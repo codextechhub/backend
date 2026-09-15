@@ -91,6 +91,19 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
         ],
     ),
     (
+        "field_access",
+        "Which platform roles read and write each registered field of a record",
+        [
+            # Both CRITICAL because a switch can open staff bank details. View
+            # only shows switches and opens nothing, so it is not restricted.
+            # Manage opens a field the moment it is saved, so it is restricted:
+            # adding it to a role you hold goes through the role change ladder,
+            # and nobody can assign a role carrying it without holding it.
+            ("view",   "View field access switches on roles",   False, _CRITICAL),
+            ("manage", "Change field access switches on roles", True,  _CRITICAL),
+        ],
+    ),
+    (
         "staff_profile",
         "CX staff HR / personal profile records",
         [

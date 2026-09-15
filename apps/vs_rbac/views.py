@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from django.db import transaction
 from django.db.models import Count, Q
+from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.views import APIView
@@ -20,10 +21,12 @@ from .models import (
     TenantRoleChangeRequest,
     TenantRoleTemplate,
     TenantUserRoleAssignment,
+    UserFieldAccessOverride,
     UserPermissionOverride,
 )
 from .serializers import (
     FieldDefinitionSerializer,
+    UserFieldAccessOverrideSerializer,
     UserPermissionOverrideSerializer,
     PermissionActionSerializer,
     PermissionDependencySerializer,
@@ -67,6 +70,9 @@ ROLE_UPDATE_KEYS = ["school.roles.update", "platform.roles.update"]
 ROLE_APPROVE_KEYS = ["school.roles.approve", "platform.roles.approve"]
 ROLE_DELETE_KEYS = ["school.roles.delete", "platform.roles.delete"]
 ROLE_ASSIGN_KEYS = ["school.roles.assign", "platform.roles.assign"]
+# Field Access switches on a tenant's roles, in the same dual vocabulary.
+FIELD_ACCESS_VIEW_KEYS = ["school.field_access.view", "platform.field_access.view"]
+FIELD_ACCESS_MANAGE_KEYS = ["school.field_access.manage", "platform.field_access.manage"]
 
 
 class TenantScopedRBACMixin:
@@ -771,6 +777,9 @@ class TenantAccessCatalogueView(TenantScopedRBACMixin, APIView):
     """
 
     pending_tenant_surface = ("get",)
+    # Platform role readers use the same tenant-shaped vocabulary when they
+    # administer a school user's field exception from the console.
+    platform_cross_tenant_param = True
 
     def get_permissions(self):
         self.rbac_permission = ROLE_VIEW_KEYS
@@ -1523,6 +1532,7 @@ class _UserPermissionOverrideBase(TenantScopedRBACMixin):
     # ?tenant=<school-slug>; RBAC still evaluates against the actor's own
     # tenant (request.rbac_tenant), so the platform key is what is required.
     platform_cross_tenant_param = True
+    self_refusal_message = "You cannot create or lift permission overrides on yourself."
 
     def _actor(self):
         return getattr(self.request, "actor_user", None) or self.request.user
@@ -1553,7 +1563,7 @@ class _UserPermissionOverrideBase(TenantScopedRBACMixin):
         effective = getattr(self.request, "user", None)
         if target.pk in {getattr(actor, "pk", None), getattr(effective, "pk", None)}:
             return error_response(
-                message="You cannot create or lift permission overrides on yourself.",
+                message=self.self_refusal_message,
                 status=status.HTTP_403_FORBIDDEN,
             )
         return None
@@ -1735,6 +1745,624 @@ class UserPermissionOverrideDetailView(_UserPermissionOverrideBase, APIView):
             override.delete()
 
         return success_response(message="Permission override lifted.")
+
+
+# -----------------------------------------------------------------------------
+# Field Access: role switches and one-person field exceptions
+# -----------------------------------------------------------------------------
+#: The ``state`` filter values on a role's field access, and the test for each.
+_FIELD_STATES = {
+    "hidden": lambda read, write: not read,
+    "read_only": lambda read, write: read and not write,
+    "full": lambda read, write: read and write,
+}
+
+
+def _tenant_fields(tenant):
+    """The active fields *tenant* may hold, with the tree each entry names.
+
+    Filtered on ``TENANT`` scope for any tenant that is not the platform, the
+    same column the switch guard and the evaluator read, so a school is never
+    shown, and can never name, a field it could not be granted.
+    """
+    from .models import PermissionScope, tenant_is_platform
+
+    fields = FieldDefinition.objects.filter(is_active=True).select_related(
+        "resource", "resource__module",
+    )
+    if not tenant_is_platform(tenant):
+        fields = fields.filter(scope=PermissionScope.TENANT)
+    return fields
+
+
+def _field_order(field):
+    """The access catalogue's order: module, resource label, group, sort order, label."""
+    from .models import display_label
+
+    resource = field.resource
+    return (
+        resource.module_id,
+        display_label(resource.label, resource.name).casefold(),
+        resource.name,
+        field.group.casefold(),
+        field.sort_order,
+        field.label.casefold(),
+    )
+
+
+def _role_block(role) -> dict:
+    return {
+        "key": role.key,
+        "name": role.name,
+        "branch_name": role.branch.name if role.branch_id else None,
+    }
+
+
+def _person_name(user):
+    if user is None:
+        return None
+    return getattr(user, "full_name", None) or getattr(user, "email", None)
+
+
+def _role_field_entry(field, row) -> dict:
+    """One field as a role's Field Access screen shows it.
+
+    ``source`` is ``role`` when the role carries a row for the field and
+    ``default`` otherwise. Write is reported as the role confers it, so a row
+    stored before its field became non-writable never shows a write switch.
+    """
+    from rest_framework.fields import DateTimeField
+
+    default = field.default_access
+    if row is None:
+        read, write, source = default["read"], default["write"], "default"
+    else:
+        read, write, source = row.can_read, row.can_write and field.writable, "role"
+    return {
+        "key": field.key,
+        "name": field.name,
+        "api_names": list(field.api_names or [field.name]),
+        "label": field.label,
+        "module": field.resource.module_id,
+        "resource": field.resource.name,
+        "group": field.group,
+        "sensitive": field.sensitive,
+        "writable": field.writable,
+        "read": read,
+        "write": write,
+        "source": source,
+        "default": default,
+        "set_by_name": _person_name(row.set_by) if row is not None else None,
+        "set_at": DateTimeField().to_representation(row.set_at) if row is not None else None,
+    }
+
+
+def _actor_holds_read(request, tenant, field_key) -> bool:
+    """Whether the caller could read *field_key* at the moment of the change.
+
+    Evaluated for the identity the permission gate evaluated (``request.user``)
+    in the tenant its authority comes from (``request.rbac_tenant``), so a
+    platform operator working on a school is judged by the switches of their
+    own roles. The value is recorded on every Field Access audit row: an
+    administrator may open a field they cannot read themselves, and this is
+    what makes those changes one filter away.
+    """
+    from .field_evaluator import get_field_access
+
+    rbac_tenant = getattr(request, "rbac_tenant", None) or tenant
+    return get_field_access(request.user, tenant=rbac_tenant).can_read(field_key)
+
+
+# Read or change one role's Read and Write switches on every registered field.
+class RoleFieldAccessView(TenantScopedRBACMixin, APIView):
+    """GET, PATCH /rbac/tenants/<slug>/roles/<key>/field-access/
+
+    **GET** lists every active field the tenant may hold with the role's
+    switches on it. Not paginated: it is a filtered vocabulary, like the access
+    catalogue, and in the same order. Query parameters, all optional:
+    ``module`` and ``resource`` (slugs), ``search`` (case-insensitive, over the
+    field key and label) and ``state`` (``hidden``, ``read_only`` or ``full``).
+    Cost is flat: the role, the fields and the role's rows.
+
+    **PATCH** changes switches, atomically::
+
+        {"changes": [
+            {"field": "procurement.vendor.phone", "read": true, "write": false},
+            {"field": "procurement.vendor.bank_account_number", "reset": true}
+        ]}
+
+    Between 1 and 200 changes, each field at most once. ``read`` and ``write``
+    are optional; a switch not sent keeps its current value. Write implies
+    Read, so ``write: true`` also stores ``read: true`` and ``read: false`` also
+    stores ``write: false``. ``reset`` deletes the role's row so the field
+    falls back to its default.
+
+    A field that is unknown, inactive, or not holdable by the tenant is refused
+    with the same 400, so a school cannot learn which platform fields exist.
+    ``write: true`` on a field that is not writable is a 400 naming it.
+
+    A change that leaves the stored (or default) state as it was writes and
+    audits nothing. Everything else writes one ``FIELD_ACCESS_CHANGED`` audit
+    row per switch that moved, or one ``FIELD_ACCESS_RESET`` row per deleted
+    row, inside the same transaction, and bumps ``role.version`` once. The role
+    and its existing rows are locked first, so two administrators on the same
+    role serialise.
+
+    An administrator may change a field they cannot read, and may change a
+    role they hold. Neither is refused; both are audited, the first through
+    ``actor_holds_read``.
+
+    The response is the GET shape for the fields named in ``changes``, showing
+    what is now stored.
+
+    Reachable before go-live on the same verbs as role detail, because a school
+    shapes its roles during onboarding. Not reachable cross-tenant by a
+    platform operator, the same as role detail.
+
+    docstring-name: Role field access
+    """
+
+    pending_tenant_surface = ("get", "patch")
+
+    def get_permissions(self):
+        if self.request.method == "PATCH":
+            self.rbac_permission = FIELD_ACCESS_MANAGE_KEYS
+        else:
+            self.rbac_permission = FIELD_ACCESS_VIEW_KEYS + FIELD_ACCESS_MANAGE_KEYS
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def _role(self):
+        role = (
+            TenantRoleTemplate.objects.select_related("branch")
+            .filter(tenant=self.tenant, key=self.kwargs.get("key"))
+            .first()
+        )
+        if role is None:
+            # Non-enumerating: another tenant's role reads as no role at all.
+            raise NotFound("No role matches the requested context.")
+        return role
+
+    def get(self, request, *args, **kwargs):
+        from .models import RoleFieldAccess
+
+        role = self._role()
+        params = request.query_params
+        state = (params.get("state") or "").strip().lower()
+        if state and state not in _FIELD_STATES:
+            return error_response(
+                message="Unknown state filter.",
+                error={"state": [f"Use one of: {', '.join(_FIELD_STATES)}."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        fields = _tenant_fields(self.tenant)
+        if module := (params.get("module") or "").strip():
+            fields = fields.filter(resource__module_id=module)
+        if resource := (params.get("resource") or "").strip():
+            fields = fields.filter(resource__name=resource)
+        if search := (params.get("search") or "").strip():
+            fields = fields.filter(Q(key__icontains=search) | Q(label__icontains=search))
+
+        rows = {
+            row.field_id: row
+            for row in RoleFieldAccess.objects.filter(role=role).select_related("set_by")
+        }
+        entries = [
+            _role_field_entry(field, rows.get(field.key))
+            for field in sorted(fields, key=_field_order)
+        ]
+        if state:
+            wanted = _FIELD_STATES[state]
+            entries = [e for e in entries if wanted(e["read"], e["write"])]
+
+        return success_response(
+            message="Data retrieved successfully",
+            data={"role": _role_block(role), "fields": entries},
+        )
+
+    def patch(self, request, *args, **kwargs):
+        from .models import RoleFieldAccess
+        from .serializers import RoleFieldAccessPatchSerializer
+
+        role = self._role()
+        body = RoleFieldAccessPatchSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        changes = body.validated_data["changes"]
+
+        requested = [change["field"] for change in changes]
+        fields = {
+            field.key: field
+            for field in _tenant_fields(self.tenant).filter(key__in=requested)
+        }
+        unknown = sorted(key for key in requested if key not in fields)
+        if unknown:
+            return error_response(
+                message="Some fields cannot be set on this role.",
+                error={"changes": [f"Unknown field(s): {', '.join(unknown)}."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        not_writable = sorted(
+            change["field"] for change in changes
+            if change.get("write") and not fields[change["field"]].writable
+        )
+        if not_writable:
+            return error_response(
+                message="Some fields cannot be written.",
+                error={"changes": [
+                    f"Not writable, so they have no write switch: {', '.join(not_writable)}."
+                ]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        actor = getattr(request, "actor_user", None) or request.user
+        now = timezone.now()
+        with transaction.atomic():
+            locked = (
+                TenantRoleTemplate.objects.select_for_update(of=("self",))
+                .select_related("tenant", "branch")
+                .get(pk=role.pk)
+            )
+            rows = {
+                row.field_id: row
+                for row in RoleFieldAccess.objects.select_for_update(of=("self",))
+                .select_related("set_by")
+                .filter(role=locked, field_id__in=requested)
+            }
+
+            to_create, to_update, to_delete, audits = [], [], [], []
+            for change in changes:
+                field = fields[change["field"]]
+                row = rows.get(field.key)
+                default = field.default_access
+                before = (
+                    {"read": row.can_read, "write": row.can_write}
+                    if row is not None else dict(default)
+                )
+
+                if change.get("reset"):
+                    if row is None:
+                        continue
+                    to_delete.append(row)
+                    rows.pop(field.key)
+                    audits.append(("FIELD_ACCESS_RESET", None, field, row.pk, before, dict(default)))
+                    continue
+
+                read = change.get("read", before["read"])
+                write = change.get("write", before["write"])
+                if change.get("write") is True:
+                    read = True
+                if not read or not field.writable:
+                    write = False
+                after = {"read": read, "write": write}
+                if after == before:
+                    continue
+
+                if row is None:
+                    row = RoleFieldAccess(role=locked, field=field)
+                    to_create.append(row)
+                    rows[field.key] = row
+                else:
+                    to_update.append(row)
+                row.can_read, row.can_write = read, write
+                row.set_by, row.set_at = actor, now
+                for switch in ("read", "write"):
+                    if before[switch] != after[switch]:
+                        audits.append(("FIELD_ACCESS_CHANGED", switch, field, row, before, after))
+
+            if to_delete:
+                RoleFieldAccess.objects.filter(pk__in=[row.pk for row in to_delete]).delete()
+            if to_create:
+                RoleFieldAccess.objects.bulk_create(to_create)
+            if to_update:
+                for row in to_update:
+                    row.assert_scope_allowed()
+                    row.updated_at = now
+                RoleFieldAccess.objects.bulk_update(
+                    to_update, ["can_read", "can_write", "set_by", "set_at", "updated_at"],
+                )
+
+            for action_type, switch, field, row_or_pk, before, after in audits:
+                self._audit(
+                    action_type=action_type,
+                    switch=switch,
+                    role=locked,
+                    field=field,
+                    entity_id=getattr(row_or_pk, "pk", row_or_pk),
+                    before=before,
+                    after=after,
+                    actor=actor,
+                    holds_read=_actor_holds_read(request, self.tenant, field.key),
+                )
+
+            if audits:
+                locked.version = (locked.version or 1) + 1
+                locked.save(update_fields=["version", "updated_at"])
+
+        entries = [
+            _role_field_entry(field, rows.get(field.key))
+            for field in sorted(fields.values(), key=_field_order)
+        ]
+        return success_response(
+            message="Field access updated.",
+            data={"role": _role_block(locked), "fields": entries},
+        )
+
+    def _audit(self, *, action_type, switch, role, field, entity_id, before, after,
+               actor, holds_read):
+        """One durable audit row for one switch moved, or one row reset.
+
+        A change that opens a sensitive field (a switch moving from off to on)
+        is a WARNING; every other change, and every reset, is INFO.
+        """
+        from .audit import record_rbac_audit
+
+        opened = switch is not None and not before[switch] and after[switch]
+        if switch is None:
+            summary = f"Field '{field.key}' reset to its default on role '{role.name}'"
+        else:
+            summary = (
+                f"{switch.capitalize()} on field '{field.key}' turned "
+                f"{'on' if after[switch] else 'off'} for role '{role.name}'"
+            )
+        record_rbac_audit(
+            action_type=action_type,
+            entity_type="RoleFieldAccess",
+            entity_id=str(entity_id),
+            entity_label=f"{role.key}:{field.key}"[:255],
+            actor_user=actor,
+            severity="WARNING" if (opened and field.sensitive) else "INFO",
+            summary=summary,
+            before_data=before,
+            diff_data=after,
+            metadata={
+                "tenant_id": str(self.tenant.pk),
+                "school_id": self.tenant.slug,
+                "role_key": role.key,
+                "field_key": field.key,
+                "switch": switch,
+                "sensitive": field.sensitive,
+                "actor_holds_read": holds_read,
+            },
+        )
+
+
+class _UserFieldAccessOverrideBase(_UserPermissionOverrideBase):
+    """Target resolution, self ban and audit for field access exceptions.
+
+    Inherits the permission override rules unchanged: the viewer's key decides
+    who may read a person's exceptions (there is no self-service exemption),
+    nobody may create or lift an exception on themselves under either identity
+    of a proxy session, a user outside the tenant reads as no user, and a
+    platform operator may act on a school user by asserting its tenant.
+
+    Every audit row records the target's effective state on the field before
+    and after, and whether the caller could read the field themselves.
+    """
+
+    self_refusal_message = "You cannot create or lift field access exceptions on yourself."
+
+    def _effective_state(self, target, field_key) -> dict:
+        """The target's current Read and Write on *field_key*, freshly evaluated."""
+        from .field_evaluator import get_field_access
+
+        target.__dict__.pop("_rbac_field_access", None)
+        return get_field_access(target, tenant=self.tenant).state(field_key)
+
+    def _audit_exception(self, *, action_type, override, entity_id, target, summary,
+                         before, after, holds_read, replaced=False):
+        from .audit import record_rbac_audit
+
+        record_rbac_audit(
+            action_type=action_type,
+            entity_type="UserFieldAccessOverride",
+            entity_id=str(entity_id),
+            entity_label=(
+                f"{getattr(target, 'email', target.pk)}:{override.field_id}:{override.access}"
+            )[:255],
+            actor_user=self._actor(),
+            severity="WARNING",
+            summary=summary,
+            before_data=before,
+            diff_data=after,
+            metadata={
+                "school_id": self.tenant.slug,
+                "tenant_id": str(self.tenant.pk),
+                "target_user_id": str(target.pk),
+                "target_user_email": getattr(target, "email", ""),
+                "field_key": override.field_id,
+                "sensitive": override.field.sensitive,
+                "access": override.access,
+                "mode": override.mode,
+                "reason": override.reason,
+                "expires_at": override.expires_at.isoformat() if override.expires_at else None,
+                "replaced": replaced,
+                "actor_holds_read": holds_read,
+            },
+        )
+
+
+# List a user's field access exceptions, or create one.
+class UserFieldAccessOverrideListCreateView(
+    _UserFieldAccessOverrideBase, generics.ListCreateAPIView,
+):
+    """
+    Tenant-facing:
+    - GET: list the field access exceptions on one user, paginated, newest
+      first. Filters: ``mode`` (ALLOW or DENY) and ``access`` (READ or WRITE).
+      Each row carries ``role_state``, what the user's roles alone say about
+      the field. The viewer needs the ``.view`` or ``.manage`` override key,
+      including for their own id.
+    - POST: create an exception::
+
+        {"field": "procurement.vendor.bank_account_number", "access": "READ",
+         "mode": "ALLOW", "reason": "Covering bursar duties 14-28 Sept",
+         "expires_at": "2026-09-28T23:59:00Z"}
+
+      It applies on the user's next request. A new exception on the same field
+      and access REPLACES the old row, and both halves are audited. A field
+      the tenant may not hold reads as a field that does not exist, and
+      ``ALLOW WRITE`` on a field that is not writable is refused.
+
+    docstring-name: User field access exceptions
+    """
+
+    serializer_class = UserFieldAccessOverrideSerializer
+    pagination_class = XVSPagination
+
+    def get_permissions(self):
+        keys = _override_keys(self._actor())
+        if self.request.method == "POST":
+            self.rbac_permission = keys["manage"]
+        else:
+            self.rbac_permission = [keys["view"], keys["manage"]]
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def _get_target(self):
+        target = getattr(self, "_target", None) or self.get_target_user()
+        self._target = target
+        return target
+
+    def get_queryset(self):
+        qs = (
+            UserFieldAccessOverride.objects
+            .filter(tenant=self.tenant, user=self._get_target())
+            .select_related("field", "created_by")
+            .order_by("-created_at")
+        )
+        if mode := self.request.query_params.get("mode"):
+            qs = qs.filter(mode=mode.upper())
+        if access := self.request.query_params.get("access"):
+            qs = qs.filter(access=access.upper())
+        return qs
+
+    def get_serializer_context(self):
+        from .field_evaluator import get_role_field_access
+
+        context = super().get_serializer_context()
+        if getattr(self, "_role_state", None) is None:
+            self._role_state = get_role_field_access(self._get_target(), tenant=self.tenant)
+        context["role_field_state"] = self._role_state
+        context["tenant"] = self.tenant
+        return context
+
+    def create(self, request, *args, **kwargs):
+        target = self._get_target()
+        if (denied := self._reject_self(target)) is not None:
+            return denied
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        field = serializer.validated_data["field"]
+        access = serializer.validated_data["access"]
+        email = getattr(target, "email", target.pk)
+        holds_read = _actor_holds_read(request, self.tenant, field.key)
+
+        with transaction.atomic():
+            existing = (
+                UserFieldAccessOverride.objects
+                .select_for_update(of=("self",))
+                .select_related("field")
+                .filter(user=target, field=field, access=access)
+                .first()
+            )
+            before = self._effective_state(target, field.key)
+            if existing is not None:
+                existing_pk = existing.pk
+                existing.delete()
+                lifted = self._effective_state(target, field.key)
+                self._audit_exception(
+                    action_type="FIELD_OVERRIDE_LIFTED",
+                    override=existing,
+                    entity_id=existing_pk,
+                    target=target,
+                    summary=(
+                        f"{existing.mode} {existing.access} exception on '{existing.field_id}' "
+                        f"for {email} replaced by a new exception"
+                    ),
+                    before=before,
+                    after=lifted,
+                    holds_read=holds_read,
+                    replaced=True,
+                )
+                before = lifted
+
+            override = serializer.save(
+                tenant=self.tenant, user=target, created_by=self._actor(),
+            )
+            self._audit_exception(
+                action_type="FIELD_OVERRIDE_CREATED",
+                override=override,
+                entity_id=override.pk,
+                target=target,
+                summary=(
+                    f"{override.mode} {override.access} exception on '{override.field_id}' "
+                    f"created for {email}"
+                ),
+                before=before,
+                after=self._effective_state(target, field.key),
+                holds_read=holds_read,
+                replaced=existing is not None,
+            )
+
+        return success_response(
+            message="Field access exception applied.",
+            data=self.get_serializer(override).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+# Lift (delete) one field access exception.
+class UserFieldAccessOverrideDetailView(_UserFieldAccessOverrideBase, APIView):
+    """
+    Tenant-facing:
+    - DELETE: lift a field access exception. A lifted DENY gives the user back
+      what their roles allow; a lifted ALLOW removes the extra access. Effective
+      on the user's next request, and audited.
+
+    docstring-name: User field access exceptions
+    """
+
+    def get_permissions(self):
+        self.rbac_permission = _override_keys(self._actor())["manage"]
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def delete(self, request, tenant_slug: str, user_id: int, id: int):
+        target = self.get_target_user()
+        if (denied := self._reject_self(target)) is not None:
+            return denied
+
+        override = (
+            UserFieldAccessOverride.objects
+            .select_related("field", "created_by")
+            .filter(pk=id, tenant=self.tenant, user=target)
+            .first()
+        )
+        if override is None:
+            return error_response(
+                message="Field access exception not found.",
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        holds_read = _actor_holds_read(request, self.tenant, override.field_id)
+        with transaction.atomic():
+            before = self._effective_state(target, override.field_id)
+            override_pk = override.pk
+            override.delete()
+            self._audit_exception(
+                action_type="FIELD_OVERRIDE_LIFTED",
+                override=override,
+                entity_id=override_pk,
+                target=target,
+                summary=(
+                    f"{override.mode} {override.access} exception on '{override.field_id}' "
+                    f"lifted for {getattr(target, 'email', target.pk)}"
+                ),
+                before=before,
+                after=self._effective_state(target, override.field_id),
+                holds_read=holds_read,
+            )
+
+        return success_response(message="Field access exception lifted.")
 
 
 # -----------------------------------------------------------------------------

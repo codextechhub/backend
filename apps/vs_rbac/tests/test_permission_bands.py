@@ -187,6 +187,14 @@ class ResolverTests(TestCase):
             capability_key_for("school", "students", "view_sensitive")
         )
 
+    def test_field_access_keys_are_core_in_a_school_and_platform_on_the_platform(self):
+        # Who may read a child's allergies is a role decision, never a tier.
+        for action in ("view", "manage"):
+            self.assertEqual(band_for("school", "field_access", action), "CORE")
+            self.assertIsNone(capability_key_for("school", "field_access", action))
+            self.assertEqual(band_for("platform", "field_access", action), "PLATFORM")
+            self.assertIsNone(capability_key_for("platform", "field_access", action))
+
     def test_an_unknown_key_is_core(self):
         self.assertIsNone(band_for("nosuch", "thing", "view"))
         self.assertIsNone(capability_key_for("nosuch", "thing", "view"))

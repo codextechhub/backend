@@ -72,54 +72,45 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             )
 
     def test_total_key_count(self):
-        """57 = 48, M13's eight academic keys, and restricted-role approval.
+        """The school and academics modules register exactly 80 keys.
 
         Deliberately a hand-maintained number: the school permission surface
         growing is something a person should have to notice and agree to, so
-        adding a key is meant to fail here until someone updates it.
+        adding a key is meant to fail here until someone updates it, and the
+        table in ``seed_school_permissions`` is where the reason for each key
+        is written.
 
-        The 48 was the 46 the catalogue shipped with plus
-        school.profile.{view,update}. The eight added at M13 are two new
-        resources on the academics module, four verbs each: ``structure`` for
-        departments, programs and levels, and ``subject``. M14 adds five more:
-        one resource, ``timetable``, carrying view, create, update, manage and
-        publish - a resource of its own rather than four more uses of the
-        calendar keys, because adding a public holiday and rebuilding the
-        school's entire timetable are not one act. They are agreed to here
-        rather than merely observed.
+        Some shapes in that table look accidental and are not:
 
-        M11 adds two more, on the existing ``school.students`` resource and no
-        new one: ``.import`` and ``.export``. Both verbs were already seeded, so
-        no new action was invented - a key whose action is not in the canonical
-        list cannot be created at all.
-
-        78 = 77, plus ``school.staff.import``, which loads a school's existing
-        staff from a spreadsheet.
-
-        77 = 69, plus the eight that came with splitting four keys that each
-        gated two depths: five for ``academics.exam``, two for
-        ``school.staff_records``, and ``school.students.promote``.
-
-        69 = 64, plus five. Four are M12's: ``school.teachers.assign``, which
-        decides who teaches what and who owns a class's marks, and the three
-        ``school.leave`` keys, which are three rather than two because applying
-        for your own leave, reading a colleague's and recording one on their
-        behalf are three different acts by three different people. The fifth is
-        ``academics.structure.import``, which was seeded with the structure
-        importer and never counted here.
-
-        The staff register keys stay on ``school.teachers``. That resource is
-        already seeded, already granted to all three prebuilt roles and already
-        mirrored in school-fe, so renaming it would leave live keys governing
-        nothing; its DESCRIPTION carries the correction instead.
-        ``school.staff`` exists for the import key alone, which governs an
-        upload rather than the directory screen, so the two do not overlap.
+        * ``academics.structure`` covers departments, programs and levels, and
+          ``academics.subject`` is its own resource because a branch admin may
+          create a subject and may not create a programme.
+        * ``academics.timetable`` and ``academics.exam`` are resources of their
+          own rather than more uses of the calendar keys, because adding a
+          public holiday, rebuilding a timetable and scheduling exams are sold
+          and granted separately.
+        * The staff register keys stay on ``school.teachers``: renaming a key
+          school-fe checks by name would leave live keys governing nothing, so
+          the resource DESCRIPTION says "Staff records" instead.
+          ``school.staff`` exists for the spreadsheet import alone.
+        * ``school.field_access`` carries view and manage for Field Access.
         """
         _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            78,
+            80,
         )
+
+    def test_field_access_view_is_open_and_manage_is_restricted(self):
+        # Viewing switches opens nothing; changing one opens a field at once.
+        _run_school_seed()
+        view = Permission.objects.get(key="school.field_access.view")
+        manage = Permission.objects.get(key="school.field_access.manage")
+        for perm in (view, manage):
+            self.assertEqual(perm.sensitivity_level, "CRITICAL", perm.key)
+            self.assertEqual(perm.scope, "TENANT", perm.key)
+        self.assertFalse(view.is_restricted)
+        self.assertTrue(manage.is_restricted)
 
     def test_impersonation_keys_are_critical_and_restricted(self):
         _run_school_seed()
@@ -178,17 +169,15 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         )
 
     def test_school_admin_gets_all_keys(self):
-        """A school admin holds every key in both modules.
+        """A school admin holds every key in both modules, all 80 of them."""
+        self.assertEqual(len(self._defaults("school_admin")), 80)
+        self.assertIn("school.field_access.manage", self._defaults("school_admin"))
 
-        77 = 69, plus the eight from the key splits. 69 = 64, plus M12's four
-        and the structure importer's one. The 64 was
-        62 plus M11's two: school.students.import and .export. The 62 was 57
-        plus M14's five: academics.timetable view, create, update, manage and
-        publish.
-
-        78 = 77, plus school.staff.import.
-        """
-        self.assertEqual(len(self._defaults("school_admin")), 78)
+    def test_only_school_admin_gets_field_access_by_default(self):
+        field_access = {"school.field_access.view", "school.field_access.manage"}
+        self.assertTrue(field_access <= self._defaults("school_admin"))
+        self.assertFalse(field_access & self._defaults("branch_admin"))
+        self.assertFalse(field_access & self._defaults("teacher"))
 
     def test_only_school_admin_gets_impersonation_by_default(self):
         # The most powerful school keys must never be a branch_admin/teacher
@@ -352,8 +341,8 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        # school_admin defaults are all 78 keys: 77, plus school.staff.import.
-        self.assertEqual(len(keys), 78)
+        # school_admin defaults are every school and academics key.
+        self.assertEqual(len(keys), 80)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
         self.assertIn("school.roles.approve", keys)

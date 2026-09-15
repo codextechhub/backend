@@ -252,6 +252,56 @@ those writes without `procurement.vendor.view_sensitive`.
 VERIFIED: see D6, same commit and same runs. The write-path test was proven by
 negative control: removing the enrolment guard fails it on each medical field.
 
+### D8. A role decides who reads and writes each field (hash pending, 2026-09-15)
+MODULES: M04 roles and permissions, MRD. Check M01 school and branch management
+(school creation now copies prebuilt field defaults, of which none are seeded yet)
+and M09 onboarding (the switches are reachable before go-live), but only to
+confirm whether either documents role provisioning at that depth.
+Field Access stage 2 (design: `docs/rbac/rbac_field_access_design.md`). It STORES,
+EVALUATES AND AUDITS switches. It ENFORCES NOTHING: no response, serializer or `/me`
+payload changes, `FieldSecurityMixin` and the `*.view_sensitive` keys still decide
+what anyone sees, and no switch has any effect on a screen until stage 3. Do not
+describe the switches as hiding or refusing anything.
+What exists now:
+- `RoleFieldAccess` (a role's Read and Write on one field, write implies read as a
+  database check), `PrebuiltRoleFieldAccess` (Codex defaults, copied when a role is
+  provisioned from the library and skipped rather than refused when they no longer
+  fit), and `UserFieldAccessOverride` (ALLOW or DENY on READ or WRITE, with the
+  permission-override rules: reason, lazy expiry, never on yourself, replace not
+  stack). Migration 0023. Guards refuse a PLATFORM field inside a school and a
+  write switch on a non-writable field, on save, clean and bulk_create.
+- `vs_rbac.field_evaluator.get_field_access`: most generous role wins, a missing
+  row is the field's default, a personal DENY beats a role and an ALLOW, super
+  admin sees everything, an unregistered field is open. Three queries cold,
+  memoised per request. Roles come from the same `_active_role_ids` the permission
+  evaluator now shares.
+- `GET, PATCH /rbac/tenants/<slug>/roles/<key>/field-access/` (school or platform
+  `field_access.view` / `.manage`; up to 200 changes, atomic, no-op writes nothing,
+  reset deletes the row) and `GET, POST, DELETE .../users/<id>/field-access-overrides/`
+  (the existing `user_overrides` / `team_overrides` keys).
+- Every switch that moves, every reset and every exception created, replaced or
+  lifted writes one durable RBAC audit row. `actor_holds_read` records when an
+  administrator opened a field they cannot read themselves (allowed by decision).
+  A failed audit rolls the change back.
+- Four keys, all CRITICAL, Core band. OWNER DECISION 2026-09-15: the MANAGE keys are
+  RESTRICTED and the VIEW keys are not. `school.field_access.view` sits in the
+  School Roles and Permissions group. `school.field_access.manage` cannot sit in
+  any group, and adding it to a role the editor holds goes through the role-change
+  ladder, because otherwise anyone who can edit roles could grant themselves
+  manage and then open a sensitive field for their own role with nobody
+  approving. Switch changes themselves still need no approval. Both school keys
+  default to School Admin and are backfilled onto existing School Admin roles by
+  the seed. `platform.field_access.view|manage` (PLATFORM, manage restricted) go
+  to the two platform admin roles.
+MUST SAY: a new FR for per-role switches and one-person field exceptions, with the
+evaluation order; section 6 (three models, the check constraint); section 7 (the
+routes, the 200 cap, the refusals, and that a platform field fails exactly like an
+unknown one); the new audit action types in FR-019; the four keys in section 3
+and in the school group count in FR-020; 8.1 (cross-tenant, self-exception,
+audit-rollback and query-cost tests). MRD Module 4 gains one capability entry.
+Backend evidence only: no frontend uses these routes yet.
+VERIFIED: filled in with the commit.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

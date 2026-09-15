@@ -474,6 +474,183 @@ class FieldDefinition(TimeStampedModel):
         return self.key
 
 
+def _field_scope_refusal(field, tenant):
+    """The error for a field *tenant* may not be granted, or ``None``.
+
+    A platform tenant may be granted any field. Every other tenant may be
+    granted only fields declared ``TENANT``: a ``PLATFORM`` field and an
+    unclassified one are refused alike, the same rule
+    :func:`assert_tenant_may_hold` applies to permission keys.
+    """
+    if field is None or tenant_is_platform(tenant):
+        return None
+    if field.scope == PermissionScope.TENANT:
+        return None
+    return ValidationError({
+        "field": (
+            f"Field '{field.key}' is platform-scoped and cannot be set inside a tenant."
+        ),
+    })
+
+
+def _field_write_refusal(field, *, attribute="can_write"):
+    """The error for a write switch on a field no API path can write, or ``None``."""
+    if field is None or field.writable:
+        return None
+    return ValidationError({
+        attribute: f"Field '{field.key}' is not writable, so it has no write switch.",
+    })
+
+
+class RoleFieldAccess(TimeStampedModel):
+    """One role's Read and Write switches on one registered field.
+
+    A missing row means the field's default (:attr:`FieldDefinition.default_access`):
+    open for a normal field, closed for a sensitive one. Resetting a field to its
+    default deletes the row, so a stored row is always a decision somebody made,
+    even when it happens to equal the default.
+
+    Write implies Read. The database enforces it with a check constraint, so no
+    write path (a serializer, a bulk update, a shell session) can store a role
+    that may change a value it cannot see.
+
+    The guard refuses two rows that could never be honoured: a field a
+    non-platform tenant may not hold, and a write switch on a field that is not
+    writable. It runs from ``clean()``, ``save()`` and
+    :class:`ScopeGuardedManager.bulk_create`, the paths the ORM writes through.
+    A queryset ``update()`` bypasses it, as it does every grant guard here.
+
+    Rows are tenant-owned through their role. Changes are made through the
+    field access endpoints, which lock, audit and bump ``role.version``.
+    """
+
+    role = models.ForeignKey(
+        "TenantRoleTemplate", on_delete=models.CASCADE, related_name="field_access",
+    )
+    field = models.ForeignKey(
+        FieldDefinition,
+        to_field="key",
+        db_column="field_key",
+        on_delete=models.CASCADE,
+        related_name="role_access",
+    )
+    can_read = models.BooleanField(default=False)
+    can_write = models.BooleanField(default=False)
+    set_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="set_role_field_access",
+    )
+    set_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["role", "field"], name="uq_role_field_access",
+            ),
+            models.CheckConstraint(
+                condition=Q(can_write=False) | Q(can_read=True),
+                name="ck_role_field_write_implies_read",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["field", "can_read"], name="rbac_rfa_field_read"),
+        ]
+
+    objects = ScopeGuardedManager()
+
+    def assert_scope_allowed(self):
+        if not self.field_id:
+            return
+        field = self.field
+        tenant = self.role.tenant if self.role_id else None
+        refusal = _field_scope_refusal(field, tenant)
+        if refusal is None and self.can_write:
+            refusal = _field_write_refusal(field)
+        if refusal is not None:
+            raise refusal
+
+    def clean(self):
+        super().clean()
+        self.assert_scope_allowed()
+
+    def save(self, *args, **kwargs):
+        self.assert_scope_allowed()
+        return super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"{self.role_id}:{self.field_id}"
+
+
+class PrebuiltRoleFieldAccess(models.Model):
+    """Codex's default Read and Write switches for a prebuilt role.
+
+    Copied onto a tenant's role when that role is provisioned from the
+    prebuilt template, beside :class:`PrebuiltRolePermission`. Later edits here
+    do not rewrite roles already provisioned, the same as prebuilt permissions.
+
+    Prebuilt roles are tenant blueprints with no platform counterpart, so a
+    platform-scoped field has no legitimate reading here and is refused, as a
+    platform key is on :class:`PrebuiltRolePermission`. A write switch on a
+    field that is not writable is refused too. Write implies Read, enforced in
+    the database.
+    """
+
+    prebuilt_role = models.ForeignKey(
+        "PrebuiltRoleTemplate",
+        on_delete=models.CASCADE,
+        related_name="default_field_access",
+    )
+    field = models.ForeignKey(
+        FieldDefinition,
+        to_field="key",
+        db_column="field_key",
+        on_delete=models.CASCADE,
+        related_name="prebuilt_role_access",
+    )
+    can_read = models.BooleanField(default=False)
+    can_write = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["prebuilt_role", "field"], name="uq_prebuilt_role_field_access",
+            ),
+            models.CheckConstraint(
+                condition=Q(can_write=False) | Q(can_read=True),
+                name="ck_prebuilt_role_field_write_implies_read",
+            ),
+        ]
+        verbose_name = "Prebuilt Role Field Access"
+        verbose_name_plural = "Prebuilt Role Field Access"
+
+    objects = ScopeGuardedManager()
+
+    def assert_scope_allowed(self):
+        if not self.field_id:
+            return
+        field = self.field
+        if field.scope != PermissionScope.TENANT:
+            raise ValidationError({
+                "field": (
+                    f"Field '{field.key}' is platform-scoped and cannot be a "
+                    f"default on a prebuilt tenant role."
+                ),
+            })
+        if self.can_write and (refusal := _field_write_refusal(field)) is not None:
+            raise refusal
+
+    def clean(self):
+        super().clean()
+        self.assert_scope_allowed()
+
+    def save(self, *args, **kwargs):
+        self.assert_scope_allowed()
+        return super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"{self.prebuilt_role_id}:{self.field_id}"
+
+
 class PermissionDependency(TimeStampedModel):
     """Explicit dependency graph between permissions.
 
@@ -1192,6 +1369,117 @@ class UserPermissionOverride(TimeStampedModel):
             errors["user"] = "User must belong to the override tenant."
         if not (self.reason or "").strip():
             errors["reason"] = "A reason is required for a permission override."
+        if errors:
+            raise ValidationError(errors)
+        self.assert_scope_allowed()
+
+    def save(self, *args, **kwargs):
+        self.assert_scope_allowed()
+        return super().save(*args, **kwargs)
+
+
+class UserFieldAccessOverride(TimeStampedModel):
+    """A one-person exception to what their roles say about one field.
+
+    The field counterpart of :class:`UserPermissionOverride`, with the same
+    rules: a required reason, an optional expiry that is evaluated lazily (an
+    expired row stops matching, nothing sweeps it), never on yourself, and a
+    new exception on the same field and access replaces the old one rather
+    than stacking. The unique constraint on ``(user, field, access)`` is what
+    makes replacement the only option.
+
+    ``access`` names the switch and ``mode`` the direction. Evaluation lives in
+    :func:`vs_rbac.field_evaluator.get_field_access`: ``ALLOW WRITE`` also
+    grants Read, ``DENY READ`` also removes Write, and a DENY beats both a role
+    and an ALLOW.
+
+    There is no restricted field. Field switches take effect without approval,
+    so any active field the tenant may hold can be allowed. The guard refuses
+    only what could never be honoured: any exception on a field the tenant may
+    not hold, and ``ALLOW WRITE`` on a field that is not writable.
+    """
+
+    class Access(models.TextChoices):
+        READ = "READ", "Read"
+        WRITE = "WRITE", "Write"
+
+    class Mode(models.TextChoices):
+        ALLOW = "ALLOW", "Allow (extra access)"
+        DENY = "DENY", "Deny (exception)"
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant",
+        on_delete=models.PROTECT,
+        related_name="user_field_access_overrides",
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="field_access_overrides",
+    )
+    field = models.ForeignKey(
+        FieldDefinition,
+        to_field="key",
+        db_column="field_key",
+        on_delete=models.PROTECT,
+        related_name="user_overrides",
+    )
+    access = models.CharField(max_length=8, choices=Access.choices)
+    mode = models.CharField(max_length=8, choices=Mode.choices)
+    reason = models.TextField()
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_field_access_overrides",
+    )
+    expires_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "field", "access"],
+                name="uq_user_field_access_override",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["tenant", "user", "expires_at"], name="rbac_ufao_tenant_user_exp",
+            ),
+        ]
+        ordering = ["-created_at"]
+
+    objects = ScopeGuardedManager()
+
+    def __str__(self) -> str:
+        return f"{self.user_id}:{self.mode}:{self.access}:{self.field_id}"
+
+    @property
+    def is_expired(self) -> bool:
+        return self.expires_at is not None and self.expires_at <= timezone.now()
+
+    def assert_scope_allowed(self):
+        if not self.field_id:
+            return
+        field = self.field
+        refusal = _field_scope_refusal(field, self.tenant if self.tenant_id else None)
+        if (
+            refusal is None
+            and self.mode == self.Mode.ALLOW
+            and self.access == self.Access.WRITE
+        ):
+            refusal = _field_write_refusal(field, attribute="access")
+        if refusal is not None:
+            raise refusal
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.user_id and self.tenant_id and self.user.tenant_id != self.tenant_id:
+            errors["user"] = "User must belong to the exception tenant."
+        if not (self.reason or "").strip():
+            errors["reason"] = "A reason is required for a field access exception."
         if errors:
             raise ValidationError(errors)
         self.assert_scope_allowed()

@@ -134,8 +134,9 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
     (
         "School Roles and Permissions",
         SCHOOL_WIDE,
-        "Build the school's role catalogue, assign roles and grant per-person "
-        "exceptions. There is one catalogue per school.",
+        "Build the school's role catalogue, assign roles, see which fields each "
+        "role reads and writes, and grant per-person exceptions. There is one "
+        "catalogue per school.",
         (
             "school.roles.view",
             "school.roles.create",
@@ -145,6 +146,7 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
             "school.roles.assign",
             "school.user_overrides.view",
             "school.user_overrides.manage",
+            "school.field_access.view",
         ),
     ),
     (
@@ -564,9 +566,15 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
 #: school administrator posting to the branch endpoint is refused outright, so
 #: offering the keys in a bundle would promise something the API declines. The
 #: import engine was briefly a way around that - see vs_import_data/datasets.py.
+#:
+#: ``school.field_access.manage`` is here because it is restricted, and a group
+#: never carries a restricted key. A switch opens a field the moment it is
+#: saved, so the key reaches a role through the role change ladder or through
+#: provisioning, never through a bundle. Its view counterpart is grouped.
 DELIBERATELY_UNGROUPED: frozenset[str] = frozenset({
     "school.branches.create",
     "school.branches.update",
+    "school.field_access.manage",
 })
 
 

@@ -4,8 +4,8 @@ Backend design for **Field Access**: per-role, per-field Read and Write switches
 that an administrator sets on a screen, replacing the code-declared
 `FieldSecurityMixin` (`apps/vs_rbac/fls.py`).
 
-Status: **approved**. Stage S1 (section 13) is built, in commit 9557ad6e. S2 is next;
-S2 to S4 are not started.
+Status: **approved**. Stage S1 (section 13) is built, in commit 9557ad6e. S2 is in
+build; S3 and S4 are not started.
 
 Companion: `rbac_field_access_frontend_prompt.md` (the brief for the frontend
 agent).
@@ -57,6 +57,8 @@ Resource → the resource's permissions, each with a readable label.
 | D11 | Read-only fields are **greyed in the UI**; the API refuses a direct write with 403. |
 | D12 | A staff member always reads and writes **their own** payroll bank details, whatever their roles say. |
 | D14 | Some fields are **set freely when a record is created** and need Write only to change afterwards. A pupil's enrolment date is the first: whoever enrols the pupil, by form or by spreadsheet, sets it, and only changing it on an existing record needs Write. Declared per field in the registry (`FieldSpec.open_on_create`), and honoured by the write check on create. |
+| D15 | **Managing Field Access is a restricted permission; viewing it is not.** Switch changes need no approval (D5), but *who may change switches* does. Adding `*.field_access.manage` to a role you hold goes through the role-change ladder, it cannot travel through a permission group, and nobody can assign a role carrying it without holding it. Otherwise a person who can only edit roles could grant themselves manage and open a sensitive field for their own role with nobody approving. `*.field_access.view` only shows switches, so it stays groupable. |
+| D16 | **Frontend Field Access tools also require the tenant's role-view key.** The role editor and one-person field exception picker both consume the role catalogue, so the UI opens only when the actor holds `*.roles.view` alongside the relevant Field Access or override key. The exception endpoints keep their override-key guards. Platform role readers may request a school's access catalogue when administering that school's user. |
 
 ## 3. Branch: every role counts everywhere (D13)
 
@@ -212,13 +214,17 @@ Registry tests (run in CI):
 
 ---
 
-## 7. Evaluation (`vs_rbac/field_access.py`)
+## 7. Evaluation (`vs_rbac/field_evaluator.py`)
 
 ```python
 get_field_access(user, tenant, branch=ANY_BRANCH) -> FieldAccessMap
 FieldAccessMap.can_read(field_key) -> bool
 FieldAccessMap.can_write(field_key) -> bool
 ```
+
+The module is `field_evaluator.py` rather than `field_access.py` because every
+domain app already has a `field_access.py` holding its field declarations, and
+one name must not mean two things.
 
 Only registered, active fields are in the map. **An unregistered field is always
 readable and writable**, which keeps the system opt-in exactly like today.
@@ -344,7 +350,9 @@ Same dual pattern as `ROLE_*_KEYS`:
 | `platform.field_access.view` | PLATFORM | same, platform tenant |
 | `platform.field_access.manage` | PLATFORM | same |
 
-`sensitivity=CRITICAL`, `is_restricted=False` (D5). Core in `permission_bands` (never
+`sensitivity=CRITICAL`. The manage keys are restricted and the view keys are not
+(D15): changing a switch needs no approval (D5), but gaining the right to change
+switches does. Core in `permission_bands` (never
 sold). Seeded to School Admin, XVS Super Admin and XVS Platform Admin. One-person
 field exceptions reuse the existing **override** keys (D8).
 
@@ -352,7 +360,9 @@ field exceptions reuse the existing **override** keys (D8).
 
 Replaces `permission-catalogue/`, which stays until both frontends move (section 13).
 Guard: `ROLE_VIEW_KEYS`. Query: `module`, `resource`, `search` (all optional).
-Same tenant-scope and plan filtering as today's catalogue.
+Same tenant-scope and plan filtering as today's catalogue. A platform actor may
+assert a school tenant here; the returned tree is scoped to that school and
+still requires the actor's platform role-view key.
 
 ```json
 [
@@ -429,6 +439,10 @@ Guard: `*.field_access.manage`. Atomic; up to 200 changes per call.
 Guards and behaviour copy `UserPermissionOverride*View`: override keys, no self
 (actor or proxied identity), replace rather than stack, `platform_cross_tenant_param`,
 non-enumerating user lookup.
+
+The frontend additionally requires the actor's tenant-specific role-view key so
+it can populate the field picker from `access-catalogue/` (D16). This is a UI
+companion requirement, not an extra guard on the exception endpoints.
 
 ```json
 {"field": "procurement.vendor.bank_account_number", "access": "READ",

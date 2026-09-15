@@ -92,6 +92,7 @@ RESOURCE_BANDS = {
     ("school", "profile"): CORE,
     ("school", "settings"): CORE,
     ("school", "roles"): CORE,
+    ("school", "field_access"): CORE,
     ("school", "administrators"): CORE,
     ("school", "fees"): CORE,
     ("school", "students"): CORE,

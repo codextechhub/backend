@@ -54,8 +54,9 @@ Keep what the current picker already shows:
 
 ### 2. Field Access menu
 
-A **Field Access** menu item, visible only to holders of `school.field_access.view`
-or `platform.field_access.view` (manage keys unlock editing):
+A **Field Access** menu item, visible only when the actor holds the tenant's
+`*.roles.view` key and either `*.field_access.view` or `*.field_access.manage`
+(manage unlocks editing):
 
 1. The admin picks a **role**.
 2. They narrow **Module → Resource** and can search by field label.
@@ -85,7 +86,14 @@ The rules are the same as permission exceptions: no exceptions on yourself (hide
 control on your own profile), and a new exception for the same field and access
 replaces the old one. Use `role_state` to explain the effect, for example "The role
 hides this. Allowed for this person until 28 Sept."
-Endpoints: `users/<id>/field-access-overrides/`.
+Endpoints: `users/<id>/field-access-overrides/`. They are guarded by the SAME keys as
+today's permission exceptions (`school.user_overrides.view|manage` in a school,
+`platform.team_overrides.view|manage` in the console), not by the field access keys,
+so show the control beside the permission exception control when the actor also
+holds the tenant's `*.roles.view` key. The companion role-view requirement lets the
+field picker use `access-catalogue/`; it does not change the exception endpoint guard.
+For a school user opened from the console, request that school's catalogue by path
+slug and `tenant` assertion rather than showing the platform tenant's field list.
 
 ### 4. Every screen obeys the switches
 
@@ -123,6 +131,22 @@ Surfaces that must use it, at minimum:
 - user security metadata and invitation details in the console,
 - import templates, jobs and batches,
 - the Export Centre column picker.
+
+## Things that are added
+
+Four permission keys, which both apps' `src/permissions/index.ts` maps must carry
+(school-fe's map is kept in lockstep with the backend seed by hand):
+`school.field_access.view`, `school.field_access.manage` (school-fe) and
+`platform.field_access.view`, `platform.field_access.manage` (console-fe). Existing
+School Admin roles receive the school pair when the backend seeds run.
+
+The two `manage` keys are **restricted** (`is_restricted: true` in the catalogue) and
+the two `view` keys are not. The role picker must treat manage like every other
+restricted permission. It never appears inside a permission group. Adding it to a
+role the editor holds is answered with 409 `RESTRICTED_NEEDS_APPROVAL` and goes to
+the role change request flow. Assigning a role that carries it is refused to anyone
+who does not hold it themselves. Changing field switches, once someone holds manage,
+still needs no approval.
 
 ## Things that are removed
 

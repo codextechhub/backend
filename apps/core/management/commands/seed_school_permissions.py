@@ -42,6 +42,27 @@ ROLE_BRANCH_ADMIN = "branch_admin"
 ROLE_TEACHER = "teacher"
 PREBUILT_ROLE_KEYS = [ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER]
 
+#: Keys registered unrestricted whatever their sensitivity.
+#:
+#: A SENSITIVE or CRITICAL key is otherwise restricted: it reaches a role the
+#: editor holds only through a reviewed role change, never travels through a
+#: permission group, and cannot be assigned by somebody who does not already
+#: hold it.
+#:
+#: ``school.field_access.view`` is here because it only shows which switches a
+#: role has. Seeing that the Storekeeper cannot read bank details opens nothing,
+#: so it stays groupable beside ``school.roles.view``.
+#:
+#: ``school.field_access.manage`` is deliberately absent. A switch opens a field
+#: the moment it is saved, so an unrestricted manage key would let somebody
+#: holding only ``school.roles.update`` add it to their own role and then turn
+#: on Read for a supplier's bank details with nobody approving either step.
+#: Restricted, adding it to a role you hold goes through the role change ladder.
+#: Both keys stay CRITICAL, which is what the audit queues read.
+UNRESTRICTED_KEYS = frozenset({
+    "school.field_access.view",
+})
+
 # ── Permission key table (single source of truth) ─────────────────────────────
 # Each row: (dotted_key, description, sensitivity, {default-role flags}).
 # The dotted key is module.resource.action. Modules: school, academics.
@@ -150,6 +171,13 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "roles", "approve",             _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
     ("school", "roles", "delete",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
+    # Field Access: which roles read and write each registered field of a
+    # record. Both CRITICAL because a switch can open a child's medical record
+    # or a supplier's bank details. View is unrestricted and manage is
+    # restricted: see UNRESTRICTED_KEYS.
+    ("school", "field_access", "view",         _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
+    ("school", "field_access", "manage",       _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
+
     # School-scoped proxy (impersonation). Deliberately a SEPARATE namespace
     # from platform.impersonation.* - a school role must never carry a key that
     # the platform tiering would read as cross-tenant reach. Holding
@@ -252,6 +280,7 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("school", "settings"):       "School settings",
     ("school", "profile"):        "The school's own identity record (ownership, term structure, currency, branding)",
     ("school", "roles"):          "School role management",
+    ("school", "field_access"):   "Which roles read and write each registered field of a record",
     ("school", "user_overrides"): "Per-user permission exceptions on school user profiles",
     ("school", "impersonation"):  "School-scoped proxy (impersonate a user in your own school)",
     ("academics", "session"):     "Academic sessions",
@@ -355,7 +384,10 @@ class Command(BaseCommand):
             expected_key = f"{module_name}.{resource_name}.{action_name}"
             all_keys.append(expected_key)
 
-            is_restricted = sensitivity in (_SENSITIVE, _CRITICAL)
+            is_restricted = (
+                sensitivity in (_SENSITIVE, _CRITICAL)
+                and expected_key not in UNRESTRICTED_KEYS
+            )
             perm = Permission.objects.filter(key=expected_key).first()
             if perm:
                 self.stdout.write(f"    {expected_key} (exists)")

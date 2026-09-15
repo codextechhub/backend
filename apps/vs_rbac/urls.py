@@ -167,6 +167,25 @@ urlpatterns = [
     ),
 
     # -------------------------------------------------------------------------
+    # Field Access: role switches and one-person field exceptions
+    # -------------------------------------------------------------------------
+    path(
+        "tenants/<slug:tenant_slug>/roles/<slug:key>/field-access/",
+        views.RoleFieldAccessView.as_view(),
+        name="rbac-role-field-access",
+    ),
+    path(
+        "tenants/<slug:tenant_slug>/users/<int:user_id>/field-access-overrides/",
+        views.UserFieldAccessOverrideListCreateView.as_view(),
+        name="rbac-user-field-access-override-list-create",
+    ),
+    path(
+        "tenants/<slug:tenant_slug>/users/<int:user_id>/field-access-overrides/<int:id>/",
+        views.UserFieldAccessOverrideDetailView.as_view(),
+        name="rbac-user-field-access-override-detail",
+    ),
+
+    # -------------------------------------------------------------------------
     # Super Admin Transfer (codex tenant)
     # -------------------------------------------------------------------------
     path(

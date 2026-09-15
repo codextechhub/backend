@@ -489,17 +489,56 @@ def provision_role_from_prebuilt(*, tenant, branch=None, prebuilt_key: str,
                     prebuilt.key, ", ".join(sorted(refused)), tenant,
                 )
                 permission_keys = [k for k in permission_keys if k not in refused]
-        role = set_role_access(
-            role=role,
-            actor=created_by,
-            reason=f"Provisioned from prebuilt role '{prebuilt.key}'.",
-            permission_keys=permission_keys,
-            group_ids=[],
-            allow_restricted=True,
-            source="prebuilt_role_provisioning",
-        )
+        with transaction.atomic():
+            role = set_role_access(
+                role=role,
+                actor=created_by,
+                reason=f"Provisioned from prebuilt role '{prebuilt.key}'.",
+                permission_keys=permission_keys,
+                group_ids=[],
+                allow_restricted=True,
+                source="prebuilt_role_provisioning",
+            )
+            _copy_prebuilt_field_access(
+                prebuilt=prebuilt, role=role, tenant=tenant, actor=created_by,
+            )
 
     return role
+
+
+def _copy_prebuilt_field_access(*, prebuilt, role, tenant, actor=None) -> int:
+    """Copy a prebuilt role's default field switches onto a new tenant role.
+
+    Runs inside the provisioning transaction, beside the permission copy. A
+    default that could not be honoured on this tenant is **skipped, not
+    refused**, for the reason provisioning drops a platform key: the caller
+    asked for a role, not for these rows, and a field reclassified after the
+    default was written must never take school creation down. Skipped are
+    defaults on an inactive field and, for a tenant that is not the platform,
+    on a field that is not ``TENANT`` scope. A write switch on a field that has
+    since become non-writable is kept as Read only.
+
+    Returns the number of rows written.
+    """
+    from .models import PermissionScope, PrebuiltRoleFieldAccess, RoleFieldAccess
+
+    defaults = PrebuiltRoleFieldAccess.objects.filter(
+        prebuilt_role=prebuilt, field__is_active=True,
+    ).select_related("field")
+    if not tenant_is_platform(tenant):
+        defaults = defaults.filter(field__scope=PermissionScope.TENANT)
+    rows = [
+        RoleFieldAccess(
+            role=role,
+            field=default.field,
+            can_read=default.can_read,
+            can_write=default.can_write and default.field.writable,
+            set_by=actor,
+        )
+        for default in defaults
+    ]
+    RoleFieldAccess.objects.bulk_create(rows)
+    return len(rows)
 
 
 # Raise a role change request and start its approval ladder.

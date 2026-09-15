@@ -179,8 +179,19 @@ def get_role_permissions(user, tenant=None, branch=ANY_BRANCH) -> Set[str]:
     return _role_permission_keys(user, tenant, branch)
 
 
-def _role_permission_keys(user, tenant, branch) -> Set[str]:
-    role_ids = set(
+def _active_role_ids(user, tenant, branch):
+    """The ids of the roles *user* holds in *tenant* right now, as a lazy queryset.
+
+    One place for the assignment rules every evaluator shares: the assignment
+    is active, the role is active, and a branch-pinned assignment counts only
+    while its branch is in service (:func:`_assignment_branch_q`). Permissions
+    and field access both read it, so a role that confers a permission is
+    exactly the role whose field switches count.
+
+    Lazy on purpose: a caller may evaluate it or nest it in another query as a
+    subquery.
+    """
+    return (
         TenantUserRoleAssignment.objects.filter(
             tenant=tenant,
             user=user,
@@ -190,6 +201,10 @@ def _role_permission_keys(user, tenant, branch) -> Set[str]:
         .filter(_assignment_branch_q(branch))
         .values_list("role_id", flat=True)
     )
+
+
+def _role_permission_keys(user, tenant, branch) -> Set[str]:
+    role_ids = set(_active_role_ids(user, tenant, branch))
 
     granted, denied = set(), set()
     for key, is_granted in TenantRolePermission.objects.filter(
