@@ -203,6 +203,28 @@ def make_permission(key, module_key=None, action=None, **kwargs):
     )
 
 
+def make_field_definition(key, label, **kwargs):
+    """Create a ``FieldDefinition`` from a dotted ``module.resource.name`` key.
+
+    The module and resource rows are created when missing, so a field can sit
+    under a resource that carries no permissions. ``scope`` defaults to
+    ``TENANT``; pass ``PLATFORM`` for a field only CodeX may be granted.
+    """
+    from vs_rbac.models import (
+        FieldDefinition, PermissionModule, PermissionResource, PermissionScope,
+    )
+
+    module_name, resource_name, name = key.split(".")
+    module, _ = PermissionModule.objects.get_or_create(name=module_name)
+    resource, _ = PermissionResource.objects.get_or_create(
+        module=module, name=resource_name,
+    )
+    kwargs.setdefault("scope", PermissionScope.TENANT)
+    return FieldDefinition.objects.create(
+        resource=resource, name=name, label=label, **kwargs
+    )
+
+
 def make_permission_set(*keys):
     return [make_permission(k) for k in keys]
 

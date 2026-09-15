@@ -10,8 +10,11 @@ class VsStudentsConfig(AppConfig):
     def ready(self):
         # The Export Centre never imports a domain app; the domain app
         # registers itself. Same shape as vs_schools and vs_academics.
-        from . import export_datasets, media_policies
+        from . import export_datasets, field_access, media_policies
         from .services import import_registry
+
+        # The student fields an administrator may restrict per role.
+        field_access.register()
 
         # No default policy exists: a file whose owner registers nothing is
         # never served. This is what makes a student photograph readable at

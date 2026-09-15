@@ -15,6 +15,12 @@ a child's medical history.
 **A file is a signed, user-bound, expiring URL, never a path.** An unsigned
 ``/media/<name>`` inside its window is a bearer token.
 
+**Every serializer that can write a restricted field carries a write map.**
+The guard binds only the serializer declaring it, so enrolling carries
+``CREATE_WRITE_PERMISSIONS`` and editing carries ``EDIT_WRITE_PERMISSIONS``,
+and a serializer that is only ever read marks its fields read-only rather than
+leaving another door.
+
 FRD M11 v2.4 sections 7 and 12.1.
 """
 from __future__ import annotations
@@ -25,6 +31,8 @@ from rest_framework import serializers
 from vs_rbac.fls import FieldSecurityMixin
 
 from .constants import (
+    CREATE_WRITE_PERMISSIONS,
+    EDIT_WRITE_PERMISSIONS,
     DocumentType,
     Gender,
     PERM_VIEW_SENSITIVE,
@@ -207,7 +215,11 @@ class GuardianWriteSerializer(serializers.Serializer):
 # ── students ───────────────────────────────────────────────────────────────
 
 class StudentListSerializer(_BranchAware):
-    """The directory row. No medical field, no guardian contact details."""
+    """The directory row. No medical field, no guardian contact details.
+
+    Every field is read-only: a row is only ever read, and a writable
+    ``enrolment_date`` here would be a write path with no field guard on it.
+    """
 
     full_name = serializers.CharField(read_only=True)
     status_label = serializers.CharField(source="get_status_display", read_only=True)
@@ -230,6 +242,7 @@ class StudentListSerializer(_BranchAware):
             # reach without a request per row.
             "applied_on",
         ]
+        read_only_fields = fields
 
     def _enrolment(self, obj):
         # Reads the prefetched list rather than querying, so the query count
@@ -267,12 +280,7 @@ class StudentDetailSerializer(FieldSecurityMixin, _BranchAware):
         "allergies": PERM_VIEW_SENSITIVE,
         "conditions": PERM_VIEW_SENSITIVE,
     }
-    write_permissions = {
-        "blood_group": PERM_VIEW_SENSITIVE,
-        "allergies": PERM_VIEW_SENSITIVE,
-        "conditions": PERM_VIEW_SENSITIVE,
-        "enrolment_date": "school.students.manage",
-    }
+    write_permissions = dict(EDIT_WRITE_PERMISSIONS)
 
     full_name = serializers.CharField(read_only=True)
     status_label = serializers.CharField(source="get_status_display", read_only=True)
@@ -349,12 +357,7 @@ class StudentWriteSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     reason and says so on the form.
     """
 
-    write_permissions = {
-        "blood_group": PERM_VIEW_SENSITIVE,
-        "allergies": PERM_VIEW_SENSITIVE,
-        "conditions": PERM_VIEW_SENSITIVE,
-        "enrolment_date": "school.students.manage",
-    }
+    write_permissions = dict(EDIT_WRITE_PERMISSIONS)
 
     class Meta:
         model = Student
@@ -380,12 +383,23 @@ class StudentWriteSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         return attrs
 
 
-class EnrolmentWriteSerializer(serializers.Serializer):
+class EnrolmentWriteSerializer(FieldSecurityMixin, serializers.Serializer):
     """Enrol, or save as an applicant. One serializer, one flag.
 
     Two endpoints would be two sets of rules, and the second one would be the
     one that forgets the duplicate check.
+
+    The medical fields carry the same write rule as editing a record: a caller
+    without ``school.students.view_sensitive`` is refused, per field, for a
+    non-blank blood group, allergy or condition, and nothing is created. A
+    blank value is allowed, because the enrol form posts every input whether
+    it was touched or not. A new record's enrolment date is set by whoever
+    enrols it; changing it later needs ``school.students.manage`` on the edit
+    route. The view must pass the request in the context, or the guard has no
+    caller to judge and skips itself.
     """
+
+    write_permissions = dict(CREATE_WRITE_PERMISSIONS)
 
     first_name = serializers.CharField(max_length=100)
     middle_name = serializers.CharField(

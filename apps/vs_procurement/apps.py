@@ -31,6 +31,10 @@ class VsProcurementConfig(AppConfig):
         from .export_datasets import register_screens
 
         register_screens()
+        # Declare the vendor fields an administrator may restrict per role.
+        from .field_access import register as register_field_access
+
+        register_field_access()
         # Contribute the AP and GR/IR reconciliations to the finance period close.
         # Registered here, not imported by finance, so the dependency keeps running
         # procurement to finance and never back.

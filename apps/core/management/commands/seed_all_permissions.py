@@ -39,6 +39,10 @@ Seed order
 13. seed_onboarding_permissions - M9 onboarding keys → school_admin (control room,
                                tasks, go-live submission) + platform roles
                                (provisioning, approve/reject)
+13b. sync_field_registry     - writes the fields each app declares for Field
+                               Access to vs_rbac.FieldDefinition. After every
+                               module seed, because a field sits under a
+                               resource those seeds register.
 14. seed_school_permission_groups - groups the school-facing keys into named
                                bundles and records which are school-wide and
                                which narrow to a branch. Runs LAST because it
@@ -72,6 +76,8 @@ SEED_STEPS: list[tuple[str, list]] = [
     ("seed_notification_permissions", []),
     ("seed_onboarding_permissions",  []),
     ("seed_health", []),
+    # After every module seed: a field sits under a resource they register.
+    ("sync_field_registry",          []),
     # Last on purpose: it groups keys from five different modules and can only
     # see the ones already in the registry.
     ("seed_school_permission_groups", []),

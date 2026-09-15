@@ -164,7 +164,10 @@ class StudentListCreateView(StudentsViewMixin, generics.ListCreateAPIView):
         # the refusal is a 403 and not a validation error.
         self.assert_holds(PERM_CREATE, PERM_CLASS_ASSIGN)
 
-        writer = EnrolmentWriteSerializer(data=request.data)
+        # The request rides in the context, or the field guard skips itself.
+        writer = EnrolmentWriteSerializer(
+            data=request.data, context=self.get_serializer_context(),
+        )
         writer.is_valid(raise_exception=True)
         data = dict(writer.validated_data)
         guardian_rows = data.pop("guardians")

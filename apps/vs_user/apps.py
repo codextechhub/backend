@@ -23,3 +23,7 @@ class VsUserConfig(AppConfig):
         from .export_datasets import register_screens
 
         register_screens()
+        # Declare the staff account fields an administrator may restrict per role.
+        from .field_access import register as register_field_access
+
+        register_field_access()

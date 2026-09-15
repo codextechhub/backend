@@ -17,6 +17,10 @@ class VsPaymentsConfig(AppConfig):
         from .export_datasets import register_screens
 
         register_screens()
+        # Declare the payment fields an administrator may restrict per role.
+        from .field_access import register as register_field_access
+
+        register_field_access()
         # Publish this tenant's payout-approval ladder when its books are created, so
         # the gate over the highest-risk cash-out path is on from onboarding rather
         # than from a remembered command.

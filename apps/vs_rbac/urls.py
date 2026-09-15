@@ -51,6 +51,11 @@ urlpatterns = [
         name="rbac-permission-detail",
     ),
     path(
+        "vision/fields/",
+        views.FieldDefinitionListView.as_view(),
+        name="rbac-field-definition-list",
+    ),
+    path(
         "vision/permission-dependencies/",
         views.PermissionDependencyListCreateView.as_view(),
         name="rbac-permission-dependency-list-create",
@@ -92,6 +97,11 @@ urlpatterns = [
         "tenants/<slug:tenant_slug>/permission-catalogue/",
         views.TenantPermissionCatalogueView.as_view(),
         name="rbac-tenant-permission-catalogue",
+    ),
+    path(
+        "tenants/<slug:tenant_slug>/access-catalogue/",
+        views.TenantAccessCatalogueView.as_view(),
+        name="rbac-tenant-access-catalogue",
     ),
 
     # -------------------------------------------------------------------------

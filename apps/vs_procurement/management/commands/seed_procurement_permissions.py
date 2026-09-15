@@ -20,6 +20,7 @@ from django.db import transaction
 
 MODULE_NAME = "procurement"
 MODULE_DESCRIPTION = "Procure-to-pay: requisitions, sourcing, receipts, vendor invoicing and payments."
+MODULE_LABEL = "Procurement"
 PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
 _PLATFORM_ROLE_NAMES = {"xvs_super_admin": "XVS Super Admin", "xvs_platform_admin": "XVS Platform Admin"}
 
@@ -120,11 +121,16 @@ class Command(BaseCommand):
                 )
 
         # ── Module bucket ─────────────────────────────────────────────────────
+        from vs_rbac.models import sentence_label
+
         module, created = PermissionModule.objects.get_or_create(
             name=MODULE_NAME,
             defaults={"description": MODULE_DESCRIPTION, "is_active": True},
         )
         self.stdout.write(f"  module '{MODULE_NAME}' " + ("created" if created else "exists"))
+        # Fill a blank label only, so an administrator's wording stands.
+        if not module.label:
+            PermissionModule.objects.filter(pk=module.pk, label="").update(label=MODULE_LABEL)
 
         # ── Resources + permission keys ───────────────────────────────────────
         created_perms = 0
@@ -138,6 +144,10 @@ class Command(BaseCommand):
                     "is_active": True,
                 },
             )
+            if not resource.label:
+                PermissionResource.objects.filter(pk=resource.pk, label="").update(
+                    label=sentence_label(resource_label),
+                )
             for action_name, sensitivity in actions:
                 action = PermissionAction.objects.get(name=action_name)
                 expected_key = f"{MODULE_NAME}.{resource_name}.{action_name}"

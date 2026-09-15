@@ -167,6 +167,86 @@ Verified: vs_procurement 581 (1 pre-existing failure belonging to another
 session), vs_workflow 419 OK, vs_finance 761 OK then 771 OK, vs_payments 206 OK,
 schools.core.fal 219 OK, schools.vs_schools 358 OK on the full run.
 
+### D6. Permissions and restrictable fields as one Module, Resource tree (hash pending, 2026-09-14)
+MODULES: M04 roles and permissions, MRD. Check M10 bulk import, M11 students,
+M12 staff, M18 payments, M19 finance, M21 vendors and M26 exports, but only to
+confirm none needs a version: their fields were registered, and nothing they do changed.
+This is stage 1 of Field Access (design: `docs/rbac/rbac_field_access_design.md`).
+It builds the vocabulary only. No field is hidden, shown or refused differently
+from before, `FieldSecurityMixin` still does the enforcing, and
+`permission-catalogue/` returns exactly what it did. Stages 2 to 4 (per-role
+switches, one-person exceptions, enforcement and key conversion) are not built.
+Do not describe them as behaviour.
+What exists now:
+- `FieldDefinition` (vs_rbac migration 0022): a code-owned registry of 47 fields
+  under 12 existing `PermissionResource` rows, 4 of them PLATFORM-scoped. Each
+  field carries label, group, `api_names`, `sensitive` (closed by default when
+  true), `writable` and `scope`.
+- Apps declare their fields in `field_access.py` from `ready()`.
+  `manage.py sync_field_registry` writes them, deactivates rather than deletes,
+  audits `FIELD_REGISTRY_SYNCED`, and has `--check`. It runs in
+  `seed_all_permissions` immediately before `seed_school_permission_groups`,
+  which makes that command nineteen steps (FR-023 still says seventeen, already stale).
+- `label` on `PermissionModule` and `PermissionResource`, editable through the
+  vision registry API, falling back to the slug read as words. The finance,
+  procurement and payments seeds fill a blank label and never overwrite one.
+- `GET /rbac/tenants/<slug>/access-catalogue/` (role view keys, pending-tenant
+  readable): Module, then Resource, then that resource's permissions and fields,
+  with `module`, `resource` and `search` filters. Its permission entries are
+  byte-identical to `permission-catalogue/`, and a school never sees a
+  PLATFORM field or permission.
+- `GET /rbac/vision/fields/` (`platform.permissions.view`, read-only): the registry.
+- The export catalogue's `Field.access` links 11 export columns to their
+  registry keys. It is not published in any response.
+MUST SAY: a new FR for the tree and the registry, with section 6 (FieldDefinition,
+the two labels), section 7 (both routes, label on the module and resource APIs)
+and 8.1 (the registry tests: every guarded field must be declared, every declared
+name must reach a serializer, scope must equal the guarding key's) following.
+FR-022's limit narrows: whether a guarded field is declared is now checked by
+test, not left to each module. MRD Module 4 gains one capability entry and a
+sentence in its description. Backend evidence only: no frontend uses either
+route yet.
+VERIFIED: vs_rbac 604 OK in the main session. The rest of the full runs are
+filled in with the commit.
+
+### D7. Enrolling a pupil no longer writes medical fields without medical access (hash pending, 2026-09-15)
+MODULES: M11 student management, M04 roles and permissions. MRD only if M11's
+entry describes enrolment write rules. Check M10 bulk import to confirm it needs
+nothing: the student import's behaviour ends unchanged.
+The edit route refused a pupil's `blood_group`, `allergies` and `conditions`
+without `school.students.view_sensitive`, but enrolment (`POST /v1/students/`)
+accepted them from anyone allowed to enrol. A custom admissions role could type
+"No known allergies" into a record the nurse relies on, and could not read the
+field afterwards. ROOT CAUSE: field write rules are declared per serializer, so a
+second write path into the same data carried none.
+What is true now:
+- Enrolment refuses a non-blank medical value from a caller without
+  `view_sensitive`, with a 400 per field, and creates nothing. A blank,
+  whitespace-only or absent value passes, because the enrol form posts every input.
+- Editing is unchanged: every present medical value, blank included, is judged,
+  because a blank erases what is stored.
+- OWNER DECISION 2026-09-15: a new pupil's enrolment date is set by whoever enrols
+  them, by form or by spreadsheet. Only changing it on an existing record needs
+  `school.students.manage`, as the edit route already enforced.
+- `FieldSecurityMixin` (shared, vs_rbac): creating a record, a blank value for a
+  guarded field is not a write. The only other serializer declaring write rules,
+  the platform staff profile, is used for updates only, so nothing else moves.
+- The student list serializer is read-only throughout. It left `enrolment_date`
+  writable while never being used to write.
+- A new registry test fails CI when any serializer can write a registered field
+  without the guarding key, or without being a declared surface. Allowlist
+  entries carry a reason and must still match a real hit. Proven by negative
+  control: removing the enrolment guard fails it on each medical field.
+MUST SAY: for M11, the write rule on enrolment versus edit, the blank-on-create
+rule, and the enrolment-date decision. For M04, FR-022's evidence (the
+blank-on-create rule) and 8.1 (the write-path test). If M11 lists a Needs
+Attention item about enrolment accepting medical data, remove it. Record as a
+residual limit, handled by Field Access stage 3 rather than here: a finance bank
+account number and payroll amounts can be written by a role that cannot read
+them. Vendor bank details are not in that list: `views/vendors.py` already refuses
+those writes without `procurement.vendor.view_sensitive`.
+VERIFIED: filled in with the commit.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

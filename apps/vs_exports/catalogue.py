@@ -123,6 +123,10 @@ class Field:
     sensitive: bool = False      # needs exports.sensitive_field.export as well
     choices: dict = dc_field(default_factory=dict)
     description: str = ""
+    #: The Field Access registry key this column exposes, for example
+    #: ``procurement.vendor.bank_account_number``. Blank when the column is not
+    #: a registered field.
+    access: str = ""
 
     @property
     def path(self) -> str:

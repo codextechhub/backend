@@ -33,6 +33,10 @@ Behaviour
   so a list endpoint that serializes 200 student records only hits the DB once.
 * On writes, every unauthorized field raises a per-field ValidationError so the
   caller knows exactly which fields were rejected.
+* Creating a record, a blank value for a guarded field is not a write and passes;
+  updating one, it is, because it would erase the stored value.
+* The rule binds only the serializer that declares it. Every route that writes
+  the same field needs its own serializer to carry the same map.
 """
 from __future__ import annotations
 
@@ -100,6 +104,23 @@ class FieldSecurityMixin:
         perm = self.write_permissions.get(field)
         return perm is None or perm in user_perms
 
+    # Decide whether an incoming field is a write the guard must judge.
+    def _is_write(self, field: str, data: Any) -> bool:
+        """Whether *field* in *data* would put a value on the record.
+
+        Updating a record, any value present is a write, because a blank one
+        erases what is stored. Creating one, a blank value (``None``, or a
+        string that is empty once trimmed) can only leave the field empty, so
+        a form that posts every input, filled or not, is not refused for the
+        inputs its user never touched. A non-blank value is judged either way.
+        """
+        if field not in data:
+            return False
+        if getattr(self, "instance", None) is not None:
+            return True
+        value = data.get(field) if hasattr(data, "get") else None
+        return not (value is None or (isinstance(value, str) and not value.strip()))
+
     # ------------------------------------------------------------------
     # DRF hooks
     # ------------------------------------------------------------------
@@ -134,7 +155,8 @@ class FieldSecurityMixin:
                 errors = {
                     field: "You do not have permission to modify this field."
                     for field in self.write_permissions
-                    if field in data and not self._can_write(field, user_perms)
+                    if self._is_write(field, data)
+                    and not self._can_write(field, user_perms)
                 }
                 if errors:
                     raise serializers.ValidationError(errors)

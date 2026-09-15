@@ -1,13 +1,13 @@
 # core_bootstrap_seeds
 
 How an empty database becomes a working platform. One master command,
-`seed_all_permissions`, chains eighteen module seeds in dependency order;
+`seed_all_permissions`, chains nineteen steps in dependency order;
 `create_superuser` mints the first account; a handful of reference-data seeds
 fill the catalogues the product needs to function. The destructive and
 development-only commands are `core_operations_and_mail`.
 
-`core` owns the master command and five of the seeds; the other thirteen live in
-the module they belong to and are invoked from here.
+`core` owns the master command and five of the seeds; the other fourteen steps
+live in the module they belong to and are invoked from here.
 
 ---
 
@@ -50,7 +50,7 @@ and `vs_tenants.Tenant`.
 
 ## 3. The chain
 
-`SEED_STEPS` (`seed_all_permissions.py:54-79`), eighteen entries:
+`SEED_STEPS` (`seed_all_permissions.py`), nineteen entries:
 
 | # | Command | Owned by | Registers |
 |---|---|---|---|
@@ -71,7 +71,8 @@ and `vs_tenants.Tenant`.
 | 15 | `seed_notification_permissions` | vs_notifications | platform + school admin defaults |
 | 16 | `seed_onboarding_permissions` | vs_onboarding | |
 | 17 | `seed_health` | vs_health | |
-| 18 | `seed_school_permission_groups` | core | groups the school keys; grants nothing |
+| 18 | `sync_field_registry` | vs_rbac | the fields each app declares for Field Access (`FieldDefinition`); after every module seed, because a field sits under a resource they register |
+| 19 | `seed_school_permission_groups` | core | groups the school keys; grants nothing |
 
 Then `_ensure_super_admin_has_every_permission`.
 
@@ -173,10 +174,10 @@ $ python manage.py seed_all_permissions
      Permission grants will be skipped for missing roles.
      Run: python manage.py create_superuser
 
-  [1/18] seed_actions
+  [1/19] seed_actions
   ─────────────────────────────────────────
   ...
-  [18/18] seed_school_permission_groups
+  [19/19] seed_school_permission_groups
   ─────────────────────────────────────────
   ...
   ✔ Super Admin reconciled with all 412 active permissions.
@@ -185,7 +186,7 @@ $ python manage.py seed_all_permissions
 
 On Windows, the last two lines never print: `✔` is U+2714, the console stream is
 cp1252, and `self.stdout.write` raises `UnicodeEncodeError`
-(`seed_all_permissions.py:163`). Every one of the eighteen steps has already
+(`seed_all_permissions.py:163`). Every one of the nineteen steps has already
 committed; the reconciliation is `@transaction.atomic` so its own rows roll back;
 and the command exits non-zero. The operator sees a traceback at the end of a
 run that mostly worked (`core_code_issues.md` §11).
@@ -220,8 +221,9 @@ Full evidence in **`error/core/core_code_issues.md`**.
   hand-bootstrapped environment dispatches nothing and says nothing
   (`core_code_issues.md` §14).
 - **The docstring and the code disagree about the chain.** The module docstring
-  numbers fourteen steps and omits `seed_health`; `SEED_STEPS` has eighteen
-  entries and the progress line prints `[i/18]`
+  numbers fifteen steps (with `sync_field_registry` as 13b) and omits
+  `seed_health`; `SEED_STEPS` has nineteen entries and the progress line prints
+  `[i/19]`
   (`core_code_issues.md` §15).
 - **`seed_vision_staff` sets a fixed password** for a roster of real staff
   addresses (`seed_vision_staff.py:53`), with no environment override.

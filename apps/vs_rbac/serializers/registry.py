@@ -6,6 +6,7 @@ from django.db import transaction
 from rest_framework import serializers
 
 from ..models import (
+    FieldDefinition,
     GroupPermission,
     Permission,
     PermissionAction,
@@ -72,7 +73,7 @@ class PermissionKeyListValidationMixin:
 class PermissionModuleSerializer(serializers.ModelSerializer):
     class Meta:
         model = PermissionModule
-        fields = ["name", "description", "is_active", "created_at", "updated_at"]
+        fields = ["name", "label", "description", "is_active", "created_at", "updated_at"]
         read_only_fields = ["created_at", "updated_at"]
 
     def validate_name(self, value):
@@ -93,7 +94,7 @@ class PermissionResourceSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PermissionResource
-        fields = ["id", "module", "name", "description", "is_active", "permissions_count", "created_at", "updated_at"]
+        fields = ["id", "module", "name", "label", "description", "is_active", "permissions_count", "created_at", "updated_at"]
         read_only_fields = ["id", "permissions_count", "created_at", "updated_at"]
 
     def validate(self, attrs):
@@ -121,6 +122,44 @@ class PermissionResourceSerializer(serializers.ModelSerializer):
         if qs.exists():
             raise serializers.ValidationError({"name": "A resource with this name already exists in this module."})
         return attrs
+
+
+class FieldDefinitionSerializer(serializers.ModelSerializer):
+    """One row of the code-owned field registry, read-only.
+
+    Adds the module and resource slugs and their display labels, so a platform
+    screen can show where a field sits without a second request.
+    """
+
+    module = serializers.CharField(source="resource.module_id", read_only=True)
+    module_label = serializers.SerializerMethodField()
+    resource = serializers.CharField(source="resource.name", read_only=True)
+    resource_label = serializers.SerializerMethodField()
+    default = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FieldDefinition
+        fields = [
+            "key", "module", "module_label", "resource_id", "resource",
+            "resource_label", "name", "api_names", "label", "group",
+            "description", "sensitive", "writable", "scope", "sort_order",
+            "is_active", "default", "created_at", "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_module_label(self, obj) -> str:
+        from ..models import display_label
+
+        module = obj.resource.module
+        return display_label(module.label, module.name)
+
+    def get_resource_label(self, obj) -> str:
+        from ..models import display_label
+
+        return display_label(obj.resource.label, obj.resource.name)
+
+    def get_default(self, obj) -> dict:
+        return obj.default_access
 
 
 class PermissionActionSerializer(serializers.ModelSerializer):

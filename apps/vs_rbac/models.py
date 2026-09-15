@@ -186,10 +186,40 @@ class PermissionRegistryRevision(models.Model):
 # Permission vocabulary (Vision-owned, admin-manageable)
 # -----------------------------------------------------------------------------
 
+def sentence_label(text: str) -> str:
+    """*text* with its first letter capitalised and the rest left as written.
+
+    ``str.capitalize`` lowercases everything after the first letter, which
+    turns "FX rates" into "Fx rates". Seeds carry wording a person already
+    chose, so only the first letter is touched.
+    """
+    text = (text or "").strip()
+    return text[:1].upper() + text[1:]
+
+
+def display_label(stored: str, slug: str) -> str:
+    """The name a person reads for a module, resource or field.
+
+    The stored label when an administrator or a seed has set one, otherwise
+    the slug read as words: ``virtual_account`` becomes "Virtual account".
+    Every surface that names a tree node goes through this, so a screen and an
+    API response can never disagree about what a node is called.
+    """
+    stored = (stored or "").strip()
+    if stored:
+        return stored
+    return sentence_label((slug or "").replace("_", " "))
+
+
 class PermissionModule(TimeStampedModel):
-    """Top-level module bucket, e.g. 'finance', 'students'."""
+    """Top-level module bucket, e.g. 'finance', 'students'.
+
+    ``label`` is the readable name ("Procurement"). Blank is allowed and reads
+    as the slug through :func:`display_label`.
+    """
 
     name = models.SlugField(max_length=64, primary_key=True)
+    label = models.CharField(max_length=80, blank=True)
     description = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
 
@@ -201,7 +231,11 @@ class PermissionModule(TimeStampedModel):
 
 
 class PermissionResource(TimeStampedModel):
-    """Resource scoped to a module, e.g. 'invoice' under 'finance'."""
+    """Resource scoped to a module, e.g. 'invoice' under 'finance'.
+
+    ``label`` is the readable name ("Vendors"). Blank is allowed and reads as
+    the slug through :func:`display_label`.
+    """
 
     module = models.ForeignKey(
         PermissionModule,
@@ -209,6 +243,7 @@ class PermissionResource(TimeStampedModel):
         related_name="resources",
     )
     name = models.SlugField(max_length=64)
+    label = models.CharField(max_length=120, blank=True)
     description = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
 
@@ -346,6 +381,94 @@ class Permission(TimeStampedModel):
         if not kwargs.get('update_fields'):
             self.key = f"{self.module_id}.{self.resource.name}.{self.action_id}"
         super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return self.key
+
+
+class FieldDefinition(TimeStampedModel):
+    """One field of a resource that an administrator may restrict per role.
+
+    A permission says whether a person may open a record at all; a field
+    definition names one piece of that record (a vendor's bank account number,
+    a pupil's allergies) so access to it can be decided separately. Field
+    definitions sit under the same :class:`PermissionResource` rows as
+    permissions, so both appear in one Module, Resource tree.
+
+    Code owns this table. Each app declares its fields in its own
+    ``field_access.py`` through :func:`vs_rbac.field_registry.register_fields`,
+    and ``manage.py sync_field_registry`` writes the declarations here. Nothing
+    else creates or edits rows: a field an administrator could invent would
+    have no serializer honouring it. A declaration that disappears from code
+    leaves its row behind with ``is_active=False``, so anything that refers to
+    the key keeps a target.
+
+    ``name`` is the registry name and the last segment of ``key``.
+    ``api_names`` are the names clients actually receive, which differ when one
+    field reaches a response under several names (``invited_by`` travels as
+    ``invited_by_id`` and ``invited_by_name``). An empty list is stored as
+    ``[name]``.
+
+    ``sensitive`` decides the default a role gets before anybody sets a switch:
+    closed for sensitive fields, open for the rest. ``writable`` is false for
+    values no API path can set (computed, provider-issued or derived), and such
+    a field never offers a write switch.
+
+    ``scope`` carries the same meaning and the same guard as
+    :attr:`Permission.scope`, and has no default for the same reason: an
+    unclassified field is refused by the sync rather than assumed safe for
+    every tenant.
+    """
+
+    key = models.CharField(max_length=200, primary_key=True)
+    resource = models.ForeignKey(
+        PermissionResource,
+        on_delete=models.PROTECT,
+        related_name="fields",
+    )
+    name = models.SlugField(max_length=64)
+    api_names = models.JSONField(default=list, blank=True)
+    label = models.CharField(max_length=120)
+    group = models.CharField(max_length=60, blank=True)
+    description = models.TextField(blank=True)
+    sensitive = models.BooleanField(default=False)
+    writable = models.BooleanField(default=True)
+    scope = models.CharField(
+        max_length=16,
+        choices=PermissionScope.choices,
+        blank=True,
+        help_text="Who may be granted this field: TENANT (any tenant) or PLATFORM (CX only).",
+    )
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["resource", "name"], name="rbac_field_unique_per_resource",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["resource", "is_active"], name="rbac_field_resource_active",
+            ),
+        ]
+        ordering = ["key"]
+
+    def save(self, *args, **kwargs):
+        if not kwargs.get("update_fields"):
+            self.key = f"{self.resource.module_id}.{self.resource.name}.{self.name}"
+        if not self.api_names:
+            self.api_names = [self.name]
+        super().save(*args, **kwargs)
+
+    @property
+    def default_access(self) -> dict:
+        """Read and write for a role that has no switch set on this field."""
+        return {
+            "read": not self.sensitive,
+            "write": (not self.sensitive) and self.writable,
+        }
 
     def __str__(self) -> str:
         return self.key

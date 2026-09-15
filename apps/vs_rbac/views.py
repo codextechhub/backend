@@ -10,6 +10,7 @@ from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, 
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
 from .models import (
+    FieldDefinition,
     Permission,
     PermissionAction,
     PermissionDependency,
@@ -22,6 +23,7 @@ from .models import (
     UserPermissionOverride,
 )
 from .serializers import (
+    FieldDefinitionSerializer,
     UserPermissionOverrideSerializer,
     PermissionActionSerializer,
     PermissionDependencySerializer,
@@ -626,63 +628,296 @@ class TenantPermissionCatalogueView(TenantScopedRBACMixin, APIView):
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get(self, request, *args, **kwargs):
-        from .models import PermissionScope, tenant_is_platform
+        """Group the tenant's permissions by module.
+
+        A module is offerable when anything in it is. ``school`` holds the
+        school's own branches and roles alongside its students, so it is never
+        wholly unavailable even to a school that bought neither the students
+        nor the teachers module.
+        """
         from .plan_gate import plan_reader
 
         tenant = self.get_tenant()
-
-        permissions = (
-            Permission.objects.filter(is_active=True)
-            .select_related(
-                "module", "resource", "action", "capability", "capability__parent",
-            )
-            .order_by("module_id", "resource_id", "action_id")
-        )
-        if not tenant_is_platform(tenant):
-            permissions = permissions.filter(scope=PermissionScope.TENANT)
-
         read_plan = plan_reader(tenant)
 
         modules: dict[str, dict] = {}
-        for permission in permissions:
-            resource = permission.resource.name if permission.resource_id else ""
-            capability, available, reason = read_plan(permission)
-            band = capability if capability and capability.parent_id else None
-
+        for permission in _catalogue_permissions(tenant):
+            entry = _permission_entry(permission, read_plan)
             bucket = modules.setdefault(
                 permission.module_id,
                 {"module": permission.module_id, "available": False, "permissions": []},
             )
-            # A module is offerable when anything in it is. ``school`` holds the
-            # school's own branches and roles alongside its students, so it is
-            # never wholly unavailable even to a school that bought neither the
-            # students nor the teachers module.
-            bucket["available"] = bucket["available"] or available
-            bucket["permissions"].append({
-                "key": permission.key,
-                "label": _permission_label(permission),
-                "resource": resource,
-                "action": permission.action_id,
-                "sensitivity": permission.sensitivity_level,
-                # Flagged so the picker can say so. These flow through an
-                # approval rather than taking effect on save.
-                "is_restricted": permission.is_restricted,
-                # What governs this permission, and what the school may do with
-                # it. A null capability is core to every school; a capability
-                # with no band is a whole module, sold or not sold.
-                "capability": capability.key if capability else None,
-                "band": band.key if band else None,
-                "depth_label": band.get_depth_display() if band else None,
-                "available": available,
-                # Present only when something is closed, and phrased for the
-                # person who can open it rather than for the one who cannot.
-                "unavailable_reason": reason or None,
-            })
+            bucket["available"] = bucket["available"] or entry["available"]
+            bucket["permissions"].append(entry)
 
         return success_response(
             message="Data retrieved successfully",
             data=list(modules.values()),
         )
+
+
+def _catalogue_permissions(tenant):
+    """The active permissions *tenant* may hold, with everything an entry reads.
+
+    Filtered on ``PermissionScope.TENANT`` for any tenant that is not the
+    platform, the same column the grant guard reads. Both catalogue views read
+    this one queryset, so they cannot offer different keys.
+    """
+    from .models import PermissionScope, tenant_is_platform
+
+    permissions = (
+        Permission.objects.filter(is_active=True)
+        .select_related(
+            "module", "resource", "action", "capability", "capability__parent",
+        )
+        .order_by("module_id", "resource_id", "action_id")
+    )
+    if not tenant_is_platform(tenant):
+        permissions = permissions.filter(scope=PermissionScope.TENANT)
+    return permissions
+
+
+def _permission_entry(permission, read_plan) -> dict:
+    """One permission as a role picker shows it, shared by both catalogues.
+
+    ``is_restricted`` is flagged so the picker can say the grant flows through
+    an approval rather than taking effect on save.
+
+    ``capability``, ``band`` and ``depth_label`` say what governs the
+    permission and what the school may do with it. A null capability is core
+    to every school; a capability with no band is a whole module, sold or not
+    sold.
+
+    ``unavailable_reason`` is present only when something is closed, and is
+    phrased for the person who can open it rather than for the one who cannot.
+
+    *read_plan* is the function :func:`vs_rbac.plan_gate.plan_reader` returns
+    for the tenant, built once per request.
+    """
+    resource = permission.resource.name if permission.resource_id else ""
+    capability, available, reason = read_plan(permission)
+    band = capability if capability and capability.parent_id else None
+    return {
+        "key": permission.key,
+        "label": _permission_label(permission),
+        "resource": resource,
+        "action": permission.action_id,
+        "sensitivity": permission.sensitivity_level,
+        "is_restricted": permission.is_restricted,
+        "capability": capability.key if capability else None,
+        "band": band.key if band else None,
+        "depth_label": band.get_depth_display() if band else None,
+        "available": available,
+        "unavailable_reason": reason or None,
+    }
+
+
+def _field_entry(field) -> dict:
+    """One registered field as the access catalogue shows it."""
+    return {
+        "key": field.key,
+        "name": field.name,
+        "api_names": list(field.api_names or [field.name]),
+        "label": field.label,
+        "group": field.group,
+        "description": field.description,
+        "sensitive": field.sensitive,
+        "writable": field.writable,
+        "default": field.default_access,
+    }
+
+
+# Permissions and fields a tenant may pick from, as one Module, Resource tree.
+class TenantAccessCatalogueView(TenantScopedRBACMixin, APIView):
+    """GET /rbac/tenants/<slug>/access-catalogue/ - permissions and fields, as a tree.
+
+    The same vocabulary as ``permission-catalogue/``, shaped for a screen that
+    walks Module, then Resource, then what sits under the resource: its
+    permissions and the fields an administrator may restrict. Each permission
+    entry is built by the function the older catalogue uses, so flattening this
+    tree gives exactly that catalogue's entries for the same tenant.
+
+    What a tenant is shown follows the grant guard, as it does there: a tenant
+    that is not the platform never sees a ``PLATFORM`` permission or a
+    ``PLATFORM`` field, and only active fields appear. ``available`` on a
+    permission comes from :func:`vs_rbac.plan_gate.plan_reader`. A resource is
+    available when any permission in it is, or when it has no permissions at
+    all, since a field is never sold separately. A module keeps the older
+    catalogue's rule, available when any of its permissions is, and is
+    available when it carries fields only.
+
+    Query parameters, all optional:
+
+    ``module``
+        A module slug; narrows the tree to that module.
+    ``resource``
+        A resource slug; narrows to resources with that slug, and to exactly
+        one when ``module`` is given too.
+    ``search``
+        Case-insensitive text matched against permission keys and labels and
+        field keys and labels. A resource in which anything matches is
+        returned whole, so a match is always shown beside the rest of its
+        resource.
+
+    Ordering: modules by slug, resources by display label, permissions with
+    ``view`` first and then by action, fields by group, sort order and label.
+    A resource left with neither permissions nor fields is omitted, and an
+    empty result is ``[]``.
+
+    Cost is flat: one query for permissions, one for fields, plus what the plan
+    reader costs, whatever the number of resources.
+
+    docstring-name: Access catalogue
+    """
+
+    pending_tenant_surface = ("get",)
+
+    def get_permissions(self):
+        self.rbac_permission = ROLE_VIEW_KEYS
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get(self, request, *args, **kwargs):
+        from .models import PermissionScope, display_label, tenant_is_platform
+        from .plan_gate import plan_reader
+
+        tenant = self.get_tenant()
+        params = request.query_params
+        module_slug = (params.get("module") or "").strip()
+        resource_slug = (params.get("resource") or "").strip()
+        search = (params.get("search") or "").strip().casefold()
+
+        permissions = _catalogue_permissions(tenant)
+        fields = FieldDefinition.objects.filter(is_active=True).select_related(
+            "resource", "resource__module",
+        )
+        if not tenant_is_platform(tenant):
+            fields = fields.filter(scope=PermissionScope.TENANT)
+        if module_slug:
+            permissions = permissions.filter(module_id=module_slug)
+            fields = fields.filter(resource__module_id=module_slug)
+        if resource_slug:
+            permissions = permissions.filter(resource__name=resource_slug)
+            fields = fields.filter(resource__name=resource_slug)
+
+        read_plan = plan_reader(tenant)
+        buckets: dict[int, dict] = {}
+
+        def bucket_for(module, resource):
+            if resource.pk not in buckets:
+                buckets[resource.pk] = {
+                    "module": module, "resource": resource,
+                    "permissions": [], "fields": [], "matched": not search,
+                }
+            return buckets[resource.pk]
+
+        for permission in permissions:
+            entry = _permission_entry(permission, read_plan)
+            bucket = bucket_for(permission.module, permission.resource)
+            bucket["permissions"].append(entry)
+            if search and (
+                search in entry["key"].casefold()
+                or search in entry["label"].casefold()
+            ):
+                bucket["matched"] = True
+
+        for field in fields:
+            bucket = bucket_for(field.resource.module, field.resource)
+            bucket["fields"].append(field)
+            if search and (
+                search in field.key.casefold() or search in field.label.casefold()
+            ):
+                bucket["matched"] = True
+
+        modules: dict[str, dict] = {}
+        for bucket in buckets.values():
+            if not bucket["matched"]:
+                continue
+            module, resource = bucket["module"], bucket["resource"]
+            node = modules.setdefault(module.name, {
+                "module": module.name,
+                "label": display_label(module.label, module.name),
+                "has_permissions": False,
+                "available": False,
+                "resources": [],
+            })
+            entries = sorted(
+                bucket["permissions"],
+                key=lambda entry: (entry["action"] != "view", entry["action"]),
+            )
+            available = any(entry["available"] for entry in entries)
+            if entries:
+                node["has_permissions"] = True
+                node["available"] = node["available"] or available
+            node["resources"].append({
+                "resource": resource.name,
+                "label": display_label(resource.label, resource.name),
+                "available": available if entries else True,
+                "permissions": entries,
+                "fields": [
+                    _field_entry(field)
+                    for field in sorted(
+                        bucket["fields"],
+                        key=lambda f: (f.group.casefold(), f.sort_order, f.label.casefold()),
+                    )
+                ],
+            })
+
+        data = []
+        for name in sorted(modules):
+            node = modules[name]
+            if not node.pop("has_permissions"):
+                node["available"] = True
+            node["resources"].sort(
+                key=lambda row: (row["label"].casefold(), row["resource"]),
+            )
+            data.append(node)
+
+        return success_response(message="Data retrieved successfully", data=data)
+
+
+# List the code-owned field registry for platform staff.
+class FieldDefinitionListView(generics.ListAPIView):
+    """GET /rbac/vision/fields/ - every registered field, active or not.
+
+    The registry is owned by code: apps declare fields in ``field_access.py``
+    and ``sync_field_registry`` writes them. So this is read-only, and a write
+    verb answers 405.
+
+    Filters: ``module`` and ``resource`` (slugs), ``sensitive`` and
+    ``is_active`` (true/false), ``search`` over key, label and description.
+
+    docstring-name: Field registry
+    """
+
+    serializer_class = FieldDefinitionSerializer
+    pagination_class = XVSPagination
+
+    def get_permissions(self):
+        self.rbac_permission = "platform.permissions.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_queryset(self):
+        qs = FieldDefinition.objects.select_related(
+            "resource", "resource__module",
+        ).order_by("resource__module_id", "resource__name", "group", "sort_order", "label")
+        qp = self.request.query_params
+        if module := qp.get("module"):
+            qs = qs.filter(resource__module_id=module)
+        if resource := qp.get("resource"):
+            qs = qs.filter(resource__name=resource)
+        for flag in ("sensitive", "is_active"):
+            lowered = (qp.get(flag) or "").lower()
+            if lowered in {"true", "1"}:
+                qs = qs.filter(**{flag: True})
+            elif lowered in {"false", "0"}:
+                qs = qs.filter(**{flag: False})
+        if search := qp.get("search"):
+            qs = qs.filter(
+                Q(key__icontains=search)
+                | Q(label__icontains=search)
+                | Q(description__icontains=search)
+            )
+        return qs
 
 
 # Retrieve or mutate one tenant role template (addressed by per-tenant key).

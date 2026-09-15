@@ -17,6 +17,10 @@ class VsFinanceConfig(AppConfig):
         from .export_datasets import register_screens
 
         register_screens()
+        # Declare the finance fields an administrator may restrict per role.
+        from .field_access import register as register_field_access
+
+        register_field_access()
         # Publish this tenant's adjustment-approval ladders when its books are
         # created. Finance registers its own provisioner through the same seam
         # procurement and payments use, rather than calling itself from the
