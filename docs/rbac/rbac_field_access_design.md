@@ -59,6 +59,7 @@ Resource → the resource's permissions, each with a readable label.
 | D14 | Some fields are **set freely when a record is created** and need Write only to change afterwards. A pupil's enrolment date is the first: whoever enrols the pupil, by form or by spreadsheet, sets it, and only changing it on an existing record needs Write. Declared per field in the registry (`FieldSpec.open_on_create`), and honoured by the write check on create. |
 | D15 | **Managing Field Access is a restricted permission; viewing it is not.** Switch changes need no approval (D5), but *who may change switches* does. Adding `*.field_access.manage` to a role you hold goes through the role-change ladder, it cannot travel through a permission group, and nobody can assign a role carrying it without holding it. Otherwise a person who can only edit roles could grant themselves manage and open a sensitive field for their own role with nobody approving. `*.field_access.view` only shows switches, so it stays groupable. |
 | D16 | **Frontend Field Access tools also require the tenant's role-view key.** The role editor and one-person field exception picker both consume the role catalogue, so the UI opens only when the actor holds `*.roles.view` alongside the relevant Field Access or override key. The exception endpoints keep their override-key guards. Platform role readers may request a school's access catalogue when administering that school's user. |
+| D17 | **The Field Access frontend is committed to main, and reaches users with stage 3.** The Field Access screen, field exceptions and the permission tree picker are built on stages 1 and 2, but until stage 3 no screen follows a switch: an admin who turned Bank account number off for Storekeeper would see the save succeed while Storekeeper still sees every bank number. The code lands on main in each app; deployment is a manual step, so the screens reach users on the first deploy after it, which is meant to be the stage 3 release. |
 
 ## 3. Branch: every role counts everywhere (D13)
 
@@ -391,6 +392,12 @@ still requires the actor's platform role-view key.
 ```
 
 Permissions inside a resource are ordered view first, then the remaining actions.
+
+A platform operator holding `platform.roles.view` may read a school's catalogue by
+asserting that school (its slug in the path and as `?tenant=`), as the console does
+when choosing a field for a school user's exception. Entries follow the asserted
+tenant, so a school's catalogue never carries a PLATFORM permission or field,
+whoever reads it.
 
 ### 9.3 `GET roles/<key>/field-access/`
 

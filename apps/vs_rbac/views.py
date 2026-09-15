@@ -773,12 +773,15 @@ class TenantAccessCatalogueView(TenantScopedRBACMixin, APIView):
     Cost is flat: one query for permissions, one for fields, plus what the plan
     reader costs, whatever the number of resources.
 
+    A platform operator holding a platform role-view key may assert a school
+    tenant, as the console does when choosing fields for a school user's field
+    exception. Entries follow the asserted tenant, so a school's catalogue never
+    shows a ``PLATFORM`` entry, whoever reads it.
+
     docstring-name: Access catalogue
     """
 
     pending_tenant_surface = ("get",)
-    # Platform role readers use the same tenant-shaped vocabulary when they
-    # administer a school user's field exception from the console.
     platform_cross_tenant_param = True
 
     def get_permissions(self):

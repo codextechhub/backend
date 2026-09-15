@@ -162,8 +162,12 @@ class AccessCatalogueTests(TestCase):
         make_assignment(cls.bright_star, cls.clerk, clerk_role, branch=None)
 
         cls.platform = platform_tenant()
+        platform_view_perm = make_permission(
+            "platform.roles.view", scope=PermissionScope.PLATFORM,
+        )
         cls.staff = _reader(
-            cls.platform, "reader@codexng.test", cls.view_perm, key="platform_reader",
+            cls.platform, "reader@codexng.test", platform_view_perm,
+            key="platform_reader",
         )
 
     def _data(self, user=None, tenant=None, **params):
@@ -185,6 +189,15 @@ class AccessCatalogueTests(TestCase):
         )
         self.assertEqual(new.status_code, 404)
         self.assertEqual(new.status_code, old.status_code)
+
+    def test_a_platform_role_reader_can_read_a_school_catalogue(self):
+        data = self._data(self.staff, self.bright_star.tenant)
+        self.assertNotIn("platform", {node["module"] for node in data})
+        field_keys = {
+            field["key"] for node in data for row in node["resources"]
+            for field in row["fields"]
+        }
+        self.assertNotIn("platform.staff_profile.account_number", field_keys)
 
     def test_a_school_sees_no_platform_field_and_no_platform_permission(self):
         data = self._data()

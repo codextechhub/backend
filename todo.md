@@ -300,6 +300,12 @@ unknown one); the new audit action types in FR-019; the four keys in section 3
 and in the school group count in FR-020; 8.1 (cross-tenant, self-exception,
 audit-rollback and query-cost tests). MRD Module 4 gains one capability entry.
 Backend evidence only: no frontend uses these routes yet.
+ALSO IN a2634100: `access-catalogue/` accepts a platform operator's tenant assertion
+(`platform_cross_tenant_param`), so the console can list a school's fields when
+recording an exception for a school user. A platform reader needs
+`platform.roles.view`, and the entries follow the asserted school's scope, so no
+PLATFORM entry appears. Section 7 must record that reader and the unchanged
+filtering. Its test lands in a later commit.
 VERIFIED (main session, one app at a time, no --keepdb): vs_rbac 717, core 163,
 schools.vs_schools 350 (fast form; the full 358 with slow classes passed before
 the seed-only restriction change), schools.vs_onboarding 178 OK.

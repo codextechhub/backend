@@ -192,6 +192,9 @@ still needs no approval.
 - Comments are short labels; reasoning goes in the component or hook docblock, written
   for a stranger, with no ticket or milestone names.
 - Test with a **single-branch and a multi-branch** tenant, and in **both** apps.
+- RELEASE (decision D17): the Field Access screen, field exceptions and the permission
+  tree picker are committed to main in each app. Deployment is manual, and these screens
+  are meant to reach users with the backend stage 3 release.
 - The backend ships in slices (design section 13). Build against the contract, and wire
   a screen to live data only once its slice exists: S1 unlocks permission allocation,
   S2 unlocks the Field Access screen and exceptions, and S3 unlocks hiding and greying
