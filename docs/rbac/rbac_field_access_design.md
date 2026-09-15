@@ -4,7 +4,8 @@ Backend design for **Field Access**: per-role, per-field Read and Write switches
 that an administrator sets on a screen, replacing the code-declared
 `FieldSecurityMixin` (`apps/vs_rbac/fls.py`).
 
-Status: **approved**. Stage S1 (section 13) is in build; S2 to S4 are not started.
+Status: **approved**. Stage S1 (section 13) is built, in commit 9557ad6e. S2 is next;
+S2 to S4 are not started.
 
 Companion: `rbac_field_access_frontend_prompt.md` (the brief for the frontend
 agent).
