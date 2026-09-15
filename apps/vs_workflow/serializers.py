@@ -338,25 +338,37 @@ class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
         return self._document_summary(obj)
 
     def _document_summary(self, obj):
+        """Return the object's summary, built at most once per object.
+
+        ``document_summary`` and ``source_document_link`` both read it, and
+        building it loads the source document and re-resolves its link. The
+        cache is keyed on the object itself rather than its ``pk``: a
+        serializer is handed whatever object the caller has, which may be
+        unsaved or a stand-in with no ``pk`` at all, and two unsaved instances
+        share ``pk=None`` and would otherwise receive each other's summary.
+        """
+        cached = getattr(self, "_document_summary_cache", None)
+        if cached is not None and cached[0] is obj:
+            return cached[1]
+        summary = self._build_document_summary(obj)
+        self._document_summary_cache = (obj, summary)
+        return summary
+
+    def _build_document_summary(self, obj):
+        """Merge the submission snapshot with the source record's live link."""
         from vs_workflow.exceptions import UnknownDocumentTypeError
         from vs_workflow.handlers import get_handler
 
-        cached = getattr(self, "_document_summary_cache", None)
-        if cached is not None and cached[0] == obj.pk:
-            return cached[1]
         summary = dict(obj.document_summary or {})
         document = obj.document
         if document is None:
-            self._document_summary_cache = (obj.pk, summary)
             return summary
         try:
             link = get_handler(obj.document_type).get_source_document_link(document)
         except UnknownDocumentTypeError:
-            self._document_summary_cache = (obj.pk, summary)
             return summary
         if link:
             summary["link"] = link
-        self._document_summary_cache = (obj.pk, summary)
         return summary
 
     def get_source_document_link(self, obj):

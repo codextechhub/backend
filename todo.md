@@ -163,8 +163,8 @@ workflow surface, and needs no module key to do it. Procurement's
 the one-click default-ladder shortcut, and the rest of the procurement approval
 page is guarded by stage eligibility rather than by any key. The shortcut was
 then deleted (see below), so the three modules are alike.
-Verified: vs_procurement 581 (1 pre-existing failure belonging to another
-session), vs_workflow 419 OK, vs_finance 761 OK then 771 OK, vs_payments 206 OK,
+Verified: vs_procurement 581 (its one failure, a workflow summary-cache bug, is
+fixed; 584 OK), vs_workflow 419 OK, vs_finance 761 OK then 771 OK, vs_payments 206 OK,
 schools.core.fal 219 OK, schools.vs_schools 358 OK on the full run.
 
 ### D6. Permissions and restrictable fields as one Module, Resource tree (9557ad6e, 2026-09-15)
