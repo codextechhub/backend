@@ -311,6 +311,37 @@ schools.vs_schools 350 (fast form; the full 358 with slow classes passed before
 the seed-only restriction change), schools.vs_onboarding 178 OK.
 makemigrations --check clean.
 
+### D9. Guardians and staff carry their own restrictable fields (hash pending, 2026-09-16)
+MODULES: M04 roles and permissions, M11 student management (guardians), M12 staff
+management, MRD.
+Field Access listed only the fields that the old `view_sensitive` keys already
+protected, so most modules had nothing to switch. The owner asked for two more
+sets, and both are declared OPEN rather than sensitive: they are visible today to
+everybody who can open those records, and declaring them sensitive would close
+them to every role the day stage 3 enforcement ships, which D9 of the design
+forbids.
+- `school.guardians`: phone, email, address, occupation. The resource carries
+  FIELDS AND NO PERMISSION KEYS, a first for the registry: a guardian is read with
+  `school.students.view` and corrected with `school.students.update`, so minting
+  guardian keys would hand every school a second set of switches governing
+  nothing. `seed_school_permissions` registers such resources through a new
+  `FIELD_ONLY_RESOURCES` list.
+- `school.teachers`: date of birth, gender, phone, email. The staff register is
+  the record the staff screens serve; qualifications and documents stay on
+  `school.staff_records`. That resource is relabelled "Staff", because the keys
+  say teachers while the register covers the bursar and the registrar too.
+- Resource labels are now seeded (`RESOURCE_LABELS`), so the tree reads in words.
+NOTHING IS ENFORCED YET: no serializer guards these fields, and no screen hides
+them. Stage 3 does that.
+MUST SAY: for M04, the fields-only resource concept and the seeded labels; for
+M11, that a guardian's contact details are switchable per role; for M12, the same
+for staff personal details and the resource's readable name. Record the residual
+limit: a field only a create path writes (a staff member's email) still needs the
+stage 3 open-on-create treatment, or a role without Write on it could not create
+staff at all.
+VERIFIED: vs_rbac 723, core 166, schools.vs_students 291, schools.vs_staff 250 OK,
+makemigrations --check clean.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

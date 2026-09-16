@@ -13,6 +13,13 @@ class VsStaffConfig(AppConfig):
         # and vs_payments.
         from . import signals, workflow_handlers  # noqa: F401
 
+        # The staff personal details an administrator may restrict per role.
+        # Field Access never imports a domain app either; the app declares its
+        # own fields.
+        from . import field_access
+
+        field_access.register()
+
         # No default media policy exists: a file whose owner registers nothing
         # is never served. This is what makes a staff photograph and a staff
         # document readable at all, and what stops either being readable by the

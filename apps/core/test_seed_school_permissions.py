@@ -18,6 +18,7 @@ from django.test import TestCase
 from vs_rbac.evaluator import get_effective_permissions
 from vs_rbac.models import (
     Permission,
+    PermissionResource,
     PrebuiltRolePermission,
     PrebuiltRoleTemplate,
     TenantRolePermission,
@@ -153,6 +154,52 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         after = Permission.objects.filter(module_id__in=["school", "academics"]).count()
         self.assertEqual(before, after)
         self.assertIn("0 new permission(s) created", out)
+
+    def test_a_fields_only_resource_is_registered_and_mints_no_key(self):
+        """Guardians exist as a resource so field switches have a home.
+
+        The guardian endpoints carry the student keys, so a guardian key would
+        be a switch governing nothing. The resource is still needed, because
+        ``sync_field_registry`` refuses a field declaration whose resource is
+        missing.
+        """
+        _run_school_seed()
+        resource = PermissionResource.objects.get(
+            module_id="school", name="guardians",
+        )
+        self.assertEqual(resource.label, "Guardians")
+        self.assertTrue(resource.description)
+        self.assertFalse(
+            Permission.objects.filter(resource=resource).exists(),
+        )
+
+    def test_the_staff_register_reads_as_staff_rather_than_teachers(self):
+        """The resource holds the bursar and the registrar as much as the teacher.
+
+        The key keeps its ``teachers`` slug because school-fe checks it by
+        name; the readable name is what the screens show.
+        """
+        _run_school_seed()
+        self.assertEqual(
+            PermissionResource.objects.get(
+                module_id="school", name="teachers",
+            ).label,
+            "Staff",
+        )
+
+    def test_a_blank_label_on_an_existing_resource_is_filled_in(self):
+        """A resource created before labels existed gains one on the next run."""
+        _run_school_seed()
+        PermissionResource.objects.filter(
+            module_id="school", name="teachers",
+        ).update(label="")
+        _run_school_seed()
+        self.assertEqual(
+            PermissionResource.objects.get(
+                module_id="school", name="teachers",
+            ).label,
+            "Staff",
+        )
 
 
 class SeedSchoolPrebuiltDefaultsTests(TestCase):

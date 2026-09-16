@@ -46,6 +46,13 @@ vendors"), never a raw key. Source: `GET /rbac/tenants/<slug>/access-catalogue/`
 `permission-catalogue/` list everywhere a role's permissions are edited, onboarding
 role drawers included.
 
+Module and Resource are chosen from searchable choice boxes (each app's `SearchSelect`),
+the same way on the role editors, the Field Access screen and the field exception
+drawer. Nothing is preselected. The Resource box stays inactive until a module is
+chosen, changing the module clears the resource, and the permissions (or fields)
+appear only once both are chosen. The school role drawer is widened on large screens
+so the selection and search have room.
+
 Keep what the current picker already shows:
 - **Unavailable** permissions (`available: false`) stay visible but disabled, with
   `unavailable_reason`.

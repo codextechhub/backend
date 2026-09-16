@@ -54,7 +54,21 @@ EXPECTED_RESOURCES = {
     ("platform", "staff_profile"),
     ("platform", "team"),
     ("procurement", "vendor"),
+    ("school", "guardians"),
     ("school", "students"),
+    ("school", "teachers"),
+}
+
+#: Resources whose fields no per-field guard withholds today, and the key that
+#: guards the endpoints those fields reach clients through.
+#:
+#: Everybody who may open the record reads them, so the resource's own view key
+#: is what decides their scope, exactly as ``view_sensitive`` decides it for a
+#: guarded field. A guardian is read with the student key because the guardian
+#: endpoints carry it.
+ENDPOINT_GUARDED_RESOURCES = {
+    ("school", "guardians"): "school.students.view",
+    ("school", "teachers"): "school.teachers.view",
 }
 
 #: Serializers that can write a registered name without carrying a rule for it,
@@ -70,7 +84,32 @@ WRITE_PATH_ALLOWLIST = {
         "A new pupil's enrolment date is set by whoever enrols them; only changing it "
         "on an existing record needs school.students.manage (owner decision, "
         "enrolment and import alike).",
+    ("schools.vs_students.serializers.EnrolmentWriteSerializer", "phone"):
+        "The pupil's own number on the enrol form, not a guardian's; the guardians on "
+        "that form arrive through the nested GuardianWriteSerializer, a declared "
+        "surface of school.guardians.",
+    ("schools.vs_students.serializers.EnrolmentWriteSerializer", "email"):
+        "The pupil's own address on the enrol form, not a guardian's; see the phone "
+        "entry above.",
+    ("schools.vs_students.serializers.EnrolmentWriteSerializer", "address"):
+        "The pupil's own address on the enrol form, not a guardian's; see the phone "
+        "entry above.",
+    ("schools.vs_staff.serializers.AccountStateSerializer", "email"):
+        "The account block nested in a staff record. It is only ever rendered, never "
+        "given a payload to validate, so no request reaches the field.",
+    ("schools.vs_staff.serializers.EmailChangeSerializer", "email"):
+        "Behind school.administrators.update on an endpoint of its own, the key that "
+        "changes an account's sign-in address; the staff edit form cannot.",
 }
+
+
+def _guard_maps(cls):
+    """The old mixin's read and write maps, empty for a serializer without it.
+
+    A field nothing withholds today is declared on an ordinary serializer, so a
+    surface no longer has to carry the mixin to be a surface.
+    """
+    return getattr(cls, "read_permissions", {}), getattr(cls, "write_permissions", {})
 
 
 def _surface(path):
@@ -138,8 +177,8 @@ class RegistryMatchesTheSerializersTests(SimpleTestCase):
         for declaration in all_declarations():
             registered = _api_names(declaration)
             for path in declaration.surfaces:
-                cls = _surface(path)
-                guarded = set(cls.read_permissions) | set(cls.write_permissions)
+                read_map, write_map = _guard_maps(_surface(path))
+                guarded = set(read_map) | set(write_map)
                 with self.subTest(surface=path):
                     self.assertEqual(guarded - registered, set())
 
@@ -157,11 +196,11 @@ class RegistryMatchesTheSerializersTests(SimpleTestCase):
     def test_sensitive_means_hidden_today(self):
         """Read-guarded fields are sensitive; write-only guarded ones are not."""
         for declaration in all_declarations():
-            surfaces = [_surface(path) for path in declaration.surfaces]
+            read_maps = [_guard_maps(_surface(path))[0] for path in declaration.surfaces]
             for spec in declaration.fields:
                 hidden = any(
-                    api_name in cls.read_permissions
-                    for cls in surfaces
+                    api_name in read_map
+                    for read_map in read_maps
                     for api_name in spec.resolved_api_names
                 )
                 if (declaration.module, declaration.resource) == ("procurement", "vendor"):
@@ -338,19 +377,67 @@ class RegistryScopeMatchesTheGuardingKeyTests(TestCase):
         call_command("sync_field_registry", stdout=StringIO())
 
     def _guards(self):
-        """``(module, resource, api_name, permission_key)`` for every guard in the code."""
+        """``(module, resource, api_name, permission_key)`` for every guard in the code.
+
+        A field withheld per caller yields the key that withholds it. A field
+        nothing withholds yields the key guarding the endpoint it travels on,
+        named in :data:`ENDPOINT_GUARDED_RESOURCES`, which is what decides its
+        scope.
+        """
         for declaration in all_declarations():
             for path in declaration.surfaces:
-                cls = _surface(path)
-                for mapping in (cls.read_permissions, cls.write_permissions):
+                for mapping in _guard_maps(_surface(path)):
                     for api_name, key in mapping.items():
                         yield declaration.module, declaration.resource, api_name, key
+            endpoint_key = ENDPOINT_GUARDED_RESOURCES.get(
+                (declaration.module, declaration.resource),
+            )
+            if endpoint_key:
+                for spec in declaration.fields:
+                    for api_name in spec.resolved_api_names:
+                        yield (
+                            declaration.module, declaration.resource,
+                            api_name, endpoint_key,
+                        )
         for api_name in _vendor_view_fields():
             yield "procurement", "vendor", api_name, "procurement.vendor.view_sensitive"
 
     def test_the_real_registry_syncs_against_the_seeded_tree(self):
         declared = sum(len(d.fields) for d in all_declarations())
         self.assertEqual(FieldDefinition.objects.filter(is_active=True).count(), declared)
+
+    def test_a_fields_only_resource_carries_its_fields_and_no_permission(self):
+        """The seed mints the resource; the sync fills it; no key is created."""
+        rows = FieldDefinition.objects.filter(
+            resource__module_id="school", resource__name="guardians", is_active=True,
+        )
+        self.assertEqual(
+            {row.name for row in rows},
+            {spec.name for spec in get_declaration("school", "guardians").fields},
+        )
+        self.assertFalse(
+            Permission.objects.filter(
+                resource__module_id="school", resource__name="guardians",
+            ).exists(),
+        )
+
+    def test_a_field_nothing_withholds_today_starts_open(self):
+        """Release day changes nobody's access (design decision D9).
+
+        Guardian contact details and staff personal details are readable by
+        everybody who may open those records. Declared sensitive, they would be
+        hidden from every role the moment enforcement ships, which is the one
+        outcome the conversion is not allowed to produce.
+        """
+        for resource in ("guardians", "teachers"):
+            for row in FieldDefinition.objects.filter(
+                resource__module_id="school", resource__name=resource, is_active=True,
+            ):
+                with self.subTest(field=row.key):
+                    self.assertFalse(row.sensitive)
+                    self.assertEqual(
+                        row.default_access, {"read": True, "write": True},
+                    )
 
     def test_every_field_scope_equals_its_guarding_keys_scope(self):
         scopes = dict(Permission.objects.values_list("key", "scope"))

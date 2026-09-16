@@ -5,13 +5,21 @@ catalogue would hide, and nothing more: flattened, its permission entries are
 exactly that catalogue's. And a school never learns that a platform-only
 permission or field exists.
 """
+from io import StringIO
+
+from django.core.management import call_command
 from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from rest_framework.test import APIClient
 
-from vs_rbac.models import PermissionModule, PermissionResource, PermissionScope
+from vs_rbac.models import (
+    Permission,
+    PermissionModule,
+    PermissionResource,
+    PermissionScope,
+)
 from vs_tenants.models import Tenant
 from vs_user.tokens import CodeXRefreshToken
 
@@ -416,3 +424,72 @@ class TreeLabelsAreEditableTests(TestCase):
         finance = next(node for node in response.data["data"] if node["module"] == "finance")
         self.assertEqual(finance["label"], "Money")
         self.assertEqual(finance["resources"][0]["label"], "Invoice")
+
+
+class RealFieldOnlyResourceTests(TestCase):
+    """The guardians resource as the seeds and the field registry really build it.
+
+    The synthetic case above proves the tree can carry a resource with fields
+    and no permissions. This one proves the product has one: a school can turn
+    a guardian's phone number off for a role without anybody minting a
+    ``school.guardians.*`` key, and the screen has a readable name to draw.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        # Every module seed, because the sync refuses the whole registry when
+        # one declared module is missing.
+        for command in (
+            "seed_actions",
+            "seed_prebuilt_role_templates",
+            "seed_school_permissions",
+            "seed_platform_permissions",
+            "seed_import_permissions",
+            "seed_finance_permissions",
+            "seed_procurement_permissions",
+            "seed_payments_permissions",
+        ):
+            call_command(command, verbosity=0, stdout=StringIO())
+        call_command("sync_field_registry", stdout=StringIO())
+
+        cls.school = make_school(slug="bright-star", name="Bright Star")
+        make_branch(cls.school, name="Main Branch")
+        cls.admin = _reader(
+            cls.school.tenant, "admin@bright-star.test",
+            Permission.objects.get(key="school.roles.view"),
+        )
+
+    def _school_resource(self, name):
+        response = _get(self.admin, self.school.tenant, module="school")
+        self.assertEqual(response.status_code, 200, response.data)
+        return _resource(response.data["data"], "school", name)
+
+    def test_guardians_carries_its_fields_and_no_permissions(self):
+        guardians = self._school_resource("guardians")
+        self.assertIsNotNone(guardians)
+        self.assertEqual(guardians["permissions"], [])
+        self.assertTrue(guardians["available"])
+        self.assertEqual(guardians["label"], "Guardians")
+        self.assertEqual(
+            {field["name"] for field in guardians["fields"]},
+            {"phone", "email", "address", "occupation"},
+        )
+
+    def test_a_guardians_contact_detail_starts_readable_and_writable(self):
+        """Nothing withholds it today, so no role loses it on release day."""
+        guardians = self._school_resource("guardians")
+        phone = next(f for f in guardians["fields"] if f["name"] == "phone")
+        self.assertFalse(phone["sensitive"])
+        self.assertEqual(phone["default"], {"read": True, "write": True})
+        self.assertEqual(phone["group"], "Contact")
+
+    def test_staff_personal_details_hang_off_the_staff_register(self):
+        """The register, not the certificates: those are sold at another depth."""
+        teachers = self._school_resource("teachers")
+        self.assertEqual(teachers["label"], "Staff")
+        self.assertEqual(
+            {field["name"] for field in teachers["fields"]},
+            {"date_of_birth", "gender", "phone", "email"},
+        )
+        self.assertTrue(teachers["permissions"])
+        self.assertEqual(self._school_resource("staff_records")["fields"], [])

@@ -61,6 +61,11 @@ Resource → the resource's permissions, each with a readable label.
 | D16 | **Frontend Field Access tools also require the tenant's role-view key.** The role editor and one-person field exception picker both consume the role catalogue, so the UI opens only when the actor holds `*.roles.view` alongside the relevant Field Access or override key. The exception endpoints keep their override-key guards. Platform role readers may request a school's access catalogue when administering that school's user. |
 | D17 | **The Field Access frontend is committed to main, and reaches users with stage 3.** The Field Access screen, field exceptions and the permission tree picker are built on stages 1 and 2, but until stage 3 no screen follows a switch: an admin who turned Bank account number off for Storekeeper would see the save succeed while Storekeeper still sees every bank number. The code lands on main in each app; deployment is a manual step, so the screens reach users on the first deploy after it, which is meant to be the stage 3 release. |
 
+Fields already known to need D14 when S3 builds it: a pupil's enrolment date,
+and any staff or guardian detail a create path requires while the update path
+omits it (a staff member's email is written only at creation, so a role without
+Write on it could not create staff at all).
+
 ## 3. Branch: every role counts everywhere (D13)
 
 Mrs. Adeyemi at Bright Star holds **School Nurse pinned to Ikeja Branch** (Allergies

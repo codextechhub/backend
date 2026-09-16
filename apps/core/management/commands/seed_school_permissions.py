@@ -18,6 +18,9 @@ Run order::
 
 Three idempotent phases:
   1. Register modules + resources + permissions (with sensitivity per table).
+     A resource usually arrives as a side effect of the first key naming it;
+     one that carries Field Access fields and no keys is listed in
+     ``FIELD_ONLY_RESOURCES`` and registered alongside them.
   2. Attach PrebuiltRolePermission defaults per the school_admin/branch_admin/
      teacher columns.
   3. Backfill: for every native tenant role template whose key matches one of the
@@ -257,6 +260,35 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("academics", "subject", "manage",         _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 ]
 
+#: Resources that carry Field Access fields and no permission keys.
+#:
+#: A resource is otherwise created as a side effect of the first key naming it,
+#: so a resource with no keys would never exist, and ``sync_field_registry``
+#: refuses a field declaration whose resource is missing. Guardians are exactly
+#: that case: a guardian's record is read with ``school.students.view`` and
+#: corrected with ``school.students.update``, so minting guardian keys would
+#: hand every school a second set of switches governing nothing, while the
+#: contact details on the record still need somewhere to hang their own.
+#:
+#: The module must already be in ``MODULES``; the label and description come
+#: from the same two tables every other resource reads.
+FIELD_ONLY_RESOURCES: list[tuple[str, str]] = [
+    ("school", "guardians"),
+]
+
+#: Readable names for resources whose slug reads wrongly on screen.
+#:
+#: A resource with no entry here reads as its slug, title-cased, which is what
+#: ``display_label`` does and what most of them want.
+RESOURCE_LABELS: dict[tuple[str, str], str] = {
+    ("school", "guardians"): "Guardians",
+    # The keys say ``teachers`` because ``Permission.key`` is a primary key
+    # four tables point at. The register they guard is the whole staff list,
+    # and the personal details hanging off this resource belong to the bursar
+    # and the registrar as much as to the teacher.
+    ("school", "teachers"): "Staff",
+}
+
 MODULES: dict[str, str] = {
     "school": "School administration - branches, people, fees, settings, roles.",
     "academics": "Academic operations - sessions, calendar, timetables, classes, structure, subjects.",
@@ -267,6 +299,8 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("school", "dashboard"):      "School overview dashboard",
     ("school", "branches"):       "School branch management",
     ("school", "students"):       "Student records",
+    # Fields only: a guardian is read and corrected with the student keys.
+    ("school", "guardians"):      "Parents and guardians, and the details the school reaches them on",
     # "Staff" rather than "Teacher": this resource governs the bursar and the
     # registrar as much as the teacher. The KEY stays school.teachers.* because
     # Permission.key is a primary key that four tables point at and school-fe
@@ -323,6 +357,37 @@ class Command(BaseCommand):
             with transaction.atomic():
                 self._run(dry_run=False)
 
+    def _resource(self, module, name, cache):
+        """The resource row for ``module.name``, created if it is new.
+
+        The description is a creation default, so a corrected one is never
+        written over. The readable label is filled in whenever it is blank,
+        because a resource created before labels existed carries none and would
+        otherwise read as its slug on the permission and Field Access screens
+        for good.
+        """
+        from vs_rbac.models import PermissionResource
+
+        rkey = (module.name, name)
+        resource = cache.get(rkey)
+        if resource is not None:
+            return resource
+        label = RESOURCE_LABELS.get(rkey, "")
+        resource, _ = PermissionResource.objects.get_or_create(
+            module=module,
+            name=name,
+            defaults={
+                "label": label,
+                "description": RESOURCE_DESCRIPTIONS.get(rkey, name),
+                "is_active": True,
+            },
+        )
+        if label and not resource.label:
+            resource.label = label
+            resource.save(update_fields=["label", "updated_at"])
+        cache[rkey] = resource
+        return resource
+
     def _run(self, dry_run: bool):
         from vs_rbac.models import (
             Permission,
@@ -360,18 +425,7 @@ class Command(BaseCommand):
         for module_name, resource_name, action_name, sensitivity, _roles in SCHOOL_PERMISSIONS:
             module = modules[module_name]
 
-            rkey = (module_name, resource_name)
-            resource = resources.get(rkey)
-            if resource is None:
-                resource, _ = PermissionResource.objects.get_or_create(
-                    module=module,
-                    name=resource_name,
-                    defaults={
-                        "description": RESOURCE_DESCRIPTIONS.get(rkey, resource_name),
-                        "is_active": True,
-                    },
-                )
-                resources[rkey] = resource
+            resource = self._resource(module, resource_name, resources)
 
             action = PermissionAction.objects.filter(name=action_name).first()
             if not action:
@@ -405,6 +459,12 @@ class Command(BaseCommand):
                 perm.save()
                 created_perm_count += 1
                 self.stdout.write(f"{prefix} + {perm.key}")
+
+        # Resources that carry Field Access fields and no keys. Registered the
+        # same way and in the same phase as the rest, because the field sync
+        # refuses a declaration whose resource is missing.
+        for module_name, resource_name in FIELD_ONLY_RESOURCES:
+            self._resource(modules[module_name], resource_name, resources)
 
         # ── Phase 2: attach prebuilt-role defaults ────────────────────────────
         self.stdout.write(self.style.MIGRATE_HEADING(
