@@ -166,7 +166,7 @@ class PayrollRunListCreateView(_FinanceBase):
         run.refresh_from_db()
         return success_response(
             f"Payroll run {run.document_number} created.",
-            data=PayrollRunSerializer(run).data, status=201,
+            data=PayrollRunSerializer(run, context={"request": request}).data, status=201,
         )
 
 
@@ -236,7 +236,7 @@ class PayrollRunDetailView(_PayrollActionBase):
     def get(self, request, pk):
         _, run = self._run(request, pk)
         return success_response(
-            "Payroll run retrieved.", data=PayrollRunSerializer(run).data,
+            "Payroll run retrieved.", data=PayrollRunSerializer(run, context={"request": request}).data,
         )
 
 
@@ -254,7 +254,7 @@ class PayrollRunPostView(_PayrollActionBase):
         run.refresh_from_db()
         return success_response(
             f"Payroll run {run.document_number} accrued.",
-            data=PayrollRunSerializer(run).data,
+            data=PayrollRunSerializer(run, context={"request": request}).data,
         )
 
 
@@ -278,7 +278,7 @@ class PayrollRunPayView(_PayrollActionBase):
         run.refresh_from_db()
         return success_response(
             f"Payroll run {run.document_number} disbursed.",
-            data=PayrollRunSerializer(run).data,
+            data=PayrollRunSerializer(run, context={"request": request}).data,
         )
 
 
@@ -299,7 +299,7 @@ class PayrollRunCancelView(_PayrollActionBase):
         run.refresh_from_db()
         return success_response(
             f"Payroll run {run.document_number} cancelled.",
-            data=PayrollRunSerializer(run).data,
+            data=PayrollRunSerializer(run, context={"request": request}).data,
         )
 
 
@@ -552,7 +552,7 @@ class PayrollRunGenerateView(_FinanceBase):
         )
         return success_response(
             f"Payroll run {run.document_number} generated from {run.lines.count()} employee(s).",
-            data=PayrollRunSerializer(run).data, status=201,
+            data=PayrollRunSerializer(run, context={"request": request}).data, status=201,
         )
 
 

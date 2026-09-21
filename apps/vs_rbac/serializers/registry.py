@@ -153,8 +153,8 @@ class FieldDefinitionSerializer(serializers.ModelSerializer):
         fields = [
             "key", "module", "module_label", "resource_id", "resource",
             "resource_label", "name", "api_names", "label", "group",
-            "description", "sensitive", "writable", "scope", "sort_order",
-            "is_active", "default", "created_at", "updated_at",
+            "description", "sensitive", "writable", "open_on_create", "scope",
+            "sort_order", "is_active", "default", "created_at", "updated_at",
         ]
         read_only_fields = fields
 

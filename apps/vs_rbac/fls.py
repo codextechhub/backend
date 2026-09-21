@@ -25,6 +25,9 @@ Usage
 
 Behaviour
 ---------
+* A field the caller may not read is absent from the response, with no
+  placeholder and no list of the names that were dropped: a response tells a
+  caller nothing about fields they may not see.
 * Fields absent from both dicts are always exposed - FLS is opt-in per field.
 * When the serializer is called without a request context (management commands,
   login payload construction, tests that bypass auth) all fields pass through
@@ -136,14 +139,9 @@ class FieldSecurityMixin:
         if user_perms is None:
             return data  # no request context - skip FLS
 
-        stripped: list[str] = []
         for field in list(data.keys()):
             if not self._can_read(field, user_perms):
                 data.pop(field)
-                stripped.append(field)
-
-        if stripped:
-            data["_stripped_fields"] = stripped  # Tell clients which sensitive fields were withheld.
 
         return data
 

@@ -46,7 +46,14 @@ from .constants import (
     TERMINAL_RUN_STATUSES,
     ValuesMode,
 )
-from .engine import ExportError, estimate, may_export_dataset, plain_sentence, sample_rows
+from .engine import (
+    ExportError,
+    estimate,
+    may_export_dataset,
+    plain_sentence,
+    readable_fields,
+    sample_rows,
+)
 from .models import (
     ExportDefinition,
     ExportDefinitionShare,
@@ -217,10 +224,11 @@ class CatalogueView(_ExportBase):
         tenant = self.tenant
         allowed = [d for d in all_datasets() if may_export_dataset(request.user, d, tenant)]
         include_sensitive = services.capabilities(request.user, tenant)["can_export_sensitive"]
+        readable = readable_fields(request.user, tenant)
         by_module = {m: [] for m in modules()}
         for dataset in allowed:
             by_module.setdefault(dataset.module, []).append(
-                dataset.describe(include_sensitive=include_sensitive)
+                dataset.describe(include_sensitive=include_sensitive, readable=readable)
             )
         return success_response(
             "Dataset catalogue retrieved successfully.",
@@ -249,7 +257,10 @@ class CatalogueDetailView(_ExportBase):
         )["can_export_sensitive"]
         return success_response(
             "Dataset retrieved successfully.",
-            dataset.describe(include_sensitive=include_sensitive),
+            dataset.describe(
+                include_sensitive=include_sensitive,
+                readable=readable_fields(request.user, self.tenant),
+            ),
         )
 
 
@@ -566,6 +577,7 @@ class FromScreenView(_ExportBase):
         include_sensitive = services.capabilities(
             request.user, self.tenant,
         )["can_export_sensitive"]
+        screen_readable = readable_fields(request.user, self.tenant)
         resolved = resolve_screen(binding, request.query_params.dict())
         config = {
             "dataset_key": dataset.key,
@@ -592,12 +604,14 @@ class FromScreenView(_ExportBase):
                 # dataset publishes both today; that is not a promise the UI
                 # should be hardcoding.
                 "supported_formats": [str(f) for f in dataset.formats],
-                # Every column the caller could pick, through the same sensitive-field gate
-                # the catalogue uses: a column they may not export is never offered rather
-                # than offered and then dropped from the file.
+                # Every column the caller could pick, through both gates the
+                # catalogue uses: a column they may not export, or may not read
+                # at all, is never offered rather than offered and then dropped
+                # from the file.
                 "fields": [
                     f.describe() for f in dataset.fields
-                    if include_sensitive or not f.sensitive
+                    if (include_sensitive or not f.sensitive)
+                    and (not f.access or screen_readable(f.access))
                 ],
                 "carried": resolved["carried"],
                 "unmapped": resolved["unmapped"],

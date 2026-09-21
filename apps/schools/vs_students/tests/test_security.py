@@ -344,15 +344,43 @@ class SensitiveFieldTests(StudentsFixture):
         )
 
     def _without_sensitive(self):
+        """A clerk who may open and correct a record but not read the medical part.
+
+        The medical fields are installed so Field Access has something to
+        enforce (a test database carries no registry, and an unregistered
+        field is open to everybody), and the clerk's role carries no switch
+        row, so each one falls back to its registry default: sensitive, and
+        therefore closed.
+        """
         from vs_rbac.tests.helpers import (
-            make_assignment, make_role, make_role_permission, make_school_admin,
+            install_declared_fields, make_assignment, make_role,
+            make_role_permission, make_school_admin,
         )
 
+        install_declared_fields("school.students")
         role = make_role(self.school, name="Clerk", key="clerk")
         for key in ("school.students.view", "school.students.update"):
             make_role_permission(role, self.permissions[key])
         user = make_school_admin(
             None, email="clerk@brightfield.test", tenant=self.tenant,
+        )
+        make_assignment(self.school, user, role, branch=None)
+        return user
+
+    def _with_sensitive(self):
+        """A nurse whose role reads and writes the child's medical details."""
+        from vs_rbac.tests.helpers import (
+            install_declared_fields, make_assignment, make_role,
+            make_role_permission, make_school_admin, set_field_access,
+        )
+
+        keys = install_declared_fields("school.students")
+        role = make_role(self.school, name="Nurse", key="school-nurse")
+        for key in ("school.students.view", "school.students.update"):
+            make_role_permission(role, self.permissions[key])
+        set_field_access(role, *keys, read=True, write=True)
+        user = make_school_admin(
+            None, email="nurse@brightfield.test", tenant=self.tenant,
         )
         make_assignment(self.school, user, role, branch=None)
         return user
@@ -366,31 +394,38 @@ class SensitiveFieldTests(StudentsFixture):
         ):
             self.assertNotIn(field, row)
 
-    def test_medical_detail_is_stripped_without_view_sensitive(self):
+    def test_medical_detail_is_absent_when_the_switch_is_off(self):
+        """Absent with nothing naming it, and no value anywhere in the body."""
         clerk = self._without_sensitive()
         response = self.get(clerk, "student-detail", pk=self.row.pk)
         data = response.data["data"]
         self.assertNotIn("allergies", data)
         self.assertNotIn("conditions", data)
         self.assertNotIn("blood_group", data)
+        self.assertNotIn("_stripped_fields", data)
+        for value in ("Peanuts", "Mild asthma", "A+"):
+            self.assertNotIn(value, response.content.decode())
 
-    def test_the_emergency_contact_is_present_without_view_sensitive(self):
+    def test_the_emergency_contact_is_present_when_the_medical_switch_is_off(self):
         clerk = self._without_sensitive()
         response = self.get(clerk, "student-detail", pk=self.row.pk)
         self.assertEqual(
             response.data["data"]["emergency_contact_phone"], "08065550130",
         )
 
-    def test_medical_detail_is_present_with_view_sensitive(self):
-        response = self.get(self.admin, "student-detail", pk=self.row.pk)
+    def test_medical_detail_is_present_when_the_switch_is_on(self):
+        nurse = self._with_sensitive()
+        response = self.get(nurse, "student-detail", pk=self.row.pk)
         self.assertEqual(response.data["data"]["allergies"], "Peanuts")
+        self.assertNotIn("allergies", response.data["data"]["_read_only_fields"])
 
-    def test_writing_allergies_without_the_key_is_refused_and_changes_nothing(self):
+    def test_writing_allergies_without_the_switch_is_refused_and_changes_nothing(self):
         clerk = self._without_sensitive()
         response = self.patch(
             clerk, "student-detail", {"allergies": "None"}, pk=self.row.pk,
         )
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["error"]["code"], "field_write_denied")
         self.row.refresh_from_db()
         self.assertEqual(self.row.allergies, "Peanuts")
 

@@ -17,8 +17,7 @@ from django.utils import timezone
 from core.media import signed_url
 from vs_finance.constants import DocumentStatus
 from vs_finance.money import format_naira
-from vs_rbac.fls import FieldSecurityMixin
-from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
+from vs_rbac.field_enforcement import FieldAccessMixin, can_read
 
 from .constants import ProcApprovalState, QuotationStatus
 from .purchasing import po_receipt_stage
@@ -97,12 +96,14 @@ class VendorContactSerializer(serializers.ModelSerializer):
         ]
 
 
-class VendorSerializer(FieldSecurityMixin, serializers.ModelSerializer):
-    """Vendor detail shape with account labels and field-level sensitive-data gates.
+class VendorSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """Vendor detail shape with account labels and per-role field access.
 
-    ``FieldSecurityMixin`` removes protected contact, tax, and banking fields when the
-    caller lacks ``procurement.vendor.view_sensitive``; it does not reject the whole
-    vendor record, so ordinary purchasing screens retain non-PII master data.
+    Contact, tax and banking details are the registered fields of
+    ``procurement.vendor``: a caller whose roles cannot read one gets the
+    vendor without it, and one who can read but not change it gets the name in
+    ``_read_only_fields``. The record itself is never refused, so an ordinary
+    purchasing screen keeps the master data it needs whatever the switches say.
     """
 
     category_code = serializers.CharField(source="category.code", read_only=True, default=None)
@@ -115,20 +116,8 @@ class VendorSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     )
     contacts = VendorContactSerializer(many=True, read_only=True)
 
-    # FLS: vendor banking details are PII used for disbursement - only holders of
-    # the sensitive grant see them; everyone else gets the record with these
-    # fields stripped.
-    read_permissions = {
-        "email": "procurement.vendor.view_sensitive",
-        "phone": "procurement.vendor.view_sensitive",
-        "address": "procurement.vendor.view_sensitive",
-        "tax_id": "procurement.vendor.view_sensitive",
-        "bank_name": "procurement.vendor.view_sensitive",
-        "bank_code": "procurement.vendor.view_sensitive",
-        "bank_account_number": "procurement.vendor.view_sensitive",
-        "bank_account_name": "procurement.vendor.view_sensitive",
-        "contacts": "procurement.vendor.view_sensitive",
-    }
+    field_resource = "procurement.vendor"
+    field_access_detail = True
 
     class Meta:
         model = Vendor
@@ -775,14 +764,10 @@ class RfqDetailSerializer(serializers.ModelSerializer):
         for q in obj.quotations.all():
             # The view orders created_at DESC, id DESC, so first is deterministically newest.
             quote_by_vendor.setdefault(q.vendor_id, q)
+        # The people a request was sent to are the vendor's contacts, so the
+        # switch that hides them on a vendor hides them here too.
         request = self.context.get("request")
-        can_view_contacts = bool(request and (
-            is_vision_super_admin(request.user)
-            or user_has_rbac_permission(
-                request.user, "procurement.vendor.view_sensitive",
-                tenant=getattr(request, "rbac_tenant", None) or getattr(request, "tenant", None),
-            )
-        ))
+        can_view_contacts = can_read(request, "procurement.vendor.contacts")
         rows = []
         for inv in obj.invitations.all():
             quote = quote_by_vendor.get(inv.vendor_id)

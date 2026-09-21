@@ -693,6 +693,23 @@ class VendorPortalTransportTests(TestCase):
 
 
 class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
+    """The vendor console, with the vendor's fields registered.
+
+    A test database carries no Field Access registry (``sync_field_registry``
+    runs at deploy), and an unregistered field is open to everybody, so these
+    tests install the vendor declarations first. The user built by ``_client``
+    then holds no role, which means the registry defaults apply: every vendor
+    contact and banking field is sensitive, so it starts hidden and unwritable.
+    ``_open_vendor_fields`` gives that user a role with the switches on, which
+    is what a school does for its purchasing officer.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from vs_rbac.tests.helpers import install_declared_fields
+
+        self.vendor_field_keys = install_declared_fields("procurement.vendor")
+
     def _client(self, entity, email="vendor-console@test.com"):
         from django.contrib.auth import get_user_model
         from core.test_utils import TenantAPIClient
@@ -701,7 +718,18 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
             email=email, password="pw", tenant=entity.tenant,
             status="ACTIVE", first_name="Vendor", last_name="Tester",
         )
-        return TenantAPIClient(user=user)
+        client = TenantAPIClient(user=user)
+        client.user = user  # So a test can give this caller a role.
+        return client
+
+    def _open_vendor_fields(self, client, *, read=True, write=True):
+        """Give the client's user a role reading and writing every vendor field."""
+        from vs_rbac.tests.helpers import make_assignment, make_role, set_field_access
+
+        role = make_role(client.user.tenant, name="Purchasing officer")
+        make_assignment(client.user.tenant, client.user, role)
+        set_field_access(role, *self.vendor_field_keys, read=read, write=write)
+        return role
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=False)
     def test_list_requires_vendor_view_permission(self, _permission):
@@ -744,8 +772,8 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(complete.data["data"][0]["active_po_count"], 0)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    @patch("vs_rbac.fls.FieldSecurityMixin._resolve_user_permissions", return_value=set())
-    def test_detail_strips_sensitive_fields_and_is_entity_scoped(self, _fls, _permission):
+    def test_detail_hides_switched_off_fields_and_is_entity_scoped(self, _permission):
+        """Hidden means absent, with nothing in the payload naming it."""
         entity, _, vendor, _, _ = self.build_p2p()
         vendor.email = "accounts@example.com"
         vendor.tax_id = "TIN-123"
@@ -757,31 +785,47 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
         client = self._client(entity)
         response = client.get(f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}")
         self.assertEqual(response.status_code, 200)
-        self.assertNotIn("email", response.data["data"])
-        self.assertIn("email", response.data["data"]["_stripped_fields"])
-        self.assertNotIn("bank_code", response.data["data"])
-        self.assertIn("bank_code", response.data["data"]["_stripped_fields"])
+        data = response.data["data"]
+        for name in ("email", "tax_id", "bank_code", "bank_account_number"):
+            self.assertNotIn(name, data)
+        blob = response.content.decode()
+        for value in ("accounts@example.com", "TIN-123", "0123456789"):
+            self.assertNotIn(value, blob)
+        self.assertNotIn("_stripped_fields", data)
+        self.assertEqual(data["_read_only_fields"], [])
         other = LedgerEntity.objects.create(name="Other", code="OTHER", kind=LedgerEntity.Kind.TENANT)
         cross = client.get(f"/v1/procurement/vendors/{vendor.id}/?entity={other.code}")
         self.assertEqual(cross.status_code, 404)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    @patch(
-        "vs_rbac.fls.FieldSecurityMixin._resolve_user_permissions",
-        return_value={"procurement.vendor.view_sensitive"},
-    )
-    def test_detail_includes_sensitive_fields_with_exact_grant(self, _fls, _permission):
+    def test_detail_includes_a_field_the_role_may_read(self, _permission):
         entity, _, vendor, _, _ = self.build_p2p()
         vendor.email = "accounts@example.com"
         vendor.save(update_fields=["email", "updated_at"])
-        response = self._client(entity).get(f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}")
+        client = self._client(entity)
+        self._open_vendor_fields(client)
+        response = client.get(f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}")
         self.assertEqual(response.data["data"]["email"], "accounts@example.com")
+        self.assertEqual(response.data["data"]["_read_only_fields"], [])
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    @patch("vs_procurement.views.vendors._has_sensitive_access", return_value=True)
-    def test_create_normalizes_identifiers_defaults_governance_and_rejects_duplicates(self, _sensitive, _permission):
+    def test_a_readable_unwritable_field_is_named_for_the_form_to_grey(self, _permission):
+        """Read on, Write off: present, and named so a form can grey it."""
+        entity, _, vendor, _, _ = self.build_p2p()
+        vendor.email = "accounts@example.com"
+        vendor.save(update_fields=["email", "updated_at"])
+        client = self._client(entity)
+        self._open_vendor_fields(client, read=True, write=False)
+        response = client.get(f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}")
+        data = response.data["data"]
+        self.assertEqual(data["email"], "accounts@example.com")
+        self.assertIn("email", data["_read_only_fields"])
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_normalizes_identifiers_defaults_governance_and_rejects_duplicates(self, _permission):
         entity, _, _, _, _ = self.build_p2p()
         client = self._client(entity)
+        self._open_vendor_fields(client)
         generated = client.post(
             f"/v1/procurement/vendors/?entity={entity.code}",
             {"name": "Generated Vendor"},
@@ -813,29 +857,51 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(duplicate_tax.status_code, 400)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    @patch("vs_procurement.views.vendors._has_sensitive_access", return_value=False)
-    def test_sensitive_update_requires_sensitive_grant(self, _sensitive, _permission):
+    def test_writing_a_field_the_role_cannot_write_is_refused(self, _permission):
+        """403 naming the field, and the vendor is left as it was."""
         entity, _, vendor, _, _ = self.build_p2p()
         response = self._client(entity).patch(
             f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}",
             {"bank_account_number": "0123456789"}, format="json",
         )
         self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["error"]["code"], "field_write_denied")
+        vendor.refresh_from_db()
+        self.assertNotEqual(vendor.bank_account_number, "0123456789")
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    @patch("vs_procurement.views.vendors._has_sensitive_access", return_value=True)
+    def test_a_hidden_field_and_a_read_only_one_are_refused_alike(self, _permission):
+        """The refusal tells a caller nothing they did not already know."""
+        entity, _, vendor, _, _ = self.build_p2p()
+        hidden = self._client(entity, email="vendor-hidden@test.com").patch(
+            f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}",
+            {"bank_account_number": "0123456789"}, format="json",
+        )
+        readable = self._client(entity, email="vendor-readonly@test.com")
+        self._open_vendor_fields(readable, read=True, write=False)
+        read_only = readable.patch(
+            f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}",
+            {"bank_account_number": "0123456789"}, format="json",
+        )
+        self.assertEqual(hidden.status_code, read_only.status_code)
+        self.assertEqual(hidden.data["message"], read_only.data["message"])
+        self.assertEqual(hidden.data["error"], read_only.data["error"])
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     @patch("vs_procurement.views.vendors._has_vendor_manage_access", return_value=True)
     def test_bank_change_resets_verified_kyc_even_when_patch_tries_to_reverify(
-        self, _manage, _sensitive, _permission,
+        self, _manage, _permission,
     ):
         entity, _, vendor, _, _ = self.build_p2p()
+        client = self._client(entity)
+        self._open_vendor_fields(client)
         Vendor.objects.filter(pk=vendor.pk).update(
             bank_name="Old Bank", bank_code="001",
             bank_account_name="Acme Supplier", bank_account_number="0123456789",
             kyc_status=VendorKycStatus.VERIFIED,
         )
 
-        response = self._client(entity).patch(
+        response = client.patch(
             f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}",
             {
                 "bank_name": "New Bank", "bank_code": "058",

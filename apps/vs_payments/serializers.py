@@ -4,7 +4,7 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from vs_finance.money import format_naira
-from vs_rbac.fls import FieldSecurityMixin
+from vs_rbac.field_enforcement import FieldAccessMixin
 
 from .models import (
     CollectionIntent,
@@ -39,20 +39,23 @@ class CollectionIntentSerializer(serializers.ModelSerializer):
         return format_naira(obj.amount)
 
 
-class VirtualAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
+class VirtualAccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One provider-issued collection account.
+
+    The number and the name on it are the registered fields of
+    ``payments.virtual_account``. Neither is writable: the provider issues
+    both when the account is opened, which is also why the payload names no
+    read-only fields. A resource a client can never write has nothing to grey.
+    """
+
+    field_resource = "payments.virtual_account"
+
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     customer_code = serializers.CharField(source="customer.code", read_only=True, default=None)
     customer_name = serializers.CharField(source="customer.name", read_only=True, default=None)
     deposit_account_code = serializers.CharField(source="deposit_account.code", read_only=True, default=None)
     deposit_account_name = serializers.CharField(source="deposit_account.name", read_only=True, default=None)
     currency_code = serializers.CharField(source="currency.code", read_only=True, default=None)
-
-    # FLS: the funding account number/name are only exposed to holders of the
-    # sensitive grant; everyone else sees the record with these fields stripped.
-    read_permissions = {
-        "account_number": "payments.virtual_account.view_sensitive",
-        "account_name": "payments.virtual_account.view_sensitive",
-    }
 
     class Meta:
         model = VirtualAccount
@@ -64,7 +67,18 @@ class VirtualAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         ]
 
 
-class PayoutInstructionSerializer(FieldSecurityMixin, serializers.ModelSerializer):
+class PayoutInstructionSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One outgoing payment, with the beneficiary behind its own switches.
+
+    The beneficiary's name, account number and bank code are the registered
+    fields of ``payments.payout``. None is writable: they are copied from the
+    verified vendor record, and a value a caller supplies is only ever
+    compared against it. The payload therefore names no read-only fields, a
+    resource a client can never write having nothing to grey.
+    """
+
+    field_resource = "payments.payout"
+
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     amount_naira = serializers.SerializerMethodField()
     # WHT withheld on this line (carried on metadata) - net = amount − wht, and the
@@ -74,14 +88,6 @@ class PayoutInstructionSerializer(FieldSecurityMixin, serializers.ModelSerialize
     # real settlement journal (Dr Accounts payable / Cr this account).
     source_account_code = serializers.CharField(source="source_account.code", read_only=True, default=None)
     source_account_name = serializers.CharField(source="source_account.name", read_only=True, default=None)
-
-    # FLS: beneficiary bank details are PII - only holders of the sensitive grant
-    # see them.
-    read_permissions = {
-        "beneficiary_name": "payments.payout.view_sensitive",
-        "beneficiary_account_number": "payments.payout.view_sensitive",
-        "beneficiary_bank_code": "payments.payout.view_sensitive",
-    }
 
     class Meta:
         model = PayoutInstruction

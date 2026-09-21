@@ -126,7 +126,9 @@ class BankAccountListCreateView(_FinanceBase):
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         return success_response(
-            "Bank accounts retrieved.", data=BankAccountSerializer(qs, many=True).data,
+            "Bank accounts retrieved.", data=BankAccountSerializer(
+                qs, many=True, context={"request": request},
+            ).data,
         )
 
     # Handle POST requests for this endpoint.
@@ -168,7 +170,8 @@ class BankAccountListCreateView(_FinanceBase):
                     pk=bank.pk).update(is_primary=False)
         return success_response(
             f"Bank account '{name}' created.",
-            data=BankAccountSerializer(bank).data, status=201,
+            data=BankAccountSerializer(bank, context={"request": request}).data,
+            status=201,
         )
 
 
@@ -226,7 +229,7 @@ class BankAccountDetailView(_FinanceBase):
         stmt = statement_balance(bank)
         stmt_val = stmt if stmt is not None else book
         unreconciled = bank.statement_lines.filter(status=BankLineStatus.UNMATCHED).count()
-        data = BankAccountSerializer(bank).data
+        data = BankAccountSerializer(bank, context={"request": request}).data
         data["metrics"] = {
             "book_balance": book, "statement_balance": stmt_val,
             "unreconciled_diff": book - stmt_val, "unreconciled_count": unreconciled,
@@ -285,7 +288,8 @@ class BankAccountDetailView(_FinanceBase):
         else:
             bank.save()
         return success_response(
-            f"Bank account '{bank.name}' updated.", data=BankAccountSerializer(bank).data)
+            f"Bank account '{bank.name}' updated.",
+            data=BankAccountSerializer(bank, context={"request": request}).data)
 
 
 # Group endpoint behavior for Bank Statement Line View.

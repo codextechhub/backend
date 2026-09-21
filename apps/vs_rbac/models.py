@@ -432,6 +432,11 @@ class FieldDefinition(TimeStampedModel):
     :attr:`Permission.scope`, and has no default for the same reason: an
     unclassified field is refused by the sync rather than assumed safe for
     every tenant.
+
+    ``open_on_create`` marks a field set freely while a record is being
+    created, so the write switch governs only later changes to it. It is what
+    keeps a role that may create a record, but not correct that field
+    afterwards, able to create one at all.
     """
 
     key = models.CharField(max_length=200, primary_key=True)
@@ -447,6 +452,10 @@ class FieldDefinition(TimeStampedModel):
     description = models.TextField(blank=True)
     sensitive = models.BooleanField(default=False)
     writable = models.BooleanField(default=True)
+    open_on_create = models.BooleanField(
+        default=False,
+        help_text="Set freely while the record is created; the write switch governs later changes only.",
+    )
     scope = models.CharField(
         max_length=16,
         choices=PermissionScope.choices,

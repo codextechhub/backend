@@ -6,7 +6,7 @@ import re
 from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
 from rest_framework import serializers
-from vs_rbac.fls import FieldSecurityMixin
+from vs_rbac.field_enforcement import FieldAccessMixin
 
 from .constants import ImportPermission
 
@@ -26,12 +26,27 @@ from .models import (
 
 
 class _FinanceImportReadMixin:
-    """Let a finance statement importer read wizard payloads for its scoped batch."""
+    """Let a finance statement importer read the payloads of its own batch.
 
-    def _can_read(self, field: str, user_perms: set[str]) -> bool:
-        if "finance.bankaccount.import" in user_perms:
-            return True
-        return super()._can_read(field, user_perms)
+    A bank statement import is run by a finance officer, not by the import
+    team, and the wizard has to show that officer the rows they have just
+    uploaded and what the engine made of them. The keys that open those
+    payloads are the import engine's, which a finance officer does not hold,
+    so the rule names the finance key that put the file there instead.
+
+    It reaches enforcement as :class:`~vs_rbac.field_enforcement.FieldAccessMixin`'s
+    owner rule, which is the seam for "this record is about this person,
+    whatever the switches say": the officer who may import a bank statement is
+    who a statement import is about.
+    """
+
+    @staticmethod
+    def owner_rule(row, user) -> bool:
+        from vs_rbac.evaluator import has_permission
+
+        return has_permission(
+            user, "finance.bankaccount.import", tenant=getattr(user, "tenant", None),
+        )
 
 
 # =========================================================
@@ -157,14 +172,17 @@ class ImportTemplateListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class ImportTemplateDetailSerializer(FieldSecurityMixin, serializers.ModelSerializer):
+class ImportTemplateDetailSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """
     Full template detail serializer.
     Includes all column definitions.
+
+    A template's validation rules are the registered field of
+    ``import.templates``: they are internal configuration, and a caller whose
+    roles cannot read them gets the template without them.
     """
-    read_permissions = {
-        "validation_rules": ImportPermission.TEMPLATE_MANAGE,
-    }
+
+    field_resource = "import.templates"
 
     columns = ImportTemplateColumnDetailSerializer(many=True, read_only=True)
 
@@ -389,17 +407,19 @@ class ImportValidationIssueResolveSerializer(serializers.ModelSerializer):
 # =========================================================
 class ImportJobRowResultSerializer(
     _FinanceImportReadMixin,
-    FieldSecurityMixin,
+    FieldAccessMixin,
     serializers.ModelSerializer,
 ):
     """
     Shows one processed row result from an import job.
+
+    The row as uploaded, the row after cleaning and the errors against it are
+    registered fields of ``import.jobs``. They carry whatever the spreadsheet
+    carried, which for a staff or pupil import is somebody's personal details,
+    so a school decides per role who reads them back.
     """
-    read_permissions = {
-        "row_payload": ImportPermission.JOB_VIEW,
-        "normalized_payload": ImportPermission.JOB_VIEW,
-        "error_details": ImportPermission.JOB_VIEW,
-    }
+
+    field_resource = "import.jobs"
 
     class Meta:
         model = ImportJobRowResult
@@ -450,17 +470,18 @@ class ImportJobListSerializer(serializers.ModelSerializer):
 
 class ImportJobDetailSerializer(
     _FinanceImportReadMixin,
-    FieldSecurityMixin,
+    FieldAccessMixin,
     serializers.ModelSerializer,
 ):
     """
     Full serializer for one import job.
+
+    The execution summary and the last error are registered fields of
+    ``import.jobs``, for the same reason the row payloads are: an engine error
+    quotes the row that caused it.
     """
-    read_permissions = {
-        "execution_summary": ImportPermission.JOB_VIEW,
-        "last_error_code": ImportPermission.JOB_VIEW,
-        "last_error_message": ImportPermission.JOB_VIEW,
-    }
+
+    field_resource = "import.jobs"
 
     queued_by = serializers.SerializerMethodField()
     row_results = ImportJobRowResultSerializer(many=True, read_only=True)
@@ -618,16 +639,18 @@ class ImportBatchListSerializer(serializers.ModelSerializer):
 
 class ImportBatchDetailSerializer(
     _FinanceImportReadMixin,
-    FieldSecurityMixin,
+    FieldAccessMixin,
     serializers.ModelSerializer,
 ):
     """
     Full serializer for one import batch.
+
+    The uploaded file and the rows parsed out of it are registered fields of
+    ``import.batches``: the file is the spreadsheet itself, and the preview is
+    what it said.
     """
-    read_permissions = {
-        "file": ImportPermission.BATCH_VIEW,
-        "preview_rows": ImportPermission.BATCH_VIEW,
-    }
+
+    field_resource = "import.batches"
 
     school = serializers.SerializerMethodField()
     branch = serializers.SerializerMethodField()

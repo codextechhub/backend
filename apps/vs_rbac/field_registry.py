@@ -31,6 +31,14 @@ class FieldSpec:
     ``api_names`` lists the names the field travels under in responses and
     request bodies when that is not just ``name``. ``scope`` is the scope of
     the permission key that guards the field, ``TENANT`` or ``PLATFORM``.
+
+    ``open_on_create`` marks a field that is set freely while the record is
+    being created, so the Write switch governs only later changes. It is for a
+    value that belongs to the act of creating the record rather than to
+    editing it, and for one a create path requires while the update path omits
+    it: without the flag, a role that may create a record but not change that
+    field could not create one at all. A field nothing can write has nothing
+    to open, so the flag needs ``writable``.
     """
 
     name: str
@@ -42,6 +50,7 @@ class FieldSpec:
     scope: str = ""
     sort_order: int = 0
     api_names: tuple[str, ...] = ()
+    open_on_create: bool = False
 
     @property
     def resolved_api_names(self) -> tuple[str, ...]:
@@ -74,8 +83,9 @@ def validate_declaration(declaration: FieldDeclaration) -> None:
     """Raise ``ValueError`` naming the first problem in *declaration*.
 
     Checks slugs, non-blank labels, unique registry names and unique client
-    names inside the resource, and a scope that is one of
-    :class:`vs_rbac.models.PermissionScope`.
+    names inside the resource, a scope that is one of
+    :class:`vs_rbac.models.PermissionScope`, and an ``open_on_create`` flag
+    only on a field something can write.
     """
     from .models import PermissionScope
 
@@ -101,6 +111,11 @@ def validate_declaration(declaration: FieldDeclaration) -> None:
                     f"fields under '{where}'."
                 )
             api_names.add(api_name)
+        if spec.open_on_create and not spec.writable:
+            raise ValueError(
+                f"Field registry: '{key}' is open on create but nothing can "
+                f"write it, so there is no later change for the switch to govern."
+            )
         if spec.scope not in PermissionScope.values:
             raise ValueError(
                 f"Field registry: '{key}' has scope '{spec.scope}'. Declare the "

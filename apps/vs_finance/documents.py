@@ -66,7 +66,19 @@ def _issuer_block(entity, *, branch=None) -> dict:
 
     The pay-to bank is always the entity's primary collection account regardless of
     which identity is used.
+
+    The account number in that block is a registered field
+    (``finance.bankaccount.account_number``), and this render is the declared
+    exception to filtering it by the caller: the document is addressed to the
+    customer who has to pay into the account, not to the member of staff who
+    pressed Send, so it is built in system context. An invoice missing its
+    account number cannot be paid, and one that differed by whoever sent it
+    would not be the same document twice.
     """
+    from vs_rbac.field_enforcement import assert_system_surface
+
+    assert_system_surface("vs_finance.documents._issuer_block")
+
     school = getattr(entity.tenant, "school_profile", None)  # A school-sourced entity brands from its school.
     branch_email = getattr(branch, "email", "") if branch is not None else ""  # Optional branch contact email.
     branch_address = getattr(branch, "address", "") if branch is not None else ""  # Optional branch address.

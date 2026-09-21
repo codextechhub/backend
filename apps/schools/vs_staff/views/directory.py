@@ -341,7 +341,12 @@ class StaffDetailView(StaffViewMixin, APIView):
     @transaction.atomic
     def patch(self, request, pk):
         staff = self.get_staff(pk)
-        payload = StaffUpdateSerializer(data=request.data, partial=True)
+        # The record and the request both ride in, or the field guard has
+        # neither a caller to judge nor a stored value to recognise an echo by.
+        payload = StaffUpdateSerializer(
+            staff, data=request.data, partial=True,
+            context=self.serializer_context(),
+        )
         payload.is_valid(raise_exception=True)
         data = dict(payload.validated_data)
 

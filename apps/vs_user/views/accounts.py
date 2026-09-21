@@ -239,7 +239,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                 request=request,
                 status=User.Status.DRAFT,
             )
-            return Response(UserReadSerializer(user).data, status=status.HTTP_201_CREATED)
+            return Response(UserReadSerializer(user, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
         # Workflow gate only applies to platform user creation. The serializer
         # has already resolved which tenant will own the row, so ask that.
@@ -257,7 +257,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                 )
                 wf_instance = _wf_submit(document=user, requested_by=request.user)
             return Response({
-                "user": UserReadSerializer(user).data,
+                "user": UserReadSerializer(user, context={"request": request}).data,
                 "workflow_instance": _WFInstanceSerializer(wf_instance).data,
             }, status=status.HTTP_201_CREATED)
 
@@ -268,7 +268,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             request=request,
         )
         UserCreationService.finalize_invitation(user=user, requested_by=request.user)
-        return Response(UserReadSerializer(user).data, status=status.HTTP_201_CREATED)
+        return Response(UserReadSerializer(user, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"], url_path="submit")
     def submit(self, request, *args, **kwargs):
@@ -341,7 +341,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                 message=detail.get("message", "Could not submit this draft."), error=detail,
             )
 
-        payload = {"user": UserReadSerializer(user).data}
+        payload = {"user": UserReadSerializer(user, context={"request": request}).data}
         if wf_instance is not None:
             payload["workflow_instance"] = _WFInstanceSerializer(wf_instance).data
         return Response(payload, status=status.HTTP_200_OK)
@@ -421,7 +421,7 @@ class UserEmailChangeView(APIView):
 
         return success_response(
             message="Email updated successfully.",
-            data=UserListSerializer(updated).data,
+            data=UserListSerializer(updated, context={"request": request}).data,
         )
 
 
@@ -451,7 +451,7 @@ class UserSuspendView(APIView):
 
         return success_response(
             message="User suspended successfully.",
-            data=UserListSerializer(updated).data,
+            data=UserListSerializer(updated, context={"request": request}).data,
         )
 
 
@@ -481,7 +481,7 @@ class UserReactivateView(APIView):
 
         return success_response(
             message="User reactivated successfully.",
-            data=UserListSerializer(updated).data,
+            data=UserListSerializer(updated, context={"request": request}).data,
         )
 
 
@@ -511,5 +511,5 @@ class UserUnlockView(APIView):
 
         return success_response(
             message="User unlocked successfully.",
-            data=UserListSerializer(updated).data,
+            data=UserListSerializer(updated, context={"request": request}).data,
         )

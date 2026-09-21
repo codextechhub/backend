@@ -176,6 +176,7 @@ class LoginService:
         )
 
         from vs_rbac.evaluator import get_effective_permissions
+        from vs_rbac.field_enforcement import field_access_payload
         from vs_tenants.context import tenant_context_block
         permissions = sorted(get_effective_permissions(authed, tenant=authed.tenant))
 
@@ -189,6 +190,9 @@ class LoginService:
                 getattr(authed.tenant, 'school_profile', None), request, user=authed,
             ),
             'permissions': permissions,
+            # Built by the same function /me uses, so the map a client is
+            # handed at login and the one it syncs afterwards cannot drift.
+            'field_access': field_access_payload(authed, authed.tenant),
         }
 
     # ── Private helpers ───────────────────────────────────────────────────────

@@ -6,20 +6,20 @@ Three rules run through every serializer here.
 not conditions, not the emergency contact. A list is the response that gets
 paged, cached and exported; a child's medical history has no business in one.
 
-**Three of the five medical fields are gated on
-``school.students.view_sensitive``, and the emergency contact is not.** An
-emergency contact only a school administrator can read is useless in the
-emergency it exists for, and it is an adult's name and phone number rather than
-a child's medical history.
+**Three of the five medical fields carry Field Access switches, and the
+emergency contact does not.** Blood group, allergies and conditions are
+registered fields of ``school.students``, so a school decides per role who
+reads and corrects them. An emergency contact only a school administrator can
+read is useless in the emergency it exists for, and it is an adult's name and
+phone number rather than a child's medical history.
 
 **A file is a signed, user-bound, expiring URL, never a path.** An unsigned
 ``/media/<name>`` inside its window is a bearer token.
 
-**Every serializer that can write a restricted field carries a write map.**
-The guard binds only the serializer declaring it, so enrolling carries
-``CREATE_WRITE_PERMISSIONS`` and editing carries ``EDIT_WRITE_PERMISSIONS``,
-and a serializer that is only ever read marks its fields read-only rather than
-leaving another door.
+**Every serializer that can write a registered field names its resource.**
+The guard binds only the serializer declaring it, so enrolling and editing
+each declare ``school.students``, and a serializer that is only ever read
+marks its fields read-only rather than leaving another door.
 
 FRD M11 v2.4 sections 7 and 12.1.
 """
@@ -28,14 +28,11 @@ from __future__ import annotations
 from django.utils import timezone
 from rest_framework import serializers
 
-from vs_rbac.fls import FieldSecurityMixin
+from vs_rbac.field_enforcement import FieldAccessMixin
 
 from .constants import (
-    CREATE_WRITE_PERMISSIONS,
-    EDIT_WRITE_PERMISSIONS,
     DocumentType,
     Gender,
-    PERM_VIEW_SENSITIVE,
     Relationship,
     StudentStatus,
     TransferReason,
@@ -77,7 +74,17 @@ class _BranchAware(serializers.ModelSerializer):
 
 # ── guardians ──────────────────────────────────────────────────────────────
 
-class GuardianSerializer(serializers.ModelSerializer):
+class GuardianSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """A guardian's own details, as a student's record carries them.
+
+    The phone number, email address, home address and occupation are the
+    registered fields of ``school.guardians``, so a school decides per role who
+    reads them. This shape travels nested inside a student's guardian list as
+    well as on its own, and a nested serializer is filtered as its own resource.
+    """
+
+    field_resource = "school.guardians"
+
     has_account = serializers.SerializerMethodField()
     photo_url = serializers.SerializerMethodField()
 
@@ -97,7 +104,7 @@ class GuardianSerializer(serializers.ModelSerializer):
         return obj.user_id is not None
 
 
-class GuardianUpdateSerializer(serializers.Serializer):
+class GuardianUpdateSerializer(FieldAccessMixin, serializers.Serializer):
     """A guardian's OWN details. Not their link to any one student.
 
     Every field optional, because this is a correction: a registrar fixing a
@@ -105,7 +112,13 @@ class GuardianUpdateSerializer(serializers.Serializer):
     Relationship and primary-contact are absent on purpose - those belong to a
     LINK, one per student, and a guardian standing for three children has three
     of them.
+
+    A correction is an update, so every registered field it carries asks the
+    Write switch, and a form that echoes back a value it did not change is
+    accepted rather than refused.
     """
+
+    field_resource = "school.guardians"
 
     full_name = serializers.CharField(max_length=150, required=False)
     phone = serializers.CharField(max_length=32, required=False, allow_blank=True)
@@ -159,7 +172,15 @@ def guardian_photo_url(guardian, *, request=None):
     )
 
 
-class GuardianDirectorySerializer(serializers.ModelSerializer):
+class GuardianDirectorySerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One row of the guardian directory, with the contact details switched.
+
+    A list row, so it names no read-only fields: the guardian's own record is
+    where a form edits them.
+    """
+
+    field_resource = "school.guardians"
+
     photo_url = serializers.SerializerMethodField()
     ward_count = serializers.IntegerField(read_only=True)
     ward_names = serializers.SerializerMethodField()
@@ -180,13 +201,19 @@ class GuardianDirectorySerializer(serializers.ModelSerializer):
         return len(self.context.get("wards", {}).get(obj.pk, [])) > 1
 
 
-class GuardianWriteSerializer(serializers.Serializer):
+class GuardianWriteSerializer(FieldAccessMixin, serializers.Serializer):
     """One guardian on an enrolment or a link.
 
     Either an existing guardian by id, or a new one by name and phone. Never a
     branch: a guardian is school-level and a request supplying one is refused
     as a field that does not exist rather than accepted and ignored.
+
+    Creating a guardian rather than editing one, so a blank value for a field
+    the caller may not write is dropped instead of refused: the enrol form
+    posts every input whether it was touched or not.
     """
+
+    field_resource = "school.guardians"
 
     guardian_id = serializers.IntegerField(required=False, allow_null=True)
     full_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
@@ -272,15 +299,17 @@ class StudentListSerializer(_BranchAware):
         return document_service.face_url(obj, request=self.context.get("request"))
 
 
-class StudentDetailSerializer(FieldSecurityMixin, _BranchAware):
-    """The profile. Medical is here and gated; it is never in a list."""
+class StudentDetailSerializer(FieldAccessMixin, _BranchAware):
+    """The profile. Medical is here and behind its switches; never in a list.
 
-    read_permissions = {
-        "blood_group": PERM_VIEW_SENSITIVE,
-        "allergies": PERM_VIEW_SENSITIVE,
-        "conditions": PERM_VIEW_SENSITIVE,
-    }
-    write_permissions = dict(EDIT_WRITE_PERMISSIONS)
+    A detail response, so it names in ``_read_only_fields`` whatever the
+    caller may read and not change: a school that lets a class teacher see a
+    child's allergies without correcting them gets a greyed field rather than
+    a save that is refused.
+    """
+
+    field_resource = "school.students"
+    field_access_detail = True
 
     full_name = serializers.CharField(read_only=True)
     status_label = serializers.CharField(source="get_status_display", read_only=True)
@@ -349,15 +378,19 @@ class StudentDetailSerializer(FieldSecurityMixin, _BranchAware):
         ]
 
 
-class StudentWriteSerializer(FieldSecurityMixin, serializers.ModelSerializer):
+class StudentWriteSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Editing a record. Class and status are deliberately absent.
 
     Both move through their own routes so each keeps its reason, its effective
     date and its audit line. The design's edit drawer omits them for the same
     reason and says so on the form.
+
+    Editing an existing record, so every registered field it carries is
+    governed by its Write switch, the enrolment date included: correcting when
+    a child joined rewrites their history.
     """
 
-    write_permissions = dict(EDIT_WRITE_PERMISSIONS)
+    field_resource = "school.students"
 
     class Meta:
         model = Student
@@ -383,23 +416,24 @@ class StudentWriteSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         return attrs
 
 
-class EnrolmentWriteSerializer(FieldSecurityMixin, serializers.Serializer):
+class EnrolmentWriteSerializer(FieldAccessMixin, serializers.Serializer):
     """Enrol, or save as an applicant. One serializer, one flag.
 
     Two endpoints would be two sets of rules, and the second one would be the
     one that forgets the duplicate check.
 
-    The medical fields carry the same write rule as editing a record: a caller
-    without ``school.students.view_sensitive`` is refused, per field, for a
-    non-blank blood group, allergy or condition, and nothing is created. A
-    blank value is allowed, because the enrol form posts every input whether
-    it was touched or not. A new record's enrolment date is set by whoever
-    enrols it; changing it later needs ``school.students.manage`` on the edit
-    route. The view must pass the request in the context, or the guard has no
-    caller to judge and skips itself.
+    The medical fields carry the same rule here as on the edit route: a role
+    whose Write switch does not reach a child's blood group, allergies or
+    conditions is refused, per field, and nothing is created. A blank value is
+    dropped rather than refused, because the enrol form posts every input
+    whether it was touched or not. The enrolment date is the exception the
+    registry marks: whoever enrols the pupil sets the date they enrolled on,
+    and the switch decides only who may correct it afterwards. The view must
+    pass the request in the context, or the guard has no caller to judge and
+    skips itself.
     """
 
-    write_permissions = dict(CREATE_WRITE_PERMISSIONS)
+    field_resource = "school.students"
 
     first_name = serializers.CharField(max_length=100)
     middle_name = serializers.CharField(

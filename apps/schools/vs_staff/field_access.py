@@ -15,6 +15,14 @@ Where the value lives is not where the client meets it. ``date_of_birth`` is a
 column on the staff record; ``phone``, ``email`` and ``gender`` are read from
 the linked account (``user.phone``, ``user.email``, ``user.gender``). A switch
 covers the name a client receives, which is the same in both cases.
+
+The email is the one field the Add form requires and the edit form does not
+carry at all: an account's sign-in address changes on an endpoint of its own,
+behind its own key. It is therefore declared open on create, so a role that may
+add a staff member can still send the address every new account needs, while
+the write switch keeps deciding nothing about it afterwards. The date of birth,
+gender and phone number are optional on the Add form and present on the edit
+form, so each is governed by its switch on both paths.
 """
 from vs_rbac.field_registry import FieldSpec, register_fields
 
@@ -41,7 +49,7 @@ def register():
                       sort_order=30,
                       description="The staff member's own number, on their account."),
             FieldSpec("email", "Email", group="Personal", scope=_TENANT,
-                      sort_order=40,
+                      sort_order=40, open_on_create=True,
                       description="The address they sign in with."),
         ),
     )

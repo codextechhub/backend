@@ -4,6 +4,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from vs_rbac.tests.helpers import (
+    install_declared_fields,
     make_assignment,
     make_permission,
     make_role,
@@ -71,6 +72,11 @@ class OrganogramAccessTests(TestCase):
             nok_name="Owner Relative",
             bank_name="Owner Bank",
         )
+        # A staff profile's bank details are Field Access switches, and a test
+        # database carries no registry until one is installed: an unregistered
+        # field is open to everybody by design. Installed, and with no role
+        # turning them on, the registry default applies and they start closed.
+        install_declared_fields("platform.staff_profile")
         self.client = APIClient()
         self.client.force_authenticate(user=self.viewer)
 
@@ -80,8 +86,9 @@ class OrganogramAccessTests(TestCase):
         make_assignment(self.viewer.tenant, self.viewer, role)
         # Permission evaluation memoises on the request user instance. This
         # test grants between two requests, so discard the earlier denied set.
-        if hasattr(self.viewer, "_rbac_effective_perms"):
-            del self.viewer._rbac_effective_perms
+        for memo in ("_rbac_effective_perms", "_rbac_field_access"):
+            if hasattr(self.viewer, memo):
+                delattr(self.viewer, memo)
 
     def test_active_platform_employee_can_read_chart_without_rbac_permission(self):
         urls = (
@@ -153,11 +160,17 @@ class OrganogramAccessTests(TestCase):
         for private_field in (
             "date_of_birth", "personal_email", "residential_address",
             "nok_name", "bank_name", "account_name", "account_number",
-            "date_joined", "date_exited", "_stripped_fields",
+            "date_joined", "date_exited",
         ):
             self.assertNotIn(private_field, data)
 
     def test_owner_can_retrieve_their_full_profile_without_hr_permission(self):
+        """A staff member always reads their own bank details (decision D12).
+
+        Nobody has turned the switch on for them, and nothing needs to: the
+        person whose salary is paid into the account has to be able to check
+        it, and making that depend on a payroll permission would mean handing
+        everybody sight of everybody else's."""
         response = self.client.get(
             f"/v1/user/platform-staff-profiles/{self.viewer_profile.id}/",
         )
@@ -170,6 +183,9 @@ class OrganogramAccessTests(TestCase):
         self.assertEqual(data["bank_name"], "Owner Bank")
 
     def test_hr_permission_unlocks_full_profile_but_not_payroll(self):
+        """Being allowed to open a colleague's record is not being allowed to
+        read what they are paid into. The two are separate answers: one is a
+        permission on the endpoint, the other a switch on the field."""
         profile_url = f"/v1/user/platform-staff-profiles/{self.profile.id}/"
         assignments_url = "/v1/user/organogram/assignments/?page_size=100"
 
@@ -184,7 +200,8 @@ class OrganogramAccessTests(TestCase):
         self.assertEqual(data["personal_email"], "private@example.test")
         self.assertEqual(data["nok_name"], "Private Relative")
         self.assertNotIn("bank_name", data)
-        self.assertIn("bank_name", data["_stripped_fields"])
+        self.assertNotIn("_stripped_fields", data)
+        self.assertNotIn("Private Bank", response.content.decode())
 
         self.assertEqual(self.client.get(assignments_url).status_code, 200)
 
@@ -195,6 +212,38 @@ class OrganogramAccessTests(TestCase):
         self._grant("platform.organogram.view")
 
         self.assertEqual(self.client.get(url).status_code, 200)
+
+    def test_writing_a_colleagues_bank_details_is_refused_and_changes_nothing(self):
+        """A 403 that names the field, and the account is left as it was."""
+        self._grant("platform.staff_profile.view")
+        self._grant("platform.staff_profile.update")
+
+        response = self.client.patch(
+            f"/v1/user/platform-staff-profiles/{self.profile.id}/",
+            {"bank_name": "Rewritten Bank"}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 403, response.content)
+        self.assertEqual(response.json()["error"]["code"], "field_write_denied")
+        self.profile.refresh_from_db()
+        self.assertEqual(self.profile.bank_name, "Private Bank")
+
+    def test_a_staff_member_writes_their_own_bank_details_with_no_role_saying_so(self):
+        """Decision D12, the other half: the owner corrects their own account.
+
+        The switch is off for this person's role, and they still may, because
+        the record is about them. Somebody has to be able to fix the account
+        their own salary is paid into, and it is the self-service route they
+        do it on.
+        """
+        response = self.client.patch(
+            "/v1/user/platform-staff-profiles/me/",
+            {"bank_name": "Owner's New Bank"}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.viewer_profile.refresh_from_db()
+        self.assertEqual(self.viewer_profile.bank_name, "Owner's New Bank")
 
     def test_structure_writes_still_require_manage_permission(self):
         response = self.client.post(

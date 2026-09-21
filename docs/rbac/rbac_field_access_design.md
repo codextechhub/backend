@@ -60,6 +60,7 @@ Resource → the resource's permissions, each with a readable label.
 | D15 | **Managing Field Access is a restricted permission; viewing it is not.** Switch changes need no approval (D5), but *who may change switches* does. Adding `*.field_access.manage` to a role you hold goes through the role-change ladder, it cannot travel through a permission group, and nobody can assign a role carrying it without holding it. Otherwise a person who can only edit roles could grant themselves manage and open a sensitive field for their own role with nobody approving. `*.field_access.view` only shows switches, so it stays groupable. |
 | D16 | **Frontend Field Access tools also require the tenant's role-view key.** The role editor and one-person field exception picker both consume the role catalogue, so the UI opens only when the actor holds `*.roles.view` alongside the relevant Field Access or override key. The exception endpoints keep their override-key guards. Platform role readers may request a school's access catalogue when administering that school's user. |
 | D17 | **The Field Access frontend is committed to main, and reaches users with stage 3.** The Field Access screen, field exceptions and the permission tree picker are built on stages 1 and 2, but until stage 3 no screen follows a switch: an admin who turned Bank account number off for Storekeeper would see the save succeed while Storekeeper still sees every bank number. The code lands on main in each app; deployment is a manual step, so the screens reach users on the first deploy after it, which is meant to be the stage 3 release. |
+| D18 | **Ten write abilities end at the switch-over, not one.** Where a key gates only reading and the value is written behind the endpoint's own key, a role can change a number it cannot see. Write implies Read (D10), so those writes end: four payroll-line figures, three salary figures, a bank account number, an import batch file and three staff bank fields. A role that genuinely needs one is given sight of the field, which is a switch. Owner decision, 2026-09-21. |
 
 Fields already known to need D14 when S3 builds it: a pupil's enrolment date,
 and any staff or guardian detail a create path requires while the update path
@@ -296,7 +297,11 @@ class VendorSerializer(FieldAccessMixin, serializers.ModelSerializer):
   message, so a refusal reveals nothing beyond what the caller already sees.
 - **Echoed values**: on update, a read-only field whose submitted value equals the
   stored value is dropped, not refused, so a form that sends the whole object back
-  does not fail. On create, an empty or null value is dropped; anything else is refused,
+  does not fail. That leniency belongs to a caller who may **read** the field. For a
+  hidden field an equal value is refused like any other, because "equal is accepted,
+  different is refused" answers the question hiding the field exists to keep
+  unanswered: Mr. Bello could read Ade Stationers' bank account number a digit at a
+  time from his browser console. On create, an empty or null value is dropped; anything else is refused,
   unless the field is declared open on create (D14), in which case any value is
   accepted at creation and the Write switch governs only later changes.
 - **Nested serializers** inherit the request context, so `contacts` inside a vendor
@@ -532,9 +537,17 @@ marked below.
 | `platform.tasks.view_sensitive` | not a field: raw tracebacks, audited per read | kept as a permission |
 | `exports.sensitive_field.export` | not a field: see 8.3 | kept |
 
-\* **Deliberate tightening.** Today a role with `finance.bankaccount.update` but not
-`view_sensitive` can overwrite an account number it cannot see. After conversion it
-cannot (D10). Every other row preserves access exactly. Each mapping is re-verified
+\* **Deliberate tightening, ten fields (D18).** Several keys gate only reading, while
+the value is written on a path that asks for the endpoint's own key, so a role can
+change a number it cannot see. Write implies Read (D10, and a database check), so
+that stops being expressible. The ten: four payroll-line figures, three employee
+salary figures, a finance bank account number, an import batch file, and the three
+platform staff bank fields, where a role can hold `staff_payroll.manage` without
+`.view`. Bright Star's payroll clerk types a gross salary today against a blank
+column and will not afterwards. Every one is listed with its reason in
+`vs_rbac.field_conversion.ACCEPTED_DIFFERENCES`, and the verification command
+prints what it forgave rather than skipping it. Every other row preserves access
+exactly. Each mapping is re-verified
 against the serializer and view code while building, and resource slugs are
 confirmed against the permission seeds.
 

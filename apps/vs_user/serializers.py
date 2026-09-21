@@ -18,7 +18,7 @@ from rest_framework_simplejwt.serializers import (
 
 from core.media import signed_url
 from vs_rbac.models import TenantRoleTemplate
-from vs_rbac.fls import FieldSecurityMixin
+from vs_rbac.field_enforcement import FieldAccessMixin
 from vs_tenants.references import resolve_branch_reference
 from vs_tenants.models import Tenant
 from .email_normalization import normalize_email
@@ -108,7 +108,30 @@ def _raise_password_error(exc: DjangoValidationError):
 # User serializers
 # =============================================================================
 
-class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
+def _is_own_account(account, user) -> bool:
+    """Whether *account* is the person reading it."""
+    return getattr(account, 'pk', None) == getattr(user, 'pk', None)
+
+
+class UserReadSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One account as an administrator reads it.
+
+    Account security and invitation facts are the registered fields of
+    ``platform.team``. The server records every one of them, so none is
+    writable and the switch decides only who may read them. Nothing here is a
+    form, so the payload names no read-only fields: there is nothing a client
+    could grey that it is not already forbidden to send.
+
+    A person always reads their own account in full. When somebody last signed
+    in, when their password last changed and who invited them are facts about
+    the reader, shown on their own security screen and carried in the payload
+    they are handed at login, and a switch meant to decide who may inspect
+    other people's accounts must not take a person's own away from them.
+    """
+
+    field_resource = "platform.team"
+    owner_rule = staticmethod(_is_own_account)
+
     full_name        = serializers.SerializerMethodField()
     tenant_slug = serializers.CharField(source='tenant.slug', read_only=True)
     tenant_name = serializers.CharField(source='tenant.name', read_only=True)
@@ -116,15 +139,6 @@ class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     invited_by_name  = serializers.SerializerMethodField()
     position_id      = serializers.SerializerMethodField()
     position_title   = serializers.SerializerMethodField()
-
-    # Security-sensitive fields: only platform staff with team-management
-    # access should see account security metadata for other users.
-    read_permissions = {
-        'password_changed_at': 'platform.team.view',
-        'last_login_at':       'platform.team.view',
-        'invited_by_id':       'platform.team.view',
-        'invited_by_name':     'platform.team.view',
-    }
 
     class Meta:
         model  = User
@@ -172,7 +186,18 @@ class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         return profile.position.title if profile and profile.position_id else None
 
 
-class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
+class UserListSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One account as a row of the console's user list.
+
+    A list row, so it carries no ``_read_only_fields``: nothing on this
+    surface is editable, and the names it withholds are the same registered
+    fields of ``platform.team`` the detail response withholds, on the same
+    terms, a person's own row included.
+    """
+
+    field_resource = "platform.team"
+    owner_rule = staticmethod(_is_own_account)
+
     full_name    = serializers.SerializerMethodField()
     role          = serializers.SerializerMethodField()
     # Derived from the user's tenant school profile (None for platform users).
@@ -188,12 +213,6 @@ class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     invited_by_name         = serializers.SerializerMethodField()
     invitation_email_status = serializers.SerializerMethodField()
     invitation_expires_at   = serializers.SerializerMethodField()
-
-    read_permissions = {
-        'invited_by_name':       'platform.team.view',
-        'invitation_email_status': 'platform.team.view',
-        'invitation_expires_at':   'platform.team.view',
-    }
 
     class Meta:
         model  = User
@@ -827,13 +846,6 @@ class MyPasswordResetSerializer(serializers.ModelSerializer):
 # PlatformStaffProfile
 # =============================================================================
 
-# Payroll/bank fields are gated by these keys via FLS. Kept as module-level
-# constants so the viewset can reuse them when deciding self-service exposure.
-STAFF_PAYROLL_READ_PERM  = 'platform.staff_payroll.view'
-STAFF_PAYROLL_WRITE_PERM = 'platform.staff_payroll.manage'
-STAFF_PAYROLL_FIELDS     = ('bank_name', 'account_name', 'account_number')
-
-
 class OrgNodeInlineSerializer(serializers.ModelSerializer):
     """Minimal nested org-node representation for related objects."""
 
@@ -903,41 +915,27 @@ class PlatformStaffProfileBriefSerializer(serializers.ModelSerializer):
         return 'brief'
 
 
-class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerializer):
+def _profile_belongs_to(profile, user) -> bool:
+    """Whether *profile* is the staff record *user* is the subject of."""
+    return getattr(profile, 'user_id', None) == getattr(user, 'id', None)
+
+
+class PlatformStaffProfileSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """
-    Full CX-staff profile. Bank/payroll fields are stripped on read and
-    rejected on write unless the caller holds the matching payroll permission
-    (see FieldSecurityMixin in vs_rbac.fls).
+    Full CX-staff profile. The payroll bank fields are the registered fields of
+    ``platform.staff_profile``: a caller whose roles cannot read one gets the
+    profile without it, and one who cannot write it is refused with 403.
+
+    A staff member always reads and writes their own bank details, whatever
+    their roles say. Somebody has to be able to correct the account their own
+    salary is paid into, and making that depend on a payroll permission would
+    mean either granting every member of staff sight of everybody's account or
+    leaving them unable to fix their own.
     """
 
-    read_permissions  = {f: STAFF_PAYROLL_READ_PERM  for f in STAFF_PAYROLL_FIELDS}
-    write_permissions = {f: STAFF_PAYROLL_WRITE_PERM for f in STAFF_PAYROLL_FIELDS}
-
-    # ── FLS owner exception ───────────────────────────────────────────────────
-    # A staff member can always read and write their own payroll fields,
-    # regardless of whether they hold the platform.staff_payroll.* permissions.
-
-    def _request_user_owns(self, obj) -> bool:
-        request = self.context.get('request')
-        user = getattr(request, 'user', None)
-        return bool(
-            obj is not None and user is not None
-            and getattr(obj, 'user_id', None) == getattr(user, 'id', None)
-        )
-
-    def to_representation(self, instance):
-        self._fls_is_owner = self._request_user_owns(instance)
-        return super().to_representation(instance)
-
-    def _can_read(self, field, user_perms):
-        if getattr(self, '_fls_is_owner', False) and field in STAFF_PAYROLL_FIELDS:
-            return True
-        return super()._can_read(field, user_perms)
-
-    def _can_write(self, field, user_perms):
-        if field in STAFF_PAYROLL_FIELDS and self._request_user_owns(self.instance):
-            return True
-        return super()._can_write(field, user_perms)
+    field_resource = "platform.staff_profile"
+    field_access_detail = True
+    owner_rule = staticmethod(_profile_belongs_to)
 
     user            = UserInlineSerializer(read_only=True)
     user_id         = serializers.PrimaryKeyRelatedField(

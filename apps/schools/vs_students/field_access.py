@@ -4,7 +4,10 @@ Blood group, allergies and conditions are hidden from a caller without
 ``school.students.view_sensitive`` and refused on write for the same caller,
 whether the write is an edit or an enrolment.
 The enrolment date is readable by everybody who can open the record, and only
-changing it needs ``school.students.manage``, so it is not sensitive.
+changing it needs ``school.students.manage``, so it is not sensitive. It is
+declared open on create for the same reason: whoever enrols the pupil, by form
+or by spreadsheet, sets the date they enrolled on, and the write switch decides
+only who may correct it afterwards.
 
 A guardian's contact details are not sensitive either. Nothing withholds them
 today: every caller who may open a student or the guardian directory reads the
@@ -41,7 +44,7 @@ def register():
             FieldSpec("conditions", "Medical conditions", group="Medical",
                       sensitive=True, scope=_TENANT, sort_order=30),
             FieldSpec("enrolment_date", "Enrolment date", group="Enrolment",
-                      scope=_TENANT, sort_order=10),
+                      scope=_TENANT, sort_order=10, open_on_create=True),
         ),
     )
     register_fields(

@@ -594,6 +594,84 @@ class ExportRunTests(_ExportFixture, TestCase):
         self.assertFalse(ExportFile.objects.filter(run=run).exists())
 
 
+class FieldAccessGatesAColumnTests(_ExportFixture, TestCase):
+    """A file is not the way round a switch that hides a value on screen.
+
+    Two gates decide a restricted column, and they answer different questions.
+    ``exports.sensitive_field.export`` decides whether restricted data may
+    leave in a file at all. Field Access decides whether this caller may see
+    the column anywhere. Both tests here give the caller the first gate, so
+    what is being proved is the second one on its own.
+    """
+
+    DATASET = "procurement.vendors"
+    BANK_COLUMN = "bank_account_number"
+    BANK_FIELD = "procurement.vendor.bank_account_number"
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import install_declared_fields
+
+        self.build()
+        call_command("seed_procurement_permissions", verbosity=0)
+        self.field_keys = install_declared_fields("procurement.vendor")
+        self.buyer = self._user("buyer@test.com", role="exports_buyer", keys=[
+            ExportPermission.CATALOGUE_VIEW, ExportPermission.RUN_CREATE,
+            ExportPermission.RUN_VIEW, ExportPermission.SENSITIVE_EXPORT,
+            "procurement.vendor.view",
+        ])
+
+    def _open_the_bank_column(self):
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_rbac.tests.helpers import set_field_access
+
+        role = TenantRoleTemplate.objects.get(tenant=self.tenant, key="exports_buyer")
+        set_field_access(role, *self.field_keys, read=True, write=False)
+
+    def _catalogue_columns(self, user):
+        dataset = get_dataset(self.DATASET)
+        described = dataset.describe(
+            include_sensitive=True, readable=engine.readable_fields(user, self.tenant),
+        )
+        return {column["id"] for column in described["fields"]}
+
+    def test_the_builder_never_offers_a_column_the_caller_cannot_read(self):
+        self.assertNotIn(self.BANK_COLUMN, self._catalogue_columns(self.buyer))
+
+    def test_the_builder_offers_it_once_the_switch_is_on(self):
+        self._open_the_bank_column()
+        self.assertIn(
+            self.BANK_COLUMN,
+            self._catalogue_columns(User.objects.get(pk=self.buyer.pk)),
+        )
+
+    def test_the_file_leaves_the_column_out_and_says_why(self):
+        """Asked for anyway, it is omitted with a reason rather than written."""
+        dataset = get_dataset(self.DATASET)
+        fields, omissions = engine.resolve_columns(
+            self.buyer, dataset, ["code", "name", self.BANK_COLUMN], self.tenant,
+        )
+        self.assertNotIn(self.BANK_COLUMN, [f.id for f in fields])
+        self.assertEqual(
+            [o.code for o in omissions], [OmissionCode.FIELD_FORBIDDEN],
+        )
+        self.assertIn("Bank account number", omissions[0].items)
+
+    def test_the_file_carries_the_column_once_the_switch_is_on(self):
+        self._open_the_bank_column()
+        dataset = get_dataset(self.DATASET)
+        fields, omissions = engine.resolve_columns(
+            User.objects.get(pk=self.buyer.pk), dataset,
+            ["code", "name", self.BANK_COLUMN], self.tenant,
+        )
+        self.assertIn(self.BANK_COLUMN, [f.id for f in fields])
+        self.assertEqual(omissions, [])
+
+    def test_the_export_key_alone_does_not_open_a_hidden_column(self):
+        """The two gates are separate answers, and both have to be yes."""
+        self.assertTrue(engine.may_export_sensitive(self.buyer, self.tenant))
+        self.assertNotIn(self.BANK_COLUMN, self._catalogue_columns(self.buyer))
+
+
 class ExportOmissionAndFailureTests(_ExportFixture, TestCase):
     """The states the design cares most about: partly complete, and failed."""
 

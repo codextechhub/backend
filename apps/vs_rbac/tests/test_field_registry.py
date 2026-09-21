@@ -1,11 +1,20 @@
-"""The field registry agrees with the code that guards fields today.
+"""The field registry agrees with the code that enforces it.
 
-Field Access replaces per-serializer permission maps with a registry an
+Field Access replaced per-serializer permission maps with a registry an
 administrator can see. That only works if the registry names exactly what the
-serializers guard: a guarded field left out of it is a field nobody can open,
-and a declared field no serializer emits is a switch that changes nothing.
-These tests lock the registry to the code in both directions, and pin the
-behaviour of ``sync_field_registry``, which writes it to the database.
+code enforces: a field the conversion turns into a switch with no declaration
+behind it is a field nobody can open, and a declared field no serializer emits
+is a switch that changes nothing.
+
+What each field used to be guarded by is no longer readable off a serializer,
+so these tests read it from :mod:`vs_rbac.field_conversion`, the written
+record of which key decided which field before the switches took over. The
+conversion is the reason a field's ``sensitive`` flag has to match it exactly:
+sensitive means closed by default, so a field that nothing used to hide must
+not be sensitive, and one that a key did hide must be.
+
+They lock the registry to the code in both directions, and pin the behaviour
+of ``sync_field_registry``, which writes it to the database.
 """
 import importlib
 import pkgutil
@@ -28,7 +37,8 @@ from vs_rbac.field_registry import (
     get_declaration,
     register_fields,
 )
-from vs_rbac.fls import FieldSecurityMixin
+from vs_rbac.field_conversion import READ, WRITE, CONVERSIONS
+from vs_rbac.field_enforcement import FieldAccessMixin
 from vs_rbac.models import (
     FieldDefinition,
     Permission,
@@ -103,13 +113,37 @@ WRITE_PATH_ALLOWLIST = {
 }
 
 
-def _guard_maps(cls):
-    """The old mixin's read and write maps, empty for a serializer without it.
+#: Declared surfaces that enforce nothing themselves, and why that is right.
+#:
+#: A surface normally carries :class:`FieldAccessMixin`, because a declared
+#: field that no surface enforces is a switch an administrator can turn off
+#: while every screen keeps showing the value. The one exception is a
+#: serializer that carries the fields only by nesting the serializer that does
+#: enforce them.
+NESTING_ONLY_SURFACES = {
+    "schools.vs_students.serializers.GuardianLinkSerializer":
+        "It carries a guardian's details only by nesting GuardianSerializer, "
+        "which DRF hands the root context and which is filtered as its own "
+        "resource. The link's own fields are the relationship and the primary "
+        "flag, and neither is registered.",
+}
 
-    A field nothing withholds today is declared on an ordinary serializer, so a
-    surface no longer has to carry the mixin to be a surface.
+
+def _converted(access):
+    """Every registry key a permission key gated *access* on before conversion.
+
+    :data:`vs_rbac.field_conversion.CONVERSIONS` is the written record of what
+    each key decided in the code it replaced, checked field by field when it
+    was written. It is what these tests compare the registry against now that
+    no serializer carries a key map: a field that was read-guarded must still
+    be declared sensitive, and one the conversion never touched must not be.
     """
-    return getattr(cls, "read_permissions", {}), getattr(cls, "write_permissions", {})
+    return {
+        key
+        for conversion in CONVERSIONS
+        if access in conversion.gates
+        for key in conversion.fields
+    }
 
 
 def _surface(path):
@@ -131,8 +165,8 @@ def _vendor_view_fields():
     return set(_SENSITIVE_VENDOR_FIELDS)
 
 
-def _all_field_security_serializers():
-    """Every production serializer that guards a field with the old mixin."""
+def _all_enforcing_serializers():
+    """Every production serializer that enforces Field Access."""
     for app in django_apps.get_app_configs():
         name = f"{app.name}.serializers"
         try:
@@ -146,12 +180,11 @@ def _all_field_security_serializers():
             yield sub
             yield from walk(sub)
 
-    for cls in set(walk(FieldSecurityMixin)):
+    for cls in set(walk(FieldAccessMixin)):
         parts = cls.__module__.split(".")
         if any(part == "tests" or part.startswith("test") for part in parts):
             continue
-        if cls.read_permissions or cls.write_permissions:
-            yield cls
+        yield cls
 
 
 class RegistryMatchesTheSerializersTests(SimpleTestCase):
@@ -172,41 +205,93 @@ class RegistryMatchesTheSerializersTests(SimpleTestCase):
                     with self.subTest(key=declaration.key_for(spec), api_name=api_name):
                         self.assertIn(api_name, emitted)
 
-    def test_every_guarded_name_on_a_surface_is_registered(self):
-        """A guarded field the registry forgets would be closed to everybody."""
-        for declaration in all_declarations():
-            registered = _api_names(declaration)
-            for path in declaration.surfaces:
-                read_map, write_map = _guard_maps(_surface(path))
-                guarded = set(read_map) | set(write_map)
-                with self.subTest(surface=path):
-                    self.assertEqual(guarded - registered, set())
+    def test_every_converted_field_is_registered(self):
+        """A converted field the registry forgot would be closed to everybody.
+
+        The conversion writes a switch per field named in ``CONVERSIONS``. A
+        name there with no declaration behind it would produce a switch on a
+        field nothing enforces, and a role that lost the key would simply lose
+        the data.
+        """
+        registered = {
+            declaration.key_for(spec)
+            for declaration in all_declarations()
+            for spec in declaration.fields
+        }
+        converted = _converted(READ) | _converted(WRITE)
+        self.assertEqual(converted - registered, set())
 
     def test_the_vendor_views_hand_written_guard_is_registered(self):
         vendor = get_declaration("procurement", "vendor")
         self.assertEqual(_vendor_view_fields() - _api_names(vendor), set())
 
-    def test_every_serializer_using_the_old_mixin_is_a_declared_surface(self):
-        declared = {path for d in all_declarations() for path in d.surfaces}
-        for cls in _all_field_security_serializers():
+    def test_every_enforcing_serializer_is_a_declared_surface(self):
+        """A surface enforcing a resource is one the declaration names.
+
+        Both directions matter. A serializer enforcing ``school.students``
+        that the declaration does not list is a surface nobody checked the
+        names of, and a declaration listing a serializer that enforces some
+        other resource has been pointed at the wrong code.
+        """
+        by_path = {
+            path: (d.module, d.resource)
+            for d in all_declarations() for path in d.surfaces
+        }
+        for cls in _all_enforcing_serializers():
             path = f"{cls.__module__}.{cls.__qualname__}"
             with self.subTest(serializer=path):
-                self.assertIn(path, declared)
+                self.assertIn(path, by_path)
+                module, resource = by_path[path]
+                self.assertEqual(cls.field_resource, f"{module}.{resource}")
 
-    def test_sensitive_means_hidden_today(self):
-        """Read-guarded fields are sensitive; write-only guarded ones are not."""
+    def test_every_declared_surface_enforces_the_resource_that_names_it(self):
+        """A switch that no surface reads would change nothing on any screen.
+
+        This is the direction that catches the gap rather than the mistake: a
+        resource can be declared, synced, shown in the catalogue and switched
+        off by an administrator, and every screen keep printing the value,
+        because nobody put the mixin on the serializer.
+        """
         for declaration in all_declarations():
-            read_maps = [_guard_maps(_surface(path))[0] for path in declaration.surfaces]
+            resource = f"{declaration.module}.{declaration.resource}"
+            for path in declaration.surfaces:
+                with self.subTest(surface=path):
+                    if path in NESTING_ONLY_SURFACES:
+                        continue
+                    cls = _surface(path)
+                    self.assertTrue(
+                        issubclass(cls, FieldAccessMixin),
+                        f"{path} is a declared surface of {resource} and "
+                        f"enforces nothing.",
+                    )
+                    self.assertEqual(cls.field_resource, resource)
+
+    def test_every_alias_names_a_registered_field(self):
+        """An alias pointing at nothing would silently enforce nothing."""
+        declared = {
+            (d.module, d.resource): _api_names(d) for d in all_declarations()
+        }
+        for cls in _all_enforcing_serializers():
+            module, _, resource = cls.field_resource.partition(".")
+            for own_name, registry_name in (cls.field_aliases or {}).items():
+                with self.subTest(serializer=cls.__qualname__, alias=own_name):
+                    self.assertIn(registry_name, declared[(module, resource)])
+
+    def test_sensitive_means_the_old_key_hid_it(self):
+        """Read-guarded fields are sensitive; write-only guarded ones are not.
+
+        The default a field starts from is the whole of what release day does
+        to a role that holds no switch row: a sensitive field starts closed,
+        so declaring one sensitive that nothing hid would take it away from
+        everybody, and declaring one open that a key hid would hand it to
+        everybody.
+        """
+        hidden_before = _converted(READ)
+        for declaration in all_declarations():
             for spec in declaration.fields:
-                hidden = any(
-                    api_name in read_map
-                    for read_map in read_maps
-                    for api_name in spec.resolved_api_names
-                )
-                if (declaration.module, declaration.resource) == ("procurement", "vendor"):
-                    hidden = hidden or spec.name in _vendor_view_fields()
-                with self.subTest(key=declaration.key_for(spec)):
-                    self.assertEqual(spec.sensitive, hidden)
+                key = declaration.key_for(spec)
+                with self.subTest(key=key):
+                    self.assertEqual(spec.sensitive, key in hidden_before)
 
     def test_every_export_link_names_a_registered_field_of_the_same_sensitivity(self):
         registry = {
@@ -257,16 +342,19 @@ def _serializers_owned_by(app):
 
 
 class EveryWritePathIsKnownTests(SimpleTestCase):
-    """A second route into a registered field cannot arrive without its rule.
+    """A second route into a registered field cannot arrive unenforced.
 
-    A field's write rule binds only the serializer that declares it, so a
-    second serializer writing the same field has no rule unless someone copies
-    it. For each declaration, every serializer in the app owning its surfaces
-    is scanned: a ``ModelSerializer`` when its model is a surface's model, a
-    plain ``Serializer`` by field name. A non-read-only field named like a
-    registered writable field must carry a key a surface already guards that
-    name with. Where no surface guards the name, the serializer must at least
-    be a declared surface.
+    Enforcement binds only the serializer that declares the resource, so a
+    second serializer writing the same field enforces nothing unless somebody
+    declares it too. For each declaration, every serializer in the app owning
+    its surfaces is scanned: a ``ModelSerializer`` when its model is a
+    surface's model, a plain ``Serializer`` by field name. A non-read-only
+    field named like a registered writable field must belong to a declared
+    surface, or sit on the allowlist with a one-line reason.
+
+    This is the check that finds the shape the enrolment form had: a medical
+    value accepted on the way in by a serializer nobody had given the rule to,
+    while the edit form refused the same value.
     """
 
     def test_every_serializer_that_can_write_a_registered_field_is_known(self):
@@ -281,10 +369,6 @@ class EveryWritePathIsKnownTests(SimpleTestCase):
             models = {
                 getattr(getattr(cls, "Meta", None), "model", None) for cls in surfaces
             } - {None}
-            rules = {}
-            for cls in surfaces:
-                for name, key in getattr(cls, "write_permissions", {}).items():
-                    rules.setdefault(name, set()).add(key)
             owners = {
                 django_apps.get_containing_app_config(path.rsplit(".", 1)[0])
                 for path in declaration.surfaces
@@ -298,10 +382,6 @@ class EveryWritePathIsKnownTests(SimpleTestCase):
                     ) not in models:
                         continue
                     path = f"{cls.__module__}.{cls.__qualname__}"
-                    guards = (
-                        cls.write_permissions
-                        if issubclass(cls, FieldSecurityMixin) else {}
-                    )
                     for name, field in cls(context={}).fields.items():
                         if field.read_only or name not in writable:
                             continue
@@ -309,18 +389,12 @@ class EveryWritePathIsKnownTests(SimpleTestCase):
                         if (path, name) in WRITE_PATH_ALLOWLIST:
                             continue
                         with self.subTest(serializer=path, field=name):
-                            if name in rules:
-                                self.assertIn(
-                                    guards.get(name), rules[name],
-                                    f"{path} can write '{name}' without "
-                                    f"{sorted(rules[name])}.",
-                                )
-                            else:
-                                self.assertIn(
-                                    path, declaration.surfaces,
-                                    f"{path} can write '{name}' and is neither "
-                                    f"guarded nor a declared surface.",
-                                )
+                            self.assertIn(
+                                path, declaration.surfaces,
+                                f"{path} can write '{name}' and is not a "
+                                f"declared surface of "
+                                f"{declaration.module}.{declaration.resource}.",
+                            )
         self.assertEqual(set(WRITE_PATH_ALLOWLIST) - seen, set())
 
 
@@ -377,30 +451,23 @@ class RegistryScopeMatchesTheGuardingKeyTests(TestCase):
         call_command("sync_field_registry", stdout=StringIO())
 
     def _guards(self):
-        """``(module, resource, api_name, permission_key)`` for every guard in the code.
+        """``(field_key, permission_key)`` for every field a key used to decide.
 
-        A field withheld per caller yields the key that withholds it. A field
-        nothing withholds yields the key guarding the endpoint it travels on,
-        named in :data:`ENDPOINT_GUARDED_RESOURCES`, which is what decides its
-        scope.
+        A field a key withheld per caller yields that key, from the conversion
+        table. A field nothing withheld yields the key guarding the endpoint it
+        travels on, named in :data:`ENDPOINT_GUARDED_RESOURCES`, which is what
+        decides its scope.
         """
+        for conversion in CONVERSIONS:
+            for field_key in conversion.fields:
+                yield field_key, conversion.key
         for declaration in all_declarations():
-            for path in declaration.surfaces:
-                for mapping in _guard_maps(_surface(path)):
-                    for api_name, key in mapping.items():
-                        yield declaration.module, declaration.resource, api_name, key
             endpoint_key = ENDPOINT_GUARDED_RESOURCES.get(
                 (declaration.module, declaration.resource),
             )
             if endpoint_key:
                 for spec in declaration.fields:
-                    for api_name in spec.resolved_api_names:
-                        yield (
-                            declaration.module, declaration.resource,
-                            api_name, endpoint_key,
-                        )
-        for api_name in _vendor_view_fields():
-            yield "procurement", "vendor", api_name, "procurement.vendor.view_sensitive"
+                    yield declaration.key_for(spec), endpoint_key
 
     def test_the_real_registry_syncs_against_the_seeded_tree(self):
         declared = sum(len(d.fields) for d in all_declarations())
@@ -441,21 +508,15 @@ class RegistryScopeMatchesTheGuardingKeyTests(TestCase):
 
     def test_every_field_scope_equals_its_guarding_keys_scope(self):
         scopes = dict(Permission.objects.values_list("key", "scope"))
-        rows = list(FieldDefinition.objects.select_related("resource"))
+        rows = {row.key: row for row in FieldDefinition.objects.select_related("resource")}
         guarded = set()
-        for module, resource, api_name, key in self._guards():
-            matches = [
-                row for row in rows
-                if row.resource.module_id == module
-                and row.resource.name == resource
-                and api_name in row.api_names
-            ]
-            with self.subTest(api_name=f"{module}.{resource}.{api_name}", guard=key):
-                self.assertEqual(len(matches), 1)
+        for field_key, key in self._guards():
+            with self.subTest(field=field_key, guard=key):
+                self.assertIn(field_key, rows)
                 self.assertIn(key, scopes, "the guarding key is not seeded")
-                self.assertEqual(matches[0].scope, scopes[key])
-                guarded.add(matches[0].key)
-        self.assertEqual(guarded, {row.key for row in rows})
+                self.assertEqual(rows[field_key].scope, scopes[key])
+                guarded.add(field_key)
+        self.assertEqual(guarded, set(rows))
 
 
 def _declaration(*fields, module="testfields", resource="gadget"):

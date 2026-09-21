@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from vs_rbac.field_enforcement import FieldAccessMixin
+
 from .constants import (
     DocumentType,
     EmploymentStatus,
@@ -98,14 +100,21 @@ STAFF_LIST_PREFETCH = (
 )
 
 
-class StaffListSerializer(serializers.ModelSerializer):
+class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """One row of the directory.
 
     Carries the teaching load and an account flag, which are the two facts a row
     cannot be read without: a count of assignments says whether somebody teaches
     without anybody having to claim they are a teacher, and the flag is how
     somebody reads as employed and locked at once.
+
+    A staff member's own date of birth, gender, phone number and email are the
+    registered fields of ``school.teachers``, so a school decides per role who
+    reads them. A row of a list names no read-only fields; the record behind it
+    does.
     """
+
+    field_resource = "school.teachers"
 
     full_name = serializers.SerializerMethodField()
     email = serializers.EmailField(source="user.email", read_only=True)
@@ -506,7 +515,13 @@ class TeachingWriteSerializer(serializers.Serializer):
 
 
 class StaffDetailSerializer(StaffListSerializer):
-    """One person's record, with the account beside it rather than inside it."""
+    """One person's record, with the account beside it rather than inside it.
+
+    A detail response, so it names the registered fields the caller may read
+    and not change, for the edit drawer to grey.
+    """
+
+    field_access_detail = True
 
     account = serializers.SerializerMethodField()
     middle_name = serializers.CharField(read_only=True)
@@ -593,14 +608,20 @@ class StaffDetailSerializer(StaffListSerializer):
         }
 
 
-class StaffUpdateSerializer(serializers.ModelSerializer):
+class StaffUpdateSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """What an administrator may change on a record.
 
     ``employment_status`` is absent: it moves only through the lifecycle
     service, which is the only place that also does the right thing to the
     account. The email is absent too, because changing an account's address is a
     different key on a different endpoint.
+
+    The personal details it does carry are registered fields, so a role whose
+    Write switch does not reach one is refused with 403 rather than quietly
+    saving it.
     """
+
+    field_resource = "school.teachers"
 
     branch = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     phone = serializers.CharField(required=False, allow_blank=True)
@@ -629,14 +650,21 @@ SELF_EDITABLE_FIELDS = frozenset({
 })
 
 
-class StaffCreateSerializer(serializers.Serializer):
+class StaffCreateSerializer(FieldAccessMixin, serializers.Serializer):
     """The Add screen, in one payload.
 
     Wraps ``UserCreateSerializer``'s fields rather than replacing them: the
     account half is validated by the platform's own serializer inside the view,
     and what is declared here is the staff half plus the three child collections
     the form carries.
+
+    The address a new account signs in with is declared open on create, so a
+    role that may add a member of staff can still send it; every other
+    registered detail here is governed by its Write switch on this path as on
+    the edit form.
     """
+
+    field_resource = "school.teachers"
 
     # Account half, passed through to UserCreateSerializer.
     first_name = serializers.CharField(max_length=100)

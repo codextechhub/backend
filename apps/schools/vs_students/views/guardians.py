@@ -108,7 +108,10 @@ class StudentGuardiansView(StudentsViewMixin, APIView):
     @transaction.atomic
     def post(self, request, pk):
         student = self.student(pk)
-        writer = GuardianWriteSerializer(data=request.data)
+        # The request rides in, or the field guard has no caller to judge.
+        writer = GuardianWriteSerializer(
+            data=request.data, context=self.get_serializer_context(),
+        )
         writer.is_valid(raise_exception=True)
         data = writer.validated_data
 
@@ -300,14 +303,19 @@ class GuardianDetailView(StudentsViewMixin, APIView):
         elsewhere.
         """
         guardian = self.guardian(pk)
-        writer = GuardianUpdateSerializer(data=request.data, partial=True)
+        # The record and the request both ride in, or the field guard has
+        # neither a caller to judge nor a stored value to recognise an echo by.
+        writer = GuardianUpdateSerializer(
+            guardian, data=request.data, partial=True,
+            context={"request": request},
+        )
         writer.is_valid(raise_exception=True)
         guardian, changed = guardian_service.update_guardian(
             guardian, actor=request.user, **writer.validated_data,
         )
         return success_response(
             f"{guardian.full_name} updated." if changed else "Nothing to change.",
-            data=GuardianSerializer(guardian).data,
+            data=GuardianSerializer(guardian, context={"request": request}).data,
         )
 
     def get(self, request, pk):

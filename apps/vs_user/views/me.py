@@ -48,6 +48,7 @@ class CurrentUserView(APIView):
 
     def get(self, request):
         from vs_rbac.evaluator import get_effective_permissions
+        from vs_rbac.field_enforcement import field_access_payload
         from vs_tenants.context import tenant_context_block
         # request.tenant is bound by TenantJWTAuthentication; fall back to the
         # user's home tenant for auth paths that bypass it (e.g. force_authenticate).
@@ -56,14 +57,17 @@ class CurrentUserView(APIView):
             get_effective_permissions(request.user, tenant=tenant)
         )
         data = {
-            "user": UserReadSerializer(request.user).data,
-            # Same builder as the login response: the console skips its
+            "user": UserReadSerializer(request.user, context={"request": request}).data,
+            # Same builders as the login response: the console skips its
             # /me sync straight after a login, so the two must not drift.
             "tenant": tenant_context_block(tenant),
             "school": school_public_info(
                 getattr(tenant, "school_profile", None), request, user=request.user,
             ),
             "permissions": permissions,
+            # What the screens may not show and may not offer to change, for
+            # the forms and columns that have no record to ask.
+            "field_access": field_access_payload(request.user, tenant),
         }
 
         # Browser reloads deliberately persist no proxy credential. Tell the

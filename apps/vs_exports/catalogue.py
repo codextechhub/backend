@@ -331,15 +331,24 @@ class Dataset:
         return tuple(f.id for f in self.filters if f.required)
 
     # Serialise for the catalogue endpoint.
-    def describe(self, *, include_sensitive: bool = True) -> dict:
+    def describe(self, *, include_sensitive: bool = True, readable=None) -> dict:
         """The catalogue shape the builder reads.
 
-        ``include_sensitive=False`` hides restricted fields from a caller who may not
-        export them, so the picker never offers a column that would be dropped at run
-        time.
+        Two gates, and they answer different questions. ``include_sensitive``
+        is whether restricted data may leave in a file at all, which is
+        ``exports.sensitive_field.export``. ``readable``, a predicate over a
+        column's Field Access key, is whether this caller may see the column
+        anywhere; a column they cannot read on the screen is not one they may
+        take away in a spreadsheet. Either gate closing hides the column, so
+        the picker never offers one that would be dropped at run time.
+
+        ``readable=None`` applies no Field Access gate, for a caller that has
+        already reduced the columns or has nobody to judge.
         """
         fields = [
-            f for f in self.fields if include_sensitive or not f.sensitive
+            f for f in self.fields
+            if (include_sensitive or not f.sensitive)
+            and (readable is None or not f.access or readable(f.access))
         ]
         return {
             "id": self.key,

@@ -225,6 +225,56 @@ def make_field_definition(key, label, **kwargs):
     )
 
 
+def install_declared_fields(*resources):
+    """Write the real declarations of ``module.resource`` to the database.
+
+    ``sync_field_registry`` runs in the deploy sequence, not in a migration, so
+    a test database carries no field rows and Field Access enforces nothing in
+    it: an unregistered field is readable and writable by design. A test that
+    wants a module's real switches asks for its resources by name here, and
+    gets exactly what the app declares in its ``field_access.py`` rather than a
+    stand-in that could drift from it.
+
+    Returns the keys written, so a caller can switch them on for a role.
+    """
+    from vs_rbac.field_registry import get_declaration
+    from vs_rbac.models import FieldDefinition
+
+    written = []
+    for resource in resources:
+        module_name, _, resource_name = resource.partition(".")
+        declaration = get_declaration(module_name, resource_name)
+        if declaration is None:
+            raise AssertionError(f"No app declares the fields of '{resource}'.")
+        for spec in declaration.fields:
+            key = declaration.key_for(spec)
+            if FieldDefinition.objects.filter(key=key).exists():
+                written.append(key)
+                continue
+            make_field_definition(
+                key, spec.label, group=spec.group, description=spec.description,
+                sensitive=spec.sensitive, writable=spec.writable, scope=spec.scope,
+                sort_order=spec.sort_order,
+                api_names=list(spec.resolved_api_names),
+                open_on_create=spec.open_on_create,
+            )
+            written.append(key)
+    return written
+
+
+def set_field_access(role, *keys, read=True, write=True):
+    """Turn Read and Write on or off for *role* over each registered *keys*."""
+    from vs_rbac.models import RoleFieldAccess
+
+    rows = []
+    for key in keys:
+        row, _ = RoleFieldAccess.objects.update_or_create(
+            role=role, field_id=key, defaults={"can_read": read, "can_write": write},
+        )
+        rows.append(row)
+    return rows
+
+
 def make_permission_set(*keys):
     return [make_permission(k) for k in keys]
 

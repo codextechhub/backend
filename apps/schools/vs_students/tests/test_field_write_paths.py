@@ -1,16 +1,24 @@
 """Every route that writes a student's restricted fields applies its rule.
 
-Blood group, allergies and conditions need ``school.students.view_sensitive``
-to write, whether the record is being created by enrolment or edited later.
-The enrolment date is different: a new pupil's date is set by whoever enrols
-them, through the enrol form or the spreadsheet import alike, and only
-changing it on an existing record needs ``school.students.manage``.
+Blood group, allergies and conditions are Field Access switches on
+``school.students``. A role whose Write switch does not reach them is refused,
+whether the record is being created by enrolment or edited later. The
+enrolment date is different: it is declared open on create, so a new pupil's
+date is set by whoever enrols them, through the enrol form or the spreadsheet
+import alike, and only changing it on an existing record asks the switch.
 
 Each rule is proven against both shapes of school: Brightfield with two
 branches and Sunrise with one. Creating a record, a blank medical value writes
 nothing and passes, because the enrol form posts every input whether it was
 touched or not. Editing one, a blank value erases what is stored, so it is
 refused like any other.
+
+A test database carries no Field Access registry, and an unregistered field is
+open to everybody, so the fixture installs the student declarations first and
+then sets each role's switches to what the conversion leaves it holding: the
+medical fields closed for everybody but the nurse, and the enrolment date
+readable by all three with Write off, which is what a role that did not hold
+``school.students.manage`` converts to.
 """
 from __future__ import annotations
 
@@ -26,15 +34,20 @@ from schools.vs_students.models import (
     StudentGuardian,
 )
 from vs_rbac.tests.helpers import (
+    install_declared_fields,
     make_assignment,
     make_role,
     make_role_permission,
     make_school_admin,
+    set_field_access,
 )
 
 from .test_import_export import _ImportFixture
 
 MEDICAL = ("blood_group", "allergies", "conditions")
+
+MEDICAL_KEYS = tuple(f"school.students.{name}" for name in MEDICAL)
+ENROLMENT_DATE_KEY = "school.students.enrolment_date"
 
 #: What an admissions officer holds: enrol and seat a child, nothing more.
 OFFICER_KEYS = (
@@ -48,12 +61,15 @@ OFFICER_KEYS = (
 class _WritePathFixture(_ImportFixture):
     """Three roles per school: an officer, a nurse-registrar and a clerk.
 
-    None of them holds ``school.students.manage``.
+    None of them may change an enrolment date once the record exists, which is
+    what a role without ``school.students.manage`` converts to. Only the nurse
+    reads and writes the medical fields.
     """
 
     @classmethod
     def setUpTestData(cls):
         super().setUpTestData()
+        install_declared_fields("school.students")
         tenant = cls.solo.tenant
         program = Program.all_objects.create(tenant=tenant, name="Primary", code="PRY")
         level = Level.all_objects.create(
@@ -68,19 +84,22 @@ class _WritePathFixture(_ImportFixture):
         for label, school in (("multi", cls.school), ("single", cls.solo)):
             cls.people[label] = {
                 "officer": cls._person(school, label, "officer", ()),
-                "nurse": cls._person(
-                    school, label, "nurse", ("school.students.view_sensitive",),
-                ),
+                "nurse": cls._person(school, label, "nurse", (), medical=True),
                 "clerk": cls._person(
                     school, label, "clerk", ("school.students.update",),
                 ),
             }
 
     @classmethod
-    def _person(cls, school, label, name, extra_keys):
+    def _person(cls, school, label, name, extra_keys, *, medical=False):
         role = make_role(school, name=f"{name.title()} {label}", key=f"{name}_{label}")
         for key in OFFICER_KEYS + tuple(extra_keys):
             make_role_permission(role, cls.permissions[key])
+        # Everybody reads when a pupil joined and nobody may rewrite it: the
+        # state a role without school.students.manage converts to.
+        set_field_access(role, ENROLMENT_DATE_KEY, read=True, write=False)
+        if medical:
+            set_field_access(role, *MEDICAL_KEYS, read=True, write=True)
         user = make_school_admin(
             None, email=f"{name}.{label}@write-paths.test", tenant=school.tenant,
         )
@@ -118,13 +137,18 @@ class _WritePathFixture(_ImportFixture):
         )
 
     def refused_fields(self, response):
-        """The field names a 400 response carries errors under, in ``error.detail``."""
+        """The field names a refusal carries errors under, in ``error.detail``."""
         detail = (response.data.get("error") or {}).get("detail")
         return set(detail) if isinstance(detail, dict) else set()
 
+    def assertFieldWriteDenied(self, response):
+        """A refused field write is a 403 that names the field, not a 400."""
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(response.data["error"]["code"], "field_write_denied")
+
 
 class EnrolmentMedicalFieldTests(_WritePathFixture):
-    def test_medical_values_without_the_key_are_refused_per_field_and_nothing_is_written(self):
+    def test_medical_values_without_the_switch_are_refused_per_field_and_nothing_is_written(self):
         """An admissions officer cannot type a pupil's allergies the nurse relies on."""
         for label, tenant, body in self.shapes():
             with self.subTest(school=label):
@@ -134,23 +158,23 @@ class EnrolmentMedicalFieldTests(_WritePathFixture):
                     blood_group="O+", allergies="No known allergies",
                     conditions="None",
                 ))
-                self.assertEqual(response.status_code, 400, response.data)
+                self.assertFieldWriteDenied(response)
                 self.assertTrue(
                     set(MEDICAL) <= self.refused_fields(response), response.data,
                 )
                 self.assertEqual(self.counts(tenant), before)
 
-    def test_one_medical_value_without_the_key_names_only_that_field(self):
+    def test_one_medical_value_without_the_switch_names_only_that_field(self):
         for label, tenant, body in self.shapes():
             with self.subTest(school=label):
                 officer = self.people[label]["officer"]
                 response = self.post(officer, "student-list", body(
                     allergies="Peanuts", blood_group="", conditions="",
                 ))
-                self.assertEqual(response.status_code, 400, response.data)
+                self.assertFieldWriteDenied(response)
                 self.assertEqual(self.refused_fields(response), {"allergies"})
 
-    def test_blank_or_absent_medical_values_without_the_key_enrol_with_the_fields_empty(self):
+    def test_blank_or_absent_medical_values_without_the_switch_enrol_with_the_fields_empty(self):
         for label, tenant, body in self.shapes():
             officer = self.people[label]["officer"]
             for case, extra in (
@@ -169,7 +193,7 @@ class EnrolmentMedicalFieldTests(_WritePathFixture):
                     for field in MEDICAL:
                         self.assertEqual(getattr(student, field), "")
 
-    def test_medical_values_with_the_key_are_saved(self):
+    def test_medical_values_with_the_switch_are_saved(self):
         for label, tenant, body in self.shapes():
             with self.subTest(school=label):
                 nurse = self.people[label]["nurse"]
@@ -184,8 +208,8 @@ class EnrolmentMedicalFieldTests(_WritePathFixture):
                     ("AB+", "Penicillin", "Asthma"),
                 )
 
-    def test_a_nurse_without_manage_enrols_with_medical_values_and_a_chosen_date(self):
-        """The medical key is all enrolment asks for; manage never enters into it."""
+    def test_a_nurse_without_the_date_switch_enrols_with_medical_values_and_a_chosen_date(self):
+        """The medical switch is all enrolment asks for; the date is open on create."""
         for label, tenant, body in self.shapes():
             with self.subTest(school=label):
                 nurse = self.people[label]["nurse"]
@@ -202,9 +226,9 @@ class EnrolmentMedicalFieldTests(_WritePathFixture):
 
 
 class EnrolmentDateTests(_WritePathFixture):
-    """Set freely by whoever enrols; changed later only with manage."""
+    """Set freely by whoever enrols; changed later only with the Write switch."""
 
-    def test_an_officer_without_manage_enrols_with_a_chosen_date_and_it_is_saved(self):
+    def test_an_officer_without_the_write_switch_enrols_with_a_chosen_date_and_it_is_saved(self):
         for label, tenant, body in self.shapes():
             with self.subTest(school=label):
                 officer = self.people[label]["officer"]
@@ -215,7 +239,7 @@ class EnrolmentDateTests(_WritePathFixture):
                 student = Student.all_objects.get(tenant=tenant, first_name="Dated")
                 self.assertEqual(student.enrolment_date, dt.date(2025, 9, 8))
 
-    def test_changing_that_date_later_without_manage_is_refused(self):
+    def test_changing_that_date_later_without_the_write_switch_is_refused(self):
         for label, tenant, body in self.shapes():
             with self.subTest(school=label):
                 officer = self.people[label]["officer"]
@@ -230,7 +254,7 @@ class EnrolmentDateTests(_WritePathFixture):
                     clerk, "student-detail", {"enrolment_date": "2025-01-06"},
                     pk=student.pk,
                 )
-                self.assertEqual(response.status_code, 400, response.data)
+                self.assertFieldWriteDenied(response)
                 self.assertEqual(self.refused_fields(response), {"enrolment_date"})
                 student.refresh_from_db()
                 self.assertEqual(student.enrolment_date, dt.date(2025, 9, 8))
@@ -248,7 +272,7 @@ class EditRouteIsUnchangedTests(_WritePathFixture):
             )),
         )
 
-    def test_a_blank_medical_value_without_the_key_is_still_refused_on_edit(self):
+    def test_a_blank_medical_value_without_the_switch_is_still_refused_on_edit(self):
         """On an existing record a blank erases the nurse's entry."""
         for label, row in self.records():
             with self.subTest(school=label):
@@ -256,12 +280,12 @@ class EditRouteIsUnchangedTests(_WritePathFixture):
                 response = self.patch(
                     clerk, "student-detail", {"allergies": ""}, pk=row.pk,
                 )
-                self.assertEqual(response.status_code, 400, response.data)
+                self.assertFieldWriteDenied(response)
                 self.assertIn("allergies", self.refused_fields(response))
                 row.refresh_from_db()
                 self.assertEqual(row.allergies, "Peanuts")
 
-    def test_an_enrolment_date_without_manage_is_refused_on_edit(self):
+    def test_an_enrolment_date_without_the_write_switch_is_refused_on_edit(self):
         for label, row in self.records():
             with self.subTest(school=label):
                 clerk = self.people[label]["clerk"]
@@ -269,7 +293,7 @@ class EditRouteIsUnchangedTests(_WritePathFixture):
                     clerk, "student-detail", {"enrolment_date": "2025-01-06"},
                     pk=row.pk,
                 )
-                self.assertEqual(response.status_code, 400, response.data)
+                self.assertFieldWriteDenied(response)
                 row.refresh_from_db()
                 self.assertEqual(row.enrolment_date, dt.date(2024, 9, 9))
 
@@ -302,7 +326,7 @@ class ImportEnrolmentDateTests(_WritePathFixture):
             original_filename="roll.xlsx", uploaded_by=uploaded_by,
         )
 
-    def test_an_uploader_without_manage_validates_a_file_with_an_admission_date(self):
+    def test_an_uploader_without_the_write_switch_validates_a_file_with_an_admission_date(self):
         for label, tenant, branch, overrides in self.import_shapes():
             with self.subTest(school=label):
                 officer = self.people[label]["officer"]
@@ -314,7 +338,7 @@ class ImportEnrolmentDateTests(_WritePathFixture):
                     [i for i in issues if i["severity"] == "error"], [],
                 )
 
-    def test_an_uploader_without_manage_executes_and_the_admission_date_is_saved(self):
+    def test_an_uploader_without_the_write_switch_executes_and_the_admission_date_is_saved(self):
         from vs_import_data.services.import_executor import (
             execute_dataset_handler, map_row_to_payload,
         )

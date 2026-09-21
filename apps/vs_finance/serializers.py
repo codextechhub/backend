@@ -13,7 +13,7 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from core.media import signed_url
-from vs_rbac.fls import FieldSecurityMixin
+from vs_rbac.field_enforcement import FieldAccessMixin
 
 from .models import (
     Account,
@@ -754,7 +754,17 @@ class DimensionSerializer(serializers.ModelSerializer):
 # Banking                                                                     #
 # --------------------------------------------------------------------------- #
 
-class BankAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
+class BankAccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One funding account, with the number behind its own switch.
+
+    The account number is the registered field of ``finance.bankaccount``: a
+    caller whose roles cannot read it gets the account without it, and the
+    endpoints that write it refuse a role that cannot change it.
+    """
+
+    field_resource = "finance.bankaccount"
+    field_access_detail = True
+
     gl_account = serializers.CharField(source="gl_account.code", read_only=True)
     gl_account_name = serializers.CharField(source="gl_account.name", read_only=True)
     currency = serializers.CharField(source="currency_id", read_only=True, default=None)
@@ -762,12 +772,6 @@ class BankAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     book_balance_naira = serializers.SerializerMethodField()
     unreconciled_count = serializers.SerializerMethodField()
     last_reconciled_at = serializers.SerializerMethodField()
-
-    # FLS: the funding account number is sensitive - only holders of the
-    # sensitive grant see it; everyone else gets the record with it stripped.
-    read_permissions = {
-        "account_number": "finance.bankaccount.view_sensitive",
-    }
 
     class Meta:
         model = BankAccount
@@ -1102,20 +1106,17 @@ class TaxFilingSerializer(serializers.ModelSerializer):
 # Payroll                                                                     #
 # --------------------------------------------------------------------------- #
 
-class PayrollLineSerializer(FieldSecurityMixin, serializers.ModelSerializer):
-    cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
+class PayrollLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One person's line of a payroll run.
 
-    # FLS: per-employee names and pay figures are sensitive - only holders of
-    # the payroll sensitive grant see them; everyone else gets the line with
-    # these fields stripped.
-    read_permissions = {
-        "employee_name": "finance.payrollrun.view_sensitive",
-        "gross_amount": "finance.payrollrun.view_sensitive",
-        "paye_amount": "finance.payrollrun.view_sensitive",
-        "pension_amount": "finance.payrollrun.view_sensitive",
-        "net_amount": "finance.payrollrun.view_sensitive",
-        "components": "finance.payrollrun.view_sensitive",
-    }
+    A line is always a row inside a run, never a detail response of its own,
+    so it names no read-only fields: the run that carries it is the record a
+    form edits.
+    """
+
+    field_resource = "finance.payrollrun"
+
+    cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
 
     class Meta:
         model = PayrollLine
@@ -1133,8 +1134,8 @@ class PayrollRunSerializer(serializers.ModelSerializer):
     # branch per pay date, so without this the list shows several rows with the
     # same date, the same period label and nothing to tell them apart. Null
     # means a central run over the whole entity, which is what every run was
-    # before per-branch payroll existed. Not FLS-stripped: a site is not a pay
-    # figure, and the officer who has to pick the right run needs to read it.
+    # before per-branch payroll existed. Not a registered field: a site is not
+    # a pay figure, and the officer who has to pick the right run needs to read it.
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     # Statutory liability accounts the run credited (set on post) - let the FE match the
     # real outstanding balance (trial balance) to show remittance status honestly.
@@ -1158,8 +1159,8 @@ class PayrollRunSerializer(serializers.ModelSerializer):
 
 
 class SalaryComponentSerializer(serializers.ModelSerializer):
-    """A structure line. Not FLS-stripped - a structure is configuration (e.g. 'Basic =
-    40% of gross'), not any one person's pay."""
+    """A structure line. Not a registered field - a structure is configuration
+    (e.g. 'Basic = 40% of gross'), not any one person's pay."""
 
     class Meta:
         model = SalaryComponent
@@ -1185,15 +1186,26 @@ class SalaryStructureSerializer(serializers.ModelSerializer):
         return cached if cached is not None else obj.employee_salaries.count()
 
 
-class EmployeeSalarySerializer(FieldSecurityMixin, serializers.ModelSerializer):
+class EmployeeSalarySerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One roster row, with the pay figures behind their own switches.
+
+    Which pay figures a person may see is ``finance.salary``'s question, and
+    which roster rows they may reach at all is the roster endpoints'. The two
+    are separate on purpose: an officer assigning branches needs the roster
+    without needing anybody's salary.
+    """
+
+    field_resource = "finance.salary"
+    field_access_detail = True
+
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
     structure_name = serializers.CharField(source="structure.name", read_only=True, default=None)
-    # Not FLS-stripped: which site somebody works at is not a pay figure, and it has
+    # Not a registered field: which site somebody works at is not a pay figure, and it has
     # to be readable by whoever is assigning branches before a school can switch to
     # per-branch payroll. ``branch_name`` is null for an unassigned row, which is
     # the state the frontend filters on to find who is still blocking the switch.
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
-    # The account this row is for, where one is known. Not FLS-stripped: WHO a
+    # The account this row is for, where one is known. Not a registered field: WHO a
     # roster row is about is not a pay figure, and it is what lets a caller ask
     # whether the person being paid still works here. Null on every row written
     # before the link existed, and there is no backfill, so a null means "not
@@ -1205,19 +1217,6 @@ class EmployeeSalarySerializer(FieldSecurityMixin, serializers.ModelSerializer):
     pension_amount = serializers.SerializerMethodField()
     net_amount = serializers.SerializerMethodField()
     components = serializers.SerializerMethodField()
-
-    # FLS: the pay figures are sensitive - names stay visible (the roster), but the
-    # amounts are stripped unless the caller holds the sensitive grant.
-    # Note: field-level "see individual pay figures" stays keyed on the single
-    # finance.payrollrun.view_sensitive grant (NOT finance.salary.*, which gates the
-    # roster/structure endpoints themselves), so one key governs pay-figure visibility.
-    read_permissions = {
-        "gross_amount": "finance.payrollrun.view_sensitive",
-        "paye_amount": "finance.payrollrun.view_sensitive",
-        "pension_amount": "finance.payrollrun.view_sensitive",
-        "net_amount": "finance.payrollrun.view_sensitive",
-        "components": "finance.payrollrun.view_sensitive",
-    }
 
     class Meta:
         model = EmployeeSalary

@@ -363,10 +363,18 @@ class _FinanceBase(APIView):
     # Paginate a queryset with platform envelope.
     def paginate(self, request, qs, serializer_cls, **ser_kwargs):
         """List response via the platform's XVSPagination envelope ({pagination, data}).
-        Fixed page size 25 (override per-request with ?page_size=, capped at 100)."""
+
+        Fixed page size 25 (override per-request with ?page_size=, capped at 100).
+
+        The request rides in the serializer context unless the caller supplies
+        one of its own. A serializer only knows whose response it is building
+        from the context, and a list built without it would hand every caller
+        the same rows whatever their Field Access says.
+        """
         from core.pagination import XVSPagination
 
         paginator = XVSPagination()  # Instantiate platform paginator.
         paginator.page_size = 25  # Default finance page size.
         page = paginator.paginate_queryset(qs, request, view=self)  # Slice queryset for current request.
+        ser_kwargs.setdefault("context", {"request": request})
         return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)  # Serialize and wrap page.

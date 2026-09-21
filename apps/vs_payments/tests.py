@@ -58,6 +58,16 @@ from .providers import registry
 from .providers.fake import FakeProvider
 
 
+def _request_for(user):
+    """The smallest request a Field Access read needs: a caller and a tenant."""
+    from rest_framework.test import APIRequestFactory
+
+    request = APIRequestFactory().get("/")
+    request.user = user
+    request.tenant = user.tenant
+    return request
+
+
 # Group tests for Payments Fixture Mixin.
 def _platform_tenant():
     """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
@@ -1602,38 +1612,109 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertEqual(response.status_code, 403, response.content)
         self.assertFalse(PayoutBatch.objects.exists())
 
-    def test_batch_detail_strips_beneficiary_bank_fields_without_sensitive_grant(self):
+    #: The payout fields Field Access governs, by the name a client sees.
+    PROTECTED_PAYOUT_FIELDS = {
+        "beneficiary_name", "beneficiary_account_number", "beneficiary_bank_code",
+    }
+
+    def _payout_viewer(self, *, switches_on=False, email="payout-view-only@test.com"):
+        """A caller who may open payouts, with the beneficiary on or off.
+
+        The fields are installed first because a test database carries no
+        Field Access registry, and an unregistered field is open to everybody.
+        With them installed and no switch row, the registry default applies:
+        every beneficiary field is sensitive, so it starts hidden.
+        """
         from core.test_utils import TenantAPIClient
         from vs_rbac.models import Permission, TenantRolePermission
+        from vs_rbac.tests.helpers import install_declared_fields, set_field_access
 
+        keys = install_declared_fields("payments.payout")
         viewer = self.User.objects.create_user(
-            email="payout-view-only@test.com", password="pw", status="ACTIVE",
+            email=email, password="pw", status="ACTIVE",
             first_name="View", last_name="Only", tenant=self.entity.tenant,
         )
+        label = email.split("@")[0]
         role = self.TenantRoleTemplate.objects.create(
-            tenant=self.entity.tenant, key="payout-view-only",
-            name="Payout view only", status="ACTIVE",
+            tenant=self.entity.tenant, key=f"payout-view-{label}",
+            name=f"Payout viewer {label}", status="ACTIVE",
         )
-        TenantRolePermission.objects.create(
-            role=role, permission=Permission.objects.get(key="payments.payout.view"),
-        )
+        for key in ("payments.payout.view", "payments.report.view"):
+            TenantRolePermission.objects.create(
+                role=role, permission=Permission.objects.get(key=key),
+            )
         self.TenantUserRoleAssignment.objects.create(
             tenant=self.entity.tenant, user=viewer, role=role,
             assignment_status="ACTIVE",
         )
+        if switches_on:
+            set_field_access(role, *keys, read=True, write=False)
+        client = TenantAPIClient(user=viewer)
+        client.user = viewer  # So a test can evaluate this caller directly.
+        return client
+
+    def test_batch_detail_hides_the_beneficiary_when_the_switch_is_off(self):
+        """Absent, and nothing in the payload names what was dropped."""
         batch = self._draft_batch(10_000)
 
-        response = TenantAPIClient(user=viewer).get(
+        response = self._payout_viewer().get(
             f"/v1/payments/payout-batches/{batch.pk}/?entity={self.entity.code}",
         )
 
         self.assertEqual(response.status_code, 200, response.content)
         instruction = response.json()["data"]["instructions"][0]
-        protected = {
-            "beneficiary_name", "beneficiary_account_number", "beneficiary_bank_code",
-        }
-        self.assertTrue(protected.isdisjoint(instruction))
-        self.assertEqual(set(instruction["_stripped_fields"]), protected)
+        self.assertTrue(self.PROTECTED_PAYOUT_FIELDS.isdisjoint(instruction))
+        self.assertNotIn("_stripped_fields", instruction)
+
+    def test_batch_detail_carries_the_beneficiary_when_the_switch_is_on(self):
+        batch = self._draft_batch(10_000)
+
+        response = self._payout_viewer(
+            switches_on=True, email="payout-sees-bank@test.com",
+        ).get(f"/v1/payments/payout-batches/{batch.pk}/?entity={self.entity.code}")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        instruction = response.json()["data"]["instructions"][0]
+        for name in self.PROTECTED_PAYOUT_FIELDS:
+            self.assertIn(name, instruction)
+
+    def test_the_movements_feed_drops_the_beneficiary_rather_than_masking_it(self):
+        """The feed answers no more about a payment than its own record does.
+
+        Its column names are its own: ``party`` is the customer on a
+        collection and the beneficiary on a payout, so the switch reaches it
+        through the mapping in the view rather than through the registry.
+        """
+        self._draft_batch(10_000)
+        client = self._payout_viewer(email="payout-feed-hidden@test.com")
+
+        response = client.get(
+            f"/v1/payments/movements/?direction=out&entity={self.entity.code}",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        rows = response.json()["data"]
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertNotIn("party", row)
+            self.assertNotIn("beneficiary_account", row)
+        self.assertNotIn("••••", response.content.decode())
+
+    def test_the_movements_feed_carries_the_beneficiary_when_the_switch_is_on(self):
+        self._draft_batch(10_000)
+        client = self._payout_viewer(
+            switches_on=True, email="payout-feed-open@test.com",
+        )
+
+        response = client.get(
+            f"/v1/payments/movements/?direction=out&entity={self.entity.code}",
+        )
+
+        rows = response.json()["data"]
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertIn("party", row)
+            self.assertIn("beneficiary_account", row)
 
     def test_vendor_from_another_tenant_is_rejected(self):
         from vs_tenants.models import Tenant
@@ -1830,6 +1911,42 @@ class PayoutBatchApprovalTests(TestCase):
         beneficiary = details["sections"][1]["rows"][0]
         self.assertEqual(beneficiary["account"], "•••• 6789")
         self.assertNotIn("0123456789", str(details))
+
+    def test_an_approver_who_cannot_read_the_beneficiary_is_not_shown_it(self):
+        """The same stored document, read by two people, shows two things.
+
+        The layout is snapshotted when the batch is submitted and read later by
+        whoever approves it, so the switch is applied on the way out. An
+        approver whose role cannot read the beneficiary loses both columns,
+        not two columns of blanks, because a blank column still says how many
+        rows have a value.
+        """
+        from vs_workflow.presentation import for_reader
+
+        self._publish_template()
+        self._make_approver()
+        batch = self._draft_batch(10000)
+        self._submit_for_approval(batch)
+        stored = self._instance_for(batch).document_details
+
+        hidden = self._payout_viewer(email="payout-approver-hidden@test.com")
+        allowed = self._payout_viewer(
+            switches_on=True, email="payout-approver-open@test.com",
+        )
+        closed = for_reader(stored, _request_for(hidden.user))
+        open_ = for_reader(stored, _request_for(allowed.user))
+
+        beneficiaries = closed["sections"][1]
+        self.assertEqual(
+            [column["key"] for column in beneficiaries["columns"]],
+            ["amount", "narration"],
+        )
+        self.assertNotIn("Acme", str(closed))
+        self.assertNotIn("6789", str(closed))
+        self.assertIn(
+            "beneficiary", [c["key"] for c in open_["sections"][1]["columns"]],
+        )
+        self.assertEqual(self._instance_for(batch).document_details, stored)
 
     # --- 3b. another tenant cannot submit this batch ----------------------- #
 

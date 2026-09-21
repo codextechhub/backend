@@ -103,6 +103,21 @@ def may_export_sensitive(user, tenant) -> bool:
     return _holds(user, ExportPermission.SENSITIVE_EXPORT, tenant)
 
 
+def readable_fields(user, tenant):
+    """A predicate over a column's Field Access key, for *user* in *tenant*.
+
+    An export is a surface like any other, so a column whose registry key the
+    caller cannot read is not offered and not written. The run is filtered as
+    the person it belongs to, which is the owner for a scheduled run: a file
+    that arrived by email at seven in the morning carries what its owner could
+    have seen on screen at the time, and nothing more.
+    """
+    from vs_rbac.field_evaluator import get_field_access
+
+    access = get_field_access(user, tenant=tenant)
+    return access.can_read
+
+
 def resolve_columns(user, dataset, column_ids, tenant):
     """Reduce requested columns to the ones this user may actually read.
 
@@ -112,11 +127,18 @@ def resolve_columns(user, dataset, column_ids, tenant):
     produce their own :class:`Omission`, so the run detail can say *which* of the two
     happened rather than "something was left out".
 
+    Two gates drop a column, and a caller is told the same thing by either:
+    ``exports.sensitive_field.export``, which decides whether restricted data
+    may leave in a file at all, and the caller's Field Access, which decides
+    whether they may see the column anywhere. A file must not be the way round
+    a switch that hides a bank account number on screen.
+
     The same call serves both checkpoints: at build time the caller treats the result
     as advisory (it shapes the picker), at run time as authoritative (it shapes the
     file). Sharing one implementation is what stops the two from drifting apart.
     """
     allow_sensitive = may_export_sensitive(user, tenant)
+    readable = readable_fields(user, tenant)
     requested = list(dict.fromkeys(column_ids or []))          # de-dupe, keep order
     # Locked fields lead, then everything the caller asked for.
     ordered = list(dataset.locked_field_ids) + [
@@ -130,6 +152,9 @@ def resolve_columns(user, dataset, column_ids, tenant):
             withdrawn.append(column_id)
             continue
         if field.sensitive and not allow_sensitive:
+            forbidden.append(field.label)
+            continue
+        if field.access and not readable(field.access):
             forbidden.append(field.label)
             continue
         fields.append(field)

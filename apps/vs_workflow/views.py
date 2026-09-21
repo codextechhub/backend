@@ -619,12 +619,16 @@ class WorkflowInstanceViewSet(
     @action(detail=True, methods=["post"])
     def withdraw(self, request, pk=None):
         instance = actions_svc.withdraw(self.get_object().id, request.user)
-        return Response(WorkflowInstanceDetailSerializer(instance).data)
+        return Response(WorkflowInstanceDetailSerializer(
+            instance, context=self.get_serializer_context(),
+        ).data)
 
     @action(detail=True, methods=["post"])
     def resubmit(self, request, pk=None):
         instance = actions_svc.resubmit(self.get_object().id, request.user)
-        return Response(WorkflowInstanceDetailSerializer(instance).data)
+        return Response(WorkflowInstanceDetailSerializer(
+            instance, context=self.get_serializer_context(),
+        ).data)
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
@@ -632,7 +636,9 @@ class WorkflowInstanceViewSet(
         p.is_valid(raise_exception=True)
         instance = actions_svc.cancel(
             self.get_object().id, request.user, p.validated_data["reason"])
-        return Response(WorkflowInstanceDetailSerializer(instance).data)
+        return Response(WorkflowInstanceDetailSerializer(
+            instance, context=self.get_serializer_context(),
+        ).data)
 
     @action(detail=True, methods=["post"], url_path="continue-without-approval")
     def continue_without_approval(self, request, pk=None):
@@ -695,7 +701,9 @@ class WorkflowInstanceViewSet(
                 "error": {"code": "INVALID_REASON", "detail": {}},
             }, status=status.HTTP_400_BAD_REQUEST)
         instance.refresh_from_db()
-        return Response(WorkflowInstanceDetailSerializer(instance).data)
+        return Response(WorkflowInstanceDetailSerializer(
+            instance, context=self.get_serializer_context(),
+        ).data)
 
     @action(detail=True, methods=["post"], url_path="actions")
     def record_action(self, request, pk=None):
@@ -706,7 +714,9 @@ class WorkflowInstanceViewSet(
             action=p.validated_data["action"],
             comment=p.validated_data.get("comment", ""),
         )
-        return Response(WorkflowInstanceDetailSerializer(instance).data)
+        return Response(WorkflowInstanceDetailSerializer(
+            instance, context=self.get_serializer_context(),
+        ).data)
 
 
 class WorkflowNotificationSettingView(APIView):

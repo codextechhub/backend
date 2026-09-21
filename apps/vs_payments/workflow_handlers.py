@@ -134,7 +134,15 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
         }
 
     def get_document_details(self, document) -> dict:
-        """Show each beneficiary without storing complete account numbers."""
+        """Show each beneficiary without storing complete account numbers.
+
+        The beneficiary and the account are registered fields of
+        ``payments.payout``, so the two columns carry their keys and an
+        approver whose roles cannot read those fields is shown the batch
+        without them. The account is truncated to its last four digits here
+        whoever reads it: an approval document is kept for as long as the
+        approval is, and a complete account number does not need to be.
+        """
         from vs_finance.money import format_naira
 
         instructions = document.instructions.order_by("id")
@@ -148,8 +156,10 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
             table_section(
                 "Beneficiaries",
                 [
-                    ("beneficiary", "Beneficiary"),
-                    ("account", "Account"),
+                    ("beneficiary", "Beneficiary",
+                     "payments.payout.beneficiary_name"),
+                    ("account", "Account",
+                     "payments.payout.beneficiary_account_number"),
                     ("amount", "Amount"),
                     ("narration", "Narration"),
                 ],

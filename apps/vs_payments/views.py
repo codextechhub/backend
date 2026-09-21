@@ -30,11 +30,11 @@ from core.response import success_response
 from vs_finance.money import format_naira
 from vs_finance.models import Account, Customer, Invoice
 from vs_finance.views import resolve_entity
+from vs_rbac.field_enforcement import can_read
 from vs_rbac.permissions import (
     HasRBACPermission,
     IsAuthenticatedAndActive,
     IsVisionStaff,
-    user_has_rbac_permission,
 )
 
 from . import reconciliation, services, webhooks
@@ -981,12 +981,31 @@ def _movement_querysets(entity, *, provider=None, group=None):
     return cv, pv  # Return both common-shape querysets for the feed.
 
 
+#: The feed's own column names for the two payout fields Field Access governs,
+#: and the registry keys behind them.
+#:
+#: The feed puts a collection and a payout in one row shape, so its names are
+#: neither side's: ``party`` is the customer on a collection and the
+#: beneficiary on a payout, and no single switch could cover both. Registering
+#: the feed's names as the payout field's own would therefore make one switch
+#: mean two things, so the mapping lives here, at the one call site that needs
+#: it, instead of in the registry.
+_MOVEMENT_PAYOUT_FIELDS = {
+    "party": "payments.payout.beneficiary_name",
+    "beneficiary_account": "payments.payout.beneficiary_account_number",
+}
+
+
 # Group endpoint behavior for Movements View.
 class MovementsView(APIView):
     """GET /payments/movements/ - unified, paginated money-movement feed: confirmed-or-
     pending collections (in) + payouts (out), newest first. Filters: ``?direction=in|out``,
-    ``?group=SETTLED|PENDING|FAILED|REFUNDED``, ``?provider=``. Payout beneficiary
-    name/account are FLS-masked without payments.payout.view_sensitive.
+    ``?group=SETTLED|PENDING|FAILED|REFUNDED``, ``?provider=``.
+
+    A payout row carries the beneficiary's name and account number only for a
+    caller whose roles let them read those fields; for anybody else the keys
+    are absent rather than masked, so the feed says no more about a payment
+    than the payment's own record would.
 
     docstring-name: Movements feed
     """
@@ -1012,13 +1031,17 @@ class MovementsView(APIView):
 
         paginator = XVSPagination()  # Build the shared paginator.
         page = paginator.paginate_queryset(union, request, view=self)  # Slice the union query.
-        can_sensitive = user_has_rbac_permission(request.user, "payments.payout.view_sensitive")  # Check for sensitive access.
-        rows = []  # Build the response rows explicitly so we can mask sensitive payout data.
+        # Evaluated once for the page; the map behind it is cached on the request.
+        hidden = [
+            name for name, key in _MOVEMENT_PAYOUT_FIELDS.items()
+            if not can_read(request, key)
+        ]
+        rows = []  # Build the response rows explicitly so the beneficiary can be dropped.
         for m in page:  # Convert each result row into a serializable mapping.
             row = dict(m)  # Coerce the projected row into a plain dict.
-            if row["kind"] == "payout" and not can_sensitive:  # Mask payout beneficiary details without the grant.
-                row["party"] = "••••"  # Hide beneficiary name.
-                row["beneficiary_account"] = "••••"  # Hide beneficiary account number.
+            if row["kind"] == "payout":  # A collection's party is its customer, not a beneficiary.
+                for name in hidden:  # Absent, not masked: a marker is itself an answer.
+                    row.pop(name, None)
             row["amount_naira"] = format_naira(row["amount"])  # Add a display amount.
             row["created_at"] = row["created_at"].isoformat() if row["created_at"] else None  # Normalize timestamps.
             row["confirmed_at"] = row["confirmed_at"].isoformat() if row["confirmed_at"] else None  # Normalize timestamps.

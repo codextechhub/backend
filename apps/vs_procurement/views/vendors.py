@@ -2,8 +2,15 @@
 
 Codes and historical category links are stable business identifiers.  Updates
 may deactivate master data but do not rewrite snapshots already embedded in
-purchase documents.  Contact, tax, and bank fields are additionally protected
-by field-level RBAC on both serialization and mutation paths.
+purchase documents.
+
+The create and update routes apply the body themselves rather than through a
+serializer, so each one asks Field Access whether the caller may write the
+names it carries. Contact, tax and banking details are refused with 403 for a
+role whose switches do not reach them, on the same terms the vendor serializer
+applies when it hides them on the way out. Creating a vendor is a create path,
+so a field declared open on create is allowed there and governed by its switch
+only afterwards.
 """
 from __future__ import annotations
 
@@ -19,6 +26,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from core.response import success_response
 from vs_finance.views import resolve_entity
 from vs_finance.constants import AccountType, DocumentStatus
+from vs_rbac.field_enforcement import assert_writable
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 
 from ..constants import PAYMENT_TERM_DAYS, PaymentTerms, VendorKycStatus, VendorRisk
@@ -47,6 +55,11 @@ from .base import (
 # Vendor categories + vendors                                                 #
 # --------------------------------------------------------------------------- #
 
+#: The vendor's contact, tax and banking names, which are the registered
+#: fields of ``procurement.vendor``. Whether a caller may write one is Field
+#: Access's answer, not this set's; the set survives as the single written
+#: record of which vendor names carry switches, which the registry tests check
+#: the declaration against.
 _SENSITIVE_VENDOR_FIELDS = {
     "email", "phone", "address", "tax_id",
     "bank_name", "bank_code", "bank_account_number", "bank_account_name", "contacts",
@@ -117,21 +130,6 @@ def _replace_vendor_contacts(vendor, raw):
     VendorContact.objects.bulk_create([VendorContact(vendor=vendor, **row) for row in cleaned])
 
 
-def _has_sensitive_access(request):
-    """Check field-level access using the same tenant/branch RBAC context as the view."""
-    if is_vision_super_admin(request.user):
-        return True
-    tenant = getattr(request, "rbac_tenant", None) or getattr(request, "tenant", None)
-    return user_has_rbac_permission(
-        request.user, "procurement.vendor.view_sensitive",
-        tenant=tenant or getattr(request.user, "tenant", None),
-    )
-
-
-def _require_sensitive_access(request, body):
-    """Reject writes to PII/bank fields unless field-level RBAC permits them."""
-    if _SENSITIVE_VENDOR_FIELDS.intersection(body) and not _has_sensitive_access(request):
-        raise PermissionDenied("You do not have permission to modify sensitive vendor fields.")
 
 
 def _has_vendor_manage_access(request):
@@ -522,7 +520,7 @@ class VendorListCreateView(_ProcBase):
         name = _clean_text(body, "name", 200)
         if not name:
             raise ValidationError({"name": "A vendor name is required."})
-        _require_sensitive_access(request, body)
+        assert_writable(request, "procurement.vendor", body, creating=True)
         tax_id = _clean_text(body, "tax_id", 32, upper=True)
         if body.get("payable_account"):
             payable = _validate_account_type(
@@ -643,7 +641,7 @@ class VendorDetailView(_ProcBase):
         """Apply validated governance changes while preserving the vendor code."""
         entity = resolve_entity(request)
         body = request.data
-        _require_sensitive_access(request, body)
+        assert_writable(request, "procurement.vendor", body)
         # The route still requires vendor.update; compliance fields add a second,
         # narrower authority and are rejected before the vendor row is mutated.
         _require_vendor_manage_access(request, body)

@@ -320,7 +320,7 @@ class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
     stage_instances = WorkflowStageInstanceReadSerializer(many=True, read_only=True)
     audit_logs      = WorkflowAuditLogReadSerializer(many=True, read_only=True)
     document_summary = serializers.SerializerMethodField()
-    document_details = serializers.JSONField(read_only=True)
+    document_details = serializers.SerializerMethodField()
     source_document_link = serializers.SerializerMethodField()
     next_stage      = serializers.SerializerMethodField()
 
@@ -336,6 +336,18 @@ class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
 
     def get_document_summary(self, obj):
         return self._document_summary(obj)
+
+    def get_document_details(self, obj):
+        """The snapshotted layout, filtered for whoever is reading it now.
+
+        The snapshot is built when the document is submitted and kept as it
+        was; what a given approver may see of it is decided here, so two
+        approvers of the same batch can be shown different columns without the
+        stored document differing.
+        """
+        from vs_workflow.presentation import for_reader
+
+        return for_reader(obj.document_details, self.context.get("request"))
 
     def _document_summary(self, obj):
         """Return the object's summary, built at most once per object.
