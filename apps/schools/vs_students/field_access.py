@@ -1,11 +1,11 @@
 """Student and guardian fields an administrator may restrict per role.
 
-Blood group, allergies and conditions are hidden from a caller without
-``school.students.view_sensitive`` and refused on write for the same caller,
-whether the write is an edit or an enrolment.
-The enrolment date is readable by everybody who can open the record, and only
-changing it needs ``school.students.manage``, so it is not sensitive. It is
-declared open on create for the same reason: whoever enrols the pupil, by form
+Blood group, allergies and conditions are declared sensitive, so a role reads
+and corrects them only where a school has turned the switches on, and a write
+is refused whether it arrives as an edit or as an enrolment.
+
+The enrolment date is readable by everybody who can open the record, so it is
+not sensitive. It is declared open on create: whoever enrols the pupil, by form
 or by spreadsheet, sets the date they enrolled on, and the write switch decides
 only who may correct it afterwards.
 

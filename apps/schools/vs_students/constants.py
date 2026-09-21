@@ -16,7 +16,6 @@ PERM_VIEW = "school.students.view"
 PERM_CREATE = "school.students.create"
 PERM_UPDATE = "school.students.update"
 PERM_MANAGE = "school.students.manage"
-PERM_VIEW_SENSITIVE = "school.students.view_sensitive"
 PERM_IMPORT = "school.students.import"
 PERM_EXPORT = "school.students.export"
 
@@ -28,31 +27,11 @@ PERM_PROMOTE = "school.students.promote"
 PERM_CLASS_ASSIGN = "academics.classes.assign"
 PERM_CLASS_VIEW = "academics.classes.view"
 
-#: The keys that guard WRITING restricted fields while a student is created,
-#: used by enrolment.
-#:
-#: Medical fields only. A child's blood group, allergies and conditions need
-#: ``school.students.view_sensitive`` however the record comes to exist, or an
-#: officer could type "No known allergies" that they cannot even read back. The
-#: enrolment date is absent on purpose: a new pupil's date is set by whoever
-#: enrols them, through the form or the spreadsheet import alike.
-CREATE_WRITE_PERMISSIONS = {
-    "blood_group": PERM_VIEW_SENSITIVE,
-    "allergies": PERM_VIEW_SENSITIVE,
-    "conditions": PERM_VIEW_SENSITIVE,
-}
-
-#: The keys that guard WRITING restricted fields on an existing student, used
-#: by the edit route and the profile serializer.
-#:
-#: The medical fields as above, plus the enrolment date: once a record exists,
-#: changing when the child joined rewrites their history, and that needs
-#: ``school.students.manage``. A field guard binds only the serializer that
-#: declares it, so every writer takes its keys from one of these two maps.
-EDIT_WRITE_PERMISSIONS = {
-    **CREATE_WRITE_PERMISSIONS,
-    "enrolment_date": PERM_MANAGE,
-}
+# No key names a restricted field of a student. Blood group, allergies,
+# conditions and the enrolment date are registered fields of
+# ``school.students`` (``schools/vs_students/field_access.py``), and a role's
+# own Read and Write switches decide each of them on every path: the enrolment
+# form, the edit route and the spreadsheet import alike.
 
 # ── Configuration keys (vs_config) ─────────────────────────────────────────
 # The admission-number policy is a school's own rule, so it lives in the

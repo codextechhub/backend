@@ -1,10 +1,10 @@
 """Import engine fields an administrator may restrict per role.
 
-A template's validation rules are internal configuration, read with
-``import.templates.manage``, a platform-only key, and written by the template
-create and update endpoints. A job's payloads and errors, and a batch's parsed
-preview, are produced by the engine and never accepted from a caller. A batch's
-file is the upload itself.
+A template's validation rules are internal configuration, declared sensitive
+and ``PLATFORM`` scope, and written by the template create and update
+endpoints, which ask for ``import.templates.manage``. A job's payloads and
+errors, and a batch's parsed preview, are produced by the engine and never
+accepted from a caller. A batch's file is the upload itself.
 """
 from vs_rbac.field_registry import FieldSpec, register_fields
 

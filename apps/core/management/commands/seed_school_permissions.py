@@ -87,7 +87,10 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "students", "create",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "students", "update",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "students", "manage",           _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
-    ("school", "students", "view_sensitive",   _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    # A child's blood group, allergies and conditions have no key of their own.
+    # Who reads and corrects each of them is a Field Access switch on the role,
+    # so a school can open the medical fields to its nurse without handing over
+    # anything else on the record.
     # school_admin only for import: a bad import is the fastest way to
     # damage a school's records and is reversible only through the engine's
     # rollback. Export reaches branch_admin because a branch admin exports

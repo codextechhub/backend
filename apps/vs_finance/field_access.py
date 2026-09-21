@@ -1,7 +1,9 @@
 """Finance fields an administrator may restrict per role.
 
-The fields the finance serializers withhold today behind
-``finance.bankaccount.view_sensitive`` and ``finance.payrollrun.view_sensitive``.
+A bank account's number, and the figures on a payroll line and a salary row.
+All are declared sensitive, so a role reaches none of them until a school turns
+it on: reaching the payroll screens is ``finance.payrollrun.view``, and seeing
+what each person is paid is a second decision.
 
 What decides ``writable``:
 

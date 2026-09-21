@@ -512,8 +512,8 @@ class VirtualAccountDepositTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(payments.first().amount, 45000)
         self.assertEqual(payments.first().customer_id, customer.pk)
         self.assertEqual(payments.first().status, "POSTED")
-        # The account number is FLS-restricted on the virtual-account serializer, so it
-        # must not be smuggled onto the receipt narration, which has no such protection.
+        # The account number is a switched field of the virtual account, so it must
+        # not be smuggled onto the receipt narration, which carries no switch.
         self.assertNotIn(va.account_number, payments.first().narration)
 
     # Verify a re-delivered deposit creates no second intent or receipt behavior.
@@ -1253,7 +1253,7 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
         va = created.json()["data"]
         self.assertEqual(va["status"], "ACTIVE")
         self.assertEqual(va["customer_code"], "CUST1")
-        # super-admin holds view_sensitive → the funding number is visible.
+        # A super admin reads every field, so the funding number is visible.
         self.assertTrue(va["account_number"])
 
         # GET list is paginated and rides KPIs.

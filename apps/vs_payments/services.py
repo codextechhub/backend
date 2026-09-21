@@ -260,9 +260,9 @@ def record_virtual_account_deposit(*, virtual_account, reference, amount,
             deposit_account=virtual_account.deposit_account,  # Land the receipt in the account's own bank GL.
             payer_email=(customer.billing_email if customer else ""),
             payer_name=(customer.name if customer else virtual_account.account_name),
-            # Deliberately no account number in the narration: it is FLS-restricted on
-            # the virtual-account serializer, and the narration is copied onto the
-            # finance receipt, which has no such protection.
+            # Deliberately no account number in the narration: the number is a
+            # switched field of the virtual account, and the narration is copied
+            # onto the finance receipt, which carries no switch of its own.
             narration="Virtual account deposit.",
             metadata={"source": "virtual_account_deposit", "webhook_event_type": event_type},
             status=CollectionStatus.PENDING,  # Nothing is settled until the provider is re-verified.

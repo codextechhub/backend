@@ -27,8 +27,9 @@ _RESTRICTED = {"SENSITIVE", "CRITICAL"}
 # (resource_name, resource_label, [(action, sensitivity), ...])
 PAYMENTS_RESOURCES = [
     ("collection",      "gateway collections", [("view", "NORMAL"), ("create", "CRITICAL")]),
-    ("payout",          "gateway payouts",     [("view", "NORMAL"), ("create", "CRITICAL"),
-                                               ("view_sensitive", "SENSITIVE")]),
+    # The beneficiary's name, account number and bank code are Field Access
+    # switches on the role rather than a key of their own.
+    ("payout",          "gateway payouts",     [("view", "NORMAL"), ("create", "CRITICAL")]),
     ("report",          "settlement reports",  [("view", "NORMAL")]),
     # Inbound provider webhooks that could not be booked. Viewing exposes provider
     # references and error detail, so it is SENSITIVE; replaying re-runs the confirm
@@ -41,8 +42,10 @@ PAYMENTS_RESOURCES = [
     # require the caller to be CX platform-tenant staff.
     ("unattributed_webhook", "unattributed provider webhooks",
      [("view", "SENSITIVE"), ("replay", "CRITICAL")]),
+    # The provider-issued number and name on an account are Field Access
+    # switches on the role rather than a key of their own.
     ("virtual_account", "virtual accounts",    [("view", "NORMAL"), ("create", "SENSITIVE"),
-                                                ("manage", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
+                                                ("manage", "SENSITIVE")]),
     # Bulk-payout-batch approval (maker-checker over the highest-risk cash-out path).
     # No approver keys: who may release a payout is the workflow stage's answer,
     # not a permission's. See the note in the finance seeder.

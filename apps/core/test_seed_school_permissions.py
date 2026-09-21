@@ -51,7 +51,6 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         for key in (
             "school.dashboard.view",
             "school.students.view",
-            "school.students.view_sensitive",
             "school.administrators.suspend",
             "school.administrators.reactivate",
             "school.roles.assign",
@@ -73,7 +72,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             )
 
     def test_total_key_count(self):
-        """The school and academics modules register exactly 80 keys.
+        """The school and academics modules register exactly 79 keys.
 
         Deliberately a hand-maintained number: the school permission surface
         growing is something a person should have to notice and agree to, so
@@ -95,11 +94,15 @@ class SeedSchoolPermissionsKeyTests(TestCase):
           the resource DESCRIPTION says "Staff records" instead.
           ``school.staff`` exists for the spreadsheet import alone.
         * ``school.field_access`` carries view and manage for Field Access.
+        * There is no key for a child's medical details. Blood group, allergies
+          and conditions are registered fields of ``school.students``, so who
+          reads and corrects them is a switch on the role, set on the Field
+          Access screen and not by ticking a permission.
         """
         _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            80,
+            79,
         )
 
     def test_field_access_view_is_open_and_manage_is_restricted(self):
@@ -139,7 +142,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
     def test_sensitivity_levels_applied(self):
         _run_school_seed()
         self.assertEqual(
-            Permission.objects.get(key="school.students.view_sensitive").sensitivity_level,
+            Permission.objects.get(key="school.students.manage").sensitivity_level,
             "SENSITIVE",
         )
         self.assertEqual(
@@ -216,8 +219,8 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         )
 
     def test_school_admin_gets_all_keys(self):
-        """A school admin holds every key in both modules, all 80 of them."""
-        self.assertEqual(len(self._defaults("school_admin")), 80)
+        """A school admin holds every key in both modules, all 79 of them."""
+        self.assertEqual(len(self._defaults("school_admin")), 79)
         self.assertIn("school.field_access.manage", self._defaults("school_admin"))
 
     def test_only_school_admin_gets_field_access_by_default(self):
@@ -248,7 +251,14 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         self.assertFalse(overrides & self._defaults("teacher"))
 
     def test_branch_admin_default_count(self):
-        """32 = 31, plus M11's school.students.export.
+        """42 = 43, less the medical key that is now a field switch.
+
+        A branch admin reads and corrects a child's blood group, allergies and
+        conditions exactly where the school turns those switches on for their
+        role, so there is no key left to default.
+
+        43 = 32, plus the steps below, and 32 = 31, plus M11's
+        school.students.export.
 
         A branch admin exports their own branch's roll, and the dataset is
         narrowed to the branches they can see, so the file can never be wider
@@ -298,7 +308,7 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         stays with the school admin, because terminating somebody is not.
         """
         branch_admin = self._defaults("branch_admin")
-        self.assertEqual(len(branch_admin), 43)
+        self.assertEqual(len(branch_admin), 42)
         self.assertIn("school.staff.import", branch_admin)
         self.assertNotIn("school.students.import", branch_admin)
         self.assertIn("school.teachers.assign", branch_admin)
@@ -389,7 +399,7 @@ class SeedSchoolBackfillTests(TestCase):
             .values_list("permission_id", flat=True)
         )
         # school_admin defaults are every school and academics key.
-        self.assertEqual(len(keys), 80)
+        self.assertEqual(len(keys), 79)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
         self.assertIn("school.roles.approve", keys)

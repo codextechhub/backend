@@ -69,13 +69,12 @@ EXPECTED_RESOURCES = {
     ("school", "teachers"),
 }
 
-#: Resources whose fields no per-field guard withholds today, and the key that
-#: guards the endpoints those fields reach clients through.
+#: Resources whose fields are declared open, and the key that guards the
+#: endpoints those fields reach clients through.
 #:
 #: Everybody who may open the record reads them, so the resource's own view key
-#: is what decides their scope, exactly as ``view_sensitive`` decides it for a
-#: guarded field. A guardian is read with the student key because the guardian
-#: endpoints carry it.
+#: is what decides their scope, while a switch narrows it per role. A guardian
+#: is read with the student key because the guardian endpoints carry it.
 ENDPOINT_GUARDED_RESOURCES = {
     ("school", "guardians"): "school.students.view",
     ("school", "teachers"): "school.teachers.view",
@@ -434,7 +433,21 @@ class DefaultAccessTests(SimpleTestCase):
 
 
 class RegistryScopeMatchesTheGuardingKeyTests(TestCase):
-    """Each field carries the scope of the permission key that guards it today."""
+    """Each field is reachable by a key of its own scope.
+
+    A field is not holdable on its own: it reaches a client through endpoints,
+    and those endpoints ask for keys registered on the field's own resource.
+    So a field's scope has to be one some key on that resource carries. A
+    ``PLATFORM`` field under a resource only tenants hold is a switch a school
+    is offered on the Field Access screen and can never see the effect of; a
+    ``TENANT`` field under a resource only CodeX holds is the reverse.
+
+    A resource may carry both scopes, and ``import.templates`` does: reading
+    the template list is a school's, editing the validation rules behind it is
+    CodeX's, and the rules are a ``PLATFORM`` field for that reason. Matching
+    the scope against the whole resource rather than one key is what keeps such
+    a resource expressible.
+    """
 
     @classmethod
     def setUpTestData(cls):
@@ -451,23 +464,28 @@ class RegistryScopeMatchesTheGuardingKeyTests(TestCase):
         call_command("sync_field_registry", stdout=StringIO())
 
     def _guards(self):
-        """``(field_key, permission_key)`` for every field a key used to decide.
+        """``(field_key, {scope: [keys]})`` for every registered field.
 
-        A field a key withheld per caller yields that key, from the conversion
-        table. A field nothing withheld yields the key guarding the endpoint it
-        travels on, named in :data:`ENDPOINT_GUARDED_RESOURCES`, which is what
-        decides its scope.
+        The keys registered on the field's own resource, grouped by the scope
+        each carries. A resource that has fields and no keys of its own falls
+        back to :data:`ENDPOINT_GUARDED_RESOURCES`, which names the key whose
+        endpoints reach them.
         """
-        for conversion in CONVERSIONS:
-            for field_key in conversion.fields:
-                yield field_key, conversion.key
+        scopes = dict(Permission.objects.values_list("key", "scope"))
+        by_resource: dict[tuple[str, str], list[str]] = {}
+        for key, module, resource in Permission.objects.values_list(
+            "key", "resource__module_id", "resource__name",
+        ):
+            by_resource.setdefault((module, resource), []).append(key)
+
         for declaration in all_declarations():
-            endpoint_key = ENDPOINT_GUARDED_RESOURCES.get(
-                (declaration.module, declaration.resource),
-            )
-            if endpoint_key:
-                for spec in declaration.fields:
-                    yield declaration.key_for(spec), endpoint_key
+            pair = (declaration.module, declaration.resource)
+            keys = by_resource.get(pair) or [ENDPOINT_GUARDED_RESOURCES[pair]]
+            reachable: dict[str, list[str]] = {}
+            for key in sorted(keys):
+                reachable.setdefault(scopes[key], []).append(key)
+            for spec in declaration.fields:
+                yield declaration.key_for(spec), reachable
 
     def test_the_real_registry_syncs_against_the_seeded_tree(self):
         declared = sum(len(d.fields) for d in all_declarations())
@@ -507,14 +525,16 @@ class RegistryScopeMatchesTheGuardingKeyTests(TestCase):
                     )
 
     def test_every_field_scope_equals_its_guarding_keys_scope(self):
-        scopes = dict(Permission.objects.values_list("key", "scope"))
         rows = {row.key: row for row in FieldDefinition.objects.select_related("resource")}
         guarded = set()
-        for field_key, key in self._guards():
-            with self.subTest(field=field_key, guard=key):
+        for field_key, reachable in self._guards():
+            with self.subTest(field=field_key):
                 self.assertIn(field_key, rows)
-                self.assertIn(key, scopes, "the guarding key is not seeded")
-                self.assertEqual(rows[field_key].scope, scopes[key])
+                self.assertIn(
+                    rows[field_key].scope, reachable,
+                    f"{field_key} is {rows[field_key].scope} and no key on its "
+                    f"resource is: {reachable}",
+                )
                 guarded.add(field_key)
         self.assertEqual(guarded, set(rows))
 

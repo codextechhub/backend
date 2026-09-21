@@ -147,9 +147,10 @@ class PlatformStaffProfileViewSet(
     GET    /platform-staff-profiles/me/      - own profile (self-service)
     PATCH  /platform-staff-profiles/me/      - edit own profile (self-service)
 
-    Sensitive payroll fields (bank_name, account_name, account_number) are
-    gated by FLS - only callers holding platform.staff_payroll.view/manage
-    can read/write them, regardless of endpoint.
+    The payroll fields (bank_name, account_name, account_number) are registered
+    Field Access fields of ``platform.staff_profile``: the caller's role decides
+    whether each is read and written, on every endpoint here. A staff member
+    always reads and writes their own, whatever their roles say.
 
     Permission matrix:
       list:                   any active user, current-tenant staff only

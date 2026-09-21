@@ -184,7 +184,7 @@ class ResolverTests(TestCase):
 
     def test_a_never_band_key_resolves_to_no_capability(self):
         self.assertIsNone(
-            capability_key_for("school", "students", "view_sensitive")
+            capability_key_for("school", "user_overrides", "manage")
         )
 
     def test_field_access_keys_are_core_in_a_school_and_platform_on_the_platform(self):

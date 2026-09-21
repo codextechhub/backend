@@ -1,8 +1,8 @@
 """Seed the `platform` permission module and grant it to the platform roles.
 
 This is the single source of truth for the platform-administration permissions
-(permissions registry, roles, team, staff profiles, payroll, organogram,
-schools, branches, audit, dashboard, documents). Both ``create_superuser`` and
+(permissions registry, roles, team, staff profiles, organogram, schools,
+branches, audit, dashboard, documents). Both ``create_superuser`` and
 ``seed_all_permissions`` run this - keeping the keys defined in exactly one
 place so a new resource (e.g. organogram) can never again be wired into views
 but forgotten by the seed.
@@ -108,14 +108,12 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
             ("update", "Edit a CX staff profile",   False, _NORMAL),
         ],
     ),
-    (
-        "staff_payroll",
-        "CX staff sensitive payroll / bank details (FLS-gated)",
-        [
-            ("view",   "View staff bank / payroll details", False, _SENSITIVE),
-            ("manage", "Edit staff bank / payroll details", True,  _CRITICAL),
-        ],
-    ),
+    # There is deliberately no ``staff_payroll`` resource. A CX staff member's
+    # bank name, account name and account number are registered fields of
+    # ``platform.staff_profile`` (``vs_user/field_access.py``), so who reads
+    # and writes each of them is a Field Access switch on the role. A key here
+    # would answer the same question a second time and could disagree with the
+    # switch, and the profile endpoints already carry ``staff_profile.*``.
     (
         "organogram",
         "CX organogram - departments, positions, assignments, matrix lines",

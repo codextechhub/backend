@@ -357,10 +357,11 @@ class Permission(TimeStampedModel):
     #: available to everybody. The opposite default would hide working routes
     #: from paying schools the day a new module ships.
     #:
-    #: Some keys must never be filled in. ``school.students.view_sensitive``
-    #: guards a child's blood group and allergies; who inside a school may
-    #: read that is a role decision, and selling it by tier would be
-    #: indefensible.
+    #: Some keys must never be filled in. ``school.user_overrides.manage``
+    #: grants one person an exception to their role; who inside a school may
+    #: do that is a role decision, and selling it by tier would be
+    #: indefensible. ``vs_rbac.permission_bands.NEVER_BAND`` is the list, with
+    #: the reason each stays out.
     capability = models.ForeignKey(
         "vs_config.Capability",
         on_delete=models.SET_NULL,

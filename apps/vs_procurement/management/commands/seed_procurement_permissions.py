@@ -63,8 +63,10 @@ PROCUREMENT_RESOURCES = [
     ("requisition",    "purchase requisitions", [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("submit", "SENSITIVE")]),
     ("rfq",            "requests for quotation", [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("issue", "SENSITIVE")]),
     ("stock",          "stock items",           [("view", "NORMAL"), ("manage", "SENSITIVE"), ("issue", "SENSITIVE"), ("adjust", "SENSITIVE")]),
+    # A vendor's contact and banking details are not a key of their own: who
+    # reads and writes each of them is a Field Access switch on the role.
     ("vendor",         "vendors",               [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"),
-                                                 ("manage", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
+                                                 ("manage", "SENSITIVE")]),
     ("vendor_assessment", "vendor assessments",  [("create", "SENSITIVE")]),
     ("vendor_invoice", "vendor invoices",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("submit", "SENSITIVE"),
                                                  ("match", "SENSITIVE"), ("post", "CRITICAL"), ("override_variance", "CRITICAL"),

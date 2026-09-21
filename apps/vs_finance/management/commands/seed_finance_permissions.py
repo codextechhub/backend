@@ -64,9 +64,11 @@ FINANCE_RESOURCES = [
                                                 ("email", "SENSITIVE")]),
     ("report",       "financial reports",      [("view", "NORMAL")]),
     ("audit",        "finance audit logs",     [("view", "SENSITIVE")]),
+    # Who reads the account number itself is a Field Access switch on the role,
+    # not a key here.
     ("bankaccount",  "bank accounts",          [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("update", "SENSITIVE"), ("import", "SENSITIVE"),
-                                                ("reconcile", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
+                                                ("reconcile", "SENSITIVE")]),
     ("budget",       "budgets",                [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("edit", "SENSITIVE"), ("approve", "SENSITIVE"),
                                                 ("delete", "SENSITIVE")]),
@@ -89,9 +91,11 @@ FINANCE_RESOURCES = [
                                                 ("dispose", "CRITICAL")]),
     ("paymentplan",  "payment plans",          [("view", "NORMAL"), ("create", "NORMAL"),
                                                 ("activate", "SENSITIVE"), ("cancel", "SENSITIVE")]),
+    # Reaching the payroll screens at all is what these keys decide. Whether a
+    # holder sees the figures on a line, or on a salary row, is a Field Access
+    # switch on the role.
     ("payrollrun",   "payroll runs",           [("view", "SENSITIVE"), ("create", "SENSITIVE"),
-                                                ("post", "CRITICAL"), ("pay", "CRITICAL"),
-                                                ("view_sensitive", "SENSITIVE")]),
+                                                ("post", "CRITICAL"), ("pay", "CRITICAL")]),
     # The salary roster / structures (master data behind a run) get their own resource so
     # editing them is not conflated with running payroll. Every verb is SENSITIVE - even
     # listing exposes who earns what.

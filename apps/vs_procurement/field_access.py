@@ -1,9 +1,14 @@
 """Vendor fields an administrator may restrict per role.
 
-These are the fields ``VendorSerializer`` withholds from a caller without
-``procurement.vendor.view_sensitive``, and the ones ``views/vendors.py`` refuses
-to write for the same caller. Every one is written by the vendor create and
+A supplier's contact and banking details. ``VendorSerializer`` withholds each
+from a role whose Read switch is off, and ``views/vendors.py`` refuses to write
+one whose Write switch is off. Every one is written by the vendor create and
 update endpoints, ``contacts`` through ``_replace_vendor_contacts``.
+
+All of them are declared sensitive, so a role reaches none of them until a
+school turns it on. Reaching the vendor record is ``procurement.vendor.view``;
+reading the bank account on it is a separate decision, which is what keeps
+raising an order and paying for it apart.
 """
 from vs_rbac.field_registry import FieldSpec, register_fields
 

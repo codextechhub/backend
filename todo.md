@@ -342,6 +342,45 @@ staff at all.
 VERIFIED: vs_rbac 723, core 166, schools.vs_students 291, schools.vs_staff 250 OK,
 makemigrations --check clean.
 
+### D10. A role's switches decide which fields it reads and writes (4767f637, 2026-09-21)
+MODULES: M04 roles and permissions, and every module whose fields are now switched:
+M03 identity, M11 students, M12 staff, M18 payments, M19 finance, M21 vendors,
+M10 bulk import, M26 exports, M07 workflow, MRD.
+Field Access stage 3. The switches stored in stage 2 now DECIDE what every surface
+shows and accepts, replacing the permission keys that were checked inside
+serializers (`vs_rbac.fls`, retired in the following commit).
+- A field a caller cannot read is ABSENT, with no placeholder and no list of the
+  names withheld. One they can read but not change is present and named in
+  `_read_only_fields`. A submitted field they cannot write is refused 403
+  `field_write_denied` naming every offending field, and nothing is saved.
+- Dropped rather than refused: an echoed unchanged value on update (only for a
+  caller who may READ the field), an empty value on create, and any value of a
+  field declared open on create, which is how a pupil's enrolment date and a staff
+  member's email still work at creation.
+- Migration 0025 converted every key into switches on roles, the prebuilt library
+  and personal exceptions, so release day changes nobody's access.
+  `verify_field_access_conversion` proves it per user on a production copy.
+- OWNER DECISION D18: ten write abilities end, all the same shape, where a key
+  gated only reading and the value was written behind the endpoint's own key. Four
+  payroll-line figures, three salary figures, a bank account number, an import
+  batch file and three staff bank fields. Writing a number you cannot see stops
+  being expressible, because write implies read.
+- Surfaces: vendors, bank accounts, payroll, salaries, virtual accounts, payouts,
+  students, staff, user accounts, imports, exports, the money movements feed (keys
+  absent rather than bulleted) and approval documents. An invoice's pay-to block is
+  a declared system surface: it is addressed to the payer.
+- `/me` and the login response carry `field_access` (hidden, read-only, and the
+  read-only names an Add form may still offer). A field the tenant may not hold is
+  omitted rather than named.
+MUST SAY: for M04, the enforcement contract, the 403, the conversion and D18; for
+each module, that its named fields are now governed by role switches rather than a
+key, and which fields those are. Remove any Needs Attention item about field-level
+security being a mechanism with no policy behind it. Record that the frontends do
+not yet hide or grey: that ships with the frontend slice.
+VERIFIED: vs_rbac 811, core 168, vs_procurement 586, vs_finance 771,
+vs_payments 210, vs_user 408, vs_import_data 81, vs_exports 185, vs_workflow 420,
+schools.vs_students 291, schools.vs_staff 250 OK; makemigrations --check clean.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

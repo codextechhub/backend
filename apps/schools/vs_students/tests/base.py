@@ -41,7 +41,6 @@ STUDENT_KEYS = (
     "school.students.create",
     "school.students.update",
     "school.students.manage",
-    "school.students.view_sensitive",
     "school.students.import",
     "school.students.export",
 )

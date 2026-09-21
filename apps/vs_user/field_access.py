@@ -1,14 +1,16 @@
 """Staff account fields an administrator may restrict per role.
 
-``platform.staff_profile`` holds a CX staff member's payroll bank details. They
-are read with ``platform.staff_payroll.view`` and written with
-``platform.staff_payroll.manage``, both platform-only keys, and the profile
-endpoints write them.
+``platform.staff_profile`` holds a CX staff member's payroll bank details,
+written by the profile endpoints. All three are declared sensitive and
+``PLATFORM`` scope, so only a platform role reaches them and only where the
+switches are on. A staff member always reads and writes their own, whatever
+their roles say: that is an owner rule on the serializer, not a switch.
 
 ``platform.team`` holds account security and invitation facts about another
-user, read with ``platform.team.view``, which a school's own administrators
-hold too. The server records every one of them (sign-in, password change,
-invitation), so none is writable.
+user. Reaching the account at all is ``platform.team.view``, which a school's
+own administrators hold too; which of these facts they see is the switch. The
+server records every one of them (sign-in, password change, invitation), so
+none is writable.
 """
 from vs_rbac.field_registry import FieldSpec, register_fields
 

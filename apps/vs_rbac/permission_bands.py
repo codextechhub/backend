@@ -208,19 +208,13 @@ ACTION_BANDS = {
 #: Keys that must never carry a band, with the reason each stays out. These
 #: decide who inside an organisation may look at something. A school must not
 #: be able to buy its way into a child's medical record.
+#:
+#: The fields themselves are absent because they are no longer keys. A child's
+#: blood group, a supplier's bank details, a payout's destination account and
+#: an individual salary figure are Field Access switches, and a switch carries
+#: no band at all: what a school buys is the screen, and who inside the school
+#: reads a field on it is that school's own decision.
 NEVER_BAND = {
-    ("school", "students", "view_sensitive"):
-        "A child's blood group, allergies and medical conditions.",
-    ("procurement", "vendor", "view_sensitive"):
-        "A supplier's bank details; separation of duties, not a tier.",
-    ("payments", "payout", "view_sensitive"):
-        "Destination account details on a payout.",
-    ("payments", "virtual_account", "view_sensitive"):
-        "Account numbers behind a school's collection accounts.",
-    ("finance", "bankaccount", "view_sensitive"):
-        "The school's own bank account numbers.",
-    ("finance", "payrollrun", "view_sensitive"):
-        "Individual salary figures.",
     ("exports", "sensitive_field", "export"):
         "Permission to carry restricted fields out of the platform.",
     ("school", "user_overrides", "manage"):

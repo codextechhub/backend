@@ -1,19 +1,26 @@
-"""The permission keys that guard fields today, as Field Access switches.
+"""The permission keys that guarded fields, as Field Access switches.
 
-Field level security started as a handful of permission keys checked inside
-serializers (``vs_rbac.fls``). Field Access replaces them with per-role Read
-and Write switches. This module is the single place that says which key stands
-for which field and which access, so nothing has to derive it again at a call
-site, and the data migration, the verification command and the tests all read
-the same table.
+Field visibility started as a handful of permission keys checked inside
+serializers. Field Access replaced them with per-role Read and Write switches.
+This module is the single place that says which key stood for which field and
+which access, so nothing has to derive it again at a call site, and the two
+data migrations, the verification command and the tests all read the same
+table.
+
+It outlives the keys themselves. Migration 0025 converts grants into switches
+and migration 0026 deletes the keys that guarded nothing else, so from then on
+the entries here describe what a database held before it was migrated, which is
+what the verification command needs in order to prove that release day changed
+nobody's access. ``survives`` records which keys stayed, because they also
+guard a page or an endpoint.
 
 Every entry was checked against the code, not against a design table: each
 serializer's ``read_permissions`` and ``write_permissions``, the vendor view's
 ``_require_sensitive_access``, the quotation request's ``can_view_contacts``
-and the movements feed's mask. ``gates`` records what the code enforces at
-field level, which is not always what a key's name suggests: several keys gate
-only reading, and the value is written on a path that asks for the endpoint's
-own key instead.
+and the movements feed's mask. ``gates`` records what that code enforced at
+field level, which is not always what a key's name suggests: several keys gated
+only reading, while the value was written on a path that asked for the
+endpoint's own key instead.
 
 Translating a key into switches
 -------------------------------
@@ -25,11 +32,11 @@ For role ``r`` and converted field ``f``::
 
 Two consequences are worth stating plainly.
 
-**Write follows Read where nothing gates writes today.** Write implies Read is
-an invariant of the new model (D10, and a check constraint in the database), so
-"may change a value it cannot see" stops being expressible. Where a key gates
-only reading, the write switch therefore follows the read switch, and a role
-that could change the value today without holding the read key loses that.
+**Write follows Read where nothing gated writes.** Write implies Read is an
+invariant of the new model (D10, and a check constraint in the database), so
+"may change a value it cannot see" is not expressible. Where a key gated only
+reading, the write switch therefore follows the read switch, and a role that
+could change the value without holding the read key loses that.
 :data:`ACCEPTED_DIFFERENCES` names every field where this bites and why.
 
 **A field whose default is open needs an explicit OFF row.** A role that lacks
@@ -61,15 +68,15 @@ _WRITE_ONLY = frozenset({WRITE})
 
 @dataclass(frozen=True)
 class KeyConversion:
-    """One permission key, the registered fields it guards, and how.
+    """One permission key, the registered fields it guarded, and how.
 
-    ``gates`` holds the accesses the key decides **in code today**. ``survives``
-    is False for a key that exists only to guard fields and leaves the registry
-    once enforcement moves to the switches, and True for one that also guards a
-    page or an endpoint and therefore stays.
+    ``gates`` holds the accesses the key decided in the serializers and views
+    that checked it. ``survives`` is False for a key that guarded fields and
+    nothing else, which migration 0026 deletes, and True for one that also
+    guards a page or an endpoint and therefore stays.
 
-    ``note`` records where the guard lives, so a reader can check the entry
-    against the code without searching for it.
+    ``note`` records where the guard lived, so a reader can check the entry
+    against the history of that file without searching for it.
     """
 
     key: str
@@ -79,7 +86,7 @@ class KeyConversion:
     note: str = ""
 
 
-#: Every key that decides a registered field today, and what it decides.
+#: Every key that decided a registered field, and what it decided.
 CONVERSIONS: tuple[KeyConversion, ...] = (
     KeyConversion(
         key="procurement.vendor.view_sensitive",
@@ -281,11 +288,11 @@ CONVERSIONS: tuple[KeyConversion, ...] = (
 )
 
 
-#: The key that actually decides a write today where no field level check does.
+#: The key that actually decided a write where no field level check did.
 #:
 #: Used only to describe what access looked like before conversion. A caller
-#: holding one of these keys can change the value now whether or not they can
-#: read it, which is the access :data:`ACCEPTED_DIFFERENCES` records as lost.
+#: holding one of these could change the value whether or not they could read
+#: it, which is the access :data:`ACCEPTED_DIFFERENCES` records as lost.
 #: A field whose write path asks for the same key that gates its reads is
 #: absent here, because for it nothing changes.
 WRITE_REACHED_BY: dict[str, tuple[str, ...]] = {
@@ -328,9 +335,9 @@ class AcceptedDifference:
 
 
 _D10_CLAMP = (
-    "Write implies Read, so a role that can change this value today without "
-    "being able to see it keeps neither. The write path asks for {keys}, not "
-    "for the key that gates reading."
+    "Write implies Read, so a role that could change this value without "
+    "being able to see it keeps neither. The write path asked for {keys}, not "
+    "for the key that gated reading."
 )
 
 
@@ -398,9 +405,9 @@ def converted_field_keys() -> tuple[str, ...]:
 def gate_index() -> dict[str, dict[str, str]]:
     """``{field key: {access: permission key}}`` for the converted fields.
 
-    An access missing from a field's entry is one no field level check decides
-    today: reading such a field is open to whoever may open the record, and
-    writing it is decided by the endpoint the write goes through.
+    An access missing from a field's entry is one no field level check
+    decided: reading such a field was open to whoever could open the record,
+    and writing it was decided by the endpoint the write went through.
     """
     index: dict[str, dict[str, str]] = {}
     for entry in CONVERSIONS:
@@ -599,8 +606,8 @@ def _override_plan(models) -> list[dict]:
 
     One row per access the key gates, carrying the original mode, expiry and
     author. An ALLOW on a restricted key is left behind because it confers
-    nothing today: the permission evaluator refuses it, so converting it would
-    hand somebody access they do not have. A DENY is always carried, because
+    nothing: the permission evaluator refuses it, so converting it would hand
+    somebody access they do not have. A DENY is always carried, because
     taking access away is never an escalation.
     """
     fields = _converted_fields(models)
@@ -659,7 +666,7 @@ def _override_scope_ok(models, plan) -> list[dict]:
 
 
 def run_conversion(apps=None) -> dict:
-    """Write the switches and exceptions today's keys stand for.
+    """Write the switches and exceptions the old keys stand for.
 
     Idempotent: a switch or exception already present is left exactly as it
     is, so a second run writes nothing and an administrator's own decision is

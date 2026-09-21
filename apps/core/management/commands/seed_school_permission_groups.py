@@ -319,10 +319,11 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
             # against an invoice, and the invoice carries the branch. The
             # gateway record has no branch of its own to narrow by.
             #
-            # Every verb here is ``view``. Creating a collection, opening or
-            # managing a virtual account, and the two ``view_sensitive`` keys
-            # that expose the payer's own account details are all restricted,
-            # so none of them is groupable - which is the intended shape.
+            # Every verb here is ``view``. Creating a collection and opening or
+            # managing a virtual account are restricted, so neither is
+            # groupable, which is the intended shape. The account numbers
+            # themselves are Field Access switches and were never a group's to
+            # carry.
             "payments.collection.view",
             "payments.virtual_account.view",
             "payments.report.view",
@@ -381,13 +382,16 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
     (
         "Student Records",
         BRANCH_SCOPABLE,
-        "Enrol, edit and manage students, including their restricted fields.",
+        "Enrol, edit and manage students. Held for one branch it covers that "
+        "branch's roll.",
         (
+            # The medical fields are absent because no key carries them: blood
+            # group, allergies and conditions are Field Access switches, set
+            # per role on the Field Access screen rather than bundled here.
             "school.students.view",
             "school.students.create",
             "school.students.update",
             "school.students.manage",
-            "school.students.view_sensitive",
         ),
     ),
     (

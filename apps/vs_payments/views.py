@@ -289,8 +289,9 @@ class VirtualAccountListCreateView(APIView):
 
     GET is paginated with filters (``status``, ``provider``, ``customer``,
     ``search``) and rides KPI counts (active / inactive / providers in use) in
-    the envelope. The funding number/name stay FLS-stripped unless the caller
-    holds ``payments.virtual_account.view_sensitive``.
+    the envelope. The funding number and name are switched fields of
+    ``payments.virtual_account``, so they are absent unless the caller's role
+    reads them.
 
     docstring-name: Virtual accounts
     """

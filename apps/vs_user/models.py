@@ -1261,7 +1261,7 @@ class PlatformStaffProfile(TimeStampedModel):
     date_joined       = models.DateField(null=True, blank=True)
     date_exited       = models.DateField(null=True, blank=True)
 
-    # ── Payroll (sensitive - gated behind FLS at the serializer layer) ────────
+    # ── Payroll (registered Field Access fields; the role's switches decide) ──
     bank_name      = models.CharField(max_length=120, blank=True, default='')
     account_name   = models.CharField(max_length=200, blank=True, default='')
     account_number = models.CharField(max_length=20,  blank=True, default='')

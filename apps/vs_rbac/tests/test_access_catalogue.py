@@ -102,7 +102,6 @@ class AccessCatalogueTests(TestCase):
             "procurement.vendor.view",
             "procurement.vendor.create",
             "procurement.vendor.update",
-            "procurement.vendor.view_sensitive",
             "finance.invoice.view",
             "finance.invoice.create",
             "school.students.view",

@@ -121,9 +121,10 @@ class Student(_Owned):
 
     # ── medical ────────────────────────────────────────────────────────────
     # Five fields, not one free-text box: the profile shows five labelled rows
-    # and the edit drawer five inputs. The first three are gated on
-    # school.students.view_sensitive; the emergency contact deliberately is
-    # not, because a contact only an administrator can read is useless in the
+    # and the edit drawer five inputs. The first three are registered Field
+    # Access fields and declared sensitive, so a role reads them only where a
+    # school turns the switch on. The emergency contact deliberately is not,
+    # because a contact only an administrator can read is useless in the
     # emergency it exists for. None of the five is ever in a list serializer.
     blood_group = models.CharField(max_length=4, blank=True, default="")
     allergies = models.CharField(max_length=200, blank=True, default="")

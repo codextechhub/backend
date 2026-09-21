@@ -37,7 +37,6 @@ class _PayrollFixture(_FinanceBranchFixture):
 
     PAYROLL_KEYS = (
         "finance.payrollrun.create", "finance.payrollrun.view",
-        "finance.payrollrun.view_sensitive",
         "finance.salary.create", "finance.salary.view", "finance.salary.update",
         "finance.salary.delete",
     )

@@ -629,7 +629,7 @@ class VendorDetailView(_ProcBase):
         )
 
     def get(self, request, pk):
-        """Serialize one vendor; the serializer applies sensitive-field FLS."""
+        """Serialize one vendor, less the fields the caller's role cannot read."""
         entity = resolve_entity(request)
         vendor = self._get(entity, pk)
         return success_response(
