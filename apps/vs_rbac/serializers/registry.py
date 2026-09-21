@@ -90,12 +90,23 @@ class PermissionResourceSerializer(serializers.ModelSerializer):
         slug_field="name",
         queryset=PermissionModule.objects.filter(is_active=True),
     )
+    module_label = serializers.SerializerMethodField(read_only=True)
     permissions_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = PermissionResource
-        fields = ["id", "module", "name", "label", "description", "is_active", "permissions_count", "created_at", "updated_at"]
-        read_only_fields = ["id", "permissions_count", "created_at", "updated_at"]
+        fields = [
+            "id", "module", "module_label", "name", "label", "description",
+            "is_active", "permissions_count", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "module_label", "permissions_count", "created_at", "updated_at",
+        ]
+
+    def get_module_label(self, obj):
+        from ..models import display_label
+
+        return display_label(obj.module.label, obj.module.name)
 
     def validate(self, attrs):
         module = attrs.get("module") or getattr(self.instance, "module", None)
@@ -183,7 +194,7 @@ class PermissionActionSerializer(serializers.ModelSerializer):
 # 1b) Permission Registry
 # -----------------------------------------------------------------------------
 class PermissionSerializer(serializers.ModelSerializer):
-    """Read/write serializer for the global permission registry."""
+    """Represent one backend-owned permission definition."""
 
     module = serializers.SlugRelatedField(
         slug_field="name",
@@ -209,6 +220,9 @@ class PermissionSerializer(serializers.ModelSerializer):
     resource_key = serializers.SerializerMethodField(read_only=True)
     module_key = serializers.SerializerMethodField(read_only=True)
     action_key = serializers.SerializerMethodField(read_only=True)
+    label = serializers.CharField(source="readable_label", read_only=True)
+    module_label = serializers.SerializerMethodField(read_only=True)
+    resource_label = serializers.SerializerMethodField(read_only=True)
 
     def get_resource_key(self, obj):
         return obj.resource.name if obj.resource_id else None
@@ -219,16 +233,29 @@ class PermissionSerializer(serializers.ModelSerializer):
     def get_action_key(self, obj):
         return obj.action_id
 
+    def get_module_label(self, obj):
+        from ..models import display_label
+
+        return display_label(obj.module.label, obj.module.name)
+
+    def get_resource_label(self, obj):
+        from ..models import display_label
+
+        return display_label(obj.resource.label, obj.resource.name)
+
     class Meta:
         model = Permission
         fields = [
             "key",
             "module",
             "module_key",
+            "module_label",
             "resource",
             "resource_key",
+            "resource_label",
             "action",
             "action_key",
+            "label",
             "description",
             "sensitivity_level",
             "scope",
@@ -237,7 +264,10 @@ class PermissionSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["key", "module_key", "resource_key", "action_key", "created_at", "updated_at"]
+        read_only_fields = [
+            "key", "module_key", "module_label", "resource_key",
+            "resource_label", "action_key", "label", "created_at", "updated_at",
+        ]
 
     def validate(self, attrs):
         module = attrs.get("module") or getattr(self.instance, "module", None)
@@ -319,13 +349,21 @@ class PermissionDependencySerializer(serializers.ModelSerializer):
 
     permission_key = serializers.CharField(source="permission.key")
     depends_on_key = serializers.CharField(source="depends_on.key")
+    permission_label = serializers.CharField(
+        source="permission.readable_label", read_only=True,
+    )
+    depends_on_label = serializers.CharField(
+        source="depends_on.readable_label", read_only=True,
+    )
 
     class Meta:
         model = PermissionDependency
         fields = [
             "id",
             "permission_key",
+            "permission_label",
             "depends_on_key",
+            "depends_on_label",
             "created_at",
             "updated_at",
         ]

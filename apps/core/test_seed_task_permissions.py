@@ -13,6 +13,9 @@ from django.test import TestCase
 
 from vs_rbac.models import (
     Permission,
+    PermissionAction,
+    PermissionModule,
+    PermissionResource,
     PermissionScope,
     TenantRolePermission,
     TenantRoleTemplate,
@@ -98,3 +101,41 @@ class SeedTaskPermissionsTests(TestCase):
         _call("seed_platform_permissions")
         after = (self._granted("xvs_super_admin"), self._granted("xvs_platform_admin"))
         self.assertEqual(before, after)
+
+
+class SeedPermissionRegistryOwnershipTests(TestCase):
+    """The platform seeder exposes only the permission-registry read key."""
+
+    def setUp(self):
+        _call("seed_actions")
+        _call("seed_platform_permissions")
+
+    def test_only_the_registry_view_key_is_active(self):
+        active_keys = set(
+            Permission.objects.filter(
+                key__startswith="platform.permissions.",
+                is_active=True,
+            ).values_list("key", flat=True)
+        )
+
+        self.assertEqual(active_keys, {"platform.permissions.view"})
+
+    def test_reseeding_deactivates_a_legacy_registry_write_key(self):
+        module = PermissionModule.objects.get(name="platform")
+        resource = PermissionResource.objects.get(
+            module=module,
+            name="permissions",
+        )
+        action = PermissionAction.objects.get(name="create")
+        legacy = Permission.objects.create(
+            module=module,
+            resource=resource,
+            action=action,
+            scope=PermissionScope.PLATFORM,
+            is_active=True,
+        )
+
+        _call("seed_platform_permissions")
+
+        legacy.refresh_from_db()
+        self.assertFalse(legacy.is_active)

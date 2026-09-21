@@ -385,8 +385,8 @@ def _resource_rows(data):
     ]
 
 
-class TreeLabelsAreEditableTests(TestCase):
-    """A label set through the vision API is shown; a blank one falls back."""
+class TreeLabelsComeFromBackendDefinitionsTests(TestCase):
+    """A backend-defined label is shown, while a blank one falls back."""
 
     @classmethod
     def setUpTestData(cls):
@@ -397,23 +397,10 @@ class TreeLabelsAreEditableTests(TestCase):
         cls.admin = _reader(cls.school.tenant, "admin@bright-star.test", view_perm)
         cls.operator = make_vision_user(email="labels@codexng.test", super_admin=True)
 
-    def test_a_patched_label_is_shown_and_a_blank_one_falls_back(self):
+    def test_a_stored_label_is_shown_and_a_blank_one_falls_back(self):
         resource = PermissionResource.objects.get(module_id="finance", name="invoice")
-        resource.label = "Bills"
-        resource.save()
-
-        client = APIClient()
-        client.force_authenticate(user=self.operator)
-        module_response = client.patch(
-            reverse("rbac-permission-module-detail", kwargs={"name": "finance"}),
-            {"label": "Money"}, format="json",
-        )
-        self.assertEqual(module_response.status_code, 200, module_response.data)
-        resource_response = client.patch(
-            reverse("rbac-permission-resource-detail", kwargs={"pk": resource.pk}),
-            {"label": ""}, format="json",
-        )
-        self.assertEqual(resource_response.status_code, 200, resource_response.data)
+        PermissionModule.objects.filter(name="finance").update(label="Money")
+        PermissionResource.objects.filter(pk=resource.pk).update(label="")
 
         self.assertEqual(PermissionModule.objects.get(name="finance").label, "Money")
         resource.refresh_from_db()

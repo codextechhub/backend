@@ -23,7 +23,6 @@ from rest_framework.test import APIClient
 from vs_rbac.evaluator import get_effective_permissions, has_permission
 from vs_rbac.models import (
     Permission,
-    PermissionDependency,
     PermissionScope,
     RBACAuditLog,
     TenantRoleTemplate,
@@ -139,38 +138,19 @@ class PermissionListCreateViewTests(_AuthMixin, TestCase):
         self.school_admin = make_school_admin(self.branch)
         self.url = reverse("rbac-permission-list-create")
 
-    def test_create_permission_as_vision(self):
-        from vs_rbac.models import PermissionAction, PermissionModule, PermissionResource
-        module, _ = PermissionModule.objects.get_or_create(name="hr")
-        PermissionResource.objects.get_or_create(module=module, name="leave")
-        PermissionAction.objects.get_or_create(name="view")
-        data = {
-            "module": "hr",
-            "resource": "leave",
-            "action": "view",
-            "scope": PermissionScope.TENANT,
-            "description": "View",
-        }
-        resp = self._vision_client().post(self.url, data, format="json")
-        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
-        permission = Permission.objects.get(key="hr.leave.view")
-        self.assertEqual(permission.scope, PermissionScope.TENANT)
-        self.assertEqual(resp.data["data"]["scope"], PermissionScope.TENANT)
-
-    def test_create_permission_requires_scope(self):
-        from vs_rbac.models import PermissionAction, PermissionModule, PermissionResource
-        module, _ = PermissionModule.objects.get_or_create(name="hr")
-        PermissionResource.objects.get_or_create(module=module, name="leave")
-        PermissionAction.objects.get_or_create(name="view")
-
+    def test_create_permission_is_not_an_api_operation(self):
         resp = self._vision_client().post(
             self.url,
-            {"module": "hr", "resource": "leave", "action": "view"},
+            {
+                "module": "hr",
+                "resource": "leave",
+                "action": "view",
+                "scope": PermissionScope.TENANT,
+            },
             format="json",
         )
 
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("scope", resp.data["error"]["detail"])
+        self.assertEqual(resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
         self.assertFalse(Permission.objects.filter(key="hr.leave.view").exists())
 
     def test_search_permissions_across_related_fields(self):
@@ -197,46 +177,23 @@ class PermissionDetailViewTests(_AuthMixin, TestCase):
             "rbac-permission-detail", kwargs={"key": self.permission.key},
         )
 
-    def test_update_rejects_identity_changes_without_breaking_grants(self):
-        from vs_rbac.models import PermissionAction, PermissionModule, PermissionResource
-
+    def test_update_is_not_an_api_operation_and_keeps_grants(self):
         school = make_school()
         role = make_role(school, name="Invoice Approver")
         grant = make_role_permission(role, self.permission)
-        module, _ = PermissionModule.objects.get_or_create(name="payments")
-        PermissionResource.objects.get_or_create(module=module, name="payout")
-        PermissionAction.objects.get_or_create(name="authorize")
 
         resp = self._vision_client().patch(
             self.url,
-            {"module": "payments", "resource": "payout", "action": "authorize"},
+            {"description": "Approve a finance invoice."},
             format="json",
         )
 
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-        errors = resp.data["error"]["errors"]
-        self.assertEqual(set(errors), {"module", "resource", "action"})
+        self.assertEqual(resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
         self.assertTrue(
             Permission.objects.filter(key="finance.invoice.approve").exists()
         )
         grant.refresh_from_db()
         self.assertEqual(grant.permission_id, "finance.invoice.approve")
-
-    def test_update_allows_non_identity_changes(self):
-        resp = self._vision_client().patch(
-            self.url,
-            {
-                "description": "Approve a finance invoice.",
-                "scope": PermissionScope.PLATFORM,
-            },
-            format="json",
-        )
-
-        self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.permission.refresh_from_db()
-        self.assertEqual(self.permission.key, "finance.invoice.approve")
-        self.assertEqual(self.permission.description, "Approve a finance invoice.")
-        self.assertEqual(self.permission.scope, PermissionScope.PLATFORM)
 
 
 class PermissionVocabularyIdentityTests(_AuthMixin, TestCase):
@@ -244,7 +201,7 @@ class PermissionVocabularyIdentityTests(_AuthMixin, TestCase):
         self.vision_user = make_vision_user(super_admin=True)
         self.permission = make_permission("finance.invoice.approve")
 
-    def test_update_rejects_module_resource_and_action_renames(self):
+    def test_vocabulary_changes_are_not_api_operations(self):
         module_url = reverse(
             "rbac-permission-module-detail",
             kwargs={"name": self.permission.module_id},
@@ -272,7 +229,9 @@ class PermissionVocabularyIdentityTests(_AuthMixin, TestCase):
 
         for response in responses:
             with self.subTest(response=response.data):
-                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertEqual(
+                    response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED,
+                )
 
         self.permission.refresh_from_db()
         self.assertEqual(self.permission.module_id, "finance")
@@ -290,12 +249,11 @@ class PermissionDependencyViewTests(_AuthMixin, TestCase):
         self.perm_view = make_permission("finance.invoice.view")
         self.perm_approve = make_permission("finance.invoice.approve")
 
-    def test_create_dependency(self):
+    def test_create_dependency_is_not_an_api_operation(self):
         url = reverse("rbac-permission-dependency-list-create")
         data = {"permission_key": "finance.invoice.approve", "depends_on_key": "finance.invoice.view"}
         resp = self._vision_client().post(url, data, format="json")
-        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
-        self.assertTrue(PermissionDependency.objects.exists())
+        self.assertEqual(resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
     def test_school_admin_denied(self):
         url = reverse("rbac-permission-dependency-list-create")
@@ -1373,4 +1331,3 @@ class PermissionGroupCreationScopeTests(TestCase):
             permission.key,
             get_effective_permissions(fresh, tenant=school.tenant),
         )
-

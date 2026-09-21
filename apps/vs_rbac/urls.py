@@ -4,7 +4,7 @@ from . import views
 
 urlpatterns = [
     # -------------------------------------------------------------------------
-    # Permission vocabulary - Module / Resource / Action
+    # Backend-owned permission vocabulary - read-only API
     # -------------------------------------------------------------------------
     path(
         "vision/permission-modules/",
@@ -38,7 +38,7 @@ urlpatterns = [
     ),
 
     # -------------------------------------------------------------------------
-    # Vision-owned Permission Registry
+    # Backend-owned Permission Registry - read-only API
     # -------------------------------------------------------------------------
     path(
         "vision/permissions/",
@@ -67,7 +67,7 @@ urlpatterns = [
     ),
 
     # -------------------------------------------------------------------------
-    # Vision-owned Permission Groups (shared across school + platform roles)
+    # Backend-owned Permission Groups (shared across tenant + platform roles)
     # -------------------------------------------------------------------------
     path(
         "vision/permission-groups/",

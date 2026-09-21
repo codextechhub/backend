@@ -103,13 +103,25 @@ class TenantScopedRBACMixin:
 
 
 # -----------------------------------------------------------------------------
-# Permission vocabulary - Module / Resource / Action (Vision-owned)
+# Permission vocabulary - Module / Resource / Action (backend-owned)
 # -----------------------------------------------------------------------------
 
-# List and create permission modules in the Vision-owned vocabulary.
-class PermissionModuleListCreateView(CreateModelMixin, generics.ListCreateAPIView):
-    """docstring-name: Permission modules"""
-    queryset = PermissionModule.objects.all()
+# Permission definitions are registered by the backend seeders. These endpoints
+# expose that vocabulary to the console without allowing it to become a second
+# source of truth.
+class RegistryReadOnlyMixin:
+    rbac_permission = "platform.permissions.view"
+
+    def get_permissions(self):
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+
+class PermissionModuleListCreateView(RegistryReadOnlyMixin, generics.ListAPIView):
+    """List backend-owned permission modules.
+
+    docstring-name: Permission modules
+    """
+    queryset = PermissionModule.objects.order_by("name")
     serializer_class = PermissionModuleSerializer
     pagination_class = XVSPagination
 
@@ -126,36 +138,27 @@ class PermissionModuleListCreateView(CreateModelMixin, generics.ListCreateAPIVie
             qs = qs.filter(Q(name__icontains=search))
         return qs
 
-    def get_permissions(self):
-        # Creating vocabulary is stricter than reading it.
-        if self.request.method == "POST":
-            self.rbac_permission = "platform.permissions.create"
-        else:
-            self.rbac_permission = "platform.permissions.view"
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
+class PermissionModuleDetailView(
+    RegistryReadOnlyMixin, RetrieveModelMixin, generics.RetrieveAPIView
+):
+    """Retrieve one backend-owned permission module.
 
-# Retrieve or mutate one permission module by its stable name.
-class PermissionModuleDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
-    """docstring-name: Permission modules"""
+    docstring-name: Permission modules
+    """
     queryset = PermissionModule.objects.all()
     serializer_class = PermissionModuleSerializer
     lookup_field = "name"
 
-    def get_permissions(self):
-        if self.request.method == "DELETE":
-            self.rbac_permission = "platform.permissions.manage"
-        elif self.request.method in ("PUT", "PATCH"):
-            self.rbac_permission = "platform.permissions.update"
-        else:
-            self.rbac_permission = "platform.permissions.view"
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
+class PermissionResourceListCreateView(RegistryReadOnlyMixin, generics.ListAPIView):
+    """List backend-owned resources within permission modules.
 
-# List and create resources within a permission module.
-class PermissionResourceListCreateView(CreateModelMixin, generics.ListCreateAPIView):
-    """docstring-name: Permission resources"""
-    queryset = PermissionResource.objects.select_related("module").all()
+    docstring-name: Permission resources
+    """
+    queryset = PermissionResource.objects.select_related("module").order_by(
+        "module_id", "name",
+    )
     serializer_class = PermissionResourceSerializer
     pagination_class = XVSPagination
 
@@ -174,34 +177,24 @@ class PermissionResourceListCreateView(CreateModelMixin, generics.ListCreateAPIV
             qs = qs.filter(Q(name__icontains=search))
         return qs
 
-    def get_permissions(self):
-        if self.request.method == "POST":
-            self.rbac_permission = "platform.permissions.create"
-        else:
-            self.rbac_permission = "platform.permissions.view"
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
+class PermissionResourceDetailView(
+    RegistryReadOnlyMixin, RetrieveModelMixin, generics.RetrieveAPIView
+):
+    """Retrieve one backend-owned permission resource.
 
-# Retrieve or mutate one permission resource.
-class PermissionResourceDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
-    """docstring-name: Permission resources"""
+    docstring-name: Permission resources
+    """
     queryset = PermissionResource.objects.select_related("module").annotate(permissions_count=Count("permissions", distinct=True))
     serializer_class = PermissionResourceSerializer
 
-    def get_permissions(self):
-        if self.request.method == "DELETE":
-            self.rbac_permission = "platform.permissions.manage"
-        elif self.request.method in ("PUT", "PATCH"):
-            self.rbac_permission = "platform.permissions.update"
-        else:
-            self.rbac_permission = "platform.permissions.view"
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
+class PermissionActionListCreateView(RegistryReadOnlyMixin, generics.ListAPIView):
+    """List backend-owned action verbs used in permission keys.
 
-# List and create action verbs used when composing permission keys.
-class PermissionActionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
-    """docstring-name: Permission actions"""
-    queryset = PermissionAction.objects.all()
+    docstring-name: Permission actions
+    """
+    queryset = PermissionAction.objects.order_by("name")
     serializer_class = PermissionActionSerializer
     pagination_class = XVSPagination
 
@@ -218,48 +211,31 @@ class PermissionActionListCreateView(CreateModelMixin, generics.ListCreateAPIVie
             qs = qs.filter(Q(name__icontains=search))
         return qs
 
-    def get_permissions(self):
-        if self.request.method == "POST":
-            self.rbac_permission = "platform.permissions.create"
-        else:
-            self.rbac_permission = "platform.permissions.view"
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
+class PermissionActionDetailView(
+    RegistryReadOnlyMixin, RetrieveModelMixin, generics.RetrieveAPIView
+):
+    """Retrieve one backend-owned permission action.
 
-# Retrieve or mutate one action verb by name.
-class PermissionActionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
-    """docstring-name: Permission actions"""
+    docstring-name: Permission actions
+    """
     queryset = PermissionAction.objects.annotate(permissions_count=Count("permissions", distinct=True))
     serializer_class = PermissionActionSerializer
     lookup_field = "name"
 
-    def get_permissions(self):
-        if self.request.method == "DELETE":
-            self.rbac_permission = "platform.permissions.manage"
-        elif self.request.method in ("PUT", "PATCH"):
-            self.rbac_permission = "platform.permissions.update"
-        else:
-            self.rbac_permission = "platform.permissions.view"
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
-
-
 # -----------------------------------------------------------------------------
-# Global Permission Registry (Vision-owned)
+# Global Permission Registry (backend-owned)
 # -----------------------------------------------------------------------------
-# List and create concrete permission keys from module/resource/action vocabulary.
-class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
-    """docstring-name: Permissions"""
-    queryset = Permission.objects.select_related("module", "resource", "action").order_by("-updated_at", "module", "action", "key")
+class PermissionListCreateView(RegistryReadOnlyMixin, generics.ListAPIView):
+    """List backend-owned permission definitions.
+
+    docstring-name: Permissions
+    """
+    queryset = Permission.objects.select_related(
+        "module", "resource", "action",
+    ).order_by("module_id", "resource__name", "action_id")
     serializer_class = PermissionSerializer
     pagination_class = XVSPagination
-
-    def get_permissions(self):
-        # Registry writes use create rights; list views require only read access.
-        if self.request.method == "POST":
-            self.rbac_permission = "platform.permissions.create"
-        else:
-            self.rbac_permission = "platform.permissions.view"
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -295,131 +271,56 @@ class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
         return qs
 
 
-# Retrieve, update, or delete one concrete permission key.
-class PermissionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
-    """docstring-name: Permissions"""
+class PermissionDetailView(
+    RegistryReadOnlyMixin, RetrieveModelMixin, generics.RetrieveAPIView
+):
+    """Retrieve one backend-owned permission definition.
+
+    docstring-name: Permissions
+    """
     queryset = Permission.objects.prefetch_related(
         "groups", "dependencies__depends_on", "required_by__permission"
     ).all()
     lookup_field = "key"
 
-    def get_serializer_class(self):
-        # Detail reads include dependencies and group membership; writes use the lean serializer.
-        if self.request.method == "GET":
-            return PermissionDetailSerializer
-        return PermissionSerializer
-
-    def get_permissions(self):
-        if self.request.method == "DELETE":
-            self.rbac_permission = "platform.permissions.delete"
-        elif self.request.method in ("PUT", "PATCH"):
-            self.rbac_permission = "platform.permissions.update"
-        else:
-            self.rbac_permission = "platform.permissions.view"
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
-
-    def update(self, request, *args, **kwargs):
-        partial = kwargs.pop("partial", False)
-        try:
-            instance = self.get_object()
-        except Exception:
-            return error_response(
-                message="Permission not found.",
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        serializer = self.get_serializer(instance, data=request.data, partial=partial)
-        if not serializer.is_valid():
-            return error_response(
-                message="Invalid data.",
-                error={"errors": serializer.errors},
-            )
-
-        try:
-            self.perform_update(serializer)
-        except Exception as exc:
-            return error_response(
-                message="Update failed.",
-                error={"error": str(exc)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-        return success_response(
-            message="Permission updated successfully.",
-            data=serializer.data,
-        )
-
-    def delete(self, request, *args, **kwargs):
-        try:
-            instance = self.get_object()
-        except Exception:
-            return error_response(
-                message="Permission not found.",
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        try:
-            self.perform_destroy(instance)
-        except Exception as exc:
-            return error_response(
-                message="Delete failed.",
-                error={"error": str(exc)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-        return success_response(message="Permission deleted successfully.")
+    serializer_class = PermissionDetailSerializer
 
 
-# List and create dependency rules between permission keys.
-class PermissionDependencyListCreateView(CreateModelMixin, generics.ListCreateAPIView):
-    """docstring-name: Permission dependencies"""
-    queryset = PermissionDependency.objects.select_related("permission", "depends_on").all()
+class PermissionDependencyListCreateView(RegistryReadOnlyMixin, generics.ListAPIView):
+    """List backend-owned dependency rules between permission keys.
+
+    docstring-name: Permission dependencies
+    """
+    queryset = PermissionDependency.objects.select_related(
+        "permission", "depends_on",
+    ).order_by(
+        "permission__module_id", "permission__resource__name",
+        "permission__action_id", "depends_on_id",
+    )
     serializer_class = PermissionDependencySerializer
     pagination_class = XVSPagination
 
-    def get_permissions(self):
-        if self.request.method == "POST":
-            self.rbac_permission = "platform.permissions.manage"
-        else:
-            self.rbac_permission = "platform.permissions.view"
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
+class PermissionDependencyDetailView(
+    RegistryReadOnlyMixin, RetrieveModelMixin, generics.RetrieveAPIView
+):
+    """Retrieve one backend-owned permission dependency.
 
-# Retrieve or remove one dependency rule.
-class PermissionDependencyDetailView(RetrieveModelMixin, DestroyModelMixin, generics.RetrieveDestroyAPIView):
-    """docstring-name: Permission dependencies"""
+    docstring-name: Permission dependencies
+    """
     queryset = PermissionDependency.objects.select_related("permission", "depends_on").all()
     serializer_class = PermissionDependencySerializer
     lookup_field = "id"
 
-    def get_permissions(self):
-        if self.request.method == "DELETE":
-            self.rbac_permission = "platform.permissions.manage"
-        else:
-            self.rbac_permission = "platform.permissions.view"
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
-
-
 # -----------------------------------------------------------------------------
-# Permission Groups (Vision-owned, shared across school + platform roles)
+# Permission Groups (backend-owned, shared across school + platform roles)
 # -----------------------------------------------------------------------------
-# List and create reusable permission bundles.
-class PermissionGroupListCreateView(CreateModelMixin, generics.ListCreateAPIView):
-    """
-    Vision-facing:
-    - GET: list all permission groups
-    - POST: create a new permission group with optional permission_keys
+class PermissionGroupListCreateView(RegistryReadOnlyMixin, generics.ListAPIView):
+    """List backend-owned reusable permission bundles.
 
     docstring-name: Permission groups
     """
     pagination_class = XVSPagination
-
-    def get_permissions(self):
-        if self.request.method == "POST":
-            self.rbac_permission = "platform.permissions.manage"
-        else:
-            self.rbac_permission = "platform.permissions.view"
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
         qs = (
@@ -449,45 +350,21 @@ class PermissionGroupListCreateView(CreateModelMixin, generics.ListCreateAPIView
 
         return qs
 
-    def get_serializer_class(self):
-        # Create accepts permission_keys, while list keeps the payload compact.
-        if self.request.method == "POST":
-            return PermissionGroupDetailSerializer
-        return PermissionGroupListSerializer
+    serializer_class = PermissionGroupListSerializer
 
 
-# Retrieve, update, or delete one permission bundle.
-class PermissionGroupDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
-    """
-    Vision-facing:
-    - GET: group detail with expanded permissions
-    - PATCH/PUT: update group fields and optionally replace permission_keys
-    - DELETE: blocked for system groups
+class PermissionGroupDetailView(
+    RegistryReadOnlyMixin, RetrieveModelMixin, generics.RetrieveAPIView
+):
+    """Retrieve one backend-owned permission bundle.
 
     docstring-name: Permission groups
     """
     serializer_class = PermissionGroupDetailSerializer
     lookup_field = "id"
 
-    def get_permissions(self):
-        if self.request.method in ("PUT", "PATCH", "DELETE"):
-            self.rbac_permission = "platform.permissions.manage"
-        else:
-            self.rbac_permission = "platform.permissions.view"
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
-
     def get_queryset(self):
         return PermissionGroup.objects.all().prefetch_related("permissions")
-
-    def delete(self, request, *args, **kwargs):
-        instance = self.get_object()
-        if instance.is_system:
-            # System bundles may back shipped roles, so they are not user-deletable.
-            return error_response(
-                message="System permission groups cannot be deleted.",
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        return super().delete(request, *args, **kwargs)
 
 
 # -----------------------------------------------------------------------------
@@ -560,27 +437,8 @@ class TenantRoleTemplateListCreateView(TenantScopedRBACMixin, CreateModelMixin, 
 
 
 def _permission_label(permission) -> str:
-    """The sentence a person reads beside the checkbox.
-
-    ``description`` when the registry has one, which is most of them. When it
-    does not, the key is composed back into English from its own parts rather
-    than printed raw: 48 of the keys a school can hold carry no description,
-    and they are all in ``academics`` and ``school`` - precisely the modules a
-    school spends this screen in. "school.administrators.view" is not a label,
-    but "View administrators" is, and it is built from the same two fields the
-    key itself is built from, so it cannot describe a different permission than
-    the one it sits beside.
-    """
-    described = (permission.description or "").strip()
-    if described:
-        return described
-    action = (permission.action_id or "").replace("_", " ").strip()
-    resource = (
-        permission.resource.name if permission.resource_id else ""
-    ).replace("_", " ").strip()
-    if not action and not resource:
-        return permission.key
-    return f"{action} {resource}".strip().capitalize()
+    """Return the backend wording a person reads beside the checkbox."""
+    return permission.readable_label
 
 
 # The permissions a tenant may pick from, grouped the way a picker shows them.

@@ -26,13 +26,9 @@ _NORMAL, _SENSITIVE, _CRITICAL = "NORMAL", "SENSITIVE", "CRITICAL"
 PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
     (
         "permissions",
-        "Global permission registry management",
+        "Global permission registry inspection",
         [
-            ("view",   "View global permission registry",  False, _NORMAL),
-            ("create", "Add new permissions",              False, _NORMAL),
-            ("update", "Edit permission metadata",         False, _NORMAL),
-            ("manage", "Manage groups and dependencies",   True,  _SENSITIVE),
-            ("delete", "Delete permissions from registry", True,  _NORMAL),
+            ("view", "View global permission registry", False, _NORMAL),
         ],
     ),
     (
@@ -246,6 +242,13 @@ SUPER_ADMIN_ONLY_KEYS = {
     "platform.tasks.view_all",
     "platform.tasks.view_sensitive",
 }
+
+RETIRED_PERMISSION_KEYS = {
+    "platform.permissions.create",
+    "platform.permissions.update",
+    "platform.permissions.manage",
+    "platform.permissions.delete",
+}
 # Canonical codex-tenant role keys (mirror the legacy PlatformRoleTemplate ids).
 PLATFORM_ROLE_KEYS = ["xvs_super_admin", "xvs_platform_admin"]
 _PLATFORM_ROLE_NAMES = {
@@ -321,6 +324,17 @@ class Command(BaseCommand):
                     self.stdout.write(f"  + {perm.key}")
 
                 all_perms.append(perm)
+
+        retired_count = Permission.objects.filter(
+            key__in=RETIRED_PERMISSION_KEYS,
+            is_active=True,
+        ).update(is_active=False)
+        if retired_count:
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"  Deactivated {retired_count} obsolete registry-write key(s)."
+                )
+            )
 
         # ── Grant to platform roles (codex tenant) ─────────────────────────────
         self.stdout.write(self.style.MIGRATE_HEADING("\n  Granting to platform roles...\n"))

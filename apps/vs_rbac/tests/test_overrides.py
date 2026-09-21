@@ -354,6 +354,7 @@ class UserPermissionOverrideTests(TestCase):
         rows = resp.json()["data"]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["permission_key"], TARGET_KEY)
+        self.assertEqual(rows[0]["permission_label"], "Update students")
         self.assertTrue(rows[0]["granted_by_role"])
         self.assertFalse(rows[0]["is_expired"])
         self.assertEqual(rows[0]["created_by_id"], str(self.actor.pk))

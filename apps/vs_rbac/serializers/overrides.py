@@ -28,6 +28,9 @@ class UserPermissionOverrideSerializer(serializers.ModelSerializer):
         help_text="Dotted permission key, e.g. 'school.students.update'.",
     )
     permission_key = serializers.CharField(source="permission_id", read_only=True)
+    permission_label = serializers.CharField(
+        source="permission.readable_label", read_only=True,
+    )
     permission_description = serializers.CharField(
         source="permission.description", read_only=True,
     )
@@ -48,6 +51,7 @@ class UserPermissionOverrideSerializer(serializers.ModelSerializer):
             "user_id",
             "permission",
             "permission_key",
+            "permission_label",
             "permission_description",
             "permission_sensitivity",
             "mode",
@@ -64,6 +68,7 @@ class UserPermissionOverrideSerializer(serializers.ModelSerializer):
             "id",
             "user_id",
             "permission_key",
+            "permission_label",
             "permission_description",
             "permission_sensitivity",
             "is_expired",

@@ -385,6 +385,20 @@ class Permission(TimeStampedModel):
     def __str__(self) -> str:
         return self.key
 
+    @property
+    def readable_label(self) -> str:
+        """Return the backend wording a permission picker shows to people.
+
+        Seeders may supply exact wording in ``description``. A definition with
+        no description still reads naturally because its action and resource
+        are the same parts from which its stable key is composed.
+        """
+        if description := self.description.strip():
+            return description
+        action = self.action_id.replace("_", " ")
+        resource = self.resource.name.replace("_", " ")
+        return f"{action} {resource}".capitalize()
+
 
 class FieldDefinition(TimeStampedModel):
     """One field of a resource that an administrator may restrict per role.
