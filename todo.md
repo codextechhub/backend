@@ -381,7 +381,7 @@ VERIFIED: vs_rbac 811, core 168, vs_procurement 586, vs_finance 771,
 vs_payments 210, vs_user 408, vs_import_data 81, vs_exports 185, vs_workflow 420,
 schools.vs_students 291, schools.vs_staff 250 OK; makemigrations --check clean.
 
-### D11. Hidden fields stop leaking below the top, and Add forms keep them (hash pending, 2026-09-22)
+### D11. Hidden fields stop leaking below the top, and Add forms keep them (cf9cdbad, 2026-09-22)
 MODULES: M04 roles and permissions, M11 students (guardians), M12 staff, MRD.
 - A staff member's email with Read off still reached the caller inside the
   record's `account` block (and in the create response). The block now enforces
