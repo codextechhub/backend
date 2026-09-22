@@ -216,7 +216,7 @@ class Command(BaseCommand):
             self._add_qualifications(profile, last, actor)
             made += 1
 
-        self._lock_one_account(tenant)
+        self._lock_one_account(tenant, slug)
         self._appoint_leave_approver(tenant, actor)
         self._appoint_money_approvers(tenant, actor)
         self._teach(tenant, actor)
@@ -325,7 +325,7 @@ class Command(BaseCommand):
             ),
         )
 
-    def _lock_one_account(self, tenant):
+    def _lock_one_account(self, tenant, slug):
         """One account LOCKED while its owner is plainly employed.
 
         The one state in this command written directly, and it says so here.
@@ -335,15 +335,26 @@ class Command(BaseCommand):
         flag chip and the Locked accounts count both need somebody to be locked
         and employed at once, which is the pair a school is most likely to read
         as a suspension.
+
+        The account is chosen only from the cast this command seeds, by the
+        addresses it gives them. A school's administrators carry staff records
+        too, and they are the accounts somebody signs in with to look at the
+        seeded school, so locking one of them locks the reader out of the very
+        screen the row exists for.
         """
         from vs_user.models import User
 
         from ...constants import EmploymentStatus
         from ...models import StaffProfile
 
+        cast = [
+            f"{first}.{last}@{slug}.test".lower()
+            for first, last, *_ in PEOPLE
+        ]
         target = (
             StaffProfile.objects.filter(
-                tenant=tenant, employment_status=EmploymentStatus.ACTIVE,
+                tenant=tenant, user__email__in=cast,
+                employment_status=EmploymentStatus.ACTIVE,
                 user__status=User.Status.ACTIVE,
             )
             .order_by("pk")

@@ -389,3 +389,51 @@ class ScenarioCoverageTests(_Base):
                     profile.branch_id, (None, branch.pk),
                     "a posting is either this school's one branch or school-wide",
                 )
+
+
+class LockedAccountTests(_Base):
+    """The one locked account is a seeded staff member, never an administrator.
+
+    A school's administrators carry staff records of their own, and theirs are
+    the newest in the school once it is built. They are also who signs in to
+    look at a seeded school, so a lock that lands on one keeps the reader out of
+    the directory the lock exists to populate.
+    """
+
+    def _give_admin_the_newest_record(self, school, index):
+        from schools.vs_staff.services import creation
+        from vs_user.models import User
+
+        admin = User.objects.get(email=f"staffseed{index}@example.test")
+        creation.create_profile(tenant=school.tenant, user=admin, actor=admin)
+        return admin
+
+    def test_an_administrator_with_the_newest_record_is_not_locked(self):
+        from schools.vs_staff.management.commands.seed_staff_scenarios import (
+            PEOPLE,
+        )
+        from vs_user.models import AccountLockout
+
+        self.seed()
+        admins = {
+            school.slug: self._give_admin_the_newest_record(school, index)
+            for index, school in enumerate(self.cast())
+        }
+        AccountLockout.objects.all().delete()
+        self.seed()
+        for school in self.cast():
+            with self.subTest(school=school.slug):
+                locked = [
+                    row.user.email
+                    for row in AccountLockout.objects.filter(
+                        user__tenant=school.tenant,
+                    )
+                    if row.is_locked_now()
+                ]
+                self.assertNotIn(admins[school.slug].email, locked)
+                cast = {
+                    f"{first}.{last}@{school.slug}.test".lower()
+                    for first, last, *_ in PEOPLE
+                }
+                self.assertEqual(len(locked), 1, locked)
+                self.assertIn(locked[0], cast)
