@@ -5,9 +5,8 @@ states this module has to show cannot all exist in one person, let alone one
 school:
 
     holy-cross          Two branches and live, with the deepest academic
-                        structure of the four and a ``teacher`` role template
-                        of its own. **This is the school to drive the module
-                        against.** It is the only live multi-branch school in
+                        structure of the four. **This is the school to drive
+                        the module against.** It is the only live multi-branch school in
                         the cast, which is the shape the module is designed for:
                         a posting that means something, a reach that can be
                         wider than it, and enough classes and offerings for the
@@ -15,11 +14,8 @@ school:
     brightfield-lekki   Two branches, still onboarding. The full cast of
                         PEOPLE: every employment status, every account state
                         that disagrees with one, and a registrar posted
-                        school-wide. Its role catalogue has no ``teacher`` in
-                        it, so everybody here is granted School Admin by the
-                        fallback below - which makes it the wrong school for
-                        reading a role column and the right one for the
-                        pre-live narrowing at a school with two branches.
+                        school-wide. The pre-live shape at a school with two
+                        branches.
     sunrise-academy     One branch and live. The recede case: the only place the
                         rule that the branch dimension disappears at a
                         one-branch school can actually be seen.
@@ -106,6 +102,22 @@ QUALIFICATIONS = {
                 ("ICAN (Chartered)", "Institute of Chartered Accountants of Nigeria", 2011)],
     "Bakare": [("B.Ed. Integrated Science", "Obafemi Awolowo University", 2014)],
     "Nwankwo": [("B.Sc. Public Administration", "Ahmadu Bello University", 2008)],
+}
+
+
+#: The prebuilt role each job title is invited into; anything unlisted is a
+#: Teacher. A bursar invited as a teacher cannot open the fee ledger she runs,
+#: and every finance approval that names her group finds nobody able to act.
+#:
+#: Where a school's catalogue lacks the role, the invitation falls back to
+#: Teacher and then to School Admin, because a seeder that insisted on a role the
+#: school never made would put nobody on the list at all. Every school built by
+#: ``build_school`` carries all five prebuilt roles, so the fallback is reached
+#: only by a school whose catalogue was edited by hand.
+ROLE_FOR_JOB_TITLE = {
+    "Bursar": "finance_admin",
+    "Procurement Officer": "procurement_admin",
+    "Branch Administrator": "branch_admin",
 }
 
 
@@ -206,6 +218,7 @@ class Command(BaseCommand):
 
         self._lock_one_account(tenant)
         self._appoint_leave_approver(tenant, actor)
+        self._appoint_money_approvers(tenant, actor)
         self._teach(tenant, actor)
         self._record_leave(tenant, actor)
 
@@ -225,13 +238,12 @@ class Command(BaseCommand):
 
         from ...services import creation
 
-        # Teacher where the school has one, and School Admin where it does not.
-        # A school builds its own catalogue, so the prebuilt teacher template is
-        # not guaranteed to be there, and a seeder that insisted on it would
-        # refuse to put anybody on the list at all. The cost is visible and is
-        # named in the docstring: at a school without it, every row reads School
-        # Admin, so that school is the wrong one to read a role column at.
-        role = self._role(tenant, "teacher") or self._role(tenant, "school_admin")
+        # The role the job title implies, then Teacher, then School Admin.
+        role = (
+            self._role(tenant, ROLE_FOR_JOB_TITLE.get(job_title, "teacher"))
+            or self._role(tenant, "teacher")
+            or self._role(tenant, "school_admin")
+        )
         if role is None:
             raise CommandError(
                 f"{slug} has no role to invite anybody into. Run "
@@ -395,6 +407,87 @@ class Command(BaseCommand):
         WorkflowApproverGroupMember.objects.create(
             group=group, kind="USER", user=actor,
         )
+
+    @transaction.atomic
+    def _appoint_money_approvers(self, tenant, actor):
+        """Publish the finance, procurement and payout ladders, and staff them.
+
+        Each ladder is published through its own module's service, the one its
+        ``seed_*_approvals`` command calls, and each service creates its groups
+        empty. Empty groups park every requisition, refund and payout, so a
+        seeded school could show the parking rule and nothing past it.
+
+        The first-line groups get the school's bursar, the person who does that
+        work at a real school, alongside the administrator; the senior groups get
+        the administrator alone. The payout checker is the bursar only where the
+        school has one, because the senior payout stage refuses a second vote from
+        the person who cast the first. A group somebody has already filled is
+        left as it is.
+        """
+        from vs_finance.approvals import (
+            ensure_tenant_approval_templates as ensure_finance_ladders,
+            ensure_tenant_expense_claim_template,
+        )
+        from vs_finance.constants import (
+            WF_ADJUSTMENT_APPROVER_GROUP,
+            WF_EXPENSE_CLAIM_APPROVER_GROUP,
+            WF_SENIOR_ADJUSTMENT_APPROVER_GROUP,
+        )
+        from vs_payments.approvals import (
+            ensure_tenant_approval_templates as ensure_payout_ladder,
+        )
+        from vs_payments.constants import (
+            WF_DEFAULT_APPROVE_GROUP,
+            WF_DEFAULT_HIGH_VALUE_GROUP,
+        )
+        from vs_procurement.approvals import (
+            ensure_tenant_approval_templates as ensure_procurement_ladders,
+        )
+        from vs_procurement.constants import (
+            WF_DEFAULT_MANAGER_GROUP,
+            WF_DEFAULT_SENIOR_GROUP,
+        )
+        from vs_workflow.models import (
+            WorkflowApproverGroup,
+            WorkflowApproverGroupMember,
+        )
+
+        from ...constants import EmploymentStatus
+        from ...models import StaffProfile
+
+        ensure_finance_ladders(tenant)
+        ensure_tenant_expense_claim_template(tenant)
+        ensure_procurement_ladders(tenant)
+        ensure_payout_ladder(tenant)
+
+        bursar = (
+            StaffProfile.objects
+            .filter(
+                tenant=tenant, job_title="Bursar",
+                employment_status=EmploymentStatus.ACTIVE,
+            )
+            .select_related("user").first()
+        )
+        first_line = [bursar.user, actor] if bursar else [actor]
+        members = {
+            WF_ADJUSTMENT_APPROVER_GROUP: first_line,
+            WF_EXPENSE_CLAIM_APPROVER_GROUP: first_line,
+            WF_DEFAULT_MANAGER_GROUP: first_line,
+            WF_SENIOR_ADJUSTMENT_APPROVER_GROUP: [actor],
+            WF_DEFAULT_SENIOR_GROUP: [actor],
+            WF_DEFAULT_APPROVE_GROUP: [bursar.user] if bursar else [actor],
+            WF_DEFAULT_HIGH_VALUE_GROUP: [actor],
+        }
+        for code, users in members.items():
+            group = WorkflowApproverGroup.all_objects.filter(
+                tenant=tenant, code=code,
+            ).first()
+            if group is None or group.members.exists():
+                continue
+            for user in users:
+                WorkflowApproverGroupMember.objects.create(
+                    group=group, kind="USER", user=user, added_by=actor,
+                )
 
     def _teach(self, tenant, actor):
         """Cover some subjects, leave one with only assistants, leave one bare.

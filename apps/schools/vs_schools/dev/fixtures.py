@@ -5,11 +5,12 @@ imports this. It exists so ``seed_test_school`` (one school) and
 ``seed_onboarding_scenarios`` (a cast of them, each parked in a different state)
 build the same shape of school instead of two shapes that drift.
 
-Why a school is not one row: it needs a tenant, at least one branch, the
-prebuilt role templates with their permissions copied in, a person holding each
-role, a set of books and a provisioned control room. Miss any one and the school
-looks fine in the admin, then answers 403 or an empty checklist to the first
-screen that asks it a real question.
+Why a school is not one row: it needs a tenant, at least one branch, the five
+prebuilt role templates every real school is created with, an administrator
+holding them with a staff record behind the account, a set of books and a
+provisioned control room. Miss any one and the school looks fine in the admin,
+then answers 403 or an empty checklist to the first screen that asks it a real
+question.
 
 Never import this from application code, and never run it against production -
 it writes known passwords.
@@ -72,6 +73,15 @@ def build_school(
     reachable because the control room must tell it apart from "you have not
     started yet".
 
+    The school administrator is posted with ``branch=None``, a real posting that
+    means "the whole school", and it is what the onboarding first-administrator
+    check looks for: a person pinned to one site is not the school's
+    administrator. Beside School Admin they hold Finance Admin and Procurement
+    Admin. A real school gives those hats to whoever runs its money and School
+    Admin carries neither, but the seeded administrator is the one account a
+    developer signs in as, and without them every finance and procurement screen
+    answers "You do not have permission" to the person demonstrating it.
+
     Branches that older runs of this seed stored under a retired main-branch
     name are renamed before the main branch is fetched. The fetch keys on the
     name, so without the rename a re-seed would try to create a second main
@@ -84,6 +94,8 @@ def build_school(
     from vs_user.email_normalization import normalize_email
 
     from schools.vs_onboarding.services.provisioning import provision_onboarding
+    from schools.vs_staff.models import StaffProfile
+    from schools.vs_staff.services.creation import create_profile
 
     from ..models import (
         Currency,
@@ -93,6 +105,7 @@ def build_school(
         SchoolStatus,
         TermStructure,
     )
+    from ..services.admin_provisioning import REQUIRED_ROLE_KEYS
     from ..services.books import provision_books_for_school
 
     User = get_user_model()
@@ -176,7 +189,7 @@ def build_school(
     # built here would carry whatever this file happened to list and would drift
     # from what a real school gets the first time a key is added.
     roles = {}
-    for key in ("school_admin", "branch_admin"):
+    for key in REQUIRED_ROLE_KEYS:
         role = provision_role_from_prebuilt(tenant=tenant, prebuilt_key=key)
         if role is None:
             raise RuntimeError(
@@ -186,11 +199,16 @@ def build_school(
         if role.role_permissions.filter(granted=True).count() == 0:
             notes.append(f"role '{key}' carries no permissions - run seed_all_permissions")
 
-    def make_user(local_part, first, last, branch, role_key):
-        """One account, its password reset, and its role assignment.
+    def make_user(local_part, first, last, branch, role_keys, job_title):
+        """One account, its password reset, its role assignments and its staff record.
 
         Scoped to this tenant: one address can be an account at several schools,
         so an unscoped lookup would find - and quietly re-point - somebody else's.
+
+        The staff record is written the way a real administrator gets one, through
+        ``creation.create_profile``: an administrator is a member of staff, and
+        one without a record appears on no staff screen and is named on approval
+        and delegation screens only by account number.
         """
         email = normalize_email(f"{local_part}@{slug}.example.com")
         user = User.objects.filter(email=email, tenant=tenant).first()
@@ -206,23 +224,34 @@ def build_school(
         user.branch = branch
         user.save()
 
-        assignment, _ = TenantUserRoleAssignment.objects.get_or_create(
-            tenant=tenant, user=user, role=roles[role_key], branch=branch,
-            defaults=dict(
-                assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
-            ),
-        )
-        assignment.assignment_status = (
-            TenantUserRoleAssignment.AssignmentStatus.ACTIVE
-        )
-        assignment.save()
+        for role_key in role_keys:
+            assignment, _ = TenantUserRoleAssignment.objects.get_or_create(
+                tenant=tenant, user=user, role=roles[role_key], branch=branch,
+                defaults=dict(
+                    assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+                ),
+            )
+            assignment.assignment_status = (
+                TenantUserRoleAssignment.AssignmentStatus.ACTIVE
+            )
+            assignment.save()
+
+        if not StaffProfile.all_objects.filter(user=user).exists():
+            create_profile(
+                tenant=tenant, user=user, actor=user, branch=branch,
+                job_title=job_title,
+            )
         return user
 
-    # branch=None is a real posting meaning "the whole school", and it is what
-    # the onboarding first-administrator check looks for: a person pinned to one
-    # site is not the school's administrator.
-    admin = make_user("admin", *admin_name, None, "school_admin")
-    branch_admin = make_user("branch.admin", *branch_admin_name, main, "branch_admin")
+    # School-wide administrator with the money hats; branch administrator at main.
+    admin = make_user(
+        "admin", *admin_name, None,
+        ("school_admin", "finance_admin", "procurement_admin"), "Proprietor",
+    )
+    branch_admin = make_user(
+        "branch.admin", *branch_admin_name, main, ("branch_admin",),
+        "Branch Administrator",
+    )
 
     if with_books:
         # Before the control room: "confirm your set of books" is a required

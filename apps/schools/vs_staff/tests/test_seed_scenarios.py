@@ -84,6 +84,7 @@ class _Base(TestCase):
             )
             make_role(school, name="School Admin", key="school_admin")
             make_role(school, name="Teacher", key="teacher")
+            make_role(school, name="Finance Admin", key="finance_admin")
 
         # Named one at a time rather than run whole. The academics seeder has a
         # wider cast than this module's, and calling it bare would demand two
@@ -291,6 +292,69 @@ class ScenarioCoverageTests(_Base):
                     group.members.exists(),
                     "the group is empty, so every request would park",
                 )
+
+    def test_a_bursar_is_invited_into_finance_admin_and_a_teacher_into_teacher(self):
+        """The role follows the job, not the first role the school happens to have.
+
+        A bursar invited as a teacher cannot open the fee ledger she runs, and
+        every finance approval that names her group finds nobody able to act.
+        """
+        from vs_rbac.models import TenantUserRoleAssignment
+
+        self.seed()
+        tenant = self.multi_live.tenant
+
+        def role_keys(job_title):
+            profile = StaffProfile.all_objects.filter(
+                tenant=tenant, job_title=job_title,
+            ).first()
+            return set(
+                TenantUserRoleAssignment.objects.filter(
+                    tenant=tenant, user=profile.user,
+                ).values_list("role__key", flat=True),
+            )
+
+        self.assertEqual(role_keys("Bursar"), {"finance_admin"})
+        self.assertEqual(role_keys("Lead Teacher"), {"teacher"})
+        # No Procurement Admin role at this school: the job falls back to Teacher.
+        self.assertEqual(role_keys("Procurement Officer"), {"teacher"})
+
+    def test_the_money_ladders_are_published_and_staffed(self):
+        """Every finance, procurement and payout group has somebody in it.
+
+        The ladder services create their groups empty, and an empty group parks
+        every requisition, refund and payout, so a seeded school could show the
+        parking rule and nothing past it. The senior payout stage refuses a second
+        vote from whoever cast the first, so where a school has an active bursar
+        the first payout check is hers alone.
+        """
+        from vs_workflow.models import WorkflowApproverGroup
+
+        self.seed()
+        for school in self.cast():
+            with self.subTest(school=school.slug):
+                tenant = school.tenant
+                groups = {
+                    group.code: set(group.members.values_list("user__email", flat=True))
+                    for group in WorkflowApproverGroup.all_objects.filter(tenant=tenant)
+                }
+                for code in (
+                    "procurement-approver", "procurement-senior-approver",
+                    "finance-adjustment-approver",
+                    "finance-senior-adjustment-approver",
+                    "finance-expense-claim-approver",
+                    "payout-approver", "payout-senior-approver",
+                ):
+                    self.assertTrue(groups.get(code), f"{code} is empty or missing")
+
+                bursar = StaffProfile.all_objects.filter(
+                    tenant=tenant, job_title="Bursar",
+                    employment_status=EmploymentStatus.ACTIVE,
+                ).select_related("user").first()
+                if bursar is not None:
+                    self.assertIn(bursar.user.email, groups["procurement-approver"])
+                    self.assertEqual(groups["payout-approver"], {bursar.user.email})
+                    self.assertNotIn(bursar.user.email, groups["payout-senior-approver"])
 
     def test_leave_exists_in_both_an_approved_and_a_pending_state(self):
         self.seed()
