@@ -39,6 +39,9 @@ def register():
             "schools.vs_staff.serializers.StaffDetailSerializer",
             "schools.vs_staff.serializers.StaffUpdateSerializer",
             "schools.vs_staff.serializers.StaffCreateSerializer",
+            # The account block nested in a staff record, which carries the
+            # sign-in address a second time.
+            "schools.vs_staff.serializers.AccountStateSerializer",
         ),
         fields=(
             FieldSpec("date_of_birth", "Date of birth", group="Personal",

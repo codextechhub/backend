@@ -282,10 +282,23 @@ def field_access_payload(user, tenant) -> dict:
 
     The map the logged-in user receives with ``/me`` and with the login
     response, for the screens that have no record to ask: a create form and a
-    list of columns. Each resource carries the client-facing names that are
-    ``hidden``, the ones that are ``read_only``, and, under
-    ``open_on_create``, the read-only ones an Add form may still offer because
-    the write switch governs them only once the record exists.
+    list of columns. Each resource carries three lists of client-facing names:
+
+    * ``hidden``: the ones the user may not read, which an existing record
+      leaves out;
+    * ``read_only``: the ones the user may read and not change, which an
+      existing record's form greys;
+    * ``open_on_create``: every name declared open on create that is not fully
+      open to the user, hidden or read-only alike. An Add form offers these as
+      ordinary inputs, because the write switch governs them only once the
+      record exists and the create paths accept any value for them. Each name
+      here also appears in ``hidden`` or ``read_only``, which is what it is on
+      every record that already exists.
+
+    The two lists a name can sit in are therefore not exclusive: a staff
+    member's email for a role with Read off is in ``hidden`` and in
+    ``open_on_create``, so the Add form asks for it and the record drawer never
+    shows it.
 
     Only resources with something to say appear, and an absent resource or an
     absent name means full access, so a client never has to tell "nothing is
@@ -323,10 +336,7 @@ def field_access_payload(user, tenant) -> dict:
             resource, {"hidden": [], "read_only": [], "open_on_create": []},
         )
         names = api_names or [field_name]
-        if not readable:
-            entry["hidden"].extend(names)
-            continue
-        entry["read_only"].extend(names)
+        entry["read_only" if readable else "hidden"].extend(names)
         if open_on_create:
             entry["open_on_create"].extend(names)
     for entry in payload.values():
@@ -391,6 +401,15 @@ class FieldAccessMixin:
 
     Nested serializers need nothing: DRF gives a child the root's context, so
     a nested one carrying this mixin is filtered as its own resource.
+
+    What a ``SerializerMethodField`` returns is opaque to this mixin: it
+    filters the method field's own name and nothing inside the value. A block
+    that carries a registered field (an account's sign-in address beside the
+    staff record it belongs to) is therefore declared as a nested serializer
+    carrying the mixin, or built by hand and passed through :func:`visible`,
+    never assembled inside a method. The deep payload tests render every
+    declared surface as a caller with every field closed and fail on any
+    registered name found at any depth.
 
     A serializer rendered with no request in its context passes everything, as
     does one given :func:`system_context`.

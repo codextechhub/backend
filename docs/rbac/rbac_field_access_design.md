@@ -62,10 +62,13 @@ Resource → the resource's permissions, each with a readable label.
 | D17 | **The Field Access frontend is committed to main, and reaches users with stage 3.** The Field Access screen, field exceptions and the permission tree picker are built on stages 1 and 2, but until stage 3 no screen follows a switch: an admin who turned Bank account number off for Storekeeper would see the save succeed while Storekeeper still sees every bank number. The code lands on main in each app; deployment is a manual step, so the screens reach users on the first deploy after it, which is meant to be the stage 3 release. |
 | D18 | **Ten write abilities end at the switch-over, not one.** Where a key gates only reading and the value is written behind the endpoint's own key, a role can change a number it cannot see. Write implies Read (D10), so those writes end: four payroll-line figures, three salary figures, a bank account number, an import batch file and three staff bank fields. A role that genuinely needs one is given sight of the field, which is a switch. Owner decision, 2026-09-21. |
 
-Fields already known to need D14 when S3 builds it: a pupil's enrolment date,
-and any staff or guardian detail a create path requires while the update path
-omits it (a staff member's email is written only at creation, so a role without
-Write on it could not create staff at all).
+Fields declared open on create under D14: a pupil's enrolment date, a staff
+member's email (written only at creation, so a role without Write on it could
+not create staff at all), and a guardian's phone number (required by every
+route that adds a guardian, while the correction form may still change it
+under its switch; owner decision). A guardian's email, address and occupation
+are optional on every create route, so they stay governed by their switches
+there.
 
 ## 3. Branch: every role counts everywhere (D13)
 
@@ -306,6 +309,14 @@ class VendorSerializer(FieldAccessMixin, serializers.ModelSerializer):
   accepted at creation and the Write switch governs only later changes.
 - **Nested serializers** inherit the request context, so `contacts` inside a vendor
   is filtered as its own resource or dropped as a whole field.
+- **Method fields are opaque.** The mixin filters a `SerializerMethodField` by its
+  own name and cannot see inside what it returns. A block that carries a
+  registered field (the account block inside a staff record carries the sign-in
+  address) is declared as a nested serializer carrying the mixin, or built by
+  hand and passed through `visible()`. The deep payload tests render every
+  declared surface as a caller with every field of its resource closed, walk the
+  whole JSON, and fail on any registered name found at any depth; a surface no
+  app's case renders fails the registry tests.
 
 ### 8.2 Hand-built responses and raw writes
 
@@ -482,12 +493,24 @@ registry is owned by code (D2).
 
 ```json
 "field_access": {
-  "procurement.vendor": {"hidden": ["bank_account_number"], "read_only": ["phone"]},
-  "school.students":    {"hidden": [], "read_only": ["blood_group"]}
+  "procurement.vendor": {"hidden": ["bank_account_number"], "read_only": ["phone"],
+                         "open_on_create": []},
+  "school.students":    {"hidden": [], "read_only": ["blood_group", "enrolment_date"],
+                         "open_on_create": ["enrolment_date"]},
+  "school.teachers":    {"hidden": ["email"], "read_only": [],
+                         "open_on_create": ["email"]}
 }
 ```
 
 - Only resources where something is not full. An absent resource or name means full.
+- Each resource carries all three lists, each sorted. `hidden` and `read_only`
+  describe an existing record and never share a name.
+- `open_on_create` lists every field declared open on create (D14) that is not
+  fully open to the user, **hidden and read-only alike**. An Add form offers
+  these as ordinary inputs. Every name in it also appears in `hidden` or
+  `read_only`, which is what it is on every record that already exists: the
+  staff Add form asks a registrar with email Read off for the address, and the
+  staff record never shows it to her.
 - Used for **create forms and columns**, where no record exists yet.
 - On an existing record the response's `_read_only_fields` wins, because it carries
   owner rules and, under option B, the record's branch.

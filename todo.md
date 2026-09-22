@@ -381,6 +381,29 @@ VERIFIED: vs_rbac 811, core 168, vs_procurement 586, vs_finance 771,
 vs_payments 210, vs_user 408, vs_import_data 81, vs_exports 185, vs_workflow 420,
 schools.vs_students 291, schools.vs_staff 250 OK; makemigrations --check clean.
 
+### D11. Hidden fields stop leaking below the top, and Add forms keep them (hash pending, 2026-09-22)
+MODULES: M04 roles and permissions, M11 students (guardians), M12 staff, MRD.
+- A staff member's email with Read off still reached the caller inside the
+  record's `account` block (and in the create response). The block now enforces
+  the same switch. A pupil's enrolment date with Read off still printed down the
+  student directory; the directory row now enforces it too.
+- A deep payload check renders every declared surface as a caller with every
+  field closed and fails on a registered name at any depth; a read-path check
+  fails any serializer that emits a registered name without enforcing it.
+- OWNER DECISION: a guardian's phone is open on create (like the enrolment date
+  and a staff email). Email, address and occupation stay governed on create.
+- `/me` and login `field_access.<resource>.open_on_create` now lists every open-on-
+  create name not fully open to the user, hidden ones included; each name also
+  stays in `hidden` or `read_only`.
+MUST SAY: M12, the email is filtered in every copy on the record; M11, the phone
+rule and the directory now respecting the enrolment-date switch; M04, the new
+payload rule and the deep/read-path checks. Deploy runs `sync_field_registry` so
+the phone's open-on-create flag reaches the database.
+VERIFIED (isolated copy of HEAD plus this change): vs_rbac 832, schools.vs_staff 258,
+schools.vs_students 298, vs_procurement 588, vs_finance 773, vs_payments 212,
+vs_user 410, vs_import_data 83, core 168, vs_exports 185, vs_workflow 420 OK;
+makemigrations --check clean.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

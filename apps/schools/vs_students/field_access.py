@@ -16,6 +16,16 @@ them sensitive would close them to every role the day the switches start being
 enforced, which is the one thing Field Access must not do, so they are declared
 open and a school turns them off for the roles it chooses.
 
+A guardian's phone number is declared open on create. Every route that adds a
+guardian (a row of the enrol form, the link form on a student's record, and the
+guardian and student spreadsheet imports) requires one, while the correction
+form may still change it under its switch, so without the flag a role that may
+not change a phone number could never add a guardian at all. Setting it while
+the guardian is created is not changing it, and the Write switch keeps
+deciding who may correct it afterwards. The email address, home address and
+occupation are optional on every create route and a blank one is dropped, so
+each stays governed by its switch on both paths.
+
 ``school.guardians`` carries fields and no permission keys. A guardian is read
 with ``school.students.view`` and corrected with ``school.students.update``
 (``views/guardians.py``), so the resource exists to hang switches on and mints
@@ -32,6 +42,7 @@ def register():
         "school",
         "students",
         surfaces=(
+            "schools.vs_students.serializers.StudentListSerializer",
             "schools.vs_students.serializers.StudentDetailSerializer",
             "schools.vs_students.serializers.StudentWriteSerializer",
             "schools.vs_students.serializers.EnrolmentWriteSerializer",
@@ -61,7 +72,7 @@ def register():
         ),
         fields=(
             FieldSpec("phone", "Phone", group="Contact", scope=_TENANT,
-                      sort_order=10,
+                      sort_order=10, open_on_create=True,
                       description="The number the school calls about the child."),
             FieldSpec("email", "Email", group="Contact", scope=_TENANT,
                       sort_order=20,

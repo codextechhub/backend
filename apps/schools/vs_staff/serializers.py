@@ -49,8 +49,16 @@ def _actor(user):
     return {"id": user.pk, "name": _full_name(user)}
 
 
-class AccountStateSerializer(serializers.Serializer):
+class AccountStateSerializer(FieldAccessMixin, serializers.Serializer):
     """The account half, kept as its own object on purpose.
+
+    The sign-in address is the staff member's registered ``email`` of
+    ``school.teachers``, the same value the record carries at its top level, so
+    this block enforces the same switch. It is nested as a serializer rather
+    than returned from a method, because Field Access filters a nested
+    serializer as its own surface and cannot see into what a method returns: a
+    role with Read off would otherwise lose the top-level address and still be
+    sent this one.
 
     ``can_hold_password`` is read from the model's own allow-list rather than
     recomputed, so a status added later cannot quietly acquire a meaning here
@@ -69,8 +77,10 @@ class AccountStateSerializer(serializers.Serializer):
     status = serializers.SerializerMethodField()
     label = serializers.SerializerMethodField()
     can_sign_in = serializers.SerializerMethodField()
+    field_resource = "school.teachers"
+
     can_hold_password = serializers.BooleanField(source="may_hold_password")
-    email = serializers.EmailField()
+    email = serializers.EmailField(read_only=True)
 
     def get_status(self, obj) -> str:
         return obj.account_state
@@ -523,7 +533,7 @@ class StaffDetailSerializer(StaffListSerializer):
 
     field_access_detail = True
 
-    account = serializers.SerializerMethodField()
+    account = AccountStateSerializer(source="user", read_only=True)
     middle_name = serializers.CharField(read_only=True)
     date_of_birth = serializers.DateField(read_only=True)
     phone = serializers.CharField(source="user.phone", read_only=True)
@@ -540,9 +550,6 @@ class StaffDetailSerializer(StaffListSerializer):
             "photo_url", "exit_date", "tenure", "lifecycle", "counts",
             "created_by",
         ]
-
-    def get_account(self, obj):
-        return AccountStateSerializer(obj.user).data
 
     def get_photo_url(self, obj):
         return obj.photo.url if obj.photo else None

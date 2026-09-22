@@ -103,9 +103,6 @@ WRITE_PATH_ALLOWLIST = {
     ("schools.vs_students.serializers.EnrolmentWriteSerializer", "address"):
         "The pupil's own address on the enrol form, not a guardian's; see the phone "
         "entry above.",
-    ("schools.vs_staff.serializers.AccountStateSerializer", "email"):
-        "The account block nested in a staff record. It is only ever rendered, never "
-        "given a payload to validate, so no request reaches the field.",
     ("schools.vs_staff.serializers.EmailChangeSerializer", "email"):
         "Behind school.administrators.update on an endpoint of its own, the key that "
         "changes an account's sign-in address; the staff edit form cannot.",
@@ -395,6 +392,121 @@ class EveryWritePathIsKnownTests(SimpleTestCase):
                                 f"{declaration.module}.{declaration.resource}.",
                             )
         self.assertEqual(set(WRITE_PATH_ALLOWLIST) - seen, set())
+
+
+#: Where an app keeps its deep payload case, relative to the app package.
+DEEP_PAYLOAD_MODULES = ("tests_field_access_deep_payload", "tests.test_field_access_deep_payload")
+
+
+def _deep_payload_cases():
+    """Every deep payload case an installed app provides.
+
+    Found by importing each app's case module by convention and walking the
+    subclasses of :class:`vs_rbac.tests.deep_payload.DeepPayloadChecks`, so
+    this engine's tests name no domain app. The classes are never bound into
+    this module, so the runner collects them where they are defined and not
+    a second time here.
+    """
+    from .deep_payload import DeepPayloadChecks
+
+    for app in django_apps.get_app_configs():
+        for suffix in DEEP_PAYLOAD_MODULES:
+            name = f"{app.name}.{suffix}"
+            try:
+                importlib.import_module(name)
+            except ModuleNotFoundError as exc:
+                if exc.name not in (name, name.rsplit(".", 1)[0]):
+                    raise
+
+    def walk(cls):
+        for sub in cls.__subclasses__():
+            yield sub
+            yield from walk(sub)
+
+    return [cls for cls in walk(DeepPayloadChecks) if cls.covers]
+
+
+class EveryDeclaredSurfaceIsRenderedDeepTests(SimpleTestCase):
+    """Every declared surface is rendered by some app's deep payload case.
+
+    The deep payload check renders a surface as a caller who may read none of
+    its resource's fields and fails on a registered name at any depth, which
+    is the only way to catch a field travelling inside a method field or a
+    merged dict. It proves nothing about a surface nobody renders, so a
+    surface declared without a case fails here.
+    """
+
+    def test_the_cases_cover_every_declared_surface_and_nothing_else(self):
+        declared = {
+            path: f"{d.module}.{d.resource}"
+            for d in all_declarations() for path in d.surfaces
+        }
+        covered = {}
+        for case in _deep_payload_cases():
+            for path in case.covers:
+                with self.subTest(case=case.__qualname__, surface=path):
+                    self.assertIn(path, declared, "A case renders an undeclared surface.")
+                    self.assertIn(declared.get(path), case.resources)
+                    self.assertNotIn(path, covered, "Two cases render the same surface.")
+                covered[path] = case
+        self.assertEqual(set(declared) - set(covered), set())
+
+
+#: Serializers that emit a registered name without enforcing it, each with the
+#: reason that is safe. Every entry must still match a real hit.
+READ_PATH_ALLOWLIST = {
+    ("vs_import_data.serializers.ImportTemplateCreateSerializer", "validation_rules"):
+        "The response to creating a template, behind import.templates.create, a "
+        "platform-only key; it returns the rules the caller has just written.",
+    ("vs_import_data.serializers.ImportTemplateUpdateSerializer", "validation_rules"):
+        "The response to correcting a template, behind import.templates.manage, the "
+        "platform-only key whose holders write the rules on the same endpoint.",
+}
+
+
+class EveryReadPathIsKnownTests(SimpleTestCase):
+    """A second serializer cannot send a registered field unfiltered.
+
+    The read-side twin of :class:`EveryWritePathIsKnownTests`. Enforcement
+    binds only the serializers that carry the mixin, so a list row or a lighter
+    shape of the same model that emits a registered name hands it to every
+    caller whatever the switch says: a school hiding when a pupil joined would
+    still print the date down the directory. Every serializer in the app that
+    owns a declaration, on a surface's model, that emits a registered name must
+    be a declared surface or sit on the allowlist with a one-line reason.
+    """
+
+    def test_every_serializer_that_emits_a_registered_field_is_known(self):
+        seen = set()
+        for declaration in all_declarations():
+            names = _api_names(declaration)
+            surfaces = [_surface(path) for path in declaration.surfaces]
+            models = {
+                getattr(getattr(cls, "Meta", None), "model", None) for cls in surfaces
+            } - {None}
+            owners = {
+                django_apps.get_containing_app_config(path.rsplit(".", 1)[0])
+                for path in declaration.surfaces
+            }
+            for app in owners:
+                for cls in _serializers_owned_by(app):
+                    if getattr(getattr(cls, "Meta", None), "model", None) not in models:
+                        continue
+                    path = f"{cls.__module__}.{cls.__qualname__}"
+                    if path in declaration.surfaces:
+                        continue
+                    for name, field in cls(context={}).fields.items():
+                        if field.write_only or name not in names:
+                            continue
+                        seen.add((path, name))
+                        if (path, name) in READ_PATH_ALLOWLIST:
+                            continue
+                        with self.subTest(serializer=path, field=name):
+                            self.fail(
+                                f"{path} sends '{name}' and is not a declared "
+                                f"surface of {declaration.module}.{declaration.resource}."
+                            )
+        self.assertEqual(set(READ_PATH_ALLOWLIST) - seen, set())
 
 
 class RegistrationValidationTests(SimpleTestCase):

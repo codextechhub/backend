@@ -563,6 +563,73 @@ class TheMapAUserIsHandedTests(_Enforcement):
         self.assertTrue(alias.sensitive)
 
 
+class HiddenButOpenOnCreateTests(_Enforcement):
+    """A field the caller cannot read, but may set while creating the record.
+
+    Bright Star's storekeeper has the date a vendor was opened switched off
+    entirely: she never sees it on an existing vendor. The date is declared
+    open on create, so she still types it when she adds Ade Stationers, and
+    only correcting it later needs the switch.
+    """
+
+    def setUp(self):
+        super().setUp()
+        RoleFieldAccess.objects.filter(role=self.role, field=self.opened_on).update(
+            can_read=False, can_write=False,
+        )
+
+    def test_the_map_lists_it_as_hidden_and_as_open_on_create(self):
+        payload = field_access_payload(_fresh(self.user), self.tenant)
+        self.assertEqual(payload, {
+            "fenf.vendor": {
+                "hidden": ["bank_account_number", "opened_on"],
+                "read_only": ["phone"],
+                "open_on_create": ["opened_on"],
+            },
+        })
+
+    def test_every_open_on_create_name_is_also_hidden_or_read_only(self):
+        """The Add form's list never stands in for what an existing record shows."""
+        for entry in field_access_payload(_fresh(self.user), self.tenant).values():
+            with self.subTest(entry=entry):
+                self.assertEqual(
+                    set(entry["open_on_create"]) - set(entry["hidden"]) - set(entry["read_only"]),
+                    set(),
+                )
+
+    def test_the_serializer_accepts_it_while_creating(self):
+        serializer = _VendorCreateSerializer(
+            data={"name": "Ade Stationers", "opened_on": "2026-09-16"},
+            context=self._context(),
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        serializer.save()
+        self.assertEqual(SAVED, [{"name": "Ade Stationers", "opened_on": "2026-09-16"}])
+
+    def test_the_serializer_refuses_it_on_an_existing_record(self):
+        with self.assertRaises(FieldWriteDenied) as caught:
+            _VendorCreateSerializer(
+                self._vendor(opened_on="2026-09-16"),
+                data={"opened_on": "2026-09-16"}, context=self._context(),
+            ).is_valid()
+        self.assertEqual(caught.exception.fields, ["opened_on"])
+        self.assertEqual(SAVED, [])
+
+    def test_the_serializer_leaves_it_out_of_the_record_it_renders(self):
+        data = _VendorCreateSerializer(
+            self._vendor(opened_on="2026-09-16"), context=self._context(),
+        ).data
+        self.assertNotIn("opened_on", data)
+
+    def test_a_raw_create_path_accepts_it_and_a_raw_update_refuses_it(self):
+        body = {"opened_on": "2026-09-16"}
+        self.assertIsNone(
+            assert_writable(self._request(), "fenf.vendor", body, creating=True)
+        )
+        with self.assertRaises(FieldWriteDenied):
+            assert_writable(self._request(), "fenf.vendor", body)
+
+
 class SystemSurfaceTests(TestCase):
     """A render that runs for nobody says so, once, in one list."""
 

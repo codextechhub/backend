@@ -210,7 +210,11 @@ class GuardianWriteSerializer(FieldAccessMixin, serializers.Serializer):
 
     Creating a guardian rather than editing one, so a blank value for a field
     the caller may not write is dropped instead of refused: the enrol form
-    posts every input whether it was touched or not.
+    posts every input whether it was touched or not. The phone number is
+    declared open on create, because a new guardian cannot be added without
+    one; any value is accepted here and only the correction form asks its
+    Write switch. A row naming an existing guardian writes none of these
+    details: the existing record is linked as it stands.
     """
 
     field_resource = "school.guardians"
@@ -241,12 +245,19 @@ class GuardianWriteSerializer(FieldAccessMixin, serializers.Serializer):
 
 # ── students ───────────────────────────────────────────────────────────────
 
-class StudentListSerializer(_BranchAware):
+class StudentListSerializer(FieldAccessMixin, _BranchAware):
     """The directory row. No medical field, no guardian contact details.
 
     Every field is read-only: a row is only ever read, and a writable
     ``enrolment_date`` here would be a write path with no field guard on it.
+
+    The enrolment date is a registered field of ``school.students``, so the row
+    enforces its Read switch as the profile does: a school that hides when a
+    pupil joined from a role hides it from the directory too. A list row names
+    no read-only fields.
     """
+
+    field_resource = "school.students"
 
     full_name = serializers.CharField(read_only=True)
     status_label = serializers.CharField(source="get_status_display", read_only=True)
