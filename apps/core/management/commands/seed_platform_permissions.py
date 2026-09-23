@@ -32,6 +32,15 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
         ],
     ),
     (
+        "permission_groups",
+        "Administrator-created permission bundles for role assignment",
+        [
+            ("create", "Create permission groups", False, _NORMAL),
+            ("update", "Edit permission groups", False, _NORMAL),
+            ("delete", "Delete permission groups", True, _SENSITIVE),
+        ],
+    ),
+    (
         "roles",
         "Platform role template management",
         [

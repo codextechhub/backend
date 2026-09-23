@@ -43,11 +43,10 @@ Seed order
                                Access to vs_rbac.FieldDefinition. After every
                                module seed, because a field sits under a
                                resource those seeds register.
-14. seed_school_permission_groups - groups the school-facing keys into named
-                               bundles and records which are school-wide and
-                               which narrow to a branch. Runs LAST because it
-                               spans five modules and can only group keys that
-                               are already registered. Grants nothing.
+14. seed_permission_dependencies - reconciles the backend-owned prerequisite
+                               graph and backfills roles with required keys.
+15. retire_system_permission_groups - preserves existing grants as direct role
+                               grants, then removes legacy backend-created groups.
 """
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
@@ -78,9 +77,9 @@ SEED_STEPS: list[tuple[str, list]] = [
     ("seed_health", []),
     # After every module seed: a field sits under a resource they register.
     ("sync_field_registry",          []),
-    # Last on purpose: it groups keys from five different modules and can only
-    # see the ones already in the registry.
-    ("seed_school_permission_groups", []),
+    # Last on purpose: both steps need the complete registry and role library.
+    ("seed_permission_dependencies", []),
+    ("retire_system_permission_groups", []),
 ]
 
 

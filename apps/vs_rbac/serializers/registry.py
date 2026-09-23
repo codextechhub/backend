@@ -397,8 +397,9 @@ class PermissionDetailSerializer(PermissionSerializer):
 
     def get_groups(self, obj):
         return [
-            {"id": str(g.id), "name": g.name, "is_system": g.is_system}
+            {"id": str(g.id), "name": g.name}
             for g in obj.groups.all()
+            if not g.is_system
         ]
 
     def get_dependencies(self, obj):
@@ -419,7 +420,7 @@ class PermissionDetailSerializer(PermissionSerializer):
 #     platform role templates.
 # -----------------------------------------------------------------------------
 class PermissionGroupListSerializer(serializers.ModelSerializer):
-    """Lightweight serializer for permission group list screens."""
+    """Lightweight serializer for administrator-created permission groups."""
 
     permissions_count = serializers.IntegerField(read_only=True)
 
@@ -429,7 +430,6 @@ class PermissionGroupListSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "description",
-            "is_system",
             "is_active",
             "permissions_count",
             "created_at",
@@ -437,7 +437,6 @@ class PermissionGroupListSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
-            "is_system",
             "permissions_count",
             "created_at",
             "updated_at",
@@ -472,7 +471,6 @@ class PermissionGroupDetailSerializer(
             "id",
             "name",
             "description",
-            "is_system",
             "is_active",
             "permissions",
             "permission_keys",
@@ -481,7 +479,6 @@ class PermissionGroupDetailSerializer(
         ]
         read_only_fields = [
             "id",
-            "is_system",
             "created_at",
             "updated_at",
         ]
@@ -507,22 +504,50 @@ class PermissionGroupDetailSerializer(
                 f"{', '.join(sorted(restricted))}. Grant them through an "
                 "approved role change request instead."
             )
+        inactive = list(
+            Permission.objects.filter(
+                key__in=keys, is_active=False,
+            ).values_list("key", flat=True)
+        )
+        if inactive:
+            raise serializers.ValidationError(
+                "Inactive permissions cannot belong to permission groups: "
+                f"{', '.join(sorted(inactive))}."
+            )
+
+        from ..validators import PermissionDependencyValidator
+
+        dependency_result = PermissionDependencyValidator().validate_permission_set(keys)
+        if not dependency_result["valid"]:
+            missing = dependency_result["missing_dependencies"]
+            details = "; ".join(
+                f"{key} also requires {', '.join(required)}"
+                for key, required in sorted(missing.items())
+            )
+            errors = "; ".join(dependency_result["errors"])
+            message = "; ".join(part for part in (details, errors) if part)
+            raise serializers.ValidationError(
+                f"Include every required permission in the group: {message}."
+            )
         return keys
+
+    @staticmethod
+    def _scope_for(permission_keys):
+        """Use tenant scope only when every selected key is tenant-holdable."""
+        has_platform_key = Permission.objects.filter(
+            key__in=permission_keys,
+        ).exclude(scope=PermissionScope.TENANT).exists()
+        return (
+            PermissionScope.PLATFORM
+            if has_platform_key
+            else PermissionScope.TENANT
+        )
 
     @transaction.atomic
     def create(self, validated_data):
         permission_keys = validated_data.pop("permission_keys", [])
-        # ``scope`` is not on this serializer, and the field has no model
-        # default, so without this every group built through the API was
-        # created unclassified - and ``TenantRoleGroup`` refuses to attach an
-        # unclassified bundle to a role inside a tenant. The bundle was
-        # therefore unusable by the only people who can build one.
-        #
-        # TENANT is the only honest default here: ``GroupPermission`` already
-        # refuses to put a PLATFORM-scoped key in a group that is not declared
-        # PLATFORM, so this endpoint could never have produced a platform
-        # bundle anyway. Platform bundles are seeded, not posted.
-        validated_data.setdefault("scope", PermissionScope.TENANT)
+        validated_data["scope"] = self._scope_for(permission_keys)
+        validated_data["is_system"] = False
         group = PermissionGroup.objects.create(**validated_data)
 
         if permission_keys:
@@ -535,7 +560,27 @@ class PermissionGroupDetailSerializer(
 
     @transaction.atomic
     def update(self, instance, validated_data):
+        if instance.is_system:
+            raise serializers.ValidationError(
+                "Backend-created permission groups cannot be changed."
+            )
         permission_keys = validated_data.pop("permission_keys", None)
+
+        if permission_keys is not None:
+            scope = self._scope_for(permission_keys)
+            if (
+                scope == PermissionScope.PLATFORM
+                and TenantRoleGroup.objects.filter(group=instance)
+                .exclude(role__tenant__kind="PLATFORM")
+                .exists()
+            ):
+                raise serializers.ValidationError({
+                    "permission_keys": (
+                        "This group is attached to a non-platform role and cannot "
+                        "contain platform permissions."
+                    ),
+                })
+            validated_data["scope"] = scope
 
         for field, value in validated_data.items():
             setattr(instance, field, value)

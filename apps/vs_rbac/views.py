@@ -300,6 +300,38 @@ class PermissionDependencyListCreateView(RegistryReadOnlyMixin, generics.ListAPI
     serializer_class = PermissionDependencySerializer
     pagination_class = XVSPagination
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        params = self.request.query_params
+        if search := (params.get("search") or "").strip():
+            qs = qs.filter(
+                Q(permission__key__icontains=search)
+                | Q(permission__description__icontains=search)
+                | Q(depends_on__key__icontains=search)
+                | Q(depends_on__description__icontains=search)
+            )
+
+        graph_for = (params.get("graph_for") or "").strip()
+        if not graph_for:
+            return qs
+
+        edges = list(qs.values_list("id", "permission_id", "depends_on_id"))
+        connected = {graph_for}
+        changed = True
+        while changed:
+            changed = False
+            for _pk, permission_key, required_key in edges:
+                if permission_key in connected or required_key in connected:
+                    before = len(connected)
+                    connected.update({permission_key, required_key})
+                    changed = changed or len(connected) != before
+        edge_ids = [
+            pk
+            for pk, permission_key, required_key in edges
+            if permission_key in connected and required_key in connected
+        ]
+        return qs.filter(pk__in=edge_ids)
+
 
 class PermissionDependencyDetailView(
     RegistryReadOnlyMixin, RetrieveModelMixin, generics.RetrieveAPIView
@@ -313,25 +345,33 @@ class PermissionDependencyDetailView(
     lookup_field = "id"
 
 # -----------------------------------------------------------------------------
-# Permission Groups (backend-owned, shared across school + platform roles)
+# Permission Groups (administrator-owned role-building shortcuts)
 # -----------------------------------------------------------------------------
-class PermissionGroupListCreateView(RegistryReadOnlyMixin, generics.ListAPIView):
-    """List backend-owned reusable permission bundles.
+class PermissionGroupListCreateView(
+    CreateModelMixin, generics.ListCreateAPIView,
+):
+    """List and create administrator-owned permission bundles.
 
     docstring-name: Permission groups
     """
     pagination_class = XVSPagination
 
+    def get_permissions(self):
+        self.rbac_permission = (
+            "platform.permission_groups.create"
+            if self.request.method == "POST"
+            else "platform.permissions.view"
+        )
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
     def get_queryset(self):
         qs = (
-            PermissionGroup.objects.all()
+            PermissionGroup.objects.filter(is_system=False)
             .annotate(permissions_count=Count("group_permissions", distinct=True))
             .order_by("name")
         )
 
         is_active = self.request.query_params.get("is_active")
-        is_system = self.request.query_params.get("is_system")
-
         if is_active is not None:
             lowered = is_active.lower()
             if lowered in {"true", "1"}:
@@ -339,32 +379,115 @@ class PermissionGroupListCreateView(RegistryReadOnlyMixin, generics.ListAPIView)
             elif lowered in {"false", "0"}:
                 qs = qs.filter(is_active=False)
 
-        if is_system is not None:
-            lowered = is_system.lower()
-            if lowered in {"true", "1"}:
-                qs = qs.filter(is_system=True)
-            elif lowered in {"false", "0"}:
-                qs = qs.filter(is_system=False)
         if search := self.request.query_params.get("search"):
             qs = qs.filter(Q(name__icontains=search))
 
         return qs
 
-    serializer_class = PermissionGroupListSerializer
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return PermissionGroupDetailSerializer
+        return PermissionGroupListSerializer
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        group = serializer.save()
+        from .audit import record_rbac_audit
+
+        record_rbac_audit(
+            action_type="permission_group.create",
+            entity_type="permission_group",
+            entity_id=str(group.pk),
+            entity_label=group.name,
+            actor_user=self.request.user,
+            summary=f"Created permission group {group.name}.",
+            diff_data={
+                "permission_keys": sorted(
+                    group.permissions.values_list("key", flat=True),
+                ),
+            },
+        )
 
 
 class PermissionGroupDetailView(
-    RegistryReadOnlyMixin, RetrieveModelMixin, generics.RetrieveAPIView
+    RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin,
+    generics.RetrieveUpdateDestroyAPIView,
 ):
-    """Retrieve one backend-owned permission bundle.
+    """Retrieve or change one administrator-owned permission bundle.
 
     docstring-name: Permission groups
     """
     serializer_class = PermissionGroupDetailSerializer
     lookup_field = "id"
 
+    def get_permissions(self):
+        self.rbac_permission = (
+            "platform.permission_groups.delete"
+            if self.request.method == "DELETE"
+            else "platform.permission_groups.update"
+            if self.request.method in {"PUT", "PATCH"}
+            else "platform.permissions.view"
+        )
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
     def get_queryset(self):
-        return PermissionGroup.objects.all().prefetch_related("permissions")
+        return PermissionGroup.objects.filter(is_system=False).prefetch_related(
+            "permissions",
+        )
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        group = serializer.instance
+        before = {
+            "name": group.name,
+            "description": group.description,
+            "is_active": group.is_active,
+            "permission_keys": sorted(
+                group.permissions.values_list("key", flat=True),
+            ),
+        }
+        updated = serializer.save()
+        from .audit import record_rbac_audit
+
+        record_rbac_audit(
+            action_type="permission_group.update",
+            entity_type="permission_group",
+            entity_id=str(updated.pk),
+            entity_label=updated.name,
+            actor_user=self.request.user,
+            summary=f"Updated permission group {updated.name}.",
+            before_data=before,
+            diff_data={
+                "name": updated.name,
+                "description": updated.description,
+                "is_active": updated.is_active,
+                "permission_keys": sorted(
+                    updated.permissions.values_list("key", flat=True),
+                ),
+            },
+        )
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        from .audit import record_rbac_audit
+
+        record_rbac_audit(
+            action_type="permission_group.delete",
+            entity_type="permission_group",
+            entity_id=str(instance.pk),
+            entity_label=instance.name,
+            actor_user=self.request.user,
+            summary=f"Deleted permission group {instance.name}.",
+            before_data={
+                "name": instance.name,
+                "description": instance.description,
+                "is_active": instance.is_active,
+                "permission_keys": sorted(
+                    instance.permissions.values_list("key", flat=True),
+                ),
+            },
+        )
+        instance.delete()
 
 
 # -----------------------------------------------------------------------------
@@ -643,7 +766,7 @@ class TenantAccessCatalogueView(TenantScopedRBACMixin, APIView):
     platform_cross_tenant_param = True
 
     def get_permissions(self):
-        self.rbac_permission = ROLE_VIEW_KEYS
+        self.rbac_permission = ROLE_VIEW_KEYS + ["platform.permissions.view"]
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get(self, request, *args, **kwargs):

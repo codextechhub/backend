@@ -15,7 +15,6 @@ from django.db.models import Prefetch
 
 from vs_rbac.models import (
     Permission,
-    PermissionGroup,
     PrebuiltRolePermission,
     PrebuiltRoleTemplate,
     display_label,
@@ -23,11 +22,8 @@ from vs_rbac.models import (
 
 
 def registry_catalogue(*, module: str = "", include_inactive: bool = False) -> dict:
-    """Build the permission, default-group and default-role overview."""
+    """Build the permission and default-role overview."""
     permissions = Permission.objects.select_related(
-        "module", "resource", "action",
-    ).order_by("module_id", "resource__name", "action_id")
-    grouped_permissions = Permission.objects.select_related(
         "module", "resource", "action",
     ).order_by("module_id", "resource__name", "action_id")
     role_permissions = PrebuiltRolePermission.objects.select_related(
@@ -46,7 +42,6 @@ def registry_catalogue(*, module: str = "", include_inactive: bool = False) -> d
             "action__is_active": True,
         }
         permissions = permissions.filter(**active_definition)
-        grouped_permissions = grouped_permissions.filter(**active_definition)
         role_permissions = role_permissions.filter(
             **{
                 f"permission__{field}": value
@@ -54,12 +49,6 @@ def registry_catalogue(*, module: str = "", include_inactive: bool = False) -> d
             }
         )
 
-    groups = PermissionGroup.objects.prefetch_related(
-        Prefetch(
-            "permissions",
-            queryset=grouped_permissions,
-        )
-    ).order_by("name")
     roles = PrebuiltRoleTemplate.objects.prefetch_related(
         Prefetch(
             "default_permissions",
@@ -68,7 +57,6 @@ def registry_catalogue(*, module: str = "", include_inactive: bool = False) -> d
     ).order_by("tier", "name")
 
     if not include_inactive:
-        groups = groups.filter(is_active=True)
         roles = roles.filter(is_active=True)
     if module:
         permissions = permissions.filter(module_id=module)
@@ -113,15 +101,6 @@ def registry_catalogue(*, module: str = "", include_inactive: bool = False) -> d
 
     return {
         "modules": modules,
-        "default_groups": [
-            {
-                "name": group.name,
-                "description": group.description,
-                "scope": group.scope,
-                "permissions": [row.key for row in group.permissions.all()],
-            }
-            for group in groups
-        ],
         "default_roles": [
             {
                 "key": role.key,
@@ -141,7 +120,7 @@ def registry_catalogue(*, module: str = "", include_inactive: bool = False) -> d
 class Command(BaseCommand):
     help = (
         "Show permissions by module, resource and action, followed by the "
-        "backend-owned default permission groups and role library."
+        "backend-owned default role library."
     )
 
     def add_arguments(self, parser):
@@ -183,12 +162,6 @@ class Command(BaseCommand):
                         f"    {permission['label']} [{permission['key']}] "
                         f"({' | '.join(flags)})"
                     )
-
-        self.stdout.write("\nDefault permission groups")
-        for group in catalogue["default_groups"]:
-            self.stdout.write(f"{group['name']} ({group['scope']})")
-            for key in group["permissions"]:
-                self.stdout.write(f"  {key}")
 
         self.stdout.write("\nDefault role library")
         for role in catalogue["default_roles"]:

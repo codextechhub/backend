@@ -578,9 +578,8 @@ Every place the old keys reach is converted:
 1. **Tenant roles.** A role's effective key set (direct grants minus role denies,
    plus permission groups) decides the switches written.
 2. **Prebuilt roles.** `PrebuiltRolePermission` becomes `PrebuiltRoleFieldAccess`.
-3. **Permission groups.** The keys are removed from groups (for example the student
-   medical key in `seed_school_permission_groups`), after roles holding those groups
-   have been converted.
+3. **Permission groups.** The keys are removed from any legacy group membership
+   after roles holding those groups have been converted.
 4. **Permission overrides.** ALLOW/DENY on an old key becomes field overrides with
    the same mode, expiry and creator. The reason becomes "Converted from permission
    exception: <original reason>".

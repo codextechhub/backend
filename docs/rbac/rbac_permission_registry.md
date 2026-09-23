@@ -1,9 +1,10 @@
 # Backend owned permission registry
 
 The permission registry is the backend source of truth for permission modules,
-resources, actions, dependencies, reusable permission groups, and prebuilt role
-templates. The frontend can read these definitions and use them when composing a
-custom role, but it cannot create, edit, or delete them.
+resources, actions, dependencies, and prebuilt role templates. The frontend can
+read these definitions and use them when composing a custom role, but it cannot
+create, edit, or delete them. Permission groups are administrator-created role
+shortcuts and retain their own CRUD flow.
 
 The database models remain because grants, denies, role assignments, dependency
 validation, and runtime authorization all reference the stored definitions. The
@@ -33,7 +34,6 @@ review are:
 | Workflow permissions | `apps/vs_workflow/management/commands/seed_workflow_permissions.py` |
 | Module-specific permissions | Each engine app's `management/commands/seed_*_permissions.py` |
 | Default role library | `apps/core/management/commands/seed_prebuilt_role_templates.py` |
-| Default permission groups | `apps/core/management/commands/seed_school_permission_groups.py` |
 
 The engines remain domain-neutral. Product-specific permission definitions belong
 with the product app that owns them, while shared engine permissions remain in the
@@ -57,7 +57,7 @@ python manage.py show_access_registry --include-inactive
 ```
 
 The output is ordered by module, then resource, then action. It also lists the
-default permission groups and prebuilt role templates. Each permission shows its
+prebuilt role templates. Each permission shows its
 human-readable label alongside its stable key, scope, sensitivity, and restricted
 state.
 
@@ -82,7 +82,10 @@ case fallback for older definitions.
 ## Read-only API
 
 All global definition routes require `platform.permissions.view`. They accept GET
-and reject POST, PUT, PATCH, and DELETE with HTTP 405.
+and reject POST, PUT, PATCH, and DELETE with HTTP 405. Permission groups are not
+global definitions: administrators holding the corresponding
+`platform.permission_groups.create`, `platform.permission_groups.update`, or
+`platform.permission_groups.delete` permission can create, edit, or delete them.
 
 | Route | Purpose |
 |---|---|
@@ -96,12 +99,16 @@ and reject POST, PUT, PATCH, and DELETE with HTTP 405.
 | `GET /v1/rbac/vision/permissions/<key>/` | Read one permission and its relationships |
 | `GET /v1/rbac/vision/permission-dependencies/` | List dependency edges with readable labels |
 | `GET /v1/rbac/vision/permission-dependencies/<id>/` | Read one dependency edge |
-| `GET /v1/rbac/vision/permission-groups/` | List backend-defined groups |
+| `GET /v1/rbac/vision/permission-groups/` | List administrator-created groups |
+| `POST /v1/rbac/vision/permission-groups/` | Create a group |
 | `GET /v1/rbac/vision/permission-groups/<id>/` | Read one group and its permissions |
+| `PATCH /v1/rbac/vision/permission-groups/<id>/` | Update a group and its membership |
+| `DELETE /v1/rbac/vision/permission-groups/<id>/` | Delete a group |
 
 Custom tenant roles remain editable through the tenant role endpoints. A user can
-create a custom role, choose from readable backend-owned permissions and groups,
-and manage personal grants or denies through the existing controlled flows.
+create a custom role, choose from readable backend-owned permissions and
+administrator-created groups, and manage personal grants or denies through the
+existing controlled flows.
 
 ## Adding or changing a definition
 
@@ -109,7 +116,7 @@ and manage personal grants or denies through the existing controlled flows.
 2. Supply the module, resource, action, description, scope, sensitivity, restricted
    state, and active state explicitly.
 3. Add dependencies in backend code where the module owns them.
-4. Add or update a default group only in the default group seeder.
+4. Add or update a dependency in the backend dependency seeder.
 5. Add or update a prebuilt role only in the prebuilt role seeder.
 6. Run the focused seeder test, then the full `vs_rbac` test app.
 7. Run `show_access_registry --module <module>` and review the ordered output.
@@ -132,13 +139,18 @@ It no longer creates these obsolete keys:
 When the seeder finds one of these legacy rows in an existing database, it marks
 the row inactive. This preserves historical relationships and avoids cascading
 deletes while ensuring the active catalogue describes the supported read-only API.
+Permission-group CRUD uses the separate `platform.permission_groups.create`,
+`platform.permission_groups.update`, and `platform.permission_groups.delete`
+keys.
 
 ## Runtime invariants
 
 - `Permission.scope` controls whether a tenant role may hold a key. A blank scope
   fails closed for a non-platform tenant.
-- A permission group grants nothing until a role attaches it.
+- A permission group is created by an administrator and grants nothing until a
+  role attaches it.
 - Group scope must agree with the permissions it contains.
+- A group must contain every dependency required by its permissions.
 - Dependency validation checks the final permission set, including permissions
   supplied through attached groups.
 - Prebuilt roles are backend-owned blueprints. Provisioning copies their defaults

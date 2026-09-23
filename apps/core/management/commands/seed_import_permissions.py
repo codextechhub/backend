@@ -257,9 +257,6 @@ class Command(BaseCommand):
         # nobody can explain.
         self._seed_school_admin_defaults()
 
-        # -- Permission Groups -------------------------------------------------
-        self._seed_permission_groups(all_keys)
-
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_count} new permission(s) created, {len(all_keys)} total import keys registered.\n"
         ))
@@ -323,83 +320,3 @@ class Command(BaseCommand):
             f"{attached} newly attached, {backfilled} backfilled across "
             f"{len(roles)} existing role template(s)."
         )
-
-    def _seed_permission_groups(self, all_keys: list[str]) -> None:
-        from vs_rbac.models import (
-            GroupPermission,
-            Permission,
-            PermissionGroup,
-            PermissionScope,
-        )
-
-        TEMPLATE_KEYS = [k for k in all_keys if k.startswith("import.templates.")]
-        BATCH_KEYS    = [k for k in all_keys if k.startswith("import.batches.")]
-
-        groups = [
-            (
-                "Data Import - all",
-                "Full access to the tenant-holdable data import pipeline - template selection, batches, jobs, and related resources.",
-                all_keys,
-            ),
-            (
-                "Import Batch - all",
-                "Full access to import batch operations: upload, validate, execute, and delete batches.",
-                BATCH_KEYS,
-            ),
-            (
-                "Import Template - all",
-                "Access to the system import templates a tenant may use. Authoring them is platform-only and is not carried here.",
-                TEMPLATE_KEYS,
-            ),
-        ]
-
-        self.stdout.write(self.style.MIGRATE_HEADING("\n  Seeding import permission groups...\n"))
-
-        for name, description, keys in groups:
-            group, created = PermissionGroup.objects.get_or_create(
-                name=name,
-                defaults={
-                    "description": description,
-                    # ``PermissionGroup.scope`` has no default, deliberately, so
-                    # every creation path has to declare it. Migration 0007
-                    # classified the groups that already existed; a group seeded
-                    # after it without this line is created unclassified, and
-                    # ``TenantRoleGroup`` refuses to attach an unclassified
-                    # bundle to any role inside a tenant. These bundles are
-                    # built to be tenant-attachable, so they are TENANT-scoped
-                    # and carry only tenant-holdable keys (see the link loop).
-                    "scope": PermissionScope.TENANT,
-                    "is_system": True,
-                    "is_active": True,
-                },
-            )
-            action = "Created" if created else "Found  "
-            self.stdout.write(f"  {action} group: {name!r}")
-
-            GroupPermission.objects.filter(
-                group=group, permission__is_restricted=True,
-            ).delete()
-
-            added = 0
-            for key in keys:
-                perm = Permission.objects.filter(key=key).first()
-                if not perm:
-                    continue
-                # Not every import key is tenant-holdable: authoring a system
-                # template is platform-only. A TENANT bundle travels into a
-                # school's effective set through ``TenantRoleGroup``, so
-                # ``GroupPermission`` rejects a platform key inside one. Filter
-                # here, at the point all three bundles link through, so a
-                # platform-scoped key added later is excluded by construction
-                # rather than crashing the seed.
-                if perm.scope != PermissionScope.TENANT or perm.is_restricted:
-                    continue
-                _, link_created = GroupPermission.objects.get_or_create(
-                    group=group,
-                    permission=perm,
-                )
-                if link_created:
-                    added += 1
-
-            if added:
-                self.stdout.write(f"           + linked {added} permission(s)")
