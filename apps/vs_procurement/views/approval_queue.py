@@ -305,7 +305,7 @@ class ProcurementApprovalCoverageView(_ProcBase):
 
     docstring-name: Approval coverage
     """
-    rbac_permission = "procurement.approval.manage"
+    rbac_permission = "procurement.approval.view"
 
     def get(self, request):
         """Report approver coverage per branch for the caller's own tenant."""

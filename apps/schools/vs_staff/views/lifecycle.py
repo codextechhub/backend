@@ -19,7 +19,7 @@ from ..constants import (
     PERM_CREATE,
     PERM_ACCOUNT_SUSPEND,
     PERM_ACCOUNT_UPDATE,
-    PERM_MANAGE,
+    PERM_TRANSITION,
     PERM_VIEW,
 )
 from ..serializers import (
@@ -47,7 +47,7 @@ class StaffStatusView(StaffViewMixin, APIView):
     docstring-name: Change an employment status
     """
 
-    rbac_permission = PERM_MANAGE
+    rbac_permission = PERM_TRANSITION
 
     def get(self, request, pk):
         """What this person can be moved to, and what each move would do.
@@ -356,7 +356,7 @@ class StaffInvitationRevokeView(StaffViewMixin, APIView):
     docstring-name: Revoke a staff invitation
     """
 
-    rbac_permission = PERM_MANAGE
+    rbac_permission = PERM_TRANSITION
 
     def post(self, request, pk):
         staff = self.get_staff(pk)

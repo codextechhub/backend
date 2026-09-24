@@ -34,7 +34,8 @@ KEYS = (
     "academics.structure.view",
     "academics.structure.create",
     "academics.structure.update",
-    "academics.structure.manage",
+    "academics.structure.archive",
+    "academics.structure.reactivate",
 )
 
 

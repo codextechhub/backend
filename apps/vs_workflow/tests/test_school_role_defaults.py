@@ -3,7 +3,7 @@
 The decision has to live in the prebuilt role library, because the library is
 what every school created from here on is built from. Writing it only into the
 tenant roles that exist today leaves the schools created tomorrow without it,
-and for ``workflow.template.manage`` that is not a gap a school can close by
+and for the restricted workflow template write keys that is not a gap a school can close by
 itself: the key is restricted, so the only route to it is a change request, and
 approving one grants nothing the approver does not already hold. A School Admin
 provisioned without the key raises a request nobody in the school can decide.
@@ -29,8 +29,10 @@ from vs_workflow.management.commands.seed_workflow_permissions import (
 )
 
 WORKFLOW_KEYS = [
-    "workflow.template.view", "workflow.template.manage",
-    "workflow.group.view", "workflow.group.manage",
+    "workflow.template.view", "workflow.template.update",
+    "workflow.template.publish",
+    "workflow.group.view", "workflow.group.create",
+    "workflow.group.update", "workflow.group.delete",
     "workflow.instance.view", "workflow.instance.cancel",
 ]
 
@@ -72,9 +74,9 @@ class SchoolWorkflowRoleDefaultsTests(TestCase):
             .values_list("permission_id", flat=True)
         )
         self.assertEqual(attached, set(SCHOOL_ROLE_DEFAULTS["school_admin"]))
-        self.assertIn("workflow.template.manage", attached)
+        self.assertIn("workflow.template.update", attached)
 
-    def test_a_school_provisioned_from_the_library_can_manage_its_own_rules(self):
+    def test_a_school_provisioned_from_the_library_can_update_its_own_rules(self):
         """The failure this closes, stated as the thing that should be true.
 
         A head teacher signing in on her school's first day owns her approval
@@ -87,7 +89,7 @@ class SchoolWorkflowRoleDefaultsTests(TestCase):
             tenant=self.school.tenant, prebuilt_key="school_admin",
         )
 
-        self.assertIn("workflow.template.manage", _granted(role))
+        self.assertIn("workflow.template.update", _granted(role))
 
     def test_a_school_that_already_exists_is_brought_up_to_the_same_set(self):
         """The library alone would leave every school standing today behind."""
@@ -155,7 +157,7 @@ class SchoolWorkflowRoleDefaultsTests(TestCase):
         _seed()
 
         self.assertNotIn("workflow.instance.cancel", _granted(existing))
-        self.assertIn("workflow.template.manage", _granted(existing))
+        self.assertIn("workflow.template.update", _granted(existing))
 
     def test_running_it_twice_grants_nothing_the_second_time(self):
         existing = make_role(self.school, name="School Admin", key="school_admin")

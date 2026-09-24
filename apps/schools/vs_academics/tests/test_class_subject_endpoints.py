@@ -30,9 +30,9 @@ from schools.vs_academics.models import (
 
 KEYS = (
     "academics.classes.view", "academics.classes.create",
-    "academics.classes.update", "academics.classes.manage",
+    "academics.classes.update", "academics.classes.archive", "academics.classes.reactivate",
     "academics.subject.view", "academics.subject.create",
-    "academics.subject.update", "academics.subject.manage",
+    "academics.subject.update", "academics.subject.archive", "academics.subject.reactivate",
     "academics.structure.view",
 )
 

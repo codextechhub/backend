@@ -3246,7 +3246,7 @@ class DunningPolicyListCreateView(_FinanceBase):
     @property
     # Handle the rbac permission workflow.
     def rbac_permission(self):
-        return "finance.dunning.manage" if self.request.method == "POST" \
+        return "finance.dunning.create" if self.request.method == "POST" \
             else "finance.dunning.view"
 
     # Handle GET requests for this endpoint.
@@ -3310,7 +3310,7 @@ class DunningPolicyDetailView(_FinanceBase):
     @property
     # Handle the rbac permission workflow.
     def rbac_permission(self):
-        return "finance.dunning.manage" if self.request.method == "PATCH" \
+        return "finance.dunning.update" if self.request.method == "PATCH" \
             else "finance.dunning.view"
 
     # Support the policy workflow.

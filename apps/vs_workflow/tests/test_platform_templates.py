@@ -15,7 +15,11 @@ from vs_rbac.tests.helpers import (
     codex_tenant, make_assignment, make_branch, make_permission, make_role,
     make_role_permission, make_school, make_school_admin, make_vision_user,
 )
-from vs_workflow.constants import PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW
+from vs_workflow.constants import (
+    PERM_TEMPLATE_PUBLISH,
+    PERM_TEMPLATE_UPDATE,
+    PERM_TEMPLATE_VIEW,
+)
 from vs_workflow.models import WorkflowTemplate
 from vs_workflow.views import WorkflowTemplateViewSet
 
@@ -89,13 +93,13 @@ class PlatformTemplateTests(TestCase):
     def setUp(self):
         self.codex = codex_tenant()
         self.platform_admin = make_vision_user(email=f"plat-{next(_counter)}@codex.com")
-        _grant(self.platform_admin, [PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW], self.codex)
+        _grant(self.platform_admin, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_VIEW], self.codex)
 
         self.school = make_school(slug=f"tpl-school-{next(_counter)}", name="Tpl School")
         self.branch = make_branch(self.school)
         self.tenant = self.school.tenant
         self.tenant_admin = make_school_admin(self.branch, email=f"tadm-{next(_counter)}@test.com")
-        _grant(self.tenant_admin, [PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW])
+        _grant(self.tenant_admin, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_VIEW])
         # The role every stage in these tests names, in both publishing tenants.
         make_role(self.tenant, name="Approver", key="approver")
         make_role(self.codex, name="Approver", key="approver")
@@ -135,7 +139,7 @@ class PlatformTemplateTests(TestCase):
 
         other = make_school(slug=f"other-{next(_counter)}", name="Other")
         other_admin = make_school_admin(make_branch(other), email=f"oadm-{next(_counter)}@t.com")
-        _grant(other_admin, [PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW])
+        _grant(other_admin, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_VIEW])
         resp = _call(USE_PLATFORM, "post", other_admin, other.tenant, pk=mine.pk)
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
         mine.refresh_from_db()
@@ -239,14 +243,14 @@ class PlatformOversightTests(TestCase):
     def setUp(self):
         self.codex = codex_tenant()
         self.platform_admin = make_vision_user(email=f"ovr-{next(_counter)}@codex.com")
-        _grant(self.platform_admin, [PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW], self.codex)
+        _grant(self.platform_admin, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_VIEW], self.codex)
         make_role(self.codex, name="Approver", key="approver")
 
         self.school = make_school(slug=f"ovr-school-{next(_counter)}", name="Ovr School")
         self.branch = make_branch(self.school)
         self.tenant = self.school.tenant
         self.tenant_admin = make_school_admin(self.branch, email=f"ovr-adm-{next(_counter)}@t.com")
-        _grant(self.tenant_admin, [PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW])
+        _grant(self.tenant_admin, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_VIEW])
         make_role(self.tenant, name="Approver", key="approver")
         make_role(self.tenant, name="Second", key="second")
 

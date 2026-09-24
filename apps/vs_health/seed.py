@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from django.conf import settings
 
-from .constants import PERM_VIEW, PERM_MANAGE
+from .constants import PERM_CREATE, PERM_UPDATE, PERM_VIEW
 
 
 SERVICES = [
@@ -39,7 +39,7 @@ def _log(stdout, msg):
         stdout.write(msg)
 
 
-# Ensure the RBAC contract for health read/manage access exists.
+# Ensure the RBAC contract for health read and write access exists.
 def seed_permissions(stdout=None):
     from vs_rbac.models import PermissionModule, PermissionResource, PermissionAction, Permission, PermissionScope
 
@@ -52,11 +52,14 @@ def seed_permissions(stdout=None):
         resource.description = "Platform health and observability."
         resource.save(update_fields=["description"])
     for action_name, desc in [("view", "View observability data"),
-                              ("manage", "Manage incidents, alerts and deployments")]:
+                              ("create", "Create incidents, alerts and deployments"),
+                              ("update", "Update incidents and alert rules")]:
         PermissionAction.objects.get_or_create(name=action_name, defaults={"description": desc})
 
-    # Manage is sensitive because it can alter incidents, deployments, and alert rules.
-    for key, action, sens in [(PERM_VIEW, "view", "NORMAL"), (PERM_MANAGE, "manage", "SENSITIVE")]:
+    # Health writes are sensitive because they alter incidents, deployments, and alert rules.
+    for key, action, sens in [(PERM_VIEW, "view", "NORMAL"),
+                              (PERM_CREATE, "create", "SENSITIVE"),
+                              (PERM_UPDATE, "update", "SENSITIVE")]:
         permission = Permission.objects.filter(key=key).first()
         if permission is None:
             permission = Permission.objects.create(
@@ -70,7 +73,7 @@ def seed_permissions(stdout=None):
         elif permission.description != f"Health: {action}":
             permission.description = f"Health: {action}"
             permission.save(update_fields=["description"])
-    _log(stdout, f"  permissions: {PERM_VIEW}, {PERM_MANAGE}")
+    _log(stdout, f"  permissions: {PERM_VIEW}, {PERM_CREATE}, {PERM_UPDATE}")
 
 
 # Seed the monitored service registry without writing any telemetry.

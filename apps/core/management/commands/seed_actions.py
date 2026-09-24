@@ -33,7 +33,6 @@ ACTIONS: list[tuple[str, str]] = [
     ("create",     "Create a new record."),
     ("update",     "Modify an existing record's fields."),
     ("delete",     "Permanently remove a record (hard-delete or irreversible soft-delete)."),
-    ("manage",     "Full control over a resource - implies view, create, update, and delete."),
 
     # ── Approval & lifecycle ──────────────────────────────────────────────────
     ("approve",    "Ratify or authorise a submitted record (scores, invoices, leave requests, etc.)."),
@@ -44,6 +43,8 @@ ACTIONS: list[tuple[str, str]] = [
     ("archive",    "Move a record to an archived / read-only state without hard deletion."),
     ("suspend",    "Temporarily deactivate an account or entity."),
     ("reactivate", "Restore a previously suspended or deactivated entity."),
+    ("transition", "Move a record through one of its defined lifecycle states."),
+    ("configure",  "Change operational or commercial configuration."),
     ("replay",     "Re-run a stored inbound event that failed to process the first time."),
 
     # ── Data transfer & movement ──────────────────────────────────────────────
@@ -117,6 +118,7 @@ ACTIONS: list[tuple[str, str]] = [
     ("trigger",    "Initiate a deployment, job, or pipeline run."),
     ("run",        "Execute a migration, script, or background task."),
     ("escalate",   "Escalate a support ticket or incident to a higher tier."),
+    ("triage",     "Work a shared operational queue and its routing decisions."),
 ]
 
 

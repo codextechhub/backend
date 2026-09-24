@@ -357,7 +357,7 @@ class Permission(TimeStampedModel):
     #: available to everybody. The opposite default would hide working routes
     #: from paying schools the day a new module ships.
     #:
-    #: Some keys must never be filled in. ``school.user_overrides.manage``
+    #: Some keys must never be filled in. ``school.user_overrides.create``
     #: grants one person an exception to their role; who inside a school may
     #: do that is a role decision, and selling it by tier would be
     #: indefensible. ``vs_rbac.permission_bands.NEVER_BAND`` is the list, with
@@ -732,7 +732,9 @@ class PermissionGroup(TimeStampedModel):
             contain ``TENANT`` keys; ``GroupPermission`` enforces that, so the
             declaration cannot drift from the contents. No group may contain a
             restricted key because attachment takes effect without approval.
-        is_system: True for Vision-seeded groups; False for custom groups.
+        is_system: Legacy marker used only while old backend-created groups are
+            converted to direct role grants and removed. API-created groups
+            are always False.
         is_active: Soft-delete / hide toggle.
         permissions: M2M to ``Permission`` via ``GroupPermission``.
     """

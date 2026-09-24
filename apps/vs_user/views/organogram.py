@@ -332,7 +332,7 @@ class OrgNodeViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     CX org nodes (hierarchical): Division → Department → Team.
 
     Active platform employees may read the organisational structure. Writes
-    require platform staff plus platform.organogram.manage.
+    require platform staff plus the matching organogram write permission.
 
     This table has no tenant column - the CX org tree belongs to CX and to
     nobody else - so there is nothing for a queryset to narrow. The boundary
@@ -349,7 +349,10 @@ class OrgNodeViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         read_actions = {'list', 'retrieve'}
         if self.action in read_actions:
             return [IsAuthenticatedAndActive(), IsVisionStaff()]
-        self.rbac_permission = 'platform.organogram.manage'
+        self.rbac_permission = {
+            'create': 'platform.organogram.create',
+            'destroy': 'platform.organogram.delete',
+        }.get(self.action, 'platform.organogram.update')
         return [IsAuthenticatedAndActive(), IsVisionStaff(), HasRBACPermission()]
 
     def get_queryset(self):
@@ -393,7 +396,7 @@ class PositionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     Active platform employees may read seats and the reporting tree. Summary
     data such as vacancies requires platform staff plus platform.organogram.view;
-    writes require platform staff plus platform.organogram.manage.
+    writes require platform staff plus the matching organogram write permission.
 
     Like OrgNode, a seat belongs to the CX chart and carries no tenant column,
     so the caller's tenant kind is the only boundary available - and vacancies
@@ -411,7 +414,10 @@ class PositionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             return [IsAuthenticatedAndActive(), IsVisionStaff()]
         self.rbac_permission = (
             'platform.organogram.view' if self.action == 'vacancies'
-            else 'platform.organogram.manage'
+            else {
+                'create': 'platform.organogram.create',
+                'destroy': 'platform.organogram.delete',
+            }.get(self.action, 'platform.organogram.update')
         )
         return [IsAuthenticatedAndActive(), IsVisionStaff(), HasRBACPermission()]
 
@@ -506,7 +512,7 @@ class PositionAssignmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         read_actions = {'list', 'retrieve'}
         self.rbac_permission = (
             'platform.staff_profile.view' if self.action in read_actions
-            else 'platform.organogram.manage'
+            else 'platform.organogram.assign'
         )
         return [IsAuthenticatedAndActive(), IsVisionStaff(), HasRBACPermission()]
 
@@ -633,7 +639,10 @@ class MatrixReportViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         read_actions = {'list', 'retrieve'}
         if self.action in read_actions:
             return [IsAuthenticatedAndActive(), IsVisionStaff()]
-        self.rbac_permission = 'platform.organogram.manage'
+        self.rbac_permission = {
+            'create': 'platform.organogram.create',
+            'destroy': 'platform.organogram.delete',
+        }.get(self.action, 'platform.organogram.update')
         return [IsAuthenticatedAndActive(), IsVisionStaff(), HasRBACPermission()]
 
     def get_queryset(self):

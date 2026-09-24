@@ -1037,7 +1037,12 @@ class ScheduleListView(_ExportBase):
 class ScheduleDetailView(_ExportBase):
     """``GET`` / ``PATCH`` / ``DELETE`` one schedule."""
 
-    rbac_permission = [ExportPermission.SCHEDULE_VIEW, ExportPermission.SCHEDULE_MANAGE]
+    @property
+    def rbac_permission(self):
+        return {
+            "PATCH": ExportPermission.SCHEDULE_UPDATE,
+            "DELETE": ExportPermission.SCHEDULE_DELETE,
+        }.get(self.request.method, ExportPermission.SCHEDULE_VIEW)
 
     def get(self, request, pk):
         return success_response(
@@ -1070,7 +1075,13 @@ class ScheduleDetailView(_ExportBase):
 class SchedulePauseView(_ExportBase):
     """``POST /schedules/<pk>/pause/`` - stop it until somebody resumes it."""
 
-    rbac_permission = ExportPermission.SCHEDULE_MANAGE
+    @property
+    def rbac_permission(self):
+        return (
+            ExportPermission.SCHEDULE_REACTIVATE
+            if self.resume
+            else ExportPermission.SCHEDULE_SUSPEND
+        )
     resume = False
 
     def post(self, request, pk):

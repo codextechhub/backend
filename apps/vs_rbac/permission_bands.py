@@ -217,7 +217,9 @@ ACTION_BANDS = {
 NEVER_BAND = {
     ("exports", "sensitive_field", "export"):
         "Permission to carry restricted fields out of the platform.",
-    ("school", "user_overrides", "manage"):
+    ("school", "user_overrides", "create"):
+        "Granting one person an exception to their role.",
+    ("school", "user_overrides", "delete"):
         "Granting one person an exception to their role.",
     ("school", "user_overrides", "view"):
         "Reading those exceptions.",

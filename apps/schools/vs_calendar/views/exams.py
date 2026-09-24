@@ -32,7 +32,7 @@ from vs_audit.services import emit_audit_event
 
 from ..constants import (
     PERM_EXAM_CREATE,
-    PERM_EXAM_MANAGE,
+    PERM_EXAM_DELETE,
     PERM_EXAM_PUBLISH,
     PERM_EXAM_UPDATE,
     PERM_EXAM_VIEW,
@@ -188,7 +188,7 @@ class ExamDetailView(CalendarViewMixin, generics.RetrieveUpdateDestroyAPIView):
         self.rbac_permission = {
             "PATCH": PERM_EXAM_UPDATE,
             "PUT": PERM_EXAM_UPDATE,
-            "DELETE": PERM_EXAM_MANAGE,
+            "DELETE": PERM_EXAM_DELETE,
         }.get(self.request.method, PERM_EXAM_VIEW)
         return super().get_permissions()
 
@@ -459,7 +459,7 @@ class ExamSlotDetailView(_ExamScoped, generics.RetrieveUpdateDestroyAPIView):
         self.rbac_permission = {
             "PATCH": PERM_EXAM_UPDATE,
             "PUT": PERM_EXAM_UPDATE,
-            "DELETE": PERM_EXAM_MANAGE,
+            "DELETE": PERM_EXAM_DELETE,
         }.get(self.request.method, PERM_EXAM_VIEW)
         return super().get_permissions()
 

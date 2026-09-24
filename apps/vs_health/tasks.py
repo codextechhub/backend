@@ -373,7 +373,7 @@ def _dispatch_alert_notification(alert) -> int:
     from vs_rbac.evaluator import resolve_users_with_permission
     from vs_tenants.models import Tenant
 
-    from .constants import PERM_MANAGE
+    from .constants import PERM_UPDATE
     from .models import AlertRule
 
     if alert.rule.channel != AlertRule.Channel.EMAIL_AND_IN_APP:
@@ -394,11 +394,11 @@ def _dispatch_alert_notification(alert) -> int:
         recipients = list(resolve_users_with_permission(
             tenant=platform_tenant,
             branch=None,
-            permission_key=PERM_MANAGE,
+            permission_key=PERM_UPDATE,
         ))
         if not recipients:
             logger.error(
-                "Health alert %s has no active platform.health.manage recipients.",
+                "Health alert %s has no active platform.health.update recipients.",
                 alert.id,
             )
             alert.incident.add_event(
@@ -406,7 +406,7 @@ def _dispatch_alert_notification(alert) -> int:
                 who="Alertmanager",
                 text=(
                     "Notification delivery failed because no active platform operator "
-                    "holds platform.health.manage."
+                    "holds platform.health.update."
                 ),
             )
             return 0

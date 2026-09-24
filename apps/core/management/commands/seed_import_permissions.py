@@ -31,7 +31,7 @@ PLATFORM_ROLE_NAMES = {
 #:
 #: Narrower than the platform set on purpose, and each exclusion is a decision:
 #:
-#: - ``templates.create`` / ``templates.manage`` shape what a valid file IS.
+#: - ``templates.create`` / ``templates.update`` shape what a valid file IS.
 #:   That is platform configuration; a school picks a template, it does not
 #:   write one.
 #: - ``batches.update`` / ``batches.delete`` rewrite or erase the record of an
@@ -63,7 +63,7 @@ IMPORT_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
         [
             ("view",   "List and retrieve system import templates",         False, S_NORMAL),
             ("create", "Create a new system import template with columns",  False, S_SENSITIVE),
-            ("manage", "View and edit internal template config fields",     True,  S_SENSITIVE),
+            ("update", "Edit internal template config fields",              True,  S_SENSITIVE),
         ],
     ),
     (
@@ -186,7 +186,7 @@ class Command(BaseCommand):
                             PermissionScope.PLATFORM
                             if key in (
                                 "import.templates.create",
-                                "import.templates.manage",
+                                "import.templates.update",
                             )
                             else PermissionScope.TENANT
                         ),

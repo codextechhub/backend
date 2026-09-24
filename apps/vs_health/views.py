@@ -7,7 +7,8 @@ Two flavours:
     reuse the core envelope mixins + XVSPagination.
 
 This is a platform/SRE tool: reads require ``platform.health.view`` and writes
-require ``platform.health.manage``. Tenant Health reads cross-tenant aggregates,
+require a concrete ``platform.health.create`` or ``platform.health.update`` key.
+Tenant Health reads cross-tenant aggregates,
 so it is intentionally gated by the platform permission only.
 """
 from __future__ import annotations
@@ -26,7 +27,7 @@ from vs_notifications.services.routing import RecordFamily
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 
 from . import services
-from .constants import PERM_VIEW, PERM_MANAGE
+from .constants import PERM_CREATE, PERM_UPDATE, PERM_VIEW
 from .models import (
     MonitoredService,
     Incident,
@@ -58,13 +59,15 @@ class HealthViewMixin:
 
 # Method-aware permission mixin for health configuration and incident writes.
 class HealthWriteMixin:
-    """Read with view perm, write with manage perm (method-aware)."""
+    """Read with view, create with create, and change with update."""
     permission_classes = PERMS
 
     @property
     def rbac_permission(self):
         method = getattr(getattr(self, "request", None), "method", "GET")
-        return PERM_VIEW if method in SAFE_METHODS else PERM_MANAGE
+        if method in SAFE_METHODS:
+            return PERM_VIEW
+        return PERM_CREATE if method == "POST" else PERM_UPDATE
 
 
 # Parse range query parameters once for health analytics endpoints.

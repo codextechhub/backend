@@ -34,13 +34,14 @@ class EscalationTests(TicketFixtureMixin, TestCase):
         self.build_users()
         self.client = APIClient()
 
-        # The school's own triage person: tickets.ticket.manage inside their
+        # The school's own triage person: tickets.ticket.triage inside their
         # tenant, which is what the visibility rule already keys on.
         self.school_admin = self.peer
         _grant(
             self.school_a,
             self.school_admin,
-            (TicketPermission.MANAGE, TicketPermission.COMMENT),
+            (TicketPermission.TRIAGE, TicketPermission.TRANSITION,
+             TicketPermission.ESCALATE, TicketPermission.COMMENT),
             role_name="Alpha Ticket Manager",
         )
 
@@ -471,13 +472,31 @@ class TicketOwnershipTests(TicketFixtureMixin, TestCase):
 
     def test_the_desk_cannot_work_a_ticket_it_cannot_open(self):
         # The same boundary on the authority predicates: an unescalated school
-        # ticket is not CodeX's to manage or to write internal notes on, so no
+        # ticket is not CodeX's to transition or to write internal notes on, so no
         # caller holding one fetched another way is told otherwise.
-        self.assertFalse(visibility.can_manage_ticket(self.support, self.ticket))
+        self.assertFalse(visibility.can_transition_ticket(self.support, self.ticket))
         self.assertFalse(visibility.can_add_internal_note(self.support, self.ticket))
         self.assertFalse(visibility.can_view_internal_notes(self.support, self.ticket))
 
         self.escalate(self.ticket)
 
-        self.assertTrue(visibility.can_manage_ticket(self.support, self.ticket))
+        self.assertTrue(visibility.can_transition_ticket(self.support, self.ticket))
         self.assertTrue(visibility.can_add_internal_note(self.support, self.ticket))
+
+    def test_escalate_does_not_require_transition(self):
+        _grant(
+            self.school_a,
+            self.norole,
+            (TicketPermission.TRIAGE, TicketPermission.ESCALATE),
+            role_name="Alpha Escalation Desk",
+        )
+
+        ticket_svc.escalate_ticket(self.ticket, actor=self.norole)
+
+        self.assertIsNotNone(self.ticket.escalated_at)
+        with self.assertRaises(PermissionDenied):
+            ticket_svc.transition_ticket(
+                self.ticket,
+                actor=self.norole,
+                status="IN_PROGRESS",
+            )

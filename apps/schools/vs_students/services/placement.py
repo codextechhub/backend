@@ -129,7 +129,7 @@ def assert_capacity(school_class, session, *, adding=1, acknowledged=False):
 
     The acknowledgement needs no extra permission key. The design shows the
     seat count and the warning to whoever is doing the enrolling and then lets
-    them proceed; reserving the override to school.students.manage would stop
+    them proceed; reserving the override to school.students.transition would stop
     the screen working for the registrar it was drawn for. It is audited either
     way, which is the control that actually matters.
     """

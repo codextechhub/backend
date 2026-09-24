@@ -136,7 +136,8 @@ class _ExportFixture:
                 ExportPermission.RUN_VIEW, ExportPermission.RUN_CREATE,
                 ExportPermission.RUN_CANCEL, ExportPermission.FILE_DOWNLOAD,
                 ExportPermission.SCHEDULE_VIEW, ExportPermission.SCHEDULE_CREATE,
-                ExportPermission.SCHEDULE_MANAGE,
+                ExportPermission.SCHEDULE_UPDATE, ExportPermission.SCHEDULE_DELETE,
+                ExportPermission.SCHEDULE_SUSPEND, ExportPermission.SCHEDULE_REACTIVATE,
             ],
         )
 

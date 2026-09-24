@@ -43,8 +43,8 @@ INTEGRATION_DEFAULTS = {
     "email_retry_backoff_seconds": 60,
 }
 
-SPECIAL_MANAGED_KEYS = frozenset((*SECURITY_FIELDS.values(), *INTEGRATION_FIELDS.values()))
-PRODUCT_OWNED_KEYS = SPECIAL_MANAGED_KEYS
+PROTECTED_SETTING_KEYS = frozenset((*SECURITY_FIELDS.values(), *INTEGRATION_FIELDS.values()))
+PRODUCT_OWNED_KEYS = PROTECTED_SETTING_KEYS
 
 # The clamp each security field obeys: a scoped value may only be as strict as
 # its parent, or stricter. See resolve_security_settings.

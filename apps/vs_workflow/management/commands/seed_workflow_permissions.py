@@ -18,7 +18,7 @@ decision recorded only in the migration is a decision new schools never get.
 That is not hypothetical. It happened to exactly these keys. The grants were
 backfilled into tenant roles and never added to the library, so schools created
 after the backfill got a School Admin holding no ``workflow.*`` key at all - and
-because ``template.manage`` and ``group.manage`` are restricted, such a school
+because the workflow write keys are restricted, such a school
 could not grant them to itself either. It could raise the change request and
 nobody in the building could approve it.
 
@@ -36,7 +36,8 @@ WORKFLOW_RESOURCES = [
         "template",
         "Workflow template definitions",
         [
-            ("manage", "Create, update, and publish workflow templates",      True),
+            ("update", "Update workflow templates",                            True),
+            ("publish", "Publish workflow templates",                          True),
             ("view",   "View workflow templates (read-only)",                 False),
         ],
     ),
@@ -56,7 +57,9 @@ WORKFLOW_RESOURCES = [
         "group",
         "Workflow approver groups",
         [
-            ("manage", "Create, edit, and delete approver groups and their members", True),
+            ("create", "Create approver groups", True),
+            ("update", "Edit approver groups and their members", True),
+            ("delete", "Delete approver groups", True),
             ("view",   "View approver groups and their resolved members",             False),
         ],
     ),
@@ -75,21 +78,23 @@ _PLATFORM_ROLE_NAMES = {"xvs_super_admin": "XVS Super Admin", "xvs_platform_admi
 
 #: Which school role holds which workflow key, by prebuilt library key.
 #:
-#: The split follows who is answerable for what. School Admin gets the manage
-#: keys, because deciding who signs off the school's money is the head's call
+#: The split follows who is answerable for what. School Admin gets the write
+#: keys because deciding who signs off the school's money is the head's call
 #: and there is nobody else in a school to make it. Finance Admin and
 #: Procurement Admin read the rules governing their own documents, since seeing
 #: which ladder governs a purchase order is part of running procurement and
 #: changing it is not. Branch Admin sees instances only: a branch admin answers
 #: questions about documents in flight and configures nothing.
 #:
-#: ``group.manage`` and ``template.manage`` are restricted keys. That bars them
+#: The group and template write keys are restricted. That bars them
 #: from a permission group, not from a role - the restriction exists so a key
 #: cannot be handed out by attaching a group, and these are direct role grants.
 SCHOOL_ROLE_DEFAULTS = {
     "school_admin": [
-        "workflow.template.view", "workflow.template.manage",
-        "workflow.group.view", "workflow.group.manage",
+        "workflow.template.view", "workflow.template.update",
+        "workflow.template.publish",
+        "workflow.group.view", "workflow.group.create",
+        "workflow.group.update", "workflow.group.delete",
         "workflow.instance.view", "workflow.instance.cancel",
     ],
     "finance_admin": [

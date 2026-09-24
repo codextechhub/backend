@@ -33,11 +33,11 @@ class TicketExportVisibilityTests(TestCase):
         cls.lekki = make_branch(cls.school, name="Lekki Branch", is_main=True)
         cls.ikeja = make_branch(cls.school, name="Ikeja Branch", is_main=False)
 
-        manage = make_permission(
-            TicketPermission.MANAGE, scope=PermissionScope.TENANT,
+        triage = make_permission(
+            TicketPermission.TRIAGE, scope=PermissionScope.TENANT,
         )
         role = make_role(cls.school, name="Ticket Manager", key="branch_admin")
-        make_role_permission(role, manage)
+        make_role_permission(role, triage)
 
         # A manager pinned to Ikeja: manages Ikeja's tickets and the school's.
         cls.ikeja_manager = make_school_admin(

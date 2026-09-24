@@ -32,7 +32,10 @@ class TaskStatus(models.TextChoices):
 # what a person sees is settled structurally by the organogram: a manager sees
 # their own area and assigns down it.
 PERM_TASK_VIEW     = "todo.task.view"
-PERM_TASK_MANAGE   = "todo.task.manage"
+PERM_TASK_CREATE   = "todo.task.create"
+PERM_TASK_UPDATE   = "todo.task.update"
+PERM_TASK_MARK     = "todo.task.mark"
+PERM_TASK_DELETE   = "todo.task.delete"
 PERM_TASK_ASSIGN   = "todo.task.assign"
 
 

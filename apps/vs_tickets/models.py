@@ -111,7 +111,7 @@ class Ticket(TimeStampedModel):
     # ── Escalation: who this ticket is now addressed to ─────────────────────
     #
     # A ticket starts as the school's own. Their staff raise it, and whoever
-    # holds ``tickets.ticket.manage`` inside that school triages it - the
+    # holds ``tickets.ticket.triage`` inside that school triages it - the
     # projector in Room 3 is not CodeX's to fix, and a support desk that
     # receives it stops being read.
     #

@@ -27,7 +27,9 @@ SCHOOL_DEFAULT_KEYS = {
 }
 SCHOOL_ADMIN_EXTRA_KEYS = {
     "tickets.ticket.update",
-    "tickets.ticket.manage",
+    "tickets.ticket.triage",
+    "tickets.ticket.transition",
+    "tickets.ticket.escalate",
     "tickets.report.view",
 }
 _RESTRICTED = {"SENSITIVE", "CRITICAL"}
@@ -39,7 +41,9 @@ TICKET_RESOURCES = [
     ("ticket", "support tickets", [
         ("view", "NORMAL"),
         ("update", "NORMAL"),
-        ("manage", "SENSITIVE"),
+        ("triage", "SENSITIVE"),
+        ("transition", "SENSITIVE"),
+        ("escalate", "SENSITIVE"),
         ("assign", "SENSITIVE"),
     ]),
     ("comment", "ticket comments", [("post", "NORMAL")]),

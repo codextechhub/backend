@@ -1,14 +1,14 @@
 """Changing field access switches is a restricted power; seeing them is not.
 
 A switch opens a field the moment it is saved, with nobody approving it. So
-``school.field_access.manage`` must not be something a person can give
+``school.field_access.update`` must not be something a person can give
 themselves. At Bright Star School, Mr Okafor holds Deputy Head, which carries
 ``school.roles.update``. If manage were unrestricted he could add it to Deputy
 Head, save, and turn on Read for a supplier's bank account number on his own
 role. Restricted, the first step goes to the role change ladder, and the detour
 through a role he does not hold is closed by the assignment ceiling.
 
-``school.field_access.view`` only shows switches, so it stays groupable.
+``school.field_access.view`` only shows switches, so it stays unrestricted.
 
 Each rule is checked in a single-branch school and a multi-branch one, because
 Mr Okafor's Deputy Head grant pinned to one branch is still a role he holds.
@@ -23,13 +23,9 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from core.management.commands.seed_school_permission_groups import (
-    SCHOOL_PERMISSION_GROUPS,
-)
 from vs_rbac.models import (
-    GroupPermission,
     Permission,
-    PermissionGroup,
+    PrebuiltRoleTemplate,
     RoleFieldAccess,
     TenantRolePermission,
     TenantRoleTemplate,
@@ -50,7 +46,7 @@ from .helpers import (
 )
 
 VIEW = "school.field_access.view"
-MANAGE = "school.field_access.manage"
+UPDATE = "school.field_access.update"
 ROLE_KEYS = [
     "school.roles.view",
     "school.roles.create",
@@ -58,9 +54,6 @@ ROLE_KEYS = [
     "school.roles.delete",
     "school.roles.assign",
 ]
-ROLES_GROUP = "School Roles and Permissions"
-
-
 def _client(user):
     client = APIClient()
     client.credentials(
@@ -105,7 +98,7 @@ class _RestrictionRules(_SchoolShape):
         self.school = self._school(f"far-{shape}")
         self.tenant = self.school.tenant
         self.slug = self.tenant.slug
-        make_permission(MANAGE, is_restricted=True, sensitivity_level="CRITICAL")
+        make_permission(UPDATE, is_restricted=True, sensitivity_level="CRITICAL")
         make_permission(VIEW, sensitivity_level="CRITICAL")
 
         self.okafor = make_school_admin(self.ikeja, email=f"far-okafor-{shape}@test.com")
@@ -126,25 +119,25 @@ class _RestrictionRules(_SchoolShape):
             format="json",
         )
 
-    def test_adding_manage_to_a_role_you_hold_needs_approval(self):
-        response = self._save_role(self.deputy_head, ROLE_KEYS + [MANAGE])
+    def test_adding_update_to_a_role_you_hold_needs_approval(self):
+        response = self._save_role(self.deputy_head, ROLE_KEYS + [UPDATE])
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT, response.data)
         self.assertEqual(response.data["error"]["code"], "RESTRICTED_NEEDS_APPROVAL")
-        self.assertNotIn(MANAGE, _granted(self.deputy_head))
+        self.assertNotIn(UPDATE, _granted(self.deputy_head))
 
     def test_adding_view_to_a_role_you_hold_saves(self):
         response = self._save_role(self.deputy_head, ROLE_KEYS + [VIEW])
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
         self.assertIn(VIEW, _granted(self.deputy_head))
 
-    def test_adding_manage_to_a_role_you_do_not_hold_saves(self):
-        response = self._save_role(self.storekeeper, [VIEW, MANAGE])
+    def test_adding_update_to_a_role_you_do_not_hold_saves(self):
+        response = self._save_role(self.storekeeper, [VIEW, UPDATE])
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
-        self.assertIn(MANAGE, _granted(self.storekeeper))
+        self.assertIn(UPDATE, _granted(self.storekeeper))
 
     def test_giving_yourself_that_role_is_refused_by_the_ceiling(self):
         self.assertEqual(
-            self._save_role(self.storekeeper, [VIEW, MANAGE]).status_code,
+            self._save_role(self.storekeeper, [VIEW, UPDATE]).status_code,
             status.HTTP_200_OK,
         )
         url = reverse("rbac-assignment-list-create", kwargs={"tenant_slug": self.slug})
@@ -179,7 +172,6 @@ class _SeededSchoolAdmin(_SchoolShape):
             "seed_actions",
             "seed_prebuilt_role_templates",
             "seed_school_permissions",
-            "seed_school_permission_groups",
         ):
             _call(command)
 
@@ -188,20 +180,21 @@ class _SeededSchoolAdmin(_SchoolShape):
 
     def test_the_seed_registers_view_open_and_manage_restricted(self):
         self.assertFalse(Permission.objects.get(key=VIEW).is_restricted)
-        self.assertTrue(Permission.objects.get(key=MANAGE).is_restricted)
+        self.assertTrue(Permission.objects.get(key=UPDATE).is_restricted)
 
-    def test_manage_is_in_no_group_and_view_is_in_the_roles_group(self):
-        self.assertFalse(GroupPermission.objects.filter(permission_id=MANAGE).exists())
-        for _name, _reach, _description, keys in SCHOOL_PERMISSION_GROUPS:
-            self.assertNotIn(MANAGE, keys)
-        roles_group = PermissionGroup.objects.get(name=ROLES_GROUP)
-        self.assertIn(VIEW, set(roles_group.permissions.values_list("key", flat=True)))
+    def test_manage_and_view_are_direct_school_admin_defaults(self):
+        prebuilt = PrebuiltRoleTemplate.objects.get(key="school_admin")
+        keys = set(
+            prebuilt.default_permissions.values_list("permission_id", flat=True),
+        )
+        self.assertIn(UPDATE, keys)
+        self.assertIn(VIEW, keys)
 
     def test_a_newly_provisioned_school_admin_holds_manage_and_can_change_switches(self):
         school = self._school(self._slug("provisioned"))
         tenant = school.tenant
         role = provision_role_from_prebuilt(tenant=tenant, prebuilt_key="school_admin")
-        self.assertIn(MANAGE, _granted(role))
+        self.assertIn(UPDATE, _granted(role))
         self.assertIn(VIEW, _granted(role))
 
         admin = make_school_admin(self.ikeja, email=f"{self._slug('head')}@test.com")
@@ -230,9 +223,9 @@ class _SeededSchoolAdmin(_SchoolShape):
             tenant=school.tenant, key="school_admin", name="School Admin",
             is_system_role=True,
         )
-        self.assertNotIn(MANAGE, _granted(role))
+        self.assertNotIn(UPDATE, _granted(role))
         _call("seed_school_permissions")
-        self.assertIn(MANAGE, _granted(role))
+        self.assertIn(UPDATE, _granted(role))
         self.assertIn(VIEW, _granted(role))
 
 

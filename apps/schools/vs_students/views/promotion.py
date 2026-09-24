@@ -120,8 +120,7 @@ class PromotionRunView(_PromotionBase):
 
     def post(self, request):
         # Two keys: the run writes placements, and placing is vs_academics'.
-        # ``promote`` rather than ``manage``: promoting the whole roll and
-        # moving one child between branches are sold at different depths.
+        # Promotion and transfer are sold at different depths.
         self.assert_holds(PERM_PROMOTE, PERM_CLASS_ASSIGN)
 
         data = self._payload(request)

@@ -40,12 +40,14 @@ STUDENT_KEYS = (
     "school.students.view",
     "school.students.create",
     "school.students.update",
-    "school.students.manage",
+    "school.students.transition",
+    "school.students.transfer",
+    "school.students.suspend",
+    "school.students.reactivate",
     "school.students.import",
     "school.students.export",
 )
-#: Promoting the whole roll, split out of ``students.manage`` so it can be sold
-#: a depth deeper than transferring one child between branches.
+#: Promoting the whole roll is sold deeper than transferring one child.
 PROMOTE_KEYS = ("school.students.promote",)
 CLASS_KEYS = ("academics.classes.assign", "academics.classes.view")
 ALL_KEYS = STUDENT_KEYS + PROMOTE_KEYS + CLASS_KEYS

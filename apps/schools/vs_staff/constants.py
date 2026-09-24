@@ -18,7 +18,7 @@ from django.db import models
 PERM_VIEW = "school.teachers.view"
 PERM_CREATE = "school.teachers.create"
 PERM_UPDATE = "school.teachers.update"
-PERM_MANAGE = "school.teachers.manage"
+PERM_TRANSITION = "school.teachers.transition"
 PERM_ASSIGN = "school.teachers.assign"
 
 #: Loading a school's existing staff from a spreadsheet.
@@ -41,7 +41,8 @@ PERM_RECORDS_UPDATE = "school.staff_records.update"
 
 PERM_LEAVE_APPLY = "school.leave.apply"
 PERM_LEAVE_VIEW = "school.leave.view"
-PERM_LEAVE_MANAGE = "school.leave.manage"
+PERM_LEAVE_UPDATE = "school.leave.update"
+PERM_LEAVE_CANCEL = "school.leave.cancel"
 
 PERM_ACCOUNT_UPDATE = "school.administrators.update"
 PERM_ACCOUNT_SUSPEND = "school.administrators.suspend"

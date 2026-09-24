@@ -370,7 +370,7 @@ class ClearTests(_Base):
         from vs_rbac.models import TenantRolePermission
 
         TenantRolePermission.objects.filter(
-            role=self.role, permission__key="academics.timetable.manage",
+            role=self.role, permission__key="academics.timetable.delete",
         ).update(granted=False)
         response = self.post(
             self.admin, "calendar-class-clear", class_id=self.jss1a.pk,

@@ -45,7 +45,7 @@ class TaxObligationListCreateView(_FinanceBase):
     @property
     # Handle the rbac permission workflow.
     def rbac_permission(self):
-        return "finance.tax.manage" if self.request.method == "POST" \
+        return "finance.tax.create" if self.request.method == "POST" \
             else "finance.tax.view"
 
     # Handle GET requests for this endpoint.
@@ -92,7 +92,7 @@ class TaxObligationDetailView(_FinanceBase):
     @property
     # Handle the rbac permission workflow.
     def rbac_permission(self):
-        return "finance.tax.manage" if self.request.method == "PATCH" \
+        return "finance.tax.update" if self.request.method == "PATCH" \
             else "finance.tax.view"
 
     # Support the obligation workflow.
@@ -358,5 +358,4 @@ class TaxFilingPayView(_TaxFilingActionBase):
             f"Tax filing {filing.document_number} remitted.",
             data=TaxFilingSerializer(filing).data,
         )
-
 

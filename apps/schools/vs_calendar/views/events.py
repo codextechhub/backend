@@ -34,7 +34,7 @@ from vs_audit.services import emit_audit_event
 
 from ..constants import (
     PERM_CALENDAR_CREATE,
-    PERM_CALENDAR_MANAGE,
+    PERM_CALENDAR_DELETE,
     PERM_CALENDAR_UPDATE,
     PERM_CALENDAR_VIEW,
     WARN_EVENT_OUTSIDE_ANY_TERM,
@@ -306,7 +306,7 @@ class EventDetailView(_EventBase, generics.RetrieveUpdateDestroyAPIView):
             # SENSITIVE and school_admin only, deliberately: a branch adds and
             # edits its own entries, and removing one from the school's
             # calendar is the school's call.
-            "DELETE": PERM_CALENDAR_MANAGE,
+            "DELETE": PERM_CALENDAR_DELETE,
         }.get(self.request.method, PERM_CALENDAR_VIEW)
         return super().get_permissions()
 

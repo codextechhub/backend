@@ -49,7 +49,6 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
             ("update",   "Edit platform role metadata",               False, _NORMAL),
             ("approve",  "Approve restricted platform role grants",   True,  _CRITICAL),
             ("assign",   "Assign roles to users",                     True,  _SENSITIVE),
-            ("manage",   "Full control over platform roles",          True,  _SENSITIVE),
             ("delete",   "Delete platform roles",                     True,  _SENSITIVE),
             ("transfer", "Transfer Super Admin role to another user", True,  _CRITICAL),
         ],
@@ -92,7 +91,8 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
             # Seeing that a user HAS exceptions is itself sensitive: without
             # this key the affected user cannot learn they have any.
             ("view",   "View a CX user's permission exceptions",            True, _CRITICAL),
-            ("manage", "Grant or revoke a CX user's permission exceptions", True, _CRITICAL),
+            ("create", "Grant a CX user's permission exception", True, _CRITICAL),
+            ("delete", "Revoke a CX user's permission exception", True, _CRITICAL),
         ],
     ),
     (
@@ -101,11 +101,11 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
         [
             # Both CRITICAL because a switch can open staff bank details. View
             # only shows switches and opens nothing, so it is not restricted.
-            # Manage opens a field the moment it is saved, so it is restricted:
+            # Update opens a field the moment it is saved, so it is restricted:
             # adding it to a role you hold goes through the role change ladder,
             # and nobody can assign a role carrying it without holding it.
             ("view",   "View field access switches on roles",   False, _CRITICAL),
-            ("manage", "Change field access switches on roles", True,  _CRITICAL),
+            ("update", "Change field access switches on roles", True,  _CRITICAL),
         ],
     ),
     (
@@ -128,7 +128,10 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
         "CX organogram - departments, positions, assignments, matrix lines",
         [
             ("view",   "View organogram summary metrics",             False, _NORMAL),
-            ("manage", "Edit departments, positions and assignments", True, _SENSITIVE),
+            ("create", "Create departments, positions and assignments", False, _NORMAL),
+            ("update", "Edit departments, positions and assignments", False, _NORMAL),
+            ("delete", "Delete departments, positions and assignments", True, _SENSITIVE),
+            ("assign", "Assign staff to organogram positions", True, _SENSITIVE),
         ],
     ),
     (
@@ -139,7 +142,8 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
             ("create", "Onboard a new school",                 False, _NORMAL),
             ("update", "Edit school info and settings",        False, _NORMAL),
             ("delete", "Decommission a school record",         True,  _SENSITIVE),
-            ("manage", "Full school lifecycle administration", True,  _SENSITIVE),
+            ("configure", "Change a school's plan and module depths", True, _SENSITIVE),
+            ("transition", "Transition a school in or out of service", True, _SENSITIVE),
         ],
     ),
     (
@@ -149,7 +153,7 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
             ("view",   "View branches under a school", False, _NORMAL),
             ("create", "Add a new branch to a school", False, _NORMAL),
             ("update", "Edit branch details",          False, _NORMAL),
-            ("manage", "Transition branch lifecycle",  True,  _SENSITIVE),
+            ("transition", "Transition branch lifecycle",  True,  _SENSITIVE),
         ],
     ),
     (
@@ -158,7 +162,9 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
         [
             ("view",   "View audit events and entity trails", False, _NORMAL),
             ("export", "Export audit data to file",           True,  _SENSITIVE),
-            ("manage", "Create and manage compliance rules",  True,  _SENSITIVE),
+            ("create", "Create compliance rules", True, _SENSITIVE),
+            ("update", "Edit compliance rules", True, _SENSITIVE),
+            ("delete", "Delete compliance rules", True, _SENSITIVE),
         ],
     ),
     (
@@ -215,7 +221,7 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
 #   user ("outsider holds the very same key, but in a different tenant") and
 #   assert they may run and download their own exports.
 #
-# ``platform.audit.manage`` is deliberately NOT in this list: it edits
+# The audit rule write keys are deliberately absent from this list: they edit
 # compliance and retention rules through an unscoped queryset, and nothing
 # grants it to a tenant.
 #
@@ -253,7 +259,6 @@ SUPER_ADMIN_ONLY_KEYS = {
 RETIRED_PERMISSION_KEYS = {
     "platform.permissions.create",
     "platform.permissions.update",
-    "platform.permissions.manage",
     "platform.permissions.delete",
 }
 # Canonical codex-tenant role keys (mirror the legacy PlatformRoleTemplate ids).

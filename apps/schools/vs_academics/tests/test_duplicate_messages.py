@@ -39,9 +39,9 @@ class _AllAcademics(_Base):
         super().setUpTestData()
         for key in (
             "academics.classes.view", "academics.classes.create",
-            "academics.classes.update", "academics.classes.manage",
+            "academics.classes.update", "academics.classes.archive", "academics.classes.reactivate",
             "academics.subject.view", "academics.subject.create",
-            "academics.subject.update", "academics.subject.manage",
+            "academics.subject.update", "academics.subject.archive", "academics.subject.reactivate",
         ):
             make_role_permission(
                 cls.role, make_permission(key, scope=PermissionScope.TENANT),

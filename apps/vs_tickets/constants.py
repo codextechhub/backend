@@ -88,7 +88,9 @@ class TicketPermission:
     # may file a ticket, and participants always keep access to their thread.
     VIEW = "tickets.ticket.view"
     UPDATE = "tickets.ticket.update"
-    MANAGE = "tickets.ticket.manage"
+    TRIAGE = "tickets.ticket.triage"
+    TRANSITION = "tickets.ticket.transition"
+    ESCALATE = "tickets.ticket.escalate"
     ASSIGN = "tickets.ticket.assign"
     COMMENT = "tickets.comment.post"
     INTERNAL_NOTE = "tickets.internal_note.post"

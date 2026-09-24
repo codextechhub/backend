@@ -67,7 +67,7 @@ urlpatterns = [
     ),
 
     # -------------------------------------------------------------------------
-    # Backend-owned Permission Groups (shared across tenant + platform roles)
+    # Administrator-owned Permission Groups (shared across tenant + platform roles)
     # -------------------------------------------------------------------------
     path(
         "vision/permission-groups/",

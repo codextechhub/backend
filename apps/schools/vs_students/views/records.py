@@ -10,7 +10,6 @@ from core.response import success_response
 
 from ..constants import (
     PERM_CLASS_VIEW,
-    PERM_MANAGE,
     PERM_UPDATE,
     PERM_VIEW,
 )
@@ -332,14 +331,14 @@ class AdmissionPolicyView(StudentsViewMixin, APIView):
 
     The school's own rule about admission numbers. Reading it needs only
     ``view`` because the enrolment form has to render the hint; setting it
-    needs ``manage``.
+    needs ``update``.
 
     docstring-name: Admission number policy
     """
 
     def get_permissions(self):
         self.rbac_permission = (
-            PERM_MANAGE if self.request.method == "PUT" else PERM_VIEW
+            PERM_UPDATE if self.request.method == "PUT" else PERM_VIEW
         )
         return super().get_permissions()
 

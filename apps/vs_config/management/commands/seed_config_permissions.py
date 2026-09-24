@@ -5,13 +5,13 @@ from django.db import transaction
 RESOURCES = [
     ("definition", [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("archive", "SENSITIVE")]),
     ("value", [("view", "NORMAL"), ("update", "SENSITIVE")]),
-    ("capability", [("view", "NORMAL"), ("manage", "SENSITIVE")]),
-    ("entitlement", [("view", "SENSITIVE"), ("manage", "CRITICAL")]),
-    ("override", [("view", "NORMAL"), ("manage", "SENSITIVE")]),
+    ("capability", [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("archive", "SENSITIVE")]),
+    ("entitlement", [("view", "SENSITIVE"), ("update", "CRITICAL"), ("delete", "CRITICAL")]),
+    ("override", [("view", "NORMAL"), ("update", "SENSITIVE")]),
     ("audit", [("view", "SENSITIVE"), ("export", "SENSITIVE")]),
     ("export", [("create", "SENSITIVE")]),
-    ("security", [("view", "SENSITIVE"), ("manage", "CRITICAL")]),
-    ("integration", [("view", "SENSITIVE"), ("manage", "CRITICAL")]),
+    ("security", [("view", "SENSITIVE"), ("update", "CRITICAL")]),
+    ("integration", [("view", "SENSITIVE"), ("update", "CRITICAL"), ("trigger", "CRITICAL")]),
 ]
 PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
 _PLATFORM_ROLE_NAMES = {"xvs_super_admin": "XVS Super Admin", "xvs_platform_admin": "XVS Platform Admin"}

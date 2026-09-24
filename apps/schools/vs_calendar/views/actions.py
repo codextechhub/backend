@@ -10,7 +10,7 @@ from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
 
 from ..constants import (
-    PERM_TIMETABLE_MANAGE,
+    PERM_TIMETABLE_DELETE,
     PERM_TIMETABLE_PUBLISH,
     PERM_TIMETABLE_UPDATE,
 )
@@ -106,7 +106,7 @@ class ClassTimetableClearView(_ClassScoped):
 
     def get_permissions(self):
         # SENSITIVE and school_admin only, matching every other delete here.
-        self.rbac_permission = PERM_TIMETABLE_MANAGE
+        self.rbac_permission = PERM_TIMETABLE_DELETE
         return super().get_permissions()
 
     @transaction.atomic

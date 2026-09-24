@@ -1,6 +1,6 @@
 """Who a ticket's notifications reach, and why it is the list the picker offers.
 
-A desk agent whose ``tickets.ticket.manage`` key arrives through a permission
+A desk agent whose ``tickets.ticket.triage`` key arrives through a permission
 group is an ordinary shape, not an exotic one: a group is how a desk's keys are
 bundled and attached, and a role built that way carries no permission of its
 own. Such an agent passes every permission gate, appears in the assignee picker
@@ -58,13 +58,13 @@ class TicketRecipientsHoldingAKeyThroughAGroupTests(TicketFixtureMixin, TestCase
     def setUp(self):
         self.build_users()
 
-        # Ngozi works the CodeX desk. Her manage key is in the Support Desk
+        # Ngozi works the CodeX desk. Her triage key is in the Support Desk
         # group, not on her role.
         self.group_agent = _user("desk-group@cx.test", "Ngozi", "Desk")
         _grant_through_group(
             self.group_agent.tenant,
             self.group_agent,
-            TicketPermission.MANAGE,
+            TicketPermission.TRIAGE,
             group_name="Support Desk",
             role_name="CX Desk Agent",
         )
@@ -80,7 +80,7 @@ class TicketRecipientsHoldingAKeyThroughAGroupTests(TicketFixtureMixin, TestCase
         _grant_through_group(
             self.school_a.tenant,
             self.school_group_triager,
-            TicketPermission.MANAGE,
+            TicketPermission.TRIAGE,
             group_name="School Support Desk",
             role_name="Alpha Desk Agent",
         )

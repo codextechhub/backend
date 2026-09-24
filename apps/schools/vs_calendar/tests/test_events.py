@@ -267,7 +267,7 @@ class EventSecurityTests(_Base):
             start_date=dt.date(2025, 11, 14), end_date=dt.date(2025, 11, 14),
         )
         TenantRolePermission.objects.filter(
-            role=self.role, permission__key="academics.calendar.manage",
+            role=self.role, permission__key="academics.calendar.delete",
         ).update(granted=False)
         response = self.delete(self.admin, "calendar-event-detail", pk=event.pk)
         self.assertEqual(response.status_code, 403, response.data)

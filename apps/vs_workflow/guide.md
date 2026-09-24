@@ -157,14 +157,14 @@ A group that resolves to nobody (empty, deactivated, or every member vacant)
 behaves like any other empty stage: `skip_if_no_approvers` decides whether the
 stage is skipped or the workflow waits.
 
-**Managing groups** (the "Workflow Approver" screen):
+**Approver groups** (the "Workflow Approver" screen):
 
 | Method | Path | Permission |
 |---|---|---|
-| `GET` / `POST` | `/approver-groups/` | `workflow.group.view` / `workflow.group.manage` |
-| `GET` / `PATCH` / `DELETE` | `/approver-groups/{id}/` | view / manage |
-| `POST` | `/approver-groups/{id}/members/` | manage |
-| `DELETE` | `/approver-groups/{id}/members/{member_id}/` | manage |
+| `GET` / `POST` | `/approver-groups/` | `workflow.group.view` / `workflow.group.create` |
+| `GET` / `PATCH` / `DELETE` | `/approver-groups/{id}/` | view / update / delete |
+| `POST` | `/approver-groups/{id}/members/` | update |
+| `DELETE` | `/approver-groups/{id}/members/{member_id}/` | update |
 | `GET` | `/approver-groups/{id}/resolve/` | view |
 
 `resolve/` returns the live per-member breakdown ("this role resolves to 3
@@ -187,7 +187,7 @@ platform act, so the publish payload carries `scope`:
 
 | `scope` | Writes | Who may |
 |---|---|---|
-| `TENANT` (default) | a template owned by the calling tenant | anyone with `workflow.template.manage` |
+| `TENANT` (default) | a template owned by the calling tenant | anyone with `workflow.template.publish` |
 | `PLATFORM` | the shared, tenant-less template | only an actor whose tenant is `PLATFORM` |
 
 This distinction is load-bearing. The platform (Codex) is itself a tenant, so
@@ -271,7 +271,7 @@ An override names either a role key or one of the tenant's approver groups, and
 the engine consults it before the stage's own configuration. Only *who approves*
 changes; advance rule, rejection policy and routing stay with the template.
 Deleting the override restores the template's own approver. Overrides need
-`workflow.template.manage`, because repointing an approval step is a
+`workflow.template.update`, because repointing an approval step is a
 template-level decision.
 
 ---
@@ -704,7 +704,7 @@ All endpoints are under `/v1/workflow/`.
 |--------|-----|------------|-------------|
 | `GET` | `/templates/` | `workflow.template.view` | List all templates (scoped to school if set). |
 | `GET` | `/templates/{id}/` | `workflow.template.view` | Retrieve a single template with stages and routes. |
-| `POST` | `/templates/publish/` | `workflow.template.manage` | Create or update a template in place. |
+| `POST` | `/templates/publish/` | `workflow.template.publish` | Create or update a template in place. |
 
 ### Instances
 

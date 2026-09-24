@@ -492,8 +492,8 @@ class VendorInvoiceSubmitApprovalView(_ProcBase):
 
 # A school builds its approval steps through the workflow surface it already
 # holds keys for: ``POST /workflow/templates/publish/`` under
-# ``workflow.template.manage``, and the approver-group screens under
-# ``workflow.group.manage``. Both are granted to school_admin, and both consoles
+# the workflow template write keys, and the approver-group screens under
+# their concrete group write keys. Both are granted to school_admin, and both consoles
 # wire them. There is deliberately no procurement-specific shortcut that installs
 # a ready-made ladder: a suggested ladder is a guess at who approves a school's
 # spend and at the amount that needs a second pair of eyes, and both are answers

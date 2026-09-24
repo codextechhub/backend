@@ -336,7 +336,7 @@ class ExamSecurityTests(_ExamBase):
 
         created = self.paper()
         TenantRolePermission.objects.filter(
-            role=self.role, permission__key="academics.exam.manage",
+            role=self.role, permission__key="academics.exam.delete",
         ).update(granted=False)
         response = self.delete(
             self.admin, "calendar-exam-slot-detail",

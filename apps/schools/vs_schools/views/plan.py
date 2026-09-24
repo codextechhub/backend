@@ -58,7 +58,7 @@ class SchoolPlanView(_PlanView):
     def get_permissions(self):
         self.rbac_permission = (
             "platform.schools.view" if self.request.method == "GET"
-            else "platform.schools.manage"
+            else "platform.schools.configure"
         )
         return super().get_permissions()
 
@@ -98,7 +98,7 @@ class SchoolPlanUpliftView(_PlanView):
     docstring-name: Give a school deeper reach for a while
     """
 
-    rbac_permission = "platform.schools.manage"
+    rbac_permission = "platform.schools.configure"
 
     def post(self, request, slug):
         school = self.get_school(slug)
@@ -129,7 +129,7 @@ class SchoolPlanUpliftDetailView(_PlanView):
     docstring-name: Withdraw an uplift
     """
 
-    rbac_permission = "platform.schools.manage"
+    rbac_permission = "platform.schools.configure"
 
     def delete(self, request, slug, capability):
         school = self.get_school(slug)

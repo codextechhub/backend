@@ -22,7 +22,12 @@ from vs_rbac.tests.helpers import (
     make_assignment, make_branch, make_permission, make_role,
     make_role_permission, make_school, make_school_admin,
 )
-from vs_workflow.constants import PERM_GROUP_MANAGE, PERM_GROUP_VIEW
+from vs_workflow.constants import (
+    PERM_GROUP_CREATE,
+    PERM_GROUP_DELETE,
+    PERM_GROUP_UPDATE,
+    PERM_GROUP_VIEW,
+)
 from vs_workflow.models import WorkflowApproverGroup, WorkflowApproverGroupMember
 from vs_workflow.views import (
     WorkflowApproverGroupViewSet, WorkflowStageApproverOverrideViewSet,
@@ -78,7 +83,7 @@ class ApproverGroupApiTests(TestCase):
         self.tenant = self.school.tenant
 
         self.manager = make_school_admin(self.branch, email="grp-manager@test.com")
-        _grant(self.manager, [PERM_GROUP_MANAGE, PERM_GROUP_VIEW])
+        _grant(self.manager, [PERM_GROUP_CREATE, PERM_GROUP_UPDATE, PERM_GROUP_DELETE, PERM_GROUP_VIEW])
         self.viewer = make_school_admin(self.branch, email="grp-viewer@test.com")
         _grant(self.viewer, [PERM_GROUP_VIEW])
         self.nobody = make_school_admin(self.branch, email="grp-nobody@test.com")
@@ -119,10 +124,10 @@ class ApproverGroupApiTests(TestCase):
         list groups cannot configure one. Reading travels with template
         management; writing still takes the group's own manage key.
         """
-        from vs_workflow.constants import PERM_TEMPLATE_MANAGE
+        from vs_workflow.constants import PERM_TEMPLATE_UPDATE
 
         manager = make_school_admin(self.branch, email=f"tpl-only-{next(_counter)}@test.com")
-        _grant(manager, [PERM_TEMPLATE_MANAGE])
+        _grant(manager, [PERM_TEMPLATE_UPDATE])
 
         resp = _call(LIST, "get", BASE, manager, self.tenant)
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
@@ -131,10 +136,10 @@ class ApproverGroupApiTests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
     def test_template_manager_still_cannot_change_a_group(self):
-        from vs_workflow.constants import PERM_TEMPLATE_MANAGE
+        from vs_workflow.constants import PERM_TEMPLATE_UPDATE
 
         manager = make_school_admin(self.branch, email=f"tpl-only2-{next(_counter)}@test.com")
-        _grant(manager, [PERM_TEMPLATE_MANAGE])
+        _grant(manager, [PERM_TEMPLATE_UPDATE])
 
         resp = _call(LIST, "post", BASE, manager, self.tenant, {"code": "x", "name": "X"})
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
@@ -255,7 +260,7 @@ class ApproverGroupApiTests(TestCase):
     def test_same_code_allowed_in_another_tenant(self):
         other = make_school(slug="grp-same-code", name="Same Code")
         admin = make_school_admin(make_branch(other), email="other-admin@test.com")
-        _grant(admin, [PERM_GROUP_MANAGE, PERM_GROUP_VIEW])
+        _grant(admin, [PERM_GROUP_CREATE, PERM_GROUP_UPDATE, PERM_GROUP_DELETE, PERM_GROUP_VIEW])
         resp = _call(LIST, "post", BASE, admin, other.tenant,
                      {"code": "po-approvers", "name": "Their POs"})
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
@@ -384,7 +389,7 @@ class DynamicRolePreviewTests(TestCase):
         self.tenant = self.school.tenant
 
         self.builder = make_school_admin(self.branch, email="dyn-builder@test.com")
-        _grant(self.builder, ["workflow.template.view", "workflow.template.manage"])
+        _grant(self.builder, ["workflow.template.view", "workflow.template.update"])
 
         self.officer_role = make_role(self.tenant, name="Finance Officer",
                                       key="finance-officer", is_system_role=True)
@@ -475,7 +480,7 @@ class StageApproverOverrideApiTests(TestCase):
         self.tenant = self.school.tenant
 
         self.admin = make_school_admin(self.branch, email="ovr-admin@test.com")
-        _grant(self.admin, ["workflow.template.manage", "workflow.template.view"])
+        _grant(self.admin, ["workflow.template.update", "workflow.template.view"])
         self.viewer = make_school_admin(self.branch, email="ovr-viewer@test.com")
         _grant(self.viewer, ["workflow.template.view"])
 

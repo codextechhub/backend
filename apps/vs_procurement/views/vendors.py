@@ -132,20 +132,20 @@ def _replace_vendor_contacts(vendor, raw):
 
 
 
-def _has_vendor_manage_access(request):
+def _has_vendor_verification_access(request):
     """Check compliance-governance access in the request's tenant/branch context."""
     if is_vision_super_admin(request.user):
         return True
     tenant = getattr(request, "rbac_tenant", None) or getattr(request, "tenant", None)
     return user_has_rbac_permission(
-        request.user, "procurement.vendor.manage",
+        request.user, "procurement.vendor.verify",
         tenant=tenant or getattr(request.user, "tenant", None),
     )
 
 
-def _require_vendor_manage_access(request, body):
+def _require_vendor_verification_access(request, body):
     """Require the compliance permission only for KYC, risk, and hold changes."""
-    if _COMPLIANCE_VENDOR_FIELDS.intersection(body) and not _has_vendor_manage_access(request):
+    if _COMPLIANCE_VENDOR_FIELDS.intersection(body) and not _has_vendor_verification_access(request):
         raise PermissionDenied("You do not have permission to modify vendor compliance fields.")
 
 
@@ -644,7 +644,7 @@ class VendorDetailView(_ProcBase):
         assert_writable(request, "procurement.vendor", body)
         # The route still requires vendor.update; compliance fields add a second,
         # narrower authority and are rejected before the vendor row is mutated.
-        _require_vendor_manage_access(request, body)
+        _require_vendor_verification_access(request, body)
         vendor = self._get(entity, pk, lock=True)
         previous_email = vendor.email
 

@@ -73,7 +73,10 @@ SCHOOL_ROLE_DEFAULTS: dict[str, tuple[str, ...]] = {
         "exports.definition.share",
         "exports.schedule.view",
         "exports.schedule.create",
-        "exports.schedule.manage",
+        "exports.schedule.update",
+        "exports.schedule.delete",
+        "exports.schedule.suspend",
+        "exports.schedule.reactivate",
         # The whole point of the sensitivity gate: it is held separately, by the
         # one school role trusted with restricted columns.
         "exports.sensitive_field.export",
@@ -92,7 +95,8 @@ EXPORTS_RESOURCES = [
                                                   ("cancel", "NORMAL")]),
     ("file",            "produced files",        [("download", "SENSITIVE")]),
     ("schedule",        "export schedules",      [("view", "NORMAL"), ("create", "NORMAL"),
-                                                  ("manage", "SENSITIVE")]),
+                                                  ("update", "NORMAL"), ("delete", "SENSITIVE"),
+                                                  ("suspend", "SENSITIVE"), ("reactivate", "SENSITIVE")]),
     ("sensitive_field", "restricted fields in exports", [("export", "CRITICAL")]),
     ("activity",        "other people's export activity", [("view", "CRITICAL")]),
 ]

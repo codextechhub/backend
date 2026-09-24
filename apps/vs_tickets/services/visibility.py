@@ -14,14 +14,14 @@ from ..models import Ticket
 # Decide whether a user can operate the cross-tenant support desk.
 def is_support_user(user) -> bool:
     """Cross-tenant support console access: PLATFORM-tenant staff holding the
-    manage grant. The kind check is load-bearing - a school user granted
-    tickets.ticket.manage manages tickets inside their own tenant only and
+    triage grant. The kind check is load-bearing - a school user granted
+    tickets.ticket.triage works tickets inside the holder's own tenant only and
     must never inherit the cross-tenant span."""
     if not user or not getattr(user, "is_authenticated", False):
         return False
     if getattr(getattr(user, "tenant", None), "kind", None) != "PLATFORM":
         return False
-    return user_has_rbac_permission(user, TicketPermission.MANAGE, tenant=user.tenant)
+    return user_has_rbac_permission(user, TicketPermission.TRIAGE, tenant=user.tenant)
 
 
 # Decide whether the platform desk may take ownership of a ticket.
@@ -34,7 +34,7 @@ def accepts_platform_assignment(ticket) -> bool:
     Naming a CodeX user as the owner of a school's ticket therefore hands the
     desk exactly what escalating hands it, while skipping the escalation's
     audit entry, the notification that tells the desk it has gained work, and
-    the ``manage`` grant escalating asks for. ``assign`` is the weaker key of
+    the ``triage`` grant escalating asks for. ``assign`` is the weaker key of
     the two, so without this the short route needs less authority than the
     declared one.
 
@@ -53,7 +53,7 @@ def users_holding_ticket_keys_qs(permission_keys):
 
     The single authority behind two questions that must never disagree: who a
     ticket may be assigned to, and who its notifications reach. A desk agent
-    whose ``tickets.ticket.manage`` key arrives through a permission group
+    whose ``tickets.ticket.triage`` key arrives through a permission group
     rather than directly on her role passes every permission gate and stands in
     the assignee picker, so a recipient query reading only the keys written on
     the role would hand her tickets and tell her about none of them. Both
@@ -135,7 +135,7 @@ def eligible_support_users_qs(ticket):
         return User.objects.none()
 
     return (
-        users_holding_ticket_keys_qs([TicketPermission.MANAGE])
+        users_holding_ticket_keys_qs([TicketPermission.TRIAGE])
         .filter(tenant__kind="PLATFORM")
         .order_by("first_name", "last_name", "email")
     )
@@ -174,7 +174,7 @@ def visible_tickets_qs(user):
     if not user or not getattr(user, "is_authenticated", False):
         return qs.none()
 
-    # Platform support (tickets.ticket.manage on the platform tenant) works the
+    # Platform support (tickets.ticket.triage on the platform tenant) works the
     # cross-tenant support console - the one deliberate span over all tenants.
     #
     # That span is no longer "every ticket". A school's staff raise tickets to
@@ -198,7 +198,7 @@ def visible_tickets_qs(user):
     qs = qs.filter(tenant=user.tenant)
 
     visibility = Q(requester=user) | Q(assignee=user)
-    if has_ticket_permission(user, TicketPermission.MANAGE, tenant=user.tenant):
+    if has_ticket_permission(user, TicketPermission.TRIAGE, tenant=user.tenant):
         # Branch narrowing belongs to this arm alone. See the docstring.
         visibility |= (
             Q(tenant=user.tenant)
@@ -234,7 +234,7 @@ def can_view_ticket(user, ticket: Ticket) -> bool:
     if ticket.requester_id == user.pk or ticket.assignee_id == user.pk:
         # A participant keeps their own thread whatever branch it carries.
         return True
-    if not has_ticket_permission(user, TicketPermission.MANAGE, tenant=ticket.tenant):
+    if not has_ticket_permission(user, TicketPermission.TRIAGE, tenant=ticket.tenant):
         return False
     branch_ids = visible_branch_ids(user, user.tenant)
     return (
@@ -244,9 +244,9 @@ def can_view_ticket(user, ticket: Ticket) -> bool:
     )
 
 
-# Decide who can perform support-owner actions on a ticket.
-def can_manage_ticket(user, ticket: Ticket) -> bool:
-    """Whether ``user`` may drive ``ticket`` as its resolver.
+# Decide who can move a ticket through its lifecycle.
+def can_transition_ticket(user, ticket: Ticket) -> bool:
+    """Whether ``user`` may move ``ticket`` through its lifecycle.
 
     Support authority is wide but not unconditional: it reaches the tickets a
     support user may read, and stops where their list stops. Answering yes for
@@ -254,17 +254,42 @@ def can_manage_ticket(user, ticket: Ticket) -> bool:
     viewset alone, so any future caller holding a ticket it fetched another way
     would be told CodeX may work a ticket CodeX may not open.
     """
-    if is_support_user(user):
-        return can_view_ticket(user, ticket)
-    if ticket.assignee_id == getattr(user, "pk", None):
-        # Assignees can progress the ticket even without broader tenant management.
-        return True
-    return has_ticket_permission(user, TicketPermission.MANAGE, tenant=ticket.tenant)
+    authority_tenant = (
+        user.tenant
+        if getattr(getattr(user, "tenant", None), "kind", None) == "PLATFORM"
+        else ticket.tenant
+    )
+    return (
+        can_view_ticket(user, ticket)
+        and has_ticket_permission(
+            user,
+            TicketPermission.TRANSITION,
+            tenant=authority_tenant,
+        )
+    )
+
+
+# Decide who can send a school ticket to CodeX support.
+def can_escalate_ticket(user, ticket: Ticket) -> bool:
+    """Whether ``user`` may escalate a ticket they can already read."""
+    authority_tenant = (
+        user.tenant
+        if getattr(getattr(user, "tenant", None), "kind", None) == "PLATFORM"
+        else ticket.tenant
+    )
+    return (
+        can_view_ticket(user, ticket)
+        and has_ticket_permission(
+            user,
+            TicketPermission.ESCALATE,
+            tenant=authority_tenant,
+        )
+    )
 
 
 # Decide who can edit mutable ticket fields.
 def can_update_ticket_fields(user, ticket: Ticket) -> bool:
-    # The requester owns the problem statement. Management and assignment
+    # The requester owns the problem statement. Transition and assignment
     # grants allow resolvers to progress the workflow, not rewrite what the
     # requester reported.
     return ticket.requester_id == getattr(user, "pk", None)

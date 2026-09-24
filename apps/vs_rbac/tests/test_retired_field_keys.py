@@ -54,7 +54,7 @@ RETIRED_KEYS = (
     "platform.staff_payroll.manage",
 )
 
-#: Converted keys that also guard a page or an endpoint, so they stay.
+#: Converted keys migration 0026 leaves because they also guard an endpoint.
 SURVIVING_KEYS = (
     "platform.team.view",
     "school.students.manage",
@@ -62,6 +62,9 @@ SURVIVING_KEYS = (
     "import.jobs.view",
     "import.batches.view",
 )
+
+# Migration 0027 later retires the two broad action keys in this historical set.
+ACTIVE_SURVIVING_KEYS = tuple(key for key in SURVIVING_KEYS if not key.endswith(".manage"))
 
 
 def _retire_them():
@@ -128,33 +131,10 @@ class RetiredKeysLeaveNoSeedTests(TestCase):
             "A retired key is back in a module seed table.",
         )
 
-    def test_the_surviving_keys_are_still_declared(self):
-        """The sweep was by key, never by the word ``sensitive``.
-
-        ``school.students.manage`` transfers a child between branches and
-        ``platform.team.view`` opens the staff list. Both carried field
-        switches as well, and taking the family out by name would have taken
-        them with it.
-        """
+    def test_a_surviving_field_conversion_key_is_still_declared(self):
+        """The field-key sweep was exact and left the staff-list key alone."""
         declared = self._seed_table_keys()
-        for key in ("school.students.manage", "platform.team.view"):
-            self.assertIn(key, declared, key)
-
-    def test_no_permission_group_carries_a_retired_key(self):
-        from core.management.commands.seed_school_permission_groups import (
-            DELIBERATELY_UNGROUPED,
-            SCHOOL_PERMISSION_GROUPS,
-        )
-
-        grouped = {
-            key
-            for _name, _reach, _description, keys in SCHOOL_PERMISSION_GROUPS
-            for key in keys
-        } | set(DELIBERATELY_UNGROUPED)
-        self.assertEqual(
-            sorted(k for k in RETIRED_KEYS if k in grouped), [],
-            "A retired key is named in the school permission group catalogue.",
-        )
+        self.assertIn("platform.team.view", declared)
 
     def test_no_band_names_a_retired_key(self):
         from vs_rbac.permission_bands import ACTION_BANDS, NEVER_BAND
@@ -228,8 +208,8 @@ class RetiredKeysAreNotSeededTests(TestCase):
             ).exists(),
         )
 
-    def test_the_surviving_keys_are_still_registered(self):
-        for key in SURVIVING_KEYS:
+    def test_the_still_active_conversion_keys_are_registered(self):
+        for key in ACTIVE_SURVIVING_KEYS:
             with self.subTest(key=key):
                 self.assertTrue(Permission.objects.filter(key=key).exists(), key)
 

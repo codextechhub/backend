@@ -31,7 +31,7 @@ from vs_tenants.models import BranchStatus, Tenant
 
 from .models import School, SchoolStatus
 
-MANAGE_KEY = "platform.schools.manage"
+TRANSITION_KEY = "platform.schools.transition"
 
 
 class SchoolServiceStateTests(TestCase):
@@ -78,7 +78,7 @@ class SchoolServiceStateTests(TestCase):
             None, email="admin@bright-star.test", tenant=self.school.tenant,
         )
         role = make_platform_role(name="Sneaky")
-        make_platform_role_permission(role, make_permission(MANAGE_KEY))
+        make_platform_role_permission(role, make_permission(TRANSITION_KEY))
         make_platform_assignment(school_admin, role)
 
         self._post(

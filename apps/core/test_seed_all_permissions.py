@@ -24,9 +24,9 @@ class SuperAdminPermissionReconciliationTests(TestCase):
             defaults={"name": "XVS Platform Admin", "is_system_role": True},
         )
         first = make_permission("new_module.first.generate")
-        second = make_permission("new_module.second.manage")
+        second = make_permission("new_module.second.update")
         inactive = make_permission(
-            "new_module.retired.manage",
+            "new_module.retired.update",
             is_active=False,
         )
         TenantRolePermission.objects.create(

@@ -47,14 +47,14 @@ class RoleListAccessTests(TestCase):
 
     def test_template_manager_can_read_the_role_list(self):
         user = make_school_admin(self.branch, email=f"tpl-{next(_counter)}@test.com")
-        _grant(user, ["workflow.template.manage"])
+        _grant(user, ["workflow.template.update"])
         resp = _call("get", user, self.tenant)
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
     def test_template_manager_cannot_create_a_role(self):
         """Reading travels with template management; writing does not."""
         user = make_school_admin(self.branch, email=f"tpl2-{next(_counter)}@test.com")
-        _grant(user, ["workflow.template.manage"])
+        _grant(user, ["workflow.template.update"])
         resp = _call("post", user, self.tenant, {"name": "Sneaky", "key": "sneaky"})
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 

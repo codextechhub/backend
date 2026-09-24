@@ -169,16 +169,25 @@ class EntityListCreateView(generics.ListCreateAPIView):
     documents and numbering), so it is gated on the dedicated ``finance.entity.create``
     key, which is granted only to the platform admin roles.
 
+    The GET side carries no privilege of its own: it is the picker every finance
+    screen resolves ``?entity=`` against, and :func:`resolve_entity` (what every
+    one of those screens actually calls) asks nothing beyond tenant membership.
+    Gating the list behind a dedicated ``finance.entity.view`` key made it
+    stricter than everything that consumes it - a caller holding, say,
+    ``finance.concession.view`` could be refused the very picker that gets them
+    to concessions. Module membership matches the real authority: anyone already
+    working in finance is entitled to see which books their tenant has.
+
     docstring-name: Ledger entities
     """
 
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
-
-    @property
-    # Handle the rbac permission workflow.
-    def rbac_permission(self):
-        return ("finance.entity.create" if self.request.method == "POST"
-                else "finance.entity.view")
+    # Handle the get permissions workflow.
+    def get_permissions(self):
+        if self.request.method == "POST":
+            self.rbac_permission = "finance.entity.create"
+            return [(IsAuthenticatedAndActive & HasRBACPermission)()]
+        self.rbac_modules = ["finance"]
+        return [(IsAuthenticatedAndActive & HasAnyModuleAccess)()]
 
     # Handle the get serializer class workflow.
     def get_serializer_class(self):

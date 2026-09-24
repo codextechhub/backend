@@ -45,7 +45,7 @@ from .helpers import (
 
 _counter = itertools.count(1)
 
-OVERRIDE_MANAGE_KEY = "school.user_overrides.manage"
+OVERRIDE_CREATE_KEY = "school.user_overrides.create"
 ROLE_CREATE_KEY = "school.roles.create"
 ROLE_ASSIGN_KEY = "school.roles.assign"
 PLATFORM_TARGET_KEY = "platform.schools.view"
@@ -100,7 +100,7 @@ class PlatformScopeEscalationTests(TestCase):
         self.attacker = make_school_admin(self.branch, email="probe-admin@test.com")
         _grant(
             self.attacker,
-            [OVERRIDE_MANAGE_KEY, ROLE_CREATE_KEY, ROLE_ASSIGN_KEY],
+            [OVERRIDE_CREATE_KEY, ROLE_CREATE_KEY, ROLE_ASSIGN_KEY],
         )
         self.colleague = make_staff_user(self.branch, email="probe-colleague@test.com")
         self.platform_key = make_permission(PLATFORM_TARGET_KEY)
@@ -146,7 +146,13 @@ class PlatformScopeEscalationTests(TestCase):
                 make_permission(key).scope, PermissionScope.TENANT, key,
             )
         # ...while the rest of the module stays CX-only.
-        for key in ("platform.audit.manage", "platform.team_overrides.manage"):
+        for key in (
+            "platform.audit.create",
+            "platform.audit.update",
+            "platform.audit.delete",
+            "platform.team_overrides.create",
+            "platform.team_overrides.delete",
+        ):
             self.assertEqual(
                 make_permission(key).scope, PermissionScope.PLATFORM, key,
             )
@@ -189,7 +195,7 @@ class PlatformScopeEscalationTests(TestCase):
         codex = codex_tenant()
         cx_admin = make_vision_user(email="probe-cx-admin@codex.test")
         cx_target = make_vision_user(email="probe-cx-target@codex.test")
-        _grant(cx_admin, ["platform.team_overrides.manage"], tenant=codex)
+        _grant(cx_admin, ["platform.team_overrides.create"], tenant=codex)
 
         url = reverse(
             "rbac-user-permission-override-list-create",

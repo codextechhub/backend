@@ -168,12 +168,15 @@ CFG_NOTIFICATIONS_ENABLED = "workflow.notifications.enabled"
 
 # Permission keys (vs_rbac contract)
 # RBAC keys that protect workflow template and instance operations.
-PERM_TEMPLATE_MANAGE = "workflow.template.manage"
+PERM_TEMPLATE_UPDATE = "workflow.template.update"
+PERM_TEMPLATE_PUBLISH = "workflow.template.publish"
 PERM_TEMPLATE_VIEW   = "workflow.template.view"
 PERM_INSTANCE_VIEW   = "workflow.instance.view"
 PERM_INSTANCE_CANCEL = "workflow.instance.cancel"
 PERM_ACTION_REVERSE  = "workflow.action.reverse"
-PERM_GROUP_MANAGE    = "workflow.group.manage"
+PERM_GROUP_CREATE    = "workflow.group.create"
+PERM_GROUP_UPDATE    = "workflow.group.update"
+PERM_GROUP_DELETE    = "workflow.group.delete"
 PERM_GROUP_VIEW      = "workflow.group.view"
 
 # Notification event keys

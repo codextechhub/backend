@@ -310,7 +310,7 @@ class StockLocationListCreateView(_ProcBase):
     @property
     def rbac_permission(self):
         return ("procurement.stock.view" if self.request.method == "GET"
-                else "procurement.stock.manage")
+                else "procurement.stock.create")
 
     def get(self, request):
         """List this entity's locations, newest default first."""
@@ -370,7 +370,7 @@ class StockLocationDetailView(_ProcBase):
     @property
     def rbac_permission(self):
         return ("procurement.stock.view" if self.request.method == "GET"
-                else "procurement.stock.manage")
+                else "procurement.stock.update")
 
     def _location(self, request, pk):
         entity = resolve_entity(request)
@@ -459,7 +459,7 @@ class StockItemListCreateView(_ProcBase):
     @property
     def rbac_permission(self):
         """Require stock management for creation and stock visibility for reads."""
-        return "procurement.stock.manage" if self.request.method == "POST" \
+        return "procurement.stock.create" if self.request.method == "POST" \
             else "procurement.stock.view"
 
     def get(self, request):
@@ -572,7 +572,7 @@ class StockItemDetailView(_ProcBase):
     @property
     def rbac_permission(self):
         """Separate stock-master governance from balance/movement visibility."""
-        return "procurement.stock.manage" if self.request.method == "PATCH" \
+        return "procurement.stock.update" if self.request.method == "PATCH" \
             else "procurement.stock.view"
 
     def get(self, request, pk):

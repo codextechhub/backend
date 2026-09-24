@@ -294,7 +294,7 @@ class IsAuthenticatedAndActive(BasePermission):
 # Allow only Vision staff into platform-owned RBAC administration surfaces.
 class IsVisionStaff(BasePermission):
     """
-    Vision staff can manage global permission registry + approve/deny requests.
+    Vision staff can inspect the global permission registry and decide requests.
     "Vision staff" means an account on a PLATFORM-kind tenant, which is what
     has_permission below reads. There is no persona column to consult.
     """

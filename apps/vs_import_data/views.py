@@ -265,7 +265,7 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
 class SystemImportTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, generics.RetrieveUpdateAPIView):
     """
     GET   -> retrieve one official system template.
-    PATCH -> update template metadata and/or columns (platform staff + TEMPLATE_MANAGE only).
+    PATCH -> update template metadata and/or columns (platform staff + TEMPLATE_UPDATE only).
 
     docstring-name: Import templates
     """
@@ -285,7 +285,7 @@ class SystemImportTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, gener
 
     def get_permissions(self):
         self.rbac_permission = (
-            ImportPermission.TEMPLATE_MANAGE
+            ImportPermission.TEMPLATE_UPDATE
             if self.request.method in ("PATCH", "PUT")
             else ImportPermission.TEMPLATE_VIEW
         )

@@ -24,7 +24,8 @@ from .visibility import (
     can_assign_ticket,
     can_attach_to_ticket,
     can_comment_on_ticket,
-    can_manage_ticket,
+    can_escalate_ticket,
+    can_transition_ticket,
     can_update_ticket_fields,
     can_view_ticket,
     is_support_user,
@@ -113,7 +114,7 @@ def assign_ticket(ticket: Ticket, *, actor, assignee: User | None) -> Ticket:
     if assignee is not None and not is_support_user(assignee):
         # Assignees must be support-capable; customers cannot become ticket owners.
         raise ValidationError({
-            "assignee_id": ["Tickets can only be assigned to active staff who can manage tickets."],
+            "assignee_id": ["Tickets can only be assigned to active staff who can triage tickets."],
         })
     if assignee is not None and not accepts_platform_assignment(ticket):
         raise ValidationError({
@@ -149,7 +150,7 @@ def assign_ticket(ticket: Ticket, *, actor, assignee: User | None) -> Ticket:
 
 # Move a ticket through the allowed lifecycle graph and stamp terminal dates.
 def transition_ticket(ticket: Ticket, *, actor, status: str) -> Ticket:
-    if not can_manage_ticket(actor, ticket):
+    if not can_transition_ticket(actor, ticket):
         raise PermissionDenied("You cannot change this ticket's status.")
     if status == ticket.status:
         # Repeating the current status is idempotent and should not create audit noise.
@@ -192,7 +193,7 @@ def escalate_ticket(ticket: Ticket, *, actor, note: str = "") -> Ticket:
     """Hand a school's ticket up to CodeX, without moving it.
 
     The school triages first: their staff raise tickets to their own school,
-    and whoever holds ``tickets.ticket.manage`` there works them. Escalating is
+    and whoever holds ``tickets.ticket.triage`` there works them. Escalating is
     that person saying "we cannot solve this".
 
     It stamps the same row rather than opening a second ticket. The reference
@@ -209,7 +210,7 @@ def escalate_ticket(ticket: Ticket, *, actor, note: str = "") -> Ticket:
     it on and why - a school escalating behind the reporter's back is how a
     ticket goes quiet from their side for a week.
     """
-    if not can_manage_ticket(actor, ticket):
+    if not can_escalate_ticket(actor, ticket):
         raise PermissionDenied("You cannot escalate this ticket.")
     if getattr(ticket.tenant, "kind", None) == "PLATFORM":
         raise ValidationError("A CodeX ticket is already with CodeX.")

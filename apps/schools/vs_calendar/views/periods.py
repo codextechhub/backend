@@ -19,7 +19,7 @@ from vs_audit.services import emit_audit_event
 
 from ..constants import (
     PERM_TIMETABLE_CREATE,
-    PERM_TIMETABLE_MANAGE,
+    PERM_TIMETABLE_DELETE,
     PERM_TIMETABLE_UPDATE,
     PERM_TIMETABLE_VIEW,
 )
@@ -193,7 +193,7 @@ class PeriodDetailView(_PeriodBase, generics.RetrieveUpdateDestroyAPIView):
         self.rbac_permission = {
             "PATCH": PERM_TIMETABLE_UPDATE,
             "PUT": PERM_TIMETABLE_UPDATE,
-            "DELETE": PERM_TIMETABLE_MANAGE,
+            "DELETE": PERM_TIMETABLE_DELETE,
         }.get(self.request.method, PERM_TIMETABLE_VIEW)
         return super().get_permissions()
 

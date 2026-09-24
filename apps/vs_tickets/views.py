@@ -80,11 +80,11 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     RBAC_ACTION_KEYS = {
         "assign": TicketPermission.ASSIGN,
-        "transition": TicketPermission.MANAGE,
+        "transition": TicketPermission.TRANSITION,
         # Escalating is a triage decision, so it takes the triage grant. The
         # person who works the school's queue is the one who decides a thing is
         # beyond it.
-        "escalate": TicketPermission.MANAGE,
+        "escalate": TicketPermission.ESCALATE,
         "audit": TicketPermission.AUDIT_VIEW,
         "eligible_assignees": TicketPermission.ASSIGN,
     }

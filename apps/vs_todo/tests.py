@@ -345,7 +345,9 @@ class PermissionSeedTests(TestCase):
         from vs_rbac.models import Permission
         call_command("seed_platform_permissions", verbosity=0)
         for key in (
-            "platform.organogram.view", "platform.organogram.manage",
+            "platform.organogram.view", "platform.organogram.create",
+            "platform.organogram.update", "platform.organogram.delete",
+            "platform.organogram.assign",
             "platform.staff_profile.view", "platform.audit.export",
         ):
             self.assertTrue(Permission.objects.filter(key=key).exists(), key)
@@ -360,16 +362,23 @@ class PermissionSeedTests(TestCase):
         self.assertFalse(TenantRolePermission.objects.filter(
             role__key="xvs_platform_admin", role__tenant__kind="PLATFORM",
             permission_id="platform.roles.transfer").exists())
-        # Organogram manage IS granted to both.
+        # Each organogram write operation is granted to both.
         for role_id in ("xvs_super_admin", "xvs_platform_admin"):
-            self.assertTrue(TenantRolePermission.objects.filter(
-                role__key=role_id, role__tenant__kind="PLATFORM",
-                permission_id="platform.organogram.manage").exists(), role_id)
+            for key in (
+                "platform.organogram.create", "platform.organogram.update",
+                "platform.organogram.delete", "platform.organogram.assign",
+            ):
+                self.assertTrue(TenantRolePermission.objects.filter(
+                    role__key=role_id, role__tenant__kind="PLATFORM",
+                    permission_id=key).exists(), f"{role_id}:{key}")
 
     def test_todo_seed_captures_and_grants_task_keys(self):
         from vs_rbac.models import Permission, TenantRolePermission
         call_command("seed_todo_permissions", verbosity=0)
-        for key in ("todo.task.view", "todo.task.manage", "todo.task.assign"):
+        for key in (
+            "todo.task.view", "todo.task.create", "todo.task.update",
+            "todo.task.mark", "todo.task.delete", "todo.task.assign",
+        ):
             self.assertTrue(Permission.objects.filter(key=key).exists(), key)
             for role_id in ("xvs_super_admin", "xvs_platform_admin"):
                 self.assertTrue(TenantRolePermission.objects.filter(

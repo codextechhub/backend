@@ -99,7 +99,7 @@ class FeeDuePolicyEndpointTests(FALFixture):
         super().setUp()
         self.url = reverse("fal-fee-due-policy")
 
-    def _client(self, user, keys=("school.fees.view", "school.fees.manage")):
+    def _client(self, user, keys=("school.fees.view", "school.fees.update")):
         """The real auth path, not force_authenticate.
 
         ``request.tenant`` is set by the authentication class from the mandatory

@@ -962,7 +962,13 @@ class ComplianceRuleListCreateView(CreateModelMixin, generics.ListCreateAPIView)
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
-    rbac_permission = "platform.audit.manage"
+    @property
+    def rbac_permission(self):
+        return (
+            "platform.audit.create"
+            if self.request.method == "POST"
+            else "platform.audit.view"
+        )
 
     def get_queryset(self):
         queryset = ComplianceRule.objects.select_related("tenant").all()
@@ -1007,7 +1013,13 @@ class ComplianceRuleDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMode
 
     queryset = ComplianceRule.objects.select_related("tenant").all()
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
-    rbac_permission = "platform.audit.manage"
+    @property
+    def rbac_permission(self):
+        return {
+            "PUT": "platform.audit.update",
+            "PATCH": "platform.audit.update",
+            "DELETE": "platform.audit.delete",
+        }.get(self.request.method, "platform.audit.view")
     lookup_field = "id"
 
     def get_serializer_class(self):

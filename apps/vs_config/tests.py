@@ -443,7 +443,7 @@ class ConfigurationBranchEntitlementTests(TestCase):
         self.lekki = make_branch(self.school, name="Lekki Branch", is_main=False)
 
         self.admin = make_school_admin(self.ikeja, email="ikeja-config@example.com")
-        permission = make_permission("config.value.manage")
+        permission = make_permission("config.value.update")
         role = make_role(self.school, name="Configuration Admin")
         make_role_permission(role, permission)
         make_assignment(self.school, self.admin, role)
@@ -699,7 +699,7 @@ class RuntimeSettingsAPITests(TestCase):
         make_assignment(self.user.tenant, self.user, role)
 
     def test_security_requires_dedicated_permissions_and_no_approval(self):
-        self.grant("config.security.view", "config.security.manage")
+        self.grant("config.security.view", "config.security.update")
         self.client.force_authenticate(self.user)
 
         response = self.client.patch(
@@ -734,7 +734,7 @@ class RuntimeSettingsAPITests(TestCase):
         branch = make_branch(school)
         admin = make_school_admin(branch, email="runtime-settings-school@example.com")
         role = make_role(school, name="Runtime settings manager")
-        for key in ("config.security.view", "config.security.manage"):
+        for key in ("config.security.view", "config.security.update"):
             make_role_permission(role, make_permission(key))
         make_assignment(school, admin, role)
         self.client.force_authenticate(admin)
@@ -771,12 +771,12 @@ class RuntimeSettingsAPITests(TestCase):
         branch = make_branch(school)
         admin = make_school_admin(branch, email="clamp-admin@example.com")
         role = make_role(school, name="Clamp security manager")
-        for key in ("config.security.view", "config.security.manage"):
+        for key in ("config.security.view", "config.security.update"):
             make_role_permission(role, make_permission(key))
         make_assignment(school, admin, role)
 
         # Platform starts lax at 10, so a school override of 9 is legal to save.
-        self.grant("config.security.view", "config.security.manage")
+        self.grant("config.security.view", "config.security.update")
         self.client.force_authenticate(self.user)
         relaxed = self.client.patch(
             "/v1/config/security-settings/",
@@ -814,7 +814,7 @@ class RuntimeSettingsAPITests(TestCase):
         branch = make_branch(school)
         admin = make_school_admin(branch, email="runtime-branch@example.com")
         role = make_role(school, name="Branch security manager")
-        for key in ("config.security.view", "config.security.manage"):
+        for key in ("config.security.view", "config.security.update"):
             make_role_permission(role, make_permission(key))
         make_assignment(school, admin, role)
         self.client.force_authenticate(admin)
@@ -861,7 +861,7 @@ class RuntimeSettingsAPITests(TestCase):
     def test_integration_save_changes_runtime_sender_and_redacts_status(self):
         from core.mail import build_from_email
 
-        self.grant("config.integration.view", "config.integration.manage")
+        self.grant("config.integration.view", "config.integration.update")
         self.client.force_authenticate(self.user)
         response = self.client.patch(
             "/v1/config/integration-settings/",
@@ -882,7 +882,7 @@ class RuntimeSettingsAPITests(TestCase):
         self.assertNotIn("secret", str(status_data).lower())
 
     def test_null_resets_special_value_to_default(self):
-        self.grant("config.security.view", "config.security.manage")
+        self.grant("config.security.view", "config.security.update")
         self.client.force_authenticate(self.user)
         self.client.patch(
             "/v1/config/security-settings/",
@@ -903,7 +903,7 @@ class RuntimeSettingsAPITests(TestCase):
     @patch("vs_config.views.test_email_connection")
     def test_connection_test_is_permission_controlled_safe_and_audited(self, test_email):
         cache.clear()
-        self.grant("config.integration.view", "config.integration.manage")
+        self.grant("config.integration.view", "config.integration.trigger")
         self.client.force_authenticate(self.user)
 
         response = self.client.post(
@@ -1264,7 +1264,7 @@ class EntitlementOperationsAPITests(TestCase):
         branch = make_branch(self.first)
         admin = make_school_admin(branch, email="school-renewal@example.com")
         role = make_role(self.first, name="Entitlement manager")
-        make_role_permission(role, make_permission("config.entitlement.manage"))
+        make_role_permission(role, make_permission("config.entitlement.update"))
         make_assignment(self.first, admin, role)
         self.client.force_authenticate(admin)
 

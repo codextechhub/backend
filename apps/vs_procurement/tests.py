@@ -888,7 +888,7 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(hidden.data["error"], read_only.data["error"])
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    @patch("vs_procurement.views.vendors._has_vendor_manage_access", return_value=True)
+    @patch("vs_procurement.views.vendors._has_vendor_verification_access", return_value=True)
     def test_bank_change_resets_verified_kyc_even_when_patch_tries_to_reverify(
         self, _manage, _permission,
     ):
@@ -936,7 +936,7 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     @patch("vs_procurement.views.vendors.is_vision_super_admin", return_value=False)
     @patch("vs_procurement.views.vendors.user_has_rbac_permission", return_value=False)
-    def test_compliance_update_requires_vendor_manage_in_entity_context(
+    def test_compliance_update_requires_vendor_sensitive_access_in_entity_context(
         self, mock_has_permission, _super_admin, _update_permission,
     ):
         entity, _, vendor, _, _ = self.build_p2p()
@@ -950,13 +950,13 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(vendor.risk, "LOW")
         self.assertFalse(vendor.on_hold)
         mock_has_permission.assert_called_once()
-        self.assertEqual(mock_has_permission.call_args.args[1], "procurement.vendor.manage")
+        self.assertEqual(mock_has_permission.call_args.args[1], "procurement.vendor.verify")
         self.assertEqual(mock_has_permission.call_args.kwargs["tenant"], entity.tenant)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     @patch("vs_procurement.views.vendors.is_vision_super_admin", return_value=False)
     @patch("vs_procurement.views.vendors.user_has_rbac_permission", return_value=True)
-    def test_compliance_update_succeeds_with_update_and_manage_permissions(
+    def test_compliance_update_succeeds_with_update_and_sensitive_permissions(
         self, mock_has_permission, _super_admin, _update_permission,
     ):
         entity, _, vendor, _, _ = self.build_p2p()
@@ -969,13 +969,13 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(vendor.kyc_status, VendorKycStatus.REJECTED)
         self.assertEqual(vendor.risk, "HIGH")
         self.assertTrue(vendor.on_hold)
-        self.assertEqual(mock_has_permission.call_args.args[1], "procurement.vendor.manage")
+        self.assertEqual(mock_has_permission.call_args.args[1], "procurement.vendor.verify")
         self.assertEqual(mock_has_permission.call_args.kwargs["tenant"], entity.tenant)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     @patch("vs_procurement.views.vendors.is_vision_super_admin", return_value=False)
     @patch("vs_procurement.views.vendors.user_has_rbac_permission", return_value=False)
-    def test_non_compliance_update_does_not_require_vendor_manage(
+    def test_non_compliance_update_does_not_require_vendor_sensitive_access(
         self, mock_has_permission, mock_super_admin, _update_permission,
     ):
         entity, _, vendor, _, _ = self.build_p2p()
@@ -991,7 +991,7 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
         mock_super_admin.assert_not_called()
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    @patch("vs_procurement.views.vendors._has_vendor_manage_access", return_value=True)
+    @patch("vs_procurement.views.vendors._has_vendor_verification_access", return_value=True)
     def test_update_preserves_states_and_cross_entity_ids_are_hidden(
         self, _manage_permission, _update_permission,
     ):
@@ -1040,7 +1040,7 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
 class SeedProcurementPermissionsTests(TestCase):
     """Procurement permission seeding includes compliance governance idempotently."""
 
-    def test_vendor_manage_is_sensitive_and_granted_to_platform_roles_idempotently(self):
+    def test_vendor_verification_is_restricted_and_granted_idempotently(self):
         from io import StringIO
 
         from django.core.management import call_command
@@ -1056,7 +1056,7 @@ class SeedProcurementPermissionsTests(TestCase):
             action.description,
             "Override a blocking vendor-invoice match variance for an audited post.",
         )
-        permission = Permission.objects.get(key="procurement.vendor.manage")
+        permission = Permission.objects.get(key="procurement.vendor.verify")
         self.assertEqual(permission.sensitivity_level, Permission.Sensitivity.SENSITIVE)
         self.assertTrue(permission.is_restricted)
         override = Permission.objects.get(key="procurement.vendor_invoice.override_variance")
@@ -9435,9 +9435,10 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
         self._receive(entity, vendor, item, qty=10, unit_price=100_000)
         client = self._client(entity)
         e = f"?entity={entity.code}"
-        # view grants list/detail/summary/movements but NOT manage/issue/adjust.
+        # View grants list/detail/summary/movements but not create/update/issue/adjust.
         mock_has.side_effect = _deny_keys(
-            "procurement.stock.manage", "procurement.stock.issue", "procurement.stock.adjust")
+            "procurement.stock.create", "procurement.stock.update",
+            "procurement.stock.issue", "procurement.stock.adjust")
         self.assertEqual(client.get(f"/v1/procurement/stock-items/{e}").status_code, 200)
         self.assertEqual(client.get(f"/v1/procurement/stock-items/summary/{e}").status_code, 200)
         self.assertEqual(client.get(f"/v1/procurement/stock-items/{item.pk}/{e}").status_code, 200)
@@ -14050,7 +14051,8 @@ class ProcurementCatalogueReadingTests(_BranchTenantsFixture, TestCase):
             self.multi_tenant, "ikeja-store@t.com", branch=self.ikeja,
         )
         for key in ("procurement.vendor.view", "procurement.vendor.update",
-                    "procurement.stock.view", "procurement.stock.manage",
+                    "procurement.stock.view", "procurement.stock.create",
+                    "procurement.stock.update",
                     "procurement.analytics.view"):
             self.grant(
                 self.client.test_user, key, tenant=self.multi_tenant,

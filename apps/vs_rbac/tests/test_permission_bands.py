@@ -132,7 +132,7 @@ class BandedPermissionsTests(_Seeded):
             "school.staff_records.view": "teachers_plus",
             "school.teachers.view": "teachers_core",
             "school.students.promote": "students_plus",
-            "school.students.manage": "students_core",
+            "school.students.transition": "students_core",
             "procurement.analytics.view": "procurement_advanced",
             "procurement.report.view": "procurement_plus",
         }
@@ -184,12 +184,12 @@ class ResolverTests(TestCase):
 
     def test_a_never_band_key_resolves_to_no_capability(self):
         self.assertIsNone(
-            capability_key_for("school", "user_overrides", "manage")
+            capability_key_for("school", "user_overrides", "create")
         )
 
     def test_field_access_keys_are_core_in_a_school_and_platform_on_the_platform(self):
         # Who may read a child's allergies is a role decision, never a tier.
-        for action in ("view", "manage"):
+        for action in ("view", "update"):
             self.assertEqual(band_for("school", "field_access", action), "CORE")
             self.assertIsNone(capability_key_for("school", "field_access", action))
             self.assertEqual(band_for("platform", "field_access", action), "PLATFORM")

@@ -26,9 +26,11 @@ from vs_rbac.permissions import user_has_rbac_permission
 
 from vs_workflow.exceptions import TemplateInvalidError
 from vs_workflow.constants import (
-    PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW,
+    PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_UPDATE,
+    PERM_TEMPLATE_VIEW,
     PERM_INSTANCE_VIEW, PERM_INSTANCE_CANCEL,
-    PERM_ACTION_REVERSE, PERM_GROUP_MANAGE, PERM_GROUP_VIEW,
+    PERM_ACTION_REVERSE, PERM_GROUP_CREATE, PERM_GROUP_DELETE,
+    PERM_GROUP_UPDATE, PERM_GROUP_VIEW,
     ApproverSource, GroupMemberKind, OrganogramTarget,
 )
 from vs_workflow.models import (
@@ -167,12 +169,10 @@ class WorkflowTemplateViewSet(
     serializer_class = WorkflowTemplateReadSerializer
 
     def get_permissions(self):
-        # Publishing templates requires manage rights; read endpoints use view rights.
-        self.rbac_permission = (
-            PERM_TEMPLATE_MANAGE
-            if self.action in ("publish", "use_platform_version", "adoption", "compare")
-            else PERM_TEMPLATE_VIEW
-        )
+        self.rbac_permission = {
+            "publish": PERM_TEMPLATE_PUBLISH,
+            "use_platform_version": PERM_TEMPLATE_UPDATE,
+        }.get(self.action, PERM_TEMPLATE_VIEW)
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_serializer(self, *args, **kwargs):
@@ -724,7 +724,7 @@ class WorkflowNotificationSettingView(APIView):
 
     One switch for the whole school: whether its approvals notify anybody.
     Reading needs only template view, because the Workflow area shows the
-    current answer; changing it needs template manage, the same key that
+    current answer; changing it needs template update, the same key that
     decides who approves what.
 
     docstring-name: Workflow notifications
@@ -734,7 +734,7 @@ class WorkflowNotificationSettingView(APIView):
 
     def get_permissions(self):
         self.rbac_permission = (
-            PERM_TEMPLATE_MANAGE if self.request.method == "PATCH" else PERM_TEMPLATE_VIEW
+            PERM_TEMPLATE_UPDATE if self.request.method == "PATCH" else PERM_TEMPLATE_VIEW
         )
         return super().get_permissions()
 
@@ -866,11 +866,15 @@ class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
         # Reading the groups travels with template management for the same
         # reason the role list does: a WORKFLOW_GROUP stage names a group, and
         # the builder cannot offer one it is not allowed to read. Writing a
-        # group still takes the group's own manage key.
-        self.rbac_permission = (
-            PERM_GROUP_MANAGE if self.action in self._WRITE_ACTIONS
-            else [PERM_GROUP_VIEW, PERM_TEMPLATE_MANAGE]
-        )
+        # group still takes the group's own action-specific key.
+        self.rbac_permission = {
+            "create": PERM_GROUP_CREATE,
+            "destroy": PERM_GROUP_DELETE,
+            "update": PERM_GROUP_UPDATE,
+            "partial_update": PERM_GROUP_UPDATE,
+            "add_member": PERM_GROUP_UPDATE,
+            "remove_member": PERM_GROUP_UPDATE,
+        }.get(self.action, [PERM_GROUP_VIEW, PERM_TEMPLATE_UPDATE])
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_serializer_context(self):
@@ -998,10 +1002,12 @@ class WorkflowDynamicRoleViewSet(TenantScopedMixin, ModelViewSet):
         # The approver-group keys: both answer "who approves" on one screen, and
         # a template builder picking a Dynamic Role has to be able to read them.
         # Trying rules writes nothing, so reading is enough for the preview.
-        self.rbac_permission = (
-            PERM_GROUP_MANAGE if self.action in self._WRITE_ACTIONS
-            else [PERM_GROUP_VIEW, PERM_TEMPLATE_MANAGE]
-        )
+        self.rbac_permission = {
+            "create": PERM_GROUP_CREATE,
+            "destroy": PERM_GROUP_DELETE,
+            "update": PERM_GROUP_UPDATE,
+            "partial_update": PERM_GROUP_UPDATE,
+        }.get(self.action, [PERM_GROUP_VIEW, PERM_TEMPLATE_UPDATE])
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_serializer_context(self):
@@ -1156,11 +1162,13 @@ class WorkflowStageApproverOverrideViewSet(TenantScopedMixin, ModelViewSet):
 
     def get_permissions(self):
         # Repointing an approval step is a template-level decision, so it takes
-        # template manage rights rather than the lighter group rights.
-        self.rbac_permission = (
-            PERM_TEMPLATE_VIEW if self.action in ("list", "retrieve")
-            else PERM_TEMPLATE_MANAGE
-        )
+        # template update rights rather than the lighter group rights.
+        self.rbac_permission = {
+            "create": PERM_TEMPLATE_UPDATE,
+            "destroy": PERM_TEMPLATE_UPDATE,
+            "update": PERM_TEMPLATE_UPDATE,
+            "partial_update": PERM_TEMPLATE_UPDATE,
+        }.get(self.action, PERM_TEMPLATE_VIEW)
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_serializer_context(self):
@@ -1195,7 +1203,7 @@ class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = ApprovalDelegation.all_objects.filter(tenant=self.get_tenant())
-        if not user_has_rbac_permission(user, PERM_TEMPLATE_MANAGE, tenant=user.tenant):
+        if not user_has_rbac_permission(user, PERM_TEMPLATE_UPDATE, tenant=user.tenant):
             # Non-admin users can only see delegations they created or receive.
             qs = qs.filter(Q(delegator=user) | Q(delegate=user))
         return qs.order_by("-starts_at")
@@ -1211,7 +1219,7 @@ class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
     def revoke(self, request, pk=None):
         delegation = self.get_object()
         if (delegation.delegator_id != request.user.pk and
-                not user_has_rbac_permission(request.user, PERM_TEMPLATE_MANAGE, tenant=request.tenant)):
+                not user_has_rbac_permission(request.user, PERM_TEMPLATE_UPDATE, tenant=request.tenant)):
             return Response({
                 "success": False,
                 "message": "You do not have permission to revoke this delegation.",

@@ -19,7 +19,8 @@ from vs_audit.services import emit_audit_event
 
 from ..constants import (
     PERM_STRUCTURE_CREATE,
-    PERM_STRUCTURE_MANAGE,
+    PERM_STRUCTURE_ARCHIVE,
+    PERM_STRUCTURE_REACTIVATE,
     PERM_STRUCTURE_UPDATE,
     PERM_STRUCTURE_VIEW,
 )
@@ -676,7 +677,10 @@ class LevelDetailView(_StructureBase, generics.RetrieveUpdateAPIView):
 # Nothing here is deleted; see RecordStateView for why.
 
 class _StructureStateView(RecordStateView):
-    rbac_permission = PERM_STRUCTURE_MANAGE
+
+    @property
+    def rbac_permission(self):
+        return PERM_STRUCTURE_REACTIVATE if self.active else PERM_STRUCTURE_ARCHIVE
 
     #: The scoped queryset the pk is looked up in.
     source = None

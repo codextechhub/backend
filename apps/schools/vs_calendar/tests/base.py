@@ -38,13 +38,13 @@ CALENDAR_KEYS = (
     "academics.calendar.view",
     "academics.calendar.create",
     "academics.calendar.update",
-    "academics.calendar.manage",
+    "academics.calendar.delete",
 )
 TIMETABLE_KEYS = (
     "academics.timetable.view",
     "academics.timetable.create",
     "academics.timetable.update",
-    "academics.timetable.manage",
+    "academics.timetable.delete",
     "academics.timetable.publish",
 )
 #: Exams hold their own keys. They used to ride on the timetable's, which meant
@@ -55,7 +55,7 @@ EXAM_KEYS = (
     "academics.exam.view",
     "academics.exam.create",
     "academics.exam.update",
-    "academics.exam.manage",
+    "academics.exam.delete",
     "academics.exam.publish",
 )
 ALL_KEYS = CALENDAR_KEYS + TIMETABLE_KEYS + EXAM_KEYS

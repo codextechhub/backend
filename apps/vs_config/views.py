@@ -85,7 +85,7 @@ from .runtime_settings import (
     INTEGRATION_FIELDS,
     PRODUCT_OWNED_KEYS,
     SECURITY_FIELDS,
-    SPECIAL_MANAGED_KEYS,
+    PROTECTED_SETTING_KEYS,
     resolve_integration_settings,
     resolve_security_settings,
     validate_security_compliance,
@@ -280,12 +280,12 @@ class ValueListSetView(ConfigAPIView):
         special_keys = {
             serializer.validated_data["key"]
             for serializer in serializers
-            if serializer.validated_data["key"] in SPECIAL_MANAGED_KEYS
+            if serializer.validated_data["key"] in PROTECTED_SETTING_KEYS
         }
         if special_keys:
             raise ValidationError({
                 "values": (
-                    "Security and integration settings require their dedicated manage "
+                    "Security and integration settings require their dedicated update "
                     "permission and must be changed from their Platform Settings section."
                 )
             })
@@ -321,7 +321,7 @@ class ValueResetView(ConfigAPIView):
     def delete(self, request, key):
         serializer = ClearConfigurationValueSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        if key in SPECIAL_MANAGED_KEYS:
+        if key in PROTECTED_SETTING_KEYS:
             raise ValidationError({
                 "value": (
                     "This setting must be reset from its Security or Integrations section."
@@ -461,7 +461,7 @@ def _save_curated_values(
 class SecuritySettingsView(ConfigAPIView):
     permission_map = {
         "GET": ConfigPermissions.SECURITY_VIEW,
-        "PATCH": ConfigPermissions.SECURITY_MANAGE,
+        "PATCH": ConfigPermissions.SECURITY_UPDATE,
     }
 
     def get(self, request):
@@ -497,7 +497,7 @@ class IntegrationSettingsView(ConfigAPIView):
     platform_methods = {"GET", "PATCH"}
     permission_map = {
         "GET": ConfigPermissions.INTEGRATION_VIEW,
-        "PATCH": ConfigPermissions.INTEGRATION_MANAGE,
+        "PATCH": ConfigPermissions.INTEGRATION_UPDATE,
     }
 
     def get(self, request):
@@ -519,7 +519,7 @@ class IntegrationSettingsView(ConfigAPIView):
 
 class IntegrationConnectionTestView(ConfigAPIView):
     platform_methods = {"POST"}
-    permission_map = {"POST": ConfigPermissions.INTEGRATION_MANAGE}
+    permission_map = {"POST": ConfigPermissions.INTEGRATION_TRIGGER}
 
     def post(self, request):
         serializer = IntegrationConnectionTestSerializer(data=request.data)
@@ -595,7 +595,7 @@ class CapabilityListCreateView(ConfigAPIView):
     platform_methods = {"POST"}
     permission_map = {
         "GET": ConfigPermissions.CAPABILITY_VIEW,
-        "POST": ConfigPermissions.CAPABILITY_MANAGE,
+        "POST": ConfigPermissions.CAPABILITY_CREATE,
     }
 
     # Return the capability catalogue, hiding archived gates by default.
@@ -628,8 +628,8 @@ class CapabilityDetailView(ConfigAPIView):
     platform_methods = {"PATCH", "DELETE"}
     permission_map = {
         "GET": ConfigPermissions.CAPABILITY_VIEW,
-        "PATCH": ConfigPermissions.CAPABILITY_MANAGE,
-        "DELETE": ConfigPermissions.CAPABILITY_MANAGE,
+        "PATCH": ConfigPermissions.CAPABILITY_UPDATE,
+        "DELETE": ConfigPermissions.CAPABILITY_ARCHIVE,
     }
 
     # Resolve capabilities by stable key for public admin URLs.
@@ -677,7 +677,7 @@ class EntitlementListSetView(ConfigAPIView):
     platform_methods = {"POST"}
     permission_map = {
         "GET": ConfigPermissions.ENTITLEMENT_VIEW,
-        "POST": ConfigPermissions.ENTITLEMENT_MANAGE,
+        "POST": ConfigPermissions.ENTITLEMENT_UPDATE,
     }
 
     # List entitlements at the resolved platform or tenant scope.
@@ -725,7 +725,7 @@ class EntitlementListSetView(ConfigAPIView):
 
 class EntitlementResetView(ConfigAPIView):
     platform_methods = {"DELETE"}
-    permission_map = {"DELETE": ConfigPermissions.ENTITLEMENT_MANAGE}
+    permission_map = {"DELETE": ConfigPermissions.ENTITLEMENT_DELETE}
 
     def delete(self, request, capability):
         """Drop one entitlement layer, and name any role that leaves behind.
@@ -858,7 +858,7 @@ class EntitlementCalendarView(ConfigAPIView):
 
 class EntitlementBulkScheduleView(ConfigAPIView):
     platform_methods = {"POST"}
-    permission_map = {"POST": ConfigPermissions.ENTITLEMENT_MANAGE}
+    permission_map = {"POST": ConfigPermissions.ENTITLEMENT_UPDATE}
 
     def post(self, request):
         serializer = BulkSetEntitlementSerializer(data=request.data)
@@ -911,7 +911,7 @@ class EntitlementBulkScheduleView(ConfigAPIView):
 class OverrideListSetView(ConfigAPIView):
     permission_map = {
         "GET": ConfigPermissions.OVERRIDE_VIEW,
-        "POST": ConfigPermissions.OVERRIDE_MANAGE,
+        "POST": ConfigPermissions.OVERRIDE_UPDATE,
     }
 
     # List overrides that are physically stored at the resolved scope.

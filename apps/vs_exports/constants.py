@@ -328,7 +328,10 @@ class ExportPermission:
     FILE_DOWNLOAD = "exports.file.download"
     SCHEDULE_VIEW = "exports.schedule.view"
     SCHEDULE_CREATE = "exports.schedule.create"
-    SCHEDULE_MANAGE = "exports.schedule.manage"
+    SCHEDULE_UPDATE = "exports.schedule.update"
+    SCHEDULE_DELETE = "exports.schedule.delete"
+    SCHEDULE_SUSPEND = "exports.schedule.suspend"
+    SCHEDULE_REACTIVATE = "exports.schedule.reactivate"
     #: Required *in addition* to the dataset's own key to include a sensitive field.
     SENSITIVE_EXPORT = "exports.sensitive_field.export"
     #: Admin-only: read other people's export activity. Reading it is itself audited.

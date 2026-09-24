@@ -109,4 +109,5 @@ REQUEST_METRIC_SERVICE_PREFIXES = {
 # ---------------------------------------------------------------------------
 # RBAC keys protecting observability reads and health-management writes.
 PERM_VIEW = "platform.health.view"
-PERM_MANAGE = "platform.health.manage"
+PERM_CREATE = "platform.health.create"
+PERM_UPDATE = "platform.health.update"

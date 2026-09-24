@@ -56,8 +56,8 @@ PREBUILT_ROLE_KEYS = [ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER]
 #: role has. Seeing that the Storekeeper cannot read bank details opens nothing,
 #: so it stays groupable beside ``school.roles.view``.
 #:
-#: ``school.field_access.manage`` is deliberately absent. A switch opens a field
-#: the moment it is saved, so an unrestricted manage key would let somebody
+#: ``school.field_access.update`` is deliberately absent. A switch opens a field
+#: the moment it is saved, so an unrestricted update key would let somebody
 #: holding only ``school.roles.update`` add it to their own role and then turn
 #: on Read for a supplier's bank details with nobody approving either step.
 #: Restricted, adding it to a role you hold goes through the role change ladder.
@@ -81,12 +81,15 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "branches", "view",             _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "branches", "create",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "branches", "update",           _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
-    ("school", "branches", "manage",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("school", "branches", "delete",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
     ("school", "students", "view",             _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("school", "students", "create",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "students", "update",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
-    ("school", "students", "manage",           _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "students", "transition",       _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "students", "transfer",         _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "students", "suspend",          _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "students", "reactivate",       _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     # A child's blood group, allergies and conditions have no key of their own.
     # Who reads and corrects each of them is a Field Access switch on the role,
     # so a school can open the medical fields to its nurse without handing over
@@ -96,7 +99,7 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     # rollback. Export reaches branch_admin because a branch admin exports
     # their own branch's roll and cannot reach anybody else's.
     # Promotion is a bulk act on the whole roll, and it used to ride on
-    # ``students.manage``, the same key that transfers one child between
+    # the broad student lifecycle key, the same key that transferred one child between
     # branches. One key could not sell the two at different depths.
     ("school", "students", "promote",          _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "students", "import",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
@@ -105,7 +108,7 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "teachers", "view",             _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("school", "teachers", "create",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "teachers", "update",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
-    ("school", "teachers", "manage",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("school", "teachers", "transition",       _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     # Who teaches which subject to which class, and who is a class teacher.
     # SENSITIVE because it decides who owns a class's marks, and branch_admin
     # holds it because staffing a branch's classes is a branch decision.
@@ -142,7 +145,8 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     # and approves it.
     ("school", "leave", "apply",               _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("school", "leave", "view",                _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
-    ("school", "leave", "manage",              _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "leave", "update",              _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "leave", "cancel",              _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
 
     ("school", "administrators", "view",       _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "administrators", "create",     _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
@@ -151,10 +155,10 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "administrators", "reactivate", _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
     ("school", "fees", "view",                 _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
-    ("school", "fees", "manage",               _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("school", "fees", "update",               _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
     ("school", "settings", "view",             _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
-    ("school", "settings", "manage",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("school", "settings", "update",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
     # The school's own identity record: ownership type, term structure,
     # currency, address, website, motto, registration id and logo. NOT its
@@ -179,10 +183,10 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
 
     # Field Access: which roles read and write each registered field of a
     # record. Both CRITICAL because a switch can open a child's medical record
-    # or a supplier's bank details. View is unrestricted and manage is
+    # or a supplier's bank details. View is unrestricted and update is
     # restricted: see UNRESTRICTED_KEYS.
     ("school", "field_access", "view",         _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
-    ("school", "field_access", "manage",       _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
+    ("school", "field_access", "update",       _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
 
     # School-scoped proxy (impersonation). Deliberately a SEPARATE namespace
     # from platform.impersonation.* - a school role must never carry a key that
@@ -197,7 +201,8 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     # equally restricted on purpose - without it a user must never be able to
     # learn that exceptions exist on their own account.
     ("school", "user_overrides", "view",       _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
-    ("school", "user_overrides", "manage",     _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
+    ("school", "user_overrides", "create",     _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
+    ("school", "user_overrides", "delete",     _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
 
     ("school", "impersonation", "start",       _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
     ("school", "impersonation", "end",         _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
@@ -207,17 +212,20 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("academics", "session", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("academics", "session", "create",         _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
     ("academics", "session", "update",         _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
-    ("academics", "session", "manage",         _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("academics", "session", "activate",       _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("academics", "session", "archive",        _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("academics", "session", "delete",         _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
     ("academics", "calendar", "view",          _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("academics", "calendar", "create",        _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("academics", "calendar", "update",        _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
-    ("academics", "calendar", "manage",        _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("academics", "calendar", "delete",        _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
     ("academics", "classes", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("academics", "classes", "create",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("academics", "classes", "update",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
-    ("academics", "classes", "manage",         _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("academics", "classes", "archive",        _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("academics", "classes", "reactivate",     _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("academics", "classes", "assign",         _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
 
     # Academic structure. "structure" covers departments, programs and
@@ -227,7 +235,8 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("academics", "structure", "view",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("academics", "structure", "create",       _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
     ("academics", "structure", "update",       _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
-    ("academics", "structure", "manage",       _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("academics", "structure", "archive",      _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("academics", "structure", "reactivate",   _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     # Its own key, and SENSITIVE, exactly as school.students.import is. One
     # upload builds a school's whole spine - every programme, year group and
     # class - so it is not the same act as adding one class through the form,
@@ -236,12 +245,12 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
 
     # A resource of its own rather than four more uses of the calendar
     # keys: adding a public holiday and rebuilding the school's entire timetable
-    # are not one act. Merging them would also hand academics.calendar.manage,
+    # are not one act. Merging them would also hand academics.calendar.delete,
     # which is SENSITIVE and school_admin-only, the power to delete a grid.
     ("academics", "timetable", "view",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("academics", "timetable", "create",       _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("academics", "timetable", "update",       _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
-    ("academics", "timetable", "manage",       _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("academics", "timetable", "delete",       _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     # branch_admin holds publish so a branch's grid does not wait on the head
     # office. A school wanting exam publication reserved to head office
     # withholds it in a role template of its own, which is configuration.
@@ -254,13 +263,14 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("academics", "exam", "view",              _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("academics", "exam", "create",            _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("academics", "exam", "update",            _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
-    ("academics", "exam", "manage",            _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("academics", "exam", "delete",            _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("academics", "exam", "publish",           _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
 
     ("academics", "subject", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("academics", "subject", "create",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("academics", "subject", "update",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
-    ("academics", "subject", "manage",         _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("academics", "subject", "archive",        _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("academics", "subject", "reactivate",     _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 ]
 
 #: Resources that carry Field Access fields and no permission keys.

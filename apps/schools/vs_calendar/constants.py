@@ -14,12 +14,12 @@ from __future__ import annotations
 PERM_CALENDAR_VIEW = "academics.calendar.view"
 PERM_CALENDAR_CREATE = "academics.calendar.create"
 PERM_CALENDAR_UPDATE = "academics.calendar.update"
-PERM_CALENDAR_MANAGE = "academics.calendar.manage"
+PERM_CALENDAR_DELETE = "academics.calendar.delete"
 
 PERM_TIMETABLE_VIEW = "academics.timetable.view"
 PERM_TIMETABLE_CREATE = "academics.timetable.create"
 PERM_TIMETABLE_UPDATE = "academics.timetable.update"
-PERM_TIMETABLE_MANAGE = "academics.timetable.manage"
+PERM_TIMETABLE_DELETE = "academics.timetable.delete"
 PERM_TIMETABLE_PUBLISH = "academics.timetable.publish"
 
 #: Exams have their own keys rather than borrowing the timetable's. Sharing
@@ -28,7 +28,7 @@ PERM_TIMETABLE_PUBLISH = "academics.timetable.publish"
 PERM_EXAM_VIEW = "academics.exam.view"
 PERM_EXAM_CREATE = "academics.exam.create"
 PERM_EXAM_UPDATE = "academics.exam.update"
-PERM_EXAM_MANAGE = "academics.exam.manage"
+PERM_EXAM_DELETE = "academics.exam.delete"
 PERM_EXAM_PUBLISH = "academics.exam.publish"
 
 

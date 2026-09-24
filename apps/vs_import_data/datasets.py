@@ -95,7 +95,7 @@ PLATFORM_ONLY_DATASETS: frozenset[str] = frozenset({
 #: asking could create twenty by uploading a spreadsheet.
 #:
 #: A school still administers the branches it HAS. ``school.branches.view``
-#: and ``.manage`` are its own keys; opening and editing branches is not.
+#: and ``.delete`` are its own keys; opening and editing branches is not.
 #:
 #: The remaining onboarding datasets, staff and parents, have no template
 #: and no model to import into. When one lands, adding it here is the only

@@ -47,14 +47,17 @@ STAFF_KEYS = (
     "school.teachers.view",
     "school.teachers.create",
     "school.teachers.update",
-    "school.teachers.manage",
+    "school.teachers.transition",
     "school.teachers.assign",
 )
 #: Qualifications, certificates and documents. Split out of the register keys
 #: so the two can be sold at different depths; granted here alongside them, the
 #: way the migration carried every existing register grant across.
 RECORD_KEYS = ("school.staff_records.view", "school.staff_records.update")
-LEAVE_KEYS = ("school.leave.apply", "school.leave.view", "school.leave.manage")
+LEAVE_KEYS = (
+    "school.leave.apply", "school.leave.view", "school.leave.update",
+    "school.leave.cancel",
+)
 ACCOUNT_KEYS = (
     "school.administrators.create",
     "school.administrators.update",

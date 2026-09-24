@@ -471,7 +471,7 @@ class ConfigIsPlatformOnlyTests(TestCase):
     def test_the_migration_moves_config_off_the_tenant_surface(self):
         """CodeX decides what a school HAS; a school does not decide for itself.
 
-        A tenant able to hold ``config.entitlement.manage`` is one row of
+        A tenant able to hold ``config.entitlement.update`` is one row of
         enforcement away from granting itself the modules it has not paid for.
 
         The migration's own function is run here rather than the seeded state
@@ -486,7 +486,7 @@ class ConfigIsPlatformOnlyTests(TestCase):
             "vs_rbac.migrations.0008_config_is_platform_only",
         )
 
-        make_permission("config.entitlement.manage", scope=PermissionScope.TENANT)
+        make_permission("config.entitlement.update", scope=PermissionScope.TENANT)
         make_permission("config.value.view", scope=PermissionScope.TENANT)
 
         migration.forward(registry, None)
@@ -521,7 +521,7 @@ class ConfigIsPlatformOnlyTests(TestCase):
 
     def test_a_school_cannot_grant_itself_a_config_permission(self):
         """The listing is a courtesy; this is the rule."""
-        make_permission("config.entitlement.manage", scope=PermissionScope.PLATFORM)
+        make_permission("config.entitlement.update", scope=PermissionScope.PLATFORM)
         make_role(self.school, name="Assistant Bursar", key="assistant-bursar")
 
         response = self._client().patch(
@@ -533,7 +533,7 @@ class ConfigIsPlatformOnlyTests(TestCase):
                 },
             )
             + f"?tenant={self.tenant.slug}",
-            {"permission_keys": ["config.entitlement.manage"]},
+            {"permission_keys": ["config.entitlement.update"]},
             format="json",
         )
         self.assertEqual(response.status_code, 400, response.data)

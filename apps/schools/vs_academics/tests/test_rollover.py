@@ -49,15 +49,15 @@ KEYS = (
     "academics.structure.view",
     "academics.structure.create",
     "academics.structure.update",
-    "academics.structure.manage",
+    "academics.structure.archive", "academics.structure.reactivate",
     "academics.classes.view",
     "academics.classes.create",
     "academics.classes.update",
-    "academics.classes.manage",
+    "academics.classes.archive", "academics.classes.reactivate",
     "academics.subject.view",
     "academics.subject.create",
     "academics.subject.update",
-    "academics.subject.manage",
+    "academics.subject.archive", "academics.subject.reactivate",
 )
 
 

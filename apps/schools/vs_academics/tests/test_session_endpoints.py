@@ -31,7 +31,9 @@ KEYS = (
     "academics.session.view",
     "academics.session.create",
     "academics.session.update",
-    "academics.session.manage",
+    "academics.session.activate",
+    "academics.session.archive",
+    "academics.session.delete",
 )
 
 

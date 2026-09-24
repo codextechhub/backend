@@ -7,26 +7,33 @@ class ConfigPermissions:
     VALUE_VIEW = "config.value.view"
     VALUE_UPDATE = "config.value.update"
     CAPABILITY_VIEW = "config.capability.view"
-    CAPABILITY_MANAGE = "config.capability.manage"
+    CAPABILITY_CREATE = "config.capability.create"
+    CAPABILITY_UPDATE = "config.capability.update"
+    CAPABILITY_ARCHIVE = "config.capability.archive"
     ENTITLEMENT_VIEW = "config.entitlement.view"
-    ENTITLEMENT_MANAGE = "config.entitlement.manage"
+    ENTITLEMENT_UPDATE = "config.entitlement.update"
+    ENTITLEMENT_DELETE = "config.entitlement.delete"
     OVERRIDE_VIEW = "config.override.view"
-    OVERRIDE_MANAGE = "config.override.manage"
+    OVERRIDE_UPDATE = "config.override.update"
     AUDIT_VIEW = "config.audit.view"
     AUDIT_EXPORT = "config.audit.export"
     EXPORT_CREATE = "config.export.create"
     SECURITY_VIEW = "config.security.view"
-    SECURITY_MANAGE = "config.security.manage"
+    SECURITY_UPDATE = "config.security.update"
     INTEGRATION_VIEW = "config.integration.view"
-    INTEGRATION_MANAGE = "config.integration.manage"
+    INTEGRATION_UPDATE = "config.integration.update"
+    INTEGRATION_TRIGGER = "config.integration.trigger"
 
     # Seeding uses this list as the complete RBAC contract for the config module.
     ALL = [
         DEFINITION_VIEW, DEFINITION_CREATE, DEFINITION_UPDATE, DEFINITION_ARCHIVE,
-        VALUE_VIEW, VALUE_UPDATE, CAPABILITY_VIEW, CAPABILITY_MANAGE,
-        ENTITLEMENT_VIEW, ENTITLEMENT_MANAGE, OVERRIDE_VIEW, OVERRIDE_MANAGE,
+        VALUE_VIEW, VALUE_UPDATE, CAPABILITY_VIEW, CAPABILITY_CREATE,
+        CAPABILITY_UPDATE, CAPABILITY_ARCHIVE,
+        ENTITLEMENT_VIEW, ENTITLEMENT_UPDATE, ENTITLEMENT_DELETE,
+        OVERRIDE_VIEW, OVERRIDE_UPDATE,
         AUDIT_VIEW, AUDIT_EXPORT, EXPORT_CREATE,
-        SECURITY_VIEW, SECURITY_MANAGE, INTEGRATION_VIEW, INTEGRATION_MANAGE,
+        SECURITY_VIEW, SECURITY_UPDATE, INTEGRATION_VIEW, INTEGRATION_UPDATE,
+        INTEGRATION_TRIGGER,
     ]
 
 

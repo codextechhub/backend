@@ -24,13 +24,13 @@ class ActorContextMixin:
 class BranchTransitionView(ActorContextMixin, generics.GenericAPIView):
     """docstring-name: Transition branch lifecycle"""
     # The granular key matches the sibling branch views (platform.branches.*);
-    # `platform.branches.manage` is seeded as restricted/SENSITIVE and is
+    # `platform.branches.transition` is seeded as restricted/SENSITIVE and is
     # described in seed_platform_permissions as exactly this operation.
     # IsVisionStaff stays alongside it: suspending or closing a branch is a
     # platform commercial action, so a school-tenant role holding the key by
     # misconfiguration still must not reach it.
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff & HasRBACPermission]
-    rbac_permission = "platform.branches.manage"
+    rbac_permission = "platform.branches.transition"
     serializer_class = BranchStateTransitionSerializer
     queryset = Branch.objects.all().select_related("tenant__school_profile")
     lookup_field = "code"

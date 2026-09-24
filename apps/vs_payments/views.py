@@ -363,8 +363,8 @@ class VirtualAccountDetailView(APIView):
     @property
     # Handle the rbac permission workflow.
     def rbac_permission(self):
-        return (  # Use manage permission for PATCH, view permission otherwise.
-            "payments.virtual_account.manage"
+        return (  # Use update permission for PATCH, view permission otherwise.
+            "payments.virtual_account.update"
             if self.request.method == "PATCH"
             else "payments.virtual_account.view"
         )

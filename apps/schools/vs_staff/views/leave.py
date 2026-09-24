@@ -8,7 +8,8 @@ school having two kinds of leave with two different meanings.
 
 Three keys, because three different people do three different things.
 ``school.leave.apply`` is for your own and every member of staff holds it.
-``school.leave.manage`` is for somebody else's. ``school.leave.view`` is for
+``school.leave.update`` and ``school.leave.cancel`` are for somebody else's.
+``school.leave.view`` is for
 reading a colleague's, and a teacher does not hold it: who is off sick is not
 something every colleague may read.
 
@@ -25,7 +26,12 @@ from rest_framework.views import APIView
 
 from core.response import success_response
 
-from ..constants import PERM_LEAVE_APPLY, PERM_LEAVE_MANAGE, PERM_LEAVE_VIEW
+from ..constants import (
+    PERM_LEAVE_APPLY,
+    PERM_LEAVE_CANCEL,
+    PERM_LEAVE_UPDATE,
+    PERM_LEAVE_VIEW,
+)
 from ..models import LeaveRequest
 from ..serializers import LeaveSerializer, LeaveUpdateSerializer, LeaveWriteSerializer
 from ..services import leave as leave_service
@@ -67,7 +73,7 @@ class StaffLeaveView(StaffViewMixin, APIView):
         method = (getattr(self.request, "method", "") or "").upper()
         if method in ("GET", "HEAD", "OPTIONS"):
             return PERM_LEAVE_VIEW
-        return PERM_LEAVE_APPLY if self._is_own() else PERM_LEAVE_MANAGE
+        return PERM_LEAVE_APPLY if self._is_own() else PERM_LEAVE_UPDATE
 
     def get(self, request, pk):
         staff = self.get_staff(pk)
@@ -113,7 +119,9 @@ class LeaveDetailView(StaffViewMixin, APIView):
     docstring-name: One leave request
     """
 
-    rbac_permission = PERM_LEAVE_MANAGE
+    @property
+    def rbac_permission(self):
+        return PERM_LEAVE_CANCEL if self.request.method == "DELETE" else PERM_LEAVE_UPDATE
 
     def _row(self, pk):
         row = (

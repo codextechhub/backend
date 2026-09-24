@@ -10,7 +10,10 @@ from core.response import success_response
 from ..constants import (
     BULK_MAX,
     PERM_CLASS_ASSIGN,
-    PERM_MANAGE,
+    PERM_REACTIVATE,
+    PERM_SUSPEND,
+    PERM_TRANSFER,
+    PERM_TRANSITION,
     PERM_UPDATE,
     PERM_VIEW,
     StudentStatus,
@@ -44,7 +47,7 @@ from .base import StudentsViewMixin
 class _StudentAction(StudentsViewMixin, APIView):
     """One student, one act. Subclasses declare their key and do the work."""
 
-    key = PERM_MANAGE
+    key = PERM_TRANSITION
 
     def get_permissions(self):
         self.rbac_permission = self.key
@@ -140,6 +143,7 @@ class SuspendStudentView(_StudentAction):
     docstring-name: Suspend a student
     """
 
+    key = PERM_SUSPEND
     serializer_class = ReasonOnlySerializer
 
     @transaction.atomic
@@ -159,6 +163,7 @@ class TransferOutView(_StudentAction):
     docstring-name: Transfer a student out
     """
 
+    key = PERM_TRANSFER
     serializer_class = TransferOutSerializer
 
     @transaction.atomic
@@ -186,6 +191,7 @@ class ReactivateStudentView(_StudentAction):
     docstring-name: Reactivate a student
     """
 
+    key = PERM_REACTIVATE
     serializer_class = ReactivateSerializer
 
     @transaction.atomic
@@ -204,7 +210,7 @@ class ReactivateStudentView(_StudentAction):
         class_id = data.get("school_class")
         if not class_id:
             raise PlacementRequired()
-        self.assert_holds(PERM_MANAGE, PERM_CLASS_ASSIGN)
+        self.assert_holds(PERM_REACTIVATE, PERM_CLASS_ASSIGN)
 
         school_class = resolve_class(self.tenant, request.user, class_id)
         transition(
@@ -421,7 +427,7 @@ class BulkStatusView(_BulkAction):
     """
 
     def get_permissions(self):
-        self.rbac_permission = PERM_MANAGE
+        self.rbac_permission = PERM_TRANSITION
         return super().get_permissions()
 
     def post(self, request):

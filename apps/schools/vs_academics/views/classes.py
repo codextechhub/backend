@@ -26,11 +26,13 @@ from vs_audit.services import emit_audit_event
 
 from ..constants import (
     PERM_CLASSES_CREATE,
-    PERM_CLASSES_MANAGE,
+    PERM_CLASSES_ARCHIVE,
+    PERM_CLASSES_REACTIVATE,
     PERM_CLASSES_UPDATE,
     PERM_CLASSES_VIEW,
     PERM_SUBJECT_CREATE,
-    PERM_SUBJECT_MANAGE,
+    PERM_SUBJECT_ARCHIVE,
+    PERM_SUBJECT_REACTIVATE,
     PERM_SUBJECT_UPDATE,
     PERM_SUBJECT_VIEW,
 )
@@ -233,7 +235,10 @@ class ClassDetailView(_ClassBase, generics.RetrieveUpdateAPIView):
 
 
 class _ClassStateView(_ClassBase, APIView):
-    rbac_permission = PERM_CLASSES_MANAGE
+
+    @property
+    def rbac_permission(self):
+        return PERM_CLASSES_REACTIVATE if self.active else PERM_CLASSES_ARCHIVE
 
     active: bool
     action: str
@@ -641,7 +646,10 @@ def _write_offerings(tenant, subject, levels):
 
 
 class _SubjectStateView(RecordStateView):
-    rbac_permission = PERM_SUBJECT_MANAGE
+
+    @property
+    def rbac_permission(self):
+        return PERM_SUBJECT_REACTIVATE if self.active else PERM_SUBJECT_ARCHIVE
 
     def resolve(self, pk):
         row = scope_to_visible_branches(

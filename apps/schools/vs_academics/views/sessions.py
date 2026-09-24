@@ -19,7 +19,9 @@ from vs_tenants.references import resolve_branch_reference
 from ..constants import (
     PERM_STRUCTURE_CREATE,
     PERM_SESSION_CREATE,
-    PERM_SESSION_MANAGE,
+    PERM_SESSION_ACTIVATE,
+    PERM_SESSION_ARCHIVE,
+    PERM_SESSION_DELETE,
     PERM_SESSION_UPDATE,
     PERM_SESSION_VIEW,
 )
@@ -273,7 +275,7 @@ class SessionActivateView(AcademicsViewMixin, APIView):
     docstring-name: Make a session active
     """
 
-    rbac_permission = PERM_SESSION_MANAGE
+    rbac_permission = PERM_SESSION_ACTIVATE
 
     def post(self, request, pk):
         session = _get_or_404(self.tenant, pk)
@@ -297,7 +299,7 @@ class SessionArchiveView(AcademicsViewMixin, APIView):
     docstring-name: Archive a session
     """
 
-    rbac_permission = PERM_SESSION_MANAGE
+    rbac_permission = PERM_SESSION_ARCHIVE
 
     def post(self, request, pk):
         session = _get_or_404(self.tenant, pk)
@@ -395,7 +397,7 @@ class TermDetailView(AcademicsViewMixin, generics.RetrieveUpdateDestroyAPIView):
 
     def get_permissions(self):
         self.rbac_permission = (
-            PERM_SESSION_MANAGE if self.request.method == "DELETE"
+            PERM_SESSION_DELETE if self.request.method == "DELETE"
             else PERM_SESSION_UPDATE if self.request.method == "PATCH"
             else PERM_SESSION_VIEW
         )

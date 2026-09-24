@@ -40,9 +40,9 @@ NEVER_GRANTED_BY_DEFAULT = frozenset({
 
 # (resource_name, resource_label, [(action, sensitivity), ...])
 PROCUREMENT_RESOURCES = [
-    # ``manage`` configures the rules and ``override`` steps past a stuck one;
+    # ``update`` configures the rules and ``override`` steps past a stuck one;
     # neither is "may approve", which the workflow stage decides.
-    ("approval",       "spend approvals",       [("manage", "SENSITIVE"),
+    ("approval",       "spend approvals",       [("view", "SENSITIVE"), ("update", "SENSITIVE"),
                                                  ("override", "CRITICAL")]),
     ("settings",       "procurement settings",  [("view", "NORMAL"), ("update", "SENSITIVE")]),
     ("competition",    "competitive bidding policy", [("override", "CRITICAL")]),
@@ -62,11 +62,12 @@ PROCUREMENT_RESOURCES = [
     ("analytics",      "procurement analytics", [("view", "NORMAL")]),
     ("requisition",    "purchase requisitions", [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("submit", "SENSITIVE")]),
     ("rfq",            "requests for quotation", [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("issue", "SENSITIVE")]),
-    ("stock",          "stock items",           [("view", "NORMAL"), ("manage", "SENSITIVE"), ("issue", "SENSITIVE"), ("adjust", "SENSITIVE")]),
+    ("stock",          "stock items",           [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("issue", "SENSITIVE"), ("adjust", "SENSITIVE")]),
     # A vendor's contact and banking details are not a key of their own: who
     # reads and writes each of them is a Field Access switch on the role.
-    ("vendor",         "vendors",               [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"),
-                                                 ("manage", "SENSITIVE")]),
+    ("vendor",         "vendors",               [("view", "NORMAL"),
+                                                 ("create", "SENSITIVE"), ("update", "SENSITIVE"),
+                                                 ("verify", "SENSITIVE")]),
     ("vendor_assessment", "vendor assessments",  [("create", "SENSITIVE")]),
     ("vendor_invoice", "vendor invoices",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("submit", "SENSITIVE"),
                                                  ("match", "SENSITIVE"), ("post", "CRITICAL"), ("override_variance", "CRITICAL"),

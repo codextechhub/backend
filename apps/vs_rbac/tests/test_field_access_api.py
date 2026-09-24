@@ -50,9 +50,10 @@ from .helpers import (
 _counter = itertools.count(1)
 
 VIEW = "school.field_access.view"
-MANAGE = "school.field_access.manage"
+UPDATE = "school.field_access.update"
 EXCEPTION_VIEW = "school.user_overrides.view"
-EXCEPTION_MANAGE = "school.user_overrides.manage"
+EXCEPTION_CREATE = "school.user_overrides.create"
+EXCEPTION_DELETE = "school.user_overrides.delete"
 
 
 def _grant(user, keys, tenant=None):
@@ -103,7 +104,10 @@ class _FieldAccessApi(TestCase):
         )
 
         self.admin = make_school_admin(self.branch, email="fa-admin@test.com")
-        self.admin_role = _grant(self.admin, [VIEW, MANAGE, EXCEPTION_VIEW, EXCEPTION_MANAGE])
+        self.admin_role = _grant(
+            self.admin,
+            [VIEW, UPDATE, EXCEPTION_VIEW, EXCEPTION_CREATE, EXCEPTION_DELETE],
+        )
         self.storekeeper = make_role(self.tenant, name="Storekeeper", key="storekeeper")
         self.target = make_staff_user(self.branch, email="fa-target@test.com")
         make_assignment(self.tenant, self.target, self.storekeeper)
@@ -247,9 +251,9 @@ class MissingKeysTests(_FieldAccessApi):
         self.assertEqual(patched.status_code, status.HTTP_403_FORBIDDEN)
         self.assertFalse(RoleFieldAccess.objects.exists())
 
-    def test_the_manage_key_alone_can_read(self):
+    def test_the_update_key_alone_can_read(self):
         manager = make_staff_user(self.branch, email="fa-manager@test.com")
-        _grant(manager, [MANAGE])
+        _grant(manager, [UPDATE])
         self.assertEqual(self._get(user=manager).status_code, status.HTTP_200_OK)
 
     def test_the_exception_view_key_lists_and_cannot_create(self):
@@ -264,7 +268,7 @@ class MissingKeysTests(_FieldAccessApi):
 
     def test_a_school_exception_key_gives_a_platform_actor_nothing(self):
         cx = make_vision_user(email="fa-cx-stranger@test.com")
-        _grant(cx, [EXCEPTION_MANAGE])
+        _grant(cx, [EXCEPTION_CREATE])
         url = reverse(
             "rbac-user-field-access-override-list-create",
             kwargs={"tenant_slug": cx.tenant.slug, "user_id": make_vision_user(
@@ -305,7 +309,7 @@ class PlatformFieldTests(_FieldAccessApi):
 
     def test_the_platform_tenant_can_set_a_platform_field(self):
         cx = make_vision_user(email="fa-cx-admin@test.com")
-        _grant(cx, ["platform.field_access.view", "platform.field_access.manage"])
+        _grant(cx, ["platform.field_access.view", "platform.field_access.update"])
         role = make_platform_role(name="FA Payroll Officer", key="fa-payroll-officer")
         slug = cx.tenant.slug
         url = reverse("rbac-role-field-access", kwargs={"tenant_slug": slug, "key": role.key})
@@ -343,7 +347,7 @@ class SelfExceptionTests(_FieldAccessApi):
 
         _grant(self.admin, ["school.impersonation.start"])
         deputy = make_staff_user(self.branch, email="fa-deputy@test.com")
-        _grant(deputy, [EXCEPTION_VIEW, EXCEPTION_MANAGE])
+        _grant(deputy, [EXCEPTION_VIEW, EXCEPTION_CREATE, EXCEPTION_DELETE])
         session = ImpersonationSession.objects.create(
             staff_user=self.admin, tenant=self.tenant, target_user=deputy,
             justification="Support diagnosis.",
@@ -742,7 +746,7 @@ class UserFieldAccessOverrideApiTests(_FieldAccessApi):
 
     def test_a_platform_operator_can_manage_a_school_users_exceptions(self):
         cx = make_vision_user(email="fa-cx-operator@test.com")
-        _grant(cx, ["platform.team_overrides.manage"])
+        _grant(cx, ["platform.team_overrides.create"])
         response = _client(cx).post(
             _with_tenant(self._exceptions_url(), self.slug),
             {"field": self.name.key, "access": "READ", "mode": "DENY", "reason": "Escalated support."},
@@ -761,7 +765,7 @@ class PlatformOperatorOnSchoolRolesTests(_FieldAccessApi):
 
     def test_a_platform_operator_asserting_a_school_is_refused_with_404(self):
         cx = make_vision_user(email="fa-cx-roles@test.com")
-        _grant(cx, ["platform.field_access.view", "platform.field_access.manage"])
+        _grant(cx, ["platform.field_access.view", "platform.field_access.update"])
         client = _client(cx)
         url = self._role_url()
 
@@ -780,7 +784,7 @@ class TwoAdministratorsOnOneRoleTests(_FieldAccessApi):
 
     def test_each_save_lands_on_what_the_last_one_stored(self):
         colleague = make_school_admin(self.branch, email="fa-admin-two@test.com")
-        _grant(colleague, [VIEW, MANAGE])
+        _grant(colleague, [VIEW, UPDATE])
         version = self.storekeeper.version
 
         first = self._patch([{"field": self.phone.key, "read": True}])

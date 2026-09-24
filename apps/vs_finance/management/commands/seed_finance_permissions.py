@@ -83,7 +83,8 @@ FINANCE_RESOURCES = [
                                                 ("post", "CRITICAL"), ("allocate", "SENSITIVE"),
                                                 ("reverse", "CRITICAL")]),
     ("dunning",      "dunning notices",        [("view", "NORMAL"), ("generate", "SENSITIVE"),
-                                                ("send", "SENSITIVE"), ("manage", "SENSITIVE")]),
+                                                ("send", "SENSITIVE"), ("create", "SENSITIVE"),
+                                                ("update", "SENSITIVE")]),
     ("expenseclaim", "expense claims",         [("view", "NORMAL"), ("create", "NORMAL"),
                                                 ("post", "SENSITIVE"), ("settle", "CRITICAL")]),
     ("fixedasset",   "fixed assets",           [("view", "NORMAL"), ("create", "SENSITIVE"),
@@ -123,7 +124,8 @@ FINANCE_RESOURCES = [
     ("writeoff",     "bad-debt write-offs",    [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("post", "CRITICAL"), ("submit", "SENSITIVE")]),
     ("tax",          "tax filings",            [("view", "NORMAL"), ("file", "SENSITIVE"),
-                                                ("pay", "CRITICAL"), ("manage", "SENSITIVE")]),
+                                                ("pay", "CRITICAL"), ("create", "SENSITIVE"),
+                                                ("update", "SENSITIVE")]),
 ]
 
 

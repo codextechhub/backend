@@ -59,12 +59,12 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             "school.roles.approve",
             "school.roles.delete",
             "academics.session.view",
-            "academics.calendar.manage",
+            "academics.calendar.delete",
             "academics.classes.assign",
             "academics.structure.view",
-            "academics.structure.manage",
+            "academics.structure.archive",
             "academics.subject.create",
-            "academics.subject.manage",
+            "academics.subject.archive",
         ):
             self.assertTrue(
                 Permission.objects.filter(key=key).exists(),
@@ -72,7 +72,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             )
 
     def test_total_key_count(self):
-        """The school and academics modules register exactly 79 keys.
+        """The school and academics modules register exactly 89 keys.
 
         Deliberately a hand-maintained number: the school permission surface
         growing is something a person should have to notice and agree to, so
@@ -93,7 +93,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
           school-fe checks by name would leave live keys governing nothing, so
           the resource DESCRIPTION says "Staff records" instead.
           ``school.staff`` exists for the spreadsheet import alone.
-        * ``school.field_access`` carries view and manage for Field Access.
+        * ``school.field_access`` carries view and update for Field Access.
         * There is no key for a child's medical details. Blood group, allergies
           and conditions are registered fields of ``school.students``, so who
           reads and corrects them is a switch on the role, set on the Field
@@ -102,19 +102,19 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            79,
+            89,
         )
 
-    def test_field_access_view_is_open_and_manage_is_restricted(self):
+    def test_field_access_view_is_open_and_update_is_restricted(self):
         # Viewing switches opens nothing; changing one opens a field at once.
         _run_school_seed()
         view = Permission.objects.get(key="school.field_access.view")
-        manage = Permission.objects.get(key="school.field_access.manage")
-        for perm in (view, manage):
+        update = Permission.objects.get(key="school.field_access.update")
+        for perm in (view, update):
             self.assertEqual(perm.sensitivity_level, "CRITICAL", perm.key)
             self.assertEqual(perm.scope, "TENANT", perm.key)
         self.assertFalse(view.is_restricted)
-        self.assertTrue(manage.is_restricted)
+        self.assertTrue(update.is_restricted)
 
     def test_impersonation_keys_are_critical_and_restricted(self):
         _run_school_seed()
@@ -128,12 +128,13 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             self.assertTrue(perm.is_restricted, key)
 
     def test_override_keys_are_critical_and_restricted(self):
-        # `.view` is as restricted as `.manage`: without it a user must not be
+        # `.view` is as restricted as the write keys: without it a user must not be
         # able to learn that permission exceptions exist on their account.
         _run_school_seed()
         for key in (
             "school.user_overrides.view",
-            "school.user_overrides.manage",
+            "school.user_overrides.create",
+            "school.user_overrides.delete",
         ):
             perm = Permission.objects.get(key=key)
             self.assertEqual(perm.sensitivity_level, "CRITICAL", key)
@@ -142,7 +143,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
     def test_sensitivity_levels_applied(self):
         _run_school_seed()
         self.assertEqual(
-            Permission.objects.get(key="school.students.manage").sensitivity_level,
+            Permission.objects.get(key="school.students.transition").sensitivity_level,
             "SENSITIVE",
         )
         self.assertEqual(
@@ -219,12 +220,12 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         )
 
     def test_school_admin_gets_all_keys(self):
-        """A school admin holds every key in both modules, all 79 of them."""
-        self.assertEqual(len(self._defaults("school_admin")), 79)
-        self.assertIn("school.field_access.manage", self._defaults("school_admin"))
+        """A school admin holds every key in both modules, all 89 of them."""
+        self.assertEqual(len(self._defaults("school_admin")), 89)
+        self.assertIn("school.field_access.update", self._defaults("school_admin"))
 
     def test_only_school_admin_gets_field_access_by_default(self):
-        field_access = {"school.field_access.view", "school.field_access.manage"}
+        field_access = {"school.field_access.view", "school.field_access.update"}
         self.assertTrue(field_access <= self._defaults("school_admin"))
         self.assertFalse(field_access & self._defaults("branch_admin"))
         self.assertFalse(field_access & self._defaults("teacher"))
@@ -244,21 +245,19 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
     def test_only_school_admin_gets_permission_overrides_by_default(self):
         overrides = {
             "school.user_overrides.view",
-            "school.user_overrides.manage",
+            "school.user_overrides.create",
+            "school.user_overrides.delete",
         }
         self.assertTrue(overrides <= self._defaults("school_admin"))
         self.assertFalse(overrides & self._defaults("branch_admin"))
         self.assertFalse(overrides & self._defaults("teacher"))
 
     def test_branch_admin_default_count(self):
-        """42 = 43, less the medical key that is now a field switch.
+        """47 permissions cover branch-level school operations.
 
         A branch admin reads and corrects a child's blood group, allergies and
         conditions exactly where the school turns those switches on for their
         role, so there is no key left to default.
-
-        43 = 32, plus the steps below, and 32 = 31, plus M11's
-        school.students.export.
 
         A branch admin exports their own branch's roll, and the dataset is
         narrowed to the branches they can see, so the file can never be wider
@@ -267,57 +266,37 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         reversible only through the engine's rollback, so it stays with the
         school admin.
 
-        The 31 was 27, plus four of M14's five.
-
         A branch admin builds and publishes their own branch's grid -
         academics.timetable.view, .create, .update and .publish - so that it
-        does not wait on the head office. Only .manage is withheld, which
-        deletes a room, a period, a slot or a whole grid, and matches
-        academics.calendar.manage exactly: a branch adds and edits its own
-        entries, and removing them is the school's call.
+        does not wait on the head office. The delete permission is withheld:
+        a branch adds and edits its own entries, and removing them is the
+        school's call.
 
-        The 27 below was 23, plus four of M13's eight.
+        A branch admin reads the school profile because the currency and term
+        structure govern screens they work in. Changing it stays with the
+        school admin.
 
-        The 23 was 22 plus reading the school profile: a branch admin reads it
-        because the currency and term structure on it govern screens they work
-        in, and changing it stays with the school admin.
+        A branch admin reads the structure and works with subjects because a
+        subject may belong to one branch. Creating or retiring a department,
+        programme, or level is a statement about the whole school's curriculum,
+        so those actions stay with the school admin.
 
-        M13 adds four and withholds four, which is the shape of the module
-        rather than an oversight. A branch admin reads the structure and works
-        with subjects - academics.structure.view, academics.subject.view,
-        .create and .update - because a subject may genuinely belong to one
-        branch. Creating a department, a programme or a level is a statement
-        about the whole school's curriculum, so structure.create, .update and
-        .manage stay with the school admin, and so does subject.manage, which
-        deletes.
-
-        43 = 42, plus school.staff.import, which the student import's reasoning
-        does not reach. A branch admin already adds staff one at a time through
-        school.teachers.create, and a branch opening with forty teachers is
-        that same act at the scale a spreadsheet exists for. A roll import is
-        the other case: it rewrites records belonging to children across the
-        school, which is why school.students.import stops at the school admin.
-
-        42 = 36, plus six of the eight split keys: a branch admin sets exam
-        schedules (view, create, update, publish) and reads and maintains staff
-        records, but does not delete an exam or promote the roll.
-
-        36 = 32, plus M12's four. A branch admin holds every one of them: who
-        teaches which class at their branch is a branch decision, and so is
-        recording that somebody there is away. Only the employment lifecycle
-        stays with the school admin, because terminating somebody is not.
+        A branch admin may import staff because they may already add staff one
+        at a time. They set exam schedules and maintain staff records, but do
+        not delete an exam, promote the roll, or change employment status.
         """
         branch_admin = self._defaults("branch_admin")
-        self.assertEqual(len(branch_admin), 42)
+        self.assertEqual(len(branch_admin), 47)
         self.assertIn("school.staff.import", branch_admin)
         self.assertNotIn("school.students.import", branch_admin)
         self.assertIn("school.teachers.assign", branch_admin)
-        self.assertIn("school.leave.manage", branch_admin)
-        self.assertNotIn("school.teachers.manage", branch_admin)
+        self.assertIn("school.leave.update", branch_admin)
+        self.assertIn("school.leave.cancel", branch_admin)
+        self.assertNotIn("school.teachers.transition", branch_admin)
         self.assertIn("school.students.export", branch_admin)
         self.assertNotIn("school.students.import", branch_admin)
         self.assertIn("academics.timetable.publish", branch_admin)
-        self.assertNotIn("academics.timetable.manage", branch_admin)
+        self.assertNotIn("academics.timetable.delete", branch_admin)
         self.assertIn("academics.subject.create", self._defaults("branch_admin"))
         self.assertNotIn("academics.structure.create", self._defaults("branch_admin"))
         self.assertIn("school.profile.view", self._defaults("branch_admin"))
@@ -399,7 +378,7 @@ class SeedSchoolBackfillTests(TestCase):
             .values_list("permission_id", flat=True)
         )
         # school_admin defaults are every school and academics key.
-        self.assertEqual(len(keys), 79)
+        self.assertEqual(len(keys), 89)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
         self.assertIn("school.roles.approve", keys)

@@ -197,7 +197,7 @@ class FeeDuePolicyView(APIView):
 
     @property
     def rbac_permission(self):
-        return "school.fees.manage" if self.request.method == "PATCH" \
+        return "school.fees.update" if self.request.method == "PATCH" \
             else "school.fees.view"
 
     def _payload(self, request, row):

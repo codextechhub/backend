@@ -1229,7 +1229,7 @@ class CodexTenantRoleViewTests(TestCase):
 
 
 class PermissionGroupCreationScopeTests(TestCase):
-    """A bundle built through the API has to be usable inside a tenant.
+    """An administrator-created bundle derives a safe scope from its members.
 
     ``PermissionGroup.scope`` has no default and the group serializer does not
     expose the field, so every group created through the endpoint was written
@@ -1237,9 +1237,8 @@ class PermissionGroupCreationScopeTests(TestCase):
     bundle to a role inside a tenant. Vision could build a bundle that no
     school could ever be given.
 
-    Serializer-level rather than over HTTP: the endpoint is gated by
-    ``platform.permissions.manage`` and the question here is what the write
-    produces, not who may reach it.
+    Serializer-level rather than over HTTP: the endpoint has its own create
+    permission and the question here is what the write produces.
     """
 
     def test_group_created_through_the_serializer_is_tenant_scoped(self):

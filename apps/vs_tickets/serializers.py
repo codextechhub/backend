@@ -140,22 +140,23 @@ class TicketDetailSerializer(TicketSerializer):
         from .services.visibility import (
             can_attach_to_ticket,
             can_comment_on_ticket,
-            can_manage_ticket,
+            can_escalate_ticket,
+            can_transition_ticket,
             can_update_ticket_fields,
         )
 
         user = self.context["request"].user
-        can_manage = can_manage_ticket(user, obj)
+        can_escalate = can_escalate_ticket(user, obj)
         return {
             "can_comment": can_comment_on_ticket(user, obj),
             "can_attach": can_attach_to_ticket(user, obj),
             "can_update": can_update_ticket_fields(user, obj),
-            "can_manage": can_manage,
+            "can_transition": can_transition_ticket(user, obj),
             # Mirrors escalate_ticket's own guards, so the control is offered
             # exactly when the action would be accepted. Offering a button that
             # answers "already escalated" is worse than not offering one.
             "can_escalate": (
-                can_manage
+                can_escalate
                 and obj.escalated_at is None
                 and getattr(obj.tenant, "kind", None) != "PLATFORM"
             ),

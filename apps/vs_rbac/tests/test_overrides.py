@@ -4,7 +4,7 @@ Covers the evaluator precedence rules, the tenant-scoped API (authz,
 cross-tenant isolation, instant effect, lift, replace), the audit trail, the
 self-override ban, and - the security crux - the self-visibility rule: an
 affected user must never be able to learn they have overrides unless they
-themselves hold the ``.view``/``.manage`` key.
+themselves hold the ``.view`` key.
 """
 import itertools
 from datetime import timedelta
@@ -37,7 +37,8 @@ from .helpers import (
 
 _grant_counter = itertools.count(1)
 
-MANAGE_KEY = "school.user_overrides.manage"
+CREATE_KEY = "school.user_overrides.create"
+DELETE_KEY = "school.user_overrides.delete"
 VIEW_KEY = "school.user_overrides.view"
 TARGET_KEY = "school.students.update"
 
@@ -89,7 +90,7 @@ class UserPermissionOverrideTests(TestCase):
         # Actor: holds the manage key. Target: holds the role grant under test.
         self.actor = make_school_admin(self.branch, email="ovr-actor@test.com")
         self.target = make_staff_user(self.branch, email="ovr-target@test.com")
-        _grant(self.actor, [MANAGE_KEY])
+        _grant(self.actor, [CREATE_KEY, DELETE_KEY])
         _grant(self.target, [TARGET_KEY])
 
         self.list_url = reverse(
@@ -522,7 +523,10 @@ class PlatformUserPermissionOverrideTests(TestCase):
         self.target = make_vision_user(email="cx-target@test.com")
         self.tenant = self.actor.tenant
         self.slug = self.tenant.slug
-        _grant(self.actor, ["platform.team_overrides.manage"])
+        _grant(
+            self.actor,
+            ["platform.team_overrides.create", "platform.team_overrides.delete"],
+        )
         make_permission("platform.team.view")
         make_permission(TARGET_KEY)
         self.url = reverse(
@@ -540,7 +544,7 @@ class PlatformUserPermissionOverrideTests(TestCase):
 
     def test_school_key_does_not_grant_a_platform_actor_access(self):
         stranger = make_vision_user(email="cx-stranger@test.com")
-        _grant(stranger, [MANAGE_KEY])  # school namespace - no reach here
+        _grant(stranger, [CREATE_KEY])  # school namespace - no reach here
         resp = _client(stranger).get(_q(self.url, self.slug))
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 

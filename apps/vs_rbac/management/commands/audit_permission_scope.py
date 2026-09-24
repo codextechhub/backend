@@ -50,7 +50,7 @@ from django.urls import URLPattern, URLResolver, get_resolver
 #: Verbs that change something. A read on a shared table is fine - a school has
 #: to see the currency list; it just may not edit it for everybody.
 WRITE_VERBS = {
-    "create", "update", "delete", "manage", "configure", "edit", "import",
+    "create", "update", "delete", "configure", "edit", "import",
     "generate", "post", "approve", "approve_high_value", "approve_senior",
     "reject", "reverse", "writeoff", "cancel", "close", "lock", "reopen",
     "settle", "pay", "submit", "send", "email", "email_statement", "allocate",

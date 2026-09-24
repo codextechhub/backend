@@ -6521,13 +6521,24 @@ class EntityCreatePermissionTests(TestCase):
     denied - proving the POST is RBAC-gated, not open like the GET-only list was.
     """
 
+    # Prepare or verify the setUpTestData test path.
+    @classmethod
+    def setUpTestData(cls):
+        from django.core.management import call_command
+
+        # Permission rows live in these seeds rather than in migrations, so
+        # the RBAC gate (and test_list_open_to_holder_of_unrelated_finance_permission,
+        # which grants a specific finance key) has something to match against.
+        sink = io.StringIO()
+        call_command("seed_actions", verbosity=0, stdout=sink)
+        call_command("seed_finance_permissions", verbosity=0, stdout=sink)
+
     # Prepare or verify the setUp test path.
     def setUp(self):
         from django.contrib.auth import get_user_model
-        from rest_framework.test import APIClient
 
         User = get_user_model()
-        self.user = User.objects.create_user(tenant=_platform_tenant(), 
+        self.user = User.objects.create_user(tenant=_platform_tenant(),
             email="no-grant@test.com", password="testpass123",
             status="ACTIVE",
             first_name="No", last_name="Grant",
@@ -6542,11 +6553,40 @@ class EntityCreatePermissionTests(TestCase):
         )
         self.assertEqual(resp.status_code, 403)
 
-    # Verify list still denied without view grant behavior.
-    def test_list_still_denied_without_view_grant(self):
-        # The GET side is gated on finance.entity.view; same ungranted user is denied.
+    # Verify list still denied with no finance grant at all behavior.
+    def test_list_still_denied_without_any_finance_grant(self):
+        # The GET side is gated on finance module membership; a user holding no
+        # finance.* key at all is still denied.
         resp = self.client.get("/v1/finance/entities/")
         self.assertEqual(resp.status_code, 403)
+
+    # Verify list open to any finance permission behavior.
+    def test_list_open_to_holder_of_unrelated_finance_permission(self):
+        """A caller who can open concessions must also be able to list entities.
+
+        The reported defect: the picker every finance screen resolves
+        ``?entity=`` against was gated on a dedicated ``finance.entity.view``
+        key that nothing else implied, so a bursar granted only
+        ``finance.concession.view`` could reach the permission check inside
+        Concessions but never the picker that gets them there. Module
+        membership fixes that at the root - holding any finance key is enough.
+        """
+        from vs_rbac.models import Permission, TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment
+
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=self.user.tenant, key="concession_only",
+            defaults={"name": "Concession only", "status": "ACTIVE"},
+        )
+        TenantRolePermission.objects.create(
+            role=role, permission=Permission.objects.get(key="finance.concession.view"),
+            granted=True,
+        )
+        TenantUserRoleAssignment.objects.create(
+            tenant=self.user.tenant, user=self.user, role=role,
+            assignment_status="ACTIVE",
+        )
+        resp = self.client.get("/v1/finance/entities/")
+        self.assertEqual(resp.status_code, 200, resp.content)
 
     # Verify direct entry denied without grant behavior.
     def test_direct_entry_denied_without_grant(self):

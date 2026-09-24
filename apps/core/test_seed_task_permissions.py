@@ -67,6 +67,9 @@ class SeedTaskPermissionsTests(TestCase):
 
         self.assertTrue(PermissionAction.objects.filter(name="view_all").exists())
 
+    def test_the_broad_action_is_not_canonical(self):
+        self.assertFalse(PermissionAction.objects.filter(name="manage").exists())
+
     def test_every_key_is_platform_scoped(self):
         """A school role must not be offered these in its permission picker."""
         for key in (VIEW, VIEW_ALL, VIEW_SENSITIVE):
@@ -119,6 +122,14 @@ class SeedPermissionRegistryOwnershipTests(TestCase):
         )
 
         self.assertEqual(active_keys, {"platform.permissions.view"})
+
+    def test_permission_group_writes_have_their_own_keys(self):
+        self.assertTrue(
+            Permission.objects.filter(
+                key="platform.permission_groups.update",
+                is_active=True,
+            ).exists(),
+        )
 
     def test_reseeding_deactivates_a_legacy_registry_write_key(self):
         module = PermissionModule.objects.get(name="platform")

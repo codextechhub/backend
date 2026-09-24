@@ -1,15 +1,13 @@
-"""Four keys that used to gate two things each, and now gate one apiece.
+"""Keys split from broader permissions stay registered at the right risk.
 
 Each of these keys covered a feature the price list sells at one depth and a
 second feature it sells a depth deeper. While they shared a key, neither could
 be sold as designed: banding it shallow gave the deeper feature away, and
 banding it deep took the shallower one with it.
 
-The tests pin both halves of every split, because only one of them is obvious.
-The obvious half is that the new key exists and the deep feature now asks for
-it. The half that actually breaks things is the other one: a split silently
-removes access from everybody holding the old key, so a migration copies every
-grant across, and the old key must go on governing what it always governed.
+Some source keys remain because they still govern a separate operation. Broad
+action keys do not: migration 0027 copies their grants to concrete operations
+and removes them.
 
 There is no fixture shortcut here. Each split is checked against the seeded
 registry rather than against a hand-made permission, because the thing being
@@ -21,21 +19,21 @@ from ..models import Permission
 
 
 SPLITS = [
-    # (new key, the key it was split out of, what the new one governs)
+    # (new key, remaining source key if any, what the new one governs)
     ("academics.exam.view", "academics.timetable.view", "exams"),
     ("academics.exam.create", "academics.timetable.create", "exams"),
     ("academics.exam.update", "academics.timetable.update", "exams"),
-    ("academics.exam.manage", "academics.timetable.manage", "exams"),
+    ("academics.exam.delete", None, "exam deletion"),
     ("academics.exam.publish", "academics.timetable.publish", "exams"),
     ("school.staff_records.view", "school.teachers.view", "staff records"),
     ("school.staff_records.update", "school.teachers.update", "staff records"),
-    ("school.students.promote", "school.students.manage", "promotion"),
+    ("school.students.promote", None, "promotion"),
     ("procurement.analytics.view", "procurement.report.view", "spend analysis"),
 ]
 
 
 class SplitKeysAreSeededTests(TestCase):
-    """Every new key is in the registry, and every old one is still there."""
+    """Every new key exists and only useful source keys remain."""
 
     @classmethod
     def setUpTestData(cls):
@@ -53,19 +51,20 @@ class SplitKeysAreSeededTests(TestCase):
                     f"{new_key} governs {governs} and is not in the registry",
                 )
 
-    def test_no_old_key_was_removed(self):
-        # A split adds a key; it never takes one away. The old key goes on
-        # governing what it always governed.
+    def test_source_keys_with_a_remaining_operation_stay_registered(self):
         for _, old_key, _ in SPLITS:
+            if old_key is None:
+                continue
             with self.subTest(key=old_key):
                 self.assertTrue(
                     Permission.objects.filter(key=old_key, is_active=True).exists(),
-                    f"{old_key} was removed rather than split",
+                    f"{old_key} still governs an operation and was removed",
                 )
 
-    def test_a_split_key_keeps_its_sensitivity(self):
-        # Splitting must not quietly make a dangerous action look ordinary.
+    def test_a_split_key_is_not_less_sensitive_than_its_source(self):
         for new_key, old_key, _ in SPLITS:
+            if old_key is None:
+                continue
             with self.subTest(key=new_key):
                 new = Permission.objects.get(key=new_key)
                 old = Permission.objects.get(key=old_key)
@@ -74,6 +73,25 @@ class SplitKeysAreSeededTests(TestCase):
                     ["NORMAL", "SENSITIVE", "CRITICAL"].index(old.sensitivity_level),
                     f"{new_key} is treated as less dangerous than {old_key}",
                 )
+
+    def test_concrete_delete_and_promotion_keys_are_sensitive(self):
+        for key in ("academics.exam.delete", "school.students.promote"):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    Permission.objects.get(key=key).sensitivity_level,
+                    Permission.Sensitivity.SENSITIVE,
+                )
+
+    def test_broad_source_keys_are_gone(self):
+        self.assertFalse(
+            Permission.objects.filter(
+                key__in=(
+                    "academics.exam.manage",
+                    "academics.timetable.manage",
+                    "school.students.manage",
+                ),
+            ).exists(),
+        )
 
     def test_the_promote_action_is_in_the_canonical_vocabulary(self):
         from ..models import PermissionAction

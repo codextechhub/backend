@@ -229,7 +229,7 @@ class BranchTransitionEndpointTests(TestCase):
     """The POST endpoint is the only production path that changes branch status."""
 
     def setUp(self):
-        # super_admin=True carries the RBAC grant for platform.branches.manage.
+        # super_admin=True carries the RBAC grant for platform.branches.transition.
         self.vision_user = make_vision_user(
             email="lifecycle-vision@example.com", super_admin=True
         )
@@ -372,7 +372,7 @@ class BranchTransitionEndpointTests(TestCase):
         self.assertEqual(self.branch_a.status, BranchStatus.PENDING)
 
     def test_platform_user_without_the_permission_key_is_denied(self):
-        # Vision staff, but holding no role that grants platform.branches.manage.
+        # Vision staff, but holding no role that grants platform.branches.transition.
         plain_staff = make_vision_user(email="lifecycle-nokey@example.com")
         client = APIClient()
         client.force_authenticate(user=plain_staff)

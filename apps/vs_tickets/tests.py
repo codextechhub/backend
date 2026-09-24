@@ -120,14 +120,14 @@ class TicketFixtureMixin:
         _grant(self.school_a, self.peer, REQUESTER_KEYS, role_name="Alpha Peer")
         _grant(self.school_b, self.outsider, REQUESTER_KEYS, role_name="Beta Requester")
         # Support authority is an RBAC grant on the platform tenant now, not a
-        # user_type side effect: is_support_user checks tickets.ticket.manage.
+        # Support status comes from the ticket triage permission.
         _grant(
             self.support.tenant, self.support,
-            (TicketPermission.MANAGE,), role_name="CX Support",
+            (TicketPermission.TRIAGE, TicketPermission.TRANSITION, TicketPermission.ESCALATE), role_name="CX Support",
         )
         _grant(
             self.other_support.tenant, self.other_support,
-            (TicketPermission.MANAGE,), role_name="CX Support Tier 2",
+            (TicketPermission.TRIAGE, TicketPermission.TRANSITION, TicketPermission.ESCALATE), role_name="CX Support Tier 2",
         )
 
     def escalate(self, ticket):
@@ -146,7 +146,7 @@ class TicketFixtureMixin:
         if not getattr(self, "_triage_granted", False):
             _grant(
                 self.school_a, self.peer,
-                (TicketPermission.MANAGE,), role_name="Alpha Triage",
+                (TicketPermission.TRIAGE, TicketPermission.TRANSITION, TicketPermission.ESCALATE), role_name="Alpha Triage",
             )
             self._triage_granted = True
         return ticket_svc.escalate_ticket(
@@ -504,7 +504,7 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
         # that owns the ticket.
         _grant(
             self.school_a, self.peer,
-            (TicketPermission.MANAGE,), role_name="Alpha Triage",
+            (TicketPermission.TRIAGE, TicketPermission.TRANSITION, TicketPermission.ESCALATE), role_name="Alpha Triage",
         )
         ticket = ticket_svc.create_ticket(
             actor=self.requester,
@@ -773,12 +773,12 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
         self.assertNotIn(other, visibility.visible_tickets_qs(self.support))
 
     def test_school_manage_grant_does_not_leak_cross_tenant(self):
-        # A SCHOOL user holding tickets.ticket.manage manages tickets inside
+        # A SCHOOL user holding tickets.ticket.triage works tickets inside
         # their own tenant only - the cross-tenant support span is reserved
         # for PLATFORM-tenant staff.
         _grant(
             self.school_a, self.peer,
-            (TicketPermission.MANAGE,), role_name="Alpha Ticket Manager",
+            (TicketPermission.TRIAGE, TicketPermission.TRANSITION, TicketPermission.ESCALATE), role_name="Alpha Ticket Manager",
         )
         other = ticket_svc.create_ticket(
             actor=self.outsider, title="Other", description="x", category="HELP", priority="LOW",
@@ -922,7 +922,8 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
         _grant(
             self.school_a,
             self.peer,
-            (TicketPermission.MANAGE, TicketPermission.UPDATE),
+            (TicketPermission.TRIAGE, TicketPermission.TRANSITION,
+             TicketPermission.ESCALATE, TicketPermission.UPDATE),
             role_name="Alpha Ticket Manager",
         )
         self.client_api.force_authenticate(self.peer)
@@ -1005,7 +1006,11 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
         self.assertEqual(rejected.status_code, 400)
 
     def test_school_manager_with_grant_can_transition_via_api(self):
-        _grant(self.school_a, self.peer, (TicketPermission.MANAGE,), role_name="Alpha Manager")
+        _grant(
+            self.school_a, self.peer,
+            (TicketPermission.TRIAGE, TicketPermission.TRANSITION, TicketPermission.ESCALATE),
+            role_name="Alpha Manager",
+        )
         self.client_api.force_authenticate(self.peer)
         response = self.client_api.post(
             f"/v1/support/tickets/{self.ticket.pk}/transition/",
@@ -1225,7 +1230,7 @@ class TicketPermissionSeedTests(TestCase):
         )
         # Its neighbours stay a school's: managing and triaging are theirs.
         self.assertEqual(
-            Permission.objects.get(key="tickets.ticket.manage").scope, "TENANT",
+            Permission.objects.get(key="tickets.ticket.triage").scope, "TENANT",
         )
 
 

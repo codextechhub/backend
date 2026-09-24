@@ -1,7 +1,7 @@
 """Seed vs_todo permission keys and grant them to platform roles (idempotent).
 
 Run order:
-    python manage.py seed_actions             # adds view, manage, assign verbs
+    python manage.py seed_actions             # adds the task action verbs
     python manage.py create_superuser         # ensures the platform roles exist
     python manage.py seed_todo_permissions
 
@@ -18,7 +18,10 @@ TODO_RESOURCES = [
         "ToDo accountability tasks",
         [
             ("view",   "View ToDo tasks and dashboards",                 False),
-            ("manage", "Create, edit, complete, and delete ToDo tasks",  False),
+            ("create", "Create ToDo tasks",                                False),
+            ("update", "Edit ToDo tasks",                                  False),
+            ("mark",   "Complete or reopen ToDo tasks",                    False),
+            ("delete", "Delete ToDo tasks",                                True),
             ("assign", "Assign a task down the organogram to a report",  False),
         ],
     ),

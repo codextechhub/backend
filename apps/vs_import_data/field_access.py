@@ -2,7 +2,7 @@
 
 A template's validation rules are internal configuration, declared sensitive
 and ``PLATFORM`` scope, and written by the template create and update
-endpoints, which ask for ``import.templates.manage``. A job's payloads and
+endpoints, which ask for ``import.templates.update``. A job's payloads and
 errors, and a batch's parsed preview, are produced by the engine and never
 accepted from a caller. A batch's file is the upload itself.
 """

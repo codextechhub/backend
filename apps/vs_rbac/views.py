@@ -64,7 +64,7 @@ ROLE_VIEW_KEYS = ["school.roles.view", "platform.roles.view"]
 # template manager also a role administrator - grants far more than it needs.
 # Limited to the list endpoint, which carries names, keys and counts; role
 # detail and every write still take the role keys themselves.
-ROLE_LIST_KEYS = ROLE_VIEW_KEYS + ["workflow.template.manage"]
+ROLE_LIST_KEYS = ROLE_VIEW_KEYS + ["workflow.template.update"]
 ROLE_CREATE_KEYS = ["school.roles.create", "platform.roles.create"]
 ROLE_UPDATE_KEYS = ["school.roles.update", "platform.roles.update"]
 ROLE_APPROVE_KEYS = ["school.roles.approve", "platform.roles.approve"]
@@ -72,7 +72,7 @@ ROLE_DELETE_KEYS = ["school.roles.delete", "platform.roles.delete"]
 ROLE_ASSIGN_KEYS = ["school.roles.assign", "platform.roles.assign"]
 # Field Access switches on a tenant's roles, in the same dual vocabulary.
 FIELD_ACCESS_VIEW_KEYS = ["school.field_access.view", "platform.field_access.view"]
-FIELD_ACCESS_MANAGE_KEYS = ["school.field_access.manage", "platform.field_access.manage"]
+FIELD_ACCESS_UPDATE_KEYS = ["school.field_access.update", "platform.field_access.update"]
 
 
 class TenantScopedRBACMixin:
@@ -1486,11 +1486,13 @@ class TenantRoleChangeRequestDecisionView(TenantScopedRBACMixin, APIView):
 # (TenantJWTAuthentication), and a platform actor needs the platform key.
 OVERRIDE_PLATFORM_KEYS = {
     "view": "platform.team_overrides.view",
-    "manage": "platform.team_overrides.manage",
+    "create": "platform.team_overrides.create",
+    "delete": "platform.team_overrides.delete",
 }
 OVERRIDE_SCHOOL_KEYS = {
     "view": "school.user_overrides.view",
-    "manage": "school.user_overrides.manage",
+    "create": "school.user_overrides.create",
+    "delete": "school.user_overrides.delete",
 }
 
 
@@ -1506,13 +1508,13 @@ class _UserPermissionOverrideBase(TenantScopedRBACMixin):
 
     Self-visibility rule (owner requirement): there is deliberately **no**
     self-service exemption here. Reading your own overrides still requires the
-    viewer's ``.view``/``.manage`` key, so a user without it can never learn
+    viewer's ``.view`` key, so a user without it can never learn
     that exceptions exist on their account - they only observe permissions
     working or not working. Nothing about overrides is exposed on ``/me`` or
     any self-service profile serializer.
     """
 
-    # Lets a platform (CX) actor manage a school user's overrides by asserting
+    # Lets a platform (CX) actor administer a tenant user's overrides by asserting
     # ?tenant=<school-slug>; RBAC still evaluates against the actor's own
     # tenant (request.rbac_tenant), so the platform key is what is required.
     platform_cross_tenant_param = True
@@ -1589,7 +1591,7 @@ class UserPermissionOverrideListCreateView(
     """
     Tenant-facing:
     - GET: list the permission exceptions on one user (viewer needs the
-      ``.view`` or ``.manage`` key - including for their own id).
+      ``.view`` key, including for their own id).
     - POST: create an exception. Both modes apply immediately; a new override
       for a key the user already has REPLACES the old row (both audited).
 
@@ -1602,10 +1604,10 @@ class UserPermissionOverrideListCreateView(
     def get_permissions(self):
         keys = _override_keys(self._actor())
         if self.request.method == "POST":
-            self.rbac_permission = keys["manage"]
+            self.rbac_permission = keys["create"]
         else:
             # Managing implies seeing.
-            self.rbac_permission = [keys["view"], keys["manage"]]
+            self.rbac_permission = [keys["view"], keys["create"]]
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
@@ -1696,7 +1698,7 @@ class UserPermissionOverrideDetailView(_UserPermissionOverrideBase, APIView):
     """
 
     def get_permissions(self):
-        self.rbac_permission = _override_keys(self._actor())["manage"]
+        self.rbac_permission = _override_keys(self._actor())["delete"]
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def delete(self, request, tenant_slug: str, user_id: int, id: int):
@@ -1890,9 +1892,9 @@ class RoleFieldAccessView(TenantScopedRBACMixin, APIView):
 
     def get_permissions(self):
         if self.request.method == "PATCH":
-            self.rbac_permission = FIELD_ACCESS_MANAGE_KEYS
+            self.rbac_permission = FIELD_ACCESS_UPDATE_KEYS
         else:
-            self.rbac_permission = FIELD_ACCESS_VIEW_KEYS + FIELD_ACCESS_MANAGE_KEYS
+            self.rbac_permission = FIELD_ACCESS_VIEW_KEYS + FIELD_ACCESS_UPDATE_KEYS
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def _role(self):
@@ -2174,7 +2176,7 @@ class UserFieldAccessOverrideListCreateView(
     - GET: list the field access exceptions on one user, paginated, newest
       first. Filters: ``mode`` (ALLOW or DENY) and ``access`` (READ or WRITE).
       Each row carries ``role_state``, what the user's roles alone say about
-      the field. The viewer needs the ``.view`` or ``.manage`` override key,
+      the field. The viewer needs the ``.view`` override key,
       including for their own id.
     - POST: create an exception::
 
@@ -2196,9 +2198,9 @@ class UserFieldAccessOverrideListCreateView(
     def get_permissions(self):
         keys = _override_keys(self._actor())
         if self.request.method == "POST":
-            self.rbac_permission = keys["manage"]
+            self.rbac_permission = keys["create"]
         else:
-            self.rbac_permission = [keys["view"], keys["manage"]]
+            self.rbac_permission = [keys["view"], keys["create"]]
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def _get_target(self):
@@ -2307,7 +2309,7 @@ class UserFieldAccessOverrideDetailView(_UserFieldAccessOverrideBase, APIView):
     """
 
     def get_permissions(self):
-        self.rbac_permission = _override_keys(self._actor())["manage"]
+        self.rbac_permission = _override_keys(self._actor())["delete"]
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def delete(self, request, tenant_slug: str, user_id: int, id: int):

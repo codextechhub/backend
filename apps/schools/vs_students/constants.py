@@ -15,11 +15,14 @@ from django.db import models
 PERM_VIEW = "school.students.view"
 PERM_CREATE = "school.students.create"
 PERM_UPDATE = "school.students.update"
-PERM_MANAGE = "school.students.manage"
+PERM_TRANSITION = "school.students.transition"
+PERM_TRANSFER = "school.students.transfer"
+PERM_SUSPEND = "school.students.suspend"
+PERM_REACTIVATE = "school.students.reactivate"
 PERM_IMPORT = "school.students.import"
 PERM_EXPORT = "school.students.export"
 
-#: Promotion is a bulk act on the whole roll. It used to ride on PERM_MANAGE,
+#: Promotion is a bulk act on the whole roll. It has its own permission,
 #: the key that also transfers one child between branches, so the two could
 #: never be sold at different depths.
 PERM_PROMOTE = "school.students.promote"

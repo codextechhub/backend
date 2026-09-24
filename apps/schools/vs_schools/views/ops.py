@@ -63,7 +63,7 @@ class SchoolServiceStateView(_SchoolOpBaseView):
     do until now.
 
     ``IsVisionStaff`` sits beside the key for the same reason the branch
-    transition view carries it. ``platform.schools.manage`` is seeded
+    transition view carries it. ``platform.schools.transition`` is seeded
     restricted/SENSITIVE, but a key's namespace is not its audience: nothing
     stops that key being attached to a role inside a school tenant, and a
     school must never be able to switch itself - or anybody else - off.
@@ -76,7 +76,7 @@ class SchoolServiceStateView(_SchoolOpBaseView):
     """
 
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff & HasRBACPermission]
-    rbac_permission = "platform.schools.manage"
+    rbac_permission = "platform.schools.transition"
 
     def post(self, request, *args, **kwargs):
         return self._run(request, SchoolServiceStateSerializer)

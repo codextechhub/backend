@@ -24,7 +24,7 @@ from vs_rbac.scoping import WHOLE_TENANT
 
 from ..constants import (
     PERM_TIMETABLE_CREATE,
-    PERM_TIMETABLE_MANAGE,
+    PERM_TIMETABLE_DELETE,
     PERM_TIMETABLE_PUBLISH,
     PERM_TIMETABLE_UPDATE,
     PERM_TIMETABLE_VIEW,
@@ -522,7 +522,7 @@ class SlotDetailView(CalendarViewMixin, generics.RetrieveUpdateDestroyAPIView):
         self.rbac_permission = {
             "PATCH": PERM_TIMETABLE_UPDATE,
             "PUT": PERM_TIMETABLE_UPDATE,
-            "DELETE": PERM_TIMETABLE_MANAGE,
+            "DELETE": PERM_TIMETABLE_DELETE,
         }.get(self.request.method, PERM_TIMETABLE_VIEW)
         return super().get_permissions()
 

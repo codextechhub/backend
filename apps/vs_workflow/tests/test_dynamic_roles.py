@@ -27,8 +27,8 @@ from schools.vs_students.workflow_conditions import STUDENT_DOCUMENT_TYPES
 from vs_workflow.conditions import context as rule_context
 from vs_workflow.conditions.fields import areas_for, catalogue, unanswerable
 from vs_workflow.constants import (
-    AuditEventType, DocumentAudience, PERM_GROUP_MANAGE, PERM_GROUP_VIEW,
-    PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW,
+    AuditEventType, DocumentAudience, PERM_GROUP_CREATE, PERM_GROUP_DELETE,
+    PERM_GROUP_UPDATE, PERM_GROUP_VIEW, PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_VIEW,
 )
 from vs_workflow.exceptions import TemplateInvalidError
 from vs_workflow.handlers.base import BaseWorkflowHandler
@@ -124,7 +124,7 @@ class _Fixture(TestCase):
         self.tenant = self.school.tenant
 
         self.manager = make_school_admin(self.branch, email=f"dr-manager-{n}@test.com")
-        _grant(self.manager, [PERM_GROUP_MANAGE, PERM_GROUP_VIEW])
+        _grant(self.manager, [PERM_GROUP_CREATE, PERM_GROUP_UPDATE, PERM_GROUP_DELETE, PERM_GROUP_VIEW])
         self.viewer = make_school_admin(self.branch, email=f"dr-viewer-{n}@test.com")
         _grant(self.viewer, [PERM_GROUP_VIEW])
         self.nobody = make_school_admin(self.branch, email=f"dr-nobody-{n}@test.com")
@@ -624,7 +624,7 @@ class DocumentAudienceTests(_Fixture):
         super().setUp()
         self.platform = codex_tenant()
         self.cx_admin = make_vision_user(email=f"dr-cx-{next(_counter)}@codex.test")
-        _grant(self.cx_admin, [PERM_GROUP_MANAGE, PERM_GROUP_VIEW])
+        _grant(self.cx_admin, [PERM_GROUP_CREATE, PERM_GROUP_UPDATE, PERM_GROUP_DELETE, PERM_GROUP_VIEW])
         self.cx_role = make_role(self.platform, name="CX approver",
                                  key=f"dr-cx-approver-{next(_counter)}", is_system_role=True)
 
@@ -902,7 +902,7 @@ class WorkflowNotificationSettingTests(_Fixture):
         self.assertIs(_body(resp)["enabled"], True)
 
     def test_somebody_who_manages_templates_can_turn_them_off(self):
-        _grant(self.manager, [PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW])
+        _grant(self.manager, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_VIEW])
         resp = _call(NOTIF_SETTING, "patch", self.manager, self.tenant,
                      {"enabled": False}, path=self.SETTING)
         self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
@@ -916,13 +916,13 @@ class WorkflowNotificationSettingTests(_Fixture):
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_it_is_only_ever_true_or_false(self):
-        _grant(self.manager, [PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW])
+        _grant(self.manager, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_VIEW])
         resp = _call(NOTIF_SETTING, "patch", self.manager, self.tenant,
                      {"enabled": "off"}, path=self.SETTING)
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_one_school_turning_them_off_leaves_another_alone(self):
-        _grant(self.manager, [PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW])
+        _grant(self.manager, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_VIEW])
         _call(NOTIF_SETTING, "patch", self.manager, self.tenant,
               {"enabled": False}, path=self.SETTING)
         from vs_workflow.services.notification_settings import notifications_enabled
