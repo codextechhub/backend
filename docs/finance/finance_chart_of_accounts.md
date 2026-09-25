@@ -68,11 +68,12 @@ Routes covered (mounted at `/v1/finance/`):
 
 All require `?entity=<id|code>` **except** `GET/POST /entities/` (the entity list
 is the thing that enumerates entities). Permission gate is
-`IsAuthenticatedAndActive & HasRBACPermission`.
+`IsAuthenticatedAndActive & HasRBACPermission`, except `GET /entities/`,
+which uses `HasAnyModuleAccess` on the `finance` module.
 
 | Method + path | permission key | what it does | request body (fields actually read) | response |
 |---|---|---|---|---|
-| `GET /entities/` | `finance.entity.view` | List **all** sets of books. Query: `kind`, `is_active` | - | paginated `LedgerEntitySerializer` |
+| `GET /entities/` | any `finance.*` key | List the caller's own tenant's sets of books (the picker every finance screen opens with). Query: `kind`, `is_active` | - | paginated `LedgerEntitySerializer` |
 | `POST /entities/` | `finance.entity.create` | **Provision** a new entity *and* seed currencies + starter CoA + 12 periods | `code`, `name`, `kind?`, `base_currency?` (3-letter code), `source_school?`, `fiscal_year?`, `fiscal_start_month?` | `201` `LedgerEntitySerializer` |
 | `GET /accounts/?entity=` | `finance.account.view` | CoA. `?with_balance=true` → **full tree, un-paginated**, with `balance` + `tag`. Else paginated picker list. Query: `account_type` (single or `A,B`), `is_postable` | - | paginated **or** `success_response` tree of `AccountSerializer` |
 | `POST /accounts/?entity=` | `finance.account.create` | Create one CoA node | `code`, `name`, `account_type`, `parent?` (**by pk**), `is_contra?`, `is_postable?`, `subtype?`, `description?` | `201` `AccountSerializer` |

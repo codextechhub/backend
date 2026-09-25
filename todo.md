@@ -417,8 +417,10 @@ MODULES: M19 finance and accounting, M04 roles and permissions, MRD.
 - Rode in on an unrelated commit ("Replace broad manage permissions with
   concrete actions"), so the hash above does not name this change.
 MUST SAY: for M19, the picker's access rule and that it matches what opening
-the books already required; for M04, that `finance.entity.view` is still
-registered and assignable but no longer gates anything. NEEDS ATTENTION for
+the books already required; for M04, that `finance.entity.view` no longer
+gates any backend data. It still decides who is shown the Entities setup
+screen, the "View entities" palette action and the procurement settings
+entity link in both frontends, and platform roles keep it. NEEDS ATTENTION for
 M19: a school with one set of books still sees the picker step (frontend
 package), where the branch rule says a single option should not appear.
 VERIFIED (working tree before commit): vs_finance 774 OK.
