@@ -112,6 +112,15 @@ class StaffProfile(_Owned):
         "vs_tenants.Branch", on_delete=models.PROTECT, null=True, blank=True,
         related_name="staff_profiles",
     )
+    additional_postings = models.ManyToManyField(
+        "vs_tenants.Branch", blank=True, related_name="additional_staff_postings",
+    )
+
+    @property
+    def posting_branch_ids(self):
+        """Every equal branch posting, empty for a school-wide posting."""
+        other_ids = [branch.pk for branch in self.additional_postings.all()]
+        return ([self.branch_id] if self.branch_id else []) + other_ids
     #: The number the SCHOOL chose, in whatever format it uses. BFS/STF/0012 is
     #: not a shape the platform imposes, and a school that does not number its
     #: staff is not made to invent one, which is why blank is allowed and the

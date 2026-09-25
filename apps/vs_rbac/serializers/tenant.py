@@ -239,6 +239,7 @@ class TenantRoleTemplateListSerializer(serializers.ModelSerializer):
     tenant = serializers.SlugRelatedField(slug_field="slug", read_only=True)
     assigned_users_count = serializers.IntegerField(read_only=True)
     permissions_count = serializers.IntegerField(read_only=True)
+    branch_ids = serializers.ListField(child=serializers.IntegerField(), read_only=True)
 
     class Meta:
         model = TenantRoleTemplate
@@ -247,6 +248,7 @@ class TenantRoleTemplateListSerializer(serializers.ModelSerializer):
             "key",
             "tenant",
             "branch",
+            "branch_ids",
             "name",
             "status",
             "is_system_role",
@@ -290,6 +292,12 @@ class TenantRoleTemplateDetailSerializer(
         required=False,
         allow_null=True,
     )
+    branch_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), required=False,
+    )
+    assigned_users_count = serializers.SerializerMethodField()
+    permissions_count = serializers.SerializerMethodField()
+    has_assignment_history = serializers.SerializerMethodField()
 
     #: Whether the reader holds this role themselves. The roles screen needs it
     #: before anything is saved: a restricted addition to your own role goes
@@ -327,6 +335,7 @@ class TenantRoleTemplateDetailSerializer(
             "key",
             "tenant",
             "branch",
+            "branch_ids",
             "name",
             "description",
             "status",
@@ -340,6 +349,9 @@ class TenantRoleTemplateDetailSerializer(
             "group_ids",
             "reason",
             "held_by_me",
+            "assigned_users_count",
+            "permissions_count",
+            "has_assignment_history",
             "created_at",
             "updated_at",
         ]
@@ -347,6 +359,9 @@ class TenantRoleTemplateDetailSerializer(
             "id",
             "key",
             "held_by_me",
+            "assigned_users_count",
+            "permissions_count",
+            "has_assignment_history",
             "is_system_role",
             "version",
             "created_by",
@@ -363,6 +378,30 @@ class TenantRoleTemplateDetailSerializer(
             role=obj, user=actor,
             assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
         ).exists()
+
+    def get_assigned_users_count(self, obj):
+        return TenantUserRoleAssignment.objects.filter(
+            role=obj, assignment_status="ACTIVE",
+        ).values("user_id").distinct().count()
+
+    def get_permissions_count(self, obj):
+        return sum(row.granted for row in obj.role_permissions.all())
+
+    def get_has_assignment_history(self, obj):
+        return TenantUserRoleAssignment.objects.filter(role=obj).exists()
+
+    def validate_branch_ids(self, value):
+        """Resolve every branch inside this tenant, with one error for all misses."""
+        tenant = self._tenant()
+        ids = list(dict.fromkeys(value))
+        if tenant is None:
+            raise serializers.ValidationError("Tenant context is required.")
+        branches = Branch.all_objects.filter(
+            tenant=tenant, pk__in=ids, status__in=Branch.IN_SERVICE_STATES,
+        )
+        if branches.count() != len(ids):
+            raise serializers.ValidationError(BRANCH_NOT_FOUND)
+        return ids
 
     def validate_branch(self, value):
         """Fallback tenancy check for a branch the field resolved unscoped.
@@ -386,6 +425,9 @@ class TenantRoleTemplateDetailSerializer(
         tenant = self._tenant()
         if tenant is None:
             raise serializers.ValidationError({"tenant": "Tenant context is required."})
+        if "branch" in attrs and "branch_ids" not in attrs:
+            branch = attrs.pop("branch")
+            attrs["branch_ids"] = [branch.pk] if branch is not None else []
         name = attrs.get("name") or getattr(self.instance, "name", None)
         if name:
             qs = TenantRoleTemplate.objects.filter(tenant=tenant, name__iexact=name)
@@ -395,10 +437,25 @@ class TenantRoleTemplateDetailSerializer(
                 raise serializers.ValidationError(
                     {"name": "A role with this name already exists in this tenant."}
                 )
+        if "branch_ids" in attrs:
+            requested = attrs["branch_ids"]
+            if "branch" in attrs and attrs["branch"] is not None and attrs["branch"].pk not in requested:
+                raise serializers.ValidationError({"branch_ids": "Branch choices disagree."})
+            if self.instance is not None and set(requested) != set(self.instance.branch_ids):
+                request = self.context.get("request")
+                actor = getattr(request, "user", None)
+                old = set(self.instance.branch_ids)
+                broadens = (bool(old) and not requested) or bool(set(requested) - old)
+                if broadens and actor and TenantUserRoleAssignment.objects.filter(
+                    role=self.instance, user=actor, assignment_status="ACTIVE",
+                ).exists():
+                    raise serializers.ValidationError({
+                        "branch_ids": "Another administrator must widen a role you hold.",
+                    })
         self._reject_out_of_scope_keys(attrs, tenant)
         self._reject_restricted_additions(attrs)
         self._reject_last_way_in(attrs, tenant)
-        if "permission_keys" in attrs or "group_ids" in attrs:
+        if "permission_keys" in attrs or "group_ids" in attrs or "branch_ids" in attrs:
             reason = (attrs.get("reason") or "").strip()
             if not reason:
                 raise serializers.ValidationError({
@@ -596,6 +653,7 @@ class TenantRoleTemplateDetailSerializer(
     def create(self, validated_data):
         permission_keys = validated_data.pop("permission_keys", [])
         group_ids = validated_data.pop("group_ids", [])
+        branch_ids = validated_data.pop("branch_ids", None)
         reason = validated_data.pop("reason", "")
 
         if permission_keys or group_ids:
@@ -612,7 +670,12 @@ class TenantRoleTemplateDetailSerializer(
         validated_data["tenant"] = tenant
         validated_data["created_by"] = actor
         validated_data["key"] = _unique_tenant_role_key(tenant, validated_data["name"])
+        if branch_ids is not None:
+            validated_data["branch_id"] = branch_ids[0] if branch_ids else None
+            validated_data.pop("branch", None)
         role = TenantRoleTemplate.objects.create(**validated_data)
+        if branch_ids is not None:
+            role.additional_branches.set(branch_ids[1:])
 
         if permission_keys or group_ids:
             from ..services import set_role_access
@@ -631,6 +694,7 @@ class TenantRoleTemplateDetailSerializer(
     def update(self, instance, validated_data):
         permission_keys = validated_data.pop("permission_keys", None)
         group_ids = validated_data.pop("group_ids", None)
+        branch_ids = validated_data.pop("branch_ids", None)
         reason = validated_data.pop("reason", "")
 
         if permission_keys is not None or group_ids is not None:
@@ -663,7 +727,12 @@ class TenantRoleTemplateDetailSerializer(
         for field, value in validated_data.items():
             setattr(instance, field, value)
 
+        if branch_ids is not None:
+            instance.branch_id = branch_ids[0] if branch_ids else None
+
         instance.save()
+        if branch_ids is not None:
+            instance.additional_branches.set(branch_ids[1:])
 
         request = self.context.get("request")
         actor = request.user if request and request.user.is_authenticated else None
@@ -860,6 +929,16 @@ class TenantUserRoleAssignmentSerializer(
             raise serializers.ValidationError({"role": ROLE_NOT_FOUND})
         if branch is not None and branch.tenant_id != tenant.pk:
             raise serializers.ValidationError({"branch": BRANCH_NOT_FOUND})
+        if self.instance is None and role is not None and branch is not None:
+            role_ids = role.branch_ids
+            if len(role_ids) > 1:
+                raise serializers.ValidationError({
+                    "branch": "This role grants all its selected branches. Leave the assignment branch empty.",
+                })
+            if role_ids and branch.pk not in role_ids:
+                raise serializers.ValidationError({
+                    "branch": "This branch is outside the role's reach.",
+                })
 
         if (
             new_status == TenantUserRoleAssignment.AssignmentStatus.ACTIVE

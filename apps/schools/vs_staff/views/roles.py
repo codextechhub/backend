@@ -12,6 +12,7 @@ from __future__ import annotations
 from rest_framework.views import APIView
 
 from core.response import success_response
+from vs_tenants.models import Branch
 
 from ..constants import PERM_OVERRIDES_VIEW, PERM_VIEW
 from ..services import posting, roles
@@ -40,10 +41,21 @@ class StaffRolesView(StaffViewMixin, APIView):
     def get(self, request, pk):
         staff = self.get_staff(pk)
         school_wide, reach_rows = posting.reach_of(staff)
+        active = roles.active_grants(staff)
+        revoked = roles.revoked_grants(staff)
+        branch_ids = set()
+        for grant in active + revoked:
+            if grant.branch_id is not None:
+                branch_ids.add(grant.branch_id)
+            elif grant.role_id:
+                branch_ids.update(grant.role.branch_ids)
+        branch_names = dict(Branch.all_objects.filter(
+            tenant=self.tenant, pk__in=branch_ids,
+        ).values_list("pk", "name"))
 
         return success_response(data={
-            "roles": [self._grant(grant) for grant in roles.active_grants(staff)],
-            "revoked": [self._revoked(grant) for grant in roles.revoked_grants(staff)],
+            "roles": [self._grant(grant, branch_names) for grant in active],
+            "revoked": [self._revoked(grant, branch_names) for grant in revoked],
             "reach": {
                 "school_wide": school_wide,
                 "note": (
@@ -60,21 +72,24 @@ class StaffRolesView(StaffViewMixin, APIView):
             "overrides": self._overrides(staff),
         })
 
-    def _grant(self, grant):
+    def _grant(self, grant, branch_names):
         role = getattr(grant, "role", None)
+        role_ids = role.branch_ids if role is not None else []
+        effective_ids = role_ids if grant.branch_id is None and role_ids else ([grant.branch_id] if grant.branch_id else [])
         return {
             "id": grant.pk,
             "role": (role.name or role.key) if role else "",
             "role_key": role.key if role else "",
-            "school_wide": grant.branch_id is None,
+            "school_wide": grant.branch_id is None and not role_ids,
             "branch_id": grant.branch_id,
-            "branch_name": grant.branch.name if grant.branch_id else "School-wide",
+            "branch_ids": effective_ids,
+            "branch_name": ", ".join(branch_names.get(pk, str(pk)) for pk in effective_ids) if effective_ids else "School-wide",
             "granted_at": grant.assigned_at,
             "granted_by": self._actor(grant.assigned_by),
         }
 
-    def _revoked(self, grant):
-        payload = self._grant(grant)
+    def _revoked(self, grant, branch_names):
+        payload = self._grant(grant, branch_names)
         payload.update({
             "revoked_at": grant.revoked_at,
             "revoked_by": self._actor(grant.revoked_by),

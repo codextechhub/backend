@@ -545,6 +545,7 @@ class TenantRoleTemplateListCreateView(TenantScopedRBACMixin, CreateModelMixin, 
                 ),
             )
             .select_related("created_by", "tenant", "branch")
+            .prefetch_related("additional_branches")
             .order_by("name")
         )
         if branch_id := qp.get("branch"):
@@ -947,6 +948,7 @@ class TenantRoleTemplateDetailView(TenantScopedRBACMixin, RetrieveModelMixin, Up
             .prefetch_related(
                 "role_permissions__permission",
                 "role_groups__group",
+                "additional_branches",
             )
         )
 
@@ -976,6 +978,11 @@ class TenantRoleTemplateDetailView(TenantScopedRBACMixin, RetrieveModelMixin, Up
             return error_response(
                 message="This role is locked and cannot be deleted.",
                 status=status.HTTP_403_FORBIDDEN,
+            )
+        if instance.user_assignments.exists():
+            return error_response(
+                message="This role has assignment history. Take it out of use instead.",
+                status=status.HTTP_409_CONFLICT,
             )
         return super().delete(request, *args, **kwargs)
 

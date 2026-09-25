@@ -57,7 +57,7 @@ def emit_employment_status_changed(staff, event, actor=None):
     )
 
 
-def emit_posting_changed(staff, previous, actor=None):
+def emit_posting_changed(staff, previous, actor=None, *, previous_ids=None, next_ids=None):
     """One event per person, never one per bulk call.
 
     A bulk action that writes a single event is a bulk action nobody can audit
@@ -72,6 +72,8 @@ def emit_posting_changed(staff, previous, actor=None):
         metadata={
             "from_branch_id": previous,
             "to_branch_id": staff.branch_id,
+            "from_branch_ids": previous_ids if previous_ids is not None else ([previous] if previous else []),
+            "to_branch_ids": next_ids if next_ids is not None else staff.posting_branch_ids,
             # Said in the metadata as well as in the response, because the
             # question "did this move their access too" is asked of the trail
             # long after the confirmation dialog is gone.

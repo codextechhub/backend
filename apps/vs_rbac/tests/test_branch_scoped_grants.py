@@ -544,12 +544,16 @@ class BranchScopeQueryCostTests(_BranchGrantFixture):
             second = visible_branch_ids(sunday, self.tenant)
         self.assertEqual(first, second)
 
-    def test_a_home_posting_costs_one_query_not_two(self):
-        """The legacy fallback must not dereference ``User.branch`` to read its id."""
+    def test_a_home_posting_reads_grants_and_equal_postings_once(self):
+        """The fallback reads equal postings once and caches the branch set."""
         legacy = self.person(self.tenant, "legacy-cost@grant.test", branch=self.lekki)
         legacy = type(legacy).objects.get(pk=legacy.pk)  # Unwarmed, as a request is.
 
-        with self.assertNumQueries(1):
+        with self.assertNumQueries(2):
+            self.assertEqual(
+                visible_branch_ids(legacy, self.tenant), frozenset({self.lekki.pk}),
+            )
+        with self.assertNumQueries(0):
             self.assertEqual(
                 visible_branch_ids(legacy, self.tenant), frozenset({self.lekki.pk}),
             )

@@ -102,6 +102,8 @@ class AccountStateSerializer(FieldAccessMixin, serializers.Serializer):
 #: at a branch. A list of relations kept in two heads drifts; this one is kept
 #: beside the serializer that needs it.
 STAFF_LIST_PREFETCH = (
+    "additional_postings",
+    "user__tenant_role_assignments__role__additional_branches",
     "user__tenant_role_assignments__role",
     "user__invitation",
     # Whether a lockout is running, which the account status and the chip both
@@ -134,6 +136,7 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
     account_flag = serializers.SerializerMethodField()
     roles = serializers.SerializerMethodField()
     branch_name = serializers.SerializerMethodField()
+    posting_branch_ids = serializers.SerializerMethodField()
     posted_school_wide = serializers.SerializerMethodField()
     teaching_load = serializers.SerializerMethodField()
     employment_status_label = serializers.CharField(
@@ -188,7 +191,7 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
             "display_employment_status", "display_employment_status_label",
             "employment_type",
             "account_status", "account_flag", "roles", "branch_id",
-            "branch_name", "posted_school_wide", "teaching_load",
+            "branch_name", "posting_branch_ids", "posted_school_wide", "teaching_load",
             "on_leave_today", "on_leave_until", "hire_date", "can_resend",
             "invited_at", "invitation_email_status",
         ]
@@ -213,12 +216,18 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
     def get_branch_name(self, obj):
         if not self.context.get("multi_branch"):
             return None
-        return obj.branch.name if obj.branch_id else "School-wide"
+        names = ([obj.branch.name] if obj.branch_id else []) + [
+            branch.name for branch in obj.additional_postings.all()
+        ]
+        return ", ".join(names) if names else "School-wide"
+
+    def get_posting_branch_ids(self, obj):
+        return obj.posting_branch_ids
 
     def get_posted_school_wide(self, obj):
         if not self.context.get("multi_branch"):
             return None
-        return obj.branch_id is None
+        return not obj.posting_branch_ids
 
     def get_teaching_load(self, obj) -> int:
         return getattr(obj, "teaching_load", 0) or 0
@@ -735,6 +744,9 @@ class BulkPostingSerializer(serializers.Serializer):
     #: Explicitly nullable: "across the whole school" is a choice a school makes
     #: rather than a field it forgot to fill in.
     branch = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    branch_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), required=False,
+    )
     reason = serializers.CharField(required=False, allow_blank=True, default="")
 
 

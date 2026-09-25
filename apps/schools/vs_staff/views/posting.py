@@ -5,7 +5,7 @@ FRD M12 v2.1, FR-010 and FR-019.
 from __future__ import annotations
 
 from django.db import transaction
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.views import APIView
 
 from core.response import success_response
@@ -46,7 +46,14 @@ class StaffBulkPostingView(StaffViewMixin, APIView):
         payload.is_valid(raise_exception=True)
         data = payload.validated_data
 
-        branch = posting.resolve_posting(self.tenant, data.get("branch"))
+        if "branch_ids" in data:
+            ids = list(dict.fromkeys(data["branch_ids"]))
+            if "branch" in data:
+                raise ValidationError({"branch_ids": "Choose branch ids or a branch, not both."})
+            branches = [posting.resolve_posting(self.tenant, branch_id) for branch_id in ids]
+        else:
+            branch = posting.resolve_posting(self.tenant, data.get("branch"))
+            branches = [branch] if branch is not None else []
         # Resolved and narrowed before anything is written, so a partial bulk
         # never happens: a caller naming somebody they cannot see gets one 404
         # and no one is moved.
@@ -54,8 +61,8 @@ class StaffBulkPostingView(StaffViewMixin, APIView):
 
         warnings = []
         for person in people:
-            stranded = posting.set_posting(
-                person, branch, actor=request.user, reason=data.get("reason", ""),
+            stranded = posting.set_postings(
+                person, branches, actor=request.user, reason=data.get("reason", ""),
             )
             if stranded:
                 warnings.append({
@@ -63,7 +70,7 @@ class StaffBulkPostingView(StaffViewMixin, APIView):
                     "staff_id": person.pk,
                     "message": (
                         f"{person.user.first_name} {person.user.last_name} still "
-                        f"teaches {', '.join(stranded)}. Moving them does not "
+                        f"teaches {', '.join(stranded)}. Changing postings does not "
                         f"cancel those assignments."
                     ),
                     "classes": stranded,
@@ -161,7 +168,7 @@ class StaffRosterView(StaffViewMixin, APIView):
                     "title": "Posted here",
                     "note": (
                         f"Based at {branch.name}. Tick anybody here to move them "
-                        f"to another branch."
+                        f"to other branches."
                     ),
                     "movable": True,
                     "change_it": "",
@@ -188,7 +195,7 @@ class StaffRosterView(StaffViewMixin, APIView):
                     "note": (
                         "No single base, so they belong to the school and appear "
                         "on every branch's roster. Tick anybody here to give "
-                        "them one branch instead."
+                        "them selected branches instead."
                     ),
                     "movable": True,
                     "change_it": "",
@@ -239,6 +246,10 @@ class StaffBulkRoleView(StaffViewMixin, APIView):
             people=[found[pk] for pk in data["staff_ids"]], actor=request.user,
         )
 
+        selected_names = list(self.tenant.branches.filter(
+            pk__in=role.branch_ids,
+        ).order_by("name").values_list("name", flat=True))
+
         def named(rows):
             return [
                 {
@@ -255,7 +266,7 @@ class StaffBulkRoleView(StaffViewMixin, APIView):
             ),
             data={
                 "role": {"id": role.pk, "key": role.key, "name": role.name},
-                "reach": branch.name if branch else "School-wide",
+                "reach": branch.name if branch else ", ".join(selected_names) if selected_names else "School-wide",
                 "granted": named(granted),
                 # Named rather than counted: "2 already had it" sends somebody
                 # back through a list of forty to work out which two.

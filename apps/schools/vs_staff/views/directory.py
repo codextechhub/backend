@@ -156,8 +156,8 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
         response = self.get_paginated_response(serializer.data)
         response.data["counts"] = counts(queryset, self.tenant)
         response.data["role_options"] = [
-            {"value": row["key"], "label": row["name"]}
-            for row in self._invitable_roles().values("key", "name")
+            {"value": role.key, "label": role.name, "branch_ids": role.branch_ids}
+            for role in self._invitable_roles().prefetch_related("additional_branches")
         ]
         response.data["multi_branch"] = self.multi_branch
         return response

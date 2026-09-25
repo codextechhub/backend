@@ -74,6 +74,15 @@ def grant_to_many(*, tenant, role, branch, people, actor):
     """
     from vs_rbac.models import TenantUserRoleAssignment
 
+    if branch is not None:
+        role_ids = role.branch_ids
+        if len(role_ids) > 1:
+            raise ValidationError({
+                "branch": "This role grants all its selected branches. Leave the assignment branch empty.",
+            })
+        if role_ids and branch.pk not in role_ids:
+            raise ValidationError({"branch": "This branch is outside the role's reach."})
+
     granted, already = [], []
     for person in people:
         exists = TenantUserRoleAssignment.objects.filter(

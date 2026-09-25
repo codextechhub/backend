@@ -239,10 +239,13 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         Branch, on_delete=models.PROTECT,
         related_name='users', null=True, blank=True,
         help_text=(
-            'The one branch this person is posted to. NULL means "across the '
-            'whole tenant" for a tenant user, and is the only legal value for '
+            'The compatibility anchor of this person’s posting set. NULL means '
+            '"across the whole tenant" for a tenant user, and is the only legal value for '
             'Vision Staff, who belong to no tenant branch at all.'
         ),
+    )
+    additional_branches = models.ManyToManyField(
+        Branch, blank=True, related_name="additional_users",
     )
 
     # ── Identity ──────────────────────────────────────────────────────────────

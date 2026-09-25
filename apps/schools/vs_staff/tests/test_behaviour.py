@@ -438,6 +438,35 @@ class InvitationRevokeTests(StaffFixture):
 
 
 class PostingTests(StaffFixture):
+    def test_equal_postings_appear_as_posted_at_both_branches(self):
+        response = self.post(self.admin, "staff-bulk-posting", {
+            "staff_ids": [self.eze.pk],
+            "branch_ids": [self.ikeja.pk, self.lekki.pk],
+        })
+        self.assertEqual(response.status_code, 200, response.data)
+        self.eze.refresh_from_db()
+        self.eze.user.refresh_from_db()
+        self.assertEqual(set(self.eze.posting_branch_ids), {self.ikeja.pk, self.lekki.pk})
+        self.assertEqual(
+            set(self.eze.user.additional_branches.values_list("pk", flat=True)) | {self.eze.user.branch_id},
+            {self.ikeja.pk, self.lekki.pk},
+        )
+        for branch in (self.ikeja, self.lekki):
+            roster = self.get(self.admin, "staff-roster", {"branch": branch.pk})
+            self.assertEqual(roster.status_code, 200, roster.data)
+            groups = {group["key"]: group for group in roster.data["data"]["groups"]}
+            self.assertIn(self.eze.pk, {row["id"] for row in groups["posted_here"]["rows"]})
+
+    def test_foreign_branch_in_equal_postings_rejects_the_whole_move(self):
+        before = set(self.eze.posting_branch_ids)
+        response = self.post(self.admin, "staff-bulk-posting", {
+            "staff_ids": [self.eze.pk],
+            "branch_ids": [self.ikeja.pk, self.solo_branch.pk],
+        })
+        self.assertIn(response.status_code, (400, 404), response.data)
+        self.eze.refresh_from_db()
+        self.assertEqual(set(self.eze.posting_branch_ids), before)
+
     def test_moving_a_posting_leaves_every_grant_untouched(self):
         from vs_rbac.models import TenantUserRoleAssignment
 

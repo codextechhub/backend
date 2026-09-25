@@ -359,6 +359,68 @@ class TenantRoleTemplateViewTests(TestCase):
         resp = _token_client(self.admin).post(self._list_url(), data, format="json")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_selected_branch_role_grants_both_branches_on_one_assignment(self):
+        second = make_branch(self.school, name="Yaba Branch", is_main=False)
+        third = make_branch(self.school, name="Lekki Branch", is_main=False)
+        permission = make_permission("students.profile.view")
+        response = _token_client(self.admin).post(self._list_url(), {
+            "name": "Student records officer",
+            "branch_ids": [self.branch.pk, second.pk],
+            "permission_keys": [permission.pk],
+            "reason": "Student records team serves both branches.",
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        role = TenantRoleTemplate.objects.get(tenant=self.school.tenant, name="Student records officer")
+        self.assertEqual(set(role.branch_ids), {self.branch.pk, second.pk})
+
+        staff = make_staff_user(self.branch, email="equal-role-reach@test.com")
+        assignment = _token_client(self.admin).post(
+            _q(reverse("rbac-assignment-list-create", kwargs={"tenant_slug": self.slug}), self.slug),
+            {"user": staff.pk, "role": role.pk}, format="json",
+        )
+        self.assertEqual(assignment.status_code, status.HTTP_201_CREATED, assignment.data)
+        self.assertIsNone(TenantUserRoleAssignment.objects.get(pk=assignment.data["data"]["id"]).branch_id)
+        from vs_rbac.scoping import visible_branch_ids
+        self.assertEqual(visible_branch_ids(staff, self.school.tenant), frozenset({self.branch.pk, second.pk}))
+        self.assertNotIn(third.pk, visible_branch_ids(staff, self.school.tenant))
+        self.assertTrue(has_permission(staff, permission.pk, tenant=self.school.tenant, branch=self.branch))
+        self.assertTrue(has_permission(staff, permission.pk, tenant=self.school.tenant, branch=second))
+        self.assertFalse(has_permission(staff, permission.pk, tenant=self.school.tenant, branch=third))
+
+    def test_selected_branch_role_rejects_foreign_branch_atomically(self):
+        other = make_school(slug="foreign-reach", name="Foreign Reach")
+        foreign = make_branch(other, name="Foreign Branch")
+        response = _token_client(self.admin).post(self._list_url(), {
+            "name": "Cross school officer",
+            "branch_ids": [self.branch.pk, foreign.pk],
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.data)
+        self.assertFalse(TenantRoleTemplate.objects.filter(
+            tenant=self.school.tenant, name="Cross school officer",
+        ).exists())
+
+    def test_holder_cannot_widen_own_role_from_one_branch_to_school_wide(self):
+        role = make_role(self.school, name="Narrow records role", branch=self.branch)
+        make_assignment(self.school, self.admin, role)
+        response = _token_client(self.admin).patch(self._detail_url(role.key), {
+            "branch_ids": [],
+            "reason": "Give this role every branch.",
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.data)
+        role.refresh_from_db()
+        self.assertEqual(role.branch_ids, [self.branch.pk])
+
+    def test_assignment_cannot_pin_a_role_outside_its_selected_reach(self):
+        other = make_branch(self.school, name="Other Branch", is_main=False)
+        role = make_role(self.school, name="Ikeja-only records", branch=self.branch)
+        staff = make_staff_user(self.branch, email="out-of-reach@test.com")
+        response = _token_client(self.admin).post(
+            _q(reverse("rbac-assignment-list-create", kwargs={"tenant_slug": self.slug}), self.slug),
+            {"user": staff.pk, "role": role.pk, "branch": other.pk}, format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.data)
+        self.assertFalse(TenantUserRoleAssignment.objects.filter(user=staff, role=role).exists())
+
     def test_retrieve_by_key(self):
         role = make_role(self.school, name="Teacher")
         make_role_permission(role, make_permission("students.profile.view"))

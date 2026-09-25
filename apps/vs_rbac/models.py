@@ -943,7 +943,12 @@ class PrebuiltRolePermission(models.Model):
 # -----------------------------------------------------------------------------
 
 class TenantRoleTemplate(TimeStampedModel):
-    """Role blueprint owned by one tenant, optionally narrowed to a branch."""
+    """Role blueprint with school-wide or selected branch reach.
+
+    An empty branch set means school-wide. The first selected branch stays in
+    ``branch`` for callers that still read that column; the remaining branches
+    live in ``additional_branches``. All selected branches have equal reach.
+    """
 
     class Status(models.TextChoices):
         ACTIVE = "ACTIVE", "Active"
@@ -957,6 +962,15 @@ class TenantRoleTemplate(TimeStampedModel):
         Branch, on_delete=models.PROTECT, related_name="tenant_role_templates",
         null=True, blank=True,
     )
+    additional_branches = models.ManyToManyField(
+        Branch, blank=True, related_name="additional_tenant_role_templates",
+    )
+
+    @property
+    def branch_ids(self):
+        """Every selected branch id, empty for a school-wide role."""
+        other_ids = [branch.pk for branch in self.additional_branches.all()]
+        return ([self.branch_id] if self.branch_id else []) + other_ids
     key = models.SlugField(max_length=120)
     name = models.CharField(max_length=80)
     description = models.TextField(blank=True)

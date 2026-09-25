@@ -1,16 +1,14 @@
 """Where somebody is based, and the roster that reads it three ways.
 
 A posting and a reach are different facts and this module keeps them apart.
-The posting is one branch or the whole school, and it is this table's column.
-The reach is which branches a person can actually work in, it comes from their
-role grants, and it is computed by ``vs_rbac`` rather than stored here, so it
-cannot go stale.
+The posting is an equal set of branches or the whole school. The first branch
+is stored in the legacy column; the others are stored in additional_postings.
+Reach comes from role grants and is computed by ``vs_rbac``.
 
 **Moving a posting never moves a grant**, and the response says so as well as
 the confirmation. A bulk action that quietly re-pinned grants would change what
 people may do while claiming to change where they sit.
 
-FRD M12 v2.1, FR-010 and section 6.
 """
 from __future__ import annotations
 
@@ -83,42 +81,45 @@ def resolve_reach(tenant, requested):
 
 @transaction.atomic
 def set_posting(staff, branch, *, actor, reason=""):
-    """Write the posting on the record and on the account, together.
+    """Write a single-branch or school-wide posting through the set writer."""
+    return set_postings(staff, [branch] if branch is not None else [], actor=actor, reason=reason)
 
-    ``User.branch`` keeps its job as the caller's home posting, and the identity
-    layer's fallback narrowing reads it. Letting the two drift would mean a
-    person whose staff record says Ikeja and whose session still narrows to
-    Lekki, which is the kind of disagreement nobody notices until it decides
-    what somebody can see.
 
-    Returns the classes this person teaches at the branch they are leaving, so
-    the caller can warn and name them. Warn, never refuse: a school moving a
-    teacher mid-term is doing it deliberately.
+@transaction.atomic
+def set_postings(staff, branches, *, actor, reason=""):
+    """Replace the equal posting set without changing any role grants.
+
+    ``branch`` and ``User.branch`` retain the first id as a compatibility
+    anchor. The roster and branch fallback read the whole set, so that anchor
+    does not make one selected branch more authoritative than the others.
     """
-    previous = staff.branch_id
-    if previous == getattr(branch, "pk", None):
+    branches = list(dict((branch.pk, branch) for branch in branches).values())
+    previous_ids = set(staff.posting_branch_ids)
+    next_ids = {branch.pk for branch in branches}
+    if previous_ids == next_ids:
         return []
 
-    stranded = _assignments_left_behind(staff)
-
-    staff.branch = branch
+    stranded = _assignments_left_behind(staff, previous_ids, next_ids)
+    previous = staff.branch_id
+    staff.branch = branches[0] if branches else None
     staff.save(update_fields=["branch", "updated_at"])
+    staff.additional_postings.set(branches[1:])
 
     user = staff.user
-    user.branch = branch
+    user.branch = staff.branch
     user.save(update_fields=["branch", "updated_at"])
+    user.additional_branches.set(branches[1:])
 
-    audit.emit_posting_changed(staff, previous, actor=actor)
+    audit.emit_posting_changed(
+        staff, previous, actor=actor,
+        previous_ids=sorted(previous_ids), next_ids=sorted(next_ids),
+    )
     return stranded
 
 
-def _assignments_left_behind(staff):
-    """Classes at the person's current posting that they teach.
-
-    Named rather than counted, and read before the move so the branch being left
-    is still the one on the record.
-    """
-    if staff.branch_id is None:
+def _assignments_left_behind(staff, previous_ids, next_ids):
+    """Active classes in branches no longer covered by this posting set."""
+    if not next_ids:
         return []
     from schools.vs_academics.models import AcademicSession, SessionStatus
 
@@ -127,12 +128,13 @@ def _assignments_left_behind(staff):
     ).values_list("pk", flat=True).first()
     if active is None:
         return []
-    rows = (
-        staff.teaching_assignments.filter(
-            session_id=active, school_class__branch_id=staff.branch_id,
-        )
-        .select_related("subject", "school_class")
-        .order_by("school_class__name", "subject__name")
+    rows = staff.teaching_assignments.filter(session_id=active)
+    if previous_ids:
+        rows = rows.filter(school_class__branch_id__in=previous_ids - next_ids)
+    else:
+        rows = rows.exclude(school_class__branch_id__in=next_ids)
+    rows = rows.select_related("subject", "school_class").order_by(
+        "school_class__name", "subject__name",
     )
     return [f"{row.school_class.name} {row.subject.name}" for row in rows]
 
@@ -178,9 +180,9 @@ def roster(tenant, user, branch):
     posted_here, reaching_here, school_wide = [], [], []
     via = {}
     for person in people:
-        if person.branch_id == branch.pk:
+        if branch.pk in person.posting_branch_ids:
             posted_here.append(person)
-        elif person.branch_id is None:
+        elif not person.posting_branch_ids:
             school_wide.append(person)
         elif _reaches(reach.get(person.user_id), branch.pk):
             reaching_here.append(person)
@@ -206,16 +208,20 @@ def _via_roles(staff, branch_id) -> list:
     for grant in staff.user.tenant_role_assignments.all():
         if grant.assignment_status != "ACTIVE":
             continue
-        if grant.branch_id not in (branch_id, None):
-            continue
         role = getattr(grant, "role", None)
         if role is None:
+            continue
+        role_ids = role.branch_ids
+        if grant.branch_id is None:
+            if role_ids and branch_id not in role_ids:
+                continue
+        elif grant.branch_id != branch_id or (role_ids and branch_id not in role_ids):
             continue
         name = role.name or role.key
         # A role held both ways reaches here on its own pin, which is the one
         # somebody would change, so the narrower reading wins.
         if name not in seen or grant.branch_id is not None:
-            seen[name] = {"name": name, "school_wide": grant.branch_id is None}
+            seen[name] = {"name": name, "school_wide": grant.branch_id is None and not role_ids}
     return [seen[name] for name in sorted(seen)]
 
 
@@ -239,18 +245,27 @@ def reach_of(staff):
         grant for grant in staff.user.tenant_role_assignments.all()
         if grant.assignment_status == "ACTIVE"
     ]
-    if any(grant.branch_id is None for grant in grants):
+    if any(grant.branch_id is None and not grant.role.branch_ids for grant in grants):
         return True, []
 
     by_branch: dict[int, list[str]] = {}
     for grant in grants:
         role = getattr(grant, "role", None)
         name = (role.name or role.key) if role is not None else ""
-        by_branch.setdefault(grant.branch_id, []).append(name)
+        role_ids = role.branch_ids if role is not None else []
+        ids = (
+            role_ids if grant.branch_id is None and role_ids
+            else [grant.branch_id] if grant.branch_id and (not role_ids or grant.branch_id in role_ids)
+            else []
+        )
+        for branch_id in ids:
+            by_branch.setdefault(branch_id, []).append(name)
 
     branches = {
         branch.pk: branch
-        for branch in Branch.all_objects.filter(pk__in=by_branch)
+        for branch in Branch.all_objects.filter(
+            pk__in=by_branch, status__in=Branch.IN_SERVICE_STATES,
+        )
     }
     rows = [
         (branches[branch_id], sorted(set(names)))

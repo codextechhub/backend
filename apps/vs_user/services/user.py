@@ -38,6 +38,8 @@ def grant_reach(*, user, role, requested=REACH_UNSTATED):
     the posting, so the deputy based at Lekki who is made Branch Admin of Ikeja
     administers Ikeja rather than the site she sits at.
     """
+    if role is not None and len(role.branch_ids) > 1:
+        return None
     if requested is not REACH_UNSTATED:
         return requested
     if role is not None and role.branch_id:

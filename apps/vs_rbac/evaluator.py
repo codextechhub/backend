@@ -61,26 +61,34 @@ ANY_BRANCH = _AnyBranch()
 
 
 def _assignment_branch_q(branch) -> Q:
-    """The branch condition on a role assignment, expressed in exactly one place.
+    """Match the effective branch set of an assignment and its role.
 
-    A whole-tenant grant (``branch IS NULL``) always counts - it is what "the
-    whole tenant" means, and it is how everyone working today holds their access.
-    A branch-pinned grant counts only while its branch is still in service, so a
-    suspended, deactivated or closed branch withdraws the access it conferred
-    instead of leaving it hanging.
-
-    The liveness test is written as a positive ``status IN (in service)`` rather
-    than an exclusion: ``branch`` is nullable, and a negative filter across that
-    join would take the whole-tenant grants down with it.
+    A role with selected branches caps every assignment. Its unpinned grant
+    inherits that whole selected set, while an unpinned grant of an unbound role
+    remains school-wide. Only branches still in service confer authority.
     """
     from vs_tenants.models import Branch
+    from django.db.models import F
 
     live = Q(branch__status__in=Branch.IN_SERVICE_STATES)
+    role_selected = Q(role__branch__isnull=False)
+    role_matches_assignment = (
+        Q(role__branch=F("branch")) | Q(role__additional_branches=F("branch"))
+    )
+    explicit = live & (~role_selected | role_matches_assignment)
+    inherited_live = (
+        Q(role__branch__status__in=Branch.IN_SERVICE_STATES)
+        | Q(role__additional_branches__status__in=Branch.IN_SERVICE_STATES)
+    )
     if branch is ANY_BRANCH:
-        return Q(branch__isnull=True) | live
+        return (Q(branch__isnull=True) & (~role_selected | inherited_live)) | explicit
     if branch is None:
-        return Q(branch__isnull=True)
-    return Q(branch__isnull=True) | (Q(branch=branch) & live)
+        return Q(branch__isnull=True) & ~role_selected
+    inherited = Q(branch__isnull=True) & (
+        (Q(role__branch=branch) & Q(role__branch__status__in=Branch.IN_SERVICE_STATES))
+        | (Q(role__additional_branches=branch) & Q(role__additional_branches__status__in=Branch.IN_SERVICE_STATES))
+    )
+    return (Q(branch__isnull=True) & ~role_selected) | inherited | (Q(branch=branch) & explicit)
 
 
 def _holdable_filter(tenant) -> dict:

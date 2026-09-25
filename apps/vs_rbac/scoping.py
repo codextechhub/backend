@@ -86,6 +86,37 @@ class _NoGrants:
 _SILENT = _NoGrants()
 
 
+def _assignment_scope_rows(queryset, *, with_user=False):
+    """Read effective branch inputs in one query, including role reach."""
+    fields = (
+        "branch_id", "branch__status", "role__branch_id",
+        "role__branch__status", "role__additional_branches__id",
+        "role__additional_branches__status",
+    )
+    return queryset.values_list(*(("user_id",) + fields if with_user else fields))
+
+
+def _effective_grant_rows(rows):
+    """Expand inherited role reach while keeping silent grants distinguishable."""
+    from vs_tenants.models import Branch
+
+    for branch_id, status, role_branch_id, role_status, extra_id, extra_status in rows:
+        if role_branch_id is None and extra_id is None:
+            yield branch_id, status
+            continue
+        if branch_id is None:
+            if role_branch_id is not None:
+                yield role_branch_id, role_status
+            if extra_id is not None:
+                yield extra_id, extra_status
+            continue
+        allowed = (
+            (branch_id == role_branch_id and role_status in Branch.IN_SERVICE_STATES)
+            or (branch_id == extra_id and extra_status in Branch.IN_SERVICE_STATES)
+        )
+        yield branch_id, status if allowed else ""
+
+
 def _grant_scope(user, tenant):
     """The narrowing the caller's role grants imply: one of the three answers above.
 
@@ -111,14 +142,14 @@ def _grant_scope(user, tenant):
     # posting, the second must show nothing - and a filter that drops the
     # withdrawn rows makes the two indistinguishable. The status comes back with
     # the row instead, so this is still one query.
-    rows = set(
+    rows = set(_effective_grant_rows(_assignment_scope_rows(
         TenantUserRoleAssignment.objects.filter(
             tenant=tenant,
             user=user,
             assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
             role__status="ACTIVE",
-        ).values_list("branch_id", "branch__status")
-    )
+        ),
+    )))
     return _scope_from_rows(rows)
 
 
@@ -147,6 +178,16 @@ def _scope_from_rows(rows):
     )
 
 
+def _posting_fallback(user, extra_ids=None):
+    """The account's equal posting set when no active grant speaks for it."""
+    if extra_ids is None:
+        extra_ids = user.additional_branches.values_list("pk", flat=True)
+    ids = set(extra_ids)
+    if user.branch_id is not None:
+        ids.add(user.branch_id)
+    return frozenset(ids) if ids else WHOLE_TENANT
+
+
 def visible_branch_ids_for(users, tenant):
     """:func:`visible_branch_ids` for many people, in one query.
 
@@ -167,14 +208,24 @@ def visible_branch_ids_for(users, tenant):
         return {}
 
     by_user = {}
-    rows = TenantUserRoleAssignment.objects.filter(
+    rows = _assignment_scope_rows(TenantUserRoleAssignment.objects.filter(
         tenant=tenant,
         user__in=users,
         assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
         role__status="ACTIVE",
-    ).values_list("user_id", "branch_id", "branch__status")
-    for user_id, branch_id, status in rows:
-        by_user.setdefault(user_id, set()).add((branch_id, status))
+    ), with_user=True)
+    for user_id, *grant in rows:
+        by_user.setdefault(user_id, []).append(tuple(grant))
+
+    silent_ids = [user.pk for user in users if not by_user.get(user.pk)]
+    from vs_user.models import User
+    extras = {}
+    if silent_ids:
+        through = User.additional_branches.through
+        for user_id, branch_id in through.objects.filter(
+            user_id__in=silent_ids,
+        ).values_list("user_id", "branch_id"):
+            extras.setdefault(user_id, set()).add(branch_id)
 
     answer = {}
     for user in users:
@@ -184,10 +235,9 @@ def visible_branch_ids_for(users, tenant):
         if getattr(user, "tenant_id", None) != tenant.pk:
             scope = _SILENT
         else:
-            scope = _scope_from_rows(by_user.get(user.pk, ()))
+            scope = _scope_from_rows(_effective_grant_rows(by_user.get(user.pk, ())))
         if scope is _SILENT:
-            own_id = getattr(user, "branch_id", None)
-            scope = WHOLE_TENANT if own_id is None else frozenset({own_id})
+            scope = _posting_fallback(user, extras.get(user.pk, ()))
         answer[user.pk] = scope
     return answer
 
@@ -221,8 +271,7 @@ def visible_branch_ids(user, tenant=None) -> Optional[FrozenSet[int]]:
         # ``branch_id`` rather than ``branch``: the id is already on the row, and
         # dereferencing the relation would fetch the whole Branch on the hot path
         # of every read just to read its primary key back.
-        own_id = getattr(user, "branch_id", None)
-        scope = WHOLE_TENANT if own_id is None else frozenset({own_id})
+        scope = _posting_fallback(user)
 
     if cache is None:
         cache = {}
