@@ -404,6 +404,25 @@ schools.vs_students 298, vs_procurement 588, vs_finance 773, vs_payments 212,
 vs_user 410, vs_import_data 83, core 168, vs_exports 185, vs_workflow 420 OK;
 makemigrations --check clean.
 
+### D12. Anyone working in finance can see which books their school has (415953a7, 2026-09-24)
+MODULES: M19 finance and accounting, M04 roles and permissions, MRD.
+- `GET /finance/entities/` (the set-of-books picker every finance screen opens
+  with) needed its own `finance.entity.view` key, which no ordinary finance role
+  carried. A branch admin holding `finance.concession.view` was refused the
+  picker, so Concessions, and every other finance screen, failed with a bare
+  "You do not have permission" before its own check ever ran.
+- The list now opens to anyone holding any `finance.*` key, the same rule the
+  posting-window endpoint uses. Which books appear is unchanged: the caller's
+  own tenant only. Creating books still needs `finance.entity.create`.
+- Rode in on an unrelated commit ("Replace broad manage permissions with
+  concrete actions"), so the hash above does not name this change.
+MUST SAY: for M19, the picker's access rule and that it matches what opening
+the books already required; for M04, that `finance.entity.view` is still
+registered and assignable but no longer gates anything. NEEDS ATTENTION for
+M19: a school with one set of books still sees the picker step (frontend
+package), where the branch rule says a single option should not appear.
+VERIFIED (working tree before commit): vs_finance 774 OK.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
