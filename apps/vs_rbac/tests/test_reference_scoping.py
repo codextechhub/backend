@@ -137,7 +137,7 @@ class RoleTemplateBranchScopingTests(_TwoShapedTenants):
         return _q(reverse("rbac-role-list-create", kwargs={"tenant_slug": slug}), slug)
 
     def _post(self, actor, slug=None, **body):
-        payload = {"name": "Branchy Role"}
+        payload = {"name": "Branchy Role", "reason": "Verify role branch scope"}
         payload.update(body)
         return _token_client(actor).post(self._url(slug), payload, format="json")
 
