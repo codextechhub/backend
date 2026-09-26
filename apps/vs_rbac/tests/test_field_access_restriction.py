@@ -5,8 +5,9 @@ A switch opens a field the moment it is saved, with nobody approving it. So
 themselves. At Bright Star School, Mr Okafor holds Deputy Head, which carries
 ``school.roles.update``. If manage were unrestricted he could add it to Deputy
 Head, save, and turn on Read for a supplier's bank account number on his own
-role. Restricted, the first step goes to the role change ladder, and the detour
-through a role he does not hold is closed by the assignment ceiling.
+role. Restricted, adding it to any role - his own or Storekeeper - saves the
+rest of the role and sends manage to the role change ladder, and handing
+himself a role that already carries it is closed by the assignment ceiling.
 
 ``school.field_access.view`` only shows switches, so it stays unrestricted.
 
@@ -119,27 +120,28 @@ class _RestrictionRules(_SchoolShape):
             format="json",
         )
 
-    def test_adding_update_to_a_role_you_hold_needs_approval(self):
+    def _pending(self, response):
+        return [row["permission_key"] for row in response.data["data"]["pending_additions"]]
+
+    def test_adding_update_to_a_role_you_hold_waits_for_approval(self):
         response = self._save_role(self.deputy_head, ROLE_KEYS + [UPDATE])
-        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT, response.data)
-        self.assertEqual(response.data["error"]["code"], "RESTRICTED_NEEDS_APPROVAL")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
         self.assertNotIn(UPDATE, _granted(self.deputy_head))
+        self.assertEqual(self._pending(response), [UPDATE])
 
     def test_adding_view_to_a_role_you_hold_saves(self):
         response = self._save_role(self.deputy_head, ROLE_KEYS + [VIEW])
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
         self.assertIn(VIEW, _granted(self.deputy_head))
 
-    def test_adding_update_to_a_role_you_do_not_hold_saves(self):
+    def test_adding_update_to_a_role_you_do_not_hold_waits_too(self):
         response = self._save_role(self.storekeeper, [VIEW, UPDATE])
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
-        self.assertIn(UPDATE, _granted(self.storekeeper))
+        self.assertNotIn(UPDATE, _granted(self.storekeeper))
+        self.assertEqual(self._pending(response), [UPDATE])
 
-    def test_giving_yourself_that_role_is_refused_by_the_ceiling(self):
-        self.assertEqual(
-            self._save_role(self.storekeeper, [VIEW, UPDATE]).status_code,
-            status.HTTP_200_OK,
-        )
+    def test_giving_yourself_a_role_that_carries_it_is_refused_by_the_ceiling(self):
+        make_role_permission(self.storekeeper, Permission.objects.get(key=UPDATE))
         url = reverse("rbac-assignment-list-create", kwargs={"tenant_slug": self.slug})
         response = _client(self.okafor).post(
             _q(url, self.slug),

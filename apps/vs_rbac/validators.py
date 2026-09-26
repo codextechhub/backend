@@ -20,12 +20,6 @@ from .models import (
 )
 
 
-RESTRICTED_ROLE_CHANGE_MESSAGE = (
-    "Restricted permissions cannot be granted directly. Submit a role change "
-    "request for approval."
-)
-
-
 def restricted_permission_keys(permission_keys) -> Set[str]:
     """Return the restricted subset of a permission-key iterable."""
     keys = {key for key in permission_keys or [] if key}

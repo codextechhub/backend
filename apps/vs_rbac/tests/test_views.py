@@ -32,6 +32,7 @@ from vs_rbac.models import (
     TenantRoleChangeDeltaItem,
 )
 from vs_user.tokens import CodeXRefreshToken
+from vs_workflow.models import WorkflowInstance
 from .helpers import (
     make_school,
     make_branch,
@@ -318,30 +319,84 @@ class TenantRoleTemplateViewTests(TestCase):
         self.assertEqual(role.role_permissions.count(), 1)
         self.assertTrue(role.key)
 
-    def test_create_role_rejects_restricted_permission(self):
+    def test_create_role_holds_a_restricted_permission_for_approval(self):
+        """The role is made now; the restricted key waits for the ladder."""
+        _grant_role_admin(self.admin)
+        make_permission("students.profile.view")
         make_permission(
             "payments.payout.create", is_restricted=True,
             sensitivity_level=Permission.Sensitivity.CRITICAL,
         )
+
         resp = _token_client(self.admin).post(
             self._list_url(),
             {
                 "name": "Temporary Payments Officer",
-                "permission_keys": ["payments.payout.create"],
+                "permission_keys": ["students.profile.view", "payments.payout.create"],
+                "reason": "Ada covers payouts while Ngozi is on leave.",
             },
             format="json",
         )
 
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+        role = TenantRoleTemplate.objects.get(
+            tenant=self.school.tenant, name="Temporary Payments Officer",
+        )
+        self.assertEqual(
+            set(role.role_permissions.filter(granted=True)
+                .values_list("permission_id", flat=True)),
+            {"students.profile.view"},
+        )
+        request = TenantRoleChangeRequest.objects.get(target_role=role)
+        self.assertEqual(request.status, TenantRoleChangeRequest.Status.PENDING)
+        self.assertEqual(request.requested_by, self.admin)
+        self.assertEqual(
+            list(request.delta_items.values_list("permission_id", "operation")),
+            [("payments.payout.create", "ADD")],
+        )
+        self.assertTrue(WorkflowInstance.objects.for_document(request).exists())
+        self.assertEqual(
+            [row["permission_key"] for row in resp.data["data"]["pending_additions"]],
+            ["payments.payout.create"],
+        )
+
+    def test_create_role_without_a_restricted_key_raises_no_request(self):
+        make_permission("students.profile.view")
+
+        resp = _token_client(self.admin).post(
+            self._list_url(),
+            {"name": "Class Teacher", "permission_keys": ["students.profile.view"],
+             "reason": "Form teachers read their pupils."},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+        self.assertEqual(resp.data["data"]["pending_additions"], [])
+        self.assertFalse(TenantRoleChangeRequest.objects.exists())
+
+    def test_a_ladder_that_cannot_run_refuses_the_whole_create(self):
+        """No half-made role that looks finished and lacks what was asked for."""
+        from unittest.mock import patch
+
+        from vs_workflow.exceptions import ApprovalNotConfiguredError
+
+        make_permission("payments.payout.create", is_restricted=True)
+        with patch(
+            "vs_workflow.services.submission.submit_for_approval",
+            side_effect=ApprovalNotConfiguredError(),
+        ):
+            resp = _token_client(self.admin).post(
+                self._list_url(),
+                {"name": "Payouts", "permission_keys": ["payments.payout.create"],
+                 "reason": "Payout desk."},
+                format="json",
+            )
+
+        self.assertEqual(resp.status_code, status.HTTP_409_CONFLICT, resp.data)
         self.assertFalse(
-            TenantRoleTemplate.objects.filter(
-                tenant=self.school.tenant, name="Temporary Payments Officer",
-            ).exists()
+            TenantRoleTemplate.objects.filter(tenant=self.school.tenant, name="Payouts").exists()
         )
-        payout = _token_client(self.admin).post(
-            _q(reverse("payments-payouts"), self.slug), {}, format="json",
-        )
-        self.assertEqual(payout.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(TenantRoleChangeRequest.objects.exists())
 
     def test_create_role_ignores_body_tenant_mass_assignment(self):
         other = make_school(slug="mass-other", name="Mass Other")
@@ -519,8 +574,8 @@ class TenantRoleTemplateViewTests(TestCase):
         own.refresh_from_db()
         self.assertEqual(own.status, "ACTIVE")
 
-    def test_a_restricted_addition_to_a_role_the_actor_holds_is_refused(self):
-        """The rule is "nobody approves their own increase in power"."""
+    def test_a_restricted_addition_to_a_role_the_actor_holds_waits_for_approval(self):
+        _grant_role_admin(self.admin)
         role = TenantRoleTemplate.objects.get(
             tenant=self.school.tenant, name__startswith="grant-role-",
         )
@@ -533,37 +588,75 @@ class TenantRoleTemplateViewTests(TestCase):
             format="json",
         )
 
-        self.assertEqual(resp.status_code, 409, resp.data)
-        self.assertEqual(resp.data["error"]["code"], "RESTRICTED_NEEDS_APPROVAL")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertFalse(
+            role.role_permissions.filter(permission_id="finance.account.create").exists()
+        )
         self.assertEqual(
-            resp.data["error"]["detail"]["restricted_additions"],
+            [row["permission_key"] for row in resp.data["data"]["pending_additions"]],
             ["finance.account.create"],
         )
 
-    def test_the_same_addition_to_somebody_elses_role_goes_through(self):
-        """Doing the job `school.roles.update` exists for.
+    def test_a_restricted_addition_to_somebody_elses_role_waits_too(self):
+        """Holding the role editor is not holding the decision.
 
-        Refusing this and telling the head teacher to raise a request she would
-        approve herself produces a second record of the same decision by the
-        same person, and the bursar ends up able to create accounts either way.
+        The ordinary addition in the same save lands at once; only the
+        restricted one waits.
         """
+        _grant_role_admin(self.admin)
         bursar = make_role(self.school, name="Bursar")
         make_role_permission(bursar, make_permission("students.profile.view"))
+        make_permission("students.fees.view")
         perm = make_permission("finance.account.create", is_restricted=True)
 
         resp = _token_client(self.admin).patch(
             self._detail_url(bursar.key),
-            {"permission_keys": ["students.profile.view", perm.key],
+            {"permission_keys": ["students.profile.view", "students.fees.view", perm.key],
              "reason": "The bursar posts our fee journals."},
             format="json",
         )
 
         self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
-        self.assertIn(
-            perm.key,
+        self.assertEqual(
             set(bursar.role_permissions.filter(granted=True)
                 .values_list("permission_id", flat=True)),
+            {"students.profile.view", "students.fees.view"},
         )
+        request = TenantRoleChangeRequest.objects.get(target_role=bursar)
+        self.assertEqual(
+            list(request.delta_items.values_list("permission_id", flat=True)),
+            [perm.key],
+        )
+
+    def test_saving_again_while_a_request_waits_does_not_raise_a_second(self):
+        _grant_role_admin(self.admin)
+        bursar = make_role(self.school, name="Bursar")
+        perm = make_permission("finance.account.create", is_restricted=True)
+        body = {"permission_keys": [perm.key], "reason": "Fee journals."}
+
+        _token_client(self.admin).patch(self._detail_url(bursar.key), body, format="json")
+        resp = _token_client(self.admin).patch(self._detail_url(bursar.key), body, format="json")
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertEqual(TenantRoleChangeRequest.objects.filter(target_role=bursar).count(), 1)
+
+    def test_a_restricted_key_the_role_already_holds_survives_a_save(self):
+        """Keeping a restricted key is not granting it, so nothing is raised."""
+        bursar = make_role(self.school, name="Bursar")
+        perm = make_permission("finance.account.create", is_restricted=True)
+        make_role_permission(bursar, perm)
+        make_permission("students.profile.view")
+
+        resp = _token_client(self.admin).patch(
+            self._detail_url(bursar.key),
+            {"permission_keys": [perm.key, "students.profile.view"],
+             "reason": "Bursars read pupil records."},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertTrue(bursar.role_permissions.filter(permission=perm, granted=True).exists())
+        self.assertFalse(TenantRoleChangeRequest.objects.exists())
 
     def test_giving_yourself_that_role_is_still_refused_by_the_grant_ceiling(self):
         """The other half of the door, and it was already shut.

@@ -274,6 +274,13 @@ class TenantRoleTemplateDetailSerializer(
     - ``permission_keys`` replaces the role's direct permission rows.
     - ``group_ids`` replaces the role's attached permission groups.
     - dependency validation runs against the flattened effective set.
+    - a restricted key the role does not already hold is never granted by a
+      save. The save grants everything else and raises one role change request
+      for the restricted keys, which take effect when its ladder approves it.
+      ``pending_additions`` lists what is waiting, so the caller can say so.
+      This holds on a new role, on a role nobody holds and on the saver's own:
+      a restricted grant is a decision the approval ladder makes, not the
+      person with the role editor open.
 
     Scope (tenant) is injected by the view; ``branch`` (when supplied) is
     resolved inside that tenant, so another tenant's branch is simply not
@@ -299,13 +306,14 @@ class TenantRoleTemplateDetailSerializer(
     permissions_count = serializers.SerializerMethodField()
     has_assignment_history = serializers.SerializerMethodField()
 
-    #: Whether the reader holds this role themselves. The roles screen needs it
-    #: before anything is saved: a restricted addition to your own role goes
-    #: through approval and to anybody else's does not, so the button has to say
-    #: which it will be while the boxes are still being ticked. Computed here
+    #: Whether the reader holds this role themselves, so a screen that changes
+    #: it knows to refresh the reader's own access afterwards. Computed here
     #: because the client cannot: a person may hold several roles, and the token
     #: carries one.
     held_by_me = serializers.SerializerMethodField()
+    #: Restricted keys asked for on this role and still waiting on approval,
+    #: each with the request that carries it.
+    pending_additions = serializers.SerializerMethodField()
     role_permissions = TenantRolePermissionSerializer(many=True, read_only=True)
     role_groups = TenantRoleGroupAttachmentSerializer(many=True, read_only=True)
 
@@ -349,6 +357,7 @@ class TenantRoleTemplateDetailSerializer(
             "group_ids",
             "reason",
             "held_by_me",
+            "pending_additions",
             "assigned_users_count",
             "permissions_count",
             "has_assignment_history",
@@ -359,6 +368,7 @@ class TenantRoleTemplateDetailSerializer(
             "id",
             "key",
             "held_by_me",
+            "pending_additions",
             "assigned_users_count",
             "permissions_count",
             "has_assignment_history",
@@ -378,6 +388,17 @@ class TenantRoleTemplateDetailSerializer(
             role=obj, user=actor,
             assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
         ).exists()
+
+    def get_pending_additions(self, obj) -> list[dict]:
+        rows = TenantRoleChangeDeltaItem.objects.filter(
+            request__target_role=obj,
+            request__status=TenantRoleChangeRequest.Status.PENDING,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
+        ).order_by("permission_id").values_list("permission_id", "request_id")
+        return [
+            {"permission_key": key, "request_id": str(request_id)}
+            for key, request_id in rows
+        ]
 
     def get_assigned_users_count(self, obj):
         return TenantUserRoleAssignment.objects.filter(
@@ -453,7 +474,6 @@ class TenantRoleTemplateDetailSerializer(
                         "branch_ids": "Another administrator must widen a role you hold.",
                     })
         self._reject_out_of_scope_keys(attrs, tenant)
-        self._reject_restricted_additions(attrs)
         self._reject_last_way_in(attrs, tenant)
         if "permission_keys" in attrs or "group_ids" in attrs or "branch_ids" in attrs:
             reason = (attrs.get("reason") or "").strip()
@@ -519,85 +539,56 @@ class TenantRoleTemplateDetailSerializer(
                 ),
             })
 
-    def _reject_restricted_additions(self, attrs):
-        """Refuse a restricted addition that would land on the actor's own role.
+    def _hold_back_restricted(self, permission_keys, role=None):
+        """Split a grant list into what saves now and what waits for approval.
 
-        The rule this enforces is not "restricted permissions need approval". It
-        is "nobody approves their own increase in power", and those are the same
-        sentence only when the person editing holds the role.
-
-        A head teacher adding ``finance.account.create`` to **Bursar**, a role
-        she does not hold, is doing the job ``school.roles.update`` exists for.
-        Refusing her and telling her to raise a request she would then approve
-        herself is ceremony: it produces a second record of the same decision by
-        the same person, and the school still ends up with the bursar able to
-        create accounts. Adding it to a role she DOES hold is the thing the
-        restriction is for, and that still goes through approval.
-
-        The other way to reach the same place is assignment, and it is guarded
-        alongside this one: see ``TenantUserRoleAssignmentSerializer``. Editing a
-        role you do not hold and then giving it to yourself would otherwise be
-        this rule with one extra step.
+        Returns ``(grant_now, held)``. ``held`` is every restricted key the role
+        does not already hold directly; a restricted key it holds already stays
+        in ``grant_now``, since keeping it is not granting it.
         """
-        if "permission_keys" not in attrs and "group_ids" not in attrs:
+        from ..validators import restricted_permission_keys
+
+        current = set(
+            TenantRolePermission.objects.filter(role=role, granted=True)
+            .values_list("permission_id", flat=True)
+        ) if role is not None else set()
+        held = restricted_permission_keys(set(permission_keys) - current)
+        return [key for key in permission_keys if key not in held], held
+
+    def _raise_for_approval(self, role, held, reason, actor):
+        """Raise one role change request for the held keys.
+
+        A key already waiting on this role is not asked for twice, so saving
+        the role again while a request is open does not stack a second one.
+        Runs inside the save's transaction: a ladder that cannot be resolved
+        refuses the whole save rather than leaving a role that looks finished
+        and quietly lacks what was asked for.
+        """
+        if not held:
             return
+        from ..services import raise_role_change_request
 
-        from ..validators import (
-            RESTRICTED_ROLE_CHANGE_MESSAGE,
-            group_permission_keys,
-            restricted_permission_keys,
-            role_permission_keys,
+        waiting = set(
+            TenantRoleChangeDeltaItem.objects.filter(
+                request__target_role=role,
+                request__status=TenantRoleChangeRequest.Status.PENDING,
+                operation=TenantRoleChangeDeltaItem.Operation.ADD,
+                permission_id__in=held,
+            ).values_list("permission_id", flat=True)
         )
-
-        current_keys = role_permission_keys(self.instance) if self.instance else set()
-        current_group_ids = set(
-            TenantRoleGroup.objects.filter(role=self.instance).values_list(
-                "group_id", flat=True,
-            )
-        ) if self.instance else set()
-        direct_keys = set(attrs.get("permission_keys", []))
-        if "permission_keys" not in attrs and self.instance:
-            direct_keys = set(
-                TenantRolePermission.objects.filter(
-                    role=self.instance, granted=True,
-                ).values_list("permission_id", flat=True)
-            )
-        group_ids = set(attrs.get("group_ids", []))
-        if "group_ids" not in attrs:
-            group_ids = current_group_ids
-
-        proposed_keys = direct_keys | group_permission_keys(group_ids)
-        added_restricted = restricted_permission_keys(proposed_keys - current_keys)
-        newly_attached_groups = group_ids - current_group_ids
-        added_restricted.update(
-            restricted_permission_keys(group_permission_keys(newly_attached_groups))
+        wanted = sorted(set(held) - waiting)
+        if not wanted:
+            return
+        raise_role_change_request(
+            tenant=role.tenant,
+            requested_by=actor,
+            target_role=role,
+            justification=reason,
+            deltas=[
+                {"permission_key": key, "operation": TenantRoleChangeDeltaItem.Operation.ADD}
+                for key in wanted
+            ],
         )
-        if added_restricted and self._actor_holds_this_role():
-            from ..exceptions import RestrictedNeedsApprovalError
-
-            # Typed, so the client can turn Save into "Raise for approval" on
-            # the code and build the request from the keys, rather than parsing
-            # a sentence out of a field error.
-            raise RestrictedNeedsApprovalError(
-                RESTRICTED_ROLE_CHANGE_MESSAGE,
-                restricted_additions=added_restricted,
-            )
-
-    def _actor_holds_this_role(self) -> bool:
-        """Whether the person saving would be granting this to themselves."""
-        if self.instance is None:
-            return False
-        request = self.context.get("request")
-        actor = getattr(request, "user", None)
-        if actor is None or not getattr(actor, "is_authenticated", False):
-            # No actor to reason about. Refuse, because the safe reading of "we
-            # cannot tell whose hand this is" is that it might be their own.
-            return True
-        return TenantUserRoleAssignment.objects.filter(
-            role=self.instance,
-            user=actor,
-            assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
-        ).exists()
 
     def _reject_out_of_scope_keys(self, attrs, tenant):
         """Report a platform key in a tenant role as a 400, not a 500.
@@ -677,16 +668,18 @@ class TenantRoleTemplateDetailSerializer(
         if branch_ids is not None:
             role.additional_branches.set(branch_ids[1:])
 
-        if permission_keys or group_ids:
+        grant_now, held = self._hold_back_restricted(permission_keys)
+        if grant_now or group_ids:
             from ..services import set_role_access
 
             role = set_role_access(
                 role=role,
                 actor=actor,
                 reason=reason,
-                permission_keys=permission_keys,
+                permission_keys=grant_now,
                 group_ids=group_ids,
             )
+        self._raise_for_approval(role, held, reason, actor)
 
         return role
 
@@ -737,25 +730,19 @@ class TenantRoleTemplateDetailSerializer(
         request = self.context.get("request")
         actor = request.user if request and request.user.is_authenticated else None
 
+        held = set()
         if permission_keys is not None or group_ids is not None:
             from ..services import set_role_access
 
-            kwargs = {
-                "role": instance,
-                "actor": actor,
-                "reason": reason,
-                # The question was already answered in validate(): a restricted
-                # addition to somebody else's role is ordinary administration
-                # and was let through there, so the service must not refuse it
-                # again on the way past. Its own guard stays for callers that
-                # have not asked whose role this is.
-                "allow_restricted": not self._actor_holds_this_role(),
-            }
+            kwargs = {"role": instance, "actor": actor, "reason": reason}
             if permission_keys is not None:
-                kwargs["permission_keys"] = permission_keys
+                kwargs["permission_keys"], held = self._hold_back_restricted(
+                    permission_keys, role=instance,
+                )
             if group_ids is not None:
                 kwargs["group_ids"] = group_ids
             instance = set_role_access(**kwargs)
+        self._raise_for_approval(instance, held, reason, actor)
 
         return instance
 

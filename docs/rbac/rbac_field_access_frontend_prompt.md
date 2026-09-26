@@ -149,10 +149,10 @@ School Admin roles receive the school pair when the backend seeds run.
 
 The two `manage` keys are **restricted** (`is_restricted: true` in the catalogue) and
 the two `view` keys are not. The role picker must treat manage like every other
-restricted permission. It never appears inside a permission group. Adding it to a
-role the editor holds is answered with 409 `RESTRICTED_NEEDS_APPROVAL` and goes to
-the role change request flow. Assigning a role that carries it is refused to anyone
-who does not hold it themselves. Changing field switches, once someone holds manage,
+restricted permission. It never appears inside a permission group. Adding it to any
+role saves the rest of the role and raises a role change request for it; the role's
+`pending_additions` names it until the ladder decides. Assigning a role that carries
+it is refused to anyone who does not hold it themselves. Changing field switches, once someone holds manage,
 still needs no approval.
 
 ## Things that are removed
