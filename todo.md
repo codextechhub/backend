@@ -822,6 +822,27 @@ MUST SAY: the runway is an average of recent outflow, over the history the
 books have when that is under 90 days, and absent under two weeks.
 VERIFIED (working tree before commit): vs_finance 872 OK.
 
+### D29. The Procurement overview, from requisition to payment (03400801, 2026-09-26)
+MODULES: M20 procurement.
+- `GET /procurement/reports/dashboard/` takes `?window=` (the finance
+  dashboard's windows, always read by date) and adds `books`,
+  `reader_first_name`, `window`, `windows`, `pipeline`, `committed_vs_spent`
+  (`labels`, `current`, `committed`, `spent`), `top_vendors`, `exceptions`,
+  `bills_due`, `contracts_ending`.
+- REMOVED: `purchase_order_status`, `monthly_spend_trend`; RENAMED:
+  `kpis.total_spend_mtd` to `kpis.spend`. KPIs gain `open_purchase_orders.amount`,
+  `pending_approvals.amount/slow_count/type_count`, `overdue_invoices.oldest_days`,
+  `active_vendors.first_time_count`.
+- Each `pipeline` stage needs its list's key (requisition, rfq, purchase_order,
+  goods_receipt, vendor_invoice, vendor_payment); a missing key drops the stage.
+- `exceptions[].key`: `match_failed`, `price_variance`, `vendor_on_hold`,
+  `unbilled_receipts` (only non-empty ones are sent). Price is checked against
+  the order, not the catalogue.
+- `contracts_ending[].ordered` is `null` for a branch-narrowed reader.
+- `seed_procurement_dashboard_demo --entity <CODE> [--requester <email>]`
+  (after the finance dashboard demo; DEBUG only).
+VERIFIED (working tree before commit): vs_procurement 603 OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
