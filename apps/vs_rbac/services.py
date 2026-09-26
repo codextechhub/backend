@@ -81,10 +81,18 @@ def set_role_access(
 
     ``permission_keys``, ``denied_permission_keys`` and ``group_ids`` are
     independently optional. An omitted dimension is preserved, while an
-    explicitly empty iterable clears it. For backward compatibility, supplying
-    grants without an explicit deny set clears the denies. The durable audit
-    write is inside the same transaction, so an audit failure rolls the access
-    change back.
+    explicitly empty iterable clears it. An omitted deny set keeps every deny
+    except those on keys the call now grants: granting a key lifts its own deny
+    and nothing else. A deny is a decision somebody made on purpose, and one
+    that quietly lapsed would hand its key back through any group the role
+    carries. The durable audit write is inside the same transaction, so an
+    audit failure rolls the access change back.
+
+    ``allow_restricted`` is for callers that have already settled who decided
+    a restricted grant: an approved change request, provisioning and seeding.
+    Everything else is refused a restricted key the role does not already
+    hold directly. Groups never carry one (a group refuses restricted members
+    and a legacy member is not effective), so direct grants are what count.
     """
     reason = (reason or "").strip()
     if not reason:
@@ -118,7 +126,7 @@ def set_role_access(
     )
     if denied_permission_keys is _UNSET:
         desired_denied_permission_keys = (
-            current_denied_permission_keys if permission_keys is _UNSET else set()
+            current_denied_permission_keys - desired_permission_keys
         )
     else:
         desired_denied_permission_keys = {
@@ -186,8 +194,7 @@ def set_role_access(
         from .validators import restricted_permission_keys
 
         added_restricted = restricted_permission_keys(
-            set(after["combined_permission_keys"])
-            - set(before["combined_permission_keys"])
+            desired_permission_keys - current_permission_keys
         )
         if added_restricted:
             raise ValidationError({

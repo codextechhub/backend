@@ -118,11 +118,9 @@ class SetRoleAccessTests(TestCase):
             )),
             {self.group.pk},
         )
-        self.assertFalse(
-            TenantRolePermission.objects.filter(
-                role=self.role,
-                permission=self.denied_permission,
-            ).exists()
+        self.assertEqual(
+            log.diff_data["denied_permission_keys"]["after"],
+            [self.denied_permission.key],
         )
 
     def test_group_only_change_preserves_explicit_denies(self):
@@ -224,6 +222,39 @@ class SetRoleAccessTests(TestCase):
         self.assertFalse(TenantRoleGroup.objects.filter(role=self.role).exists())
         self.assertEqual(self.role.version, original_version)
 
+    def test_replacing_grants_keeps_the_denies_it_does_not_name(self):
+        """A role editor saving its ticked boxes has not decided to lift a deny."""
+        set_role_access(
+            role=self.role,
+            actor=self.actor,
+            reason="Accounts officers now edit invoices.",
+            permission_keys=[self.view_permission.key, self.update_permission.key],
+        )
+
+        denied = TenantRolePermission.objects.get(
+            role=self.role, permission=self.denied_permission,
+        )
+        self.assertFalse(denied.granted)
+
+    def test_granting_a_denied_key_lifts_that_deny_and_no_other(self):
+        TenantRolePermission.objects.create(
+            role=self.role, permission=self.report_permission, granted=False,
+        )
+
+        set_role_access(
+            role=self.role,
+            actor=self.actor,
+            reason="Payout approval moves to this role.",
+            permission_keys=[self.view_permission.key, self.denied_permission.key],
+        )
+
+        rows = dict(
+            TenantRolePermission.objects.filter(role=self.role)
+            .values_list("permission_id", "granted")
+        )
+        self.assertIs(rows[self.denied_permission.key], True)
+        self.assertIs(rows[self.report_permission.key], False)
+
     def test_reason_is_required(self):
         with self.assertRaises(APIValidationError):
             set_role_access(
@@ -277,6 +308,26 @@ class ApplySchoolTenantRoleChangeRequestTests(TestCase):
         self.assertEqual(log.metadata["reason"], rcr.justification)
         self.assertEqual(log.metadata["approval_reference"], str(rcr.pk))
         self.assertEqual(log.metadata["source"], "approved_change_request")
+
+    def test_approving_keeps_the_roles_other_denies(self):
+        """An approval adds what it names and leaves the role's denies alone."""
+        TenantRolePermission.objects.create(
+            role=self.role, permission=self.perm_approve, granted=False,
+        )
+        rcr = make_role_change_request(self.school, self.admin, self.role)
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=self.perm_export,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
+        )
+
+        apply_role_change_request(rcr, self.reviewer, "Approved")
+
+        self.assertFalse(
+            TenantRolePermission.objects.get(
+                role=self.role, permission=self.perm_approve,
+            ).granted
+        )
+        self.assertEqual(self._granted(), {"finance.invoice.view", "finance.invoice.export"})
 
     def test_a_school_may_approve_its_own_request_and_the_log_says_so(self):
         """Most schools cannot staff two approvers, so the rule is audit not refuse.
