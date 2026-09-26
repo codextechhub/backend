@@ -107,6 +107,11 @@ DOCUMENT_SETTING_CONSUMERS = {
         "vs_finance.views_ar",
         "Allows or rejects non-zero customer opening balances.",
     ),
+    "term_collection_target_pct": _consumer(
+        "Finance dashboard: receivables",
+        "vs_finance.dashboard_receivables",
+        "Draws the target line on the collection curve and judges the projected finish against it.",
+    ),
 }
 
 

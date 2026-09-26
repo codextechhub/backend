@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from django.conf import settings
-from django.core.validators import MaxValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
 from ..constants import (
@@ -106,6 +106,13 @@ class FinanceDocumentSettings(TimeStampedModel):
     default_invoice_narration = models.CharField(max_length=255, blank=True, default="")
     auto_post_manual_invoices = models.BooleanField(default=True)
     allow_customer_opening_balances = models.BooleanField(default=True)
+    term_collection_target_pct = models.PositiveSmallIntegerField(
+        default=90, validators=[MinValueValidator(1), MaxValueValidator(100)],
+        help_text=(
+            "Share of a billing period's fees the owner aims to collect by its end, "
+            "drawn as the target on the collection curve."
+        ),
+    )
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="finance_document_settings_updates", null=True, blank=True,

@@ -9,8 +9,10 @@ that are not a school's get ``None``.
 Between terms the answer is the term that last started: in the holiday after
 First Term the bursar is still collecting First Term fees, and "This term"
 should keep meaning the term those fees were billed for until Second Term
-begins. A term in a draft or archived session is not considered, so next
-year's calendar being set up early never takes over the dashboard.
+begins. A term in a draft session is not considered, so next year's calendar
+being set up early never takes over the dashboard; an archived session's terms
+are, so asking about a day in last year (the term before this one, for a
+comparison) finds last year's term.
 """
 from __future__ import annotations
 
@@ -33,8 +35,7 @@ def current_term(entity, as_of):
     term = (
         AcademicTerm.all_objects
         .filter(
-            tenant=tenant, session__status="ACTIVE", archived_at__isnull=True,
-            start_date__lte=as_of,
+            tenant=tenant, session__status__in=["ACTIVE", "ARCHIVED"], start_date__lte=as_of,
         )
         .select_related("session")
         .order_by("-start_date")

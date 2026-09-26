@@ -520,6 +520,9 @@ FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:3000")
 # The window a book's owner bills by (a school's academic term), for "This term"
 # on the finance dashboard. See vs_finance.billing_periods.
 FINANCE_BILLING_PERIOD_PROVIDER = "schools.core.fal.billing_periods.current_term"
+# How the books' owner groups payers (a school's classes), for "collection by
+# class". See vs_finance.payer_groups.
+FINANCE_PAYER_GROUP_PROVIDER = "schools.core.fal.payer_groups.payer_classes"
 
 # Public targets the platform-health synthetic probes knock on. A deployment
 # names its own; the defaults reach the development API. See the module

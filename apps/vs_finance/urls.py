@@ -20,6 +20,7 @@ from .views import (
     DirectEntryCreateView,
     EntityListCreateView,
     FinanceDashboardView,
+    FinanceReceivablesDashboardView,
     FiscalPeriodListView,
     FiscalYearCloseView,
     FiscalYearListView,
@@ -322,6 +323,8 @@ urlpatterns = [
 
     # Reports / financial statements
     path("reports/dashboard/", FinanceDashboardView.as_view(), name="finance-dashboard"),
+    path("reports/dashboard/receivables/", FinanceReceivablesDashboardView.as_view(),
+         name="finance-dashboard-receivables"),
     path("reports/trial-balance/", TrialBalanceView.as_view(), name="finance-trial-balance"),
     path("reports/income-statement/", IncomeStatementView.as_view(), name="finance-income-statement"),
     path("reports/balance-sheet/", BalanceSheetView.as_view(), name="finance-balance-sheet"),

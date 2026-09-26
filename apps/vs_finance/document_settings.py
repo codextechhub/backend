@@ -14,6 +14,8 @@ SETTING_FIELDS = (
     "default_invoice_narration",
     "auto_post_manual_invoices",
     "allow_customer_opening_balances",
+    "term_collection_target_pct",
+    # Not a model field; kept last because the update loop skips it.
     "primary_collection_bank_account",
 )
 
@@ -48,6 +50,7 @@ def serialize_finance_document_settings(settings):
         "default_invoice_narration": settings.default_invoice_narration,
         "auto_post_manual_invoices": settings.auto_post_manual_invoices,
         "allow_customer_opening_balances": settings.allow_customer_opening_balances,
+        "term_collection_target_pct": settings.term_collection_target_pct,
         "primary_collection_bank_account": _bank_summary(primary),
         "bank_account_options": [
             _bank_summary(bank) for bank in BankAccount.objects.filter(
@@ -89,6 +92,17 @@ def _validated_values(data):
         if not isinstance(data[field], bool):
             raise ValidationError({field: "Use true or false."})
         values[field] = data[field]
+    if "term_collection_target_pct" in data:
+        value = data["term_collection_target_pct"]
+        try:
+            if isinstance(value, bool):
+                raise TypeError
+            value = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"term_collection_target_pct": "Enter a whole percentage."}) from exc
+        if value < 1 or value > 100:
+            raise ValidationError({"term_collection_target_pct": "Use a value from 1 to 100."})
+        values["term_collection_target_pct"] = value
     if "primary_collection_bank_account" in data:
         values["primary_collection_bank_account"] = data["primary_collection_bank_account"]
     return values

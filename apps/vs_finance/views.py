@@ -2379,6 +2379,37 @@ class FinanceDashboardView(APIView):
         )
 
 
+class FinanceReceivablesDashboardView(APIView):
+    """The Receivables & collections tab of the Finance dashboard.
+
+    Same opening rule and query parameters as :class:`FinanceDashboardView`
+    (``?window=``, ``?period=``); each block is computed only for a reader who
+    holds its key, under their branches. See
+    :mod:`vs_finance.dashboard_receivables`.
+
+    docstring-name: Finance dashboard: receivables
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasAnyModuleAccess]
+    rbac_modules = ["finance"]
+
+    def get(self, request):
+        from .dashboard import DashboardReader
+        from .dashboard_receivables import receivables_view
+
+        entity = resolve_entity(request)
+        return success_response(
+            message="Receivables dashboard retrieved.",
+            data=receivables_view(
+                entity,
+                reader=DashboardReader.for_user(request.user, getattr(request.user, "tenant", None)),
+                window=request.query_params.get("window"),
+                period=_resolve_period(entity, request),
+                user=request.user,
+            ),
+        )
+
+
 # Group endpoint behavior for A R Aging View.
 class ARAgingView(APIView):
     """Customer balances by age bucket, with CSV, XLSX and PDF export.

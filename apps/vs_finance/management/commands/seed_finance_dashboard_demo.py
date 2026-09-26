@@ -53,9 +53,11 @@ class Command(BaseCommand):
         as_of = (datetime.date.fromisoformat(options["as_of"]) if options.get("as_of")
                  else datetime.date.today())
         rng = random.Random(entity.code)
-        with transaction.atomic(), \
-                mock.patch("vs_finance.document_email.issue_invoice_copy", return_value=None), \
-                mock.patch("vs_finance.document_email.issue_receipt_copy", return_value=None):
+        # The copies are sent from on-commit hooks, so the switches must stay on
+        # until the transaction has committed: they wrap it, not sit inside it.
+        with mock.patch("vs_finance.document_email.issue_invoice_copy", return_value=None), \
+                mock.patch("vs_finance.document_email.issue_receipt_copy", return_value=None), \
+                transaction.atomic():
             Seeder(entity, as_of, rng, self.stdout).run()
 
 
