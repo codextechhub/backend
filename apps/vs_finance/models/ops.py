@@ -1053,12 +1053,22 @@ class Budget(TimeStampedModel):
 
     Read-only against the ledger: a budget never posts. Budget-vs-actual
     (:func:`vs_finance.reports.budget_vs_actual`) compares each line to the
-    :class:`AccountBalance` actuals. Approval **locks** the figures so the plan can't be
-    quietly rewritten to flatter the variance.
+    ledger's actuals. Approval **locks** the figures so the plan can't be quietly
+    rewritten to flatter the variance.
+
+    ``branch`` makes it one branch's plan, measured against the journals raised
+    in that branch alone; empty, it is the school's plan, measured against the
+    whole ledger. A branch plan leaves out school-wide entries because those are
+    the school plan's to measure: counting them in every branch's plan would
+    charge each branch the whole school's shared spend.
     """
 
     entity = models.ForeignKey(
         LedgerEntity, on_delete=models.PROTECT, related_name="budgets",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        related_name="finance_budgets", null=True, blank=True,
     )
     code = models.CharField(
         max_length=48, blank=True, db_index=True,
@@ -1078,10 +1088,18 @@ class Budget(TimeStampedModel):
     )
 
     class Meta:
+        # Names are unique within a plan's own scope, so one branch naming its
+        # plan never collides with, or reveals, another branch's.
         constraints = [
             models.UniqueConstraint(
                 fields=["entity", "fiscal_year", "name"],
+                condition=models.Q(branch__isnull=True),
                 name="uniq_finance_budget_entity_year_name",
+            ),
+            models.UniqueConstraint(
+                fields=["entity", "fiscal_year", "branch", "name"],
+                condition=models.Q(branch__isnull=False),
+                name="uniq_finance_budget_branch_year_name",
             ),
         ]
         indexes = [models.Index(fields=["entity", "status"])]

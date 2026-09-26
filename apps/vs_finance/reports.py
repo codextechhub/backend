@@ -1027,6 +1027,23 @@ class BudgetVarianceReport:
 
 
 # Handle the budget vs actual workflow.
+def _budget_actuals(budget):
+    """The ledger a budget is measured against: the whole entity, or its branch.
+
+    A branch's plan is measured against the journals raised in that branch alone
+    (the exclusive reading), because school-wide entries are the school plan's to
+    measure; see :class:`vs_finance.models.Budget`.
+    """
+    from .branch_ledger import ledger_balances
+    from vs_rbac.scoping import BranchScope
+
+    if budget.branch_id is None:
+        return ledger_balances(budget.entity)
+    return ledger_balances(
+        budget.entity, BranchScope(frozenset({budget.branch_id}), include_shared=False),
+    )
+
+
 def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
     """Compare a budget's planned figures to ledger actuals, per account.
 
@@ -1038,7 +1055,7 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
     to scope both sides to a single period; otherwise the whole fiscal year is summed.
     """
     from .constants import AccountType, NormalBalance
-    from .models import AccountBalance, BudgetLine
+    from .models import BudgetLine
 
     # Budgets are plans of income/expense; the balance-sheet contra side of a posting
     # (cash, AR, payables) is noise in a variance report, so unbudgeted accounts only
@@ -1075,7 +1092,7 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
 
     # Actual movement per account from the period balances of this fiscal year.
     balances = (
-        AccountBalance.objects
+        _budget_actuals(budget)
         .filter(period__fiscal_year=fiscal_year)
         .select_related("account", "period")
     )
@@ -1159,7 +1176,7 @@ def budget_monthly_matrix(budget) -> BudgetMatrix:
     balances) - no per-cell query - so the whole grid is one cheap read.
     """
     from .constants import AccountType, NormalBalance
-    from .models import AccountBalance, BudgetLine, FiscalPeriod
+    from .models import BudgetLine, FiscalPeriod
 
     _PL_TYPES = {AccountType.INCOME, AccountType.EXPENSE}
     fiscal_year = budget.fiscal_year
@@ -1191,7 +1208,7 @@ def budget_monthly_matrix(budget) -> BudgetMatrix:
             slot_for(line.account)["budget"][line.period_no] += line.amount
 
     balances = (
-        AccountBalance.objects
+        _budget_actuals(budget)
         .filter(period__fiscal_year=fiscal_year, period__period_no__lte=12)
         .select_related("account", "period")
     )
@@ -1466,12 +1483,12 @@ def income_statement_compare(entity, *, period=None, scope=None) -> IncomeStatem
     has_prior = prior_fy is not None
     pri_inc, pri_exp = _actuals(prior_fy) if has_prior else ({}, {})
 
-    # Budget for the current fiscal year - prefer an approved (locked) plan over a draft.
+    # The school's plan for the year, approved over draft. A branch plan is not
+    # compared here: it covers one branch exclusively, the statement does not.
+    school_plans = Budget.objects.filter(entity=entity, fiscal_year=fy, branch__isnull=True)
     budget = None if scope is not None and scope.is_narrowed else (
-        Budget.objects.filter(
-            entity=entity, fiscal_year=fy,
-            status=BudgetStatus.APPROVED).order_by("-id").first()
-        or Budget.objects.filter(entity=entity, fiscal_year=fy).order_by("-id").first())
+        school_plans.filter(status=BudgetStatus.APPROVED).order_by("-id").first()
+        or school_plans.order_by("-id").first())
     has_budget = budget is not None
     budget_by_acc: dict[int, list] = {}
     if has_budget:

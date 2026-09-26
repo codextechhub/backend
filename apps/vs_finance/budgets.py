@@ -63,20 +63,30 @@ def ensure_budget_period(budget, period_no):
     return _ensure_fiscal_period(period_no, _regular_period_nos(budget))
 
 
+def _name_clash(name, fiscal_year, branch) -> str:
+    """The error for a plan name already taken by the same school or branch that year."""
+    owner = branch.name if branch is not None else "the school"
+    return f"{owner} already has a budget named '{name}' for FY{fiscal_year.year}."
+
+
 @transaction.atomic
 # Create a draft budget document.
-def create_budget(entity, *, name, fiscal_year, lines=None, actor_user=None):
+def create_budget(entity, *, name, fiscal_year, lines=None, actor_user=None, branch=None):
     """Create a draft budget with an auto-allocated code, optionally with its lines.
 
     The code is drawn from the same tenant-level daily document sequence as other
-    finance records, so every budget has a stable unique reference.
+    finance records, so every budget has a stable unique reference. ``branch``
+    makes it that branch's plan; ``None`` is the school's. A name already used by
+    a plan in the same scope and year is refused with a readable error.
     """
     from .models import Budget
     from .numbering import next_document_number
 
+    if Budget.objects.filter(entity=entity, fiscal_year=fiscal_year, branch=branch, name=name).exists():
+        raise BudgetError(_name_clash(name, fiscal_year, branch))
     code = next_document_number(entity=entity, doc_type=DocType.BUDGET)
     budget = Budget.objects.create(
-        entity=entity, code=code, fiscal_year=fiscal_year, name=name,  # Persist entity, document code, year, and name.
+        entity=entity, code=code, fiscal_year=fiscal_year, name=name, branch=branch,
     )
     if lines:  # Optional initial line payload.
         set_budget_lines(budget, lines)  # Replace draft budget lines with the supplied lines.
@@ -89,6 +99,13 @@ def update_budget(budget, *, name=None, actor_user=None):
     """Rename a draft budget. Refuses once approved/locked."""
     _ensure_editable(budget)  # Refuse edits to locked budgets.
     if name is not None:  # Only update name when caller supplied one.
+        from .models import Budget
+
+        clash = Budget.objects.filter(
+            entity=budget.entity, fiscal_year=budget.fiscal_year, branch=budget.branch, name=name,
+        ).exclude(pk=budget.pk)
+        if clash.exists():
+            raise BudgetError(_name_clash(name, budget.fiscal_year, budget.branch))
         budget.name = name  # Set the new display name.
         budget.save(update_fields=["name", "updated_at"])
     return budget  # Return the updated budget.

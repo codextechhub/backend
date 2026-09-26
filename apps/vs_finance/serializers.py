@@ -1268,16 +1268,39 @@ class BudgetLineSerializer(serializers.ModelSerializer):
 
 
 class BudgetSerializer(serializers.ModelSerializer):
+    """A budget, with whose plan it is and whether the reader may change it.
+
+    ``branch_id`` is empty for the school's own plan. ``can_manage`` answers for
+    the request's reader: a branch-bound reader may read the school's plan but
+    not change it (see :func:`vs_rbac.scoping.caller_may_change`).
+    """
+
     fiscal_year = serializers.IntegerField(source="fiscal_year.year", read_only=True)
     is_locked = serializers.BooleanField(read_only=True)
     lines = BudgetLineSerializer(many=True, read_only=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    can_manage = serializers.SerializerMethodField()
 
     class Meta:
         model = Budget
         fields = [
             "id", "code", "name", "fiscal_year", "fiscal_year_id", "status",
-            "is_locked", "approved_at", "lines",
+            "is_locked", "approved_at", "lines", "branch_id", "branch_name", "can_manage",
         ]
+
+    def get_can_manage(self, obj) -> bool:
+        from vs_rbac.scoping import caller_may_change, visible_branch_ids
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user is None:
+            return True
+        # One scope lookup per response, not per row of a list.
+        if "_visible_branches" not in self.context:
+            self.context["_visible_branches"] = visible_branch_ids(user, obj.entity.tenant)
+        return caller_may_change(
+            user, obj.entity.tenant, [obj.branch_id], visible=self.context["_visible_branches"],
+        )
 
 
 # --------------------------------------------------------------------------- #

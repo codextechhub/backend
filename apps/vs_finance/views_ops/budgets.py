@@ -1,21 +1,29 @@
 """Budgets and variance.
 
-A budget is the entity's one plan and carries no branch. A branch-bound reader
-who may read budgets sees the plan, but not the actuals set against it or the
-variance: school-wide actuals would show them other branches' money, and their
-own branch's actuals against the whole school's plan would read as a shortfall
-that is only the other branches' share. Those figures are ``None`` for them,
-each response says ``narrowed``, and variance rows for accounts the plan does not
-cover (activity with no budget line) are left out, since their presence alone
-reports other branches' postings.
+A budget is either the school's plan (no branch) or one branch's plan. Readers
+see the plans in their reach: their own branches' and the school's.
+
+* A branch plan is measured against that branch's own journals, and whoever can
+  see it sees its actuals and variance.
+* The school's plan is measured against the whole ledger. A branch-bound reader
+  sees that plan but not its actuals: the school's actuals would show them other
+  branches' money, and their own against the whole plan would read as a
+  shortfall that is only the other branches' share. For them those figures are
+  ``None``, and variance rows for accounts the plan does not cover are left out,
+  since their presence alone reports other branches' postings.
+* A branch-bound reader may change only their own branches' plans; the school's
+  plan is read-only to them, and ``can_manage`` on each budget says which. What
+  they create is filed to their branch. A school-wide reader names a branch, or
+  none for the school's plan.
 """
 from __future__ import annotations
 
 
 from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.permissions import SAFE_METHODS
 
 from core.response import success_response
-from vs_rbac.scoping import branch_scope
+from vs_rbac.scoping import assert_caller_may_change, branch_scope, raised_branch
 
 from ..money import format_naira
 from ..views import resolve_entity
@@ -40,9 +48,35 @@ from .base import (
 # Budgets                                                                     #
 # --------------------------------------------------------------------------- #
 
-def _withholds_actuals(request) -> bool:
-    """True when the reader is branch-bound; see the module docstring."""
-    return branch_scope(request, include_shared=True).is_narrowed
+def _reader_scope(request):
+    """The reader's reach over budgets: their branches' plans and the school's."""
+    return branch_scope(request, include_shared=True)
+
+
+def _withholds_actuals(request, budget) -> bool:
+    """True when this reader sees only ``budget``'s plan; see the module docstring."""
+    return budget.branch_id is None and _reader_scope(request).is_narrowed
+
+
+def _filing_choices(request, entity) -> dict:
+    """Whose plan this reader may create: the school's, and which branches'.
+
+    Answered by the server because the branch list a client can read is the
+    school's, not the reader's; offering Lekki to the Ikeja bursar would only
+    lead to a refusal on save. ``POST`` applies the same rule through
+    :func:`vs_rbac.scoping.raised_branch`.
+    """
+    from vs_rbac.scoping import WHOLE_TENANT, caller_branch_ids
+    from vs_tenants.models import Branch
+
+    ids = caller_branch_ids(request)
+    branches = Branch.objects.filter(tenant=entity.tenant)
+    if ids is not WHOLE_TENANT:
+        branches = branches.filter(pk__in=ids)
+    return {
+        "school": ids is WHOLE_TENANT,
+        "branches": [{"id": b.id, "name": b.name} for b in branches.order_by("name")],
+    }
 
 
 # Group endpoint behavior for Budget List Create View.
@@ -65,7 +99,9 @@ class BudgetListCreateView(_FinanceBase):
         from ..reports import budget_vs_actual
 
         entity = resolve_entity(request)
-        qs = Budget.objects.filter(entity=entity).select_related("fiscal_year").prefetch_related("lines")
+        qs = _reader_scope(request).filter(
+            Budget.objects.filter(entity=entity)
+        ).select_related("fiscal_year", "branch", "entity__tenant").prefetch_related("lines")
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
 
@@ -74,21 +110,22 @@ class BudgetListCreateView(_FinanceBase):
         paginator = XVSPagination()
         paginator.page_size = 25
         page = paginator.paginate_queryset(qs.order_by("-id"), request, view=self)
-        data = BudgetSerializer(page, many=True).data
+        data = BudgetSerializer(page, many=True, context={"request": request}).data
         by_id = {b.id: b for b in page}
-        narrowed = _withholds_actuals(request)
         for row in data:
             budget = by_id[row["id"]]
             report = budget_vs_actual(budget)
             budgeted = report.total_budget
             actual = report.total_actual
+            hidden = _withholds_actuals(request, budget)
             row["budgeted_total"] = budgeted
-            row["actual_ytd"] = None if narrowed else actual
+            row["actual_ytd"] = None if hidden else actual
             row["consumed_pct"] = (
-                None if narrowed or not budgeted else round(actual * 100 / budgeted, 1)
+                None if hidden or not budgeted else round(actual * 100 / budgeted, 1)
             )
         response = paginator.get_paginated_response(data)
-        response.data["narrowed"] = narrowed
+        response.data["narrowed"] = _reader_scope(request).is_narrowed
+        response.data["filing"] = _filing_choices(request, entity)
         return response
 
     # Handle POST requests for this endpoint.
@@ -106,10 +143,11 @@ class BudgetListCreateView(_FinanceBase):
             fiscal_year=_resolve_fiscal_year(entity, body.get("fiscal_year")),
             lines=_resolve_lines(entity, body.get("lines")),
             actor_user=request.user,
+            branch=raised_branch(request, entity.tenant, body),
         )
         return success_response(
             f"Budget {budget.code} created.",
-            data=BudgetSerializer(budget).data, status=201,
+            data=BudgetSerializer(budget, context={"request": request}).data, status=201,
         )
 
 
@@ -133,13 +171,28 @@ def _resolve_lines(entity, raw):
 
 # Define Budget Action Base values.
 class _BudgetActionBase(_FinanceBase):
-    # Support the budget workflow.
     def _budget(self, request, pk):
+        """The budget, if it is in the reader's reach, and theirs to change on a write.
+
+        Another branch's plan answers 404, so its existence is not confirmed. A
+        write to the school's plan by a branch-bound reader is refused here, once,
+        for every write endpoint below.
+        """
         entity = resolve_entity(request)
-        budget = Budget.objects.filter(entity=entity, pk=pk).select_related("fiscal_year").first()
+        budget = _reader_scope(request).filter(
+            Budget.objects.filter(entity=entity, pk=pk)
+        ).select_related("fiscal_year", "branch", "entity__tenant").first()
         if budget is None:
             raise NotFound("Budget not found for this entity.")
+        if request.method not in SAFE_METHODS:
+            assert_caller_may_change(
+                request.user, entity.tenant, [budget.branch_id],
+                message="This is the school's budget. Your branch can read it but not change it.",
+            )
         return entity, budget
+
+    def _payload(self, request, budget):
+        return BudgetSerializer(budget, context={"request": request}).data
 
 
 # Group endpoint behavior for Budget Detail View.
@@ -158,7 +211,7 @@ class BudgetDetailView(_BudgetActionBase):
     # Handle GET requests for this endpoint.
     def get(self, request, pk):
         _, budget = self._budget(request, pk)
-        return success_response("Budget retrieved.", data=BudgetSerializer(budget).data)
+        return success_response("Budget retrieved.", data=self._payload(request, budget))
 
     # Handle PATCH requests for this endpoint.
     def patch(self, request, pk):
@@ -171,7 +224,7 @@ class BudgetDetailView(_BudgetActionBase):
             raise ValidationError({"name": "A budget name is required."})
         update_budget(budget, name=str(name).strip() if name is not None else None, actor_user=request.user)
         budget.refresh_from_db()
-        return success_response("Budget updated.", data=BudgetSerializer(budget).data)
+        return success_response("Budget updated.", data=self._payload(request, budget))
 
     # Handle DELETE requests for this endpoint.
     def delete(self, request, pk):
@@ -206,7 +259,7 @@ class BudgetLineCreateView(_BudgetActionBase):
         )
         budget.refresh_from_db()
         return success_response(
-            "Budget line saved.", data=BudgetSerializer(budget).data, status=201,
+            "Budget line saved.", data=self._payload(request, budget), status=201,
         )
 
     # Handle PUT requests for this endpoint.
@@ -217,7 +270,7 @@ class BudgetLineCreateView(_BudgetActionBase):
         body = request.data or {}
         set_budget_lines(budget, _resolve_lines(entity, body.get("lines")))
         budget.refresh_from_db()
-        return success_response("Budget lines saved.", data=BudgetSerializer(budget).data)
+        return success_response("Budget lines saved.", data=self._payload(request, budget))
 
 
 # Group endpoint behavior for Budget Line Detail View.
@@ -233,7 +286,7 @@ class BudgetLineDetailView(_BudgetActionBase):
         _, budget = self._budget(request, pk)
         delete_budget_line(budget, line_id)
         budget.refresh_from_db()
-        return success_response("Budget line removed.", data=BudgetSerializer(budget).data)
+        return success_response("Budget line removed.", data=self._payload(request, budget))
 
 
 # Group endpoint behavior for Budget Approve View.
@@ -250,7 +303,7 @@ class BudgetApproveView(_BudgetActionBase):
         budget.refresh_from_db()
         return success_response(
             f"Budget '{budget.name}' approved and locked.",
-            data=BudgetSerializer(budget).data,
+            data=self._payload(request, budget),
         )
 
 
@@ -270,7 +323,7 @@ class BudgetVarianceView(_BudgetActionBase):
         _, budget = self._budget(request, pk)
         period_no = _int(request.query_params.get("period_no"), "period_no", minimum=1)
         report = budget_vs_actual(budget, period_no=period_no)
-        narrowed = _withholds_actuals(request)
+        narrowed = _withholds_actuals(request, budget)
 
         # Support the money pair workflow.
         def _money_pair(amount):
@@ -321,7 +374,7 @@ class BudgetHeatmapView(_BudgetActionBase):
 
         _, budget = self._budget(request, pk)
         matrix = budget_monthly_matrix(budget)
-        narrowed = _withholds_actuals(request)
+        narrowed = _withholds_actuals(request, budget)
         return success_response(
             "Budget heatmap retrieved.",
             data={

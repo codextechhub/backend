@@ -310,8 +310,8 @@ def _revenue_vs_budget(entity, fiscal_year) -> dict:
     if fiscal_year is not None:  # Budget lookup requires a fiscal year.
         from .models import Budget
 
-        budget = (  # Choose latest budget for the fiscal year.
-            Budget.objects.filter(entity=entity, fiscal_year=fiscal_year)
+        budget = (  # The school's latest plan; branch plans cover part of the ledger.
+            Budget.objects.filter(entity=entity, fiscal_year=fiscal_year, branch__isnull=True)
             .order_by("-approved_at", "-id")
             .first()
         )
