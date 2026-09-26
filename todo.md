@@ -657,6 +657,29 @@ MUST SAY: the statutory pack exists only for the whole entity. Remove the D17
 NEEDS ATTENTION note about a branch statutory pack.
 VERIFIED (working tree before commit): vs_finance.tests_branch_ledger and StatutoryPackTests 18 OK.
 
+### D22. Each branch can build its own budget (8ca7af04, 2026-09-26)
+MODULES: M19 finance and accounting.
+- `Budget.branch` (nullable, migration 0029): null is the school's plan, a
+  branch makes it that branch's plan. Names are unique per school or per
+  branch within a fiscal year (`BUDGET_ERROR`, 422, names the owner).
+- `GET /finance/budgets/` lists the reader's branches' plans plus the school's;
+  each row adds `branch_id`, `branch_name` and `can_manage`. The response adds
+  `filing: {school, branches[]}`, the plans the reader may create.
+- `POST /finance/budgets/` takes an optional `branch`, filed through
+  `raised_branch`: a one-branch reader is filed to it, naming another branch
+  is 403, a several-branch reader must name one of theirs.
+- Detail, lines, approve, variance and heatmap: another branch's plan is 404;
+  any write to the school's plan by a branch-bound reader is 403
+  `SHARED_RECORD_READ_ONLY`.
+- A branch plan's actuals are that branch's journals only (school-wide entries
+  excluded), shown in full to its readers. The school's plan keeps the D20
+  plan-only rule for branch-bound readers.
+- Finance dashboard Revenue vs Budget and the income statement budget column
+  use the school's plan only.
+MUST SAY: a branch plan is measured exclusively against its branch; the school's
+plan is read-only to branch staff.
+VERIFIED (working tree before commit): vs_finance.tests_budget_branch 16 OK; vs_finance 821 OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
