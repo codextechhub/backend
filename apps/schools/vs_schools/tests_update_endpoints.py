@@ -29,7 +29,12 @@ from vs_audit.models import (
     AuditSeverity,
     EntityAuditTrail,
 )
-from vs_rbac.tests.helpers import make_branch, make_school, make_vision_user
+from vs_rbac.tests.helpers import (
+    assert_school_created,
+    make_branch,
+    make_school,
+    make_vision_user,
+)
 from vs_tenants.models import Branch, BranchStatus, Tenant
 
 from .models import School, SchoolBranding, SchoolStatus
@@ -667,7 +672,7 @@ class SchoolTrailIsKeyedOnThePrimaryKeyTests(TestCase):
             },
             format="json",
         )
-        self.assertEqual(response.status_code, 201, response.data)
+        assert_school_created(self, response)
         return School.objects.get(slug=slug)
 
     def _rename(self, school, new_slug):
@@ -895,7 +900,7 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
             },
             format="json",
         )
-        self.assertEqual(response.status_code, 201, response.data)
+        assert_school_created(self, response)
         school = School.objects.get(slug=slug)
         return school, school.branches.get(is_main=True)
 

@@ -35,6 +35,7 @@ from schools.vs_schools.models import School, SchoolStatus
 from vs_audit.models import AuditActionType, AuditEvent, AuditModuleKey
 from vs_rbac.models import Permission
 from vs_rbac.tests.helpers import (
+    assert_school_created,
     codex_tenant,
     make_assignment,
     make_branch,
@@ -941,7 +942,10 @@ class SchoolCreationProvisionsOnboardingTests(TestCase):
         client = APIClient()
         client.force_authenticate(user=self.vision_user)
         response = client.post(reverse("school-create"), payload, format="json")
-        self.assertEqual(response.status_code, expect, response.data)
+        if expect == 201:
+            assert_school_created(self, response)
+        else:
+            self.assertEqual(response.status_code, expect, response.data)
         return response
 
     def test_creating_a_school_provisions_its_control_room(self):

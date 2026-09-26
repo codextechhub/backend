@@ -21,7 +21,11 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from vs_config.models import Capability, CapabilityDepthGrant, CapabilityEntitlement
-from vs_rbac.tests.helpers import make_school_admin, make_vision_user
+from vs_rbac.tests.helpers import (
+    assert_school_created,
+    make_school_admin,
+    make_vision_user,
+)
 
 from .models import PackagePlan, School, SchoolPackageSetup
 
@@ -68,7 +72,7 @@ class _PlanPage(TestCase):
             },
             format="json",
         )
-        self.assertEqual(response.status_code, 201, response.data)
+        assert_school_created(self, response)
         return School.objects.get(slug=slug)
 
     def _plan_url(self):

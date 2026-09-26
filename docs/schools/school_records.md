@@ -10,7 +10,7 @@ Branches are `school_branches`; subscription plans and module entitlements are
 school its books and the reset-config operation are `school_provisioning`.
 
 Routes covered by this slice, mounted at `/v1/i/` (`apps/urls.py:23`):
-`` (list), `create/`, `stats/`, `<slug>/`, `<slug>/update/`.
+`` (list), `create/`, `create/<job_id>/`, `stats/`, `<slug>/`, `<slug>/update/`.
 
 Findings for the whole module are collected in
 **`error/schools/school_code_issues.md`**; §8 below points at the ones belonging
@@ -157,11 +157,12 @@ that vocabulary sitting in the model file
 |---|---|---|---|
 | `/v1/i/` | GET | `platform.schools.view` | `?status=` (comma-separated), `?active=`, `?inactive=`, `?q=`, `?ordering=` (allowlisted to eight values). Paginated (`XVSPagination`, 25) |
 | `/v1/i/stats/` | GET | `platform.schools.view` | none. One aggregate query |
-| `/v1/i/create/` | POST | `platform.schools.create` | `name`, `slug`, `code`, `ownership_type`, `address`, `website`, `motto`, `term_structure`, `currency`, `registration_id`, `branding`, `primary_admin_data`, **`branches[]` (required)**, `package_setup_data` |
+| `/v1/i/create/` | POST | `platform.schools.create` | `name`, `slug`, `code`, `ownership_type`, `address`, `website`, `motto`, `term_structure`, `currency`, `registration_id`, `branding`, `primary_admin_data`, **`branches[]` (required)**, `package_setup_data`, `job_id` (optional UUID) |
+| `/v1/i/create/<job_id>/` | GET | `platform.schools.create` | none. The creation job's state |
 | `/v1/i/<slug>/` | GET | `platform.schools.view` | none |
 | `/v1/i/<slug>/update/` | PUT/PATCH | `platform.schools.update` | `slug`, `ownership_type`, `address`, `website`, `motto`, `term_structure`, `currency`, `registration_id`, `branding` |
 
-All five carry `IsAuthenticatedAndActive & HasRBACPermission`.
+All six carry `IsAuthenticatedAndActive & HasRBACPermission`.
 
 The `?q=` search on the list spans the school's own columns **and** its
 branches' `state`, `country` and `name`, with `.distinct()` to undo the join
@@ -310,7 +311,37 @@ and the detail always report `0` (`school_code_issues` §6).
 
 ### `POST /v1/i/create/`
 
-One `transaction.atomic` (`serializers.py:1018`), in this order:
+Creating a school is a background job. The request validates the payload
+synchronously, so a bad payload is still refused field by field with a `400`,
+and it checks the prebuilt role library synchronously, so an install that cannot
+give a school its roles still answers `503` before anything is queued. It then
+hands the writing to `vs_schools.create_school` on a worker and answers `202`
+with the job's state under `data`: `{job_id, status, steps, done, current,
+school, message}`. `steps` lists the steps this payload reports in order (the
+`school_admin` step only when a school-level administrator is sent, `plan` only
+when `package_setup_data` is sent, `invitations` only when there is an
+administrator to invite); `done` is the steps finished so far; `current` is the
+step running now; `school` is the created school's `slug` and `label` once the
+job succeeds. The console polls `GET /v1/i/create/<job_id>/` for that same state
+until the job finishes. Only the operator who started a job may read it: another
+operator's job id answers `404`, the same as one that does not exist.
+
+The caller may name the job's id in the body (`job_id`, a UUID it generated), so
+the console can poll from the moment it posts. A reused id is refused with `400`,
+and a value that is not a UUID is refused with `400`. Where the worker runs the
+task inline (local development and the eager lever on a deployment) the job has
+already finished by the time the POST returns, so `status` is already
+`SUCCEEDED` or `FAILED`.
+
+A failure raised inside the creation, rather than during validation, is recorded
+on the job: the response is still `202`, `status` is `FAILED`, `current` names
+the step it stopped on, and `message` carries a sentence fit to show. A written
+refusal such as an administrator that could not be provisioned carries its own
+message; any other fault carries a fixed generic sentence, never the raw
+exception text.
+
+The writing itself is one `transaction.atomic` (`serializers.py:1018`) on the
+worker, in this order:
 
 | Step | Rows |
 |---|---|
@@ -375,6 +406,11 @@ POST /v1/i/create/?tenant=codex
                          "enabled_modules": ["procurement"]}
 }
 ```
+
+The request validates the payload and the role library, then answers `202` with
+the creation job's state and hands the steps below to a worker. The console
+polls `GET /v1/i/create/<job_id>/` and shows each step as it finishes. The rest
+of this example is what that worker does.
 
 **2. Validation.** No slug was sent, so one is generated:
 `_normalize_slug("Bright Star Academy")` → `bright-star-academy`, not reserved,

@@ -29,6 +29,7 @@ from vs_config.models import ConfigurationDefinition
 from ..models import Permission, PermissionScope
 from ..plan_gate import plan_refusal
 from .helpers import (
+    assert_school_created,
     make_assignment,
     make_role,
     make_role_permission,
@@ -92,7 +93,7 @@ class OneSchoolMeetsTheWallTests(TestCase):
             },
             format="json",
         )
-        self.assertEqual(response.status_code, 201, response.data)
+        assert_school_created(self, response)
         return School.objects.get(slug=slug)
 
     def test_the_plan_a_school_signs_reaches_its_grants(self):

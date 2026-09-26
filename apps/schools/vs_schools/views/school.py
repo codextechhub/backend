@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import logging
+import uuid
+
 from django.db.models import Q
+from django.shortcuts import get_object_or_404
+from rest_framework.exceptions import ValidationError
 from django.db.models import Prefetch
 from rest_framework import generics
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 
-from core.mixins import RetrieveModelMixin, CreateModelMixin
+from core.mixins import RetrieveModelMixin
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
 from core.uploads import LOGO_EXTENSIONS, MAX_LOGO_BYTES, validate_upload
@@ -23,6 +28,8 @@ from ..serializers import (
     SchoolProfileUpdateSerializer,
     SchoolUpdateSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ActorContextMixin:
@@ -138,11 +145,106 @@ class SchoolStatsView(generics.GenericAPIView):
         return success_response(message="School statistics retrieved.", data=result)
     
 
-class SchoolCreateView(CreateModelMixin, ActorContextMixin, generics.CreateAPIView):
-    """docstring-name: Create a school"""
+class SchoolCreateView(ActorContextMixin, generics.GenericAPIView):
+    """Start creating a school, and answer with the job doing it.
+
+    The payload is validated here, so a mistake is still refused field by
+    field with a 400, and the install's role library is checked here, so a
+    deployment that cannot give a school its roles still answers 503 before
+    anything is queued. The creation itself runs as a background job (see
+    ``services.creation``), and the answer is ``202`` with the job's state,
+    which ``SchoolCreateJobView`` keeps answering until it finishes.
+
+    ``job_id`` in the body, a UUID the console generates, becomes the job's
+    id. It lets the console poll from the moment it posts, which is the only
+    way to watch the steps when the job runs inline in this request.
+
+    docstring-name: Create a school
+    """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.schools.create"
     serializer_class = SchoolCreateSerializer
+
+    def post(self, request, *args, **kwargs):
+        from core.models import BackgroundJob
+
+        from ..services.admin_provisioning import require_prebuilt_roles
+        from ..services.creation import creation_job_state
+        from ..tasks import create_school_task
+
+        payload = {key: request.data[key] for key in request.data}
+        job_id = _requested_job_id(payload.pop("job_id", None))
+
+        serializer = self.get_serializer(data=payload)
+        serializer.is_valid(raise_exception=True)
+        require_prebuilt_roles()
+
+        if BackgroundJob.objects.filter(celery_task_id=job_id).exists():
+            raise ValidationError({"job_id": "This job id has already been used. Generate a new one."})
+
+        try:
+            create_school_task.apply_async(
+                kwargs={
+                    "payload": payload,
+                    "actor_id": str(request.user.pk),
+                    "_job_owner_id": str(request.user.pk),
+                    "_job_label": f"Create school: {serializer.validated_data['name']}",
+                    "_job_kind": "school",
+                    # The creation screen reports the outcome itself.
+                    "_job_notify": False,
+                },
+                task_id=job_id,
+            )
+        except Exception:
+            # Inline, a failure propagates here; the job row already records it.
+            logger.warning("School creation job %s failed inline", job_id, exc_info=True)
+
+        job = BackgroundJob.objects.filter(celery_task_id=job_id).first()
+        if job is None:
+            return error_response(
+                message="The school could not be queued for creation. Try again.",
+                status=503,
+            )
+        return success_response(
+            message="School creation started.",
+            data=creation_job_state(job),
+            status=202,
+        )
+
+
+class SchoolCreateJobView(generics.GenericAPIView):
+    """The state of a school creation the caller started.
+
+    Only the person who started it can read it: another operator's job id
+    answers 404, the same as one that does not exist.
+
+    docstring-name: School creation progress
+    """
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.schools.create"
+
+    def get(self, request, job_id, *args, **kwargs):
+        from core.models import BackgroundJob
+
+        from ..services.creation import TASK_NAME, creation_job_state
+
+        job = get_object_or_404(
+            BackgroundJob,
+            celery_task_id=str(job_id),
+            owner=request.user,
+            task_name=TASK_NAME,
+        )
+        return success_response(data=creation_job_state(job))
+
+
+def _requested_job_id(raw) -> str:
+    """The caller's job id when it is a UUID, a fresh one otherwise."""
+    if raw:
+        try:
+            return str(uuid.UUID(str(raw)))
+        except ValueError:
+            raise ValidationError({"job_id": "Must be a UUID."})
+    return str(uuid.uuid4())
 
 
 class SchoolDetailView(ActorContextMixin, generics.RetrieveAPIView):

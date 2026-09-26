@@ -448,10 +448,17 @@ class AuditEvent(models.Model):
         """
         Append-only behavior:
         once created, normal updates are blocked.
+
+        An instance that was loaded from the database is refused outright. A
+        new instance carrying an existing primary key is refused by the
+        database, whose primary key rejects the insert, so neither case needs
+        a lookup: the id is minted by ``uuid4`` on construction and was being
+        read back once to ask whether it existed and again to ask whether it
+        was unique, on every event the platform writes.
         """
-        if self.pk and AuditEvent.objects.filter(pk=self.pk).exists():
+        if not self._state.adding:
             raise ValidationError("AuditEvent is immutable and cannot be updated.")
-        self.full_clean()
+        self.full_clean(validate_unique=False)
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):

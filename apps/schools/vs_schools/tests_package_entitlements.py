@@ -44,7 +44,12 @@ from vs_config.services.capabilities import (
     bulk_effective_capabilities,
     effective_capability,
 )
-from vs_rbac.tests.helpers import make_branch, make_school, make_vision_user
+from vs_rbac.tests.helpers import (
+    assert_school_created,
+    make_branch,
+    make_school,
+    make_vision_user,
+)
 from vs_tenants.models import Branch, BranchStatus
 
 from .models import (
@@ -136,7 +141,7 @@ class _PackageFixture(TestCase):
         response = self._client().post(
             reverse("school-create"), self._payload(*args, **kwargs), format="json",
         )
-        self.assertEqual(response.status_code, 201, response.data)
+        assert_school_created(self, response)
         return response
 
     def _rows(self, school):

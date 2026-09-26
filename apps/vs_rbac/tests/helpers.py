@@ -67,6 +67,21 @@ def codex_tenant():
     return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
 
 
+def assert_school_created(test, response):
+    """Assert a ``POST /i/create/`` succeeded under the background-job contract.
+
+    Creating a school is a background job: the request validates the payload and
+    hands the writing to a worker, so a successful call answers ``202`` carrying
+    the job's state rather than ``201`` with the school. Under eager Celery (the
+    test and local default) the worker has already run by the time the POST
+    returns, so the state is a terminal ``SUCCEEDED`` and every row the creation
+    writes exists once this returns. Returns the response for further assertions.
+    """
+    test.assertEqual(response.status_code, 202, response.data)
+    test.assertEqual(response.data["data"]["status"], "SUCCEEDED", response.data)
+    return response
+
+
 def make_school(slug="test-school", name="Test School", **kwargs):
     defaults = {"status": "ACTIVE"}
     defaults.update(kwargs)

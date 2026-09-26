@@ -34,7 +34,12 @@ from vs_rbac.models import (
     TenantRoleTemplate,
     TenantUserRoleAssignment,
 )
-from vs_rbac.tests.helpers import make_branch, make_school, make_vision_user
+from vs_rbac.tests.helpers import (
+    assert_school_created,
+    make_branch,
+    make_school,
+    make_vision_user,
+)
 from vs_user.models import User
 
 from .exceptions import AdminProvisioningError
@@ -119,7 +124,7 @@ class ANewSchoolGetsTheRolesCodeXShipsTests(TestCase):
 
     def test_the_full_set_is_provisioned_without_anybody_running_a_command(self):
         response = self._create("holy-trinity", "Main Branch")
-        self.assertIn(response.status_code, (200, 201), response.data)
+        assert_school_created(self, response)
 
         tenant = Tenant.objects.get(slug="holy-trinity")
         keys = set(
@@ -237,7 +242,7 @@ class OnePersonWearingSeveralHatsTests(TestCase):
             }],
         )
 
-        self.assertIn(response.status_code, (200, 201), response.data)
+        assert_school_created(self, response)
         tenant = Tenant.objects.get(slug="small-school")
 
         # One account, not two.
@@ -279,7 +284,7 @@ class OnePersonWearingSeveralHatsTests(TestCase):
             ],
         )
 
-        self.assertIn(response.status_code, (200, 201), response.data)
+        assert_school_created(self, response)
         tenant = Tenant.objects.get(slug="three-hats")
 
         user = User.objects.get(email="solo@three.ng", tenant=tenant)
@@ -343,7 +348,7 @@ class SharedAdminAcrossBranchesTests(TestCase):
                     },
                     format="json",
                 )
-        self.assertEqual(response.status_code, 201, response.data)
+        assert_school_created(self, response)
         return School.objects.get(slug="corona-secondary"), delay
 
     # --- the account is still made once -----------------------------------
@@ -674,7 +679,16 @@ class RequiredAdminProvisioningIsAtomicTests(TestCase):
                 format="json",
             )
 
-        self.assertEqual(response.status_code, 503, response.data)
+        # The failure is raised inside the creation transaction on the worker,
+        # not during the request's validation, so the job records it: the POST
+        # answers 202 with a FAILED job carrying the administrator refusal, and
+        # the transaction still rolls back every row it had written.
+        self.assertEqual(response.status_code, 202, response.data)
+        self.assertEqual(response.data["data"]["status"], "FAILED", response.data)
+        self.assertEqual(
+            response.data["data"]["message"],
+            AdminProvisioningError.default_message,
+        )
         self.assertFalse(School.objects.filter(slug="two-branch-atomic").exists())
         self.assertFalse(Tenant.objects.filter(slug="two-branch-atomic").exists())
         self.assertFalse(User.objects.filter(
@@ -958,7 +972,7 @@ class AnAdministratorIsAMemberOfStaffTests(TestCase):
                 response = client.post(
                     reverse("school-create"), payload, format="json",
                 )
-        self.assertIn(response.status_code, (200, 201), response.data)
+        assert_school_created(self, response)
         return Tenant.objects.get(slug=slug)
 
     @staticmethod
@@ -1232,7 +1246,7 @@ class ASchoolIsNeverCreatedShortOfRolesTests(TestCase):
         """The control: the refusal is about a broken install, not about creation."""
         response = self._create("whole-library-school")
 
-        self.assertIn(response.status_code, (200, 201), response.data)
+        assert_school_created(self, response)
         tenant = Tenant.objects.get(slug="whole-library-school")
         keys = set(
             TenantRoleTemplate.objects.filter(tenant=tenant)

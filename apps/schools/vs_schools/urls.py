@@ -9,6 +9,7 @@ from .views.plan import (
 )
 from .views.school import (
     SchoolCreateView,
+    SchoolCreateJobView,
     SchoolDetailView,
     SchoolListView,
     SchoolLogoView,
@@ -34,6 +35,7 @@ urlpatterns = [
     # --------- Schools ---------
     path("", SchoolListView.as_view(), name="school-list"),
     path("create/", SchoolCreateView.as_view(), name="school-create"),
+    path("create/<uuid:job_id>/", SchoolCreateJobView.as_view(), name="school-create-job"),
     path("stats/", SchoolStatsView.as_view(), name="school-stats"),
 
     # --------- Package Plans & Modules ---------

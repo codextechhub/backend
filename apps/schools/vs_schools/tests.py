@@ -15,7 +15,12 @@ from .serializers import SchoolCreateSerializer
 from .views.school import SchoolDetailView
 from vs_config.models import ConfigurationDefinition
 from vs_config.services.resolution import set_value
-from vs_rbac.tests.helpers import make_branch, make_school, make_vision_user
+from vs_rbac.tests.helpers import (
+    assert_school_created,
+    make_branch,
+    make_school,
+    make_vision_user,
+)
 from vs_tenants.models import Branch, Tenant
 
 
@@ -667,10 +672,19 @@ class EverySchoolHasAtLeastOneBranchTests(TestCase):
         return client
 
     def _post(self, payload, *, expect):
+        """POST to school-create and assert the outcome the caller intends.
+
+        ``expect=201`` names the success case, which the job contract answers as
+        ``202`` with a terminal ``SUCCEEDED`` job; any other value is asserted as
+        the literal status a refusal returns inline.
+        """
         response = self._client().post(
             reverse("school-create"), payload, format="json",
         )
-        self.assertEqual(response.status_code, expect, response.data)
+        if expect == 201:
+            assert_school_created(self, response)
+        else:
+            self.assertEqual(response.status_code, expect, response.data)
         return response
 
     # --- refused ----------------------------------------------------------
@@ -1087,10 +1101,19 @@ class AdminEmailCaseIsRefusedTests(TestCase):
         cls.incumbent = make_vision_user(email="head@bright-star.test")
 
     def _post(self, payload, *, expect):
+        """POST to school-create and assert the outcome the caller intends.
+
+        ``expect=201`` names the success case, which the job contract answers as
+        ``202`` with a terminal ``SUCCEEDED`` job; any other value is asserted as
+        the literal status a refusal returns inline.
+        """
         client = APIClient()
         client.force_authenticate(user=self.vision_user)
         response = client.post(reverse("school-create"), payload, format="json")
-        self.assertEqual(response.status_code, expect, response.data)
+        if expect == 201:
+            assert_school_created(self, response)
+        else:
+            self.assertEqual(response.status_code, expect, response.data)
         return response
 
     def test_school_create_refuses_a_branch_admin_that_is_a_case_variant(self):
@@ -1199,7 +1222,10 @@ class PrimaryAdminHasNoRoleLabelTests(TestCase):
                 response = self._client().post(
                     reverse("school-create"), payload, format="json",
                 )
-        self.assertEqual(response.status_code, expect, response.data)
+        if expect == 201:
+            assert_school_created(self, response)
+        else:
+            self.assertEqual(response.status_code, expect, response.data)
         return response
 
     # --- the link records still create -----------------------------------

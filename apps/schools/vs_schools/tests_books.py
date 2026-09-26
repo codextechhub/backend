@@ -30,7 +30,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from vs_finance.models import Account, FiscalPeriod, LedgerEntity
-from vs_rbac.tests.helpers import make_vision_user
+from vs_rbac.tests.helpers import assert_school_created, make_vision_user
 from vs_tenants.models import Branch, Tenant
 
 from .models import School
@@ -77,7 +77,10 @@ class _SchoolCreationMixin:
         response = self._client().post(
             reverse("school-create"), payload, format="json",
         )
-        self.assertEqual(response.status_code, expect, response.data)
+        if expect == 201:
+            assert_school_created(self, response)
+        else:
+            self.assertEqual(response.status_code, expect, response.data)
         return response
 
     def _books_for(self, school):

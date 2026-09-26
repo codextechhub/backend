@@ -1053,6 +1053,10 @@ class BranchInlineCreateSerializer(serializers.Serializer):
         return value.strip()
 
 
+def _ignore_stage(step: str) -> None:
+    """The stage reporter for a creation nobody is watching."""
+
+
 class SchoolCreateSerializer(serializers.ModelSerializer):
 
     """
@@ -1231,10 +1235,18 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def create(self, validated_data: Dict[str, Any]) -> School:
+        """Write the school and everything it starts with, in one transaction.
+
+        A ``report_stage`` callable in the context is told as each step starts,
+        by the step keys in ``services.creation``. The console's creation job
+        passes one to publish its progress; every other caller passes nothing
+        and nothing is reported.
+        """
         branding_data = validated_data.pop("branding", None)
         primary_admin_data = validated_data.pop("primary_admin_data", None)
         branches_data = validated_data.pop("branches", [])
         package_setup_data = validated_data.pop("package_setup_data", None)
+        report_stage = self.context.get("report_stage") or _ignore_stage
 
         from .services.admin_provisioning import require_prebuilt_roles
 
@@ -1270,6 +1282,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         #
         # Each is a get_or_create keyed on the role key, so this stays correct
         # if the library grows and is re-run.
+        report_stage("roles")
         provisioned = {
             key: provision_role_from_prebuilt(
                 tenant=school.tenant,
@@ -1286,6 +1299,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
 
         # --- 3. Optional school-level primary admin ---
         if primary_admin_data:
+            report_stage("school_admin")
             contact = ContactInfo.objects.create(
                 full_name=primary_admin_data["full_name"],
                 email=primary_admin_data["email"],
@@ -1310,6 +1324,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             )
 
         # --- 4. Create branches inline ---
+        report_stage("branches")
         for branch_data in branches_data:
             branch_admin_data = branch_data.pop("primary_admin_data", None)
 
@@ -1406,6 +1421,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         
         # --- 5. Optional package setup ---
         if package_setup_data:
+            report_stage("plan")
             # subscription_expires_at defaults to 1 year if not provided
             expires_at = package_setup_data.pop("subscription_expires_at", None)
             if not expires_at:
@@ -1439,6 +1455,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         # is deliberately not best effort: a failure there aborts creation.
         from .services.books import provision_books_for_school
 
+        report_stage("books")
         provision_books_for_school(school)
 
         # --- 7. Onboarding control room (best effort, never fatal) ---
@@ -1452,6 +1469,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             provision_onboarding_for_school,
         )
 
+        report_stage("onboarding")
         provision_onboarding_for_school(school, actor=actor)
 
         # --- 8. Audit trail for school ---
@@ -1487,6 +1505,8 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             diff_data=_school_snap["diff"],
         )
 
+        # The invitations are queued when this transaction commits.
+        report_stage("invitations")
         return school
     
 

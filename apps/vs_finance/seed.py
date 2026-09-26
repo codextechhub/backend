@@ -140,23 +140,35 @@ def seed_chart_of_accounts(entity):
     Safe to re-run: accounts are keyed by ``(entity, code)`` and only created when
     absent. Returns the list of :class:`~vs_finance.models.Account` rows for the
     entity after seeding.
+
+    The accounts already on the entity are read in one query and only the
+    missing ones are written, each with its parent set as it is created, since
+    ``DEFAULT_CHART`` lists every header before its children. A per-account
+    ``get_or_create`` paid a lookup, a savepoint and a parent update for every
+    row, which is about 170 round trips for the default chart. The
+    ``(entity, code)`` constraint still refuses a duplicate from a concurrent
+    seed of the same entity.
     """
     from .models import Account
 
+    existing = {account.code: account for account in Account.objects.filter(entity=entity)}
     created: dict[str, Account] = {}  # Account objects keyed by code for parent linking.
     for code, name, acc_type, postable, contra in DEFAULT_CHART:  # Create each default account.
         # ``normal_balance`` is left for Account.save() to derive from type + contra.  # Avoid duplicating model logic.
         ifrs_line = DEFAULT_IFRS_LINE_BY_CODE.get(code, "")
-        account, was_created = Account.objects.get_or_create(
-            entity=entity, code=code,  # Unique account identity within an entity.
-            defaults={  # Defaults used only on first create.
-                "name": name,  # Account name.
-                "account_type": acc_type,  # Account type.
-                "is_postable": postable,  # Whether journals may post directly here.
-                "is_contra": contra,  # Whether normal balance is contra to account type.
-                "ifrs_line": ifrs_line,  # Statutory presentation line.
-            },
-        )
+        account = existing.get(code)
+        was_created = account is None
+        if was_created:
+            account = Account(
+                entity=entity, code=code,  # Unique account identity within an entity.
+                name=name,  # Account name.
+                account_type=acc_type,  # Account type.
+                is_postable=postable,  # Whether journals may post directly here.
+                is_contra=contra,  # Whether normal balance is contra to account type.
+                ifrs_line=ifrs_line,  # Statutory presentation line.
+                parent=created.get(_PARENTS.get(code, "")) or existing.get(_PARENTS.get(code, "")),
+            )
+            account.save()
         # Backfill the IFRS line on a pre-existing account that hasn't been mapped yet
         # (e.g. a chart seeded before statutory packs existed); never override a line
         # an operator has set deliberately.  # Preserve manual chart customization.
@@ -278,17 +290,18 @@ def seed_fiscal_year(
                 f"FY{year} period {period_no} already exists with different boundaries.",
             )
 
+    # Only the missing periods are written; the existing ones were read above.
     periods = []  # Periods returned to caller.
     for period_no, name, start, end in expected_periods:
-        period, _ = FiscalPeriod.objects.get_or_create(
-            fiscal_year=fiscal_year, period_no=period_no,  # Unique period within fiscal year.
-            defaults={  # Fields used only on first creation.
-                "entity": entity,  # Duplicate entity for faster scoped queries.
-                "name": name,  # Period display name.
-                "start_date": start,  # Period start date.
-                "end_date": end,  # Period end date.
-            },
-        )
+        period = existing_periods.get(period_no)
+        if period is None:
+            period = FiscalPeriod.objects.create(
+                fiscal_year=fiscal_year, period_no=period_no,  # Unique period within fiscal year.
+                entity=entity,  # Duplicate entity for faster scoped queries.
+                name=name,  # Period display name.
+                start_date=start,  # Period start date.
+                end_date=end,  # Period end date.
+            )
         periods.append(period)  # Preserve period order.
     return fiscal_year, periods  # Return fiscal year and its periods.
 

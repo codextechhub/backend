@@ -122,12 +122,23 @@ class ScopeGuardedManager(VersionedManager):
     Its queryset keeps the record history of the models that declare one (role
     grants and permission exceptions, see ``vs_rbac.history``) through
     ``update()`` and the bulk writes; for the rest it changes nothing.
+
+    A model whose guard is one scope lookup per key may declare
+    ``assert_scope_allowed_bulk(objs)``, which answers the whole batch in one
+    query and refuses exactly what the per-row guard would. Without it, every
+    row is checked on its own, which is a query per row: copying a prebuilt
+    role of 200 permissions into a new school cost 200 lookups of the same
+    table.
     """
 
     def bulk_create(self, objs, *args, **kwargs):
         objs = list(objs)
-        for obj in objs:
-            obj.assert_scope_allowed()
+        bulk_guard = getattr(self.model, "assert_scope_allowed_bulk", None)
+        if bulk_guard is not None:
+            bulk_guard(objs)
+        else:
+            for obj in objs:
+                obj.assert_scope_allowed()
         return super().bulk_create(objs, *args, **kwargs)
 
 
@@ -931,6 +942,20 @@ class PrebuiltRolePermission(models.Model):
                 ),
             })
 
+    @classmethod
+    def assert_scope_allowed_bulk(cls, objs):
+        """The per-row guard for a whole batch, in one lookup."""
+        refused = sorted(platform_only_keys(obj.permission_id for obj in objs))
+        if refused:
+            listed = ", ".join(f"'{key}'" for key in refused)
+            verb = "is" if len(refused) == 1 else "are"
+            raise ValidationError({
+                "permission": (
+                    f"{listed} {verb} platform-scoped and cannot be a default on "
+                    f"a prebuilt tenant role."
+                ),
+            })
+
     def clean(self):
         super().clean()
         self.assert_scope_allowed()
@@ -1044,6 +1069,21 @@ class TenantRolePermission(TimeStampedModel):
             return
         tenant = getattr(self.role, "tenant", None) if self.role_id else None
         assert_tenant_may_hold([self.permission_id], tenant)
+
+    @classmethod
+    def assert_scope_allowed_bulk(cls, objs):
+        """The per-row guard for a whole batch, one lookup per tenant."""
+        keys_by_tenant = {}
+        for obj in objs:
+            if not obj.granted or not obj.permission_id:
+                continue
+            tenant = getattr(obj.role, "tenant", None) if obj.role_id else None
+            entry = keys_by_tenant.setdefault(
+                getattr(tenant, "pk", None), (tenant, set()),
+            )
+            entry[1].add(obj.permission_id)
+        for tenant, keys in keys_by_tenant.values():
+            assert_tenant_may_hold(keys, tenant)
 
     def clean(self):
         super().clean()
