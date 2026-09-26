@@ -636,6 +636,18 @@ VERIFIED (working tree before commit): schools.vs_academics 309 OK;
 schools.vs_calendar 251 OK (24 new in test_shared_rows_read_only);
 schools.vs_staff 288 OK; vs_rbac 855 OK.
 
+### D18. Budgets show a branch-bound reader the plan only (1c71fc7e, 2026-09-26)
+MODULES: M19 finance and accounting.
+- `GET /finance/budgets/`, `/budgets/<id>/variance/` and `/budgets/<id>/heatmap/`
+  send a branch-bound `finance.budget.view` reader the plan with every actual,
+  variance and consumed figure `null` and `narrowed: true`; variance and
+  heatmap rows for accounts the plan does not cover are omitted for them. A
+  whole-school reader is unchanged.
+MUST SAY: the plan-only rule for branch readers and why (a budget has no
+branch). Superseded in part by the branch-budget feature that follows (a
+branch's own budget shows that branch's actuals).
+VERIFIED (working tree before commit): vs_finance 809 OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
