@@ -486,6 +486,36 @@ the Annex's invoices in the totals), and `/finance/ar-adjustments/` refuses a
 write-off holder who lacks `finance.refund.view`.
 VERIFIED (working tree before commit): vs_finance 778 OK; vs_user 414 OK; vs_rbac 848 run with one failure (test_overrides pinned the /me key set without branch_reach), fixed and that class rerun 40 OK.
 
+### D15. Both dashboards open to the console; each block behind its key and the reader's branches (278583e9, 2026-09-26)
+MODULES: M19 finance and accounting, the procurement FRD, M04 roles and
+permissions, MRD.
+- `GET /finance/reports/dashboard/` opens to any `finance.*` or `payments.*`
+  key (was `finance.report.view`); `GET /procurement/reports/dashboard/` opens
+  to any `procurement.*` key (was `procurement.analytics.view`). Each block is
+  computed only for a reader holding its key and is `null` otherwise; the
+  payload gains `narrowed`.
+- Finance: document blocks need their key and are narrowed to the reader's
+  branches plus school-wide rows (receivables and aging and top overdue on
+  `finance.invoice.view`, the trend's issued series on invoice view and its
+  collected series on `finance.payment.view`, recent journals on
+  `finance.journal.view`, vendor bills on `procurement.vendor_invoice.view` and
+  approval counts per document type on that type's view key, both read
+  exclusively as procurement does). Ledger blocks (cash, receivables from the
+  GL, payables, net income, revenue vs budget, period close) go only to a
+  whole-school `finance.report.view` reader, because balances cannot be split by
+  branch; a narrowed invoice reader's receivables card is their open-invoice
+  total instead. The fiscal runway stays open to every reader.
+- Procurement: spend blocks need `procurement.analytics.view`, the order
+  pipeline `procurement.purchase_order.view`, overdue bills
+  `procurement.vendor_invoice.view`, the vendor count `procurement.vendor.view`;
+  the reader's own approval queue is always present; the activity feed goes
+  only to an unnarrowed analytics reader.
+MUST SAY: the new access rule and per-block keys on both dashboards, that a
+branch-bound reader's figures reconcile with their lists, and that ledger
+figures are whole-school only. Remove from M19 NEEDS ATTENTION the D14 note
+that the dashboard is not narrowed.
+VERIFIED (working tree before commit): vs_finance 785 OK; vs_procurement 592 OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
