@@ -648,6 +648,15 @@ branch). Superseded in part by the branch-budget feature that follows (a
 branch's own budget shows that branch's actuals).
 VERIFIED (working tree before commit): vs_finance 809 OK.
 
+### D21. The statutory pack is the school's filing, refused to a branch-bound reader (03928649, 2026-09-26)
+MODULES: M19 finance and accounting.
+- `GET /finance/reports/statutory-pack/` answers 403 to a branch-bound
+  `finance.report.view` reader, with the reason; a whole-school reader is
+  unchanged. No frontend screen reads it.
+MUST SAY: the statutory pack exists only for the whole entity. Remove the D17
+NEEDS ATTENTION note about a branch statutory pack.
+VERIFIED (working tree before commit): vs_finance.tests_branch_ledger and StatutoryPackTests 18 OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
