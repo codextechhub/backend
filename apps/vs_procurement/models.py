@@ -769,6 +769,10 @@ class StockMovement(TimeStampedModel):
         "vs_finance.JournalEntry", on_delete=models.PROTECT, related_name="stock_movements",
         null=True, blank=True,
     )
+    cost_center = models.ForeignKey(
+        "vs_finance.CostCenter", on_delete=models.PROTECT, related_name="stock_movements",
+        null=True, blank=True, help_text="Who the stock was issued to, when an issue names one.",
+    )
     reference = models.CharField(max_length=64, blank=True, default="")
     narration = models.CharField(max_length=255, blank=True, default="")
     created_by = models.ForeignKey(

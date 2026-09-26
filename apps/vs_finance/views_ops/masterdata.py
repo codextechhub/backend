@@ -200,8 +200,9 @@ class TaxCodeListCreateView(_FinanceBase):
 class CostCenterListCreateView(_FinanceBase):
     """GET (list) / POST (create) cost centres for an entity.
 
-    Reading is open to anyone working in finance, and to the requisition
-    writers whose forms pick a cost centre. A cost centre is a name and a code
+    Reading is open to anyone working in finance, and to the procurement staff
+    whose forms pick a cost centre: requisition writers, and storekeepers
+    issuing stock to a department. A cost centre is a name and a code
     for books the caller is already entitled to, with no amounts, and every
     finance report that can be narrowed by one needs this list for its filter.
     Gating the read on ``finance.costcenter.view`` refused a bursar the filter
@@ -221,10 +222,11 @@ class CostCenterListCreateView(_FinanceBase):
         return [
             "procurement.requisition.create",
             "procurement.requisition.update",
+            "procurement.stock.issue",
         ]
 
     def get_permissions(self):
-        """A read passes on any finance key or on a requisition grant."""
+        """A read passes on any finance key or on a procurement grant that picks one."""
         if self.request.method == "POST":
             return super().get_permissions()
         return [(IsAuthenticatedAndActive & (HasAnyModuleAccess | HasRBACPermission))()]

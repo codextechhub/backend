@@ -488,6 +488,9 @@ class StockMovementSerializer(serializers.ModelSerializer):
     location_code = serializers.CharField(
         source="location.code", read_only=True, default=None,
     )
+    cost_center_name = serializers.CharField(
+        source="cost_center.name", read_only=True, default=None,
+    )
     created_by_name = serializers.SerializerMethodField()
     value_amount_naira = serializers.SerializerMethodField()
     balance_value_naira = serializers.SerializerMethodField()
@@ -500,7 +503,7 @@ class StockMovementSerializer(serializers.ModelSerializer):
             "movement_date", "quantity", "value_amount", "value_amount_naira",
             "balance_qty", "balance_value", "balance_value_naira",
             "grn_id", "journal_id", "reference", "narration",
-            "created_by_name", "created_at",
+            "cost_center_id", "cost_center_name", "created_by_name", "created_at",
         ]
 
     def get_created_by_name(self, obj) -> str:

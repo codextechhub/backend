@@ -183,7 +183,7 @@ def _lock_stock_item(stock_item):
 
 def _record_movement(stock_item, balance, *, movement_type, quantity, value_amount,
                      movement_date, grn=None, journal=None, actor_user=None,
-                     reference="", narration=""):
+                     reference="", narration="", cost_center=None):
     """Apply a signed (qty, value) delta at one location and append a ledger row.
 
     Two things move together and must not drift: the location's own balance, which is
@@ -214,7 +214,7 @@ def _record_movement(stock_item, balance, *, movement_type, quantity, value_amou
         movement_type=movement_type, movement_date=movement_date,
         quantity=quantity, value_amount=value_amount,
         balance_qty=balance.on_hand_qty, balance_value=balance.stock_value,
-        grn=grn, journal=journal, created_by=actor_user,
+        grn=grn, journal=journal, created_by=actor_user, cost_center=cost_center,
         reference=reference, narration=narration,
     )
 
@@ -285,8 +285,13 @@ def receive_stock(stock_item, *, quantity, value, movement_date, location=None,
 # --------------------------------------------------------------------------- #
 
 def issue_stock(stock_item, *, quantity, movement_date, location=None,
-                expense_account=None, actor_user=None, reference="", narration=""):
+                expense_account=None, actor_user=None, reference="", narration="",
+                cost_center=None):
     """Issue ``quantity`` out of stock at moving-average cost (Dr expense, Cr inventory).
+
+    ``cost_center`` names who the stock went to (the kitchen, a department). It
+    is kept on the movement and on the expense line of the journal, so the issue
+    reports under that cost centre wherever spending is read by one.
 
     Wrapper recording a durable rejection audit on any :class:`FinanceError`, then
     re-raising - mirroring the journal posting contract.
@@ -295,7 +300,7 @@ def issue_stock(stock_item, *, quantity, movement_date, location=None,
         return _issue_stock_atomic(
             stock_item, quantity=quantity, movement_date=movement_date,
             location=location, expense_account=expense_account, actor_user=actor_user,
-            reference=reference, narration=narration,
+            reference=reference, narration=narration, cost_center=cost_center,
         )
     except FinanceError as exc:
         record_rejection(
@@ -308,7 +313,7 @@ def issue_stock(stock_item, *, quantity, movement_date, location=None,
 @transaction.atomic
 def _issue_stock_atomic(stock_item, *, quantity, movement_date, location=None,
                         expense_account=None, actor_user=None, reference="",
-                        narration=""):
+                        narration="", cost_center=None):
     """Post inventory relief and append its signed movement in one transaction.
 
     The journal owns the GL effect (Dr expense, Cr inventory); the movement owns the
@@ -320,6 +325,8 @@ def _issue_stock_atomic(stock_item, *, quantity, movement_date, location=None,
     quantity = _dec(quantity)
     if quantity <= 0:
         raise StockError("A stock issue must have a positive quantity.")
+    if cost_center is not None and (cost_center.entity_id != stock_item.entity_id or not cost_center.is_active):
+        raise StockError("The cost centre must be an active cost centre of the same books.")
     location = resolve_location(stock_item.entity, location)
     balance = lock_balance(stock_item, location)
     # Availability is the location's, not the entity's. Checking the roll-up is what
@@ -351,7 +358,7 @@ def _issue_stock_atomic(stock_item, *, quantity, movement_date, location=None,
         reference=reference, created_by=actor_user,
     )
     JournalLine.objects.create(
-        entry=entry, account=expense, debit=value, credit=0,
+        entry=entry, account=expense, debit=value, credit=0, cost_center=cost_center,
         description=f"Stock issued: {stock_item.code}", line_no=1,
     )
     JournalLine.objects.create(
@@ -366,7 +373,7 @@ def _issue_stock_atomic(stock_item, *, quantity, movement_date, location=None,
         stock_item, balance, movement_type=StockMovementType.ISSUE,
         quantity=-quantity, value_amount=-value, movement_date=movement_date,
         journal=entry, actor_user=actor_user, reference=reference,
-        narration=narration or "Stock issued",
+        narration=narration or "Stock issued", cost_center=cost_center,
     )
     record(
         entity=stock_item.entity, action=FinanceAuditAction.STOCK_ISSUED,

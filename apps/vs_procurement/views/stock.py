@@ -14,7 +14,7 @@ from django.db.models import (
     BigIntegerField, Count, DecimalField, F, OuterRef, Q, Subquery, Sum, Value,
 )
 from django.db.models.functions import Coalesce
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from core.response import success_response
 from vs_finance.money import format_naira
@@ -47,6 +47,7 @@ from .base import (
     _nonneg_qty,
     _quantity,
     _resolve_asset_account,
+    _resolve_cost_center,
     _resolve_expense_account,
     _signed_qty,
     _strict_kobo,
@@ -673,6 +674,8 @@ class StockIssueView(_ProcBase):
             actor_user=request.user,
             reference=_text(body.get("reference", ""), "reference", 64),
             narration=_text(body.get("narration", ""), "narration", 255),
+            # Who the stock went to: an active cost centre of these books, if given.
+            cost_center=_resolve_cost_center(entity, body.get("cost_center")),
         )
         return success_response(
             "Stock issued.",
@@ -682,6 +685,44 @@ class StockIssueView(_ProcBase):
             },
             status=201,
         )
+
+
+class StockRestockRequisitionView(_ProcBase):
+    """POST - draft one requisition for every item at or below its reorder level.
+
+    The lines and quantities come from the server's own reading of the caller's
+    stores (:func:`vs_procurement.dashboard_stock.low_stock`); ``item_ids`` may
+    narrow the draft to some of them. The requisition is created as a DRAFT in the
+    caller's branch and is never submitted here. The caller needs the requisition
+    create key and must be able to read stock.
+
+    docstring-name: Draft a restock requisition
+    """
+
+    rbac_permission = "procurement.requisition.create"
+
+    def post(self, request):
+        from vs_finance.dashboard import DashboardReader
+
+        from ..dashboard_stock import draft_restock_requisition
+        from ..serializers import RequisitionSerializer
+
+        entity = resolve_entity(request)
+        if not DashboardReader.for_user(request.user, getattr(request.user, "tenant", None)).can(
+            "procurement.stock.view",
+        ):
+            raise PermissionDenied("You need access to stock to draft a restock requisition.")
+        item_ids = (request.data or {}).get("item_ids") or None
+        if item_ids is not None and (not isinstance(item_ids, list) or not all(str(i).isdigit() for i in item_ids)):
+            raise ValidationError({"item_ids": "Give a list of stock item ids."})
+        req = draft_restock_requisition(
+            entity, as_of=datetime.date.today(), branch=_raised_branch(request, entity, {}),
+            store_scope=_branch_scope(request, entity, include_shared=True),
+            user=request.user, item_ids=item_ids,
+        )
+        if req is None:
+            raise ValidationError({"item_ids": "Nothing in your stores is at or below its reorder level."})
+        return success_response("Restock requisition drafted.", data=RequisitionSerializer(req).data, status=201)
 
 
 class StockAdjustView(_ProcBase):

@@ -499,6 +499,34 @@ class ProcurementSuppliersDashboardView(_ProcBase):
         )
 
 
+class ProcurementStockDashboardView(_ProcBase):
+    """The Stock & receiving tab of the Procurement dashboard.
+
+    Same opening rule and ``?window=`` as :class:`ProcurementDashboardView`. Stock
+    figures answer for the caller's stores (their branches' and the school-wide
+    ones, as the stock screens read them); receipts and orders answer under the
+    caller's branches. See :mod:`vs_procurement.dashboard_stock`.
+    """
+    permission_classes = [IsAuthenticatedAndActive & HasAnyModuleAccess]
+    rbac_modules = ["procurement"]
+
+    def get(self, request):
+        from vs_finance.dashboard import DashboardReader
+
+        from ..dashboard_stock import stock_view
+
+        entity = resolve_entity(request)
+        return success_response(
+            "Stock and receiving dashboard retrieved.",
+            data=stock_view(
+                entity, user=request.user, doc_scope=_scope(request, entity),
+                store_scope=_branch_scope(request, entity, include_shared=True),
+                reader=DashboardReader.for_user(request.user, getattr(request.user, "tenant", None)),
+                window=request.query_params.get("window"),
+            ),
+        )
+
+
 class SpendAnalysisView(_ProcBase):
     """Analyze posted invoice spend across isolated date/category filters."""
     rbac_permission = "procurement.analytics.view"

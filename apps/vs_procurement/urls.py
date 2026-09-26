@@ -148,6 +148,8 @@ urlpatterns = [
     path("stock-items/", views.StockItemListCreateView.as_view(), name="proc-stock-items"),
     # "summary" is registered before "<pk>" so the literal is not captured as an id.
     path("stock-items/summary/", views.StockItemSummaryView.as_view(), name="proc-stock-item-summary"),
+    path("stock-items/restock-requisition/", views.StockRestockRequisitionView.as_view(),
+         name="proc-stock-restock-requisition"),
     path("stock-items/<int:pk>/", views.StockItemDetailView.as_view(), name="proc-stock-item-detail"),
     path("stock-items/<int:pk>/issue/", views.StockIssueView.as_view(), name="proc-stock-issue"),
     path("stock-items/<int:pk>/adjust/", views.StockAdjustView.as_view(), name="proc-stock-adjust"),
@@ -160,6 +162,8 @@ urlpatterns = [
     path("reports/dashboard/", views.ProcurementDashboardView.as_view(), name="proc-dashboard"),
     path("reports/dashboard/suppliers/", views.ProcurementSuppliersDashboardView.as_view(),
          name="proc-dashboard-suppliers"),
+    path("reports/dashboard/stock/", views.ProcurementStockDashboardView.as_view(),
+         name="proc-dashboard-stock"),
     # "ap-aging/vendor" is registered before "ap-aging" (both literal; order harmless here).
     path("reports/ap-aging/vendor/", views.APAgingVendorDetailView.as_view(), name="proc-ap-aging-vendor"),
     path("reports/ap-aging/", views.APAgingView.as_view(), name="proc-ap-aging"),
