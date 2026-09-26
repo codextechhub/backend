@@ -61,6 +61,8 @@ class StaffTeachingView(StaffViewMixin, _SessionMixin, APIView):
     An archived year still returns its assignments and refuses new ones: who
     taught what last year is the record a school will be asked for.
 
+    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
+
     docstring-name: A staff member's teaching duties
     """
 
@@ -70,16 +72,27 @@ class StaffTeachingView(StaffViewMixin, _SessionMixin, APIView):
         return PERM_VIEW if method in ("GET", "HEAD", "OPTIONS") else PERM_ASSIGN
 
     def get(self, request, pk):
+        from vs_history.as_at import parse_as_at
+
+        from .. import as_at as past
+
         staff = self.get_staff(pk)
         session = self.resolve_session(request.query_params.get("session"))
-        rows = (
-            staff.teaching_assignments.filter(session=session)
-            .select_related("subject", "school_class", "staff__user")
-        )
+        as_at = parse_as_at(request)
+        if as_at is None:
+            rows = list(
+                staff.teaching_assignments.filter(session=session)
+                .select_related("subject", "school_class", "staff__user")
+            )
+        else:
+            record, children, _meta = past.staff_at(staff, as_at)
+            rows = [row for row in children["teaching_assignments"] if row.session_id == session.pk]
+            for row in rows:
+                row.staff = record
         return success_response(data={
             "session": {"id": session.pk, "name": session.name},
             "assignments": TeachingAssignmentSerializer(rows, many=True).data,
-            "load": rows.count(),
+            "load": len(rows),
             # Uncoloured and with nothing to compare it against. A subject's
             # weekly frequency is recorded nowhere and no contract records a
             # maximum, so a threshold here would be invented.

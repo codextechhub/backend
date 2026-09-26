@@ -32,6 +32,9 @@ class AccountDeepPayloadTests(DeepPayloadChecks, TestCase):
         _SURFACE + "UserReadSerializer",
         _SURFACE + "UserListSerializer",
         _SURFACE + "PlatformStaffProfileSerializer",
+        _SURFACE + "PlatformStaffProfileListSerializer",
+        _SURFACE + "PlatformStaffProfileBriefSerializer",
+        _SURFACE + "StaffProfileAccountSerializer",
     })
 
     @classmethod
@@ -60,6 +63,14 @@ class AccountDeepPayloadTests(DeepPayloadChecks, TestCase):
         colleague = make_vision_user(email="colleague@deep-user.test")
         cls.profile = PlatformStaffProfile.objects.create(
             user=colleague, employee_id="CX-DEEP-1", job_title="Analyst",
+            employment_type="FULL_TIME", employment_status="ACTIVE",
+            date_of_birth="1990-05-04", marital_status="SINGLE",
+            nationality="Nigerian", state_of_origin="Lagos",
+            personal_email="colleague@home.test", alternate_phone="08030000000",
+            residential_address="4 Allen Avenue", city="Ikeja", state="Lagos",
+            nok_name="Next Of Kin", nok_relationship="Sister",
+            nok_phone="08031111111", nok_address="5 Allen Avenue",
+            date_joined="2024-01-08",
             bank_name="GTBank", account_name="Colleague Name",
             account_number="0123456789",
         )
@@ -74,8 +85,14 @@ class AccountDeepPayloadTests(DeepPayloadChecks, TestCase):
                 Sample(_SURFACE + "UserReadSerializer", account, tenant=tenant),
                 Sample(_SURFACE + "UserListSerializer", [account], many=True, tenant=tenant),
             ]
-        samples.append(Sample(
-            _SURFACE + "PlatformStaffProfileSerializer",
-            PlatformStaffProfile.objects.get(pk=self.profile.pk), tenant=self.platform,
-        ))
+        profile = PlatformStaffProfile.objects.select_related("user").get(pk=self.profile.pk)
+        samples += [
+            Sample(_SURFACE + "PlatformStaffProfileSerializer", profile, tenant=self.platform),
+            Sample(_SURFACE + "PlatformStaffProfileListSerializer", [profile], many=True,
+                   tenant=self.platform),
+            Sample(_SURFACE + "PlatformStaffProfileBriefSerializer", profile,
+                   tenant=self.platform),
+            Sample(_SURFACE + "StaffProfileAccountSerializer", profile.user,
+                   tenant=self.platform),
+        ]
         return samples

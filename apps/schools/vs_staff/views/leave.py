@@ -42,6 +42,8 @@ from .base import StaffViewMixin
 class StaffLeaveView(StaffViewMixin, APIView):
     """GET/POST /v1/i/me/staff/<id>/leave/
 
+    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
+
     docstring-name: A staff member's leave
     """
 
@@ -76,11 +78,24 @@ class StaffLeaveView(StaffViewMixin, APIView):
         return PERM_LEAVE_APPLY if self._is_own() else PERM_LEAVE_UPDATE
 
     def get(self, request, pk):
+        from vs_history.as_at import parse_as_at
+
+        from .. import as_at as past
+
         staff = self.get_staff(pk)
-        rows = staff.leave_requests.select_related("requested_by", "staff__user")
+        as_at = parse_as_at(request)
+        if as_at is None:
+            rows = staff.leave_requests.select_related("requested_by", "staff__user")
+            days_taken = leave_service.days_taken(staff)
+        else:
+            record, children, _meta = past.staff_at(staff, as_at)
+            rows = sorted(children["leave_requests"], key=lambda row: row.start_date, reverse=True)
+            for row in rows:
+                row.staff = record
+            days_taken = past.days_taken_at(rows)
         return success_response(data={
-            "leave": LeaveSerializer(rows, many=True).data,
-            "days_taken": leave_service.days_taken(staff),
+            "leave": LeaveSerializer(rows, many=True, context={"as_at": as_at}).data,
+            "days_taken": days_taken,
             # Said explicitly, because a screen that shows days taken beside
             # nothing else will be asked for a balance, and there is none.
             "balance_note": (

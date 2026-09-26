@@ -89,6 +89,10 @@ echo "→ Students, guardians and the applicant pipeline for all five..."
 run seed_student_scenarios
 
 echo ""
+# Rows the seeders wrote without a save (raw bulk paths) still get a first
+# version, so every seeded profile can be read "as at" from today.
+run baseline_record_history
+
 echo "✔ Done. Logins: admin@codexng.com / Admin@123456 · *.vision.edu / Vision@2025 · school users / School@2025"
 echo "  Onboarding cast (School@2025): brightfield-lekki not-ready · st-monicas ready · holy-cross pending"
 echo "                                grace-fields rejected · crescent-model failed · lagoon-view live"

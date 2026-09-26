@@ -250,7 +250,18 @@ class PlatformStaffProfileViewSet(
         return qs
 
     def retrieve(self, request, *args, **kwargs):
+        """One profile, full or brief by who is asking.
+
+        ``?as_at=YYYY-MM-DD`` answers with the profile as it stood at the end
+        of that day, plus an ``as_at`` block (``vs_user.as_at``). The live
+        profile carries ``history_starts``, the earliest day it can be read at.
+        """
+        from vs_history.as_at import parse_as_at
+
+        from .. import as_at as past
+
         profile = self.get_object()
+        as_at = parse_as_at(request)
         tenant = getattr(request, 'tenant', None) or request.user.tenant
         can_view_full = (
             profile.user_id == request.user.id
@@ -267,10 +278,18 @@ class PlatformStaffProfileViewSet(
             if can_view_full
             else PlatformStaffProfileBriefSerializer
         )
-        serializer = serializer_class(profile, context=self.get_serializer_context())
+        if as_at is None:
+            data = serializer_class(profile, context=self.get_serializer_context()).data
+            starts = past.profile_history_starts(profile.pk)
+            data['history_starts'] = starts.isoformat() if starts else None
+        else:
+            record, meta = past.profile_at(profile, as_at)
+            data = serializer_class(record, context=self.get_serializer_context()).data
+            data['history_starts'] = meta['history_starts']
+            data['as_at'] = meta
         return success_response(
             message="Staff profile retrieved successfully.",
-            data=serializer.data,
+            data=data,
         )
 
     @action(detail=False, methods=['get', 'patch'], url_path='me')

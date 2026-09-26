@@ -354,6 +354,10 @@ class StaffDetailView(StaffViewMixin, APIView):
     tenure, and editing your own job title is a promotion the school did not
     give you.
 
+    ``?as_at=YYYY-MM-DD`` answers with the record as it stood at the end of
+    that day, plus an ``as_at`` block naming the day and when the history
+    starts (``as_at.py``). The live record carries ``history_starts``.
+
     docstring-name: A staff record
     """
 
@@ -390,10 +394,23 @@ class StaffDetailView(StaffViewMixin, APIView):
         ).exists()
 
     def get(self, request, pk):
+        from vs_history.as_at import parse_as_at
+
+        from .. import as_at as past
+
         staff = self.get_staff(pk)
-        return success_response(
-            data=StaffDetailSerializer(staff, context=self.serializer_context()).data,
-        )
+        as_at = parse_as_at(request)
+        if as_at is None:
+            data = StaffDetailSerializer(staff, context=self.serializer_context()).data
+            starts = past.staff_history_starts(staff.pk)
+            data["history_starts"] = starts.isoformat() if starts else None
+            return success_response(data=data)
+        record, _children, meta = past.staff_at(staff, as_at)
+        context = {**self.serializer_context(), "as_at": as_at, "on_leave_ids": set()}
+        data = StaffDetailSerializer(record, context=context).data
+        data["history_starts"] = meta["history_starts"]
+        data["as_at"] = meta
+        return success_response(data=data)
 
     @transaction.atomic
     def patch(self, request, pk):

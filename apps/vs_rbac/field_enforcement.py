@@ -413,11 +413,21 @@ class FieldAccessMixin:
 
     A serializer rendered with no request in its context passes everything, as
     does one given :func:`system_context`.
+
+    ``field_composites`` names a value built from registered fields, such as a
+    ``full_name`` made of a first, middle and last name, as
+    ``{"full_name": {"first_name": "first_name", "last_name": "user.last_name"}}``:
+    each part's client name, mapped to the attribute path its value is read
+    from. When the caller may read every part the composite is left as the
+    serializer rendered it; when they may not read one, it is rebuilt from the
+    parts they may read, in the order given, so a hidden first name does not
+    travel inside the full one.
     """
 
     field_resource: str = ""
     field_aliases: dict[str, str] = {}
     field_access_detail: bool = False
+    field_composites: dict[str, dict[str, str]] = {}
     owner_rule = None
 
     def _field_access(self) -> FieldAccessMap | None:
@@ -501,10 +511,31 @@ class FieldAccessMixin:
                     data.pop(name)
                 elif not access.can_write(entry.key):
                     read_only.append(name)
+            self._rebuild_composites(data, instance, access, entries)
 
         if self._emits_read_only_fields():
             data["_read_only_fields"] = read_only
         return data
+
+    def _rebuild_composites(self, data, instance, access, entries) -> None:
+        """Rebuild each composite in *data* from the parts the caller may read."""
+        for composite, parts in self.field_composites.items():
+            if composite not in data:
+                continue
+            readable = []
+            hidden = False
+            for part, path in parts.items():
+                entry = self._entry_for(part, entries)
+                if entry is not None and not access.can_read(entry.key):
+                    hidden = True
+                    continue
+                value = instance
+                for attribute in path.split("."):
+                    value = getattr(value, attribute, None)
+                if value:
+                    readable.append(str(value).strip())
+            if hidden:
+                data[composite] = " ".join(part for part in readable if part)
 
     def to_internal_value(self, data):
         access = self._field_access()

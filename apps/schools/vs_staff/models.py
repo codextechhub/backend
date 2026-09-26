@@ -30,6 +30,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
+from vs_history.queryset import VersionedManager
 from vs_rbac.managers import TenantAwareManager
 
 from .constants import (
@@ -72,7 +73,7 @@ class _Owned(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     objects = TenantAwareManager()
-    all_objects = models.Manager()
+    all_objects = VersionedManager()
 
     class Meta:
         abstract = True

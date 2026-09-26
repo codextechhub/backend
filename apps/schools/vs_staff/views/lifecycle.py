@@ -117,6 +117,8 @@ class StaffHistoryView(StaffViewMixin, APIView):
     one as the other believes its teacher was disciplined for mistyping a
     password.
 
+    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
+
     docstring-name: A staff member's history
     """
 
@@ -139,22 +141,31 @@ class StaffHistoryView(StaffViewMixin, APIView):
     )
 
     def get(self, request, pk):
+        from vs_history.as_at import parse_as_at
+
+        from .. import as_at as past
+
         staff = self.get_staff(pk)
+        as_at = parse_as_at(request)
+        rows = staff.employment_events.select_related("changed_by")
+        if as_at is not None:
+            past.staff_at(staff, as_at)
+            rows = rows.filter(created_at__lt=as_at.moment)
         events = [
             {
                 "kind": "employment",
                 "at": row.created_at,
                 **EmploymentEventSerializer(row).data,
             }
-            for row in staff.employment_events.select_related("changed_by")
+            for row in rows
         ]
         timeline = sorted(
-            events + self._account_events(staff),
+            events + self._account_events(staff, as_at),
             key=lambda row: row["at"], reverse=True,
         )
         return success_response(data={"entries": timeline})
 
-    def _account_events(self, staff):
+    def _account_events(self, staff, as_at=None):
         """The identity layer's half, read from its own log.
 
         Read from ``AuthEventLog`` rather than from the audit trail, and that is
@@ -175,6 +186,7 @@ class StaffHistoryView(StaffViewMixin, APIView):
             AuthEventLog.objects.filter(
                 tenant=self.tenant, subject_id=staff.user_id,
                 event__in=self.ACCOUNT_EVENTS,
+                **({"created_at__lt": as_at.moment} if as_at is not None else {}),
             )
             .select_related("actor")
             .order_by("-created_at")[:100]

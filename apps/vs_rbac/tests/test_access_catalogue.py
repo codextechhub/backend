@@ -458,7 +458,10 @@ class RealFieldOnlyResourceTests(TestCase):
         self.assertEqual(guardians["label"], "Guardians")
         self.assertEqual(
             {field["name"] for field in guardians["fields"]},
-            {"phone", "email", "address", "occupation"},
+            {
+                "first_name", "middle_name", "last_name", "photo",
+                "phone", "email", "address", "occupation",
+            },
         )
 
     def test_a_guardians_contact_detail_starts_readable_and_writable(self):
@@ -475,7 +478,12 @@ class RealFieldOnlyResourceTests(TestCase):
         self.assertEqual(teachers["label"], "Staff")
         self.assertEqual(
             {field["name"] for field in teachers["fields"]},
-            {"date_of_birth", "gender", "phone", "email"},
+            {
+                "first_name", "middle_name", "last_name", "photo",
+                "date_of_birth", "gender", "phone", "email",
+                "staff_number", "job_title", "employment_type", "hire_date",
+                "exit_date",
+            },
         )
         self.assertTrue(teachers["permissions"])
         self.assertEqual(self._school_resource("staff_records")["fields"], [])

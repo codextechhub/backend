@@ -134,7 +134,10 @@ def enrol(
         if guardian is None:
             guardian, _ = guardian_service.upsert_guardian(
                 tenant,
-                full_name=row.get("full_name", ""), phone=row.get("phone", ""),
+                full_name=row.get("full_name", ""),
+                first_name=row.get("first_name", ""),
+                middle_name=row.get("middle_name", ""),
+                last_name=row.get("last_name", ""), phone=row.get("phone", ""),
                 email=row.get("email", ""), occupation=row.get("occupation", ""),
                 address=row.get("address", "") or data.get("address", ""),
             )

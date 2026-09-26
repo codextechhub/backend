@@ -298,7 +298,7 @@ class Command(BaseCommand):
 
         first, second = (rows[0] for rows in list(by_branch.values())[:2])
         guardian, _ = guardian_service.upsert_guardian(
-            tenant, full_name="Mrs. Patricia Okafor",
+            tenant, first_name="Patricia", last_name="Okafor",
             phone="08065550130", email="patricia.okafor@example.ng",
             occupation="Trader",
             address="17 Bisola Durosinmi Etti Drive, Lekki, Lagos",

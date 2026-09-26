@@ -32,6 +32,9 @@ class StaffRolesView(StaffViewMixin, APIView):
     deleted: "what could this person do before" is the question asked after
     something has gone wrong.
 
+    ``?as_at=YYYY-MM-DD`` answers with the grants, reach and exceptions as they
+    stood at the end of that day (``as_at.py``).
+
     docstring-name: A staff member's roles and reach
     """
 
@@ -39,7 +42,15 @@ class StaffRolesView(StaffViewMixin, APIView):
     pending_tenant_surface = True
 
     def get(self, request, pk):
+        from vs_history.as_at import parse_as_at
+
+        from .. import as_at as past
+
         staff = self.get_staff(pk)
+        as_at = parse_as_at(request)
+        self._as_at = as_at
+        if as_at is not None:
+            staff, _children, _meta = past.staff_at(staff, as_at)
         school_wide, reach_rows = posting.reach_of(staff)
         active = roles.active_grants(staff)
         revoked = roles.revoked_grants(staff)
@@ -108,6 +119,8 @@ class StaffRolesView(StaffViewMixin, APIView):
         """
         from vs_rbac.permissions import has_permission
 
+        from .. import as_at as past
+
         if not has_permission(
             self.request.user, PERM_OVERRIDES_VIEW, tenant=self.tenant,
         ):
@@ -119,7 +132,11 @@ class StaffRolesView(StaffViewMixin, APIView):
                 "reason": getattr(row, "reason", "") or "",
                 "expires_at": getattr(row, "expires_at", None),
             }
-            for row in roles.overrides_for(staff, self.tenant)
+            for row in (
+                past.overrides_at(staff.user_id, self._as_at)
+                if self._as_at is not None
+                else roles.overrides_for(staff, self.tenant)
+            )
         ]
 
     @staticmethod

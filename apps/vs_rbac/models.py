@@ -9,6 +9,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django.utils.text import slugify
 
+from vs_history.queryset import VersionedManager
 from vs_tenants.models import Branch
 
 from .managers import TenantAwareManager
@@ -111,12 +112,16 @@ def assert_tenant_may_hold(permission_keys, tenant, *, field="permission"):
     })
 
 
-class ScopeGuardedManager(models.Manager):
+class ScopeGuardedManager(VersionedManager):
     """Manager whose ``bulk_create`` honours the per-row scope guard.
 
     ``bulk_create`` bypasses ``save()`` and ``clean()`` entirely, and it is how
     the role serializers write permission sets - so without this the model
     guard would be decorative on the exact path an attacker uses.
+
+    Its queryset keeps the record history of the models that declare one (role
+    grants and permission exceptions, see ``vs_rbac.history``) through
+    ``update()`` and the bulk writes; for the rest it changes nothing.
     """
 
     def bulk_create(self, objs, *args, **kwargs):

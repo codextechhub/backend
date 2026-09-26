@@ -106,6 +106,37 @@ WRITE_PATH_ALLOWLIST = {
     ("schools.vs_staff.serializers.EmailChangeSerializer", "email"):
         "Behind school.administrators.update on an endpoint of its own, the key that "
         "changes an account's sign-in address; the staff edit form cannot.",
+    **{
+        ("schools.vs_students.serializers.EnrolmentWriteSerializer", name):
+            "The pupil's own name on the enrol form, a school.students field; the "
+            "guardians' names arrive through the nested GuardianWriteSerializer."
+        for name in ("first_name", "middle_name", "last_name")
+    },
+    **{
+        (f"schools.vs_students.serializers.{form}", name):
+            "The guardian's own detail, a school.guardians field on a declared "
+            "surface of that resource; a pupil's field of the same name is not here."
+        for form in ("GuardianUpdateSerializer", "GuardianWriteSerializer")
+        for name in ("first_name", "middle_name", "last_name", "phone", "email", "address")
+    },
+    ("schools.vs_students.serializers.ConfirmSerializer", "student_number"):
+        "Issuing the admission number when an applicant is admitted, which is part of "
+        "creating the pupil on the roll; student_number is open on create.",
+    ("vs_user.serializers.UserUpdateSerializer", "first_name"):
+        "Asks platform.staff_profile's Write switch in validate() for a CX staff "
+        "member's account; a school's own accounts are not governed by that switch.",
+    ("vs_user.serializers.UserUpdateSerializer", "last_name"):
+        "See the first_name entry above.",
+    **{
+        ("vs_user.serializers.UserCreateSerializer", name):
+            "Creating an account, where every value is set once; the profile's switches "
+            "govern later corrections on the profile and user edit routes."
+        for name in (
+            "first_name", "last_name", "job_title", "employee_id", "employment_type",
+            "date_joined", "date_of_birth", "marital_status", "nationality",
+            "state_of_origin",
+        )
+    },
 }
 
 
@@ -455,6 +486,24 @@ class EveryDeclaredSurfaceIsRenderedDeepTests(SimpleTestCase):
 #: Serializers that emit a registered name without enforcing it, each with the
 #: reason that is safe. Every entry must still match a real hit.
 READ_PATH_ALLOWLIST = {
+    ("vs_user.serializers.UserInlineSerializer", "first_name"):
+        "A person named beside something else (a line manager, an actor on a log); "
+        "the name switch covers the CX staff profile, not every mention of a person.",
+    ("vs_user.serializers.UserInlineSerializer", "last_name"):
+        "See the first_name entry above.",
+    ("vs_user.serializers.UserReadSerializer", "first_name"):
+        "The account as Team management reads it, a surface of platform.team; the "
+        "name switch covers the HR profile.",
+    ("vs_user.serializers.UserReadSerializer", "last_name"):
+        "See the first_name entry above.",
+    ("vs_user.serializers.UserUpdateSerializer", "first_name"):
+        "The response to the edit that the same serializer checked the switch for.",
+    ("vs_user.serializers.UserUpdateSerializer", "last_name"):
+        "See the first_name entry above.",
+    ("vs_user.serializers.ActivationPreviewSerializer", "first_name"):
+        "The invitee's own name, shown to them on their own activation page.",
+    ("vs_user.serializers.ActivationPreviewSerializer", "last_name"):
+        "See the first_name entry above.",
     ("vs_import_data.serializers.ImportTemplateCreateSerializer", "validation_rules"):
         "The response to creating a template, behind import.templates.create, a "
         "platform-only key; it returns the rules the caller has just written.",
@@ -624,7 +673,9 @@ class RegistryScopeMatchesTheGuardingKeyTests(TestCase):
         Guardian contact details and staff personal details are readable by
         everybody who may open those records. Declared sensitive, they would be
         hidden from every role the moment enforcement ships, which is the one
-        outcome the conversion is not allowed to produce.
+        outcome the conversion is not allowed to produce. A field nothing can
+        write (a staff member's exit date, set only by the status change that
+        ends employment) starts with Write off, which takes nothing from anybody.
         """
         for resource in ("guardians", "teachers"):
             for row in FieldDefinition.objects.filter(
@@ -633,7 +684,7 @@ class RegistryScopeMatchesTheGuardingKeyTests(TestCase):
                 with self.subTest(field=row.key):
                     self.assertFalse(row.sensitive)
                     self.assertEqual(
-                        row.default_access, {"read": True, "write": True},
+                        row.default_access, {"read": True, "write": row.writable},
                     )
 
     def test_every_field_scope_equals_its_guarding_keys_scope(self):

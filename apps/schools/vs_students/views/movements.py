@@ -293,6 +293,8 @@ class AssignClassView(_StudentAction):
 class StatusHistoryView(StudentsViewMixin, generics.ListAPIView):
     """GET /v1/students/<id>/status-history/
 
+    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
+
     docstring-name: A student's status history
     """
 
@@ -303,14 +305,25 @@ class StatusHistoryView(StudentsViewMixin, generics.ListAPIView):
         return super().get_permissions()
 
     def get_queryset(self):
+        from vs_history.as_at import parse_as_at
+
+        from .. import as_at as past
+
         student = self.student(self.kwargs["pk"])
-        return StudentStatusLog.objects.filter(student=student).select_related(
+        rows = StudentStatusLog.objects.filter(student=student).select_related(
             "changed_by",
         )
+        as_at = parse_as_at(self.request)
+        if as_at is None:
+            return rows
+        past.student_at(student, as_at)
+        return rows.filter(changed_at__lt=as_at.moment)
 
 
 class ClassHistoryView(StudentsViewMixin, generics.ListAPIView):
     """GET /v1/students/<id>/class-history/
+
+    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
 
     The promotion trail. Every placement the student has held, with what
     became of it.
@@ -325,10 +338,18 @@ class ClassHistoryView(StudentsViewMixin, generics.ListAPIView):
         return super().get_permissions()
 
     def get_queryset(self):
+        from vs_history.as_at import parse_as_at
+
+        from .. import as_at as past
+
         student = self.student(self.kwargs["pk"])
-        return student.enrolments.select_related(
-            "school_class", "session",
-        ).order_by("-assigned_at")
+        as_at = parse_as_at(self.request)
+        if as_at is None:
+            return student.enrolments.select_related(
+                "school_class", "session",
+            ).order_by("-assigned_at")
+        past.student_at(student, as_at)
+        return past.enrolments_at(student.pk, as_at)
 
 
 class _BulkAction(StudentsViewMixin, APIView):

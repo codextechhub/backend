@@ -16,6 +16,14 @@ column on the staff record; ``phone``, ``email`` and ``gender`` are read from
 the linked account (``user.phone``, ``user.email``, ``user.gender``). A switch
 covers the name a client receives, which is the same in both cases.
 
+The name, the employment details and the photograph are open as well, and
+for the same reason: a school turns each off for the roles it chooses. The
+first and last name live on the account (``user.first_name``), are required by
+the Add form and so are open on create; ``full_name`` is rebuilt from the name
+parts a caller may read. The exit date is written only by the status change
+that ends employment, so it has a Read switch and nothing can write it here.
+The photograph is sent as ``photo`` and read back as ``photo_url``.
+
 The email is the one field the Add form requires and the edit form does not
 carry at all: an account's sign-in address changes on an endpoint of its own,
 behind its own key. It is therefore declared open on create, so a role that may
@@ -44,6 +52,27 @@ def register():
             "schools.vs_staff.serializers.AccountStateSerializer",
         ),
         fields=(
+            FieldSpec("first_name", "First name", group="Name", scope=_TENANT,
+                      sort_order=10, open_on_create=True,
+                      description="Held on the staff member's account."),
+            FieldSpec("middle_name", "Middle name", group="Name", scope=_TENANT,
+                      sort_order=20),
+            FieldSpec("last_name", "Last name", group="Name", scope=_TENANT,
+                      sort_order=30, open_on_create=True,
+                      description="Held on the staff member's account."),
+            FieldSpec("staff_number", "Staff ID", group="Employment",
+                      scope=_TENANT, sort_order=10),
+            FieldSpec("job_title", "Job title", group="Employment", scope=_TENANT,
+                      sort_order=20),
+            FieldSpec("employment_type", "Employment type", group="Employment",
+                      scope=_TENANT, sort_order=30),
+            FieldSpec("hire_date", "Hire date", group="Employment", scope=_TENANT,
+                      sort_order=40),
+            FieldSpec("exit_date", "Exit date", group="Employment", scope=_TENANT,
+                      sort_order=50, writable=False,
+                      description="Set by the status change that ends employment."),
+            FieldSpec("photo", "Photo", group="Personal", scope=_TENANT,
+                      sort_order=5, api_names=("photo", "photo_url")),
             FieldSpec("date_of_birth", "Date of birth", group="Personal",
                       scope=_TENANT, sort_order=10),
             FieldSpec("gender", "Gender", group="Personal", scope=_TENANT,

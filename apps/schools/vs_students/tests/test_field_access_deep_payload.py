@@ -36,7 +36,21 @@ class StudentsDeepPayloadTests(DeepPayloadChecks, StudentsFixture):
         _SURFACE + "GuardianUpdateSerializer",
         _SURFACE + "GuardianWriteSerializer",
         _SURFACE + "GuardianLinkSerializer",
+        _SURFACE + "SearchHitSerializer",
     })
+
+    #: A student and a guardian each have a phone, an email and an address.
+    #: Rendered as a caller closed on the student's fields, the enrol form's
+    #: guardian rows still carry the guardian's own, which are
+    #: ``school.guardians`` fields governed by that resource's switches (the
+    #: nested ``GuardianWriteSerializer``, rendered closed on its own resource
+    #: below).
+    allowlist = {
+        (_SURFACE + "EnrolmentWriteSerializer", f"guardians[].{name}"): (
+            "The guardian's own detail, a school.guardians field."
+        )
+        for name in ("phone", "email", "address")
+    }
 
     @classmethod
     def setUpTestData(cls):
@@ -115,6 +129,8 @@ class StudentsDeepPayloadTests(DeepPayloadChecks, StudentsFixture):
                        tenant=tenant),
                 Sample(_SURFACE + "GuardianLinkSerializer", [link],
                        {**context, "siblings": {}, "class_names": {}},
+                       many=True, tenant=tenant),
+                Sample(_SURFACE + "SearchHitSerializer", pupils, context,
                        many=True, tenant=tenant),
             ]
         return samples

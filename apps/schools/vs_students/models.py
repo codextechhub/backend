@@ -28,6 +28,7 @@ from django.db.models import Q
 from django.db.models.functions import Lower
 from django.utils import timezone
 
+from vs_history.queryset import VersionedManager
 from vs_rbac.managers import TenantAwareManager
 
 from .constants import (
@@ -73,7 +74,7 @@ class _Owned(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     objects = TenantAwareManager()
-    all_objects = models.Manager()
+    all_objects = VersionedManager()
 
     class Meta:
         abstract = True
@@ -188,12 +189,24 @@ class Guardian(_Owned):
     No branch column, deliberately. One row serves siblings at two branches of
     one school, and the parent's own User row carries a branch only where that
     person also works for the school.
+
+    The name is held in parts, and ``full_name`` is the one-line form every
+    list, search and label reads. While ``name_needs_review`` is set the parts
+    are a machine's reading of a name typed on one line
+    (:mod:`schools.vs_students.names`), so ``full_name`` keeps the text exactly
+    as it was typed; once a person confirms the parts the flag clears and
+    ``full_name`` is composed from them on every save.
     """
 
     tenant = models.ForeignKey(
         "vs_tenants.Tenant", on_delete=models.PROTECT, related_name="guardians",
     )
     full_name = models.CharField(max_length=150)
+    first_name = models.CharField(max_length=100, blank=True, default="")
+    middle_name = models.CharField(max_length=100, blank=True, default="")
+    last_name = models.CharField(max_length=100, blank=True, default="")
+    #: The parts were split from a one-line name and nobody has confirmed them.
+    name_needs_review = models.BooleanField(default=False)
     phone = models.CharField(max_length=32)
     #: The parent's real address, and the one a login would be issued to.
     #: Optional on the row, because a school may hold a guardian it has no
@@ -231,6 +244,32 @@ class Guardian(_Owned):
 
     def __str__(self):
         return self.full_name
+
+    def save(self, *args, **kwargs):
+        """Keep the parts and ``full_name`` agreeing before every write.
+
+        A row given only ``full_name`` (a spreadsheet column, an older client)
+        has it split into parts and flagged for review. A confirmed row has
+        ``full_name`` composed from its parts. A save naming ``update_fields``
+        is widened to carry whichever of the two it recomputed.
+        """
+        from .names import compose_full_name, split_full_name
+
+        touched = set()
+        has_parts = bool(self.first_name.strip() or self.last_name.strip())
+        if not has_parts and self.full_name.strip():
+            self.first_name, self.middle_name, self.last_name = split_full_name(self.full_name)
+            self.name_needs_review = True
+            touched |= {"first_name", "middle_name", "last_name", "name_needs_review"}
+        elif has_parts and not self.name_needs_review:
+            composed = compose_full_name(self.first_name, self.middle_name, self.last_name)
+            if composed != self.full_name:
+                self.full_name = composed
+                touched.add("full_name")
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and touched:
+            kwargs["update_fields"] = list(set(update_fields) | touched)
+        super().save(*args, **kwargs)
 
 
 class StudentGuardian(_Owned):

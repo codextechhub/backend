@@ -343,6 +343,9 @@ INSTALLED_APPS = [
     "vs_user",
     "vs_rbac",
     "vs_audit",
+    # Versions of the records a school may be asked about later. Domain apps
+    # declare what they track from their own ready(); see vs_history.registry.
+    "vs_history",
     "vs_import_data",
     'vs_config',
     'vs_notifications',

@@ -7,11 +7,15 @@ from rest_framework.exceptions import NotFound
 from rest_framework.views import APIView
 
 from core.response import success_response
+from vs_history.as_at import parse_as_at
+
+from vs_rbac.field_enforcement import assert_writable, can_read
 
 from ..constants import (
     PERM_CLASS_VIEW,
     PERM_UPDATE,
     PERM_VIEW,
+    DocumentType,
 )
 from ..models import StudentDocument
 from ..serializers import (
@@ -30,8 +34,39 @@ from ..services.placement import (
 from .base import StudentsViewMixin
 
 
+#: The registered field the passport photograph answers to.
+PHOTO_KEY = "school.students.photo"
+
+
+def assert_photo_writable(request, document_type):
+    """Refuse a passport photograph the caller's Write switch does not reach.
+
+    The passport photograph is the student's face on every screen, registered
+    as ``school.students.photo``. It is attached and removed here rather than
+    through a serializer, so the switch is asked here.
+    """
+    if document_type == DocumentType.PASSPORT_PHOTO:
+        assert_writable(request, "school.students", {"photo_url": None})
+
+
+def hide_unreadable_photo(request, rows):
+    """Drop the passport photograph's link for a caller who may not read it.
+
+    The row stays, attached or not, so the checklist still says the document
+    is held; only the file is withheld, as ``photo_url`` is on the profile.
+    """
+    if can_read(request, PHOTO_KEY):
+        return rows
+    return [
+        {**row, "url": ""} if row["document_type"] == DocumentType.PASSPORT_PHOTO else row
+        for row in rows
+    ]
+
+
 class StudentDocumentsView(StudentsViewMixin, APIView):
     """GET, POST /v1/students/<id>/documents/
+
+    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
 
     docstring-name: A student's documents
     """
@@ -43,8 +78,16 @@ class StudentDocumentsView(StudentsViewMixin, APIView):
         return super().get_permissions()
 
     def get(self, request, pk):
+        from .. import as_at as past
+
         student = self.student(pk)
-        rows = document_service.checklist(student, request=request)
+        as_at = parse_as_at(request)
+        if as_at is None:
+            rows = document_service.checklist(student, request=request)
+        else:
+            past.student_at(student, as_at)
+            rows = past.checklist_at(student.pk, as_at, request=request)
+        rows = hide_unreadable_photo(request, rows)
         return success_response(data=DocumentSerializer(rows, many=True).data)
 
     @transaction.atomic
@@ -52,6 +95,7 @@ class StudentDocumentsView(StudentsViewMixin, APIView):
         student = self.student(pk)
         writer = DocumentUploadSerializer(data=request.data)
         writer.is_valid(raise_exception=True)
+        assert_photo_writable(request, writer.validated_data["document_type"])
         doc = document_service.attach(
             student,
             document_type=writer.validated_data["document_type"],
@@ -60,7 +104,9 @@ class StudentDocumentsView(StudentsViewMixin, APIView):
         return success_response(
             f"{doc.get_document_type_display()} attached.",
             data=DocumentSerializer(
-                document_service.checklist(student, request=request),
+                hide_unreadable_photo(
+                    request, document_service.checklist(student, request=request),
+                ),
                 many=True,
             ).data,
             status=201,
@@ -85,12 +131,15 @@ class StudentDocumentDetailView(StudentsViewMixin, APIView):
         ).first()
         if doc is None:
             raise NotFound("No such document on this student's record.")
+        assert_photo_writable(request, doc.document_type)
         document_service.remove(student, doc, actor=request.user)
         return success_response("Document removed.")
 
 
 class StudentSubjectsView(StudentsViewMixin, APIView):
     """GET /v1/students/<id>/subjects/
+
+    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
 
     Read from Academic Structure for the level of the student's current class.
     A student with no class gets an empty list rather than a 404: having no
@@ -106,10 +155,17 @@ class StudentSubjectsView(StudentsViewMixin, APIView):
     def get(self, request, pk):
         from schools.vs_academics.models import SubjectOffering
 
+        from .. import as_at as past
+
         student = self.student(pk)
-        enrolment = student.enrolments.filter(is_active=True).select_related(
-            "school_class", "school_class__level",
-        ).first()
+        as_at = parse_as_at(request)
+        if as_at is None:
+            enrolment = student.enrolments.filter(is_active=True).select_related(
+                "school_class", "school_class__level",
+            ).first()
+        else:
+            past.student_at(student, as_at)
+            enrolment = past.active_enrolment(past.enrolments_at(student.pk, as_at))
         if enrolment is None or enrolment.school_class.level_id is None:
             return success_response(data=[])
 
@@ -130,6 +186,8 @@ class StudentSubjectsView(StudentsViewMixin, APIView):
 class StudentHistoryView(StudentsViewMixin, APIView):
     """GET /v1/students/<id>/history/
 
+    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
+
     Wider than the status log. The profile's history tab shows status changes,
     class moves, guardian links and field edits in one stream, so this merges
     the module's own log with the platform's audit trail rather than
@@ -145,7 +203,12 @@ class StudentHistoryView(StudentsViewMixin, APIView):
     def get(self, request, pk):
         from vs_audit.models import AuditEvent
 
+        from .. import as_at as past
+
         student = self.student(pk)
+        as_at = parse_as_at(request)
+        if as_at is not None:
+            past.student_at(student, as_at)
         entries = [
             {
                 "kind": "status",
@@ -170,6 +233,8 @@ class StudentHistoryView(StudentsViewMixin, APIView):
                 "when": event.event_at,
                 "actor": self._actor(event.actor_user),
             })
+        if as_at is not None:
+            entries = [entry for entry in entries if as_at.includes(entry["when"])]
         entries.sort(key=lambda e: e["when"], reverse=True)
 
         page = self.paginate_queryset(entries)

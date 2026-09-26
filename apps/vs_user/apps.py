@@ -27,3 +27,9 @@ class VsUserConfig(AppConfig):
         from .field_access import register as register_field_access
 
         register_field_access()
+
+        # The account and CX staff rows a profile can be read as at an
+        # earlier date.
+        from .history import register as register_history
+
+        register_history()

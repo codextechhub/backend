@@ -26,6 +26,7 @@ from django.db.models import Q, Max
 from django.db.models.functions import Lower
 from django.utils import timezone
 
+from vs_history.queryset import VersionedManager, VersionedQuerySetMixin
 from vs_tenants.models import Branch, Tenant
 from vs_rbac.managers import TenantAwareManager
 
@@ -51,7 +52,7 @@ class TimeStampedModel(models.Model):
 # UserManager + User
 # =============================================================================
 
-class UserQuerySet(models.QuerySet):
+class UserQuerySet(VersionedQuerySetMixin, models.QuerySet):
     """The bulk writes, which do not go through ``User.save()``.
 
     ``bulk_create`` and ``bulk_update`` build their SQL from the instances
@@ -1268,6 +1269,9 @@ class PlatformStaffProfile(TimeStampedModel):
     bank_name      = models.CharField(max_length=120, blank=True, default='')
     account_name   = models.CharField(max_length=200, blank=True, default='')
     account_number = models.CharField(max_length=20,  blank=True, default='')
+
+    #: Declared so its update() keeps the record history; see vs_history.queryset.
+    objects = VersionedManager()
 
     class Meta:
         db_table = 'vs_users_platform_staff_profile'

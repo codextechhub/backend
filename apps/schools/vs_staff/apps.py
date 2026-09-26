@@ -20,6 +20,11 @@ class VsStaffConfig(AppConfig):
 
         field_access.register()
 
+        # The rows a staff profile can be read as at an earlier date.
+        from . import history
+
+        history.register()
+
         # No default media policy exists: a file whose owner registers nothing
         # is never served. This is what makes a staff photograph and a staff
         # document readable at all, and what stops either being readable by the

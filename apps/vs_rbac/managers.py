@@ -48,11 +48,20 @@ from __future__ import annotations
 from django.db import models
 from django.db.models import Q
 
+from vs_history.queryset import VersionedQuerySetMixin
 from vs_tenants.context import get_current_tenant
 
 
 # Support explicit tenant scoping when code cannot rely on request context.
-class TenantAwareQuerySet(models.QuerySet):
+class TenantAwareQuerySet(VersionedQuerySetMixin, models.QuerySet):
+    """The queryset behind every tenant-aware manager.
+
+    Carries :class:`vs_history.queryset.VersionedQuerySetMixin`, so a model that
+    keeps a record history keeps it through ``update()`` and the bulk writes as
+    well as through ``save()``. On a model that keeps none the mixin does
+    nothing.
+    """
+
     def for_tenant(self, tenant):
         if tenant is None:
             raise ValueError("An explicit tenant is required.")

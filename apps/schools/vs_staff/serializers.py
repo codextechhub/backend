@@ -127,6 +127,9 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """
 
     field_resource = "school.teachers"
+    field_composites = {
+        "full_name": {"first_name": "user.first_name", "last_name": "user.last_name"},
+    }
 
     full_name = serializers.SerializerMethodField()
     email = serializers.EmailField(source="user.email", read_only=True)
@@ -394,17 +397,24 @@ class DocumentSerializer(serializers.ModelSerializer):
         source="get_document_type_display", read_only=True,
     )
     file_url = serializers.SerializerMethodField()
+    file_retired = serializers.SerializerMethodField()
     uploaded_by = serializers.SerializerMethodField()
 
     class Meta:
         model = StaffDocument
         fields = [
             "id", "document_type", "document_type_label", "title", "file_url",
-            "uploaded_by", "created_at",
+            "file_retired", "uploaded_by", "created_at",
         ]
 
     def get_file_url(self, obj):
+        if obj.pk in self.context.get("retired_document_ids", ()):
+            return None
         return obj.file.url if obj.file else None
+
+    def get_file_retired(self, obj) -> bool:
+        """Held on the day asked about and replaced since, so its file is gone."""
+        return obj.pk in self.context.get("retired_document_ids", ())
 
     def get_uploaded_by(self, obj):
         return _actor(obj.uploaded_by)
@@ -491,7 +501,8 @@ class LeaveSerializer(serializers.ModelSerializer):
         ]
 
     def get_display_status(self, obj) -> str:
-        return obj.display_status()
+        as_at = self.context.get("as_at")
+        return obj.display_status(as_at.date if as_at else None)
 
     def get_requested_by(self, obj):
         return _actor(obj.requested_by)
@@ -561,6 +572,8 @@ class StaffDetailSerializer(StaffListSerializer):
     field_access_detail = True
 
     account = AccountStateSerializer(source="user", read_only=True)
+    first_name = serializers.CharField(source="user.first_name", read_only=True)
+    last_name = serializers.CharField(source="user.last_name", read_only=True)
     middle_name = serializers.CharField(read_only=True)
     date_of_birth = serializers.DateField(read_only=True)
     phone = serializers.CharField(source="user.phone", read_only=True)
@@ -573,7 +586,8 @@ class StaffDetailSerializer(StaffListSerializer):
 
     class Meta(StaffListSerializer.Meta):
         fields = StaffListSerializer.Meta.fields + [
-            "account", "middle_name", "date_of_birth", "phone", "gender",
+            "account", "first_name", "middle_name", "last_name",
+            "date_of_birth", "phone", "gender",
             "photo_url", "exit_date", "tenure", "lifecycle", "counts",
             "created_by",
         ]
@@ -595,7 +609,8 @@ class StaffDetailSerializer(StaffListSerializer):
             return None
         from django.utils import timezone
 
-        today = timezone.localdate()
+        as_at = self.context.get("as_at")
+        today = as_at.date if as_at else timezone.localdate()
         years = today.year - obj.hire_date.year
         months = today.month - obj.hire_date.month
         if today.day < obj.hire_date.day:

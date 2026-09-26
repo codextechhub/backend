@@ -70,8 +70,14 @@ def resolve_user(tenant, email):
 
 
 @transaction.atomic
-def upsert_guardian(tenant, *, full_name, phone, email="", occupation="", address=""):
-    """The guardian row for this person, created only if they are new here."""
+def upsert_guardian(tenant, *, phone, full_name="", first_name="", middle_name="",
+                    last_name="", email="", occupation="", address=""):
+    """The guardian row for this person, created only if they are new here.
+
+    The name is given in parts. A caller holding only a one-line name passes
+    ``full_name``, and :meth:`Guardian.save` splits it and flags the split for
+    a person to confirm.
+    """
     existing = match_existing(tenant, email=email, phone=phone)
     if existing is not None:
         # Deliberately does not overwrite the stored name from the new
@@ -81,6 +87,8 @@ def upsert_guardian(tenant, *, full_name, phone, email="", occupation="", addres
 
     return Guardian.objects.create(
         tenant=tenant, full_name=(full_name or "").strip(),
+        first_name=(first_name or "").strip(), middle_name=(middle_name or "").strip(),
+        last_name=(last_name or "").strip(),
         phone=(phone or "").strip(), email=(email or "").strip(),
         occupation=(occupation or "").strip(), address=(address or "").strip(),
         user=resolve_user(tenant, email),
@@ -233,7 +241,7 @@ def primary_for(student):
 
 
 def guardian_directory(tenant, user, *, search="", include_unlinked=False,
-                       branch=None, session=None):
+                       branch=None, session=None, name_review=False):
     """The guardian list, with ward counts. Branch narrowing is on the wards.
 
     Guardian carries no branch, so the row itself is never narrowed. What is
@@ -244,15 +252,19 @@ def guardian_directory(tenant, user, *, search="", include_unlinked=False,
     own binding, so a school-wide administrator reading the directory under a
     branch lens sees the guardians of that branch's children - and not the
     parents of a site she is not looking at.
+
+    *name_review* keeps only the guardians whose name was split from one line
+    and not yet confirmed, the list an administrator works through to confirm
+    them.
     """
     from .scoping import scope_students
     from ..models import Student
 
     qs = Guardian.objects.filter(tenant=tenant)
-    # Loosely and ranked, like every other directory. A guardian is stored as
-    # ONE full name rather than parts, so the old whole-string match worked for
-    # a full name and failed for "ada okeye" typed the other way round, or for
-    # a surname and a first initial.
+    if name_review:
+        qs = qs.filter(name_needs_review=True)
+    # Loosely and ranked, like every other directory, so "ada okeye" typed the
+    # other way round, or a surname and a first initial, still finds the row.
     qs = core_search(qs, search, fields=GUARDIAN_SEARCH_FIELDS)
     if not include_unlinked:
         visible_students = scope_students(
@@ -289,7 +301,12 @@ GUARDIAN_SEARCH_FIELDS = ("full_name", "phone", "email")
 
 
 #: The guardian's own details, as opposed to their link to any one student.
-GUARDIAN_FIELDS = ("full_name", "phone", "email", "occupation", "address")
+GUARDIAN_FIELDS = (
+    "first_name", "middle_name", "last_name", "phone", "email", "occupation", "address",
+)
+
+#: The parts of a guardian's name. Sending any of them confirms the name.
+GUARDIAN_NAME_FIELDS = ("first_name", "middle_name", "last_name")
 
 
 @transaction.atomic
@@ -304,7 +321,9 @@ def update_guardian(guardian, *, actor, **fields):
     sibling link the Guardians screen exists to show.
 
     Only changed fields are written, so an unchanged save is not an audit entry
-    saying somebody edited a record they did not.
+    saying somebody edited a record they did not. The one exception is a name
+    awaiting review: sending its parts unchanged is a person confirming the
+    split, which clears the flag and is recorded as such.
 
     Two couplings the caller must not have to know about:
 
@@ -322,6 +341,9 @@ def update_guardian(guardian, *, actor, **fields):
         value = (fields[key] or "").strip()
         if value != getattr(guardian, key):
             changed[key] = value
+
+    if guardian.name_needs_review and any(key in fields for key in GUARDIAN_NAME_FIELDS):
+        changed["name_needs_review"] = False
 
     if not changed:
         return guardian, []
@@ -353,8 +375,12 @@ def update_guardian(guardian, *, actor, **fields):
         entity_type="Guardian", entity_id=str(guardian.pk),
         entity_label=guardian.full_name,
         tenant=guardian.tenant, actor_user=actor,
-        summary=f"{guardian.full_name}'s details updated: "
-                f"{', '.join(sorted(changed))}.",
+        summary=(
+            f"{guardian.full_name}'s name confirmed."
+            if set(changed) == {"name_needs_review"}
+            else f"{guardian.full_name}'s details updated: "
+                 f"{', '.join(sorted(k for k in changed if k != 'name_needs_review'))}."
+        ),
         metadata={"fields": sorted(changed)},
     )
     return guardian, sorted(changed)

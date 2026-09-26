@@ -875,9 +875,17 @@ class GuardianEditTests(StudentsFixture):
     def test_a_blank_name_is_refused(self):
         """A guardian with no name cannot be picked out of a ward list."""
         response = self.patch(
-            self.admin, "guardian-detail", {"full_name": "   "}, pk=self.g.pk,
+            self.admin, "guardian-detail", {"first_name": "   "}, pk=self.g.pk,
         )
         self.assertEqual(response.status_code, 400)
+
+    def test_a_one_line_name_is_refused_with_the_parts_to_send(self):
+        """An older client sending ``full_name`` is told, not silently ignored."""
+        response = self.patch(
+            self.admin, "guardian-detail", {"full_name": "Ada Obi"}, pk=self.g.pk,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("full_name", response.data["error"]["detail"])
 
     def test_reading_needs_view_but_writing_needs_update(self):
         from vs_rbac.tests.helpers import (

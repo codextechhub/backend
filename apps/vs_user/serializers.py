@@ -511,12 +511,54 @@ class UserCreateSerializer(serializers.Serializer):
 
 
 class UserUpdateSerializer(serializers.ModelSerializer):
+    """The profile fields an administrator corrects on an account.
+
+    The role is absent (it changes through the role change request workflow)
+    and so is the email (it has its own endpoint).
+
+    A CX staff member's first and last name are registered fields of
+    ``platform.staff_profile``, so correcting either on somebody else's
+    account asks that Write switch. Only a changed value is asked about: the
+    edit form sends the whole record back, and resending a name nobody touched
+    is not a change. An account outside the platform tenant, and a person
+    editing their own, are not governed by those switches.
+    """
+
     class Meta:
         model  = User
         fields = ('first_name', 'last_name', 'phone', 'gender')
-        # role is intentionally excluded - changes go through the
-        # TenantRoleChangeRequest workflow only.
-        # Email changes go through the separate /email/change/ endpoint.
+
+    def validate(self, attrs):
+        from vs_rbac.field_enforcement import assert_writable
+        from vs_tenants.models import Tenant
+
+        account = self.instance
+        request = self.context.get('request')
+        reader = getattr(request, 'user', None)
+        is_cx_staff = (
+            account is not None
+            and getattr(getattr(account, 'tenant', None), 'kind', None) == Tenant.Kind.PLATFORM
+        )
+        if is_cx_staff and not _is_own_account(account, reader):
+            changed = {
+                name: value for name, value in attrs.items()
+                if name in ('first_name', 'last_name') and value != getattr(account, name)
+            }
+            assert_writable(request, 'platform.staff_profile', changed)
+        return attrs
+
+
+class StaffProfileAccountSerializer(FieldAccessMixin, UserInlineSerializer):
+    """The account block of a CX staff profile, with the name switched.
+
+    The first and last name are registered fields of ``platform.staff_profile``
+    and ``full_name`` is rebuilt from the ones the reader may see. The person
+    the profile is about always reads their own name.
+    """
+
+    field_resource = 'platform.staff_profile'
+    owner_rule = staticmethod(_is_own_account)
+    field_composites = {'full_name': {'first_name': 'first_name', 'last_name': 'last_name'}}
 
 
 class EmailChangeSerializer(serializers.Serializer):
@@ -864,10 +906,24 @@ class PositionInlineSerializer(serializers.ModelSerializer):
         fields = ('id', 'title', 'code', 'org_node')
 
 
-class PlatformStaffProfileListSerializer(serializers.ModelSerializer):
-    """Slim representation for list endpoints - no sensitive payroll data."""
+def _profile_belongs_to(profile, user) -> bool:
+    """Whether *profile* is the staff record *user* is the subject of."""
+    return getattr(profile, 'user_id', None) == getattr(user, 'id', None)
 
-    user = UserInlineSerializer(read_only=True)
+
+class PlatformStaffProfileListSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """Slim representation for list endpoints - no sensitive payroll data.
+
+    A row of the same record the full profile renders, so the employment
+    details it carries and the name on its account block follow the same
+    switches of ``platform.staff_profile``. A list row names no read-only
+    fields.
+    """
+
+    field_resource = 'platform.staff_profile'
+    owner_rule = staticmethod(_profile_belongs_to)
+
+    user = StaffProfileAccountSerializer(read_only=True)
     position = PositionInlineSerializer(read_only=True)
     org_node = OrgNodeInlineSerializer(read_only=True)
     department = OrgNodeInlineSerializer(read_only=True)
@@ -884,16 +940,22 @@ class PlatformStaffProfileListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class PlatformStaffProfileBriefSerializer(serializers.ModelSerializer):
+class PlatformStaffProfileBriefSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Work-only profile shown to colleagues without HR-profile access.
 
     This is deliberately a separate allowlist, not a full serializer whose
     private fields are removed in the frontend. Personal, next-of-kin, payroll,
-    employment-date and account-management data never leave the backend.
+    employment-date and account-management data never leave the backend. The
+    work details it does carry, and the name on its account block, follow the
+    switches of ``platform.staff_profile`` as the full profile does. The line
+    manager is a person named beside the profile, not its subject.
     """
 
+    field_resource = 'platform.staff_profile'
+    owner_rule = staticmethod(_profile_belongs_to)
+
     profile_view = serializers.SerializerMethodField()
-    user = UserInlineSerializer(read_only=True)
+    user = StaffProfileAccountSerializer(read_only=True)
     position = PositionInlineSerializer(read_only=True)
     org_node = OrgNodeInlineSerializer(read_only=True)
     department = OrgNodeInlineSerializer(read_only=True)
@@ -915,11 +977,6 @@ class PlatformStaffProfileBriefSerializer(serializers.ModelSerializer):
         return 'brief'
 
 
-def _profile_belongs_to(profile, user) -> bool:
-    """Whether *profile* is the staff record *user* is the subject of."""
-    return getattr(profile, 'user_id', None) == getattr(user, 'id', None)
-
-
 class PlatformStaffProfileSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """
     Full CX-staff profile. The payroll bank fields are the registered fields of
@@ -937,7 +994,7 @@ class PlatformStaffProfileSerializer(FieldAccessMixin, serializers.ModelSerializ
     field_access_detail = True
     owner_rule = staticmethod(_profile_belongs_to)
 
-    user            = UserInlineSerializer(read_only=True)
+    user            = StaffProfileAccountSerializer(read_only=True)
     user_id         = serializers.PrimaryKeyRelatedField(
         source='user', write_only=True, required=False,
         queryset=User.objects.filter(tenant__kind=Tenant.Kind.PLATFORM),

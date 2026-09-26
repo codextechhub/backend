@@ -78,16 +78,23 @@ class _StaffChildView(StaffViewMixin, APIView):
 class QualificationListCreateView(_StaffChildView):
     """GET/POST /v1/i/me/staff/<id>/qualifications/
 
+    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
+
     docstring-name: A staff member's qualifications
     """
 
     def get(self, request, pk):
+        from vs_history.as_at import parse_as_at
+
+        from .. import as_at as past
+
         staff = self.get_staff(pk)
-        return success_response(
-            data=QualificationSerializer(
-                staff.qualifications.all(), many=True,
-            ).data,
-        )
+        as_at = parse_as_at(request)
+        rows = staff.qualifications.all()
+        if as_at is not None:
+            _record, children, _meta = past.staff_at(staff, as_at)
+            rows = children["qualifications"]
+        return success_response(data=QualificationSerializer(rows, many=True).data)
 
     def post(self, request, pk):
         staff = self.get_staff_for_write(pk)
@@ -149,17 +156,29 @@ class DocumentListCreateView(_StaffChildView):
     authenticated media view, so the payload carries a media path and never a
     signed or guessable direct link.
 
+    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
+
     docstring-name: A staff member's documents
     """
 
     parser_classes = [MultiPartParser, FormParser]
 
     def get(self, request, pk):
+        from vs_history.as_at import parse_as_at
+
+        from .. import as_at as past
+
         staff = self.get_staff(pk)
+        as_at = parse_as_at(request)
+        if as_at is None:
+            rows, retired = staff.documents.select_related("uploaded_by"), set()
+        else:
+            _record, children, _meta = past.staff_at(staff, as_at)
+            rows, retired = past.documents_with_retired(children["documents"])
         return success_response(
             data=DocumentSerializer(
-                staff.documents.select_related("uploaded_by"), many=True,
-                context={"request": request},
+                rows, many=True,
+                context={"request": request, "retired_document_ids": retired},
             ).data,
         )
 

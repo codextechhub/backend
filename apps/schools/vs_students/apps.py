@@ -16,6 +16,12 @@ class VsStudentsConfig(AppConfig):
         # The student fields an administrator may restrict per role.
         field_access.register()
 
+        # The rows a student or guardian profile can be read as at an earlier
+        # date. The history engine never imports a domain app either.
+        from . import history
+
+        history.register()
+
         # No default policy exists: a file whose owner registers nothing is
         # never served. This is what makes a student photograph readable at
         # all, and what stops it being readable by the wrong branch.

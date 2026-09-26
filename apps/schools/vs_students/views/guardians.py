@@ -8,6 +8,7 @@ from rest_framework.exceptions import NotFound
 from rest_framework.views import APIView
 
 from core.response import success_response
+from vs_rbac.field_enforcement import assert_writable
 
 from ..constants import PERM_UPDATE, PERM_VIEW
 from ..models import Guardian, Student, StudentGuardian
@@ -53,6 +54,8 @@ def _wards_by_guardian(tenant, user, guardian_ids):
 class StudentGuardiansView(StudentsViewMixin, APIView):
     """GET, POST /v1/students/<id>/guardians/
 
+    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
+
     docstring-name: A student's guardians
     """
 
@@ -63,7 +66,26 @@ class StudentGuardiansView(StudentsViewMixin, APIView):
         return super().get_permissions()
 
     def get(self, request, pk):
+        from vs_history.as_at import parse_as_at
+
+        from .. import as_at as past
+
         student = self.student(pk)
+        as_at = parse_as_at(request)
+        if as_at is not None:
+            past.student_at(student, as_at)
+            links = past.guardian_links_at(student.pk, as_at)
+            siblings = past.siblings_at(
+                student.pk, [l.guardian_id for l in links], self._visible_ids(), as_at,
+            )
+            class_names = past.class_names_at(
+                [s.pk for rows in siblings.values() for s in rows], as_at,
+            )
+            return success_response(data=GuardianLinkSerializer(
+                links, many=True,
+                context={**self.get_serializer_context(), "siblings": siblings,
+                         "class_names": class_names},
+            ).data)
         links = list(
             student.guardian_links.select_related("guardian").order_by(
                 "-is_primary", "id",
@@ -76,16 +98,19 @@ class StudentGuardiansView(StudentsViewMixin, APIView):
                      "class_names": self._class_names(siblings)},
         ).data)
 
-    def _siblings(self, student, guardian_ids):
-        rows = StudentGuardian.objects.filter(
-            tenant=self.tenant, guardian_id__in=guardian_ids,
-        ).exclude(student=student).select_related("student")
-        visible = set(
+    def _visible_ids(self) -> set:
+        return set(
             scope_students(
                 Student.objects.filter(tenant=self.tenant),
                 self.request.user, self.tenant,
             ).values_list("pk", flat=True),
         )
+
+    def _siblings(self, student, guardian_ids):
+        rows = StudentGuardian.objects.filter(
+            tenant=self.tenant, guardian_id__in=guardian_ids,
+        ).exclude(student=student).select_related("student")
+        visible = self._visible_ids()
         out: dict[int, list] = {}
         for row in rows:
             if row.student_id in visible:
@@ -121,7 +146,10 @@ class StudentGuardiansView(StudentsViewMixin, APIView):
         else:
             guardian, _ = guardian_service.upsert_guardian(
                 self.tenant,
-                full_name=data.get("full_name", ""), phone=data.get("phone", ""),
+                full_name=data.get("full_name", ""),
+                first_name=data.get("first_name", ""),
+                middle_name=data.get("middle_name", ""),
+                last_name=data.get("last_name", ""), phone=data.get("phone", ""),
                 email=data.get("email", ""),
                 occupation=data.get("occupation", ""),
                 address=data.get("address", ""),
@@ -238,6 +266,9 @@ class GuardianSearchView(StudentsViewMixin, APIView):
 class GuardianDirectoryView(StudentsViewMixin, generics.ListAPIView):
     """GET /v1/guardians/
 
+    ``?name_review=true`` lists only the guardians whose name awaits
+    confirmation (``Guardian.name_needs_review``).
+
     docstring-name: Guardians
     """
 
@@ -255,6 +286,7 @@ class GuardianDirectoryView(StudentsViewMixin, generics.ListAPIView):
             include_unlinked=(params.get("unlinked") or "").lower() == "true",
             branch=self.branch_filter,
             session=self.session_filter,
+            name_review=(params.get("name_review") or "").lower() == "true",
         ).annotate(ward_count=Count("student_links", distinct=True))
 
     def get_serializer_context(self):
@@ -282,6 +314,8 @@ class GuardianDirectoryView(StudentsViewMixin, generics.ListAPIView):
 
 class GuardianDetailView(StudentsViewMixin, APIView):
     """GET /v1/guardians/<id>/
+
+    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
 
     docstring-name: One guardian
     """
@@ -313,16 +347,41 @@ class GuardianDetailView(StudentsViewMixin, APIView):
         guardian, changed = guardian_service.update_guardian(
             guardian, actor=request.user, **writer.validated_data,
         )
+        if changed == ["name_needs_review"]:
+            message = f"{guardian.full_name}'s name confirmed."
+        elif changed:
+            message = f"{guardian.full_name} updated."
+        else:
+            message = "Nothing to change."
         return success_response(
-            f"{guardian.full_name} updated." if changed else "Nothing to change.",
+            message,
             data=GuardianSerializer(guardian, context={"request": request}).data,
         )
 
     def get(self, request, pk):
+        from vs_history.as_at import parse_as_at
+
+        from .. import as_at as past
+
         guardian = self.guardian(pk)
         wards = guardian_service.wards_queryset(
             guardian, request.user, self.tenant,
         ).select_related("branch")
+        as_at = parse_as_at(request)
+        if as_at is not None:
+            record, meta = past.guardian_at(guardian, as_at)
+            visible = set(
+                scope_students(
+                    Student.objects.filter(tenant=self.tenant),
+                    request.user, self.tenant,
+                ).values_list("pk", flat=True),
+            )
+            return success_response(data={
+                **GuardianSerializer(record, context={"request": request}).data,
+                "wards": past.wards_at(guardian.pk, visible, as_at),
+                "history_starts": meta["history_starts"],
+                "as_at": meta,
+            })
         links = {
             l.student_id: l
             for l in StudentGuardian.objects.filter(guardian=guardian)
@@ -335,8 +394,10 @@ class GuardianDetailView(StudentsViewMixin, APIView):
                 student__in=wards, is_active=True,
             ).select_related("school_class")
         }
+        starts = past.guardian_history_starts(guardian.pk)
         return success_response(data={
             **GuardianSerializer(guardian, context={"request": request}).data,
+            "history_starts": starts.isoformat() if starts else None,
             "wards": [
                 {
                     "id": s.pk, "name": s.full_name,
@@ -367,12 +428,14 @@ class GuardianPhotoView(StudentsViewMixin, APIView):
     """
 
     def get_permissions(self):
-        # The same key that corrects the rest of the record.
+        # The same key that corrects the rest of the record. The photograph's
+        # own Write switch (``school.guardians.photo``) is asked in each method.
         self.rbac_permission = PERM_UPDATE
         return super().get_permissions()
 
     def post(self, request, pk):
         guardian = self.guardian(pk)
+        assert_writable(request, "school.guardians", {"photo_url": None})
         writer = PhotoUploadSerializer(data=request.data)
         writer.is_valid(raise_exception=True)
         guardian = guardian_service.set_photo(
@@ -385,6 +448,7 @@ class GuardianPhotoView(StudentsViewMixin, APIView):
 
     def delete(self, request, pk):
         guardian = self.guardian(pk)
+        assert_writable(request, "school.guardians", {"photo_url": None})
         if not guardian.photo:
             raise NotFound("This guardian has no photograph.")
         guardian = guardian_service.clear_photo(guardian, actor=request.user)

@@ -85,4 +85,6 @@ class StaffEmailFieldAccessTests(StaffFixture):
                 entry = field_access_payload(registrar, school.tenant)["school.teachers"]
                 self.assertEqual(entry["hidden"], ["email"])
                 self.assertEqual(entry["open_on_create"], ["email"])
-                self.assertEqual(entry["read_only"], [])
+                # The exit date is read-only for everybody (the status change
+                # that ends employment writes it), so it is the only name there.
+                self.assertEqual(entry["read_only"], ["exit_date"])

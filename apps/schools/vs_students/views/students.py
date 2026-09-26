@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 
 from core.response import success_response
 from core.search import search as core_search
+from vs_history.as_at import parse_as_at
 from vs_audit.models import AuditActionType
 from vs_audit.services import emit_audit_event
 from vs_audit.models import AuditModuleKey
@@ -225,6 +226,11 @@ class StudentListCreateView(StudentsViewMixin, generics.ListCreateAPIView):
 class StudentDetailView(StudentsViewMixin, generics.RetrieveUpdateAPIView):
     """GET, PATCH /v1/students/<id>/
 
+    ``?as_at=YYYY-MM-DD`` answers with the record as it stood at the end of
+    that day, in the same shape, plus an ``as_at`` block naming the day and
+    when the record's history starts (``as_at.py``). The live record carries
+    ``history_starts`` so a page knows the earliest day it can ask for.
+
     docstring-name: One student
     """
 
@@ -241,10 +247,22 @@ class StudentDetailView(StudentsViewMixin, generics.RetrieveUpdateAPIView):
         return self.student(self.kwargs["pk"])
 
     def retrieve(self, request, *args, **kwargs):
-        return success_response(
-            "Student retrieved.",
-            data=self.get_serializer(self.get_object()).data,
-        )
+        from .. import as_at as past
+
+        student = self.get_object()
+        as_at = parse_as_at(request)
+        if as_at is None:
+            data = self.get_serializer(student).data
+            starts = past.student_history_starts(student.pk)
+            data["history_starts"] = starts.isoformat() if starts else None
+            return success_response("Student retrieved.", data=data)
+
+        record, meta = past.student_at(student, as_at)
+        context = {**self.get_serializer_context(), "as_at": as_at}
+        data = StudentDetailSerializer(record, context=context).data
+        data["history_starts"] = meta["history_starts"]
+        data["as_at"] = meta
+        return success_response("Student retrieved.", data=data)
 
     @transaction.atomic
     def patch(self, request, *args, **kwargs):

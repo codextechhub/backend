@@ -49,6 +49,10 @@ python manage.py seed_notification_settings
 # Product reference data: config capability catalogue + billing package plans.
 python manage.py seed_config_catalogue
 python manage.py seed_package
+# The first version of every tracked record that has none: the day a record's
+# history starts, and so the earliest day its profile can be read "as at".
+# Idempotent, and it does work only for rows it has not seen.
+python manage.py baseline_record_history
 
 # Bootstrap the first platform superuser. Self-skips (exits cleanly) once a
 # platform-tenant staff account exists, so it is safe to leave in permanently.

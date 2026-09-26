@@ -72,6 +72,14 @@ class _BranchAware(serializers.ModelSerializer):
         return data
 
 
+#: A person's name parts, each mapped to where its value is read. The order is
+#: the order a one-line name is written in.
+PERSON_NAME_PARTS = {
+    "first_name": "first_name", "middle_name": "middle_name", "last_name": "last_name",
+}
+GUARDIAN_NAME_PARTS = PERSON_NAME_PARTS
+
+
 # ── guardians ──────────────────────────────────────────────────────────────
 
 class GuardianSerializer(FieldAccessMixin, serializers.ModelSerializer):
@@ -84,6 +92,7 @@ class GuardianSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """
 
     field_resource = "school.guardians"
+    field_composites = {"full_name": GUARDIAN_NAME_PARTS}
 
     has_account = serializers.SerializerMethodField()
     photo_url = serializers.SerializerMethodField()
@@ -91,7 +100,8 @@ class GuardianSerializer(FieldAccessMixin, serializers.ModelSerializer):
     class Meta:
         model = Guardian
         fields = [
-            "id", "full_name", "phone", "email", "occupation", "address",
+            "id", "full_name", "first_name", "middle_name", "last_name",
+            "name_needs_review", "phone", "email", "occupation", "address",
             "has_account", "photo_url",
         ]
 
@@ -116,11 +126,18 @@ class GuardianUpdateSerializer(FieldAccessMixin, serializers.Serializer):
     A correction is an update, so every registered field it carries asks the
     Write switch, and a form that echoes back a value it did not change is
     accepted rather than refused.
+
+    The name is corrected in its parts, never as one line: a one-line name
+    would change all three parts under whichever single switch it answered
+    to. Sending the parts is also what confirms a name split from one line
+    (``Guardian.name_needs_review``).
     """
 
     field_resource = "school.guardians"
 
-    full_name = serializers.CharField(max_length=150, required=False)
+    first_name = serializers.CharField(max_length=100, required=False)
+    middle_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    last_name = serializers.CharField(max_length=100, required=False)
     phone = serializers.CharField(max_length=32, required=False, allow_blank=True)
     email = serializers.EmailField(required=False, allow_blank=True)
     occupation = serializers.CharField(
@@ -128,12 +145,29 @@ class GuardianUpdateSerializer(FieldAccessMixin, serializers.Serializer):
     )
     address = serializers.CharField(required=False, allow_blank=True)
 
-    def validate_full_name(self, value):
+    def validate_first_name(self, value):
         # Blank is refused rather than allowed through: a guardian with no name
         # is a row nobody can identify on the directory or in a ward list.
         if not (value or "").strip():
-            raise serializers.ValidationError("A guardian needs a name.")
+            raise serializers.ValidationError("A guardian needs a first name.")
         return value
+
+    def validate_last_name(self, value):
+        if not (value or "").strip():
+            raise serializers.ValidationError("A guardian needs a last name.")
+        return value
+
+    def validate(self, attrs):
+        # Refused rather than ignored: a client still sending the one-line name
+        # would otherwise be told the save succeeded while nothing changed.
+        if "full_name" in self.initial_data:
+            raise serializers.ValidationError({
+                "full_name": (
+                    "Correct a guardian's name in its parts: first_name, "
+                    "middle_name and last_name."
+                ),
+            })
+        return attrs
 
 
 class GuardianLinkSerializer(serializers.ModelSerializer):
@@ -180,6 +214,7 @@ class GuardianDirectorySerializer(FieldAccessMixin, serializers.ModelSerializer)
     """
 
     field_resource = "school.guardians"
+    field_composites = {"full_name": GUARDIAN_NAME_PARTS}
 
     photo_url = serializers.SerializerMethodField()
     ward_count = serializers.IntegerField(read_only=True)
@@ -188,7 +223,8 @@ class GuardianDirectorySerializer(FieldAccessMixin, serializers.ModelSerializer)
 
     class Meta:
         model = Guardian
-        fields = ["id", "full_name", "phone", "email", "ward_count",
+        fields = ["id", "full_name", "first_name", "middle_name", "last_name",
+                  "name_needs_review", "phone", "email", "ward_count",
                   "ward_names", "is_sibling_household", "photo_url"]
 
     def get_photo_url(self, obj):
@@ -208,6 +244,10 @@ class GuardianWriteSerializer(FieldAccessMixin, serializers.Serializer):
     branch: a guardian is school-level and a request supplying one is refused
     as a field that does not exist rather than accepted and ignored.
 
+    A new guardian's name arrives in parts. A one-line ``full_name`` is still
+    accepted for a client that has no parts to send; it is split and flagged
+    for review exactly as the spreadsheet imports' one-line column is.
+
     Creating a guardian rather than editing one, so a blank value for a field
     the caller may not write is dropped instead of refused: the enrol form
     posts every input whether it was touched or not. The phone number is
@@ -220,6 +260,9 @@ class GuardianWriteSerializer(FieldAccessMixin, serializers.Serializer):
     field_resource = "school.guardians"
 
     guardian_id = serializers.IntegerField(required=False, allow_null=True)
+    first_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    middle_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    last_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
     full_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
     phone = serializers.CharField(max_length=32, required=False, allow_blank=True)
     email = serializers.EmailField(required=False, allow_blank=True)
@@ -232,9 +275,19 @@ class GuardianWriteSerializer(FieldAccessMixin, serializers.Serializer):
 
     def validate(self, attrs):
         if not attrs.get("guardian_id"):
-            if not (attrs.get("full_name") or "").strip():
+            has_parts = any(
+                (attrs.get(part) or "").strip()
+                for part in ("first_name", "middle_name", "last_name")
+            )
+            if has_parts:
+                for part, label in (("first_name", "first"), ("last_name", "last")):
+                    if not (attrs.get(part) or "").strip():
+                        raise serializers.ValidationError({
+                            part: f"Give the guardian's {label} name.",
+                        })
+            elif not (attrs.get("full_name") or "").strip():
                 raise serializers.ValidationError({
-                    "full_name": "Give the guardian's name, or pick one already at the school.",
+                    "first_name": "Give the guardian's name, or pick one already at the school.",
                 })
             if not (attrs.get("phone") or "").strip():
                 raise serializers.ValidationError({
@@ -258,6 +311,7 @@ class StudentListSerializer(FieldAccessMixin, _BranchAware):
     """
 
     field_resource = "school.students"
+    field_composites = {"full_name": PERSON_NAME_PARTS}
 
     full_name = serializers.CharField(read_only=True)
     status_label = serializers.CharField(source="get_status_display", read_only=True)
@@ -317,10 +371,15 @@ class StudentDetailSerializer(FieldAccessMixin, _BranchAware):
     caller may read and not change: a school that lets a class teacher see a
     child's allergies without correcting them gets a greyed field rather than
     a save that is refused.
+
+    Rendered for a past day (``context["as_at"]``, see ``as_at.py``) the age is
+    the age on that day, the class is the one installed on the rebuilt record,
+    and no status move is offered, because nothing can be done to the past.
     """
 
     field_resource = "school.students"
     field_access_detail = True
+    field_composites = {"full_name": PERSON_NAME_PARTS}
 
     full_name = serializers.CharField(read_only=True)
     status_label = serializers.CharField(source="get_status_display", read_only=True)
@@ -351,9 +410,13 @@ class StudentDetailSerializer(FieldAccessMixin, _BranchAware):
         read_only_fields = ["status", "branch", "applied_on"]
 
     def get_age(self, obj):
-        return _age_on(obj.date_of_birth)
+        as_at = self.context.get("as_at")
+        return _age_on(obj.date_of_birth, as_at.date if as_at else None)
 
     def _enrolment(self, obj):
+        installed = getattr(obj, "_active_enrolments", None)
+        if installed is not None:
+            return installed[0] if installed else None
         return obj.enrolments.filter(is_active=True).select_related(
             "school_class", "school_class__level", "session",
         ).first()
@@ -377,6 +440,9 @@ class StudentDetailSerializer(FieldAccessMixin, _BranchAware):
 
     def get_allowed_transitions(self, obj):
         from .services.status import IMPACT, allowed_from
+
+        if self.context.get("as_at"):
+            return []
 
         return [
             {
@@ -613,6 +679,9 @@ class DocumentSerializer(serializers.Serializer):
     uploaded_at = serializers.DateTimeField(allow_null=True)
     id = serializers.IntegerField(allow_null=True)
     url = serializers.CharField(allow_blank=True)
+    #: Held on the day asked about, and replaced or removed since, so its file
+    #: no longer exists. Only a past view sets it.
+    file_retired = serializers.BooleanField(default=False)
 
 
 #: 5 MB. Comfortably more than a phone photograph of a certificate, and small
@@ -715,8 +784,16 @@ class AdmissionPolicySerializer(serializers.Serializer):
     hint = serializers.CharField(allow_blank=True, max_length=200)
 
 
-class SearchHitSerializer(serializers.ModelSerializer):
-    """Four fields. A type-ahead is the wrong place to leak a child's address."""
+class SearchHitSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """Four fields. A type-ahead is the wrong place to leak a child's address.
+
+    The admission number and the name parts behind ``full_name`` are registered
+    fields of ``school.students``, so the type-ahead follows the same switches
+    as the directory it searches.
+    """
+
+    field_resource = "school.students"
+    field_composites = {"full_name": PERSON_NAME_PARTS}
 
     full_name = serializers.CharField(read_only=True)
     class_name = serializers.SerializerMethodField()
@@ -724,6 +801,7 @@ class SearchHitSerializer(serializers.ModelSerializer):
     class Meta:
         model = Student
         fields = ["id", "full_name", "student_number", "class_name"]
+        read_only_fields = fields
 
     def get_class_name(self, obj):
         row = next((e for e in obj.enrolments.all() if e.is_active), None)
