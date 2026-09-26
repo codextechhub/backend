@@ -6,7 +6,6 @@ from datetime import timedelta
 
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.core.validators import RegexValidator
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
@@ -17,6 +16,7 @@ from rest_framework_simplejwt.serializers import (
 )
 
 from core.media import signed_url
+from core.validators import phone_validator
 from vs_rbac.models import TenantRoleTemplate
 from vs_rbac.field_enforcement import FieldAccessMixin
 from vs_tenants.references import resolve_branch_reference
@@ -274,7 +274,7 @@ class UserCreateSerializer(serializers.Serializer):
     # from the actor and the asserted tenant, exactly as the old default did.
     phone       = serializers.CharField(
         max_length=32, required=False, allow_blank=True, default='',
-        validators=[RegexValidator(r'^\+?[0-9 ()\-]{7,22}$', message='Enter a valid phone number.')],
+        validators=[phone_validator],
     )
     # branch passed as its integer id; resolved against the target tenant in
     # validate(). The target tenant is derived from request context, not a
@@ -526,6 +526,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model  = User
         fields = ('first_name', 'last_name', 'phone', 'gender')
+        extra_kwargs = {'phone': {'validators': [phone_validator]}}
 
     def validate(self, attrs):
         from vs_rbac.field_enforcement import assert_writable

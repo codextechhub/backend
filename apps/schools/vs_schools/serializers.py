@@ -27,6 +27,7 @@ from .models import (
     slug_is_reserved,
 )
 from core.media import signed_url
+from core.validators import phone_validator
 from vs_tenants.exceptions import BranchAlreadyInState, TenantSlugFrozen
 from vs_tenants.models import Branch, BranchLifecycle, BranchStatus, Tenant
 from vs_audit.models import AuditModuleKey, AuditActionType, AuditSeverity
@@ -477,7 +478,9 @@ class BranchPrimaryAdminWriteSerializer(serializers.Serializer):
 
     full_name = serializers.CharField(max_length=120)
     email = serializers.EmailField()
-    phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
+    phone = serializers.CharField(
+        max_length=32, required=False, allow_blank=True, default="", validators=[phone_validator],
+    )
     branch_role = serializers.CharField(max_length=80, required=False, allow_blank=True, default="Head Teacher")
 
     def validate_full_name(self, value: str) -> str:
@@ -501,7 +504,9 @@ class SchoolPrimaryAdminWriteSerializer(serializers.Serializer):
 
     full_name = serializers.CharField(max_length=120)
     email = serializers.EmailField()
-    phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
+    phone = serializers.CharField(
+        max_length=32, required=False, allow_blank=True, default="", validators=[phone_validator],
+    )
     school_role = serializers.CharField(max_length=80, required=False, allow_blank=True, default="IT Head")
 
     def validate_full_name(self, value: str) -> str:
