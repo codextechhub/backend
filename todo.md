@@ -425,9 +425,37 @@ M19: a school with one set of books still sees the picker step (frontend
 package), where the branch rule says a single option should not appear.
 VERIFIED (working tree before commit): vs_finance 774 OK.
 
+### D13. New staff start as Teacher; the adder no longer picks a role (b0989d5d, 2026-09-26)
+MODULES: M12 staff management. Check M09 onboarding and M04 roles and
+permissions, but only where they describe who chooses a new person's role.
+- `POST /v1/i/me/staff/` at a LIVE school grants the tenant's `teacher` role
+  itself (matched on the key), reaching as far as the posting. A `role` other
+  than `teacher`, or any `role_branch`, is refused with 400 on that field rather
+  than ignored. Reason: `school.teachers.create` is not `school.roles.assign`,
+  so the key that adds somebody no longer decides what they may reach; role
+  admins change grants afterwards (FR-005, FR-019).
+- A live school with no ACTIVE `teacher` role is refused with 400 on `role`,
+  naming the role to restore, rather than creating an account that reaches
+  nothing.
+- While the tenant is PENDING nothing changes: the POST still requires `role`,
+  narrowed to `school_admin` / `branch_admin`, and still honours `role_branch`.
+  A missing role there is now its own 400 ("Choose School Admin or Branch
+  Admin").
+- The list response gains `starting_role`: `{value: "teacher", label: <the
+  school's name for it>}` at a live school, `null` while PENDING. The school-fe
+  Add staff form drops its Role section when it is set.
+- The staff import keeps its Role column; see Undone item 3.
+MUST SAY: FR-001 preconditions, postconditions, business rules (3) "a role is
+required", (4) the onboarding narrowing, (7) role_branch reach, the refusals
+(the FRD says 422 for a bad role; the code answers 400), and acceptance
+(AGrantFollowsThePostingTests, the PENDING narrowing line). ALSO FIX while in
+M12: v2.8's change-log table lost its header row (row 0 holds a duplicate 2.7
+entry); v2.7's header row reads Version, Date, Summary.
+VERIFIED (working tree before commit): schools.vs_staff 267 OK.
+
 ## Undone
 
-Two items. Each says what is wrong, how to fix it, and what is stopping it.
+Three items. Each says what is wrong, how to fix it, and what is stopping it.
 Verified against the code on 2026-09-13, re-checked 2026-09-14; eight earlier
 items were removed because they were finished or no longer true, and what
 replaced them is noted at the end.
@@ -453,6 +481,15 @@ school may turn it off. BLOCKED BY: that product decision.
 domain-neutral and has no fee assignment to suspend. FIX: a fee-assignment
 concept in Finance first, then the seam through the FAL's StudentCustomerPort.
 BLOCKED BY: that Finance work, which is much larger than (a).
+
+### 3. The staff import still lets the uploader pick each person's role (2026-09-26)
+Adding one person at a live school grants Teacher and refuses any other role
+(D13), but the staff import resolves a Role column per row, so a file can make
+its bursar Payout Approver from day one with no role admin ever choosing it.
+FIX: drop the Role column from the seeded staff template, have the row handler
+grant the starting role through `roles.starting_role` exactly as the single add
+does, and update `schools/vs_staff/tests/test_imports.py`.
+BLOCKED BY: nothing; deferred to keep the Add staff change small.
 
 ## Done
 # The blank class column and the missing dry run are both fixed (2026-08-30, 182 FAL tests green). CLASS LABEL: `DebtorRow.class_label` and `FeeRow.class_label` were hardcoded to "" behind a comment saying there was no student app to ask - false since M11 landed. They now read the child's active enrolment in the newest session, via `_class_labels` + `_labelled`, applied to the built page rather than inside the row builder so a long debtor list costs ONE extra query instead of one per row (the test asserts the invariant - a class of thirty costs what a class of two costs - not a magic number). A CROSS-TENANT LEAK WAS FOUND AND CLOSED IN THAT SAME FIX, before it shipped: `Customer.source_id` is a loose string, not an FK, so a school that imported receivables before its roll can hold a reference like "7" that means nothing locally while ANOTHER school's pupil genuinely has pk 7. Unscoped, the first school's debtor list would print the second school's class against a child it has never heard of. The lookup is tenant-scoped and a test fails without it. Entity scoping upstream cannot catch this, because the leak enters through a value the ledger merely stores. DRY RUN: `generate_cohort_invoices(..., dry_run=True)` runs the REAL generation inside a transaction and rolls it back, rather than re-deriving the amounts. Deliberate: fee items are priced and taxed inside `post_invoice`, so a second implementation would quote a pre-tax figure and be wrong in exactly the case a bursar most needs it right. Running the real code also means every refusal a real run would raise is raised in the preview, so a preview cannot promise a run that then fails. `InvoiceGenerationResult` gained `dry_run` and `students_to_bill`; the preview returns no invoice pks, because they stop existing when the block exits. The in-memory fake was updated too, or a test that previewed then billed would see its own preview come back as an idempotent skip.
