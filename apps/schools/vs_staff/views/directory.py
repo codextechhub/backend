@@ -28,7 +28,7 @@ from ..serializers import (
 )
 from ..services import creation, posting, roles
 from ..services.directory import counts
-from ..services.scoping import is_self
+from ..services.scoping import guard_postings, is_self
 from .base import StaffViewMixin
 
 #: What a typed query is matched against, joined into one string.
@@ -154,7 +154,7 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
         page = self.paginate_queryset(queryset)
         serializer = self.get_serializer(page, many=True)
         response = self.get_paginated_response(serializer.data)
-        response.data["counts"] = counts(queryset, self.tenant)
+        response.data["counts"] = counts(queryset, self.tenant, by_branch=self.multi_branch)
         invitable = list(self._invitable_roles().prefetch_related("additional_branches"))
         response.data["role_options"] = [
             {"value": role.key, "label": role.name, "branch_ids": role.branch_ids}
@@ -223,7 +223,12 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
         data = payload.validated_data
 
         role, reach = self._grant_for(data)
-        branch = posting.resolve_posting(self.tenant, data.get("branch"))
+        # A branch administrator's new person is filed under their branch.
+        requested = posting.resolve_posting(self.tenant, data.get("branch"))
+        branch = next(iter(guard_postings(
+            request.user, self.tenant, [requested] if requested else [],
+            default_when_unset=True,
+        )), None)
 
         account = UserCreateSerializer(
             data={
@@ -392,7 +397,7 @@ class StaffDetailView(StaffViewMixin, APIView):
 
     @transaction.atomic
     def patch(self, request, pk):
-        staff = self.get_staff(pk)
+        staff = self.get_staff_for_write(pk)
         # The record and the request both ride in, or the field guard has
         # neither a caller to judge nor a stored value to recognise an echo by.
         payload = StaffUpdateSerializer(
@@ -429,6 +434,7 @@ class StaffDetailView(StaffViewMixin, APIView):
 
         if "branch" in data:
             branch = posting.resolve_posting(self.tenant, data.pop("branch"))
+            guard_postings(request.user, self.tenant, [branch] if branch else [])
             posting.set_posting(staff, branch, actor=request.user)
 
         if "staff_number" in data:

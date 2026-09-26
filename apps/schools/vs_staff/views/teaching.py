@@ -14,7 +14,10 @@ from rest_framework.views import APIView
 from core.pagination import XVSPagination
 from core.response import success_response
 
-from schools.vs_academics.services.scoping import scope_to_visible_branches
+from schools.vs_academics.services.scoping import (
+    assert_may_change,
+    scope_to_visible_branches,
+)
 
 from ..constants import PERM_ASSIGN, PERM_VIEW, TeachingPart
 from ..models import TeachingAssignment
@@ -120,6 +123,9 @@ class StaffTeachingView(StaffViewMixin, _SessionMixin, APIView):
         )
         if school_class is None:
             raise NotFound("No such class at this school.")
+        # A duty belongs to its class, and a shared class's staffing is not a
+        # branch's to change.
+        assert_may_change(self.request.user, self.tenant, school_class)
         subject = scope_to_visible_branches(
             Subject.objects.filter(tenant=self.tenant, pk=subject_id),
             self.request.user, self.tenant,
@@ -153,6 +159,7 @@ class TeachingAssignmentDetailView(StaffViewMixin, APIView):
         if row is None:
             raise NotFound("No such teaching duty at this school.")
         self.get_staff(row.staff_id)
+        assert_may_change(self.request.user, self.tenant, row.school_class)
         return row
 
     def patch(self, request, pk):
@@ -200,6 +207,7 @@ class ClassTeacherView(StaffViewMixin, APIView):
         ).select_related("session").first()
         if school_class is None:
             raise NotFound("No such class at this school.")
+        assert_may_change(request.user, self.tenant, school_class)
         teaching.assert_session_open(school_class.session)
 
         staff = self.get_staff(data["staff"]) if data.get("staff") else None

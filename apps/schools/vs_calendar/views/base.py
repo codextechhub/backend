@@ -120,8 +120,15 @@ class CalendarViewMixin:
         The guard on ``session`` reads the LENS, and a detail view does not use
         the lens - it resolves a row by primary key. A row carries its own year,
         and that is the one that decides.
+
+        The branch rule is applied here too, for every detail view at once:
+        another branch's row is a 404, and a shared row is read-only to a
+        branch-bound caller (see ``services.scoping.guard_detail``).
         """
+        from ..services.scoping import guard_detail
+
         obj = super().get_object()
+        guard_detail(self, obj)
         if self.request.method not in SAFE_METHODS:
             from schools.vs_academics.services.years import assert_year_is_writable
 

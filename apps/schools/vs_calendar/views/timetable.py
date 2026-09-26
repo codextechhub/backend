@@ -20,7 +20,7 @@ from rest_framework.views import APIView
 from core.response import success_response
 from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
-from vs_rbac.scoping import WHOLE_TENANT
+from vs_rbac.scoping import WHOLE_TENANT, caller_may_change
 
 from ..constants import (
     PERM_TIMETABLE_CREATE,
@@ -42,7 +42,7 @@ from ..serializers import TimetableSlotSerializer, TimetableSlotWriteSerializer
 from ..services.bells import periods_in_force
 from ..services.clashes import grid_clashes, slot_warnings
 from ..services.publishing import publish_class_timetable
-from ..services.scoping import scope_to_visible_branches
+from ..services.scoping import assert_may_change, row_branch_ids, scope_to_visible_branches
 from ..services.teachers import display_name, teaching_users
 from ..services.timetable import (
     duplicate_grid,
@@ -155,6 +155,10 @@ class ClassTimetableListView(CalendarViewMixin, APIView):
             else:
                 entry.pop("branch", None)
             entry.update(_status_of(records.get(row.pk)))
+            # Whether this viewer may change the grid; a shared class is read-only.
+            entry["can_manage"] = caller_may_change(
+                request.user, self.tenant, row_branch_ids(row), visible=self.visible,
+            )
             out.append(entry)
         return success_response(data=out)
 
@@ -296,6 +300,7 @@ class ClassTimetableDetailView(CalendarViewMixin, APIView):
     def put(self, request, class_id):
         session = self.session_required
         school_class = self._class(class_id)
+        assert_may_change(request.user, self.tenant, school_class)
         require_bell_schedule(self.tenant, session)
 
         rows = request.data.get("slots")
@@ -392,6 +397,7 @@ class SlotListCreateView(CalendarViewMixin, generics.ListCreateAPIView):
         ).first()
         if school_class is None:
             raise NotFound("No such class at this school.")
+        assert_may_change(request.user, self.tenant, school_class)
 
         period = data["period"]
         if period.tenant_id != self.tenant.id or period.session_id != session.pk:
@@ -478,6 +484,7 @@ class SlotPreviewView(CalendarViewMixin, APIView):
         ).first()
         if school_class is None:
             raise NotFound("No such class at this school.")
+        assert_may_change(request.user, self.tenant, school_class)
 
         period = data["period"]
         if period.tenant_id != self.tenant.id or period.session_id != session.pk:

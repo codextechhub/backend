@@ -929,6 +929,7 @@ class TenantUserRoleAssignmentSerializer(
             raise serializers.ValidationError({"role": ROLE_NOT_FOUND})
         if branch is not None and branch.tenant_id != tenant.pk:
             raise serializers.ValidationError({"branch": BRANCH_NOT_FOUND})
+
         if self.instance is None and role is not None and branch is not None:
             role_ids = role.branch_ids
             if len(role_ids) > 1:
@@ -991,6 +992,19 @@ class TenantUserRoleAssignmentSerializer(
                         "permissions outside your grant authority: "
                         f"{', '.join(sorted(missing))}."
                     )
+
+        # A branch-bound caller grants, changes and removes only grants that
+        # stay inside their branches, for people posted only there.
+        caller = getattr(self.context.get("request"), "user", None)
+        if caller is not None and user is not None and role is not None:
+            from ..grant_reach import assert_caller_may_grant
+
+            if self.instance is not None:
+                assert_caller_may_grant(
+                    caller, tenant, self.instance.role, self.instance.branch,
+                    holder=self.instance.user,
+                )
+            assert_caller_may_grant(caller, tenant, role, branch, holder=user)
 
         is_removing_super_admin = (
             self.instance

@@ -307,17 +307,20 @@ class ExamSecurityTests(_ExamBase):
         self.assertEqual(response.status_code, 404, response.data)
         self.assertFalse(Exam.all_objects.filter(calendar_event=lekki_mocks).exists())
 
-    def test_a_school_wide_exam_period_is_still_every_branchs_to_build_on(self):
+    def test_a_school_wide_exam_is_set_up_by_a_school_wide_administrator(self):
         """A period with no branch is the school's own examination diary.
 
-        Withholding it would leave a branch head unable to schedule the exams
-        their whole school sits, which reads as the screen being broken.
+        An exam hung off it is school-wide too, so a branch head sees the period
+        but does not create the exam: that would put a row on every branch's
+        exam screen. They schedule their own classes' papers inside the exam a
+        school-wide administrator creates (see test_shared_rows_read_only).
         """
         response = self.post(self.ikeja_admin, "calendar-exam-list", {
             "calendar_event": self.period_event.pk,
         })
 
-        self.assertNotEqual(response.status_code, 404, response.data)
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(response.data["error"]["code"], "SHARED_RECORD_READ_ONLY")
 
     def test_another_tenants_exam_answers_404(self):
         theirs_event = CalendarEvent.all_objects.create(

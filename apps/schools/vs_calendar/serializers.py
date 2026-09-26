@@ -30,6 +30,7 @@ from .models import (
     TimetableSlot,
 )
 from .services.calendar import audience_labels
+from .services.scoping import add_manage_flag
 from .services.teachers import display_name
 
 
@@ -41,7 +42,7 @@ class _Scoped(serializers.ModelSerializer):
         if not self.context.get("multi_branch", True):
             for key in ("branch", "branch_name", "scope_label"):
                 data.pop(key, None)
-        return data
+        return add_manage_flag(self, instance, data)
 
 
 class PersonSerializer(serializers.Serializer):
@@ -241,6 +242,10 @@ class TimetableSlotSerializer(serializers.ModelSerializer):
             return None
         return {"id": obj.teacher_id, "name": display_name(obj.teacher)}
 
+    def to_representation(self, instance):
+        return add_manage_flag(self, instance, super().to_representation(instance))
+
+
 
 class TimetableSlotWriteSerializer(serializers.ModelSerializer):
     class Meta:
@@ -281,6 +286,10 @@ class ExamSlotSerializer(serializers.ModelSerializer):
             return None
         return {"id": obj.invigilator_id, "name": display_name(obj.invigilator)}
 
+    def to_representation(self, instance):
+        return add_manage_flag(self, instance, super().to_representation(instance))
+
+
 
 class ExamSlotWriteSerializer(serializers.ModelSerializer):
     class Meta:
@@ -303,3 +312,6 @@ class ExamSerializer(serializers.ModelSerializer):
             "id", "name", "calendar_event", "event_name",
             "start_date", "end_date", "status", "status_label", "published_at",
         ]
+
+    def to_representation(self, instance):
+        return add_manage_flag(self, instance, super().to_representation(instance))

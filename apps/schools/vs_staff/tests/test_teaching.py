@@ -266,14 +266,32 @@ class BranchReachTests(StaffFixture):
         self.ikeja_class.refresh_from_db()
         self.assertIsNone(self.ikeja_class.class_teacher_id)
 
-    def test_the_school_wide_class_is_still_theirs_to_staff(self):
-        """A class with no branch belongs to every branch."""
+    def test_the_school_wide_class_is_staffed_by_a_school_wide_administrator(self):
+        """A class with no branch belongs to every branch, so no one branch staffs it.
+
+        Lekki's head reads the shared class and its teachers; naming its class
+        teacher, or giving it a teaching duty, would change it for Ikeja too.
+        """
         response = self.put(
             self.lekki_head, "staff-class-teacher",
             {"school_class": self.shared_class.pk, "staff": self.eze.pk},
         )
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(response.data["error"]["code"], "SHARED_RECORD_READ_ONLY")
 
-        self.assertEqual(response.status_code, 200, response.data)
+        duty = self.post(
+            self.lekki_head, "staff-teaching",
+            {"school_class": self.shared_class.pk, "subject": self.maths.pk,
+             "part": "LEAD"},
+            pk=self.eze.pk,
+        )
+        self.assertEqual(duty.status_code, 403, duty.data)
+
+        own = self.put(
+            self.lekki_head, "staff-class-teacher",
+            {"school_class": self.lekki_class.pk, "staff": self.eze.pk},
+        )
+        self.assertEqual(own.status_code, 200, own.data)
 
     def test_another_branchs_subject_cannot_be_taught(self):
         """The other half of the same resolver, which narrowed one and not both.

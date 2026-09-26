@@ -178,6 +178,11 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
     #: field here. This is what the screen that offers to invite people later
     #: reads to find them.
     invitation_email_status = serializers.SerializerMethodField()
+    #: Whether the viewer may change this record rather than only read it. False
+    #: for a branch administrator looking at somebody school-wide or posted to a
+    #: branch they do not cover; the server refuses those writes whatever the
+    #: screen draws.
+    can_manage = serializers.SerializerMethodField()
 
     class Meta:
         model = StaffProfile
@@ -193,7 +198,7 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
             "account_status", "account_flag", "roles", "branch_id",
             "branch_name", "posting_branch_ids", "posted_school_wide", "teaching_load",
             "on_leave_today", "on_leave_until", "hire_date", "can_resend",
-            "invited_at", "invitation_email_status",
+            "invited_at", "invitation_email_status", "can_manage",
         ]
 
     def get_full_name(self, obj) -> str:
@@ -220,6 +225,19 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
             branch.name for branch in obj.additional_postings.all()
         ]
         return ", ".join(names) if names else "School-wide"
+
+    def get_can_manage(self, obj) -> bool:
+        from .services.scoping import caller_manages
+
+        request = self.context.get("request")
+        if request is None:
+            return False
+        if "viewer_branches" in self.context:
+            return caller_manages(
+                request.user, None, obj,
+                visible=self.context["viewer_branches"], resolved=True,
+            )
+        return caller_manages(request.user, self.context.get("tenant"), obj)
 
     def get_posting_branch_ids(self, obj):
         return obj.posting_branch_ids

@@ -15,6 +15,12 @@ sees their branch's people **plus** the school-wide ones. A registrar with no
 posting is not missing data; she belongs to the school and appears in every
 roster.
 
+**Reading is inclusive; changing is not.** A branch administrator reads the
+school-wide people and may not change them, and may post people only to their
+own branches. Every write resolves its person through ``get_staff_for_write``
+and every posting through ``guard_postings``, and each row carries
+``can_manage`` so a screen hides the controls the server would refuse.
+
 **A person always reaches their own record**, whatever they hold. A teacher with
 no staff key at all opens her own profile, her own documents and her own leave,
 and nobody else's.
@@ -34,7 +40,7 @@ from rest_framework.exceptions import NotFound
 from core.pagination import XVSPagination
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 
-from ..services.scoping import branch_dimension_applies
+from ..services.scoping import viewer_sees_branches
 
 
 class StaffViewMixin:
@@ -52,14 +58,20 @@ class StaffViewMixin:
 
     @property
     def multi_branch(self) -> bool:
-        """Whether the branch dimension is rendered at all.
+        """Whether the branch dimension is rendered to this viewer at all.
+
+        Per viewer, not per school: a branch administrator at a two-branch
+        school works in one branch, so the posting field, column, filter and
+        roster are absent for them exactly as they are at a one-branch school.
+        Imports keep asking ``branch_dimension_applies`` directly, because a
+        file's branch column is a fact about the school.
 
         Cached per request, because several serializers ask and the answer
         cannot change mid-request.
         """
         cached = getattr(self, "_multi_branch", None)
         if cached is None:
-            cached = branch_dimension_applies(self.tenant)
+            cached = viewer_sees_branches(self.request.user, self.tenant)
             self._multi_branch = cached
         return cached
 
@@ -146,6 +158,28 @@ class StaffViewMixin:
             self.tenant, self.request.user, pk, queryset=self.staff_queryset(),
         )
 
+    def get_staff_for_write(self, pk):
+        """One person the caller may change, not merely read.
+
+        The read scoping first, so another branch's person is still a 404, then
+        :func:`~..services.scoping.assert_manages`, so a school-wide person a
+        branch administrator can see is a 403 naming why.
+        """
+        from ..services.scoping import assert_manages
+
+        staff = self.get_staff(pk)
+        assert_manages(self.request.user, self.tenant, staff)
+        return staff
+
+    @property
+    def viewer_branches(self):
+        """The caller's branch scope, resolved once for every row's ``can_manage``."""
+        if not hasattr(self, "_viewer_branches"):
+            from vs_rbac.scoping import visible_branch_ids
+
+            self._viewer_branches = visible_branch_ids(self.request.user, self.tenant)
+        return self._viewer_branches
+
     def serializer_context(self):
         from ..services.leave import on_leave_today
 
@@ -153,5 +187,6 @@ class StaffViewMixin:
             "request": self.request,
             "tenant": self.tenant,
             "multi_branch": self.multi_branch,
+            "viewer_branches": self.viewer_branches,
             "on_leave_ids": on_leave_today(self.tenant),
         }

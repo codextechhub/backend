@@ -90,7 +90,7 @@ class StaffLeaveView(StaffViewMixin, APIView):
         })
 
     def post(self, request, pk):
-        staff = self.get_staff(pk)
+        staff = self.get_staff_for_write(pk)
         payload = LeaveWriteSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         data = payload.validated_data
@@ -131,7 +131,7 @@ class LeaveDetailView(StaffViewMixin, APIView):
         )
         if row is None:
             raise NotFound("No such leave request at this school.")
-        self.get_staff(row.staff_id)
+        self.get_staff_for_write(row.staff_id)
         return row
 
     def patch(self, request, pk):

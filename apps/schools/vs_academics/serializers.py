@@ -38,11 +38,13 @@ class _BranchAware(serializers.ModelSerializer):
         return self.context.get("multi_branch", True)
 
     def to_representation(self, instance):
+        from .services.scoping import add_manage_flag
+
         data = super().to_representation(instance)
         if not self._multi_branch():
             for field in ("branch", "branch_name", "scope_label", "branches"):
                 data.pop(field, None)
-        return data
+        return add_manage_flag(self, instance, data)
 
 
 class TermSerializer(serializers.ModelSerializer):

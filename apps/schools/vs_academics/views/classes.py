@@ -48,6 +48,7 @@ from ..serializers import (
 from ..services.years import assert_year_is_writable
 from ..services.scoping import (
     UNSET,
+    assert_may_change,
     assert_within_parent,
     scope_to_visible_branches,
 )
@@ -250,7 +251,8 @@ class _ClassStateView(_ClassBase, APIView):
         ).filter(pk=pk).first()
         if klass is None:
             raise NotFound("No such class at this school.")
-        # This one resolves by pk without get_object, so the guard is explicit.
+        # This one resolves by pk without get_object, so the guards are explicit.
+        assert_may_change(request.user, self.tenant, klass)
         assert_year_is_writable(klass.session)
 
         klass.is_active = self.active
@@ -500,6 +502,7 @@ class SubjectListCreateView(_SubjectBase, generics.ListCreateAPIView):
                     self.tenant, request.user, level_ids,
                     session=self.session_required,
                 ),
+                session=self.session_required,
             )
         self._audit(
             AuditActionType.CREATE, subject, subject.name, f"{subject.name} added.",
@@ -568,6 +571,7 @@ class SubjectDetailView(_SubjectBase, generics.RetrieveUpdateAPIView):
                     self.tenant, request.user, level_ids,
                     session=self.session_required,
                 ),
+                session=self.session_required,
             )
         self._audit(
             AuditActionType.UPDATE, subject, subject.name, f"{subject.name} updated.",
@@ -603,7 +607,10 @@ class SubjectOfferingsView(_SubjectBase, APIView):
             self.tenant, request.user, writer.validated_data["level_ids"],
             session=self.session_required,
         )
-        _write_offerings(self.tenant, subject, levels)
+        levels = _offerings_caller_may_write(
+            request.user, self.tenant, subject, levels, session=self.session_required,
+        )
+        _write_offerings(self.tenant, subject, levels, session=self.session_required)
 
         emit_audit_event(
             module_key=AuditModuleKey.ACADEMICS,
@@ -623,8 +630,61 @@ class SubjectOfferingsView(_SubjectBase, APIView):
         )
 
 
-def _write_offerings(tenant, subject, levels):
-    """Replace the set, refusing any level wider than the subject's own scope.
+def _offerings_caller_may_write(user, tenant, subject, levels, *, session):
+    """The full level set to write, keeping what the caller may not change.
+
+    An offering belongs to the narrower of its subject and its level. Offering
+    Ikeja's own subject anywhere is Ikeja's business, so a caller who may change
+    the subject writes the set they sent. For a shared subject each offering is
+    judged by its level: "Mathematics at Ikeja's JSS1" is Ikeja's, "Mathematics
+    at the school-wide JSS1" is shared. A branch-bound caller may add or remove
+    only their own; every other offering the subject has this year is carried
+    over untouched, including those at levels they cannot see, which a plain
+    replace would otherwise delete. Asking to change a shared one is refused
+    rather than ignored.
+    """
+    from vs_rbac.scoping import WHOLE_TENANT, caller_may_change, visible_branch_ids
+
+    visible = visible_branch_ids(user, tenant)
+    if visible is WHOLE_TENANT or (
+        subject.branch_id is not None
+        and caller_may_change(user, tenant, [subject.branch_id], visible=visible)
+    ):
+        return levels
+
+    def owned(level):
+        return caller_may_change(
+            user, tenant, [level.branch_id] if level.branch_id else [], visible=visible,
+        )
+
+    current = list(
+        Level.all_objects.filter(
+            tenant=tenant, session=session, subject_offerings__subject=subject,
+        ).distinct()
+    )
+    current_ids = {level.pk for level in current}
+    requested_ids = {level.pk for level in levels}
+    for level in current + levels:
+        shared = level.branch_id is None
+        if shared and (level.pk in current_ids) != (level.pk in requested_ids):
+            # Another branch's level is never sent, so its absence means nothing.
+            from vs_rbac.exceptions import SharedRecordReadOnly
+
+            raise SharedRecordReadOnly(
+                f"{level.name} is shared across more than your branch, so only a "
+                f"school-wide administrator can change whether {subject.name} "
+                f"is offered there."
+            )
+    kept = [level for level in current if not owned(level)]
+    return kept + [level for level in levels if owned(level)]
+
+
+def _write_offerings(tenant, subject, levels, *, session):
+    """Replace this year's set, refusing any level wider than the subject's own scope.
+
+    Only the offerings at this year's levels are replaced. A subject spans
+    years and its offerings do not, so another year's offerings are that year's
+    record and stay as they are.
 
     A shared subject may be offered at any level the school holds. A subject
     bound to one branch may only be offered at levels that are shared or in
@@ -638,7 +698,7 @@ def _write_offerings(tenant, subject, levels):
             assert_within_parent(
                 level.branch, subject.branch, parent_label=subject.name,
             )
-    SubjectOffering.all_objects.filter(subject=subject).delete()
+    SubjectOffering.all_objects.filter(subject=subject, level__session=session).delete()
     SubjectOffering.objects.bulk_create([
         SubjectOffering(tenant=tenant, subject=subject, level=level)
         for level in levels

@@ -36,6 +36,7 @@ from ..services.sessions import (
     set_branches,
     validate_terms,
 )
+from ..services.scoping import assert_may_change, row_branch_ids
 from .base import AcademicsViewMixin
 
 
@@ -79,7 +80,15 @@ class _SessionBase(AcademicsViewMixin):
     serializer_class = SessionSerializer
 
     def get_queryset(self):
+        from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
+
         qs = _sessions_for(self.tenant)
+        visible = visible_branch_ids(self.request.user, self.tenant)
+        if visible is not WHOLE_TENANT:
+            # The inclusive read: school-wide years and years at their branches.
+            qs = qs.filter(
+                Q(is_school_wide=True) | Q(branch_links__branch_id__in=tuple(visible)),
+            ).distinct()
         status = (self.request.query_params.get("status") or "").strip().upper()
         if status and status != "ALL":
             qs = qs.filter(status=status)
@@ -115,6 +124,7 @@ class SessionListCreateView(_SessionBase, generics.ListCreateAPIView):
         writer.is_valid(raise_exception=True)
         terms = writer.validated_data.pop("terms", [])
         branch_ids = writer.validated_data.pop("branch_ids", [])
+        _assert_may_cover(request.user, self.tenant, branch_ids)
 
         # A year's name is unique per school whatever branches it names, so no
         # scope is passed: "2026/2027 already exists" is the whole rule.
@@ -180,6 +190,8 @@ class SessionDetailView(_SessionBase, generics.RetrieveUpdateAPIView):
         writer.is_valid(raise_exception=True)
         terms = writer.validated_data.pop("terms", None)
         branch_ids = writer.validated_data.pop("branch_ids", None)
+        if branch_ids is not None:
+            _assert_may_cover(request.user, self.tenant, branch_ids)
 
         if session.status == SessionStatus.ACTIVE and "start_date" in writer.validated_data:
             # A live year's start has already happened. Its name and its end
@@ -240,6 +252,16 @@ class SessionRollForwardView(AcademicsViewMixin, APIView):
         from ..models import AcademicSession
         from ..services.rollover import roll_forward
 
+        from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
+
+        if visible_branch_ids(request.user, self.tenant) is not WHOLE_TENANT:
+            # Copying a year copies its shared structure, which is not a
+            # branch's to create.
+            from vs_rbac.exceptions import SharedRecordReadOnly
+
+            raise SharedRecordReadOnly(
+                "Only a school-wide administrator can copy a year's structure forward."
+            )
         target = _get_or_404(self.tenant, pk)
         raw = str(request.data.get("from") or "").strip()
         if not raw:
@@ -279,6 +301,7 @@ class SessionActivateView(AcademicsViewMixin, APIView):
 
     def post(self, request, pk):
         session = _get_or_404(self.tenant, pk)
+        _assert_may_activate(request.user, self.tenant, session)
         displaced = activate_session(session, self.tenant, actor=request.user)
         session = _sessions_for(self.tenant).get(pk=session.pk)
         moved = [s.name for s in displaced]
@@ -303,6 +326,7 @@ class SessionArchiveView(AcademicsViewMixin, APIView):
 
     def post(self, request, pk):
         session = _get_or_404(self.tenant, pk)
+        assert_may_change(request.user, self.tenant, session)
         archive_session(session, self.tenant, actor=request.user)
         session = _sessions_for(self.tenant).get(pk=session.pk)
         return success_response(
@@ -343,6 +367,8 @@ class TermListCreateView(AcademicsViewMixin, generics.ListCreateAPIView):
     def create(self, request, *args, **kwargs):
         session = self.session
         assert_writable(session)
+        if session is not None:
+            assert_may_change(request.user, self.tenant, session)
 
         existing = [
             {
@@ -473,6 +499,48 @@ def _get_or_404(tenant, pk):
         # 404, never 403: another tenant's identifiers must not be enumerable.
         raise NotFound("No such session at this school.")
     return session
+
+
+def _assert_may_cover(user, tenant, branch_ids):
+    """A branch-bound caller sets up years for their own branches only.
+
+    An empty set is a school-wide year, which is not theirs to create.
+    """
+    from vs_rbac.scoping import assert_caller_may_change
+
+    assert_caller_may_change(user, tenant, branch_ids, message=(
+        "You can only set up a year for your own branches. A school-wide year "
+        "is set up by a school-wide administrator."
+    ))
+
+
+def _assert_may_activate(user, tenant, session):
+    """Activating a year may narrow or end others; each must be the caller's too.
+
+    Making Ikeja's year active takes Ikeja away from a school-wide year that
+    covered it, which changes that shared year for every branch.
+    """
+    from vs_rbac.scoping import WHOLE_TENANT, caller_may_change, visible_branch_ids
+    from ..services.sessions import covered_branch_ids
+
+    assert_may_change(user, tenant, session)
+    visible = visible_branch_ids(user, tenant)
+    if visible is WHOLE_TENANT:
+        return
+    claimed = covered_branch_ids(session, tenant)
+    for other in AcademicSession.objects.filter(
+        tenant=tenant, status=SessionStatus.ACTIVE,
+    ).exclude(pk=session.pk).prefetch_related("branch_links"):
+        if covered_branch_ids(other, tenant) & claimed and not caller_may_change(
+            user, tenant, row_branch_ids(other), visible=visible,
+        ):
+            from vs_rbac.exceptions import SharedRecordReadOnly
+
+            raise SharedRecordReadOnly(
+                f"Making {session.name} active would change {other.name}, which "
+                f"covers more than your branch. A school-wide administrator can "
+                f"do this."
+            )
 
 
 def _moved_sentence(names):

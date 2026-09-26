@@ -47,6 +47,94 @@ def scope_staff(queryset, user, tenant, *, field="branch", include_self=True):
     return queryset.filter(scope)
 
 
+def caller_manages(user, tenant, staff, *, visible=None, resolved=False) -> bool:
+    """Whether *user* may change *staff*'s record, not merely read it.
+
+    A whole-tenant caller manages everybody they can see. A branch-bound caller
+    manages only people whose every posting sits inside their own branches.
+    School-wide people, and people also posted to a branch the caller does not
+    cover, stay visible to them but read-only: the registrar at the school is
+    relied on by every branch, and a correction made from Ikeja reaches Lekki's
+    screens without Lekki's administrator knowing.
+
+    A person always manages their own record, subject to the self-edit rules
+    each endpoint already applies.
+
+    ``visible`` and ``resolved`` let a list pass the caller's scope once rather
+    than resolving it per row.
+    """
+    from vs_rbac.scoping import caller_may_change
+
+    if getattr(user, "pk", None) and staff.user_id == user.pk:
+        return True
+    if not resolved:
+        return caller_may_change(user, tenant, staff.posting_branch_ids)
+    return caller_may_change(user, tenant, staff.posting_branch_ids, visible=visible)
+
+
+def assert_manages(user, tenant, staff) -> None:
+    """Refuse a write to a record the caller may read but not change."""
+    from ..exceptions import SharedRecordReadOnly
+
+    if not caller_manages(user, tenant, staff):
+        raise SharedRecordReadOnly()
+
+
+def guard_postings(user, tenant, branches, *, default_when_unset=False):
+    """The postings a caller may write, from the branches they asked for.
+
+    Returns the list to write. A whole-tenant caller gets back exactly what they
+    asked for, including an empty list for school-wide. A branch-bound caller:
+
+    * naming only branches they cover gets those branches;
+    * naming a branch outside their set is refused;
+    * naming none (school-wide) is refused, because a school-wide posting puts
+      the person on every branch's roster, which is not theirs to decide. On a
+      create, ``default_when_unset`` files the person under the caller's own
+      branch instead when they cover exactly one, which is what "everything a
+      branch administrator does is registered to their branch" means.
+    """
+    from ..exceptions import BranchOutsideReach
+
+    visible = visible_branch_ids(user, tenant)
+    if visible is WHOLE_TENANT:
+        return list(branches)
+    if not branches:
+        if default_when_unset and len(visible) == 1:
+            from vs_tenants.models import Branch
+
+            sole = Branch.all_objects.filter(
+                tenant=tenant, pk=next(iter(visible)),
+            ).first()
+            if sole is not None:
+                return [sole]
+        raise BranchOutsideReach(
+            "Only a school-wide administrator can post somebody school-wide. "
+            "Choose one of your branches."
+        )
+    outside = [branch.name for branch in branches if branch.pk not in visible]
+    if outside:
+        raise BranchOutsideReach(
+            f"{', '.join(outside)} {'is' if len(outside) == 1 else 'are'} not "
+            f"one of your branches, so you cannot post staff there."
+        )
+    return list(branches)
+
+
+def viewer_sees_branches(user, tenant) -> bool:
+    """Whether the posting dimension is shown to this viewer at all.
+
+    True only where the school runs more than one branch AND the viewer works in
+    more than one of them. A branch administrator at Ikeja sees Ikeja's people
+    and the school-wide ones; which of the two a row is changes nothing they can
+    do there, so no Posted to column, field or filter is drawn for them.
+    """
+    if not branch_dimension_applies(tenant):
+        return False
+    visible = visible_branch_ids(user, tenant)
+    return visible is WHOLE_TENANT or len(visible) > 1
+
+
 def branch_dimension_applies(tenant) -> bool:
     """Whether this school has more than one branch.
 

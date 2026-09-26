@@ -1011,11 +1011,11 @@ class TenantUserRoleAssignmentListCreateView(TenantScopedRBACMixin, CreateModelM
 
     def get_queryset(self):
         tenant = self.get_tenant()
-        qs = (
+        qs = _holders_in_caller_branches(self.request.user, tenant, (
             TenantUserRoleAssignment.objects.filter(tenant=tenant)
             .select_related("user", "role", "assigned_by", "revoked_by", "tenant", "branch")
             .order_by("-created_at")
-        )
+        ))
         qp = self.request.query_params
         if user_id := qp.get("user"):
             qs = qs.filter(user_id=user_id)
@@ -1050,10 +1050,33 @@ class TenantUserRoleAssignmentDetailView(TenantScopedRBACMixin, RetrieveModelMix
 
     def get_queryset(self):
         tenant = self.get_tenant()
-        return (
+        return _holders_in_caller_branches(self.request.user, tenant, (
             TenantUserRoleAssignment.objects.filter(tenant=tenant)
             .select_related("user", "role", "assigned_by", "revoked_by", "tenant", "branch")
-        )
+        ))
+
+
+def _holders_in_caller_branches(caller, tenant, qs):
+    """Grants held by people a branch-bound caller can see: theirs and school-wide.
+
+    The same inclusive reading the staff directory applies, so the role screens
+    never name somebody the directory would not show.
+    """
+    from django.db.models import Q
+
+    from .scoping import WHOLE_TENANT, visible_branch_ids
+
+    if getattr(caller, "tenant_id", None) != tenant.pk:
+        return qs
+    visible = visible_branch_ids(caller, tenant)
+    if visible is WHOLE_TENANT:
+        return qs
+    ids = tuple(sorted(visible))
+    return qs.filter(
+        Q(user__branch__isnull=True)
+        | Q(user__branch_id__in=ids)
+        | Q(user__additional_branches__in=ids)
+    ).distinct()
 
 
 # Revoke a tenant role assignment with an audit reason.
@@ -1091,6 +1114,13 @@ class TenantUserRoleAssignmentRevokeView(TenantScopedRBACMixin, APIView):
                 message="This assignment has already been revoked.",
                 status=status.HTTP_409_CONFLICT,
             )
+
+        from .grant_reach import assert_caller_may_grant
+
+        assert_caller_may_grant(
+            request.user, tenant, assignment.role, assignment.branch,
+            holder=assignment.user,
+        )
 
         if assignment.role.key == SUPER_ADMIN_ROLE_KEY:
             return error_response(
@@ -1209,6 +1239,19 @@ class TenantUserRoleAssignmentReplaceView(TenantScopedRBACMixin, APIView):
                 ]},
                 status=status.HTTP_403_FORBIDDEN,
             )
+
+        from .grant_reach import assert_caller_may_grant
+
+        # Both the grant being retired and the one replacing it must sit inside
+        # a branch-bound caller's branches.
+        assert_caller_may_grant(
+            request.user, tenant, assignment.role, assignment.branch,
+            holder=assignment.user,
+        )
+        assert_caller_may_grant(
+            request.user, tenant, target_role, assignment.branch,
+            holder=assignment.user,
+        )
 
         if assignment.role_id == target_role.id:
             return error_response(

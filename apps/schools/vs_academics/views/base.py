@@ -119,8 +119,15 @@ class AcademicsViewMixin:
         year, and that is the one that decides.
 
         Departments and programmes have no year and are unaffected.
+
+        The branch rule is applied here too, for every detail view at once:
+        another branch's row is a 404, and a shared row is read-only to a
+        branch-bound caller (see ``services.scoping.guard_detail``).
         """
+        from ..services.scoping import guard_detail
+
         obj = super().get_object()
+        guard_detail(self, obj)
         if self.request.method not in SAFE_METHODS:
             from ..services.years import assert_year_is_writable
 
@@ -163,7 +170,10 @@ class RecordStateView(AcademicsViewMixin, APIView):
         from core.response import success_response
         from ..services.years import assert_year_is_writable
 
+        from ..services.scoping import assert_may_change
+
         row = self.resolve(pk)
+        assert_may_change(request.user, self.tenant, row)
         assert_year_is_writable(getattr(row, "session", None))
 
         row.is_active = self.active

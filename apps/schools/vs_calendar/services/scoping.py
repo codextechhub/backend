@@ -18,8 +18,12 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from schools.vs_academics.services.scoping import (  # noqa: F401  (re-exported)
     UNSET,
+    add_manage_flag,
+    assert_may_change,
     branch_dimension_applies,
+    guard_detail,
     raised_branch,
+    row_branch_ids,
     scope_to_visible_branches,
 )
 from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids

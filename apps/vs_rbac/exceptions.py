@@ -74,3 +74,26 @@ class RestrictedNeedsApprovalError(Exception):
         super().__init__(message)
         self.message = message
         self.extra = {"restricted_additions": sorted(restricted_additions)}
+
+
+class SharedRecordReadOnly(Exception):
+    """A branch-bound caller changing a row shared beyond their branches.
+
+    403 rather than 404: the caller can already read the row, so refusing to
+    name it would hide nothing. The message names who can make the change,
+    because "forbidden" alone sends a branch administrator looking for a
+    permission they will never be given.
+    """
+
+    error_code = "SHARED_RECORD_READ_ONLY"
+    default_message = (
+        "This is shared across more than your branch, so only a school-wide "
+        "administrator can change it."
+    )
+    http_status = 403
+
+    def __init__(self, message: str = "", *, extra=None):
+        self.message = message or self.default_message
+        self.extra = extra or {}
+        super().__init__(self.message)
+

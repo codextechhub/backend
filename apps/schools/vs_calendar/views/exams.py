@@ -50,7 +50,7 @@ from ..models import CalendarEvent, Exam, ExamSlot, EventType, PublishState
 from ..serializers import ExamSerializer, ExamSlotSerializer, ExamSlotWriteSerializer
 from ..services.clashes import SITTING_RANK, exam_clashes, exam_slot_warnings
 from ..services.publishing import publish_exam
-from ..services.scoping import scope_to_visible_branches
+from ..services.scoping import assert_may_change, scope_to_visible_branches
 from ..services.teachers import assert_is_teacher
 from .base import CalendarViewMixin
 from .timetable import _visible_classes
@@ -89,9 +89,12 @@ class ExamListCreateView(CalendarViewMixin, generics.ListCreateAPIView):
         # ones whose period is Ikeja's, and a school-wide exam period shows for
         # every branch, which is what a school running one exam means.
         return narrow_to_lens(
-            Exam.objects.filter(
-                tenant=self.tenant, calendar_event__session=self.session,
-            ).select_related("calendar_event"),
+            scope_to_visible_branches(
+                Exam.objects.filter(
+                    tenant=self.tenant, calendar_event__session=self.session,
+                ).select_related("calendar_event"),
+                self.request.user, self.tenant, field="calendar_event__branch",
+            ),
             lens_branch(self),
             field="calendar_event__branch",
         )
@@ -102,8 +105,14 @@ class ExamListCreateView(CalendarViewMixin, generics.ListCreateAPIView):
         data = []
         for exam in rows:
             entry = ExamSerializer(exam, context=context).data
+            # A paper is its class's: another branch's classes' papers inside a
+            # shared exam are theirs, and the clash notes already name them no
+            # further than "a class at another branch".
             slots = list(
-                ExamSlot.objects.filter(tenant=self.tenant, exam=exam)
+                scope_to_visible_branches(
+                    ExamSlot.objects.filter(tenant=self.tenant, exam=exam),
+                    request.user, self.tenant, field="school_class__branch",
+                )
                 .select_related("school_class", "subject", "room", "invigilator")
                 .order_by("exam_date"),
             )
@@ -139,6 +148,9 @@ class ExamListCreateView(CalendarViewMixin, generics.ListCreateAPIView):
         ).first()
         if event is None:
             raise NotFound("No such calendar entry in this year.")
+        # An exam takes its branch from its period: one hung off a school-wide
+        # period is school-wide, and not a branch's to create.
+        assert_may_change(request.user, self.tenant, event)
         if event.event_type != EventType.EXAM_PERIOD:
             raise ExamEventNotExamPeriod(
                 f"{event.name} is a "
@@ -229,11 +241,10 @@ class ExamDetailView(CalendarViewMixin, generics.RetrieveUpdateDestroyAPIView):
 
 class _ExamScoped(CalendarViewMixin):
     def _exam(self, exam_id, *, for_write=False):
-        row = (
-            Exam.objects.filter(tenant=self.tenant, pk=exam_id)
-            .select_related("calendar_event")
-            .first()
-        )
+        row = scope_to_visible_branches(
+            Exam.objects.filter(tenant=self.tenant, pk=exam_id),
+            self.request.user, self.tenant, field="calendar_event__branch",
+        ).select_related("calendar_event").first()
         if row is None:
             raise NotFound("No such exam at this school.")
         if for_write and row.status == PublishState.PUBLISHED:
@@ -259,6 +270,9 @@ class _ExamScoped(CalendarViewMixin):
         ).first()
         if school_class is None:
             raise NotFound("No such class at this school.")
+        # A paper is its class's: Ikeja schedules Ikeja's classes, even inside a
+        # school-wide exam, and a shared class is read-only to a branch.
+        assert_may_change(self.request.user, self.tenant, school_class)
         assert_is_teacher(self.tenant, data.get("invigilator"))
 
         room = data.get("room")
@@ -323,10 +337,10 @@ class ExamSlotListCreateView(_ExamScoped, generics.ListCreateAPIView):
 
     def get_queryset(self):
         exam = self._exam(self.kwargs["exam_id"])
-        return (
-            ExamSlot.objects.filter(tenant=self.tenant, exam=exam)
-            .select_related("school_class", "subject", "room", "invigilator")
-        )
+        return scope_to_visible_branches(
+            ExamSlot.objects.filter(tenant=self.tenant, exam=exam),
+            self.request.user, self.tenant, field="school_class__branch",
+        ).select_related("school_class", "subject", "room", "invigilator")
 
     def list(self, request, *args, **kwargs):
         rows = list(self.get_queryset())
@@ -549,6 +563,7 @@ class ExamPublishView(_ExamScoped, APIView):
 
     def post(self, request, exam_id):
         exam = self._exam(exam_id)
+        assert_may_change(request.user, self.tenant, exam)
         publish_exam(self.tenant, exam, actor=request.user, visible=self.visible)
         emit_audit_event(
             module_key=AuditModuleKey.ACADEMICS,

@@ -17,6 +17,7 @@ from ..constants import (
 from ..models import PublishState, TimetableSlot
 from ..services.publishing import publish_class_timetable
 from ..services.timetable import duplicate_grid, timetable_for
+from ..services.scoping import assert_may_change
 from .base import CalendarViewMixin
 from .timetable import _visible_classes
 
@@ -25,9 +26,12 @@ class _ClassScoped(CalendarViewMixin, APIView):
     pagination_class = None
 
     def _class(self, class_id):
+        """The class acted on. Every action here changes its timetable, so a
+        shared class is read-only to a branch-bound caller."""
         row = _visible_classes(self).filter(pk=class_id).first()
         if row is None:
             raise NotFound("No such class at this school.")
+        assert_may_change(self.request.user, self.tenant, row)
         return row
 
 

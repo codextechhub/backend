@@ -22,7 +22,7 @@ from ..constants import OFF_ROLL_STATUSES, EmploymentStatus
 from .scoping import branch_dimension_applies
 
 
-def counts(queryset, tenant):
+def counts(queryset, tenant, *, by_branch=None):
     """Everything the directory header shows, from three queries.
 
     ``queryset`` is the caller's already-scoped staff queryset, so every figure
@@ -93,7 +93,7 @@ def counts(queryset, tenant):
         # nobody reads a lockout as an employment state.
         "locked_accounts": aggregate["locked"] or 0,
     }
-    payload.update(_side_breakdown(countable, tenant))
+    payload.update(_side_breakdown(countable, tenant, by_branch=by_branch))
     return payload
 
 
@@ -112,7 +112,7 @@ def _countable(queryset):
     return queryset.order_by()
 
 
-def _side_breakdown(queryset, tenant):
+def _side_breakdown(queryset, tenant, *, by_branch=None):
     """By branch where a school has several, by role where it has one.
 
     At a single-branch school the branch panel would repeat one value on every
@@ -120,8 +120,13 @@ def _side_breakdown(queryset, tenant):
     distribution takes the space. Nothing about the data changes with it: the
     panel switches back the day a second branch opens, without a row being
     rewritten.
+
+    ``by_branch`` lets the view pass the viewer's answer: a branch
+    administrator who sees one branch gets the role distribution too.
     """
-    if branch_dimension_applies(tenant):
+    if by_branch is None:
+        by_branch = branch_dimension_applies(tenant)
+    if by_branch:
         rows = (
             queryset.values("branch_id", "branch__name")
             .annotate(n=Count("pk", distinct=True))

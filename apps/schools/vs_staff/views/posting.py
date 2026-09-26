@@ -9,11 +9,14 @@ from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.views import APIView
 
 from core.response import success_response
+from vs_rbac.grant_reach import assert_caller_may_grant
+from vs_rbac.scoping import visible_branch_ids
 
 from ..constants import PERM_ROLES_ASSIGN, PERM_UPDATE, PERM_VIEW
 from ..serializers import BulkPostingSerializer, BulkRoleSerializer, StaffListSerializer
 from ..exceptions import StaffHasLeft
 from ..services import posting, roles
+from ..services.scoping import caller_manages, guard_postings
 from .base import StaffViewMixin
 
 
@@ -54,6 +57,7 @@ class StaffBulkPostingView(StaffViewMixin, APIView):
         else:
             branch = posting.resolve_posting(self.tenant, data.get("branch"))
             branches = [branch] if branch is not None else []
+        branches = guard_postings(request.user, self.tenant, branches)
         # Resolved and narrowed before anything is written, so a partial bulk
         # never happens: a caller naming somebody they cannot see gets one 404
         # and no one is moved.
@@ -96,6 +100,7 @@ class StaffBulkPostingView(StaffViewMixin, APIView):
             raise NotFound("No such person at this school.")
 
         people = [found[pk] for pk in staff_ids]
+        _assert_manages_all(self.request.user, self.tenant, people)
         # Named rather than refused blankly, because the caller ticked rows and
         # is owed which of them stopped the move.
         gone = [person for person in people if not person.is_on_roll]
@@ -144,6 +149,10 @@ class StaffRosterView(StaffViewMixin, APIView):
         )
         if branch is None:
             raise NotFound("Say which branch.")
+        # Only a branch the caller works in, answered like an unknown one.
+        visible = self.viewer_branches
+        if visible is not None and branch.pk not in visible:
+            raise NotFound("No such branch at this school.")
 
         posted, reaching, school_wide, via = posting.roster(
             self.tenant, request.user, branch,
@@ -240,6 +249,10 @@ class StaffBulkRoleView(StaffViewMixin, APIView):
         found = {row.pk: row for row in scoped}
         if [pk for pk in data["staff_ids"] if pk not in found]:
             raise NotFound("No such person at this school.")
+        _assert_manages_all(
+            request.user, self.tenant, [found[pk] for pk in data["staff_ids"]],
+        )
+        assert_caller_may_grant(request.user, self.tenant, role, branch)
 
         granted, already = roles.grant_to_many(
             tenant=self.tenant, role=role, branch=branch,
@@ -272,6 +285,27 @@ class StaffBulkRoleView(StaffViewMixin, APIView):
                 # back through a list of forty to work out which two.
                 "already_held": named(already),
             },
+        )
+
+
+def _assert_manages_all(user, tenant, people):
+    """Refuse the whole selection if any one person is read-only to the caller.
+
+    Named, because the caller ticked rows and is owed which of them stopped it.
+    """
+    from ..exceptions import SharedRecordReadOnly
+
+    visible = visible_branch_ids(user, tenant)
+    shared = [
+        person for person in people
+        if not caller_manages(user, tenant, person, visible=visible, resolved=True)
+    ]
+    if shared:
+        raise SharedRecordReadOnly(
+            f"{', '.join(_name(person) for person in shared)} "
+            f"{'work' if len(shared) > 1 else 'works'} across more than your "
+            f"branch, so only a school-wide administrator can change "
+            f"{'them' if len(shared) > 1 else 'their record'}. Nobody was changed."
         )
 
 

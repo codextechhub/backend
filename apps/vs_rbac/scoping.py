@@ -530,6 +530,49 @@ def branch_visible(request, qs, prefix: str = "", *, field: str = "branch",
 
 
 # --------------------------------------------------------------------------- #
+# Reading is inclusive; changing is not                                       #
+# --------------------------------------------------------------------------- #
+#
+# A branch-bound caller reads their own branches' rows AND the shared ones,
+# because a school-wide subject, class or registrar belongs to their branch too.
+# They may not change a shared row: every other branch relies on it, and a
+# correction made from Ikeja reaches Lekki's screens with nobody at Lekki
+# knowing. The rule below is that asymmetry, in one place, for every module.
+
+#: "The caller's scope has not been looked up yet", distinct from
+#: :data:`WHOLE_TENANT`, which is itself ``None``.
+_UNRESOLVED = object()
+
+
+def caller_may_change(user, tenant, branch_ids, *, visible=_UNRESOLVED) -> bool:
+    """Whether *user* may change a row belonging to *branch_ids*, not merely read it.
+
+    ``branch_ids`` is the row's whole branch set: one id for a row with a single
+    branch, several for a row posted or linked to several, and empty for a row
+    shared across the tenant. A whole-tenant caller may change any row they can
+    see. A branch-bound caller may change a row only when its set is non-empty
+    and every branch in it is one of theirs.
+
+    Pass ``visible`` when judging many rows, so the caller's scope is resolved
+    once rather than per row.
+    """
+    if visible is _UNRESOLVED:
+        visible = visible_branch_ids(user, tenant)
+    if visible is WHOLE_TENANT:
+        return True
+    ids = {getattr(branch, "pk", branch) for branch in branch_ids if branch is not None}
+    return bool(ids) and ids <= visible
+
+
+def assert_caller_may_change(user, tenant, branch_ids, *, message: str = "") -> None:
+    """Refuse a write to a row the caller may read but not change (403)."""
+    from .exceptions import SharedRecordReadOnly
+
+    if not caller_may_change(user, tenant, branch_ids):
+        raise SharedRecordReadOnly(message)
+
+
+# --------------------------------------------------------------------------- #
 # The write half: what branch goes *on* a row                                 #
 # --------------------------------------------------------------------------- #
 #

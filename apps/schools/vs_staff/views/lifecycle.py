@@ -80,7 +80,7 @@ class StaffStatusView(StaffViewMixin, APIView):
         })
 
     def post(self, request, pk):
-        staff = self.get_staff(pk)
+        staff = self.get_staff_for_write(pk)
         payload = StatusChangeSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         data = payload.validated_data
@@ -213,7 +213,7 @@ class _AccountActionView(StaffViewMixin, APIView):
     message = ""
 
     def post(self, request, pk):
-        staff = self.get_staff(pk)
+        staff = self.get_staff_for_write(pk)
         getattr(accounts, self.action)(staff, actor=request.user, request=request)
         staff.refresh_from_db()
         return success_response(
@@ -279,7 +279,7 @@ class StaffAccountEmailView(StaffViewMixin, APIView):
     rbac_permission = PERM_ACCOUNT_UPDATE
 
     def patch(self, request, pk):
-        staff = self.get_staff(pk)
+        staff = self.get_staff_for_write(pk)
         payload = EmailChangeSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         accounts.change_email(
@@ -323,7 +323,7 @@ class StaffResendInvitationView(StaffViewMixin, APIView):
 
         from ..exceptions import InvitationAlreadyAccepted
 
-        staff = self.get_staff(pk)
+        staff = self.get_staff_for_write(pk)
         if staff.user.status != User.Status.PENDING:
             raise InvitationAlreadyAccepted(
                 "This invitation has already been accepted, so there is nothing "
@@ -359,7 +359,7 @@ class StaffInvitationRevokeView(StaffViewMixin, APIView):
     rbac_permission = PERM_TRANSITION
 
     def post(self, request, pk):
-        staff = self.get_staff(pk)
+        staff = self.get_staff_for_write(pk)
         payload = RevokeInvitationSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         invitations.revoke(

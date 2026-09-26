@@ -38,6 +38,93 @@ def scope_to_visible_branches(queryset, user, tenant, field="branch"):
     )
 
 
+def row_branch_ids(obj) -> list:
+    """The branches one academic or calendar row belongs to; empty means shared.
+
+    Read from the row's own branch where it has one, and from its parent where
+    it does not. A session is judged by the branches it covers, a term by its
+    session, an exam by its exam period, and a timetable slot or an exam paper
+    by its class - so Ikeja can put its own classes' papers into a school-wide
+    exam week without being able to rename or publish the exam itself.
+    """
+    if hasattr(obj, "branch_links"):
+        if getattr(obj, "is_school_wide", False):
+            return []
+        return [link.branch_id for link in obj.branch_links.all()]
+    if hasattr(obj, "branch_id"):
+        return [obj.branch_id] if obj.branch_id is not None else []
+    if getattr(obj, "school_class_id", None) is not None:
+        branch_id = obj.school_class.branch_id
+        return [branch_id] if branch_id is not None else []
+    if getattr(obj, "calendar_event_id", None) is not None:
+        branch_id = obj.calendar_event.branch_id
+        return [branch_id] if branch_id is not None else []
+    if getattr(obj, "session_id", None) is not None:
+        # A term: no branch of its own, so its year decides.
+        return row_branch_ids(obj.session)
+    return []
+
+
+def row_visible_to(user, tenant, obj) -> bool:
+    """The inclusive read, for one row already resolved by primary key.
+
+    A shared row, or a row with at least one branch the caller works in.
+    """
+    visible = visible_branch_ids(user, tenant)
+    if visible is WHOLE_TENANT:
+        return True
+    ids = row_branch_ids(obj)
+    return not ids or bool(set(ids) & visible)
+
+
+def assert_may_change(user, tenant, obj, *, message: str = "") -> None:
+    """Refuse a write to a row the caller may read but not change (403).
+
+    Shared rows are read-only to a branch-bound caller; see
+    :func:`vs_rbac.scoping.caller_may_change`.
+    """
+    from vs_rbac.scoping import assert_caller_may_change
+
+    assert_caller_may_change(user, tenant, row_branch_ids(obj), message=message)
+
+
+def add_manage_flag(serializer, instance, data):
+    """Put ``can_manage`` on a serialized row when a request is in context.
+
+    Whether the viewer may change the row rather than only read it, so a screen
+    can hide the controls the server would refuse. Absent where a serializer
+    runs without a request (a write response built with a bare context); a
+    screen reads a missing flag as manageable. ``visible_branch_ids`` is
+    memoised on the user, so a page of rows costs no query per row.
+    """
+    request = serializer.context.get("request")
+    user = getattr(request, "user", None)
+    if user is None or not getattr(user, "is_authenticated", False):
+        return data
+    from vs_rbac.scoping import caller_may_change
+
+    data["can_manage"] = caller_may_change(
+        user, getattr(request, "tenant", None), row_branch_ids(instance),
+    )
+    return data
+
+
+def guard_detail(view, obj):
+    """The read and write rules for a row a detail view resolved by pk.
+
+    Another branch's row answers 404, exactly like an unknown id; a shared row
+    answers 403 to a write from a branch-bound caller.
+    """
+    from rest_framework.exceptions import NotFound
+    from rest_framework.permissions import SAFE_METHODS
+
+    user, tenant = view.request.user, view.tenant
+    if not row_visible_to(user, tenant, obj):
+        raise NotFound("No such record at this school.")
+    if view.request.method not in SAFE_METHODS:
+        assert_may_change(user, tenant, obj)
+
+
 #: Sentinel for "the caller did not mention a branch at all".
 #:
 #: Distinct from ``None``, which is the caller explicitly choosing the whole

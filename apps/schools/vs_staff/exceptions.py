@@ -171,3 +171,29 @@ class InvitationAlreadyAccepted(StaffError):
         "revoke. Suspend the account instead."
     )
     http_status = 422
+
+
+class SharedRecordReadOnly(StaffError):
+    """A branch-bound caller acting on somebody their branches do not wholly hold.
+
+    School-wide staff, and staff posted to a branch the caller does not cover,
+    appear in a branch administrator's directory because they work there too.
+    Reading them is right; changing them is not, because the same record is
+    relied on by every other branch that sees it. 403 rather than 404: the
+    caller can already open the record, so refusing to name it hides nothing.
+    """
+
+    error_code = "SHARED_RECORD_READ_ONLY"
+    default_message = (
+        "This person works across more than your branch, so only a school-wide "
+        "administrator can change their record."
+    )
+    http_status = 403
+
+
+class BranchOutsideReach(StaffError):
+    """A branch-bound caller naming a branch, or the whole school, they do not cover."""
+
+    error_code = "BRANCH_OUTSIDE_REACH"
+    default_message = "You can only post staff to your own branches."
+    http_status = 403

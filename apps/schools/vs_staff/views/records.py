@@ -90,7 +90,7 @@ class QualificationListCreateView(_StaffChildView):
         )
 
     def post(self, request, pk):
-        staff = self.get_staff(pk)
+        staff = self.get_staff_for_write(pk)
         payload = QualificationSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         row = StaffQualification.objects.create(
@@ -123,7 +123,7 @@ class QualificationDetailView(StaffViewMixin, APIView):
             raise NotFound("No such qualification at this school.")
         # Scoped through the person it belongs to, so a branch admin cannot
         # reach a qualification on somebody they cannot open.
-        self.get_staff(row.staff_id)
+        self.get_staff_for_write(row.staff_id)
         return row
 
     def patch(self, request, pk):
@@ -164,7 +164,7 @@ class DocumentListCreateView(_StaffChildView):
         )
 
     def post(self, request, pk):
-        staff = self.get_staff(pk)
+        staff = self.get_staff_for_write(pk)
         payload = DocumentCreateSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         row = StaffDocument.objects.create(
@@ -200,7 +200,7 @@ class DocumentDetailView(StaffViewMixin, APIView):
         )
         if row is None:
             raise NotFound("No such document at this school.")
-        self.get_staff(row.staff_id)
+        self.get_staff_for_write(row.staff_id)
         # The file is removed by the post_delete receiver, so the two cannot
         # drift apart depending on which path did the delete.
         row.delete()
