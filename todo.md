@@ -692,6 +692,18 @@ MUST SAY: reading these lists follows finance module membership; the chart's
 balances do not.
 VERIFIED (working tree before commit): vs_finance 827 OK; vs_rbac branch-narrowing audit OK.
 
+### D24. The chart of accounts has a tagged shape without balances (22d45821, 2026-09-26)
+MODULES: M19 finance and accounting.
+- `GET /finance/accounts/?with_tags=true` returns the whole tree, un-paginated,
+  with each account's `tag` (CONTROL / CASH) and `balance: null`. Readable on
+  any finance key.
+- `?with_balance=true` is unchanged and still needs `finance.account.view`.
+- The New customer receivable account picker and the Record receipt posting
+  preview read `with_tags`.
+MUST SAY: which account is a control or cash account is readable without the
+chart-of-accounts key; balances are not.
+VERIFIED (working tree before commit): vs_finance 828 OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
