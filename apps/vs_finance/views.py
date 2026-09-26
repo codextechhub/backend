@@ -227,15 +227,31 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
     Chart-of-Accounts screen. Without it, the plain paginated list is served (used
     by the account pickers).
 
+    Who may read which:
+
+    * The plain list is a code and a name per account, the options behind every
+      account picker (budget lines, invoice revenue accounts, report filters).
+      Anyone holding a finance key may read it, as with fiscal periods and cost
+      centres; gating it on ``finance.account.view`` left a bursar who may build
+      a budget with no account to put on a line.
+    * The balances are the whole entity's ledger, so ``with_balance`` keeps
+      ``finance.account.view``.
+    * Creating an account keeps ``finance.account.create``.
+
     docstring-name: Chart of accounts
     """
 
     serializer_class = AccountSerializer
 
-    @property
-    # Handle the rbac permission workflow.
-    def rbac_permission(self):
-        return "finance.account.create" if self.request.method == "POST" else "finance.account.view"
+    def get_permissions(self):
+        if self.request.method == "POST":
+            self.rbac_permission = "finance.account.create"
+        elif self._with_balance():
+            self.rbac_permission = "finance.account.view"
+        else:
+            self.rbac_modules = ["finance"]
+            return [(IsAuthenticatedAndActive & HasAnyModuleAccess)()]
+        return [(IsAuthenticatedAndActive & HasRBACPermission)()]
 
     # Support the with balance workflow.
     def _with_balance(self):
@@ -653,14 +669,23 @@ class FiscalYearListView(EntityScopedListMixin, generics.ListAPIView):
     ``POST`` accepts ``year``, ``start_month``, ``fiscal_start_day`` and
     ``frequency`` (MONTHLY/QUARTERLY), then provisions the complete set of periods.
 
+    Reading is open to anyone holding a finance key, the rule the period list
+    follows: a year is a label, two dates and a status for books the caller is
+    already entitled to, and the New budget form picks its year from this list.
+    Gating it on ``finance.period.view`` left a bursar who may create budgets
+    unable to choose a year. Opening a year keeps ``finance.period.create``.
+
     docstring-name: Fiscal years
     """
 
     serializer_class = FiscalYearSerializer
 
-    @property
-    def rbac_permission(self):
-        return "finance.period.create" if self.request.method == "POST" else "finance.period.view"
+    def get_permissions(self):
+        if self.request.method == "POST":
+            self.rbac_permission = "finance.period.create"
+            return [(IsAuthenticatedAndActive & HasRBACPermission)()]
+        self.rbac_modules = ["finance"]
+        return [(IsAuthenticatedAndActive & HasAnyModuleAccess)()]
 
     # Handle the entity qs workflow.
     def entity_qs(self, entity):

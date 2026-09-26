@@ -49,14 +49,20 @@ from .base import (
 class CurrencyListCreateView(_FinanceBase):
     """GET (list) / POST (create) currencies - **global** reference data (no entity).
 
+    Reading is open to anyone holding a finance key: a currency is a code, a
+    name and a symbol, and the currency picker on invoices and bills reads this
+    list. Creating one still needs ``finance.currency.create``.
+
     docstring-name: Currencies
     """
 
-    @property
-    # Handle the rbac permission workflow.
-    def rbac_permission(self):
-        return "finance.currency.create" if self.request.method == "POST" \
-            else "finance.currency.view"
+    rbac_modules = ["finance"]
+    rbac_permission = "finance.currency.create"
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return super().get_permissions()
+        return [(IsAuthenticatedAndActive & HasAnyModuleAccess)()]
 
     # Handle GET requests for this endpoint.
     def get(self, request):
@@ -136,14 +142,22 @@ class FxRateListCreateView(_FinanceBase):
 class TaxCodeListCreateView(_FinanceBase):
     """GET (list) / POST (create) tax codes for an entity.
 
+    Reading is open to anyone holding a finance key: a tax code is a name, a
+    rate and the accounts it posts to, and the tax picker on every invoice and
+    bill line reads this list. Gating it on ``finance.taxcode.view`` left a
+    bursar who may raise an invoice unable to choose its VAT. Creating one still
+    needs ``finance.taxcode.create``.
+
     docstring-name: Tax codes
     """
 
-    @property
-    # Handle the rbac permission workflow.
-    def rbac_permission(self):
-        return "finance.taxcode.create" if self.request.method == "POST" \
-            else "finance.taxcode.view"
+    rbac_modules = ["finance"]
+    rbac_permission = "finance.taxcode.create"
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return super().get_permissions()
+        return [(IsAuthenticatedAndActive & HasAnyModuleAccess)()]
 
     # Handle GET requests for this endpoint.
     def get(self, request):

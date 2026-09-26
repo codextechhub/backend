@@ -179,7 +179,7 @@ class _BudgetActionBase(_FinanceBase):
         for every write endpoint below.
         """
         entity = resolve_entity(request)
-        budget = _reader_scope(request).filter(
+        budget = branch_scope(request, include_shared=True).filter(
             Budget.objects.filter(entity=entity, pk=pk)
         ).select_related("fiscal_year", "branch", "entity__tenant").first()
         if budget is None:
