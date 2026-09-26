@@ -798,6 +798,30 @@ MUST SAY: the curve compares like with like (a term's fees against the previous
 term's fees at the same week); the target is the school's own setting.
 VERIFIED (working tree before commit): vs_finance 855 OK; schools.core.fal and branch audit 228 OK.
 
+### D28. The Cash, spend & compliance view of the finance dashboard (2371f364, 2026-09-26)
+MODULES: M19 finance and accounting.
+- `GET /finance/reports/dashboard/spend/` (same `?window=` and `?period=` as the
+  overview; opens to any finance key) returns `runway`, `cash_movement`,
+  `spend`, `spending`, `reconciliation`, `unmatched`, `budgets`, `payroll`,
+  `claims`, `petty_cash`, `tax_owed`, `tax_calendar`, `assets`. Every figure
+  reads by date, a term window included.
+- `cash_movement`, `runway`, `reconciliation`, `unmatched`, `payroll`,
+  `tax_owed` and `tax_calendar` are whole-school only. The rest answer under the
+  reader's branches; a school-wide budget's `plan`, `used` and `pct` are `null`
+  for a branch reader.
+- Cash steps are keyed (`receipts`, `other_income`, `equity`, `other_in`,
+  `payroll`, `vendors`, `tax`, `claims`, `petty_cash`, `refunds`, `spending`,
+  `other_out`) from the accounts opposite each journal's cash lines; transfers
+  between the school's own accounts are left out.
+- `spending.basis` is `cost_centre` when any expense in the window is tagged
+  (untagged shows as "Not tagged"), else `account`.
+- `tax_calendar[].state` is `paid`, `filed`, `prepared` or `nil` (nothing owed,
+  still to be filed).
+- `seed_finance_spend_demo --entity <CODE>` (after the dashboard demo; DEBUG only).
+MUST SAY: the runway is an average of recent outflow, over the history the
+books have when that is under 90 days, and absent under two weeks.
+VERIFIED (working tree before commit): vs_finance 872 OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
