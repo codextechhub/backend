@@ -2191,14 +2191,14 @@ def _group_rows_by_ifrs_line(rows, line_map, *, ordered_lines, extra=None) -> tu
 
 
 # Handle the statutory pack workflow.
-def statutory_pack(entity, *, as_of=None, period=None, scope=None) -> StatutoryPack:
+def statutory_pack(entity, *, as_of=None, period=None) -> StatutoryPack:
     """Assemble the IFRS-for-SMEs statutory pack for ``entity``.
 
     The Statement of Financial Position is taken as at ``as_of`` (default today); the
     Income Statement, cash-flow statement and statement of changes in equity are scoped
     to ``period`` when given (else year/inception-to-date). Every figure is *regrouped*
     from the existing statements, so the pack's totals reconcile to them exactly.
-    ``scope`` narrows every statement in the pack to a reader's journals.
+    It is the school's filing, so it is only ever built for the whole entity.
     """
     from .constants import IFRSLine
 
@@ -2206,7 +2206,7 @@ def statutory_pack(entity, *, as_of=None, period=None, scope=None) -> StatutoryP
     line_map = _ifrs_line_map(entity)
 
     # --- Statement of Financial Position (regroup the balance sheet) ---------- #
-    bs = balance_sheet(entity, as_of=as_of, scope=scope)
+    bs = balance_sheet(entity, as_of=as_of)
     section_rows = {
         "non_current_assets": bs.asset_rows, "current_assets": bs.asset_rows,
         "equity": bs.equity_rows,
@@ -2231,7 +2231,7 @@ def statutory_pack(entity, *, as_of=None, period=None, scope=None) -> StatutoryP
     )
 
     # --- Income statement (regroup the P&L) ----------------------------------- #
-    pnl = income_statement(entity, period=period, scope=scope)
+    pnl = income_statement(entity, period=period)
     income_lines, _ = _group_rows_by_ifrs_line(
         list(pnl.income_rows) + list(pnl.expense_rows), line_map,
         ordered_lines=_ifrs_income_lines(),
@@ -2250,9 +2250,9 @@ def statutory_pack(entity, *, as_of=None, period=None, scope=None) -> StatutoryP
         total_income=pnl.total_income,
         total_expense=pnl.total_expense,
         net_income=pnl.net_income,
-        cash_flow=cash_flow_statement(entity, period=period, scope=scope),
-        changes_in_equity=statement_of_changes_in_equity(entity, period=period, scope=scope),
-        trial_balance=trial_balance(entity, period=period, scope=scope),
+        cash_flow=cash_flow_statement(entity, period=period),
+        changes_in_equity=statement_of_changes_in_equity(entity, period=period),
+        trial_balance=trial_balance(entity, period=period),
     )
 
 

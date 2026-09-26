@@ -137,7 +137,7 @@ class BranchReportEndpointTests(_LedgerFixture):
     def test_every_statement_endpoint_says_it_is_narrowed(self):
         client = self.client_holding("all-ikeja@corona.test", "finance.report.view", branch=self.ikeja)
         for path in ("trial-balance", "income-statement", "balance-sheet", "cash-flow",
-                     "changes-in-equity", "statutory-pack", "ar-reconciliation"):
+                     "changes-in-equity", "ar-reconciliation"):
             with self.subTest(path=path):
                 response = self.get(client, path)
                 self.assertEqual(response.status_code, 200, response.data)
@@ -149,6 +149,13 @@ class BranchReportEndpointTests(_LedgerFixture):
 
         body = b"".join(response.streaming_content) if response.streaming else response.content
         self.assertIn(b"branches and school-wide entries only", body)
+
+    def test_the_statutory_pack_is_the_schools_filing_and_refused_to_a_branch(self):
+        branch = self.client_holding("pack-ikeja@corona.test", "finance.report.view", branch=self.ikeja)
+        self.assertEqual(self.get(branch, "statutory-pack").status_code, 403)
+
+        school = self.client_holding("pack-hq@corona.test", "finance.report.view")
+        self.assertEqual(self.get(school, "statutory-pack").status_code, 200)
 
     def test_a_school_wide_reader_is_not_narrowed(self):
         client = self.client_holding("is-hq@corona.test", "finance.report.view")

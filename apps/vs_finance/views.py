@@ -14,7 +14,7 @@ from shutil import which
 
 from django.http import HttpResponse
 from rest_framework import generics
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -2190,7 +2190,15 @@ class ChangesInEquityView(APIView):
 
 # Group endpoint behavior for Statutory Pack View.
 class StatutoryPackView(APIView):
-    """docstring-name: Statutory reporting pack"""
+    """The IFRS-for-SMEs statutory pack for the entity's filings.
+
+    A statutory pack is what the school files, as one entity, so it exists only
+    whole: a branch-bound reader is refused rather than handed a branch-shaped
+    pack that looks like a filing and is not one. Their own statements are on the
+    individual report endpoints, narrowed to their branches.
+
+    docstring-name: Statutory reporting pack
+    """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
@@ -2200,11 +2208,15 @@ class StatutoryPackView(APIView):
 
         from .exports import ReportTable
 
+        if _reader_scope(request).is_narrowed:
+            raise PermissionDenied(
+                "The statutory pack covers the whole school, so it is available only "
+                "to readers whose access covers every branch."
+            )
         entity = resolve_entity(request)
-        reader_scope = _reader_scope(request)
         as_of = _resolve_date_param(request, "as_of")
         period = _resolve_period(entity, request)
-        pack = statutory_pack(entity, as_of=as_of, period=period, scope=reader_scope)
+        pack = statutory_pack(entity, as_of=as_of, period=period)
 
         # Export face: the IFRS-mapped Statement of Financial Position + Income
         # Statement as one flat table (the companion statements have their own exports).
@@ -2228,7 +2240,7 @@ class StatutoryPackView(APIView):
                 ["", "Total equity", format_naira(pack.total_equity)],
                 ["", "Total liabilities", format_naira(pack.total_liabilities)],
             ],
-        ), filename=f"statutory_pack_{entity.code}", narrowed=reader_scope.is_narrowed)
+        ), filename=f"statutory_pack_{entity.code}")
         if export is not None:
             return export
 
@@ -2250,7 +2262,6 @@ class StatutoryPackView(APIView):
             message="Statutory pack retrieved.",
             data={
                 "entity": entity.code,
-                "narrowed": reader_scope.is_narrowed,
                 "as_of": str(pack.as_of),
                 "period": getattr(period, "name", None),
                 "statement_of_financial_position": {
