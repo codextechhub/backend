@@ -193,6 +193,8 @@ class StaffFixture(TestCase):
             None, email="head@sunrise.test", tenant=cls.solo.tenant,
         )
         make_assignment(cls.solo, cls.solo_admin, cls.solo_role, branch=None)
+        # Every school is seeded with the Teacher role that new staff start on.
+        cls.solo_teacher_role = make_role(cls.solo, name="Teacher", key="teacher")
         cls.solo_staff = cls.make_staff(
             "teacher@sunrise.test", "Bola", "Ade", branch=cls.solo_branch,
             tenant=cls.solo.tenant, school=cls.solo,
@@ -282,7 +284,6 @@ class StaffFixture(TestCase):
             "first_name": "Funke",
             "last_name": "Adeyemi",
             "email": "funke@brightfield.test",
-            "role": "teacher",
             "job_title": "Bursar",
             "staff_number": "BFS/STF/0003",
         }

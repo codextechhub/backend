@@ -305,24 +305,36 @@ class SchoolStaffEndpointTests(TestCase):
             User.objects.filter(email="ngozi@bright-star.example.com").exists(),
         )
 
-    def test_a_live_school_may_invite_into_any_of_its_roles(self):
-        """The rule is onboarding's, not a permanent restriction.
+    def test_a_live_school_offers_every_role_and_invites_as_teacher(self):
+        """The narrowing is onboarding's, and so is the choice on the invite.
 
-        Once the school is live, role assignment is reviewable by the
-        administrators it now has, so the narrowing lifts.
+        Once the school is live, its role admins can review and change grants,
+        so the role options widen to every role for their drawers, and a new
+        invitation starts as Teacher instead of taking a role from the adder.
         """
         make_role(self.school, name="Payout Approver", key="payout-approver")
+        make_role(self.school, name="Teacher", key="teacher")
         Tenant.objects.filter(pk=self.tenant.pk).update(
             status=Tenant.Status.ACTIVE,
         )
 
-        values = {
-            row["value"] for row in self._get(self.admin).data["role_options"]
-        }
-        self.assertIn("payout-approver", values)
+        listed = self._get(self.admin).data
+        self.assertIn("payout-approver", {row["value"] for row in listed["role_options"]})
+        self.assertEqual(listed["starting_role"]["value"], "teacher")
 
-        response = self._post(self.admin, self._invite(role="payout-approver"))
-        self.assertEqual(response.status_code, 201, response.data)
+        refused = self._post(self.admin, self._invite(role="payout-approver"))
+        self.assertEqual(refused.status_code, 400, refused.data)
+
+        created = self._post(self.admin, self._invite(role=""))
+        self.assertEqual(created.status_code, 201, created.data)
+
+    def test_a_pending_school_must_choose_an_admin_role(self):
+        """Onboarding is how a school's first administrators arrive, so it asks."""
+        self.assertIsNone(self._get(self.admin).data["starting_role"])
+
+        response = self._post(self.admin, self._invite(role=""))
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("role", response.data["error"]["detail"])
 
     def test_a_row_says_whether_its_invitation_can_be_resent(self):
         self._post(self.admin, self._invite())

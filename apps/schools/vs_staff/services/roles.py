@@ -22,6 +22,15 @@ from rest_framework.exceptions import ValidationError
 
 from ..constants import PERM_ROLES_ASSIGN  # noqa: F401  (the view's key, named here)
 
+#: The role every member of staff added at a live school starts with.
+#:
+#: Adding somebody and deciding what they may reach are two different jobs held
+#: by two different people: the key that adds staff is not the key that assigns
+#: roles. So the add path grants this one baseline role and nothing else, and
+#: anything wider or narrower is a role admin's change afterwards. Matched on
+#: the KEY, because the name is the school's to rename and the key is not.
+STARTING_ROLE_KEY = "teacher"
+
 
 def active_grants(staff):
     """This person's live grants, newest first, with their roles loaded."""
@@ -136,4 +145,43 @@ def resolve_role(tenant, key_or_id, *, onboarding_keys=None):
             else "That is not a role this school can give out."
         )
         raise ValidationError({"role": message})
+    return role
+
+
+def find_starting_role(tenant):
+    """This school's active starting role, or ``None`` where it has none."""
+    from vs_rbac.models import TenantRoleTemplate
+
+    return TenantRoleTemplate.objects.filter(
+        tenant=tenant, status="ACTIVE", key=STARTING_ROLE_KEY,
+    ).first()
+
+
+def starting_role(tenant, *, requested=""):
+    """The role a new member of staff at a live school is granted.
+
+    ``requested`` is whatever the caller sent as ``role``. Naming the starting
+    role itself is accepted; naming any other is refused rather than quietly
+    replaced, so a client still offering a role picker learns that the choice
+    is not its to make instead of believing it was honoured.
+
+    A school that has retired its Teacher role cannot add anybody until it is
+    restored, and is told so, rather than creating accounts that sign in and
+    reach nothing.
+    """
+    role = find_starting_role(tenant)
+    if role is None:
+        raise ValidationError({
+            "role": (
+                "This school has no active Teacher role, which every new member "
+                "of staff starts with. Restore it in Roles & Permissions first."
+            ),
+        })
+    if requested not in ("", None, role.key, str(role.pk)):
+        raise ValidationError({
+            "role": (
+                "New staff start as Teacher. Other roles are given from Roles "
+                "& Permissions once they are added."
+            ),
+        })
     return role

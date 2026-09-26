@@ -33,10 +33,7 @@ class StaffEmailFieldAccessTests(StaffFixture):
         super().setUpTestData()
         install_declared_fields("school.teachers")
         cls.registrars = {}
-        for label, school, grant in (
-            ("multi", cls.school, "teacher"),
-            ("single", cls.solo, "school_admin"),
-        ):
+        for label, school in (("multi", cls.school), ("single", cls.solo)):
             role = make_role(school, name=f"Registrar {label}", key=f"registrar_{label}")
             for key in ALL_KEYS:
                 make_role_permission(role, cls.permissions[key])
@@ -45,17 +42,17 @@ class StaffEmailFieldAccessTests(StaffFixture):
                 None, email=f"registrar.{label}@staff-email.test", tenant=school.tenant,
             )
             make_assignment(school, user, role, branch=None)
-            cls.registrars[label] = (school, user, grant)
+            cls.registrars[label] = (school, user)
 
     def _domain(self, school):
         return "brightfield.test" if school.pk == self.school.pk else "sunrise.test"
 
     def test_a_registrar_with_the_email_hidden_still_adds_a_member_of_staff(self):
-        for label, (school, registrar, grant) in self.registrars.items():
+        for label, (school, registrar) in self.registrars.items():
             with self.subTest(school=label):
                 email = f"funke.{label}@{self._domain(school)}"
                 response = self.post(registrar, "staff-list", self.invite_body(
-                    email=email, role=grant, staff_number=f"STF/{label}/9",
+                    email=email, staff_number=f"STF/{label}/9",
                 ))
                 self.assertEqual(response.status_code, 201, response.data)
                 self.assertTrue(User.objects.filter(tenant=school.tenant, email=email).exists())
@@ -63,7 +60,7 @@ class StaffEmailFieldAccessTests(StaffFixture):
 
     def test_the_record_carries_the_address_nowhere_for_that_registrar(self):
         """Neither at the top of the record nor in the account block inside it."""
-        for label, (school, registrar, _grant) in self.registrars.items():
+        for label, (school, registrar) in self.registrars.items():
             with self.subTest(school=label):
                 staff = self.eze if label == "multi" else self.solo_staff
                 response = self.get(registrar, "staff-detail", pk=staff.pk)
@@ -83,7 +80,7 @@ class StaffEmailFieldAccessTests(StaffFixture):
         self.assertEqual(data["account"]["email"], self.eze.user.email)
 
     def test_the_map_offers_the_hidden_email_to_the_add_form(self):
-        for label, (school, registrar, _grant) in self.registrars.items():
+        for label, (school, registrar) in self.registrars.items():
             with self.subTest(school=label):
                 entry = field_access_payload(registrar, school.tenant)["school.teachers"]
                 self.assertEqual(entry["hidden"], ["email"])

@@ -155,20 +155,41 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
         serializer = self.get_serializer(page, many=True)
         response = self.get_paginated_response(serializer.data)
         response.data["counts"] = counts(queryset, self.tenant)
+        invitable = list(self._invitable_roles().prefetch_related("additional_branches"))
         response.data["role_options"] = [
             {"value": role.key, "label": role.name, "branch_ids": role.branch_ids}
-            for role in self._invitable_roles().prefetch_related("additional_branches")
+            for role in invitable
         ]
+        response.data["starting_role"] = self._starting_role_option(invitable)
         response.data["multi_branch"] = self.multi_branch
         return response
+
+    def _starting_role_option(self, invitable):
+        """The role the Add form grants without asking, or ``None`` to ask.
+
+        ``None`` while the school is onboarding, where the form asks which of
+        the two administrator roles to give. At a live school it names the
+        starting role, in the school's own words for it, read from the active
+        roles already loaded for ``role_options``. A school that has retired
+        that role still gets the answer, so the form stays the same and the
+        create explains what to restore.
+        """
+        if self.onboarding:
+            return None
+        role = next((r for r in invitable if r.key == roles.STARTING_ROLE_KEY), None)
+        return {
+            "value": roles.STARTING_ROLE_KEY,
+            "label": role.name if role else "Teacher",
+        }
 
     def _invitable_roles(self):
         """The roles this school may give out right now.
 
-        One queryset behind both halves of the rule - the options the form
-        offers and the check the create runs - so the dropdown can never offer a
-        role the POST would refuse, and narrowing the dropdown can never be
-        mistaken for enforcing anything.
+        The options the role drawers offer, and during onboarding the options
+        the invitation offers. ``roles.resolve_role`` applies the same
+        onboarding narrowing to every grant, so the dropdown never offers a
+        role the POST would refuse, and narrowing it is never mistaken for
+        enforcing anything.
         """
         from vs_rbac.models import TenantRoleTemplate
 
@@ -179,7 +200,10 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
-        """Add somebody, in one transaction over the form's six steps.
+        """Add somebody, in one transaction over the form's steps.
+
+        The role is the server's to choose at a live school: see
+        :meth:`_grant_for`.
 
         The account, the invitation and the grant are made by
         ``UserCreationService``, which the live endpoint already called: a second
@@ -198,12 +222,8 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
         payload.is_valid(raise_exception=True)
         data = payload.validated_data
 
-        role = roles.resolve_role(
-            self.tenant, data["role"],
-            onboarding_keys=ONBOARDING_ROLE_KEYS if self.onboarding else None,
-        )
+        role, reach = self._grant_for(data)
         branch = posting.resolve_posting(self.tenant, data.get("branch"))
-        reach = posting.resolve_reach(self.tenant, data.get("role_branch"))
 
         account = UserCreateSerializer(
             data={
@@ -260,6 +280,38 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
             ).data,
             status=status.HTTP_201_CREATED,
         )
+
+    def _grant_for(self, data):
+        """The role a new person is given, and how far it reaches.
+
+        While the school is onboarding the adder picks School Admin or Branch
+        Admin, and may say how far it reaches, because onboarding is how a
+        school's first administrators arrive. Once it is live the adder picks
+        neither: everybody starts on the starting role, reaching as far as
+        their posting, and a role admin widens, narrows or replaces it later.
+        Both are refused rather than ignored when sent, so a caller never
+        believes it granted something it did not.
+        """
+        if self.onboarding:
+            if not data.get("role"):
+                raise ValidationError({
+                    "role": "Choose School Admin or Branch Admin for them.",
+                })
+            role = roles.resolve_role(
+                self.tenant, data["role"], onboarding_keys=ONBOARDING_ROLE_KEYS,
+            )
+            return role, posting.resolve_reach(self.tenant, data.get("role_branch"))
+
+        if data.get("role_branch"):
+            raise ValidationError({
+                "role_branch": (
+                    "A new member of staff's role reaches as far as their "
+                    "posting. Change it from Roles & Permissions once they are "
+                    "added."
+                ),
+            })
+        role = roles.starting_role(self.tenant, requested=data.get("role"))
+        return role, posting.resolve_reach(self.tenant, None)
 
     def _attach_teaching(self, profile, data, actor):
         """The form's subjects-by-classes grid, if it carried one.

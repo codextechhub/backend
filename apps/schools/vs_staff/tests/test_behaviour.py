@@ -895,17 +895,14 @@ class DirectoryTests(StaffFixture):
 
 
 class AGrantFollowsThePostingTests(StaffFixture):
-    """How far the role given with a new hire reaches.
+    """The role a new hire at a live school is given, and how far it reaches.
 
-    A grant carrying no branch reaches every branch the school has, and the
-    grant written beside a posting carried none unless somebody filled in a
-    second field nobody knew about. Brightfield hires Funke into Ikeja as a
-    teacher and types the form exactly as the screen asks: she signs in and
-    reads Lekki's register, Lekki's staff records, and those of every branch
-    Brightfield opens afterwards.
-
-    So the reach follows the posting, and the whole school stays sayable: a
-    registrar who genuinely works across every branch is asked for by name.
+    Brightfield hires Funke into Ikeja. Whoever adds her holds the key that adds
+    staff, which is not the key that assigns roles, so the add path decides
+    neither what she may do nor how far: she starts as Teacher, reaching Ikeja
+    because that is where she is posted, and a role admin changes either later.
+    A grant carrying no branch would reach every branch the school has, so the
+    posting, not an empty field, is what the reach follows.
     """
 
     def grant(self, email, tenant=None):
@@ -913,41 +910,20 @@ class AGrantFollowsThePostingTests(StaffFixture):
         from vs_rbac.models import TenantUserRoleAssignment
 
         user = User.objects.get(tenant=tenant or self.tenant, email=email)
-        return TenantUserRoleAssignment.objects.get(
+        return TenantUserRoleAssignment.objects.select_related("role").get(
             user=user,
             assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
         )
 
+    def test_a_new_hire_starts_as_teacher_without_anybody_choosing_it(self):
+        response = self.post(self.admin, "staff-list", self.invite_body())
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(self.grant("funke@brightfield.test").role.key, "teacher")
+
     def test_a_teacher_hired_into_one_branch_is_granted_at_that_branch(self):
         response = self.post(
             self.admin, "staff-list", self.invite_body(branch=self.ikeja.pk),
-        )
-
-        self.assertEqual(response.status_code, 201, response.data)
-        self.assertEqual(
-            self.grant("funke@brightfield.test").branch_id, self.ikeja.pk,
-        )
-
-    def test_asking_for_the_school_grants_across_the_whole_school(self):
-        """The registrar's reach, which has to stay askable.
-
-        Mrs Nwankwo is based at Ikeja and keeps the whole school's records, so
-        her Teacher grant reaches every branch on purpose. It is typed, not
-        arrived at by leaving a field empty.
-        """
-        response = self.post(
-            self.admin, "staff-list",
-            self.invite_body(branch=self.ikeja.pk, role_branch="school"),
-        )
-
-        self.assertEqual(response.status_code, 201, response.data)
-        self.assertIsNone(self.grant("funke@brightfield.test").branch_id)
-
-    def test_a_named_branch_pins_the_grant_there_rather_than_at_the_posting(self):
-        """Based at Lekki, covering Ikeja: the deputy who runs the other site."""
-        response = self.post(
-            self.admin, "staff-list",
-            self.invite_body(branch=self.lekki.pk, role_branch=self.ikeja.pk),
         )
 
         self.assertEqual(response.status_code, 201, response.data)
@@ -962,6 +938,55 @@ class AGrantFollowsThePostingTests(StaffFixture):
         self.assertEqual(response.status_code, 201, response.data)
         self.assertIsNone(self.grant("funke@brightfield.test").branch_id)
 
+    def test_naming_the_teacher_role_is_accepted(self):
+        """A client that still sends the starting role asks for what it gets."""
+        response = self.post(
+            self.admin, "staff-list", self.invite_body(role="teacher"),
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(self.grant("funke@brightfield.test").role.key, "teacher")
+
+    def test_naming_any_other_role_is_refused_and_creates_nobody(self):
+        """Adding Funke as School Admin is a role admin's decision, not the adder's."""
+        response = self.post(
+            self.admin, "staff-list", self.invite_body(role="school_admin"),
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("role", str(response.data))
+        self.assertFalse(User.objects.filter(email="funke@brightfield.test").exists())
+
+    def test_setting_the_reach_on_create_is_refused(self):
+        """Posted to Ikeja, asking for the whole school or for Lekki: a role admin's call."""
+        for reach in ("school", self.lekki.pk):
+            with self.subTest(reach=reach):
+                response = self.post(
+                    self.admin, "staff-list",
+                    self.invite_body(branch=self.ikeja.pk, role_branch=reach),
+                )
+                self.assertEqual(response.status_code, 400, response.data)
+                self.assertIn("role_branch", str(response.data))
+        self.assertFalse(User.objects.filter(email="funke@brightfield.test").exists())
+
+    def test_a_school_without_an_active_teacher_role_is_told_why(self):
+        """Nobody is created without a role: that account would reach nothing."""
+        self.teacher_role.status = "INACTIVE"
+        self.teacher_role.save(update_fields=["status"])
+
+        response = self.post(self.admin, "staff-list", self.invite_body())
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("teacher", str(response.data).lower())
+        self.assertFalse(User.objects.filter(email="funke@brightfield.test").exists())
+
+    def test_the_list_names_the_starting_role(self):
+        response = self.get(self.admin, "staff-list")
+
+        self.assertEqual(
+            response.data["starting_role"], {"value": "teacher", "label": "Teacher"},
+        )
+
     def test_the_rule_holds_at_a_school_with_one_branch(self):
         """One branch is the common case, and the row says the same thing there.
 
@@ -971,7 +996,7 @@ class AGrantFollowsThePostingTests(StaffFixture):
         response = self.post(
             self.solo_admin, "staff-list",
             self.invite_body(
-                email="ade@sunrise.test", role="school_admin",
+                email="ade@sunrise.test",
                 branch=self.solo_branch.pk, staff_number="SUN/STF/0002",
             ),
         )

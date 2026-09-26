@@ -688,10 +688,13 @@ class StaffCreateSerializer(FieldAccessMixin, serializers.Serializer):
     email = serializers.EmailField()
     phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
     gender = serializers.CharField(required=False, allow_blank=True, default="")
-    role = serializers.CharField(max_length=120)
-    #: How far the grant reaches, where that is not the posting. A branch
-    #: reference pins it there, the word "school" asks for the whole school
-    #: deliberately, and leaving it out lets the grant follow the posting.
+    #: Onboarding only: School Admin or Branch Admin. At a live school the
+    #: server grants the starting role itself and refuses any other.
+    role = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
+    #: Onboarding only: how far the grant reaches, where that is not the
+    #: posting. A branch reference pins it there, the word "school" asks for the
+    #: whole school deliberately, and leaving it out follows the posting. At a
+    #: live school the grant always follows the posting.
     role_branch = serializers.CharField(
         required=False, allow_null=True, allow_blank=True, default=None,
     )
