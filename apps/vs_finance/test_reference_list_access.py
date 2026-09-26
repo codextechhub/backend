@@ -5,8 +5,9 @@ dimensions are the options behind the report filters, the pickers on invoice,
 bill and budget lines, and the New budget form. Each is a name and a code
 for books the caller is already entitled to, so reading them follows module
 membership: anyone holding a finance key may read them, nobody else may, and
-creating one still needs its own key. Account balances are the entity's whole
-ledger and stay behind ``finance.account.view``.
+creating one still needs its own key. The chart's tagged tree (which account is
+a receivable control) is readable the same way; account balances are the
+entity's whole ledger and stay behind ``finance.account.view``.
 """
 
 from datetime import date
@@ -145,6 +146,22 @@ class FinanceReferenceListAccessTests(TestCase):
         chart = self.user_holding("finance.account.view", email="chart-reader@test.com")
         allowed = self.call(AccountListCreateView, path, chart, params={"with_balance": "true"})
         self.assertEqual(allowed.status_code, 200)
+
+    def test_customer_author_reads_which_account_is_the_receivable_control(self):
+        from vs_finance.models import Customer
+
+        receivable = Account.objects.create(
+            entity=self.entity, code="120000", name="Accounts Receivable", account_type="ASSET",
+        )
+        Customer.objects.create(entity=self.entity, code="C1", name="Parent", receivable_account=receivable)
+        user = self.user_holding("finance.customer.create", email="customer-author@test.com")
+
+        response = self.call(AccountListCreateView, "/v1/finance/accounts/", user, params={"with_tags": "true"})
+
+        self.assertEqual(response.status_code, 200)
+        rows = {row["code"]: row for row in response.data["data"]}
+        self.assertEqual(rows["120000"]["tag"], "CONTROL")
+        self.assertTrue(all(row["balance"] is None for row in rows.values()))
 
     def test_report_reader_still_cannot_create_an_account(self):
         user = self.user_holding("finance.report.view", email="account-writer@test.com")

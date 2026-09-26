@@ -222,18 +222,24 @@ class EntityListCreateView(generics.ListCreateAPIView):
 class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
     """GET /finance/accounts/?entity= - the entity's chart of accounts.
 
-    ``?with_balance=true`` returns the **whole tree** (un-paginated) with each
-    account's net GL ``balance`` and sub-ledger ``tag`` (CONTROL / CASH) - for the
-    Chart-of-Accounts screen. Without it, the plain paginated list is served (used
-    by the account pickers).
+    Three shapes:
+
+    * ``?with_balance=true``: the **whole tree** (un-paginated) with each
+      account's net GL ``balance`` and sub-ledger ``tag`` (CONTROL / CASH), for
+      the Chart-of-Accounts screen.
+    * ``?with_tags=true``: the whole tree with ``tag`` but no balance, for forms
+      that need to know which account is a control or cash account (the
+      receivable account on a new customer, the posting preview on a receipt).
+    * Neither: the plain paginated list behind the account pickers.
 
     Who may read which:
 
-    * The plain list is a code and a name per account, the options behind every
-      account picker (budget lines, invoice revenue accounts, report filters).
-      Anyone holding a finance key may read it, as with fiscal periods and cost
-      centres; gating it on ``finance.account.view`` left a bursar who may build
-      a budget with no account to put on a line.
+    * The plain list and the tagged tree are a code, a name and a role per
+      account, for books the caller is already entitled to. Anyone holding a
+      finance key may read them, as with fiscal periods and cost centres;
+      gating them on ``finance.account.view`` left a bursar who may build a
+      budget with no account to put on a line, and one who may add a customer
+      with no receivable account to choose.
     * The balances are the whole entity's ledger, so ``with_balance`` keeps
       ``finance.account.view``.
     * Creating an account keeps ``finance.account.create``.
@@ -253,9 +259,12 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
             return [(IsAuthenticatedAndActive & HasAnyModuleAccess)()]
         return [(IsAuthenticatedAndActive & HasRBACPermission)()]
 
-    # Support the with balance workflow.
     def _with_balance(self):
-        return self.request.query_params.get("with_balance") == "true" 
+        return self.request.query_params.get("with_balance") == "true"
+
+    def _whole_tree(self):
+        """True for the un-paginated, tagged shapes (with or without balances)."""
+        return self._with_balance() or self.request.query_params.get("with_tags") == "true"
 
     # POST added manually (not using CreateAPIView or ListCreateAPIView)
     def post(self, request):
@@ -327,7 +336,7 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
-        if self._with_balance():
+        if self._whole_tree():
             entity = getattr(self, "entity", None) or resolve_entity(self.request)
             from .account_mappings import resolve_mapped_account
             from .constants import AccountMappingKey
@@ -358,7 +367,7 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
     def list(self, request, *args, **kwargs):
         # Chart mode returns the full tree in one envelope (the tree needs every
         # node); the picker mode keeps the standard paginated response.
-        if self._with_balance():
+        if self._whole_tree():
             qs = self.filter_queryset(self.get_queryset())
             data = self.get_serializer(qs, many=True).data
             return success_response("Chart of accounts retrieved.", data=data)
