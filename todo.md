@@ -680,6 +680,18 @@ MUST SAY: a branch plan is measured exclusively against its branch; the school's
 plan is read-only to branch staff.
 VERIFIED (working tree before commit): vs_finance.tests_budget_branch 16 OK; vs_finance 821 OK.
 
+### D23. Picker option lists open to any finance reader (a94d2d36, 2026-09-26)
+MODULES: M19 finance and accounting.
+- `GET /finance/fiscal-years/`, `GET /finance/accounts/` (without
+  `with_balance`), `GET /finance/tax-codes/` and `GET /finance/currencies/`
+  answer anyone holding a finance key, as periods, cost centres and dimensions
+  already did.
+- `GET /finance/accounts/?with_balance=true` still needs `finance.account.view`.
+- Creating a fiscal year, account, tax code or currency keeps its create key.
+MUST SAY: reading these lists follows finance module membership; the chart's
+balances do not.
+VERIFIED (working tree before commit): vs_finance 827 OK; vs_rbac branch-narrowing audit OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
