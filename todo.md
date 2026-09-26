@@ -755,6 +755,28 @@ VERIFIED: vs_history 23, vs_audit 96, vs_import_data 83, vs_students 327,
 vs_staff 316, vs_rbac 868, vs_user 421, all OK; driven in the console and the
 school app against backdated history, restored afterwards.
 
+### D25. A fuller finance overview, read by term, month or year (10d047f1, 2026-09-26)
+MODULES: M19 finance and accounting; the school finance layer.
+- `GET /finance/reports/dashboard/` takes `?window=` (`month`, `quarter`,
+  `year`, or the billing period's key, `term` for a school) and returns
+  `books` (`school` or `general`), `window`, `windows`, `reader_first_name`,
+  and new blocks: `collections`, `channels`, `branches`, `bank_accounts`
+  (with a month-end `spark`), `budget` (lines and `year_elapsed_pct`),
+  `top_payers`, `receivables_summary`, `attention`, `upcoming`,
+  `payables_due`. Recent journals carry `kind`.
+- Each block needs the key behind it and answers under the reader's branches;
+  `bank_accounts`, `branches`, payroll and tax items are whole-school only.
+- `FINANCE_BILLING_PERIOD_PROVIDER` names the provider of the current billing
+  period; the school layer's answers with the current term and its fee
+  invoices (`FEE:<code>` via `FeeStructureTermLink`). The term counts those
+  fees and what was paid against them whenever it arrived; calendar windows
+  count by date.
+- `manage.py seed_finance_dashboard_demo --entity <CODE>` fills a school's dev
+  books with demo activity (DEBUG only; customer email copies switched off).
+MUST SAY: "This term" is by the fee's term, not by dates; finance itself holds no
+school concepts.
+VERIFIED (working tree before commit): vs_finance 843 OK; schools.core.fal and branch audit 228 OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
