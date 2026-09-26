@@ -335,7 +335,7 @@ def _allocated_by(queryset, target_field, *, as_of):
 
 
 # Reconstruct AR as it stood on an accounting date.
-def _ar_snapshot(entity, *, as_of=None, customer=None):
+def _ar_snapshot(entity, *, as_of=None, customer=None, scope=None):
     """Effective AR documents, settlement applied by the cutoff, and unspent credit.
 
     With no cutoff this returns the stored current-state figures unchanged, so the
@@ -347,6 +347,9 @@ def _ar_snapshot(entity, *, as_of=None, customer=None):
     credit_by_customer)``. ``settled_*`` maps a document id to the kobo cleared
     against it by the cutoff, from all four AR settlement sources: cash allocations,
     credit-note allocations, concessions and bad-debt write-offs.
+
+    ``scope`` (a :class:`vs_rbac.scoping.BranchScope`) narrows the four document
+    sets to a reader's branches; ``None`` reads the whole entity.
     """
     from .constants import CreditNoteKind
     from .models import (
@@ -366,6 +369,9 @@ def _ar_snapshot(entity, *, as_of=None, customer=None):
     debit_notes = CreditNote.objects.filter(entity=entity, kind=CreditNoteKind.DEBIT)
     credit_notes = CreditNote.objects.filter(entity=entity, kind=CreditNoteKind.CREDIT)
     payments = Payment.objects.filter(entity=entity)
+    if scope is not None:
+        invoices, debit_notes, credit_notes, payments = (
+            scope.filter(qs) for qs in (invoices, debit_notes, credit_notes, payments))
     if customer is not None:
         invoices = invoices.filter(customer=customer)
         debit_notes = debit_notes.filter(customer=customer)
@@ -518,7 +524,7 @@ def _written_off_by_invoice(queryset, as_of) -> dict[int, int]:
 
 
 # Handle the ar aging workflow.
-def ar_aging(entity, *, as_of=None) -> AgingReport:
+def ar_aging(entity, *, as_of=None, scope=None) -> AgingReport:
     """Age each customer's open invoices into current/1-30/31-60/61-90/90+ buckets.
 
     An invoice ages off its ``due_date`` (falling back to ``invoice_date``). Each
@@ -533,6 +539,9 @@ def ar_aging(entity, *, as_of=None) -> AgingReport:
     after the cutoff still appeared, one settled after it had already vanished, and
     the same June report gave a different answer every month. Passing no cutoff keeps
     the current-state contract exactly as before.
+
+    ``scope`` narrows the report to a reader's branches, as the dashboard needs for
+    a branch-bound reader; the default reads the whole entity.
     """
     cutoff = as_of  # None means "current state"; a date means "rebuild at that date".
     as_of = as_of or timezone.now().date()
@@ -551,7 +560,7 @@ def ar_aging(entity, *, as_of=None) -> AgingReport:
         return r
 
     invoices, debit_notes, settled_by_invoice, settled_by_note, credit_by_customer = (
-        _ar_snapshot(entity, as_of=cutoff)
+        _ar_snapshot(entity, as_of=cutoff, scope=scope)
     )
 
     for inv in invoices:

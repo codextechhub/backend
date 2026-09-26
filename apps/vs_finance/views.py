@@ -2271,24 +2271,31 @@ class StatutoryPackView(APIView):
 class FinanceDashboardView(APIView):
     """Aggregated **Finance overview** - every dashboard block in one payload.
 
-    Computed live from the GL and entity-scoped. Optional ``?period=<period_no>``
-    pins the "as of" period; otherwise the latest open period is used.
+    Computed live and entity-scoped. Optional ``?period=<period_no>`` pins the "as
+    of" period; otherwise the latest open period is used.
+
+    Open to anyone holding a finance or payments key: the Finance console is theirs,
+    and its landing page is this one. What each reader receives is decided per
+    block by :func:`vs_finance.dashboard.finance_dashboard`, from the keys they hold
+    and the branches they reach, so a block they may not see is ``None`` rather
+    than a figure the screen then hides.
 
     docstring-name: Finance dashboard
     """
 
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
-    rbac_permission = "finance.report.view"
+    permission_classes = [IsAuthenticatedAndActive & HasAnyModuleAccess]
+    rbac_modules = ["finance", "payments"]
 
     # Handle GET requests for this endpoint.
     def get(self, request):
-        from .dashboard import finance_dashboard
+        from .dashboard import DashboardReader, finance_dashboard
 
         entity = resolve_entity(request)
         period = _resolve_period(entity, request)
+        reader = DashboardReader.for_user(request.user, getattr(request.user, "tenant", None))
         return success_response(
             message="Finance dashboard retrieved.",
-            data=finance_dashboard(entity, period=period),
+            data=finance_dashboard(entity, period=period, reader=reader),
         )
 
 

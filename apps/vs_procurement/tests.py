@@ -12214,6 +12214,12 @@ class ProcurementBranchTotalsTests(_BranchTenantsFixture, TestCase):
         code = self.multi.entity.code
         for branch in (self.lekki, self.ikeja):
             self.purchase_order(self.multi, branch=branch, status=DocumentStatus.APPROVED)
+        # The dashboard computes the order pipeline only for a reader who may list
+        # orders, so both readers hold the real key; Lekki's grant is pinned there.
+        key = "procurement.purchase_order.view"
+        self.grant(self.hq_client.test_user, key, tenant=self.multi_tenant, role_key="dash-hq")
+        self.grant(self.lekki_client.test_user, key, tenant=self.multi_tenant,
+                   role_key="dash-lekki", branch=self.lekki)
 
         everything = self.hq_client.get(f"/v1/procurement/reports/dashboard/?entity={code}")
         self.assertEqual(everything.status_code, 200, everything.data)
@@ -12234,6 +12240,9 @@ class ProcurementBranchTotalsTests(_BranchTenantsFixture, TestCase):
         self.assertEqual(summary.json()["data"]["draft"]["count"], 1)
         self.assertEqual(summary.json()["data"]["draft"]["amount"], 55_000)
 
+        # The dashboard opens to any procurement key, checked for real.
+        self.grant(client.test_user, "procurement.requisition.view",
+                   tenant=self.flat_tenant, role_key="dash-flat")
         dashboard = client.get(f"/v1/procurement/reports/dashboard/?entity={code}")
         self.assertEqual(dashboard.status_code, 200)
 

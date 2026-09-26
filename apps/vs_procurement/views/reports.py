@@ -20,6 +20,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 
 from core.pagination import XVSPagination
 from core.response import success_response
+from vs_rbac.permissions import HasAnyModuleAccess, IsAuthenticatedAndActive
 from vs_finance.views import resolve_entity
 
 
@@ -444,14 +445,20 @@ class GRIRPoLineDetailView(_ProcBase):
 class ProcurementDashboardView(_ProcBase):
     """Return the permission-aware procurement dashboard for one entity.
 
-    Every document-derived figure is narrowed to the caller's branch, so a
-    branch-bound viewer's spend, order pipeline, overdue bills and approval cards
-    reconcile with the lists they can actually open.
+    Open to anyone holding a procurement key: it is the console's landing page.
+    Each block is computed only for a reader holding the key behind it (see
+    :func:`vs_procurement.dashboard.procurement_dashboard`), and every
+    document-derived figure is narrowed to the caller's branch, so a branch-bound
+    viewer's spend, order pipeline, overdue bills and approval cards reconcile with
+    the lists they can actually open.
     """
-    rbac_permission = "procurement.analytics.view"
+    permission_classes = [IsAuthenticatedAndActive & HasAnyModuleAccess]
+    rbac_modules = ["procurement"]
 
     def get(self, request):
         """Delegate KPI composition while preserving user-dependent visibility."""
+        from vs_finance.dashboard import DashboardReader
+
         from ..dashboard import procurement_dashboard
 
         entity = resolve_entity(request)
@@ -459,6 +466,7 @@ class ProcurementDashboardView(_ProcBase):
             "Procurement dashboard retrieved.",
             data=procurement_dashboard(
                 entity, user=request.user, branch_scope=_scope(request, entity),
+                reader=DashboardReader.for_user(request.user, getattr(request.user, "tenant", None)),
             ),
         )
 

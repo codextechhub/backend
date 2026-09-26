@@ -387,7 +387,7 @@ def _recent_activity(entity) -> list:
 
 
 def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = None,
-                          branch_scope=None) -> dict:
+                          branch_scope=None, reader=None) -> dict:
     """Return the complete Procurement Dashboard payload for one ledger entity.
 
     ``as_of`` closes the current MTD spend/trend and supplies the overdue-invoice clock.
@@ -402,7 +402,25 @@ def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = No
     and a tenant with no branches both get. ``active_vendors`` stays entity-wide
     because vendors are entity master data that every branch shares and the vendor
     list is not branch-narrowed either.
+
+    ``reader`` (:class:`vs_finance.dashboard.DashboardReader`) decides which blocks
+    are computed at all: spend needs ``procurement.analytics.view``, the order
+    pipeline ``procurement.purchase_order.view``, overdue bills
+    ``procurement.vendor_invoice.view`` and the vendor count
+    ``procurement.vendor.view``. A block the reader may not see is ``None``. The
+    approval queue is the reader's own and always present. The activity feed cannot
+    be narrowed by branch, so it goes only to an analytics reader whose reach is
+    the whole school. ``None`` means every block, which is what callers without a
+    request get.
     """
+    from vs_finance.dashboard import EVERY_BLOCK
+
+    reader = reader or EVERY_BLOCK
+    narrowed = branch_scope is not None and branch_scope.is_narrowed
+    analytics = reader.can("procurement.analytics.view")
+    orders = reader.can("procurement.purchase_order.view")
+    bills = reader.can("procurement.vendor_invoice.view")
+    vendors = reader.can("procurement.vendor.view")
     as_of = as_of or timezone.localdate()
     from django.db.models import Q
 
@@ -418,56 +436,67 @@ def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = No
         previous_start + datetime.timedelta(days=as_of.day - 1),
     )
 
-    current_spend = _spend_kobo(entity, current_start, as_of, branch_filter)
-    previous_spend = _spend_kobo(entity, previous_start, previous_end, branch_filter)
-    po_status = _po_status(entity, branch_filter)
     approvals = _pending_approvals(entity, user, branch_filter)
 
-    # Strictly earlier due dates are overdue; an invoice due on as_of remains current.
-    overdue = VendorInvoice.objects.filter(
-        entity=entity,
-        status=DocumentStatus.POSTED,
-        due_date__lt=as_of,
-    ).filter(branch_filter).exclude(payment_status=InvoicePaymentStatus.PAID)
-    overdue_values = overdue.aggregate(
-        count=Count("id"),
-        # Outstanding balance is invoice total less all allocations already paid.
-        amount=Sum(F("total") - F("amount_paid")),
-    )
-    active_vendors = Vendor.objects.filter(entity=entity, is_active=True)
+    spend_kpi = None
+    if analytics:
+        current_spend = _spend_kobo(entity, current_start, as_of, branch_filter)
+        previous_spend = _spend_kobo(entity, previous_start, previous_end, branch_filter)
+        spend_kpi = {
+            "value": _money(current_spend),
+            "prior_value": _money(previous_spend),
+            "delta_pct": _delta_pct(current_spend, previous_spend),
+        }
+    po_status = _po_status(entity, branch_filter) if orders else None
+
+    overdue_kpi = None
+    if bills:
+        # Strictly earlier due dates are overdue; an invoice due on as_of remains current.
+        overdue_values = VendorInvoice.objects.filter(
+            entity=entity,
+            status=DocumentStatus.POSTED,
+            due_date__lt=as_of,
+        ).filter(branch_filter).exclude(payment_status=InvoicePaymentStatus.PAID).aggregate(
+            count=Count("id"),
+            # Outstanding balance is invoice total less all allocations already paid.
+            amount=Sum(F("total") - F("amount_paid")),
+        )
+        overdue_kpi = {
+            "count": int(overdue_values["count"] or 0),
+            "amount": _money(int(overdue_values["amount"] or 0)),
+        }
+    vendors_kpi = None
+    if vendors:
+        active_vendors = Vendor.objects.filter(entity=entity, is_active=True)
+        vendors_kpi = {
+            "count": active_vendors.count(),
+            "on_hold_count": active_vendors.filter(on_hold=True).count(),
+        }
 
     return {
         "entity": entity.code,
         "currency": entity.base_currency_id,
         "as_of": as_of.isoformat(),
         "month_start": current_start.isoformat(),
+        "narrowed": narrowed,
         "kpis": {
-            "total_spend_mtd": {
-                "value": _money(current_spend),
-                "prior_value": _money(previous_spend),
-                "delta_pct": _delta_pct(current_spend, previous_spend),
-            },
-            "open_purchase_orders": {
-                "count": po_status["open_count"],
-                "partial_count": po_status["partial_count"],
-            },
+            "total_spend_mtd": spend_kpi,
+            "open_purchase_orders": (
+                {"count": po_status["open_count"], "partial_count": po_status["partial_count"]}
+                if po_status else None
+            ),
             "pending_approvals": {"count": len(approvals)},
-            "overdue_invoices": {
-                "count": int(overdue_values["count"] or 0),
-                "amount": _money(int(overdue_values["amount"] or 0)),
-            },
-            "active_vendors": {
-                "count": active_vendors.count(),
-                "on_hold_count": active_vendors.filter(on_hold=True).count(),
-            },
+            "overdue_invoices": overdue_kpi,
+            "active_vendors": vendors_kpi,
         },
-        "spend_by_category": _spend_by_category(entity, current_start, as_of, branch_scope),
-        "purchase_order_status": {"items": po_status["items"]},
-        "monthly_spend_trend": _monthly_trend(entity, as_of, branch_filter),
-        # Entity-wide: the finance audit log carries no branch column, so this feed
-        # cannot be narrowed here. It names actions and document numbers only - no
-        # amounts - and remains a known gap for a branch-bound viewer.
-        "recent_activity": _recent_activity(entity),
+        "spend_by_category": (
+            _spend_by_category(entity, current_start, as_of, branch_scope) if analytics else None
+        ),
+        "purchase_order_status": {"items": po_status["items"]} if po_status else None,
+        "monthly_spend_trend": _monthly_trend(entity, as_of, branch_filter) if analytics else None,
+        # The finance audit log carries no branch column, so the feed cannot be
+        # narrowed; a branch-bound reader does not get it.
+        "recent_activity": _recent_activity(entity) if analytics and not narrowed else None,
         # Four cards fit the prototype panel; the full queue remains a click away and
         # the KPI above deliberately uses len(approvals) before this presentation cap.
         "approvals_awaiting_user": approvals[:4],

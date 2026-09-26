@@ -9,6 +9,20 @@ overdue/vendor-due lists and pending-approval counts).
 Everything is entity-scoped. Cross-module reads (procurement payables / vendor
 bills / approvals) are best-effort and degrade to empty rather than failing the
 whole dashboard, so a procurement hiccup never blanks the finance landing page.
+
+The dashboard opens to anyone working in finance, and each block is computed
+only for a reader who holds the key behind it (see :class:`DashboardReader`). A
+block the reader may not see is ``None`` in the payload, not an empty value, so
+nothing about it leaves the server and the screen can leave the card out rather
+than draw an empty one.
+
+Two kinds of figure answer the branch question differently. Figures read off the
+documents (invoices, receipts, vendor bills, approvals, journals) are narrowed to
+the reader's branches, so a bursar posted to one branch sees that branch and the
+school-wide rows, the same rows their lists show. Figures read off the general
+ledger balances (cash, payables, net income, revenue against budget, the period
+close) cannot be split by branch at all, so they are sent only to a reader whose
+reach is the whole school.
 """
 from __future__ import annotations
 
@@ -17,6 +31,8 @@ from dataclasses import dataclass, field
 
 from django.db.models import F, Sum
 from django.db.models.functions import TruncMonth
+
+from vs_rbac.scoping import UNNARROWED, BranchScope
 
 from .constants import (
     AccountType,
@@ -33,6 +49,50 @@ SPARK_POINTS = 6          # KPI sparkline length (month-end snapshots incl. curr
 TREND_MONTHS = 12         # receivables-vs-collections window
 TOP_OVERDUE = 5  # Number of overdue/vendor rows to surface.
 VENDOR_DUE_DAYS = 7  # Forward-looking vendor due window.
+
+
+@dataclass(frozen=True)
+class DashboardReader:
+    """Who is reading a dashboard: which keys they hold and whose rows they see.
+
+    ``keys`` is ``None`` for a reader who holds every key, which is what callers
+    without a request get by default (tests, internal reports). ``scope`` is the
+    finance reading of a blank branch (shared rows included); ``procurement_scope``
+    is procurement's (a blank branch is the institution, which a branch-pinned
+    reader is not in). Both come from the one helper every list uses, so a
+    dashboard figure and the list behind it cannot disagree.
+    """
+
+    keys: frozenset | None = None
+    scope: BranchScope = UNNARROWED
+    procurement_scope: BranchScope = UNNARROWED
+
+    def can(self, *keys: str) -> bool:
+        """True when the reader holds any one of ``keys``."""
+        return self.keys is None or any(key in self.keys for key in keys)
+
+    @property
+    def whole_tenant(self) -> bool:
+        """True when nothing narrows the reader to particular branches."""
+        return not self.scope.is_narrowed
+
+    @classmethod
+    def for_user(cls, user, tenant) -> "DashboardReader":
+        """The reader behind a request's effective user."""
+        from vs_rbac.evaluator import get_effective_permissions
+        from vs_rbac.permissions import is_vision_super_admin
+        from vs_rbac.scoping import branch_scope_for_user
+
+        keys = None if is_vision_super_admin(user) else frozenset(
+            get_effective_permissions(user, tenant=tenant))
+        return cls(
+            keys=keys,
+            scope=branch_scope_for_user(user, include_shared=True, tenant=tenant),
+            procurement_scope=branch_scope_for_user(user, include_shared=False, tenant=tenant),
+        )
+
+
+EVERY_BLOCK = DashboardReader()
 
 
 # Wrap integer kobo in standard money response shape.
@@ -260,10 +320,10 @@ def _revenue_vs_budget(entity, fiscal_year) -> dict:
 
 
 # Build AR aging chart block.
-def _ar_aging_block(entity, as_of) -> dict:
+def _ar_aging_block(entity, as_of, scope=UNNARROWED) -> dict:
     from .reports import ar_aging
 
-    rep = ar_aging(entity, as_of=as_of)  # Compute aging report as of dashboard date.
+    rep = ar_aging(entity, as_of=as_of, scope=scope)  # Compute aging report as of dashboard date.
     total = rep.total_net or 0  # Total outstanding AR.
     buckets = []  # Aging bucket payload rows.
     for key, amount in rep.bucket_totals.items():  # Convert bucket totals to display shape.
@@ -274,8 +334,12 @@ def _ar_aging_block(entity, as_of) -> dict:
 
 
 # Build trailing receivables-issued vs collections trend.
-def _trend(entity, anchor) -> dict:
-    """Trailing-12-month receivable-issued vs collected ending at ``anchor``'s month."""
+def _trend(entity, anchor, *, scope=UNNARROWED, issued_ok=True, collected_ok=True) -> dict:
+    """Trailing-12-month receivable-issued vs collected ending at ``anchor``'s month.
+
+    A series the reader may not read is ``None`` rather than a row of zeros, which
+    would read as "nothing was invoiced".
+    """
     first = anchor.replace(day=1)  # Anchor to first day of dashboard month.
     # step back 11 months for a 12-point window  # Inclusive current month.
     y, mo = first.year, first.month - (TREND_MONTHS - 1)  # Raw starting month.
@@ -286,18 +350,18 @@ def _trend(entity, anchor) -> dict:
 
     issued = {  # Posted invoice totals by month.
         r["m"]: int(r["s"] or 0)  # Month bucket -> total issued.
-        for r in Invoice.objects.filter(
+        for r in scope.filter(Invoice.objects.filter(
             entity=entity, status=DocumentStatus.POSTED, invoice_date__gte=start  # Entity, posted, after start.
-        )
+        ))
         .annotate(m=TruncMonth("invoice_date"))
         .values("m")
         .annotate(s=Sum("total"))
     }
     collected = {  # Posted payment totals by month.
         r["m"]: int(r["s"] or 0)  # Month bucket -> total collected.
-        for r in Payment.objects.filter(
+        for r in scope.filter(Payment.objects.filter(
             entity=entity, status=DocumentStatus.POSTED, payment_date__gte=start  # Entity, posted, after start.
-        )
+        ))
         .annotate(m=TruncMonth("payment_date"))
         .values("m")
         .annotate(s=Sum("amount"))
@@ -310,16 +374,20 @@ def _trend(entity, anchor) -> dict:
         iss.append(issued.get(key, 0))
         col.append(collected.get(key, 0))
         cur = datetime.date(cur.year + (cur.month // 12), (cur.month % 12) + 1, 1)
-    return {"labels": labels, "issued": iss, "collected": col}  # Return trend block.
+    return {  # Return trend block.
+        "labels": labels,
+        "issued": iss if issued_ok else None,
+        "collected": col if collected_ok else None,
+    }
 
 
 # Return top overdue customer invoices.
-def _top_overdue(entity, as_of) -> list[dict]:
+def _top_overdue(entity, as_of, scope=UNNARROWED) -> list[dict]:
     today = as_of or datetime.date.today()
     qs = (  # Query open overdue invoices.
-        Invoice.objects.filter(
+        scope.filter(Invoice.objects.filter(
             entity=entity, status=DocumentStatus.POSTED, due_date__lt=today  # Entity, posted, overdue.
-        )
+        ))
         .exclude(payment_status=InvoicePaymentStatus.PAID)
         .annotate(bal=F("total") - F("amount_paid") - F("amount_credited"))
         .filter(bal__gt=0)
@@ -339,19 +407,19 @@ def _top_overdue(entity, as_of) -> list[dict]:
 
 
 # Return upcoming vendor bills best-effort.
-def _vendor_due(entity) -> list[dict]:
+def _vendor_due(entity, scope=UNNARROWED) -> list[dict]:
     try:  # Procurement app is optional for dashboard resilience.
         from vs_procurement.models import VendorInvoice
 
         today = datetime.date.today()
         end = today + datetime.timedelta(days=VENDOR_DUE_DAYS)
         qs = (  # Query upcoming open vendor bills.
-            VendorInvoice.objects.filter(
+            scope.filter(VendorInvoice.objects.filter(
                 entity=entity,  # Scope to entity.
                 status=DocumentStatus.POSTED,  # Posted vendor invoices only.
                 due_date__gte=today,  # Not already overdue.
                 due_date__lte=end,  # Due within configured window.
-            )
+            ))
             .exclude(payment_status=InvoicePaymentStatus.PAID)
             .annotate(bal=F("total") - F("amount_paid"))
             .filter(bal__gt=0)
@@ -373,11 +441,12 @@ def _vendor_due(entity) -> list[dict]:
 
 
 # Count pending procurement approval overlays.
-def _approvals(entity) -> dict:
+def _approvals(entity, reader=EVERY_BLOCK) -> dict:
     """Pending spend-approvals, counted from each procurement doc's ``approval_state``.
 
     Entity-scoped and read straight off the document overlay (no cross-app workflow
-    join), so it's exact and can't leak another entity's counts.
+    join), so it's exact and can't leak another entity's counts. Each document type
+    is counted only for a reader who may list it, and only over their branches.
     """
     items = []  # Approval count rows.
     try:  # Procurement app is optional for dashboard resilience.
@@ -386,15 +455,16 @@ def _approvals(entity) -> dict:
 
         pending = ProcApprovalState.PENDING  # Pending approval state.
         specs = [  # Procurement documents shown on dashboard.
-            ("PurchaseRequisition", "Purchase requisitions"),  # Requisition count spec.
-            ("PurchaseOrder", "Purchase orders"),  # PO count spec.
-            ("VendorInvoice", "Vendor invoices"),  # Vendor invoice count spec.
+            ("PurchaseRequisition", "Purchase requisitions", "procurement.requisition.view"),
+            ("PurchaseOrder", "Purchase orders", "procurement.purchase_order.view"),
+            ("VendorInvoice", "Vendor invoices", "procurement.vendor_invoice.view"),
         ]
-        for model_name, label in specs:  # Count each procurement document type.
+        for model_name, label, key in specs:  # Count each procurement document type.
             model = getattr(pm, model_name, None)  # Resolve model defensively.
-            if model is None:  # Skip unavailable model.
+            if model is None or not reader.can(key):  # Skip unavailable or unreadable type.
                 continue
-            count = model.objects.filter(entity=entity, approval_state=pending).count()
+            count = reader.procurement_scope.filter(
+                model.objects.filter(entity=entity, approval_state=pending)).count()
             items.append({"label": label, "count": count})  # Add count row.
     except Exception:  # pragma: no cover - procurement optional
         pass  # Degrade to empty approvals list.
@@ -440,11 +510,11 @@ def _fiscal_runway(entity) -> dict:
 
 
 # Return recent journal activity rows.
-def _recent_journals(entity, limit=5) -> list[dict]:
+def _recent_journals(entity, limit=5, scope=UNNARROWED) -> list[dict]:
     from .models import JournalEntry
 
     qs = (  # Recent journals for entity.
-        JournalEntry.objects.filter(entity=entity)
+        scope.filter(JournalEntry.objects.filter(entity=entity))
         .select_related("created_by")
         .order_by("-date", "-id")[:limit]
     )
@@ -476,8 +546,15 @@ class FinanceDashboard:
 
 
 # Assemble complete finance dashboard payload.
-def finance_dashboard(entity, *, period=None) -> dict:
-    """Assemble the whole Finance-overview payload for ``entity``."""
+def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK) -> dict:
+    """Assemble the Finance-overview payload for ``entity`` as ``reader`` may see it.
+
+    Each block is ``None`` when the reader may not see it; see the module docstring
+    for which keys and which reach each block needs. The receivables card is read
+    off the GL for a whole-school report reader, and off the reader's own open
+    invoices otherwise, so a branch bursar sees their branch's outstanding balance
+    rather than nothing.
+    """
     current = _current_period(entity, period)  # Resolve anchor period.
     # Default as-of is the present day; pinning a period moves it to that period's end.  # Makes historical dashboards deterministic.
     if period is not None and current is not None:  # Caller pinned a specific period.
@@ -486,37 +563,60 @@ def finance_dashboard(entity, *, period=None) -> dict:
         as_of = datetime.date.today()
     periods = _period_window(entity, current)  # KPI sparkline period window.
 
-    cash = _closing_series(_cash_account_ids(entity), periods, NormalBalance.DEBIT)  # Cash KPI series.
-    ar = _closing_series(  # Receivables KPI series.
-        set(  # Customer AR account ids.
-            Customer.objects.filter(entity=entity)
-            .exclude(receivable_account=None)
-            .values_list("receivable_account_id", flat=True)
-        ),
-        periods,  # Sparkline periods.
-        NormalBalance.DEBIT,  # AR is debit-natural.
-    )
-    ap = _closing_series(_payable_account_ids(entity), periods, NormalBalance.CREDIT)  # Payables KPI series.
-    ni = _net_income_series(entity, periods)  # Net income YTD KPI series.
+    ledger = reader.whole_tenant and reader.can("finance.report.view")  # GL-derived blocks.
+    invoices = reader.can("finance.invoice.view")
+    payments = reader.can("finance.payment.view")
+    scope = reader.scope
 
+    kpis = {"cash_position": None, "receivables": None, "payables": None, "net_income_ytd": None}
+    aging = None
+    if invoices or ledger:
+        aging = _ar_aging_block(entity, as_of, scope)
+    if ledger:
+        kpis["cash_position"] = _kpi(_closing_series(_cash_account_ids(entity), periods, NormalBalance.DEBIT))
+        kpis["receivables"] = _kpi(_closing_series(
+            set(  # Customer AR account ids.
+                Customer.objects.filter(entity=entity)
+                .exclude(receivable_account=None)
+                .values_list("receivable_account_id", flat=True)
+            ),
+            periods,
+            NormalBalance.DEBIT,  # AR is debit-natural.
+        ))
+        kpis["payables"] = _kpi(_closing_series(_payable_account_ids(entity), periods, NormalBalance.CREDIT))
+        kpis["net_income_ytd"] = _kpi(_net_income_series(entity, periods))
+    elif invoices:
+        # The reader's own open invoices: no GL history to draw a sparkline from.
+        kpis["receivables"] = {"value": aging["total"], "delta_pct": None, "spark": []}
+
+    approvals = _approvals(entity, reader)
     return {  # Complete dashboard payload.
         "entity": entity.code,  # Entity code.
         "fiscal_year": _fiscal_year_label(current),  # Fiscal year label.
         "period": getattr(current, "name", None),  # Current period name.
         "as_of": as_of.isoformat(),  # Dashboard as-of date.
+        "narrowed": not reader.whole_tenant,  # Figures cover only the reader's branches.
         "fiscal_runway": _fiscal_runway(entity),  # Fiscal-calendar expiry warning.
-        "kpis": {  # Executive KPI cards.
-            "cash_position": _kpi(cash),  # Cash card.
-            "receivables": _kpi(ar),  # Receivables card.
-            "payables": _kpi(ap),  # Payables card.
-            "net_income_ytd": _kpi(ni),  # Net income card.
-        },
-        "revenue_vs_budget": _revenue_vs_budget(entity, getattr(current, "fiscal_year", None)),  # Actual vs budget block.
-        "ar_aging": _ar_aging_block(entity, as_of),  # AR aging block.
-        "trend": _trend(entity, as_of),  # Receivables vs collections trend.
-        "top_overdue": _top_overdue(entity, as_of),  # Largest overdue invoices.
-        "vendor_due": _vendor_due(entity),  # Upcoming vendor bills.
-        "approvals": _approvals(entity),  # Pending procurement approvals.
-        "close_progress": _close_progress(entity, current),  # Period-close checklist progress.
-        "recent_journals": _recent_journals(entity),  # Recent journal activity.
+        "kpis": kpis,  # Executive KPI cards.
+        "revenue_vs_budget": (
+            _revenue_vs_budget(entity, getattr(current, "fiscal_year", None)) if ledger else None
+        ),
+        "ar_aging": aging,  # AR aging block.
+        "trend": (
+            _trend(entity, as_of, scope=scope, issued_ok=invoices, collected_ok=payments)
+            if invoices or payments else None
+        ),
+        "top_overdue": _top_overdue(entity, as_of, scope) if invoices else None,
+        "vendor_due": (
+            _vendor_due(entity, reader.procurement_scope)
+            if reader.can("procurement.vendor_invoice.view") else None
+        ),
+        "approvals": approvals if approvals["items"] else None,
+        "close_progress": (
+            _close_progress(entity, current)
+            if reader.whole_tenant and reader.can("finance.period.view") else None
+        ),
+        "recent_journals": (
+            _recent_journals(entity, scope=scope) if reader.can("finance.journal.view") else None
+        ),
     }
