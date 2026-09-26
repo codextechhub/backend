@@ -5,10 +5,10 @@ receipt keys and a report key, pinned to Ikeja. The proprietor holds the report
 key school-wide. A payments clerk holds only a payout key.
 
 The dashboard opens to all three, because each works in the Finance console. What
-comes back differs: the bursar's receivables, aging and overdue list cover Ikeja
-and the school-wide rows only, and the ledger figures that cannot be split by
-branch (cash, payables, net income, budget, close) are withheld from them. The
-proprietor gets every block. The clerk gets the page with no figures in it.
+comes back differs: every figure the bursar gets, ledger figures included, covers
+Ikeja and the school-wide entries only, and the school's budget and period close
+are not sent to him at all. The proprietor gets every block. The clerk gets the
+page with no figures in it.
 """
 from __future__ import annotations
 
@@ -95,15 +95,18 @@ class FinanceDashboardAccessTests(_FinanceBranchFixture):
         self.assertEqual(data["ar_aging"]["total"]["kobo"], own)
         self.assertEqual(data["kpis"]["receivables"]["value"]["kobo"], own)
 
-    def test_a_branch_bursar_is_not_sent_the_whole_school_ledger(self):
+    def test_a_branch_bursar_gets_their_own_ledger_but_not_the_school_budget_or_close(self):
         client = self.client_holding(
-            "bursar-ledger@corona.test", "finance.report.view", "finance.invoice.view",
+            "bursar-ledger@corona.test",
+            "finance.report.view", "finance.invoice.view", "finance.period.view",
             branch=self.ikeja,
         )
         data = self.dashboard(client).data["data"]
 
         for kpi in LEDGER_KPIS:
-            self.assertIsNone(data["kpis"][kpi], kpi)
+            self.assertIsNotNone(data["kpis"][kpi], kpi)
+        # Net income from Ikeja's invoice and the school-wide one; never Lekki's three.
+        self.assertEqual(data["kpis"]["net_income_ytd"]["value"]["kobo"], 2 * 100_000)
         self.assertIsNone(data["revenue_vs_budget"])
         self.assertIsNone(data["close_progress"])
 

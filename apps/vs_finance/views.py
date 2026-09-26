@@ -1738,8 +1738,21 @@ def _line(row):
 
 
 # Support the maybe export workflow.
-def _maybe_export(request, table, *, filename):
+def _reader_scope(request):
+    """The caller's branch narrowing for a report, in finance's inclusive reading.
+
+    Every report endpoint asks this one helper, so a statement, its export and the
+    lists beside it narrow the same way: a branch-bound reader's own branches plus
+    the school-wide rows. See :mod:`vs_finance.branch_ledger` for the ledger side.
+    """
+    return branch_scope(request, include_shared=True)
+
+
+def _maybe_export(request, table, *, filename, narrowed=False):
     """If ``?export=csv|xlsx|pdf`` is set, render ``table`` to a file download.
+
+    ``narrowed`` marks a report built for a branch-bound reader: its subtitle says
+    so, because a downloaded file travels without the screen that explained it.
 
     Returns an :class:`HttpResponse` attachment, or ``None`` when no export was asked
     for (the caller then returns its normal JSON envelope). An unknown format becomes a
@@ -1751,6 +1764,8 @@ def _maybe_export(request, table, *, filename):
     fmt = request.query_params.get("export")
     if not fmt:
         return None
+    if narrowed:
+        table.subtitle = f"{table.subtitle} · the reader's branches and school-wide entries only"
     from .exports import render
 
     try:  # Start protected finance operation.
@@ -1775,8 +1790,9 @@ class TrialBalanceView(APIView):
         from .exports import ReportTable
 
         entity = resolve_entity(request)
+        reader_scope = _reader_scope(request)
         period = _resolve_period(entity, request)
-        tb = trial_balance(entity, period=period)
+        tb = trial_balance(entity, period=period, scope=reader_scope)
 
         export = _maybe_export(request, ReportTable(
             title="Trial Balance",
@@ -1784,7 +1800,7 @@ class TrialBalanceView(APIView):
             columns=["Code", "Account", "Type", "Debit", "Credit"],
             rows=[[r.code, r.name, r.account_type, r.debit_naira, r.credit_naira] for r in tb.rows],
             summary_rows=[["", "TOTAL", "", format_naira(tb.total_debit), format_naira(tb.total_credit)]],
-        ), filename=f"trial_balance_{entity.code}")
+        ), filename=f"trial_balance_{entity.code}", narrowed=reader_scope.is_narrowed)
         if export is not None:
             return export
 
@@ -1792,6 +1808,7 @@ class TrialBalanceView(APIView):
             message="Trial balance retrieved.",
             data={
                 "entity": entity.code,
+                "narrowed": reader_scope.is_narrowed,
                 "period": getattr(period, "name", None),
                 "rows": [
                     {
@@ -1821,8 +1838,9 @@ class IncomeStatementView(APIView):
         from .exports import ReportTable
 
         entity = resolve_entity(request)
+        reader_scope = _reader_scope(request)
         period = _resolve_period(entity, request)
-        rep = income_statement_compare(entity, period=period)
+        rep = income_statement_compare(entity, period=period, scope=reader_scope)
 
         # Support the mon workflow.
         def _mon(v):
@@ -1882,7 +1900,7 @@ class IncomeStatementView(APIView):
                 _xtot("Total expenses", rep.expense_totals),
                 _xtot("Net income", rep.net_totals),
             ],
-        ), filename=f"income_statement_{entity.code}")
+        ), filename=f"income_statement_{entity.code}", narrowed=reader_scope.is_narrowed)
         if export is not None:
             return export
 
@@ -1890,6 +1908,7 @@ class IncomeStatementView(APIView):
             message="Income statement retrieved.",
             data={
                 "entity": entity.code,
+                "narrowed": reader_scope.is_narrowed,
                 "period": rep.period_name,
                 "fiscal_year": rep.fiscal_year,
                 "prior_fiscal_year": rep.prior_fiscal_year,
@@ -1919,8 +1938,9 @@ class BalanceSheetView(APIView):
         from .exports import ReportTable
 
         entity = resolve_entity(request)
+        reader_scope = _reader_scope(request)
         as_of = _resolve_date_param(request, "as_of")
-        bs = balance_sheet_sections(entity, as_of=as_of)
+        bs = balance_sheet_sections(entity, as_of=as_of, scope=reader_scope)
 
         # Support the group workflow.
         def _group(g):
@@ -1954,7 +1974,7 @@ class BalanceSheetView(APIView):
                 ["", "Total liabilities", format_naira(bs.total_liabilities)],
                 ["", "Total equity", format_naira(bs.total_equity)],
             ],
-        ), filename=f"balance_sheet_{entity.code}")
+        ), filename=f"balance_sheet_{entity.code}", narrowed=reader_scope.is_narrowed)
         if export is not None:
             return export
 
@@ -1962,6 +1982,7 @@ class BalanceSheetView(APIView):
             message="Balance sheet retrieved.",
             data={
                 "entity": entity.code,
+                "narrowed": reader_scope.is_narrowed,
                 "as_of": str(bs.as_of),
                 "sections": [_section(s) for s in bs.sections],
                 "total_assets": _money(bs.total_assets),
@@ -1987,8 +2008,9 @@ class CashFlowView(APIView):
         from .exports import ReportTable
 
         entity = resolve_entity(request)
+        reader_scope = _reader_scope(request)
         period = _resolve_period(entity, request)
-        cf = cash_flow_statement(entity, period=period)
+        cf = cash_flow_statement(entity, period=period, scope=reader_scope)
 
         _ACT_LABEL = {
             "operating": "Operating activities",
@@ -2011,7 +2033,7 @@ class CashFlowView(APIView):
                 ["", "Cash at start of period", format_naira(cf.opening_cash)],
                 ["", "Cash at end of period", format_naira(cf.closing_cash)],
             ],
-        ), filename=f"cash_flow_{entity.code}")
+        ), filename=f"cash_flow_{entity.code}", narrowed=reader_scope.is_narrowed)
         if export is not None:
             return export
 
@@ -2024,6 +2046,7 @@ class CashFlowView(APIView):
             message="Cash flow statement retrieved.",
             data={
                 "entity": entity.code,
+                "narrowed": reader_scope.is_narrowed,
                 "period": getattr(period, "name", None),
                 "opening_cash": _money(cf.opening_cash),
                 "closing_cash": _money(cf.closing_cash),
@@ -2058,6 +2081,7 @@ class AnalyticsSliceView(APIView):
         from .exports import ReportTable
 
         entity = resolve_entity(request)
+        reader_scope = _reader_scope(request)
         axis = (request.query_params.get("axis") or "").strip()
         if not axis:
             raise ValidationError({"axis": "An 'axis' query parameter is required "
@@ -2070,7 +2094,7 @@ class AnalyticsSliceView(APIView):
 
         period = _resolve_period(entity, request)
         account_type = request.query_params.get("account_type") or None
-        sl = analytics_slice(entity, axis=axis, period=period, account_type=account_type)
+        sl = analytics_slice(entity, axis=axis, period=period, account_type=account_type, scope=reader_scope)
 
         export = _maybe_export(request, ReportTable(
             title=f"Analytics Slice · {axis}",
@@ -2078,7 +2102,7 @@ class AnalyticsSliceView(APIView):
             columns=["Bucket", "Code", "Account", "Type", "Net"],
             rows=[[r.bucket, r.code, r.name, r.account_type, r.net_naira] for r in sl.rows],
             summary_rows=[["", "", "TOTAL", "", format_naira(sl.total_net)]],
-        ), filename=f"analytics_slice_{axis}_{entity.code}")
+        ), filename=f"analytics_slice_{axis}_{entity.code}", narrowed=reader_scope.is_narrowed)
         if export is not None:
             return export
 
@@ -2086,6 +2110,7 @@ class AnalyticsSliceView(APIView):
             message="Analytics slice retrieved.",
             data={
                 "entity": entity.code,
+                "narrowed": reader_scope.is_narrowed,
                 "period": getattr(period, "name", None),
                 "axis": sl.axis,
                 "rows": [
@@ -2116,8 +2141,9 @@ class ChangesInEquityView(APIView):
         from .exports import ReportTable
 
         entity = resolve_entity(request)
+        reader_scope = _reader_scope(request)
         period = _resolve_period(entity, request)
-        soce = statement_of_changes_in_equity(entity, period=period)
+        soce = statement_of_changes_in_equity(entity, period=period, scope=reader_scope)
 
         export = _maybe_export(request, ReportTable(
             title="Statement of Changes in Equity",
@@ -2132,7 +2158,7 @@ class ChangesInEquityView(APIView):
                 format_naira(soce.total_opening), format_naira(soce.total_profit),
                 format_naira(soce.total_contributions), format_naira(soce.total_closing),
             ]],
-        ), filename=f"changes_in_equity_{entity.code}")
+        ), filename=f"changes_in_equity_{entity.code}", narrowed=reader_scope.is_narrowed)
         if export is not None:
             return export
 
@@ -2140,6 +2166,7 @@ class ChangesInEquityView(APIView):
             message="Statement of changes in equity retrieved.",
             data={
                 "entity": entity.code,
+                "narrowed": reader_scope.is_narrowed,
                 "period": getattr(period, "name", None),
                 "as_of": str(soce.as_of),
                 "columns": [
@@ -2174,9 +2201,10 @@ class StatutoryPackView(APIView):
         from .exports import ReportTable
 
         entity = resolve_entity(request)
+        reader_scope = _reader_scope(request)
         as_of = _resolve_date_param(request, "as_of")
         period = _resolve_period(entity, request)
-        pack = statutory_pack(entity, as_of=as_of, period=period)
+        pack = statutory_pack(entity, as_of=as_of, period=period, scope=reader_scope)
 
         # Export face: the IFRS-mapped Statement of Financial Position + Income
         # Statement as one flat table (the companion statements have their own exports).
@@ -2200,7 +2228,7 @@ class StatutoryPackView(APIView):
                 ["", "Total equity", format_naira(pack.total_equity)],
                 ["", "Total liabilities", format_naira(pack.total_liabilities)],
             ],
-        ), filename=f"statutory_pack_{entity.code}")
+        ), filename=f"statutory_pack_{entity.code}", narrowed=reader_scope.is_narrowed)
         if export is not None:
             return export
 
@@ -2222,6 +2250,7 @@ class StatutoryPackView(APIView):
             message="Statutory pack retrieved.",
             data={
                 "entity": entity.code,
+                "narrowed": reader_scope.is_narrowed,
                 "as_of": str(pack.as_of),
                 "period": getattr(period, "name", None),
                 "statement_of_financial_position": {
@@ -2322,7 +2351,7 @@ class ARAgingView(APIView):
 
         entity = resolve_entity(request)
         as_of = _resolve_date_param(request, "as_of")
-        scope = branch_scope(request, include_shared=True)
+        scope = _reader_scope(request)
         report = ar_aging(entity, as_of=as_of, scope=scope)
 
         columns = ["Code", "Customer"] + list(AGING_BUCKETS) + ["Net"]
@@ -2335,12 +2364,11 @@ class ARAgingView(APIView):
         summary += [format_naira(report.total_net)]
         export = _maybe_export(request, ReportTable(
             title="Accounts Receivable Aging",
-            subtitle=f"{entity.code} · as at {report.as_of}"
-            + (" · the reader's branches only" if scope.is_narrowed else ""),
+            subtitle=f"{entity.code} · as at {report.as_of}",
             columns=columns,
             rows=rows,
             summary_rows=[summary],
-        ), filename=f"ar_aging_{entity.code}")
+        ), filename=f"ar_aging_{entity.code}", narrowed=scope.is_narrowed)
         if export is not None:
             return export
 
@@ -2377,12 +2405,14 @@ class ARReconciliationView(APIView):
         from .reports import reconcile_ar
 
         entity = resolve_entity(request)
+        reader_scope = _reader_scope(request)
         as_of = _resolve_date_param(request, "as_of")
-        rec = reconcile_ar(entity, as_of=as_of)
+        rec = reconcile_ar(entity, as_of=as_of, scope=reader_scope)
         return success_response(
             message="AR reconciliation retrieved.",
             data={
                 "entity": entity.code,
+                "narrowed": reader_scope.is_narrowed,
                 "subledger_total": _money(rec.subledger_total),
                 "control_total": _money(rec.control_total),
                 "difference": _money(rec.difference),

@@ -2,7 +2,9 @@
 
 These functions only *read* the denormalised :class:`~vs_finance.models.AccountBalance`
 aggregates that :mod:`vs_finance.posting` maintains, so they are cheap and never
-re-sum the whole journal. The cardinal invariant they exist to demonstrate: a
+re-sum the whole journal. A statement asked for with a narrowed ``scope`` reads the
+same shape of balances from the journals in a reader's branches instead (see
+:mod:`vs_finance.branch_ledger`); an unnarrowed one is unchanged. The cardinal invariant they exist to demonstrate: a
 double-entry ledger's debits and credits are always equal, so a trial balance over a
 balanced set of postings **always balances**.
 """
@@ -66,17 +68,18 @@ class TrialBalance:
 
 
 # Handle the trial balance workflow.
-def trial_balance(entity, *, period=None) -> TrialBalance:
+def trial_balance(entity, *, period=None, scope=None) -> TrialBalance:
     """Build a trial balance for ``entity``, optionally scoped to one ``period``.
 
     Each account's net position is reduced to a single side: if accumulated debits
     exceed credits the remainder sits in the debit column, else the credit column -
     the conventional trial-balance presentation. Because every posted journal
-    balanced, the column totals are equal.
+    balanced, the column totals are equal - for a ``scope``'s journals too, since
+    any set of whole journals balances (see :mod:`vs_finance.branch_ledger`).
     """
-    from .models import AccountBalance
+    from .branch_ledger import ledger_balances
 
-    qs = AccountBalance.objects.filter(account__entity=entity).select_related("account")
+    qs = ledger_balances(entity, scope).select_related("account")
     if period is not None:
         # Cumulative balance AS OF the selected period - every movement up to and
         # including it. A trial balance is a point-in-time statement of balances,
@@ -175,7 +178,7 @@ class AnalyticsSlice:
 
 
 # Handle the analytics slice workflow.
-def analytics_slice(entity, *, axis, period=None, account_type=None) -> AnalyticsSlice:
+def analytics_slice(entity, *, axis, period=None, account_type=None, scope=None) -> AnalyticsSlice:
     """Net movement per account, bucketed by ``axis``, over posted journals.
 
     ``axis`` is either the literal ``"cost_center"`` or a :class:`~vs_finance.models.Dimension`
@@ -184,14 +187,17 @@ def analytics_slice(entity, *, axis, period=None, account_type=None) -> Analytic
     analysis and is skipped, so the report shows genuinely-allocated activity rather
     than a catch-all bucket. Optionally scope to one ``period`` and/or one
     ``account_type``. Net is ``debit - credit`` (kobo) so it reads naturally for both
-    sides of the books.
+    sides of the books. ``scope`` narrows it to the journals in a reader's branches.
     """
     from .constants import DocumentStatus
     from .models import JournalLine
+    from vs_rbac.scoping import UNNARROWED
 
     qs = (
-        JournalLine.objects
-        .filter(entry__entity=entity, entry__status=DocumentStatus.POSTED)
+        (scope or UNNARROWED).filter(
+            JournalLine.objects.filter(entry__entity=entity, entry__status=DocumentStatus.POSTED),
+            "entry__",
+        )
         .select_related("account", "cost_center")
     )
     if axis == "cost_center":
@@ -653,6 +659,28 @@ def _account_gl_net_as_of(account, as_of) -> int:
     return net if account.normal_balance == NormalBalance.DEBIT else -net
 
 
+# Net GL movement of one account over a reader's journals.
+def _account_gl_net_scoped(account, as_of, scope) -> int:
+    """:func:`_account_gl_net_as_of` over only the journals in ``scope``.
+
+    ``as_of`` ``None`` reads every date. Reversed entries count, as they do in the
+    unnarrowed figure; see :data:`vs_finance.branch_ledger.LEDGER_STATUSES`.
+    """
+    from .branch_ledger import LEDGER_STATUSES
+    from .constants import NormalBalance
+    from .models import JournalLine
+
+    lines = scope.filter(
+        JournalLine.objects.filter(account=account, entry__status__in=LEDGER_STATUSES),
+        "entry__",
+    )
+    if as_of is not None:
+        lines = lines.filter(entry__date__lte=as_of)
+    totals = lines.aggregate(debit=Sum("debit"), credit=Sum("credit"))
+    net = int(totals["debit"] or 0) - int(totals["credit"] or 0)
+    return net if account.normal_balance == NormalBalance.DEBIT else -net
+
+
 @dataclass
 # Group behavior for A R Reconciliation.
 class ARReconciliation:
@@ -668,7 +696,7 @@ class ARReconciliation:
 
 
 # Handle the reconcile ar workflow.
-def reconcile_ar(entity, *, as_of=None) -> ARReconciliation:
+def reconcile_ar(entity, *, as_of=None, scope=None) -> ARReconciliation:
     """Assert the AR **sub-ledger** (customer balances) equals the AR **control** GL.
 
     The cardinal AR control: the sum of what every customer owes must equal the
@@ -679,10 +707,14 @@ def reconcile_ar(entity, *, as_of=None) -> ARReconciliation:
     cutoff on the sub-ledger alone made the control disagree with itself the moment a
     future-dated document existed, and a control report that cries wolf is one people
     learn to ignore.
+
+    ``scope`` narrows both sides to a reader's branches: the sub-ledger to their
+    documents and the control to the journals those documents raised, so a
+    branch's reconciliation compares like with like.
     """
     from .models import Customer
 
-    aging = ar_aging(entity, as_of=as_of)
+    aging = ar_aging(entity, as_of=as_of, scope=scope)
     # Customer credit is booked to the dedicated 2140 liability, not the AR control
     # account.  It belongs on the aging screen's customer *net* position, but not in
     # this control-account reconciliation.  Open debit notes are already inside
@@ -695,10 +727,13 @@ def reconcile_ar(entity, *, as_of=None) -> ARReconciliation:
         for c in Customer.objects.filter(entity=entity).select_related("receivable_account")
         if c.receivable_account_id is not None
     }
-    control_total = sum(
-        (_account_gl_net_as_of(acc, as_of) if as_of is not None else _account_gl_net(acc))
-        for acc in control_accounts
-    )
+    if scope is not None and scope.is_narrowed:
+        control_total = sum(_account_gl_net_scoped(acc, as_of, scope) for acc in control_accounts)
+    else:
+        control_total = sum(
+            (_account_gl_net_as_of(acc, as_of) if as_of is not None else _account_gl_net(acc))
+            for acc in control_accounts
+        )
 
     return ARReconciliation(
         entity_id=entity.id,
@@ -1308,18 +1343,19 @@ class IncomeStatement:
 
 
 # Handle the income statement workflow.
-def income_statement(entity, *, period=None) -> IncomeStatement:
+def income_statement(entity, *, period=None, scope=None) -> IncomeStatement:
     """Build the income statement (P&L) for ``entity``, optionally one ``period``.
 
     Sums INCOME and EXPENSE accounts from :class:`AccountBalance`. When ``period`` is
     given only that period's balances count; otherwise every period is aggregated
     (year/life-to-date). The result's ``net_income`` is what the Balance Sheet folds
-    into equity until the year is closed to Retained Earnings.
+    into equity until the year is closed to Retained Earnings. ``scope`` narrows it
+    to a reader's journals (see :mod:`vs_finance.branch_ledger`).
     """
+    from .branch_ledger import ledger_balances
     from .constants import AccountType
-    from .models import AccountBalance
 
-    qs = AccountBalance.objects.filter(account__entity=entity).select_related("account")
+    qs = ledger_balances(entity, scope).select_related("account")
     if period is not None:
         qs = qs.filter(period=period)
 
@@ -1388,15 +1424,21 @@ class IncomeStatementCompare:
 
 
 # Handle the income statement compare workflow.
-def income_statement_compare(entity, *, period=None) -> IncomeStatementCompare:
+def income_statement_compare(entity, *, period=None, scope=None) -> IncomeStatementCompare:
     """Build the income statement with Budget + Prior-year comparison columns.
 
     Scope is a **fiscal year**: ``period`` (a :class:`FiscalPeriod`) narrows both this
     year and the prior year to that single period number; otherwise the whole current
     fiscal year (the latest) is used. See :class:`IncomeStatementCompare`.
+
+    ``scope`` narrows the actuals, this year and last, to a reader's journals. The
+    budget is the entity's plan and has no branch, so a narrowed statement carries
+    no budget column: set against one branch's actuals it would read as a shortfall
+    that is only the other branches' share.
     """
+    from .branch_ledger import ledger_balances
     from .constants import AccountType, BudgetStatus
-    from .models import AccountBalance, Budget, BudgetLine, FiscalYear
+    from .models import Budget, BudgetLine, FiscalYear
 
     fy = period.fiscal_year if period is not None else (
         FiscalYear.objects.filter(entity=entity).order_by("-year").first())
@@ -1410,8 +1452,8 @@ def income_statement_compare(entity, *, period=None) -> IncomeStatementCompare:
 
     # Support the actuals workflow.
     def _actuals(fiscal_year):
-        qs = AccountBalance.objects.filter(
-            account__entity=entity, period__fiscal_year=fiscal_year,
+        qs = ledger_balances(entity, scope).filter(
+            period__fiscal_year=fiscal_year,
         ).select_related("account")
         if period_no is not None:
             qs = qs.filter(period__period_no=period_no)
@@ -1425,7 +1467,7 @@ def income_statement_compare(entity, *, period=None) -> IncomeStatementCompare:
     pri_inc, pri_exp = _actuals(prior_fy) if has_prior else ({}, {})
 
     # Budget for the current fiscal year - prefer an approved (locked) plan over a draft.
-    budget = (
+    budget = None if scope is not None and scope.is_narrowed else (
         Budget.objects.filter(
             entity=entity, fiscal_year=fy,
             status=BudgetStatus.APPROVED).order_by("-id").first()
@@ -1542,23 +1584,25 @@ class BalanceSheet:
 
 
 # Handle the balance sheet workflow.
-def balance_sheet(entity, *, as_of=None) -> BalanceSheet:
+def balance_sheet(entity, *, as_of=None, scope=None) -> BalanceSheet:
     """Build the balance sheet for ``entity`` as at ``as_of`` (default: today).
 
     Aggregates ASSET / LIABILITY / EQUITY balances across every period that has begun
     on or before ``as_of`` (period granularity - partial-period cut-offs are not
     interpolated). The same window's net income (income − expense) is reported as
     ``retained_earnings`` and folded into equity, which is what makes ``assets ==
-    liabilities + equity`` hold while the year is still open.
+    liabilities + equity`` hold while the year is still open. ``scope`` narrows it
+    to a reader's journals; the equation still holds, because every journal
+    balances (see :mod:`vs_finance.branch_ledger` for what a branch's cash means).
     """
+    from .branch_ledger import ledger_balances
     from .constants import AccountType
-    from .models import AccountBalance
 
     as_of = as_of or timezone.now().date()
 
     qs = (
-        AccountBalance.objects
-        .filter(account__entity=entity, period__start_date__lte=as_of)
+        ledger_balances(entity, scope)
+        .filter(period__start_date__lte=as_of)
         .select_related("account")
     )
 
@@ -1677,7 +1721,7 @@ class CashFlowStatement:
 
 
 # Handle the cash flow statement workflow.
-def cash_flow_statement(entity, *, period=None) -> CashFlowStatement:
+def cash_flow_statement(entity, *, period=None, scope=None) -> CashFlowStatement:
     """Build the cash-flow statement for ``entity``, optionally one ``period``.
 
     Cash accounts are the entity's ``1100 Cash & Bank`` plus any GL account a
@@ -1685,10 +1729,16 @@ def cash_flow_statement(entity, *, period=None) -> CashFlowStatement:
     non-cash leg of every POSTED journal that touches cash into operating / investing /
     financing (see :func:`_classify_cash_flow`), and reconciles opening + net change to
     closing cash. Scoped to ``period`` when given, else the whole ledger to date.
+    ``scope`` narrows both the cash balances and the classified journals to a
+    reader's branches, so the statement still reconciles.
     """
     from .account_mappings import resolve_mapped_account
+    from .branch_ledger import ledger_balances
     from .constants import AccountMappingKey, DocumentStatus, NormalBalance
-    from .models import AccountBalance, BankAccount, JournalLine
+    from .models import BankAccount, JournalLine
+    from vs_rbac.scoping import UNNARROWED
+
+    scope = scope or UNNARROWED
 
     # 1. Identify the entity's cash accounts (1100 + any mapped bank GL account).
     cash_ids = {resolve_mapped_account(entity, AccountMappingKey.CASH_BANK).id}
@@ -1701,7 +1751,7 @@ def cash_flow_statement(entity, *, period=None) -> CashFlowStatement:
         return stmt
 
     # 2. Opening / closing cash from the denormalised balances.
-    bal_qs = AccountBalance.objects.filter(account_id__in=cash_ids).select_related("account")
+    bal_qs = ledger_balances(entity, scope).filter(account_id__in=cash_ids).select_related("account")
     if period is not None:
         bal_qs = bal_qs.filter(period=period)
 
@@ -1717,9 +1767,12 @@ def cash_flow_statement(entity, *, period=None) -> CashFlowStatement:
 
     # 3. Classify the non-cash legs of every posted journal that touches cash.
     cash_entry_ids = set(
-        JournalLine.objects
-        .filter(account_id__in=cash_ids, entry__entity=entity,
-                entry__status=DocumentStatus.POSTED)
+        scope.filter(
+            JournalLine.objects.filter(
+                account_id__in=cash_ids, entry__entity=entity,
+                entry__status=DocumentStatus.POSTED),
+            "entry__",
+        )
         .values_list("entry_id", flat=True)
     )
     if period is not None:
@@ -1880,19 +1933,20 @@ def _net_income(qs) -> int:
 
 
 # Handle the statement of changes in equity workflow.
-def statement_of_changes_in_equity(entity, *, period=None) -> StatementOfChangesInEquity:
+def statement_of_changes_in_equity(entity, *, period=None, scope=None) -> StatementOfChangesInEquity:
     """Build the statement of changes in equity for ``entity``.
 
     With ``period`` the window is that single period (opening = every earlier period;
     movement = the period). Without it the window is the whole ledger to date (opening
     zero, everything a movement from inception). Each booked EQUITY account is a
     column; the unclosed P&L is the synthetic retained-earnings column. ``closing``
-    reconciles to the balance sheet's equity at the window end.
+    reconciles to the balance sheet's equity at the window end. ``scope`` narrows
+    both the statement and that balance sheet to a reader's journals.
     """
+    from .branch_ledger import ledger_balances
     from .constants import AccountType
-    from .models import AccountBalance
 
-    base = AccountBalance.objects.filter(account__entity=entity).select_related("account")
+    base = ledger_balances(entity, scope).select_related("account")
 
     if period is not None:
         prior_qs = base.filter(period__start_date__lt=period.start_date)
@@ -1937,7 +1991,7 @@ def statement_of_changes_in_equity(entity, *, period=None) -> StatementOfChanges
     ))
 
     # Independent reconciliation target: balance-sheet equity at the window end.
-    bs_equity = balance_sheet(entity, as_of=as_of).total_equity
+    bs_equity = balance_sheet(entity, as_of=as_of, scope=scope).total_equity
 
     return StatementOfChangesInEquity(
         entity_id=entity.id,
@@ -2137,13 +2191,14 @@ def _group_rows_by_ifrs_line(rows, line_map, *, ordered_lines, extra=None) -> tu
 
 
 # Handle the statutory pack workflow.
-def statutory_pack(entity, *, as_of=None, period=None) -> StatutoryPack:
+def statutory_pack(entity, *, as_of=None, period=None, scope=None) -> StatutoryPack:
     """Assemble the IFRS-for-SMEs statutory pack for ``entity``.
 
     The Statement of Financial Position is taken as at ``as_of`` (default today); the
     Income Statement, cash-flow statement and statement of changes in equity are scoped
     to ``period`` when given (else year/inception-to-date). Every figure is *regrouped*
     from the existing statements, so the pack's totals reconcile to them exactly.
+    ``scope`` narrows every statement in the pack to a reader's journals.
     """
     from .constants import IFRSLine
 
@@ -2151,7 +2206,7 @@ def statutory_pack(entity, *, as_of=None, period=None) -> StatutoryPack:
     line_map = _ifrs_line_map(entity)
 
     # --- Statement of Financial Position (regroup the balance sheet) ---------- #
-    bs = balance_sheet(entity, as_of=as_of)
+    bs = balance_sheet(entity, as_of=as_of, scope=scope)
     section_rows = {
         "non_current_assets": bs.asset_rows, "current_assets": bs.asset_rows,
         "equity": bs.equity_rows,
@@ -2176,7 +2231,7 @@ def statutory_pack(entity, *, as_of=None, period=None) -> StatutoryPack:
     )
 
     # --- Income statement (regroup the P&L) ----------------------------------- #
-    pnl = income_statement(entity, period=period)
+    pnl = income_statement(entity, period=period, scope=scope)
     income_lines, _ = _group_rows_by_ifrs_line(
         list(pnl.income_rows) + list(pnl.expense_rows), line_map,
         ordered_lines=_ifrs_income_lines(),
@@ -2195,9 +2250,9 @@ def statutory_pack(entity, *, as_of=None, period=None) -> StatutoryPack:
         total_income=pnl.total_income,
         total_expense=pnl.total_expense,
         net_income=pnl.net_income,
-        cash_flow=cash_flow_statement(entity, period=period),
-        changes_in_equity=statement_of_changes_in_equity(entity, period=period),
-        trial_balance=trial_balance(entity, period=period),
+        cash_flow=cash_flow_statement(entity, period=period, scope=scope),
+        changes_in_equity=statement_of_changes_in_equity(entity, period=period, scope=scope),
+        trial_balance=trial_balance(entity, period=period, scope=scope),
     )
 
 
@@ -2237,14 +2292,15 @@ class BalanceSheetSections:
 
 
 # Handle the balance sheet sections workflow.
-def balance_sheet_sections(entity, *, as_of=None) -> BalanceSheetSections:
+def balance_sheet_sections(entity, *, as_of=None, scope=None) -> BalanceSheetSections:
     """Regroup the balance sheet onto IFRS SOFP sections for statutory presentation.
 
     Reuses the same section/line machinery as :func:`statutory_pack`, but surfaces the
     unclosed net income as a distinct *Current year earnings* equity line.
+    ``scope`` narrows it as :func:`balance_sheet` does.
     """
     as_of = as_of or timezone.now().date()
-    bs = balance_sheet(entity, as_of=as_of)
+    bs = balance_sheet(entity, as_of=as_of, scope=scope)
     line_map = _ifrs_line_map(entity)
 
     section_rows = {

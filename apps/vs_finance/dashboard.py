@@ -16,13 +16,14 @@ block the reader may not see is ``None`` in the payload, not an empty value, so
 nothing about it leaves the server and the screen can leave the card out rather
 than draw an empty one.
 
-Two kinds of figure answer the branch question differently. Figures read off the
-documents (invoices, receipts, vendor bills, approvals, journals) are narrowed to
-the reader's branches, so a bursar posted to one branch sees that branch and the
-school-wide rows, the same rows their lists show. Figures read off the general
-ledger balances (cash, payables, net income, revenue against budget, the period
-close) cannot be split by branch at all, so they are sent only to a reader whose
-reach is the whole school.
+Every figure answers under the reader's branches. Figures read off the documents
+(invoices, receipts, vendor bills, approvals, journals) are narrowed to the
+reader's branches and the school-wide rows, the same rows their lists show. The
+ledger figures (cash, receivables, payables, net income) are read from the same
+journals through :mod:`vs_finance.branch_ledger`, so they agree with the
+reader's own income statement and balance sheet. Two blocks stay school-wide
+only: revenue against budget, because a budget is the school's plan and has no
+branch, and the period close, which is a school-wide act.
 """
 from __future__ import annotations
 
@@ -43,6 +44,7 @@ from .constants import (
 )
 from .models import AccountBalance, BankAccount, Customer, FiscalPeriod, Invoice, Payment
 from .money import format_naira
+from .branch_ledger import ledger_balances
 from .posting import fiscal_calendar_runway
 
 SPARK_POINTS = 6          # KPI sparkline length (month-end snapshots incl. current)
@@ -172,7 +174,35 @@ def _period_window(entity, current, n=SPARK_POINTS):
 
 
 # Build cumulative closing-balance series.
-def _closing_series(account_ids, window_periods, normal) -> list[int]:
+def _movements_by_period(source, **lookups) -> dict[tuple, tuple[int, int]]:
+    """``{(fiscal year, period no): (debit, credit)}`` summed over ``source``.
+
+    ``source`` is what :func:`vs_finance.branch_ledger.ledger_balances` returns: the
+    ``AccountBalance`` queryset, aggregated in the database, or a reader's
+    :class:`~vs_finance.branch_ledger.BranchLedger`, whose rows are summed here.
+    """
+    from .branch_ledger import BranchLedger
+
+    moves: dict[tuple, tuple[int, int]] = {}
+    if isinstance(source, BranchLedger):
+        for row in source.filter(**lookups):
+            key = (row.period.fiscal_year.year, row.period.period_no)
+            dr, cr = moves.get(key, (0, 0))
+            moves[key] = (dr + row.debit_total, cr + row.credit_total)
+        return moves
+    rows = (
+        source.filter(**lookups)
+        .values("period__fiscal_year__year", "period__period_no")
+        .annotate(dr=Sum("debit_total"), cr=Sum("credit_total"))
+    )
+    for r in rows:
+        key = (r["period__fiscal_year__year"], r["period__period_no"])
+        dr, cr = moves.get(key, (0, 0))
+        moves[key] = (dr + (r["dr"] or 0), cr + (r["cr"] or 0))
+    return moves
+
+
+def _closing_series(account_ids, window_periods, normal, source=None) -> list[int]:
     """Closing balance of an account set at each window period-end, signed to ``normal``.
 
     In this denormalised model each :class:`AccountBalance` row holds only that
@@ -184,15 +214,11 @@ def _closing_series(account_ids, window_periods, normal) -> list[int]:
     if not account_ids or not window_periods:  # No accounts or periods means zero series.
         return [0 for _ in window_periods]
     sign = 1 if normal == NormalBalance.DEBIT else -1  # Convert movements to natural-balance sign.
-    rows = (  # Aggregate account movements by fiscal period.
-        AccountBalance.objects.filter(account_id__in=account_ids)
-        .values("period__fiscal_year__year", "period__period_no")
-        .annotate(dr=Sum("debit_total"), cr=Sum("credit_total"))
-    )
-    moves: dict[tuple, int] = {}  # Movement by fiscal period key.
-    for r in rows:  # Convert aggregate rows to signed movements.
-        key = (r["period__fiscal_year__year"], r["period__period_no"])  # Comparable period key.
-        moves[key] = moves.get(key, 0) + sign * ((r["dr"] or 0) - (r["cr"] or 0))
+    source = AccountBalance.objects.all() if source is None else source
+    moves = {  # Signed movement by fiscal period key.
+        key: sign * (dr - cr)
+        for key, (dr, cr) in _movements_by_period(source, account_id__in=account_ids).items()
+    }
     out = []  # Closing balances at each window point.
     for p in window_periods:  # Compute cumulative balance through each period.
         pk = (p.fiscal_year.year, p.period_no)  # Current period key.
@@ -201,7 +227,7 @@ def _closing_series(account_ids, window_periods, normal) -> list[int]:
 
 
 # Build YTD net-income series.
-def _net_income_series(entity, window_periods) -> list[int]:
+def _net_income_series(entity, window_periods, source=None) -> list[int]:
     """Cumulative YTD net income at each window period-end.
 
     Every income/expense leg contributes ``credit − debit`` to net income (income is
@@ -211,18 +237,13 @@ def _net_income_series(entity, window_periods) -> list[int]:
     """
     if not window_periods:  # No period window means no series.
         return []
-    rows = (  # Aggregate income/expense movements by period.
-        AccountBalance.objects.filter(
-            account__entity=entity,  # Scope to entity.
-            account__account_type__in=[AccountType.INCOME, AccountType.EXPENSE],  # Income and expenses only.
-        )
-        .values("period__fiscal_year__year", "period__period_no")
-        .annotate(d=Sum("debit_total"), c=Sum("credit_total"))
-    )
-    net_by: dict[tuple, int] = {}  # Net income movement by period key.
-    for r in rows:  # Convert rows to net P&L movement.
-        key = (r["period__fiscal_year__year"], r["period__period_no"])  # Comparable period key.
-        net_by[key] = net_by.get(key, 0) + ((r["c"] or 0) - (r["d"] or 0))
+    source = AccountBalance.objects.filter(account__entity=entity) if source is None else source
+    net_by = {  # Net income movement (credit - debit) by period key.
+        key: cr - dr
+        for key, (dr, cr) in _movements_by_period(
+            source, account__account_type__in=[AccountType.INCOME, AccountType.EXPENSE],
+        ).items()
+    }
     out = []  # YTD series values.
     for p in window_periods:  # Build value for each period.
         yr, pno = p.fiscal_year.year, p.period_no  # Current fiscal year and period number.
@@ -563,7 +584,11 @@ def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK) -> dict:
         as_of = datetime.date.today()
     periods = _period_window(entity, current)  # KPI sparkline period window.
 
-    ledger = reader.whole_tenant and reader.can("finance.report.view")  # GL-derived blocks.
+    # Ledger blocks read the reader's own journals when they are narrowed (see
+    # vs_finance.branch_ledger); the budget and the period close stay school-wide.
+    ledger = reader.can("finance.report.view")
+    school_ledger = ledger and reader.whole_tenant
+    source = ledger_balances(entity, reader.scope)
     invoices = reader.can("finance.invoice.view")
     payments = reader.can("finance.payment.view")
     scope = reader.scope
@@ -573,7 +598,7 @@ def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK) -> dict:
     if invoices or ledger:
         aging = _ar_aging_block(entity, as_of, scope)
     if ledger:
-        kpis["cash_position"] = _kpi(_closing_series(_cash_account_ids(entity), periods, NormalBalance.DEBIT))
+        kpis["cash_position"] = _kpi(_closing_series(_cash_account_ids(entity), periods, NormalBalance.DEBIT, source))
         kpis["receivables"] = _kpi(_closing_series(
             set(  # Customer AR account ids.
                 Customer.objects.filter(entity=entity)
@@ -582,9 +607,10 @@ def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK) -> dict:
             ),
             periods,
             NormalBalance.DEBIT,  # AR is debit-natural.
+            source,
         ))
-        kpis["payables"] = _kpi(_closing_series(_payable_account_ids(entity), periods, NormalBalance.CREDIT))
-        kpis["net_income_ytd"] = _kpi(_net_income_series(entity, periods))
+        kpis["payables"] = _kpi(_closing_series(_payable_account_ids(entity), periods, NormalBalance.CREDIT, source))
+        kpis["net_income_ytd"] = _kpi(_net_income_series(entity, periods, source))
     elif invoices:
         # The reader's own open invoices: no GL history to draw a sparkline from.
         kpis["receivables"] = {"value": aging["total"], "delta_pct": None, "spark": []}
@@ -599,7 +625,7 @@ def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK) -> dict:
         "fiscal_runway": _fiscal_runway(entity),  # Fiscal-calendar expiry warning.
         "kpis": kpis,  # Executive KPI cards.
         "revenue_vs_budget": (
-            _revenue_vs_budget(entity, getattr(current, "fiscal_year", None)) if ledger else None
+            _revenue_vs_budget(entity, getattr(current, "fiscal_year", None)) if school_ledger else None
         ),
         "ar_aging": aging,  # AR aging block.
         "trend": (
