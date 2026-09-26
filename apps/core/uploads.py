@@ -70,6 +70,10 @@ _CONTENT_TYPES = {
 #: extension nobody has thought about fails ``_magic_ok`` rather than sailing through.
 _UNVERIFIABLE = frozenset({"csv"})
 
+#: Other names for a JPEG. Windows and some browsers save photos as ``.jfif``; the
+#: bytes are an ordinary JPEG, so the useful answer is the rename, not "wrong type".
+_JPEG_ALIASES = frozenset({"jfif", "jpe", "pjpeg", "pjp"})
+
 
 def _magic_ok(suffix: str, head: bytes) -> bool:
     """Does the leading byte signature match the claimed extension?"""
@@ -123,6 +127,11 @@ def validate_upload(
         if ch.isprintable() and ch not in {'"', "\\"}
     )
     suffix = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if suffix not in allowed and suffix in _JPEG_ALIASES and "jpg" in allowed:
+        raise ValidationError(
+            {field: f"This is a JPG saved with a .{suffix} name. "
+                    "Rename it to end in .jpg, then upload it."}
+        )
     if suffix not in allowed:
         readable = ", ".join(sorted(ext.upper() for ext in allowed))
         raise ValidationError({field: type_message or f"Upload one of: {readable}."})
@@ -141,6 +150,9 @@ def validate_upload(
     head = upload.read(16)
     upload.seek(0)
     if not _magic_ok(suffix, head):
-        raise ValidationError({field: "The file content does not match its extension."})
+        raise ValidationError({
+            field: f"This file is not really a {suffix.upper()}. Open it and save it "
+                   f"again as {suffix.upper()}, then upload the new copy."
+        })
 
     return name[:255], _CONTENT_TYPES[suffix]

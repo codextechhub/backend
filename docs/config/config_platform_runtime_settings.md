@@ -332,7 +332,7 @@ PATCH /v1/config/security-settings/?tenant=alpha-nt
 
 ```json
 { "success": false,
-  "message": "An error occurred. Check the error details for more information.",
+  "message": "Must be 3 or lower to meet the parent security baseline.",
   "error": { "code": "REQUEST_ERROR",
              "detail": { "failed_login_threshold":
                          ["Must be 3 or lower to meet the parent security baseline."] } } }

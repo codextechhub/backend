@@ -49,7 +49,7 @@ None.
 | 4a | `IntegrityError`, unique violation | 400 | `DUPLICATE` | "A record with these details already exists." |
 | 4b | `IntegrityError`, anything else | 500 | `SERVER_ERROR` | Logged with `logger.exception` |
 | 5 | Anything with `error_code` **and** `message` attributes | `http_status` or 422 | the exception's own | The duck-typed domain-exception protocol |
-| 6 | Any other DRF exception (`response is not None`) | DRF's own | `REQUEST_ERROR` | `detail` is DRF's body verbatim |
+| 6 | Any other DRF exception (`response is not None`) | DRF's own | `REQUEST_ERROR` | `detail` is DRF's body verbatim; message is built from it |
 | 7 | Everything else | 500 | `SERVER_ERROR` | Logged with `logger.exception` |
 
 Branch 3's position is load-bearing and the code says so: `ProtectedError` and
@@ -87,11 +87,20 @@ None. One call per failed request.
 - **`_validation_error_message`** (`core/exceptions.py:82-88`) renders one
   sentence: `"email: Enter a valid email address.; __all__: …"`, with the
   `__all__` prefix suppressed.
-- **DRF's bare-list body is handled explicitly** (`core/exceptions.py:177-181`):
-  `ValidationError("some text")` renders as `["some text"]`, and reading `.get()`
-  off it used to turn a 400 into a 500. A single-element list of one string is
-  now unwrapped into the message; a longer list falls back to the generic
-  sentence with the list preserved in `detail`.
+- **`_request_error_message`** builds branch 6's message from DRF's body,
+  walked by `_error_leaves` whatever its shape: a dict, a bare list (what
+  `ValidationError("some text")` renders as), or a list of row dicts from a
+  `many=True` serializer. A body with its own `detail` keeps that as the
+  headline, so a sibling machine `code` never becomes copy. Otherwise one
+  message is shown on its own:
+  `{"logo": ["This file is not really a PNG. ..."]}` answers with that
+  sentence. Several are each prefixed with a dotted field path
+  (`"email: ...; lines.1.amount: ..."`), with `detail`, `non_field_errors` and
+  `__all__` left unprefixed, and anything past five is summarised as
+  `"and N more"`. The generic "An error occurred. Check the error details for
+  more information." is left only for a body with no message in it. Clients
+  show `message` and few read `detail`, so a field error kept out of the
+  headline reaches nobody.
 
 ## 6. What it writes
 
@@ -233,9 +242,11 @@ but the handler does not check.
 
 - `CustomExceptionHandlerTests` (`test_exceptions.py:16-53`) - a string
   `ValidationError` returns 400 with its own message; a dict error uses the
-  `detail` key; field errors fall back to the generic message and keep the
-  detail; a multi-item list falls back; a standard `APIException` keeps its
-  detail.
+  `detail` key; an explicit `detail` wins over its sibling keys; a single field error becomes the message and keeps the
+  detail; several field errors are each named; `non_field_errors` is not
+  prefixed; a nested row error carries its dotted path; a long list is
+  summarised; a multi-item list is joined; a body with no message falls back
+  to the generic sentence; a standard `APIException` keeps its detail.
 - `DjangoValidationErrorEnvelopeTests` (`55-109`) - a field error names its
   field in the message and keeps it in the detail; several fields are all named;
   and a message with no field is not given a fake one.

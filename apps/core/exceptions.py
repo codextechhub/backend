@@ -88,6 +88,74 @@ def _validation_error_message(detail: dict) -> str:
     return '; '.join(parts) or 'Validation failed.'
 
 
+#: Keys whose messages speak for the whole request, so no field name is shown.
+_UNNAMED_KEYS = frozenset({'detail', 'non_field_errors', NON_FIELD_ERRORS})
+
+#: Sentences shown in ``message`` before the rest are summarised as a count.
+_MAX_MESSAGE_PARTS = 5
+
+_REQUEST_ERROR_FALLBACK = (
+    "An error occurred. Check the error details for more information."
+)
+
+
+def _error_leaves(data, path=''):
+    """Yield ``(path, sentence)`` for every message in a DRF error body.
+
+    DRF nests errors the way the serializer nests fields: a dict per
+    serializer, a list per field, and a list of dicts for a ``many=True``
+    child. The path is dotted (``lines.1.amount``) so a nested failure still
+    says where it is; the unnamed keys add nothing to it.
+    """
+    if isinstance(data, dict):
+        for key, value in data.items():
+            key = str(key)
+            if key in _UNNAMED_KEYS:
+                child = path
+            else:
+                child = f'{path}.{key}' if path else key
+            yield from _error_leaves(value, child)
+    elif isinstance(data, (list, tuple)):
+        for index, item in enumerate(data):
+            if isinstance(item, (dict, list, tuple)):
+                yield from _error_leaves(item, f'{path}.{index}' if path else str(index))
+            else:
+                yield from _error_leaves(item, path)
+    elif data is not None and str(data).strip():
+        yield path, str(data)
+
+
+def _request_error_message(data) -> str:
+    """The sentence for ``message`` on a DRF error, built from its own detail.
+
+    Every client shows ``message`` and few read ``error.detail``, so a
+    serializer's field error has to reach the headline or it reaches nobody:
+    a school uploading a mislabelled logo would otherwise read "An error
+    occurred" and never learn the file is not the PNG its name claims.
+
+    A body that carries its own ``detail`` keeps it as the headline, as a
+    ``NotFound`` or ``ValidationError({"detail": ..., "code": ...})`` always
+    has. Otherwise a single message is shown on its own, since the screen
+    that raised it already knows which field it is about. Several are each
+    prefixed with their field, so the reader can tell them apart. The generic
+    sentence is left only for a body with no message in it at all.
+    """
+    if isinstance(data, dict) and 'detail' in data:
+        # The raiser chose this headline; sibling keys (a machine ``code``) are not copy.
+        data = data['detail']
+    leaves = list(_error_leaves(data))
+    if not leaves:
+        return _REQUEST_ERROR_FALLBACK
+    if len(leaves) == 1:
+        return leaves[0][1]
+    parts = [f'{path}: {text}' if path else text for path, text in leaves]
+    shown = parts[:_MAX_MESSAGE_PARTS]
+    hidden = len(parts) - len(shown)
+    if hidden:
+        shown.append(f'and {hidden} more')
+    return '; '.join(shown)
+
+
 def custom_exception_handler(exc, context):
 
     # Let DRF handle it first
@@ -164,19 +232,10 @@ def custom_exception_handler(exc, context):
 
     # Handle all other DRF exceptions
     if response is not None:
-        fallback = "An error occurred. Check the error details for more information."
         data = response.data
-        if isinstance(data, dict):
-            message = data.get("detail", fallback)
-        elif isinstance(data, list) and len(data) == 1 and isinstance(data[0], str):
-            # DRF renders ValidationError("some text") as a bare list, not a
-            # dict, and calling .get() on that turns a 400 into a 500.
-            message = data[0]
-        else:
-            message = fallback
         return Response({
             "success": False,
-            "message": message,
+            "message": _request_error_message(data),
             "error": {
                 "code": "REQUEST_ERROR",
                 "detail": data,

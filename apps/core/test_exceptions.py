@@ -30,19 +30,85 @@ class CustomExceptionHandlerTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.data["message"], "No changes detected.")
 
-    def test_field_errors_fall_back_to_the_generic_message_and_keep_detail(self):
-        response = self._handle(ValidationError({"to_state": ["Invalid choice."]}))
+    def test_an_explicit_detail_wins_over_its_sibling_keys(self):
+        response = self._handle(ValidationError({
+            "detail": "This export is too large to run now.",
+            "code": "EXPORT_TOO_LARGE",
+        }))
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("Check the error details", response.data["message"])
         self.assertEqual(
-            response.data["error"]["detail"], {"to_state": ["Invalid choice."]}
+            response.data["message"], "This export is too large to run now."
         )
 
-    def test_multi_item_list_error_falls_back_to_the_generic_message(self):
+    def test_a_single_field_error_is_the_message_and_stays_in_detail(self):
+        response = self._handle(
+            ValidationError({"logo": "This file is not really a PNG."})
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data["message"],
+            "This file is not really a PNG.",
+        )
+        self.assertEqual(
+            response.data["error"]["detail"],
+            {"logo": "This file is not really a PNG."},
+        )
+
+    def test_several_field_errors_each_name_their_field(self):
+        response = self._handle(ValidationError({
+            "email": ["That address already has an account."],
+            "role": ["Pick a role."],
+        }))
+
+        self.assertEqual(
+            response.data["message"],
+            "email: That address already has an account.; role: Pick a role.",
+        )
+
+    def test_non_field_errors_are_not_prefixed(self):
+        response = self._handle(ValidationError({
+            "non_field_errors": ["The end date is before the start date."],
+            "name": ["This field is required."],
+        }))
+
+        self.assertEqual(
+            response.data["message"],
+            "The end date is before the start date.; name: This field is required.",
+        )
+
+    def test_a_nested_row_error_carries_its_path(self):
+        response = self._handle(ValidationError({
+            "lines": [{}, {"amount": ["Must be greater than zero."]}],
+        }))
+
+        self.assertEqual(response.data["message"], "Must be greater than zero.")
+
+        response = self._handle(ValidationError({
+            "lines": [{"amount": ["Required."]}, {"amount": ["Required."]}],
+        }))
+
+        self.assertEqual(
+            response.data["message"],
+            "lines.0.amount: Required.; lines.1.amount: Required.",
+        )
+
+    def test_a_long_list_of_errors_is_summarised(self):
+        response = self._handle(ValidationError({f"f{n}": ["Bad."] for n in range(8)}))
+
+        self.assertTrue(response.data["message"].endswith("; and 3 more"))
+
+    def test_multi_item_list_error_joins_its_messages(self):
         response = self._handle(ValidationError(["First problem.", "Second problem."]))
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data["message"], "First problem.; Second problem."
+        )
+
+    def test_an_error_with_no_message_falls_back_to_the_generic_one(self):
+        response = self._handle(ValidationError({}))
+
         self.assertIn("Check the error details", response.data["message"])
 
     def test_standard_api_exception_keeps_its_detail(self):

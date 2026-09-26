@@ -280,6 +280,35 @@ class SchoolLogoEndpointTests(SchoolProfileEndpointTests):
         self.school.refresh_from_db()
         self.assertFalse(getattr(self.school, "branding", None) and self.school.branding.logo)
 
+    def test_a_mislabelled_image_says_why_in_the_message(self):
+        """The screen shows ``message``, so the reason has to be in it.
+
+        A JPEG saved from the web as ``crest.png`` passes the browser's type
+        check on its name alone. The refusal has to tell the admin the file is
+        not the PNG it claims, not "An error occurred".
+        """
+        response = self._upload(
+            self.admin, content=b"\xff\xd8\xff\xe0" + b"\x00" * 12, name="crest.png",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(
+            response.data["message"],
+            "This file is not really a PNG. Open it and save it again as PNG, "
+            "then upload the new copy.",
+        )
+
+    def test_a_jfif_is_told_to_rename_rather_than_refused_as_the_wrong_type(self):
+        """A ``.jfif`` is a JPEG under another name, so the fix is the rename."""
+        response = self._upload(
+            self.admin, content=b"\xff\xd8\xff\xe0" + b"\x00" * 12, name="crest.jfif",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(
+            response.data["message"],
+            "This is a JPG saved with a .jfif name. Rename it to end in .jpg, "
+            "then upload it.",
+        )
+
     def test_a_pdf_is_refused_even_though_documents_allow_one(self):
         """A logo is rendered inline. There is no such thing as a PDF logo."""
         response = self._upload(self.admin, content=b"%PDF-1.4 x", name="logo.pdf")

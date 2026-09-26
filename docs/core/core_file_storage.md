@@ -92,9 +92,10 @@ attachment - and get back `(safe_name, content_type)`.
 | Check | Failure |
 |---|---|
 | `upload is None` | "A file is required." |
+| Extension is a JPEG alias (`jfif`, `jpe`, `pjpeg`, `pjp`) and `jpg` is allowed | "This is a JPG saved with a .jfif name. Rename it to end in .jpg, then upload it." |
 | Extension in `allowed` | "Upload one of: …" (or the caller's `type_message`) |
 | `size` present, > 0, ≤ `max_bytes` | three distinct messages |
-| First 16 bytes match the extension | "The file content does not match its extension." |
+| First 16 bytes match the extension | "This file is not really a PDF. Open it and save it again as PDF, then upload the new copy." (named for the claimed extension) |
 
 Two policies ship with it: `DOCUMENT_EXTENSIONS` (pdf, png, jpg, jpeg, webp) at
 5 MB, and `TICKET_EXTENSIONS` (those plus gif, csv, xlsx, xls) at 10 MB
@@ -262,7 +263,7 @@ And the two refusals:
 
 ```text
 POST … (payroll.xlsx renamed to receipt.pdf)
-  → 400 {"file": ["The file content does not match its extension."]}
+  → 400 {"file": ["This file is not really a PDF. Open it and save it again as PDF, then upload the new copy."]}
 
 POST … (a 40 MB scan)
   → 400 {"file": ["Each file must be 5MB or smaller."]}
