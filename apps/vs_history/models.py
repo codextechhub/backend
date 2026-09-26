@@ -71,3 +71,25 @@ class RecordVersion(models.Model):
     def __str__(self) -> str:
         state = "deleted" if self.is_deleted else "version"
         return f"{self.record_type}:{self.record_id} {state} @ {self.recorded_at:%Y-%m-%d %H:%M}"
+
+
+class TrackingStart(models.Model):
+    """When history began for one tracked model, as a whole.
+
+    A single record's history starts at its own first version, but a list has
+    no single record to ask. A person's field exceptions on 3 March are the
+    rows that existed that day, and an empty answer is only true once tracking
+    had reached the model: before that, an exception lifted on 2 March leaves
+    no version at all. So a list read as at a day checks this start as well as
+    its owner's, and refuses a day before it.
+
+    Written by ``baseline_record_history`` the first time it meets a model:
+    the model's earliest version when it has any, otherwise the moment the
+    command ran.
+    """
+
+    record_type = models.CharField(max_length=64, unique=True)
+    started_at = models.DateTimeField()
+
+    def __str__(self) -> str:
+        return f"{self.record_type} tracked since {self.started_at:%Y-%m-%d %H:%M}"

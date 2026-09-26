@@ -27,9 +27,10 @@ from dataclasses import dataclass, field
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from vs_audit.models import AuditActionType
 from vs_rbac.field_registry import all_declarations, validate_declaration
 
-SYNCED_ACTION = "FIELD_REGISTRY_SYNCED"
+SYNCED_ACTION = AuditActionType.FIELD_REGISTRY_SYNCED
 
 #: The stored columns compared against a declaration.
 _COMPARED = (

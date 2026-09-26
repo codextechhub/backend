@@ -565,3 +565,55 @@ class PlatformUserPermissionOverrideTests(TestCase):
         row = UserPermissionOverride.objects.get()
         self.assertEqual(row.tenant_id, school.tenant.pk)
         self.assertEqual(row.user_id, school_user.pk)
+
+
+class PermissionOverridesAsAtTests(TestCase):
+    """Riverbank's admin asks which permission exceptions a teacher held last week.
+
+    The account's history starts twenty days ago; an exception created twelve
+    days ago and deleted five days ago is listed on the day between, gone
+    after, and a day before the account's history is refused.
+    """
+
+    def setUp(self):
+        UserPermissionOverrideTests.setUp(self)
+        import datetime as dt
+
+        from vs_history.as_at import RECORD_DAY_TIMEZONE, record_today
+        from vs_history.models import RecordVersion
+
+        today = record_today()
+
+        def moment(days_ago):
+            day = today - dt.timedelta(days=days_ago)
+            return dt.datetime(day.year, day.month, day.day, 12, tzinfo=RECORD_DAY_TIMEZONE)
+
+        self.day = lambda days_ago: (today - dt.timedelta(days=days_ago)).isoformat()
+        RecordVersion.objects.filter(
+            record_type="vs_user.user", record_id=str(self.target.pk),
+        ).update(recorded_at=moment(20))
+        with mock.patch("vs_history.recorder.timezone.now", return_value=moment(12)):
+            self.row = _override(self.target, "school.students.export", "ALLOW")
+        with mock.patch("vs_history.recorder.timezone.now", return_value=moment(5)):
+            self.row.delete()
+
+    def _past(self, days_ago):
+        return _client(self.actor).get(_q(self.list_url, self.slug, as_at=self.day(days_ago)))
+
+    def test_listed_on_a_day_it_was_in_force_without_a_role_comparison(self):
+        response = self._past(8)
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        rows = response.json()["data"]
+        self.assertEqual([row["permission_key"] for row in rows], ["school.students.export"])
+        self.assertIsNone(rows[0]["granted_by_role"])
+        self.assertFalse(rows[0]["is_expired"])
+
+    def test_gone_after_it_was_deleted(self):
+        response = self._past(3)
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        self.assertEqual(response.json()["data"], [])
+
+    def test_a_day_before_the_account_history_is_refused(self):
+        response = self._past(25)
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT, response.content)
+        self.assertEqual(response.json()["error"]["code"], "HISTORY_NOT_KEPT")

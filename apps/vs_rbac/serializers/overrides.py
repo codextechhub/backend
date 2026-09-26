@@ -94,14 +94,21 @@ class UserPermissionOverrideSerializer(serializers.ModelSerializer):
         )
 
     def get_is_expired(self, obj) -> bool:
-        return obj.is_expired
+        as_at = self.context.get("as_at")
+        if as_at is None:
+            return obj.is_expired
+        return obj.expires_at is not None and obj.expires_at <= as_at.moment
 
-    def get_granted_by_role(self, obj) -> bool:
+    def get_granted_by_role(self, obj) -> bool | None:
         """Does any of the target's active roles currently grant this key?
 
         The view computes the target's role-only permission set once and puts
-        it in the serializer context, so this stays free per row.
+        it in the serializer context, so this stays free per row. On a list
+        read as at an earlier day (``as_at`` in context) it is null: a role's
+        permissions keep no history to answer from.
         """
+        if self.context.get("as_at") is not None:
+            return None
         role_keys = self.context.get("role_permission_keys")
         if role_keys is None:
             return False

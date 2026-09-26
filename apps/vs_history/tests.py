@@ -33,7 +33,7 @@ from vs_history.as_at import (
 )
 from vs_history.models import RecordVersion
 from vs_history.queryset import assert_managers_versioned
-from vs_history.registry import spec_for
+from vs_history.registry import all_specs, spec_for
 from vs_rbac.tests.helpers import make_branch, make_school, make_school_admin
 from vs_tenants.context import clear_current_tenant, set_current_audit_identity
 
@@ -261,6 +261,26 @@ class BaselineCommandTests(HistoryFixture):
             call_command("baseline_record_history", stdout=StringIO())
         with self.assertRaises(HistoryNotKept):
             require_history(spec_for(Guardian), guardian.pk, AsAt(dt.date(2026, 9, 25)), noun="x")
+
+    def test_the_first_run_stamps_when_tracking_reached_each_model(self):
+        """A model with versions keeps its earliest; one without any starts at the run."""
+        from vs_history.as_at import tracking_starts
+        from vs_history.models import TrackingStart
+
+        with mock.patch("vs_history.recorder.timezone.now", return_value=_at(2026, 3, 2)):
+            self.make_guardian()
+        TrackingStart.objects.all().delete()
+        with mock.patch("vs_history.management.commands.baseline_record_history.timezone.now",
+                        return_value=_at(2026, 9, 26)):
+            call_command("baseline_record_history", stdout=StringIO())
+        self.assertEqual(tracking_starts(spec_for(Guardian)), dt.date(2026, 3, 2))
+        empty = next(
+            spec for spec in all_specs()
+            if not RecordVersion.objects.filter(record_type=spec.record_type).exists()
+        )
+        self.assertEqual(tracking_starts(empty), dt.date(2026, 9, 26))
+        call_command("baseline_record_history", stdout=StringIO())
+        self.assertEqual(tracking_starts(spec_for(Guardian)), dt.date(2026, 3, 2))
 
 
 class UserHistoryTests(HistoryFixture):

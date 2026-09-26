@@ -10,6 +10,7 @@ from rest_framework.views import APIView
 from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, DestroyModelMixin
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
+from vs_audit.models import AuditActionType
 from .models import (
     FieldDefinition,
     Permission,
@@ -395,7 +396,7 @@ class PermissionGroupListCreateView(
         from .audit import record_rbac_audit
 
         record_rbac_audit(
-            action_type="permission_group.create",
+            action_type=AuditActionType.CREATE,
             entity_type="permission_group",
             entity_id=str(group.pk),
             entity_label=group.name,
@@ -450,7 +451,7 @@ class PermissionGroupDetailView(
         from .audit import record_rbac_audit
 
         record_rbac_audit(
-            action_type="permission_group.update",
+            action_type=AuditActionType.UPDATE,
             entity_type="permission_group",
             entity_id=str(updated.pk),
             entity_label=updated.name,
@@ -472,7 +473,7 @@ class PermissionGroupDetailView(
         from .audit import record_rbac_audit
 
         record_rbac_audit(
-            action_type="permission_group.delete",
+            action_type=AuditActionType.DELETE,
             entity_type="permission_group",
             entity_id=str(instance.pk),
             entity_label=instance.name,
@@ -1570,6 +1571,72 @@ class _UserPermissionOverrideBase(TenantScopedRBACMixin):
     platform_cross_tenant_param = True
     self_refusal_message = "You cannot create or lift permission overrides on yourself."
 
+    #: The relation a row names, its model and the column it points at, used
+    #: to reattach it to rows rebuilt for an earlier day.
+    history_related = ("permission", Permission, "pk")
+    history_noun = "this person's permission exceptions"
+
+    def list(self, request, *args, **kwargs):
+        """The live list, or with ``?as_at=`` the list as it stood that day."""
+        from vs_history.as_at import parse_as_at
+
+        as_at = parse_as_at(request)
+        if as_at is None:
+            return super().list(request, *args, **kwargs)
+        rows, starts = self._rows_at(as_at)
+        page = self.paginate_queryset(rows)
+        context = {**super().get_serializer_context(), "as_at": as_at, "tenant": self.tenant}
+        serializer = self.get_serializer(
+            page if page is not None else rows, many=True, context=context,
+        )
+        if page is None:
+            return success_response(data=serializer.data)
+        response = self.get_paginated_response(serializer.data)
+        response.data["as_at"] = as_at.date.isoformat()
+        response.data["history_starts"] = starts.isoformat()
+        return response
+
+    def _rows_at(self, as_at):
+        """The target's exceptions in this tenant as they stood, newest first.
+
+        Refused with ``HISTORY_NOT_KEPT`` before the target's account history,
+        or before exceptions of this kind were first recorded.
+        """
+        from vs_history.as_at import instances_at, require_history, require_list_history
+        from vs_history.registry import spec_for
+        from vs_user.models import User
+
+        from .history import USER
+
+        target = getattr(self, "_target", None) or self.get_target_user()
+        self._target = target
+        model = self.get_serializer_class().Meta.model
+        spec = spec_for(model)
+        owner_starts = require_history(
+            spec_for(User), target.pk, as_at, noun="this person's account",
+        )
+        starts = require_list_history(spec, owner_starts, as_at, noun=self.history_noun)
+        rows = [
+            row for row in instances_at(spec, USER, target.pk, as_at)
+            if row._history_version.tenant_id == self.tenant.pk
+        ]
+        for param in ("mode", "access"):
+            value = self.request.query_params.get(param)
+            if value and hasattr(model, param):
+                rows = [row for row in rows if getattr(row, param) == value.upper()]
+        relation, related_model, column = self.history_related
+        attname = model._meta.get_field(relation).attname
+        related = related_model.objects.in_bulk(
+            {getattr(row, attname) for row in rows}, field_name=column,
+        )
+        rows = [row for row in rows if getattr(row, attname) in related]
+        creators = User.objects.in_bulk({row.created_by_id for row in rows if row.created_by_id})
+        for row in rows:
+            row._state.fields_cache[relation] = related[getattr(row, attname)]
+            row._state.fields_cache["created_by"] = creators.get(row.created_by_id)
+        rows.sort(key=lambda row: row.created_at, reverse=True)
+        return rows, starts
+
     def _actor(self):
         return getattr(self.request, "actor_user", None) or self.request.user
 
@@ -1641,7 +1708,10 @@ class UserPermissionOverrideListCreateView(
     """
     Tenant-facing:
     - GET: list the permission exceptions on one user (viewer needs the
-      ``.view`` key, including for their own id).
+      ``.view`` key, including for their own id). ``?as_at=YYYY-MM-DD`` lists
+      them as they stood at the end of that day; ``granted_by_role`` is then
+      null, since a role's permissions keep no history. A day before the
+      history starts is refused with 409 ``HISTORY_NOT_KEPT``.
     - POST: create an exception. Both modes apply immediately; a new override
       for a key the user already has REPLACES the old row (both audited).
 
@@ -2060,7 +2130,7 @@ class RoleFieldAccessView(TenantScopedRBACMixin, APIView):
                         continue
                     to_delete.append(row)
                     rows.pop(field.key)
-                    audits.append(("FIELD_ACCESS_RESET", None, field, row.pk, before, dict(default)))
+                    audits.append((AuditActionType.FIELD_ACCESS_RESET, None, field, row.pk, before, dict(default)))
                     continue
 
                 read = change.get("read", before["read"])
@@ -2083,7 +2153,7 @@ class RoleFieldAccessView(TenantScopedRBACMixin, APIView):
                 row.set_by, row.set_at = actor, now
                 for switch in ("read", "write"):
                     if before[switch] != after[switch]:
-                        audits.append(("FIELD_ACCESS_CHANGED", switch, field, row, before, after))
+                        audits.append((AuditActionType.FIELD_ACCESS_CHANGED, switch, field, row, before, after))
 
             if to_delete:
                 RoleFieldAccess.objects.filter(pk__in=[row.pk for row in to_delete]).delete()
@@ -2176,6 +2246,8 @@ class _UserFieldAccessOverrideBase(_UserPermissionOverrideBase):
     """
 
     self_refusal_message = "You cannot create or lift field access exceptions on yourself."
+    history_related = ("field", FieldDefinition, "key")
+    history_noun = "this person's field exceptions"
 
     def _effective_state(self, target, field_key) -> dict:
         """The target's current Read and Write on *field_key*, freshly evaluated."""
@@ -2238,6 +2310,12 @@ class UserFieldAccessOverrideListCreateView(
       and access REPLACES the old row, and both halves are audited. A field
       the tenant may not hold reads as a field that does not exist, and
       ``ALLOW WRITE`` on a field that is not writable is refused.
+
+    ``GET ?as_at=YYYY-MM-DD`` lists the exceptions as they stood at the end of
+    that day, in the same shape. ``is_expired`` is judged at that moment, and
+    ``role_state`` is null, because role switches keep no history to compare
+    against. A day before the person's account history, or before exceptions
+    were first recorded, is refused with 409 ``HISTORY_NOT_KEPT``.
 
     docstring-name: User field access exceptions
     """
@@ -2307,7 +2385,7 @@ class UserFieldAccessOverrideListCreateView(
                 existing.delete()
                 lifted = self._effective_state(target, field.key)
                 self._audit_exception(
-                    action_type="FIELD_OVERRIDE_LIFTED",
+                    action_type=AuditActionType.FIELD_OVERRIDE_LIFTED,
                     override=existing,
                     entity_id=existing_pk,
                     target=target,
@@ -2326,7 +2404,7 @@ class UserFieldAccessOverrideListCreateView(
                 tenant=self.tenant, user=target, created_by=self._actor(),
             )
             self._audit_exception(
-                action_type="FIELD_OVERRIDE_CREATED",
+                action_type=AuditActionType.FIELD_OVERRIDE_CREATED,
                 override=override,
                 entity_id=override.pk,
                 target=target,
@@ -2385,7 +2463,7 @@ class UserFieldAccessOverrideDetailView(_UserFieldAccessOverrideBase, APIView):
             override_pk = override.pk
             override.delete()
             self._audit_exception(
-                action_type="FIELD_OVERRIDE_LIFTED",
+                action_type=AuditActionType.FIELD_OVERRIDE_LIFTED,
                 override=override,
                 entity_id=override_pk,
                 target=target,

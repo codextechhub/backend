@@ -20,10 +20,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field as dc_field
 
 from .constants import Relationship
-from .imports import RowIssue, _as_date, _digits, _text
+from .imports import (
+    RowIssue,
+    _as_date,
+    _digits,
+    _text,
+    guardian_name_of,
+    read_guardian_name,
+)
 
 #: The template's columns, in the order a school reads them.
 COLUMNS = (
+    "guardian_first_name",
+    "guardian_middle_name",
+    "guardian_last_name",
     "guardian_full_name",
     "guardian_phone",
     "guardian_email",
@@ -38,6 +48,9 @@ COLUMNS = (
 )
 
 MAX_LENGTHS = {
+    "guardian_first_name": 100,
+    "guardian_middle_name": 100,
+    "guardian_last_name": 100,
     "guardian_full_name": 150,
     "guardian_phone": 32,
     "occupation": 100,
@@ -53,6 +66,9 @@ for _code, _label in Relationship.choices:
 
 @dataclass
 class ResolvedLink:
+    guardian_first_name: str = ""
+    guardian_middle_name: str = ""
+    guardian_last_name: str = ""
     guardian_full_name: str = ""
     guardian_phone: str = ""
     guardian_email: str = ""
@@ -75,6 +91,17 @@ class ResolvedLink:
         return not any(i.severity == "error" for i in self.issues)
 
     @property
+    def guardian_name(self) -> str:
+        return guardian_name_of(self)
+
+    @property
+    def name_column(self) -> str:
+        """The column a name-related issue points at: the one the file filled."""
+        if self.guardian_name == self.guardian_full_name:
+            return "guardian_full_name"
+        return "guardian_first_name"
+
+    @property
     def contact_key(self) -> str:
         return self.guardian_email.casefold() or _digits(self.guardian_phone)
 
@@ -85,17 +112,12 @@ def resolve_row(payload: dict, *, tenant):
     from django.core.validators import validate_email
 
     row = ResolvedLink()
-    row.guardian_full_name = _text(payload, "guardian_full_name")
+    read_guardian_name(row, payload, missing="A guardian's name is required on every row.")
     row.guardian_phone = _text(payload, "guardian_phone")
     row.guardian_email = _text(payload, "guardian_email")
     row.occupation = _text(payload, "occupation")
     row.address = _text(payload, "address")
 
-    if not row.guardian_full_name:
-        row.issues.append(RowIssue(
-            "required", "A guardian's name is required on every row.",
-            "guardian_full_name",
-        ))
     if not row.guardian_phone:
         row.issues.append(RowIssue(
             "required",
@@ -281,7 +303,7 @@ def resolve_file(payloads, *, tenant):
                 "duplicate_record",
                 f"Row {earlier} already links this guardian to "
                 f"{row.student.first_name}. A pair can only be linked once.",
-                "guardian_full_name", row.guardian_full_name,
+                row.name_column, row.guardian_name,
             ))
             continue
         pairs[key] = row_number
@@ -292,7 +314,7 @@ def resolve_file(payloads, *, tenant):
                 f"{row.existing_guardian.full_name} is already linked to "
                 f"{row.student.first_name}. This row will be skipped rather "
                 f"than linking them twice.",
-                "guardian_full_name", row.guardian_full_name,
+                row.name_column, row.guardian_name,
                 severity="warning",
             ))
             continue
@@ -316,26 +338,26 @@ def _check_contact_reused(out, row, row_number, contacts):
         return
     earlier = contacts.get(row.contact_key)
     if earlier is not None:
-        if earlier[1] != row.guardian_full_name:
+        if earlier[1] != row.guardian_name:
             out.add(row_number, RowIssue(
                 "duplicate_record",
                 f"Row {earlier[0]} gives the same contact for "
                 f"'{earlier[1]}'. Both children join that one guardian, and "
-                f"'{row.guardian_full_name}' will not be recorded.",
-                "guardian_full_name", row.guardian_full_name,
+                f"'{row.guardian_name}' will not be recorded.",
+                row.name_column, row.guardian_name,
                 severity="warning",
             ))
         return
-    contacts[row.contact_key] = (row_number, row.guardian_full_name)
+    contacts[row.contact_key] = (row_number, row.guardian_name)
 
     held = row.existing_guardian
-    if held is not None and held.full_name != row.guardian_full_name:
+    if held is not None and held.full_name != row.guardian_name:
         out.add(row_number, RowIssue(
             "duplicate_record",
             f"{held.full_name} already uses that contact at this school, so "
             f"this child joins their household and "
-            f"'{row.guardian_full_name}' will not be recorded.",
-            "guardian_full_name", row.guardian_full_name, severity="warning",
+            f"'{row.guardian_name}' will not be recorded.",
+            row.name_column, row.guardian_name, severity="warning",
         ))
 
 
@@ -372,7 +394,7 @@ def _check_primary(out, row, row_number, primaries):
             "business_rule",
             f"{row.student.first_name} already has {current.full_name} as "
             f"primary contact. This row moves it to "
-            f"{row.guardian_full_name}.",
+            f"{row.guardian_name}.",
             "is_primary", "Yes", severity="warning",
         ))
 
@@ -430,6 +452,9 @@ def build_links(resolved, *, tenant, actor):
                 continue
             guardian, made = guardian_service.upsert_guardian(
                 tenant,
+                first_name=row.guardian_first_name,
+                middle_name=row.guardian_middle_name,
+                last_name=row.guardian_last_name,
                 full_name=row.guardian_full_name,
                 phone=row.guardian_phone,
                 email=row.guardian_email,
@@ -533,12 +558,12 @@ def execute_guardians_import(import_batch, queued_by):
                     status_message=(
                         "Already linked."
                         if row.existing_link is not None
-                        else f"{row.guardian_full_name} to "
+                        else f"{row.guardian_name} to "
                              f"{row.student.full_name if row.student else ''}."
                     ),
                     row_payload=raw_rows[row_number - 1],
                     normalized_payload={
-                        "guardian": row.guardian_full_name,
+                        "guardian": row.guardian_name,
                         "student": row.student.full_name if row.student else "",
                         "relationship": row.relationship,
                         "is_primary": row.is_primary,

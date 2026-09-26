@@ -3,7 +3,8 @@
 A grant is revoked rather than deleted, but its reach can be corrected in
 place, and a permission exception is replaced by deleting it and creating
 another. Neither table alone can say what somebody could do on an earlier day,
-so both keep a history, listed on the person's own account.
+so both keep a history, listed on the person's own account. A field access
+exception is replaced the same way and keeps a history for the same reason.
 """
 from vs_history.registry import track
 
@@ -12,7 +13,11 @@ USER = "vs_user.user"
 
 def register():
     """Declare the tracked access models to the history engine."""
-    from .models import TenantUserRoleAssignment, UserPermissionOverride
+    from .models import (
+        TenantUserRoleAssignment,
+        UserFieldAccessOverride,
+        UserPermissionOverride,
+    )
 
-    for model in (TenantUserRoleAssignment, UserPermissionOverride):
+    for model in (TenantUserRoleAssignment, UserPermissionOverride, UserFieldAccessOverride):
         track(model, owners=lambda row: [(USER, row.user_id)])

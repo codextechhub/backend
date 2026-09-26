@@ -70,14 +70,35 @@ class ImportOwnershipTests(_ImportFixture):
             "finance.bankaccount.import",
         )
 
-    def test_the_template_exists_with_all_fifteen_columns(self):
+    def test_the_template_exists_with_all_eighteen_columns(self):
         from vs_import_data.models import ImportTemplate
 
         template = ImportTemplate.objects.get(code="students_v1")
         fields = set(template.columns.values_list("target_field", flat=True))
         self.assertIn("branch", fields)
         self.assertIn("guardian_email", fields)
-        self.assertEqual(len(fields), 15)
+        self.assertEqual(len(fields), 18)
+
+    def test_both_templates_ask_for_the_guardian_name_in_parts(self):
+        """The parts come first and the one-line name is an optional fallback."""
+        from vs_import_data.models import ImportTemplate
+
+        for code in ("students_v1", "guardians_v1"):
+            columns = list(
+                ImportTemplate.objects.get(code=code).columns
+                .order_by("column_order").values_list("target_field", "is_required")
+            )
+            order = [field for field, _ in columns]
+            required = dict(columns)
+            first = order.index("guardian_first_name")
+            self.assertEqual(
+                order[first:first + 4],
+                ["guardian_first_name", "guardian_middle_name",
+                 "guardian_last_name", "guardian_full_name"],
+                code,
+            )
+            self.assertFalse(required["guardian_full_name"], code)
+            self.assertEqual(len(order), len(set(order)), code)
 
 
 class ImportValidationTests(_ImportFixture):
@@ -191,6 +212,44 @@ class ImportExecutionTests(_ImportFixture):
         self.assertEqual(student.branch, self.lekki)
         self.assertEqual(student.enrolments.filter(is_active=True).count(), 1)
         self.assertEqual(student.guardian_links.filter(is_primary=True).count(), 1)
+
+    def test_a_guardian_named_in_parts_arrives_with_no_name_to_check(self):
+        """Bright Star fills the three columns; Mr Nwosu needs no check."""
+        result = self._execute(self.row(**{
+            "Guardian Name": "", "Guardian First Name": "Chukwudi",
+            "Guardian Middle Name": "Obinna", "Guardian Last Name": "Nwosu",
+        }))
+        guardian = result.instance.guardian_links.get().guardian
+        self.assertEqual(
+            (guardian.first_name, guardian.middle_name, guardian.last_name),
+            ("Chukwudi", "Obinna", "Nwosu"),
+        )
+        self.assertEqual(guardian.full_name, "Chukwudi Obinna Nwosu")
+        self.assertFalse(guardian.name_needs_review)
+
+    def test_a_one_line_guardian_name_still_imports_and_is_marked_for_a_check(self):
+        issues = validate_students_import_batch(self.batch([self.row()]))
+        warnings = [i for i in issues if i["severity"] == "warning"]
+        self.assertTrue(any("on one line" in i["message"] for i in warnings), warnings)
+        guardian = self._execute(self.row()).instance.guardian_links.get().guardian
+        self.assertTrue(guardian.name_needs_review)
+        self.assertEqual((guardian.first_name, guardian.last_name), ("Chukwudi", "Nwosu"))
+
+    def test_a_first_name_without_a_last_name_is_refused(self):
+        issues = validate_students_import_batch(self.batch([self.row(**{
+            "Guardian Name": "", "Guardian First Name": "Chukwudi",
+        })]))
+        errors = [i for i in issues if i["severity"] == "error"]
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("last name", errors[0]["message"])
+
+    def test_a_row_naming_no_guardian_at_all_is_refused(self):
+        issues = validate_students_import_batch(
+            self.batch([self.row(**{"Guardian Name": ""})]),
+        )
+        errors = [i for i in issues if i["severity"] == "error"]
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("guardian's name", errors[0]["message"])
 
     def test_three_rows_naming_one_guardian_email_create_one_guardian(self):
         for name in ("Chiamaka", "Somto", "Tobi"):
@@ -740,6 +799,35 @@ class GuardianImportTests(_ImportFixture):
         self.assertIn("could ring", errors[0]["message"])
 
     # ── writing ────────────────────────────────────────────────────────────
+
+    def test_a_guardian_named_in_parts_is_created_with_no_name_to_check(self):
+        from schools.vs_students.guardian_imports import build_links, resolve_file
+
+        resolved = resolve_file(
+            [{
+                "guardian_first_name": "Emeka", "guardian_middle_name": "",
+                "guardian_last_name": "Adeleke", "guardian_full_name": "",
+                "guardian_phone": "08035550102",
+                "guardian_email": "emeka@example.ng",
+                "student_number": "BFS/1",
+                "student_first_name": "", "student_last_name": "",
+                "student_date_of_birth": "",
+                "relationship": "Father", "is_primary": "No",
+                "occupation": "", "address": "",
+            }],
+            tenant=self.tenant,
+        )
+        build_links(resolved, tenant=self.tenant, actor=self.admin)
+        guardian = Guardian.all_objects.get(tenant=self.tenant, email="emeka@example.ng")
+        self.assertEqual((guardian.first_name, guardian.last_name), ("Emeka", "Adeleke"))
+        self.assertFalse(guardian.name_needs_review)
+
+    def test_a_guardian_row_with_only_a_last_name_is_refused(self):
+        errors = self.gerrors([self.grow(**{
+            "Guardian Name": "", "Guardian Last Name": "Adeleke",
+        })])
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("first name", errors[0]["message"])
 
     def test_it_creates_the_guardian_and_the_link(self):
         from schools.vs_students.guardian_imports import build_links, resolve_file

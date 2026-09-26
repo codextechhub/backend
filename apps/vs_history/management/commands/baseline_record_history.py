@@ -8,6 +8,9 @@ that created it. A row that already existed when tracking reached its model has
 none, and this command writes one: a baseline, dated when the command ran,
 which is the day that record's history starts. Nothing earlier is inferred.
 
+It also stamps each tracked model's :class:`~vs_history.models.TrackingStart`
+the first time it meets the model, which is what a list read as at a day checks.
+
 Idempotent: a row that already has any version is left alone, so the deploy
 runs it every time and it does work only for rows it has not seen. ``--check``
 counts those rows and writes nothing, and exits non-zero when there are any.
@@ -18,7 +21,9 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
-from vs_history.models import RecordVersion
+from django.db.models import Min
+
+from vs_history.models import RecordVersion, TrackingStart
 from vs_history.registry import all_specs, snapshot
 
 BATCH = 1000
@@ -36,6 +41,8 @@ class Command(BaseCommand):
     def handle(self, *args, check=False, **options):
         missing_total = 0
         for spec in all_specs():
+            if not check:
+                self._stamp_start(spec)
             seen = set(
                 RecordVersion.objects.filter(record_type=spec.record_type)
                 .values_list("record_id", flat=True).distinct()
@@ -67,3 +74,16 @@ class Command(BaseCommand):
             self.stdout.write(f"{spec.record_type}: baselined {len(missing)}")
         if check and missing_total:
             raise CommandError(f"{missing_total} tracked rows have no history.")
+
+    @staticmethod
+    def _stamp_start(spec):
+        """Record when tracking reached *spec*, once."""
+        if TrackingStart.objects.filter(record_type=spec.record_type).exists():
+            return
+        first = RecordVersion.objects.filter(
+            record_type=spec.record_type,
+        ).aggregate(first=Min("recorded_at"))["first"]
+        TrackingStart.objects.get_or_create(
+            record_type=spec.record_type,
+            defaults={"started_at": first or timezone.now()},
+        )

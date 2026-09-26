@@ -67,3 +67,100 @@ class PlatformStaffProfileAsAtTests(TestCase):
         response = self.read("2026-02-01")
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.data["error"]["detail"]["history_starts"], "2026-03-01")
+
+
+class OrganisationAsAtTests(TestCase):
+    """Ada's team, department and line manager on the day asked about.
+
+    Ada sits in the Analyst seat in Payments, which reports to the Head of
+    Payments seat. Grace holds that seat until 10 March, when Tunde takes it
+    over, and on 15 March the Analyst seat moves to Treasury. A past view has
+    to name the manager and the department of that day, not today's.
+    """
+
+    def setUp(self):
+        from vs_user.models import OrgNode, Position, PositionAssignment
+
+        with recorded_on(3, 1):
+            self.person = make_vision_user(
+                email="ada.org@codex.test", first_name="Ada", last_name="Obi",
+            )
+            self.grace = make_vision_user(
+                email="grace.org@codex.test", first_name="Grace", last_name="Eze",
+            )
+            self.tunde = make_vision_user(
+                email="tunde.org@codex.test", first_name="Tunde", last_name="Bello",
+            )
+            finance = OrgNode.objects.create(
+                name="Finance", code="ASAT-FIN", kind=OrgNode.Kind.DIVISION,
+            )
+            self.payments = OrgNode.objects.create(
+                name="Payments", code="ASAT-PAY", kind=OrgNode.Kind.DEPARTMENT, parent=finance,
+            )
+            self.treasury = OrgNode.objects.create(
+                name="Treasury", code="ASAT-TRE", kind=OrgNode.Kind.DEPARTMENT, parent=finance,
+            )
+            head = Position.objects.create(
+                title="Head of Payments", code="ASAT-HEAD", org_node=self.payments,
+            )
+            self.seat = Position.objects.create(
+                title="Analyst", code="ASAT-AN", org_node=self.payments, reports_to=head,
+            )
+            self.profile = PlatformStaffProfile.objects.create(
+                user=self.person, employee_id="CX-ORG-1", job_title="Analyst",
+                position=self.seat,
+            )
+        PositionAssignment.objects.create(
+            user=self.person, position=self.seat, is_primary=True,
+            start_date=dt.date(2026, 3, 1),
+        )
+        PositionAssignment.objects.create(
+            user=self.grace, position=head, is_primary=True,
+            start_date=dt.date(2026, 3, 1), end_date=dt.date(2026, 3, 10),
+        )
+        PositionAssignment.objects.create(
+            user=self.tunde, position=head, is_primary=True,
+            start_date=dt.date(2026, 3, 10),
+        )
+        with recorded_on(3, 15):
+            self.seat.org_node = self.treasury
+            self.seat.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.person)
+
+    def read(self, day):
+        url = f"/v1/user/platform-staff-profiles/{self.profile.pk}/"
+        response = self.client.get(url, {"as_at": day})
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["data"]
+
+    def test_the_line_manager_is_whoever_held_the_seat_that_day(self):
+        self.assertEqual(self.read("2026-03-05")["current_line_manager"]["first_name"], "Grace")
+        self.assertEqual(self.read("2026-03-10")["current_line_manager"]["first_name"], "Tunde")
+
+    def test_the_department_is_the_one_the_seat_sat_in_that_day(self):
+        before = self.read("2026-03-12")
+        after = self.read("2026-03-15")
+        self.assertEqual(before["department"]["name"], "Payments")
+        self.assertEqual(before["division"]["name"], "Finance")
+        self.assertEqual(before["org_node"]["name"], "Payments")
+        self.assertEqual(after["department"]["name"], "Treasury")
+        self.assertEqual(after["division"]["name"], "Finance")
+
+    def test_before_the_organisation_history_the_unit_and_manager_are_left_empty(self):
+        from vs_history.models import TrackingStart
+
+        TrackingStart.objects.create(record_type="vs_user.orgnode", started_at=_at(3, 4))
+        TrackingStart.objects.create(record_type="vs_user.position", started_at=_at(3, 1))
+        data = self.read("2026-03-02")
+        self.assertEqual(data["position"]["title"], "Analyst")
+        self.assertIsNone(data["department"])
+        self.assertIsNone(data["division"])
+        self.assertIsNone(data["current_line_manager"])
+        self.assertEqual(data["as_at"]["organisation_history_starts"], "2026-03-04")
+
+    def test_the_live_profile_still_reads_todays_organisation(self):
+        url = f"/v1/user/platform-staff-profiles/{self.profile.pk}/"
+        data = self.client.get(url).data["data"]
+        self.assertEqual(data["department"]["name"], "Treasury")
+        self.assertEqual(data["current_line_manager"]["first_name"], "Tunde")

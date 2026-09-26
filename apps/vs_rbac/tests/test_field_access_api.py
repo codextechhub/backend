@@ -485,6 +485,22 @@ class FieldAccessAuditTests(_FieldAccessApi):
         self.assertEqual(len(self._rows("FIELD_OVERRIDE_LIFTED")), 2)
         self.assertFalse(self._rows("FIELD_OVERRIDE_LIFTED")[1].metadata["replaced"])
 
+    def test_every_field_access_event_also_reaches_the_central_trail(self):
+        from vs_audit.models import AuditEvent
+
+        self._patch([{"field": self.phone.key, "write": True}])
+        self._patch([{"field": self.phone.key, "reset": True}])
+        created = self._create_exception()
+        _client(self.admin).delete(
+            _with_tenant(self._exception_url(created.json()["data"]["id"]), self.slug),
+        )
+        central = set(AuditEvent.objects.values_list("action_type", flat=True))
+        self.assertLessEqual(
+            {"FIELD_ACCESS_CHANGED", "FIELD_ACCESS_RESET",
+             "FIELD_OVERRIDE_CREATED", "FIELD_OVERRIDE_LIFTED"},
+            central,
+        )
+
 
 # =============================================================================
 # PATCH rules
@@ -835,3 +851,100 @@ class PendingSchoolExceptionTests(_FieldAccessApi):
                 self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
                 self.assertIn("TENANT_NOT_LIVE", response.content.decode())
         self.assertEqual(UserFieldAccessOverride.objects.count(), 1)
+
+
+# =============================================================================
+# Reading exceptions as at an earlier day
+# =============================================================================
+class FieldExceptionsAsAtTests(_FieldAccessApi):
+    """Bright Star's bursar asks what exceptions Ada held on an earlier day.
+
+    Ada's account history starts twenty days ago. An exception granted twelve
+    days ago and lifted five days ago must appear on the day between, must be
+    gone on the day after, and a day before anything was recorded is refused
+    rather than answered with an empty list.
+    """
+
+    def setUp(self):
+        super().setUp()
+        import datetime as dt
+
+        from vs_history.as_at import RECORD_DAY_TIMEZONE, record_today
+        from vs_history.models import RecordVersion
+
+        today = record_today()
+
+        def moment(days_ago):
+            day = today - dt.timedelta(days=days_ago)
+            return dt.datetime(day.year, day.month, day.day, 12, tzinfo=RECORD_DAY_TIMEZONE)
+
+        self.day = lambda days_ago: (today - dt.timedelta(days=days_ago)).isoformat()
+        RecordVersion.objects.filter(
+            record_type="vs_user.user", record_id=str(self.target.pk),
+        ).update(recorded_at=moment(20))
+        with mock.patch("vs_history.recorder.timezone.now", return_value=moment(12)):
+            created = self._create_exception()
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED, created.content)
+        with mock.patch("vs_history.recorder.timezone.now", return_value=moment(5)):
+            _client(self.admin).delete(
+                _with_tenant(self._exception_url(created.json()["data"]["id"]), self.slug),
+            )
+
+    def _list(self, as_at, user=None):
+        url = _with_tenant(self._exceptions_url(), self.slug)
+        return _client(user or self.admin).get(f"{url}&as_at={as_at}")
+
+    def test_the_exception_is_listed_on_a_day_it_was_in_force(self):
+        response = self._list(self.day(8))
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        body = response.json()
+        self.assertEqual([row["field_key"] for row in body["data"]], [self.bank.key])
+        row = body["data"][0]
+        self.assertEqual((row["access"], row["mode"]), ("READ", "ALLOW"))
+        self.assertEqual(row["field_label"], self.bank.label)
+        self.assertEqual(row["created_by_name"], self.admin.full_name or self.admin.email)
+        self.assertIsNone(row["role_state"])
+        self.assertFalse(row["is_expired"])
+        self.assertEqual(body["as_at"], self.day(8))
+        self.assertEqual(body["history_starts"], self.day(12))
+
+    def test_the_exception_is_gone_after_it_was_lifted(self):
+        response = self._list(self.day(3))
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        self.assertEqual(response.json()["data"], [])
+        self.assertEqual(len(self._list("").json()["data"]), 0)
+
+    def test_a_day_before_exceptions_were_recorded_is_refused(self):
+        response = self._list(self.day(15))
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT, response.content)
+        error = response.json()["error"]
+        self.assertEqual(error["code"], "HISTORY_NOT_KEPT")
+        self.assertEqual(error["detail"]["history_starts"], self.day(12))
+
+    def test_a_stamped_tracking_start_governs_before_any_row_existed(self):
+        import datetime as dt
+
+        from vs_history.models import TrackingStart
+
+        TrackingStart.objects.create(
+            record_type="vs_rbac.userfieldaccessoverride",
+            started_at=dt.datetime.fromisoformat(f"{self.day(18)}T09:00:00+01:00"),
+        )
+        response = self._list(self.day(15))
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        self.assertEqual(response.json()["data"], [])
+        self.assertEqual(response.json()["history_starts"], self.day(18))
+
+    def test_a_past_read_keeps_the_view_key(self):
+        stranger = make_staff_user(self.branch, email="fa-stranger@test.com")
+        response = self._list(self.day(8), user=stranger)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN, response.content)
+
+    def test_another_schools_admin_cannot_read_ada_as_at(self):
+        other = make_school(slug="fa-greenfield-asat", name="Greenfield School")
+        other_admin = make_school_admin(
+            make_branch(other, name="Greenfield Main"), email="fa-gf-admin@test.com",
+        )
+        url = _with_tenant(self._exceptions_url(slug=other.tenant.slug), other.tenant.slug)
+        response = _client(other_admin).get(f"{url}&as_at={self.day(8)}")
+        self.assertIn(response.status_code, {status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND})

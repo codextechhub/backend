@@ -90,7 +90,9 @@ class UserFieldAccessOverrideSerializer(serializers.ModelSerializer):
     that does not exist, and reveals nothing about which it was.
 
     ``role_state`` is what the target's roles alone say about the field, read
-    from a map the view builds once per request.
+    from a map the view builds once per request. On a list read as at an
+    earlier day (``as_at`` in context) it is null, since role switches keep no
+    history, and ``is_expired`` is judged at the end of that day.
     """
 
     field = serializers.PrimaryKeyRelatedField(
@@ -160,11 +162,14 @@ class UserFieldAccessOverrideSerializer(serializers.ModelSerializer):
         )
 
     def get_is_expired(self, obj) -> bool:
-        return obj.is_expired
+        as_at = self.context.get("as_at")
+        if as_at is None:
+            return obj.is_expired
+        return obj.expires_at is not None and obj.expires_at <= as_at.moment
 
     def get_role_state(self, obj) -> dict | None:
         role_map = self.context.get("role_field_state")
-        if role_map is None:
+        if role_map is None or self.context.get("as_at") is not None:
             return None
         return role_map.state(obj.field_id)
 

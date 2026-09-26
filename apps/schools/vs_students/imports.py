@@ -36,6 +36,9 @@ COLUMNS = (
     "admission_date",
     "branch",
     "class",
+    "guardian_first_name",
+    "guardian_middle_name",
+    "guardian_last_name",
     "guardian_full_name",
     "guardian_phone",
     "guardian_email",
@@ -44,9 +47,10 @@ COLUMNS = (
     "previous_school",
 )
 
+#: A guardian's name is required too, but as either the three name columns or
+#: the one-line ``guardian_full_name``; :func:`read_guardian_name` holds that.
 REQUIRED_COLUMNS = frozenset({
-    "first_name", "last_name", "date_of_birth", "gender",
-    "guardian_full_name", "guardian_phone",
+    "first_name", "last_name", "date_of_birth", "gender", "guardian_phone",
 })
 
 _GENDERS: dict[str, str] = {}
@@ -82,6 +86,9 @@ class ResolvedRow:
     previous_school: str = ""
     branch: object | None = None
     school_class: object | None = None
+    guardian_first_name: str = ""
+    guardian_middle_name: str = ""
+    guardian_last_name: str = ""
     guardian_full_name: str = ""
     guardian_phone: str = ""
     guardian_email: str = ""
@@ -94,6 +101,10 @@ class ResolvedRow:
     @property
     def ok(self) -> bool:
         return not any(i.severity == "error" for i in self.issues)
+
+    @property
+    def guardian_name(self) -> str:
+        return guardian_name_of(self)
 
     @property
     def key(self) -> tuple:
@@ -109,6 +120,53 @@ def _text(payload: dict, key: str) -> str:
     return "" if raw is None else str(raw).strip()
 
 
+def guardian_name_of(row) -> str:
+    """The guardian's name as one line: the parts when given, else the one line."""
+    from .names import compose_full_name
+
+    composed = compose_full_name(
+        row.guardian_first_name, row.guardian_middle_name, row.guardian_last_name,
+    )
+    return composed or row.guardian_full_name
+
+
+def read_guardian_name(row, payload, *, missing: str) -> None:
+    """Read a guardian's name from a row, in parts where the file gives them.
+
+    The three name columns are the guardian's name as the school knows it, and
+    a guardian created from them needs no check. The one-line Guardian Name is
+    the fallback for a file that has only that: it still imports, and
+    :meth:`Guardian.save` splits it and flags the split, because no rule can
+    tell which word of "Adaeze Okafor Bello" is the surname. The row says so as
+    a warning, so the school learns why the guardian arrives marked "check
+    name". Once any part is given, first and last are both required. *missing*
+    is the refusal when the row names nobody.
+    """
+    row.guardian_first_name = _text(payload, "guardian_first_name")
+    row.guardian_middle_name = _text(payload, "guardian_middle_name")
+    row.guardian_last_name = _text(payload, "guardian_last_name")
+    row.guardian_full_name = _text(payload, "guardian_full_name")
+    if row.guardian_first_name or row.guardian_middle_name or row.guardian_last_name:
+        for part, which in (("guardian_first_name", "first"), ("guardian_last_name", "last")):
+            if not getattr(row, part):
+                row.issues.append(RowIssue(
+                    "required",
+                    f"Give the guardian's {which} name too, or leave all three "
+                    f"guardian name columns empty and use Guardian Name.",
+                    part,
+                ))
+    elif row.guardian_full_name:
+        row.issues.append(RowIssue(
+            "business_rule",
+            "The guardian's name is on one line, so it will be split into first, "
+            "middle and last name and marked for somebody at the school to check. "
+            "Fill the three guardian name columns to avoid the check.",
+            "guardian_full_name", row.guardian_full_name, severity="warning",
+        ))
+    else:
+        row.issues.append(RowIssue("required", missing, "guardian_first_name"))
+
+
 #: The longest each column may be before the database refuses it.
 #:
 #: Checked HERE rather than left to the write, because a column that overflows
@@ -121,6 +179,9 @@ MAX_LENGTHS = {
     "last_name": 100,
     "student_number": 32,
     "previous_school": 200,
+    "guardian_first_name": 100,
+    "guardian_middle_name": 100,
+    "guardian_last_name": 100,
     "guardian_full_name": 150,
     "guardian_phone": 32,
 }
@@ -280,7 +341,10 @@ def _check_looks_like_a_name(row):
     file whose columns are one to the left, and saying so on row 1 saves the
     school from finding out on row 300.
     """
-    for field in ("first_name", "last_name", "guardian_full_name"):
+    for field in (
+        "first_name", "last_name", "guardian_first_name", "guardian_last_name",
+        "guardian_full_name",
+    ):
         value = getattr(row, field, "") or ""
         if any(c.isdigit() for c in value):
             row.issues.append(RowIssue(
@@ -409,18 +473,13 @@ def _resolve_class(row, payload, *, tenant, session):
 
 
 def _resolve_guardian(row, payload):
-    row.guardian_full_name = _text(payload, "guardian_full_name")
+    read_guardian_name(row, payload, missing="Every student needs a guardian's name.")
     row.guardian_phone = _text(payload, "guardian_phone")
     row.guardian_email = _text(payload, "guardian_email")
     raw_rel = _text(payload, "guardian_relationship")
     row.guardian_relationship = _RELATIONSHIPS.get(
         raw_rel.lower(), Relationship.OTHER,
     )
-    if not row.guardian_full_name:
-        row.issues.append(RowIssue(
-            "required", "Every student needs a guardian's name.",
-            "guardian_full_name",
-        ))
     if not row.guardian_phone:
         row.issues.append(RowIssue(
             "required", "Every guardian needs a phone number the school can reach.",
@@ -513,7 +572,9 @@ def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
         created_by=created_by,
     )
     guardian, _ = guardian_service.upsert_guardian(
-        tenant, full_name=row.guardian_full_name, phone=row.guardian_phone,
+        tenant, first_name=row.guardian_first_name,
+        middle_name=row.guardian_middle_name, last_name=row.guardian_last_name,
+        full_name=row.guardian_full_name, phone=row.guardian_phone,
         email=row.guardian_email, address=row.address,
     )
     guardian_service.link(
@@ -652,24 +713,24 @@ def validate_students_import_batch(import_batch) -> list[dict]:
             if not value:
                 continue
             earlier = contacts_seen.get(value)
-            if earlier is not None and earlier[1] != resolved.guardian_full_name:
+            if earlier is not None and earlier[1] != resolved.guardian_name:
                 record(row_number, RowIssue(
                     "duplicate_record",
                     f"Row {earlier[0]} gives the same contact for "
                     f"'{earlier[1]}'. Both children will be attached to that "
-                    f"one guardian, and '{resolved.guardian_full_name}' will "
+                    f"one guardian, and '{resolved.guardian_name}' will "
                     f"not be recorded.",
                     field, getattr(resolved, field), severity="warning",
                 ))
             elif earlier is None:
-                contacts_seen[value] = (row_number, resolved.guardian_full_name)
+                contacts_seen[value] = (row_number, resolved.guardian_name)
                 held = _guardian_holding(tenant, field, getattr(resolved, field))
-                if held is not None and held.full_name != resolved.guardian_full_name:
+                if held is not None and held.full_name != resolved.guardian_name:
                     record(row_number, RowIssue(
                         "duplicate_record",
                         f"{held.full_name} already uses that contact at this "
                         f"school, so this student joins their household and "
-                        f"'{resolved.guardian_full_name}' will not be recorded.",
+                        f"'{resolved.guardian_name}' will not be recorded.",
                         field, getattr(resolved, field), severity="warning",
                     ))
 

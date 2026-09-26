@@ -207,7 +207,10 @@ def import_students_row(import_batch, payload: dict, queued_by) -> ImportExecuti
         admission_date         optional - YYYY-MM-DD, defaults to today
         branch                 required of a school with more than one branch
         class                  optional - blank enrols the student unplaced
-        guardian_full_name     required
+        guardian_first_name    required with guardian_last_name, unless
+        guardian_middle_name   guardian_full_name alone carries the name
+        guardian_last_name
+        guardian_full_name     fallback: a one-line name, split and flagged
         guardian_phone         required
         guardian_email         optional - matches an existing guardian
         guardian_relationship  optional - defaults to Other

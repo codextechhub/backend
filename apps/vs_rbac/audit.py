@@ -37,8 +37,21 @@ def record_rbac_audit(
     Returns the created :class:`RBACAuditLog`. Raises on failure of the
     durable write (by design - the caller's transaction must roll back with
     it). The central mirror never raises.
+
+    ``action_type`` has to be a member of
+    :class:`~vs_audit.models.AuditActionType`. The durable row would accept
+    any string, but the central trail refuses one it does not know and says
+    nothing, so an unregistered type leaves the platform activity view silently
+    empty. Refusing it here turns that into an error the first test hits.
     """
+    from vs_audit.models import AuditActionType
     from vs_tenants.context import add_proxy_audit_metadata, resolve_audit_identity
+
+    if str(action_type) not in AuditActionType.values:
+        raise ValueError(
+            f"RBAC audit action {action_type!r} is not in AuditActionType; "
+            "register it before emitting it."
+        )
 
     actor_user, effective_user, proxy_session = resolve_audit_identity(actor_user)
     metadata = add_proxy_audit_metadata(metadata, effective_user, proxy_session)

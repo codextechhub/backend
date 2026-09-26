@@ -9,6 +9,12 @@ and the account's status.
 A CX staff member's HR profile is tracked whole. Its payroll bank fields are
 kept like the rest and reach a reader only through the serializer, which
 applies Field Access to a past version exactly as it does to the live one.
+
+The organogram's seats and units are tracked for their shape: which unit a
+seat sits in, which seat it reports to, and each unit's name, tier and parent.
+Who held a seat is already effective-dated on ``PositionAssignment``, so
+together they say which team, department, division and line manager a person
+had on an earlier day.
 """
 from vs_history.registry import track
 
@@ -20,7 +26,9 @@ USER_HISTORY_FIELDS = (
 
 def register():
     """Declare the tracked account-side models to the history engine."""
-    from .models import PlatformStaffProfile, User
+    from .models import OrgNode, PlatformStaffProfile, Position, User
 
     track(User, fields=USER_HISTORY_FIELDS)
     track(PlatformStaffProfile)
+    track(OrgNode, fields=("name", "code", "kind", "parent", "is_active"))
+    track(Position, fields=("title", "code", "org_node", "reports_to", "is_active"))

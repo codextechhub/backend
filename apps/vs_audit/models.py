@@ -128,6 +128,14 @@ class AuditActionType(models.TextChoices):
     # Per-user permission overrides (exceptions layered on role grants).
     OVERRIDE_CREATED = "OVERRIDE_CREATED", "Permission Override Created"
     OVERRIDE_LIFTED = "OVERRIDE_LIFTED", "Permission Override Lifted"
+    # Field Access: a role's Read or Write switch on one field, a switch put
+    # back to its default, a per-person field exception, and the catalogue
+    # sync that adds or retires fields.
+    FIELD_ACCESS_CHANGED = "FIELD_ACCESS_CHANGED", "Field Access Changed"
+    FIELD_ACCESS_RESET = "FIELD_ACCESS_RESET", "Field Access Reset"
+    FIELD_OVERRIDE_CREATED = "FIELD_OVERRIDE_CREATED", "Field Access Exception Created"
+    FIELD_OVERRIDE_LIFTED = "FIELD_OVERRIDE_LIFTED", "Field Access Exception Lifted"
+    FIELD_REGISTRY_SYNCED = "FIELD_REGISTRY_SYNCED", "Field Catalogue Synced"
 
     # Impersonation (dual-identity support sessions)
     IMPERSONATION_STARTED = "IMPERSONATION_STARTED", "Impersonation Started"

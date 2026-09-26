@@ -198,7 +198,8 @@ class AdministratorPermissionGroupTests(TestCase):
         )
         self.assertTrue(
             RBACAuditLog.objects.filter(
-                action_type="permission_group.create",
+                action_type="CREATE",
+                entity_type="permission_group",
                 actor=self.manager,
                 entity_id=str(group.pk),
             ).exists(),
@@ -228,7 +229,8 @@ class AdministratorPermissionGroupTests(TestCase):
         self.assertFalse(PermissionGroup.objects.filter(pk=group.pk).exists())
         self.assertTrue(
             RBACAuditLog.objects.filter(
-                action_type="permission_group.delete",
+                action_type="DELETE",
+                entity_type="permission_group",
                 actor=self.manager,
                 entity_id=str(group.pk),
             ).exists(),

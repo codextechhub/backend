@@ -748,6 +748,11 @@ class SyncFieldRegistryTests(TestCase):
             audit.metadata["created"],
             ["testfields.gadget.owner", "testfields.gadget.serial_number"],
         )
+        from vs_audit.models import AuditEvent
+
+        self.assertTrue(
+            AuditEvent.objects.filter(action_type="FIELD_REGISTRY_SYNCED").exists(),
+        )
 
     def test_a_second_run_writes_nothing_and_audits_nothing(self):
         declarations = [_declaration(_spec())]

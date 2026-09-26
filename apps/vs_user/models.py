@@ -1275,7 +1275,13 @@ class PlatformStaffProfile(TimeStampedModel):
         Derives the user's line manager from their cached primary position's
         reports_to seat. Returns a User (the holder of the manager position),
         or None if there is no position, no parent seat, or it is vacant.
+
+        A profile rebuilt as at an earlier day (``vs_user.as_at``) carries the
+        manager who held that seat that day in ``_line_manager_as_at``, since
+        the seat's holder today says nothing about who held it then.
         """
+        if '_line_manager_as_at' in self.__dict__:
+            return self.__dict__['_line_manager_as_at']
         if not self.position_id or self.position.reports_to_id is None:
             return None
         return self.position.reports_to.current_holder
@@ -1351,6 +1357,9 @@ class OrgNode(TimeStampedModel):
     )
     description = models.TextField(blank=True, default='')
     is_active   = models.BooleanField(default=True)
+
+    #: Declared so its update() keeps the record history; see vs_history.queryset.
+    objects = VersionedManager()
 
     class Meta:
         db_table = 'vs_users_org_node'
@@ -1486,6 +1495,9 @@ class Position(TimeStampedModel):
     # Number of people the seat may hold simultaneously (1 == single-incumbent).
     headcount    = models.PositiveSmallIntegerField(default=1)
     is_active    = models.BooleanField(default=True)
+
+    #: Declared so its update() keeps the record history; see vs_history.queryset.
+    objects = VersionedManager()
 
     class Meta:
         db_table = 'vs_users_position'

@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 from django.db.models import Min
 from django.utils import timezone
 
-from .models import RecordVersion
+from .models import RecordVersion, TrackingStart
 from .registry import TrackedModel, owner_key, rebuild
 
 #: The zone a school's day is counted in. The platform's schools keep West
@@ -117,6 +117,44 @@ def require_history(spec: TrackedModel, record_id, as_at: AsAt, *, noun: str) ->
     the day the history starts.
     """
     starts = history_starts(spec, record_id)
+    if starts is None or as_at.date < starts:
+        when = f"{starts.day} {starts:%B %Y}" if starts else "today"
+        raise HistoryNotKept(
+            f"History for {noun} starts on {when}. Pick that day or a later one.",
+            history_starts=starts.isoformat() if starts else None,
+        )
+    return starts
+
+
+def tracking_starts(spec: TrackedModel) -> dt.date | None:
+    """The first school day any list of *spec* can be read as at, or ``None``.
+
+    The stamped :class:`TrackingStart` when there is one. Before the baseline
+    command has stamped it, the model's earliest version stands in, which can
+    only be later than the true start and so never answers a day too early.
+    """
+    started = (
+        TrackingStart.objects.filter(record_type=spec.record_type)
+        .values_list("started_at", flat=True).first()
+    )
+    if started is None:
+        started = RecordVersion.objects.filter(
+            record_type=spec.record_type,
+        ).aggregate(first=Min("recorded_at"))["first"]
+    return record_date(started) if started else None
+
+
+def require_list_history(spec: TrackedModel, owner_starts: dt.date, as_at: AsAt,
+                         *, noun: str) -> dt.date:
+    """Raise :class:`HistoryNotKept` unless a list of *spec* is known at *as_at*.
+
+    *owner_starts* is the day the owning record's history starts (from
+    :func:`require_history`); the answer is the later of that day and the day
+    tracking reached *spec*. *noun* names the list in the refusal ("this
+    person's field exceptions"). Returns the day the list's history starts.
+    """
+    tracked = tracking_starts(spec)
+    starts = max(owner_starts, tracked) if tracked else None
     if starts is None or as_at.date < starts:
         when = f"{starts.day} {starts:%B %Y}" if starts else "today"
         raise HistoryNotKept(
