@@ -75,12 +75,13 @@ repeats it.
   zero exit code** - which reads exactly like a passing run with no summary.
 - Treat an exit code alone as insufficient evidence. Quote the `Ran N tests` line.
   If it is missing, the run did not finish and must be repeated.
-- **Iterate with the fast form, verify with the full one.** Two
-  `TransactionTestCase` classes in `schools.vs_schools` are tagged `slow`
-  (`BranchCodeAllocationConcurrencyTests` and `_MigrationHarness` and its
-  subclasses). They flush and rebuild the database around every test and re-run
-  the migration graph, and they are why that app takes ~18 minutes when the
-  other 171 tests take 30 seconds. While working, run
+- **Iterate with the fast form, verify with the full one.** Tests that rewind
+  the real migration graph or race real transactions are tagged `slow`: the
+  branch migrations in `schools.vs_schools` (`_MigrationHarness`), the
+  user-type and action-token migrations in `vs_user`, and the
+  `TransactionTestCase` concurrency tests. A rewind costs about as long as
+  Django takes to re-render every migration it unapplies, which is minutes when
+  it reaches half the graph. While working, run
   `--exclude-tag=slow`. **The run you report must be the full one**, without
   the flag: the excluded classes are exactly the ones exercising migrations and
   the branch code allocator, so a change touching either would slip past the
@@ -88,6 +89,13 @@ repeats it.
   stale schema and can pass against code it no longer matches, which is the
   failure that looks like success. Tag new slow classes the same way; the tag
   is inherited, so a base class needs marking once.
+- **A migration test subclasses `core.migration_testing.RewoundSchemaTestCase`.**
+  It rewinds its app once per class, inside the transaction the class already
+  holds, and PostgreSQL's rollback puts the schema back: nothing is replayed and
+  nothing is flushed. Never rewind in `setUp` and replay the leaves in
+  `tearDown` under `TransactionTestCase` with `serialized_rollback`. That costs
+  a rewind and a full replay per test, and it grows with every migration written
+  afterwards: it had taken `vs_user` to 29 minutes.
 - **Run one test class or method** with the dotted path
   (`manage.py test schools.vs_schools.tests_update_endpoints.SchoolSlugUpdateTests`)
   when you are working inside a single file. Seconds, not minutes.

@@ -15,12 +15,12 @@ from uuid import uuid4
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.management import call_command
 from django.db import connection, transaction
-from django.db.migrations.executor import MigrationExecutor
-from django.test import TestCase, TransactionTestCase, tag
+from django.test import TestCase, tag
 from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
+from core.migration_testing import RewoundSchemaTestCase
 from vs_user.auth_events import AuthEvent
 from vs_user.models import AccountLockout, AuthAttempt, LoginSession, User
 from vs_user.services.auth import LoginService
@@ -4622,32 +4622,29 @@ class ParentAtTwoSchoolsEndToEndTests(TestCase):
 
 
 @tag("slow")
-class UserTypeMigrationTests(TransactionTestCase):
+class UserTypeMigrationTests(RewoundSchemaTestCase):
     """0009_drop_user_type, and the 0008 conversion that still runs before it.
 
-    Driven by rewinding the real migration graph one step, which is affordable
-    here for a reason worth writing down: nothing outside ``vs_user`` depends
-    on 0008 or later, so unapplying 0009 unapplies 0009 and nothing else. The
-    predecessor of this class drove 0008's data functions against the LIVE
-    model registry instead, which worked only while ``user_type`` still existed
-    on it. It does not, so the column has to come from the schema the database
-    actually had at that point - which is what a historical registry is.
+    ``vs_user`` is rewound to 0008 once for the class (see
+    :mod:`core.migration_testing`), which also unapplies every migration that
+    depends on 0009 or later, in this app and in others. The predecessor of
+    this class drove 0008's data functions against the LIVE model registry
+    instead, which worked only while ``user_type`` still existed on it. It does
+    not, so the column has to come from the schema the database actually had
+    at that point - which is what a historical registry is.
 
     Rows are built through the historical model and stamped with
     ``QuerySet.update()`` where a value is illegal, because that is exactly how
     such a row would have arrived: past the choices list, past ``clean()``,
     straight into the column.
 
-    That applies to ``vs_user`` and to nothing else. Only this app is rewound,
-    so only its tables are at an older shape; every other app's tables are the
-    latest ones, and its historical models no longer describe them. The tenant
-    and the branch below therefore come from the LIVE ``vs_tenants`` models.
+    The tenant and the branch come from the LIVE ``vs_tenants`` models, because
+    the rewind does not reach ``vs_tenants`` or ``vs_schools``: their tables are
+    the latest ones, and their historical models no longer describe them.
     ``Branch._type`` is the proof: the column is gone from the model, so the
     registry at this point still carries it while the table does not, and a
     create through the historical class writes a column that is not there.
     """
-
-    serialized_rollback = True
 
     APP = "vs_user"
     BEFORE = "0008_drop_admin_user_types"
@@ -4655,8 +4652,6 @@ class UserTypeMigrationTests(TransactionTestCase):
     def setUp(self):
         from vs_tenants.models import Branch, Tenant
 
-        self._migrate(self.BEFORE)
-        self.historical = self._historical_apps(self.BEFORE)
         self.User = self.historical.get_model("vs_user", "User")
 
         self.codex = Tenant.objects.get(slug="codex", kind="PLATFORM")
@@ -4670,46 +4665,7 @@ class UserTypeMigrationTests(TransactionTestCase):
             status="ACTIVE",
         )
 
-    def tearDown(self):
-        # Clear this class's rows FIRST. Several tests manufacture exactly the
-        # shapes 0009 refuses to migrate, and the forward run below is the real
-        # migration - it would refuse them again, correctly, and fail the test
-        # in tearDown for doing its job. Raw SQL because the live model and the
-        # historical one disagree about which columns exist here.
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "DELETE FROM vs_users_user WHERE email LIKE '%%@retire.test'"
-            )
-            cursor.execute(
-                "DELETE FROM vs_schools_branch WHERE tenant_id = %s", [self.school.pk],
-            )
-            cursor.execute(
-                "DELETE FROM vs_tenants_tenant WHERE id = %s", [self.school.pk],
-            )
-
-        # Always leave the database at the latest state for the rest of the
-        # run. Every leaf, not just this app's - see the same rule, and the
-        # same reasoning, in schools.vs_schools._MigrationHarness.
-        executor = MigrationExecutor(connection)
-        executor.loader.build_graph()
-        executor.migrate(executor.loader.graph.leaf_nodes())
-        executor.loader.build_graph()
-        super().tearDown()
-
     # -- harness ----------------------------------------------------------
-
-    def _migrate(self, target):
-        executor = MigrationExecutor(connection)
-        executor.loader.build_graph()
-        executor.migrate([(self.APP, target)])
-        executor.loader.build_graph()
-        return executor
-
-    def _historical_apps(self, target):
-        """One state registry, so every historical model shares an identity."""
-        executor = MigrationExecutor(connection)
-        executor.loader.build_graph()
-        return executor.loader.project_state((self.APP, target)).apps
 
     @staticmethod
     def _module(name):
@@ -4898,7 +4854,7 @@ class UserTypeMigrationTests(TransactionTestCase):
             "trigger.probe@retire.test", tenant=self.codex, user_type="CX_STAFF",
         )
 
-        self._migrate("0009_drop_user_type")
+        self.migrate_to("0009_drop_user_type")
 
         # Straight SQL, so nothing but the database is consulted - no
         # serializer, no clean(), no save().
@@ -4914,7 +4870,7 @@ class UserTypeMigrationTests(TransactionTestCase):
         """The other half of the rule, which is just as easy to over-enforce."""
         pinned = self._user("trigger.pinned@retire.test")
 
-        self._migrate("0009_drop_user_type")
+        self.migrate_to("0009_drop_user_type")
 
         with connection.cursor() as cursor:
             cursor.execute(

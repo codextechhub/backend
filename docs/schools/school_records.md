@@ -534,9 +534,9 @@ Covered for this slice:
 - `tests_update_endpoints.py` (1,155 lines) - `SchoolSlugUpdateTests` covers the
   rename, the freeze after go-live, the reserved and taken cases, the tenant
   mirror, and the audit event's severity and summary.
-- The `_MigrationHarness` classes re-run the migration graph, which is what
-  guards the `vs_schools` → `schools.vs_schools` move and the `Branch`
-  relocation.
+- `BranchMigrationTests` (on `_MigrationHarness`) drives the real migration
+  graph, which is what guards the `vs_schools` → `schools.vs_schools` move and
+  the `Branch` relocation.
 
 Not covered:
 

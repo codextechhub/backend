@@ -7,11 +7,11 @@ from datetime import timedelta
 from unittest import mock
 
 from django.db import close_old_connections, connection
-from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase, tag
 from django.utils import timezone
 
 from vs_rbac.tests.helpers import make_branch, make_school, make_school_admin
+from core.migration_testing import RewoundSchemaTestCase
 from vs_user.action_tokens import (
     invitation_token_digest,
     password_reset_token_digest,
@@ -278,29 +278,27 @@ class PasswordResetConsumptionRaceTests(TransactionTestCase):
 
 
 @tag("slow")
-class ActionTokenMigrationTests(TransactionTestCase):
-    """Deployment preserves invitations and closes unbound legacy resets."""
+class ActionTokenMigrationTests(RewoundSchemaTestCase):
+    """Deployment preserves invitations and closes unbound legacy resets.
 
-    serialized_rollback = True
+    Rows are written at 0009 through the historical models, 0010 is applied,
+    and then every app is brought to its latest migration before the
+    assertions. They go through the live models and services deliberately,
+    because what is being proved is that a link issued before the migration
+    still opens after it, and only the live path can prove that. A live model
+    queries every column it declares, so stopping at 0010 would leave the ones
+    added since missing. Nothing applied after 0010 rewrites what 0010 wrote.
+    """
 
     APP = "vs_user"
     BEFORE = "0009_drop_user_type"
     AFTER = "0010_request_bound_action_tokens"
 
-    def _migrate(self, target):
-        executor = MigrationExecutor(connection)
-        executor.loader.build_graph()
-        executor.migrate([(self.APP, target)])
-        executor.loader.build_graph()
-        return executor
-
     def setUp(self):
-        executor = self._migrate(self.BEFORE)
-        historical = executor.loader.project_state((self.APP, self.BEFORE)).apps
-        HistoricalUser = historical.get_model("vs_user", "User")
-        HistoricalInvitation = historical.get_model("vs_user", "UserInvitation")
-        HistoricalReset = historical.get_model("vs_user", "PasswordResetRequest")
-        HistoricalTenant = historical.get_model("vs_tenants", "Tenant")
+        HistoricalUser = self.historical.get_model("vs_user", "User")
+        HistoricalInvitation = self.historical.get_model("vs_user", "UserInvitation")
+        HistoricalReset = self.historical.get_model("vs_user", "PasswordResetRequest")
+        HistoricalTenant = self.historical.get_model("vs_tenants", "Tenant")
 
         tenant = HistoricalTenant.objects.get(slug="codex")
         user = HistoricalUser.objects.create(
@@ -328,31 +326,8 @@ class ActionTokenMigrationTests(TransactionTestCase):
             requested_by="SELF",
         ).pk
 
-        self._migrate(self.AFTER)
-        # Back to the latest schema before the assertions run. They go through
-        # the live models and services deliberately, because what is being
-        # proved is that a link issued before the migration still opens after
-        # it, and only the live path can prove that. A live model queries every
-        # column it declares, so stopping at 0010 leaves the ones added since
-        # missing and the query fails on a column that has nothing to do with
-        # tokens. Nothing applied after 0010 rewrites what 0010 wrote.
-        self._migrate_all_leaves()
-
-    def _migrate_all_leaves(self):
-        """Bring every app to its latest migration, not only this one's.
-
-        Rewinding vs_user unapplies whatever depends on it too, so a graph left
-        short takes columns away from every later test in the run as well as
-        from this one.
-        """
-        executor = MigrationExecutor(connection)
-        executor.loader.build_graph()
-        executor.migrate(executor.loader.graph.leaf_nodes())
-        executor.loader.build_graph()
-
-    def tearDown(self):
-        self._migrate_all_leaves()
-        super().tearDown()
+        self.migrate_to(self.AFTER)
+        self.migrate_to_latest()
 
     def test_forward_migration_preserves_only_the_invitation_credential(self):
         from vs_user.models import UserInvitation

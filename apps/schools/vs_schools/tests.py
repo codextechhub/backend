@@ -4,10 +4,11 @@ from unittest import mock
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, close_old_connections, connection, transaction
-from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase, tag
 from django.urls import reverse
 from rest_framework.test import APIClient
+
+from core.migration_testing import RewoundSchemaTestCase
 
 from .models import School
 from .serializers import SchoolCreateSerializer
@@ -228,11 +229,10 @@ class BranchUniquenessConstraintTests(TestCase):
         self.assertEqual(Branch.all_objects.filter(is_main=True).count(), 2)
 
 
-# Tagged slow: TransactionTestCase gets no transaction rollback, so Django
-# flushes and rebuilds the database around every test in the class. That, not
-# the assertions, is what makes this app's suite take ~18 minutes. Skip with
-# --exclude-tag=slow while iterating; run it whenever migrations, the branch
-# code allocator or concurrency behaviour change.
+# Tagged slow: the race needs two real transactions, so this is a
+# TransactionTestCase, which flushes the database and restores the serialized
+# seed data after the test. Skip with --exclude-tag=slow while iterating; run it
+# whenever the branch code allocator or concurrency behaviour change.
 @tag("slow")
 class BranchCodeAllocationConcurrencyTests(TransactionTestCase):
     """The first-branch race: two creates against a tenant that has no branches.
@@ -316,60 +316,21 @@ class BranchCodeAllocationConcurrencyTests(TransactionTestCase):
         )
 
 
-# Tagged slow for the same reason, and more so: every subclass re-runs the
-# migration graph. The tag is inherited, so the subclasses need no marking.
+# Tagged slow: the one rewind unapplies about half the migration graph. The tag
+# is inherited, so the subclass needs no marking.
 @tag("slow")
-class _MigrationHarness(TransactionTestCase):
-    """Drive real migrations forward and back, then leave the database current.
+class _MigrationHarness(RewoundSchemaTestCase):
+    """The branch migrations, driven on the schema they were written for.
 
-    Subclasses set ``BEFORE`` and ``AFTER``. Shared by the two branch migration
-    suites so that the "put every leaf back" rule below is stated once; getting
-    it wrong is silent until an unrelated test hits a missing column.
+    ``vs_schools`` is rewound to ``BEFORE`` once per class and every test moves
+    it within its own savepoint (see :mod:`core.migration_testing`). Rewinding this app also unapplies the
+    migrations that depend on it, in ``vs_tenants``, ``vs_workflow``,
+    ``vs_finance``, ``vs_procurement`` and others, so a write through a LIVE
+    model first calls :meth:`migrate_to_latest`: a model writes every column it
+    declares, and the only schema it fits is the latest one.
     """
 
-    serialized_rollback = True
-
     APP = "vs_schools"
-    BEFORE = ""
-    AFTER = ""
-
-    def tearDown(self):
-        # Always leave the database at the latest state for the rest of the run.
-        self._migrate_all_leaves()
-        super().tearDown()
-
-    def _migrate_all_leaves(self):
-        """Bring every app to its latest migration, not only this one's.
-
-        Every LEAF, because rewinding vs_schools 0003 also unapplies the
-        migrations that depend on it - vs_workflow 0007, which adds
-        WorkflowTemplate.is_active, and migrations in vs_finance and
-        vs_procurement. Migrating only this app forward left their columns
-        missing for the rest of the run, so the serialized-rollback restore and
-        every later test that touched those tables failed on a column that does
-        not exist.
-
-        A test calls it directly before writing through a LIVE model. A model
-        writes every column it declares, so the only schema it fits is the
-        latest one.
-        """
-        executor = MigrationExecutor(connection)
-        executor.loader.build_graph()
-        executor.migrate(executor.loader.graph.leaf_nodes())
-        executor.loader.build_graph()
-
-    def _migrate(self, target):
-        executor = MigrationExecutor(connection)
-        executor.loader.build_graph()
-        executor.migrate([(self.APP, target)])
-        executor.loader.build_graph()
-        return executor
-
-    def _historical_apps(self, target):
-        """One state registry, so every historical model shares an identity."""
-        executor = MigrationExecutor(connection)
-        executor.loader.build_graph()
-        return executor.loader.project_state((self.APP, target)).apps
 
     def _make_tenant(self, historical, *, slug, name):
         """Create a tenant through the model as it stood at that migration.
@@ -395,16 +356,12 @@ class _MigrationHarness(TransactionTestCase):
         )
 
 
-class BranchTenantMigrationTests(_MigrationHarness):
+class _BranchTenantCases:
     """Phase B: the 0003 backfill, its de-duplication step, and its reverse."""
-
-    BEFORE = "0002_alter_branchlifecycle_reason"
-    AFTER = "0003_branch_tenant"
 
     def _seed_pre_migration_rows(self):
         """Build schools and branches in the 0001 state, where Branch has no tenant."""
-        self._migrate(self.BEFORE)
-        historical = self._historical_apps(self.BEFORE)
+        historical = self.historical
         OldSchool = historical.get_model(self.APP, "School")
         OldBranch = historical.get_model(self.APP, "Branch")
 
@@ -425,7 +382,7 @@ class BranchTenantMigrationTests(_MigrationHarness):
         OldBranch.objects.create(school=schools["alpha"], name="A2", code=2, _type="Sub")
         OldBranch.objects.create(school=schools["beta"], name="B1", code=1, _type="Main")
 
-        self._migrate(self.AFTER)
+        self.migrate_to(self.AFTER)
 
         self.assertEqual(Branch.all_objects.filter(tenant__isnull=True).count(), 0)
         self.assertEqual(
@@ -439,14 +396,14 @@ class BranchTenantMigrationTests(_MigrationHarness):
         # Read back through the historical model: the current ``Branch`` has
         # no ``school`` any more, and the whole point of the backfill was that
         # the two agreed at the moment the column still existed.
-        MigratedBranch = self._historical_apps(self.AFTER).get_model(self.APP, "Branch")
+        MigratedBranch = self.historical_apps(self.AFTER).get_model(self.APP, "Branch")
         for branch in MigratedBranch.objects.select_related("school"):
             self.assertEqual(branch.tenant_id, branch.school.tenant_id)
 
     def test_a_tenant_with_no_branches_survives_the_migration(self):
         tenants, _, _ = self._seed_pre_migration_rows()
 
-        self._migrate(self.AFTER)
+        self.migrate_to(self.AFTER)
 
         self.assertEqual(
             Branch.all_objects.filter(tenant_id=tenants["alpha"].pk).count(), 0,
@@ -468,7 +425,7 @@ class BranchTenantMigrationTests(_MigrationHarness):
             school=schools["alpha"], name="Dup C", code=1, is_main=False, _type="Sub",
         )
 
-        self._migrate(self.AFTER)
+        self.migrate_to(self.AFTER)
 
         codes = dict(
             Branch.all_objects.filter(tenant_id=tenants["alpha"].pk)
@@ -487,9 +444,9 @@ class BranchTenantMigrationTests(_MigrationHarness):
     def test_reverse_drops_the_column_and_both_constraints(self):
         _, schools, OldBranch = self._seed_pre_migration_rows()
         OldBranch.objects.create(school=schools["alpha"], name="A1", code=1, _type="Main")
-        self._migrate(self.AFTER)
+        self.migrate_to(self.AFTER)
 
-        self._migrate(self.BEFORE)
+        self.migrate_to(self.BEFORE)
 
         with connection.cursor() as cursor:
             columns = connection.introspection.get_table_description(
@@ -504,20 +461,20 @@ class BranchTenantMigrationTests(_MigrationHarness):
         # The rows themselves survive: the reverse is a no-op on data.
         self.assertEqual(OldBranch.objects.count(), 1)
 
-    def test_forward_reverse_forward_is_stable(self):
+    def test_the_backfill_goes_forward_back_and_forward_again(self):
         _, schools, OldBranch = self._seed_pre_migration_rows()
         OldBranch.objects.create(school=schools["beta"], name="B1", code=1, _type="Main")
 
-        self._migrate(self.AFTER)
-        self._migrate(self.BEFORE)
-        self._migrate(self.AFTER)
+        self.migrate_to(self.AFTER)
+        self.migrate_to(self.BEFORE)
+        self.migrate_to(self.AFTER)
 
-        MigratedBranch = self._historical_apps(self.AFTER).get_model(self.APP, "Branch")
+        MigratedBranch = self.historical_apps(self.AFTER).get_model(self.APP, "Branch")
         branch = MigratedBranch.objects.select_related("school").get(name="B1")
         self.assertEqual(branch.tenant_id, branch.school.tenant_id)
 
 
-class BranchMoveMigrationTests(_MigrationHarness):
+class _BranchMoveCases:
     """Phase D: the school column goes, the model changes app, no row moves.
 
     ``0004_branch_drop_school`` is the only migration in the phase that emits
@@ -530,13 +487,13 @@ class BranchMoveMigrationTests(_MigrationHarness):
     eight retargets and the column drop, and puts ``school_id`` back.
     """
 
-    BEFORE = "0003_branch_tenant"
-    AFTER = "0005_move_branch_to_vs_tenants"
+    MOVE_FROM = "0003_branch_tenant"
+    MOVE_TO = "0005_move_branch_to_vs_tenants"
 
     def _seed(self):
         """Two shapes of tenant: one with several branches, one with none."""
-        self._migrate(self.BEFORE)
-        historical = self._historical_apps(self.BEFORE)
+        self.settle_at(self.MOVE_FROM)
+        historical = self.historical_apps(self.MOVE_FROM)
         OldSchool = historical.get_model(self.APP, "School")
         OldBranch = historical.get_model(self.APP, "Branch")
 
@@ -570,30 +527,37 @@ class BranchMoveMigrationTests(_MigrationHarness):
             }
 
     def _inbound_foreign_keys(self):
-        """Every foreign key constraint pointing at the branch table."""
+        """Each (table, column) holding a foreign key to the branch table.
+
+        Keyed on the referencing column rather than counted or named: a count
+        hides one key dropped and another added, and an altered key is
+        recreated under a new name, but a key that existed before must still
+        exist on the same column afterwards.
+        """
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT count(*) FROM pg_constraint c "
+                "SELECT src.relname, att.attname FROM pg_constraint c "
                 "JOIN pg_class t ON t.oid = c.confrelid "
+                "JOIN pg_class src ON src.oid = c.conrelid "
+                "JOIN pg_attribute att ON att.attrelid = c.conrelid "
+                "AND att.attnum = ANY(c.conkey) "
                 "WHERE t.relname = %s AND c.contype = 'f'",
                 ["vs_schools_branch"],
             )
-            return cursor.fetchone()[0]
+            return set(cursor.fetchall())
 
     def _constraints(self):
         with connection.cursor() as cursor:
             return connection.introspection.get_constraints(cursor, "vs_schools_branch")
 
-    # Two methods, not six. Each one rewinds and replays the tail of a
-    # 155-migration graph, which is the slowest thing in this suite by an order
-    # of magnitude, so the assertions are grouped by the state they need rather
-    # than one per behaviour.
+    # The assertions are grouped by the migration state they need, so each
+    # method moves the graph as few times as it can.
 
     def test_forward_drops_the_school_and_re_keys_the_indexes(self):
         tenants, _, _ = self._seed()
         before_fks = self._inbound_foreign_keys()
 
-        self._migrate(self.AFTER)
+        self.migrate_to(self.MOVE_TO)
 
         columns = self._branch_columns()
         self.assertNotIn("school_id", columns)
@@ -610,7 +574,7 @@ class BranchMoveMigrationTests(_MigrationHarness):
         self.assertEqual(Branch.all_objects.filter(tenant_id=tenants["solo"].pk).count(), 0)
         # No row moved and no constraint was rebuilt away: the table is the
         # same table, so every inbound foreign key is still there.
-        self.assertEqual(self._inbound_foreign_keys(), before_fks)
+        self.assertLessEqual(before_fks, self._inbound_foreign_keys())
 
         constraints = self._constraints()
         self.assertIn("vs_schools__tenant__6bef02_idx", constraints)
@@ -623,16 +587,16 @@ class BranchMoveMigrationTests(_MigrationHarness):
         self.assertIn("uq_branch_tenant_code", constraints)
         self.assertIn("uq_branch_one_main_per_tenant", constraints)
 
-    def test_forward_reverse_forward_is_stable(self):
+    def test_the_move_goes_forward_back_and_forward_again(self):
         tenants, schools, _ = self._seed()
 
-        self._migrate(self.AFTER)
-        self._migrate(self.BEFORE)
+        self.migrate_to(self.MOVE_TO)
+        self.migrate_to(self.MOVE_FROM)
 
         # The reverse is not a no-op on data: it has to work out which school
         # each branch belonged to, from the tenant they now share.
         self.assertIn("school_id", self._branch_columns())
-        OldBranch = self._historical_apps(self.BEFORE).get_model(self.APP, "Branch")
+        OldBranch = self.historical_apps(self.MOVE_FROM).get_model(self.APP, "Branch")
         self.assertEqual(
             {b.name: b.school_id for b in OldBranch.objects.all()},
             {"HQ": schools["multi"].pk, "Lekki": schools["multi"].pk},
@@ -640,7 +604,7 @@ class BranchMoveMigrationTests(_MigrationHarness):
         for branch in OldBranch.objects.all():
             self.assertEqual(branch.tenant_id, tenants["multi"].pk)
 
-        self._migrate(self.AFTER)
+        self.migrate_to(self.MOVE_TO)
 
         self.assertNotIn("school_id", self._branch_columns())
         self.assertEqual(
@@ -652,11 +616,7 @@ class BranchMoveMigrationTests(_MigrationHarness):
         )
         self.assertEqual(Branch.all_objects.filter(tenant_id=tenants["solo"].pk).count(), 0)
         # Still creatable, and the allocator still counts from the tenant.
-        # Through ``save()``, not by calling ``allocate_next_code`` directly:
-        # the allocator takes a ``select_for_update`` lock and a
-        # TransactionTestCase runs in autocommit, so calling it by hand raises
-        # TransactionManagementError. ``save()`` opens the atomic block itself,
-        # which is also the path production uses.
+        # Through ``save()``, the path production uses.
         #
         # The graph comes forward first because this write goes through the
         # live Branch, and a live model writes exactly the columns it declares.
@@ -665,11 +625,23 @@ class BranchMoveMigrationTests(_MigrationHarness):
         # the current class leaves them empty in a database that still demands
         # them. The reads above are safe at the older state because each names
         # the column it wants.
-        self._migrate_all_leaves()
+        self.migrate_to_latest()
         fresh = Branch.all_objects.create(
             tenant_id=tenants["multi"].pk, name="Ikoyi",
         )
         self.assertEqual(fresh.code, 3)
+
+
+class BranchMigrationTests(_BranchTenantCases, _BranchMoveCases, _MigrationHarness):
+    """Both branch phases, on one rewind of ``vs_schools`` to 0002.
+
+    Rewinding to 0002 unapplies about half the graph, so the two phases share
+    it rather than paying for it twice: the Phase D cases settle at 0003
+    before they seed.
+    """
+
+    BEFORE = "0002_alter_branchlifecycle_reason"
+    AFTER = "0003_branch_tenant"
 
 
 class EverySchoolHasAtLeastOneBranchTests(TestCase):
