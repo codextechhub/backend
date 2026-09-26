@@ -210,18 +210,17 @@ def normalise_change_log(doc) -> None:
     """Give every version row the change log's ordinary row format.
 
     An earlier revision restored a missing header by copying the header row,
-    and the version rows cloned from it since inherited its fill and its
-    repeat-as-header flag, so Word printed them again at the top of every page
-    of the log. Each such row is rebuilt from the first ordinary version row,
-    keeping its text.
+    and the version rows cloned from it since inherited its fill, and sometimes
+    its repeat-as-header flag, so Word drew them in the header's colours and
+    printed some again at the top of every page of the log. Each such row is
+    rebuilt from the first ordinary version row, keeping its text.
     """
-    from patch_record_history_docs import change_log_table
+    from patch_record_history_docs import change_log_table, is_header_styled
 
     table = change_log_table(doc)
 
     def is_header(r):
-        props = r._tr.trPr
-        return props is not None and props.find(W + "tblHeader") is not None
+        return is_header_styled(table, r)
 
     ordinary = next((r for r in table.rows[1:] if not is_header(r)), None)
     if ordinary is None:

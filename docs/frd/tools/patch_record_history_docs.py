@@ -143,14 +143,43 @@ def restore_header(table, header_source) -> None:
         first._tr.getparent().remove(first._tr)
 
 
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def _first_fill(row) -> str | None:
+    shd = row.cells[0]._tc.find(f".//{_W}shd")
+    return shd.get(_W + "fill") if shd is not None else None
+
+
+def is_header_styled(table, row) -> bool:
+    """Whether a change-log row carries the header's look rather than a version row's.
+
+    Either signal counts: the repeat-as-header flag, or the header row's fill
+    on the first cell. A row cloned from the header can carry the fill without
+    the flag, and Word then draws a version in the header's colours.
+    """
+    props = row._tr.trPr
+    if props is not None and props.find(_W + "tblHeader") is not None:
+        return True
+    header_fill = _first_fill(table.rows[0])
+    return header_fill is not None and _first_fill(row) == header_fill
+
+
 def log_change(doc, version: str, summary: str, header_source=None) -> None:
+    """Add a version row at the top of the log, formatted as an ordinary version row.
+
+    The template is the first version row that does not look like the header,
+    so one mis-styled row cannot pass its look on to every version after it.
+    """
     table = change_log_table(doc)
     if header_source is not None:
         restore_header(table, change_log_table(header_source))
     if table.rows[0].cells[0].text.strip() != "Version":
         raise ValueError("Change log has no header row and no source to restore it from")
-    template = table.rows[1]
-    template._tr.addprevious(copy.deepcopy(template._tr))
+    template = next((r for r in table.rows[1:] if not is_header_styled(table, r)), None)
+    if template is None:
+        raise ValueError("The change log has no ordinary version row to copy")
+    table.rows[1]._tr.addprevious(copy.deepcopy(template._tr))
     row = table.rows[1]
     keep_format(row.cells[0], version)
     keep_format(row.cells[1], REVIEW_DATE)
