@@ -1,4 +1,13 @@
 """Budgets and variance.
+
+A budget is the entity's one plan and carries no branch. A branch-bound reader
+who may read budgets sees the plan, but not the actuals set against it or the
+variance: school-wide actuals would show them other branches' money, and their
+own branch's actuals against the whole school's plan would read as a shortfall
+that is only the other branches' share. Those figures are ``None`` for them,
+each response says ``narrowed``, and variance rows for accounts the plan does not
+cover (activity with no budget line) are left out, since their presence alone
+reports other branches' postings.
 """
 from __future__ import annotations
 
@@ -6,6 +15,7 @@ from __future__ import annotations
 from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
+from vs_rbac.scoping import branch_scope
 
 from ..money import format_naira
 from ..views import resolve_entity
@@ -29,6 +39,11 @@ from .base import (
 # --------------------------------------------------------------------------- #
 # Budgets                                                                     #
 # --------------------------------------------------------------------------- #
+
+def _withholds_actuals(request) -> bool:
+    """True when the reader is branch-bound; see the module docstring."""
+    return branch_scope(request, include_shared=True).is_narrowed
+
 
 # Group endpoint behavior for Budget List Create View.
 class BudgetListCreateView(_FinanceBase):
@@ -61,15 +76,20 @@ class BudgetListCreateView(_FinanceBase):
         page = paginator.paginate_queryset(qs.order_by("-id"), request, view=self)
         data = BudgetSerializer(page, many=True).data
         by_id = {b.id: b for b in page}
+        narrowed = _withholds_actuals(request)
         for row in data:
             budget = by_id[row["id"]]
             report = budget_vs_actual(budget)
             budgeted = report.total_budget
             actual = report.total_actual
             row["budgeted_total"] = budgeted
-            row["actual_ytd"] = actual
-            row["consumed_pct"] = round(actual * 100 / budgeted, 1) if budgeted else None
-        return paginator.get_paginated_response(data)
+            row["actual_ytd"] = None if narrowed else actual
+            row["consumed_pct"] = (
+                None if narrowed or not budgeted else round(actual * 100 / budgeted, 1)
+            )
+        response = paginator.get_paginated_response(data)
+        response.data["narrowed"] = narrowed
+        return response
 
     # Handle POST requests for this endpoint.
     def post(self, request):
@@ -250,9 +270,12 @@ class BudgetVarianceView(_BudgetActionBase):
         _, budget = self._budget(request, pk)
         period_no = _int(request.query_params.get("period_no"), "period_no", minimum=1)
         report = budget_vs_actual(budget, period_no=period_no)
+        narrowed = _withholds_actuals(request)
 
         # Support the money pair workflow.
         def _money_pair(amount):
+            if narrowed:
+                return None
             return {"kobo": amount, "naira": format_naira(amount)}
 
         return success_response(
@@ -261,17 +284,19 @@ class BudgetVarianceView(_BudgetActionBase):
                 "budget_id": report.budget_id,
                 "fiscal_year_id": report.fiscal_year_id,
                 "period_no": report.period_no,
+                "narrowed": narrowed,
                 "rows": [
                     {
                         "account_id": r.account_id, "code": r.code, "name": r.name,
                         "account_type": r.account_type,
-                        "budget": _money_pair(r.budget),
+                        "budget": {"kobo": r.budget, "naira": format_naira(r.budget)},
                         "actual": _money_pair(r.actual),
                         "variance": _money_pair(r.variance),
                     }
                     for r in report.rows
+                    if not narrowed or r.budget
                 ],
-                "total_budget": _money_pair(report.total_budget),
+                "total_budget": {"kobo": report.total_budget, "naira": format_naira(report.total_budget)},
                 "total_actual": _money_pair(report.total_actual),
                 "total_variance": _money_pair(report.total_variance),
             },
@@ -296,22 +321,29 @@ class BudgetHeatmapView(_BudgetActionBase):
 
         _, budget = self._budget(request, pk)
         matrix = budget_monthly_matrix(budget)
+        narrowed = _withholds_actuals(request)
         return success_response(
             "Budget heatmap retrieved.",
             data={
                 "budget_id": matrix.budget_id,
                 "fiscal_year_id": matrix.fiscal_year_id,
                 "periods": matrix.periods,
+                "narrowed": narrowed,
                 "rows": [
                     {
                         "account_id": r.account_id, "code": r.code, "name": r.name,
-                        "account_type": r.account_type, "cells": r.cells,
-                        "budget_total": r.budget_total, "actual_total": r.actual_total,
+                        "account_type": r.account_type,
+                        "cells": [
+                            {**cell, "actual": None} for cell in r.cells
+                        ] if narrowed else r.cells,
+                        "budget_total": r.budget_total,
+                        "actual_total": None if narrowed else r.actual_total,
                     }
                     for r in matrix.rows
+                    if not narrowed or r.budget_total
                 ],
                 "total_budget": matrix.total_budget,
-                "total_actual": matrix.total_actual,
+                "total_actual": None if narrowed else matrix.total_actual,
             },
         )
 
