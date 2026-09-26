@@ -453,6 +453,39 @@ M12: v2.8's change-log table lost its header row (row 0 holds a duplicate 2.7
 entry); v2.7's header row reads Version, Date, Summary.
 VERIFIED (working tree before commit): schools.vs_staff 267 OK.
 
+### D14. Report filters open to finance staff, and a session says which branches its user reaches (f6359e25, 2026-09-26)
+MODULES: M19 finance and accounting, M04 roles and permissions, M03 user and
+session (whichever module the FRDs file `/user/auth/me/` and sign-in under),
+MRD.
+- `GET /finance/periods/`, the list reads of `GET /finance/cost-centers/` and
+  `GET /finance/dimensions/` now open to anyone holding any `finance.*` key,
+  the rule the entity list and posting window already use. Cost centres also
+  stay open to the two requisition keys. Reason: every report filter is built
+  from these lists, and a bursar holding `finance.report.view` was refused the
+  period, cost-centre and dimension options on reports they may run. Which rows
+  appear is unchanged (the caller's own entity only; another tenant's code is a
+  404). Creating a cost centre or dimension still needs its create key; the
+  period close, reopen and lock actions keep theirs; `finance.period.view`,
+  `finance.costcenter.view` and `finance.dimension.view` still gate the setup
+  screens in both frontends.
+- The sign-in response and `GET /user/auth/me/` gain `branch_reach`:
+  `{whole_tenant: bool, branch_ids: [int]}`, built by
+  `vs_rbac.scoping.branch_reach_payload` from `visible_branch_ids`. Reason: the
+  branch list endpoint answers which branches the school runs, not which the
+  reader may work in, so a branch picker built from it offered a bursar at one
+  branch a choice the server then ignored. school-fe now shows the picker only
+  when the reader's own reach has two or more branches.
+MUST SAY: for M19, the list access rule for the three reference lists and that
+the setup screens keep their keys; for M04, that the three `.view` keys still
+gate their setup screens but no longer gate the lists; for the session FRD,
+the new `branch_reach` field, its three shapes (whole tenant, a set, an empty
+set when every granted branch is withdrawn) and that it describes the proxied
+target while proxying. NEEDS ATTENTION for M19: the Finance dashboard's figures
+are not narrowed to a branch-bound reader's branches (a Main Branch bursar sees
+the Annex's invoices in the totals), and `/finance/ar-adjustments/` refuses a
+write-off holder who lacks `finance.refund.view`.
+VERIFIED (working tree before commit): vs_finance 778 OK; vs_user 414 OK; vs_rbac 848 run with one failure (test_overrides pinned the /me key set without branch_reach), fixed and that class rerun 40 OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
