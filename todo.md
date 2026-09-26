@@ -516,6 +516,24 @@ figures are whole-school only. Remove from M19 NEEDS ATTENTION the D14 note
 that the dashboard is not narrowed.
 VERIFIED (working tree before commit): vs_finance 785 OK; vs_procurement 592 OK.
 
+### D16. AR aging narrows by branch; refunds and write-offs open on either key (dcc692e2, 2026-09-26)
+MODULES: M19 finance and accounting, M04 roles and permissions.
+- `GET /finance/reports/ar-aging/` (and its CSV/XLSX/PDF export) is narrowed to
+  the reader's branches plus school-wide documents, like the lists it is built
+  from; the payload gains `narrowed` and a narrowed export's subtitle says it
+  covers the reader's branches only.
+- `GET /finance/ar-adjustments/` opens on `finance.refund.view` or
+  `finance.writeoff.view`. Refund rows and the refundable-credit KPI go only to
+  refund-key holders; write-off rows and the written-off YTD KPI only to
+  write-off-key holders; `pending` counts the kinds the reader sees; the payload
+  gains `kinds`. Refundable credit counts only customers in the reader's
+  branches (it summed the whole entity).
+MUST SAY: the aging report's branch rule and the adjustments list's either-key
+rule with per-kind rows; for M04 that `finance.writeoff.view` now opens a
+screen. Remove from M19 NEEDS ATTENTION the D14 note that the list refuses a
+write-off holder.
+VERIFIED (working tree before commit): vs_finance 792 OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
