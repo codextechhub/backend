@@ -755,7 +755,7 @@ VERIFIED: vs_history 23, vs_audit 96, vs_import_data 83, vs_students 327,
 vs_staff 316, vs_rbac 868, vs_user 421, all OK; driven in the console and the
 school app against backdated history, restored afterwards.
 
-### D25. A fuller finance overview, read by term, month or year (10d047f1, 2026-09-26)
+### D26. A fuller finance overview, read by term, month or year (10d047f1, 2026-09-26)
 MODULES: M19 finance and accounting; the school finance layer.
 - `GET /finance/reports/dashboard/` takes `?window=` (`month`, `quarter`,
   `year`, or the billing period's key, `term` for a school) and returns
