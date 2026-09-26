@@ -517,6 +517,10 @@ FINANCE_CUSTOMER_EMAIL_BCC = _addresses(
 )
 FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:3000")
 
+# The window a book's owner bills by (a school's academic term), for "This term"
+# on the finance dashboard. See vs_finance.billing_periods.
+FINANCE_BILLING_PERIOD_PROVIDER = "schools.core.fal.billing_periods.current_term"
+
 # Public targets the platform-health synthetic probes knock on. A deployment
 # names its own; the defaults reach the development API. See the module
 # docstring.

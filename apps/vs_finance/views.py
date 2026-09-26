@@ -2346,7 +2346,10 @@ class FinanceDashboardView(APIView):
     """Aggregated **Finance overview** - every dashboard block in one payload.
 
     Computed live and entity-scoped. Optional ``?period=<period_no>`` pins the "as
-    of" period; otherwise the latest open period is used.
+    of" period; otherwise the latest open period is used. Optional ``?window=``
+    (``month``, ``quarter``, ``year``, or a billing period's key such as
+    ``term``) picks the span the window-aware cards read; the payload lists the
+    windows on offer and which one it used.
 
     Open to anyone holding a finance or payments key: the Finance console is theirs,
     and its landing page is this one. What each reader receives is decided per
@@ -2369,7 +2372,10 @@ class FinanceDashboardView(APIView):
         reader = DashboardReader.for_user(request.user, getattr(request.user, "tenant", None))
         return success_response(
             message="Finance dashboard retrieved.",
-            data=finance_dashboard(entity, period=period, reader=reader),
+            data=finance_dashboard(
+                entity, period=period, reader=reader,
+                window=request.query_params.get("window"), user=request.user,
+            ),
         )
 
 

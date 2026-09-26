@@ -530,13 +530,26 @@ def _fiscal_runway(entity) -> dict:
     }
 
 
-# Return recent journal activity rows.
 def _recent_journals(entity, limit=5, scope=UNNARROWED) -> list[dict]:
-    from .models import JournalEntry
+    """The latest journals, each with ``kind``: the document that raised it.
+
+    ``kind`` is ``receipt``, ``invoice``, ``payroll``, ``manual`` or ``other``,
+    read from the document that points at the journal, so a receipt's journal says
+    "receipt" whatever its ``source`` column holds.
+    """
+    from django.db.models import Exists, OuterRef, Q
+
+    from .models import JournalEntry, PayrollRun
 
     qs = (  # Recent journals for entity.
         scope.filter(JournalEntry.objects.filter(entity=entity))
         .select_related("created_by")
+        .annotate(
+            is_receipt=Exists(Payment.objects.filter(journal=OuterRef("pk"))),
+            is_invoice=Exists(Invoice.objects.filter(journal=OuterRef("pk"))),
+            is_payroll=Exists(PayrollRun.objects.filter(
+                Q(journal=OuterRef("pk")) | Q(disbursement_journal=OuterRef("pk")))),
+        )
         .order_by("-date", "-id")[:limit]
     )
     out = []  # Recent journal payload rows.
@@ -547,6 +560,11 @@ def _recent_journals(entity, limit=5, scope=UNNARROWED) -> list[dict]:
                 "document_number": j.document_number,  # Journal number.
                 "date": j.date.isoformat(),  # ISO journal date.
                 "source": getattr(j, "source", "") or "Manual",  # Journal source label.
+                "kind": (
+                    "receipt" if j.is_receipt else "invoice" if j.is_invoice
+                    else "payroll" if j.is_payroll
+                    else "manual" if getattr(j, "source", "") == "MANUAL" else "other"
+                ),
                 "narration": getattr(j, "narration", "") or "",  # Journal narration.
                 "amount": _m(dr),  # Journal amount.
                 "status": j.status,  # Journal status.
@@ -566,8 +584,7 @@ class FinanceDashboard:
     payload: dict = field(default_factory=dict)  # Dashboard response payload.
 
 
-# Assemble complete finance dashboard payload.
-def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK) -> dict:
+def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK, window=None, user=None) -> dict:
     """Assemble the Finance-overview payload for ``entity`` as ``reader`` may see it.
 
     Each block is ``None`` when the reader may not see it; see the module docstring
@@ -575,7 +592,14 @@ def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK) -> dict:
     off the GL for a whole-school report reader, and off the reader's own open
     invoices otherwise, so a branch bursar sees their branch's outstanding balance
     rather than nothing.
+
+    ``window`` picks the span the window-aware cards read (see
+    :mod:`vs_finance.dashboard_blocks`); an unknown or missing key reads the
+    default. ``user`` is who "waiting on you" means; without one that item is
+    left out.
     """
+    from . import dashboard_blocks as blocks
+
     current = _current_period(entity, period)  # Resolve anchor period.
     # Default as-of is the present day; pinning a period moves it to that period's end.  # Makes historical dashboards deterministic.
     if period is not None and current is not None:  # Caller pinned a specific period.
@@ -616,7 +640,42 @@ def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK) -> dict:
         kpis["receivables"] = {"value": aging["total"], "delta_pct": None, "spark": []}
 
     approvals = _approvals(entity, reader)
+    chosen, windows = blocks.resolve_window(entity, as_of, current, window)
+    revenue_vs_budget = (
+        _revenue_vs_budget(entity, getattr(current, "fiscal_year", None)) if school_ledger else None
+    )
+    banks = (
+        blocks.bank_accounts(entity)
+        if reader.whole_tenant and reader.can("finance.bankaccount.view") else None
+    )
+    for bank in banks or []:
+        # Each account's month-end balance over the same window as the headline tiles.
+        bank["spark"] = _closing_series({bank.pop("gl_account_id")}, periods, NormalBalance.DEBIT)
     return {  # Complete dashboard payload.
+        "books": blocks.books_kind(entity),
+        "reader_first_name": (getattr(user, "first_name", "") or "").strip() or None,
+        "window": chosen.payload(),
+        "windows": [{"key": w.key, "label": w.label, "name": w.name} for w in windows],
+        "collections": (
+            blocks.collections(entity, chosen, scope=scope, billed_ok=invoices, collected_ok=payments)
+            if invoices or payments else None
+        ),
+        "channels": blocks.channels(entity, chosen, scope=scope) if payments else None,
+        "branches": (
+            blocks.branches(entity, chosen, as_of) if reader.whole_tenant and invoices else None
+        ),
+        "bank_accounts": banks,
+        "budget": (
+            blocks.budget_lines(entity, revenue_vs_budget, getattr(current, "fiscal_year", None), as_of)
+        ),
+        "top_payers": blocks.top_payers(entity, as_of, scope=scope) if invoices else None,
+        "receivables_summary": blocks.receivables_summary(entity, as_of, scope=scope) if invoices else None,
+        "attention": blocks.attention(entity, as_of, reader, user, banks=banks),
+        "upcoming": blocks.upcoming(entity, as_of, reader),
+        "payables_due": (
+            blocks.payables_due(entity, as_of, reader)
+            if reader.can("procurement.vendor_invoice.view") else None
+        ),
         "entity": entity.code,  # Entity code.
         "fiscal_year": _fiscal_year_label(current),  # Fiscal year label.
         "period": getattr(current, "name", None),  # Current period name.
@@ -624,9 +683,7 @@ def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK) -> dict:
         "narrowed": not reader.whole_tenant,  # Figures cover only the reader's branches.
         "fiscal_runway": _fiscal_runway(entity),  # Fiscal-calendar expiry warning.
         "kpis": kpis,  # Executive KPI cards.
-        "revenue_vs_budget": (
-            _revenue_vs_budget(entity, getattr(current, "fiscal_year", None)) if school_ledger else None
-        ),
+        "revenue_vs_budget": revenue_vs_budget,
         "ar_aging": aging,  # AR aging block.
         "trend": (
             _trend(entity, as_of, scope=scope, issued_ok=invoices, collected_ok=payments)
