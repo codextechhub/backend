@@ -30,7 +30,7 @@ from vs_rbac.permissions import (
 # branch stays visible to a branch-pinned caller; getting that backwards hides
 # every school-wide record from a branch admin, which looks like missing data
 # rather than a permission error and so goes unreported.
-from vs_rbac.scoping import branch_q
+from vs_rbac.scoping import branch_q, branch_scope
 
 from .models import (
     Account,
@@ -2301,7 +2301,15 @@ class FinanceDashboardView(APIView):
 
 # Group endpoint behavior for A R Aging View.
 class ARAgingView(APIView):
-    """docstring-name: AR aging report"""
+    """Customer balances by age bucket, with CSV, XLSX and PDF export.
+
+    Built from the invoices, debit notes, receipts and credit notes themselves,
+    so it narrows like the lists they come from: a branch-bound reader sees their
+    branches' documents and the school-wide ones, and nothing of another
+    branch's. The export is the same narrowed report.
+
+    docstring-name: AR aging report
+    """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
@@ -2314,7 +2322,8 @@ class ARAgingView(APIView):
 
         entity = resolve_entity(request)
         as_of = _resolve_date_param(request, "as_of")
-        report = ar_aging(entity, as_of=as_of)
+        scope = branch_scope(request, include_shared=True)
+        report = ar_aging(entity, as_of=as_of, scope=scope)
 
         columns = ["Code", "Customer"] + list(AGING_BUCKETS) + ["Net"]
         rows = [
@@ -2326,7 +2335,8 @@ class ARAgingView(APIView):
         summary += [format_naira(report.total_net)]
         export = _maybe_export(request, ReportTable(
             title="Accounts Receivable Aging",
-            subtitle=f"{entity.code} · as at {report.as_of}",
+            subtitle=f"{entity.code} · as at {report.as_of}"
+            + (" · the reader's branches only" if scope.is_narrowed else ""),
             columns=columns,
             rows=rows,
             summary_rows=[summary],
@@ -2351,6 +2361,7 @@ class ARAgingView(APIView):
                 ],
                 "bucket_totals": {b: _money(v) for b, v in report.bucket_totals.items()},
                 "total_net": _money(report.total_net),
+                "narrowed": scope.is_narrowed,
             },
         )
 

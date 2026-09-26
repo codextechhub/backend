@@ -2517,13 +2517,20 @@ class ARAdjustmentListView(_FinanceBase):
     """GET /finance/ar-adjustments/ - unified customer refunds + bad-debt write-offs.
 
     Filters: ``?type=(refund|writeoff)`` and ``?search=``. The merged list is sorted
-    by date and paginated; KPI totals (written-off YTD, pending refund count) ride
-    in the response so they stay accurate across pages.
+    by date and paginated; KPI totals (written-off YTD, pending count, refundable
+    credit) ride in the response so they stay accurate across pages.
+
+    Opens on either ``finance.refund.view`` or ``finance.writeoff.view``, and each
+    kind of row, and each KPI drawn from it, goes only to a reader holding that
+    kind's key: a credit controller who handles write-offs sees write-offs, not
+    the refunds paid back to parents. A KPI the reader may not see is ``None``;
+    ``kinds`` lists the row kinds they receive. Every figure is narrowed to the
+    reader's branches, refundable credit included.
 
     docstring-name: Refunds & write-offs
     """
 
-    rbac_permission = "finance.refund.view"
+    rbac_permission = ["finance.refund.view", "finance.writeoff.view"]
 
     # Handle GET requests for this endpoint.
     def get(self, request):
@@ -2537,6 +2544,14 @@ class ARAdjustmentListView(_FinanceBase):
         type_f = (request.query_params.get("type") or "").lower()
         search = (request.query_params.get("search") or "").strip().lower()
 
+        def holds(key):
+            return is_vision_super_admin(request.user) or user_has_rbac_permission(
+                request.user, key, tenant=entity.tenant)
+
+        sees_refunds = holds("finance.refund.view")
+        sees_writeoffs = holds("finance.writeoff.view")
+        scope = branch_scope(request, include_shared=True)
+
         # One gate for the whole page. This view pulls up to 1000 refunds plus
         # the write-offs into memory before paginating, and the gate's answer
         # varies only by (document_type, tenant, branch) - so it is resolved once
@@ -2548,7 +2563,8 @@ class ARAdjustmentListView(_FinanceBase):
         # document through its ledger entity's owning tenant and its branch, and
         # without these every row would lazy-load them back - on a multi-branch
         # school that is two extra queries a row for a handful of distinct scopes.
-        for r in (Refund.objects.filter(branch_q(request, include_shared=True), entity=entity)
+        refunds = scope.filter(Refund.objects.filter(entity=entity)) if sees_refunds else Refund.objects.none()
+        for r in (refunds
                   .select_related("customer", "entity__tenant", "branch")
                   .order_by("-refund_date", "-id")[:1000]):
             refund_rows.append({
@@ -2559,8 +2575,8 @@ class ARAdjustmentListView(_FinanceBase):
                 "amount_naira": format_naira(r.amount), "status": r.status, "refund_id": r.id,
                 "approval_required": gate.required(r),
             })
-        writeoff_rows = _writeoff_rows(
-            entity, gate=gate, scope=branch_scope(request, include_shared=True),
+        writeoff_rows = (
+            _writeoff_rows(entity, gate=gate, scope=scope) if sees_writeoffs else []
         )
 
         # KPI totals - from the full sets, independent of the type filter / page.
@@ -2569,19 +2585,21 @@ class ARAdjustmentListView(_FinanceBase):
         # (writeoff_rows now also carries non-posted requests).
         written_off_ytd = sum(
             w["amount"] for w in writeoff_rows
-            if w["status"] == "POSTED" and w["date"][:4] == str(year))
-        # "Pending" spans both adjustment kinds awaiting posting/approval.
+            if w["status"] == "POSTED" and w["date"][:4] == str(year)
+        ) if sees_writeoffs else None
+        # "Pending" spans the adjustment kinds this reader sees.
         pending = (
-            Refund.objects.filter(branch_q(request, include_shared=True), entity=entity)
-            .exclude(status=DocumentStatus.POSTED).count()
-            + WriteOffRequest.objects.filter(branch_q(request, include_shared=True), entity=entity)
-            .exclude(status=DocumentStatus.POSTED).count()
+            refunds.exclude(status=DocumentStatus.POSTED).count()
+            + (scope.filter(WriteOffRequest.objects.filter(entity=entity))
+               .exclude(status=DocumentStatus.POSTED).count() if sees_writeoffs else 0)
         )
-        from .receivables import customer_refund_available_balances
-        active_customer_ids = Customer.objects.filter(
-            entity=entity, is_active=True).values_list("id", flat=True)
-        refundable_credit = sum(
-            customer_refund_available_balances(entity, active_customer_ids).values())
+        refundable_credit = None
+        if sees_refunds:
+            from .receivables import customer_refund_available_balances
+            active_customer_ids = scope.filter(Customer.objects.filter(
+                entity=entity, is_active=True)).values_list("id", flat=True)
+            refundable_credit = sum(
+                customer_refund_available_balances(entity, active_customer_ids).values())
 
         rows = []
         if type_f in ("", "refund"):
@@ -2611,6 +2629,7 @@ class ARAdjustmentListView(_FinanceBase):
                 "pending": pending,
                 "refundable_credit": refundable_credit,
             },
+            "kinds": [kind for kind, seen in (("REFUND", sees_refunds), ("WRITEOFF", sees_writeoffs)) if seen],
             "data": rows[start:start + page_size],
         })
 
