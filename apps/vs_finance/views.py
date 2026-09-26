@@ -2410,6 +2410,37 @@ class FinanceReceivablesDashboardView(APIView):
         )
 
 
+class FinanceSpendDashboardView(APIView):
+    """The Cash, spend & compliance tab of the Finance dashboard.
+
+    Same opening rule and query parameters as :class:`FinanceDashboardView`
+    (``?window=``, ``?period=``); each block is computed only for a reader who
+    holds its key, and the school's cash, bank, payroll and tax blocks only for
+    a reader who sees the whole school. See :mod:`vs_finance.dashboard_spend`.
+
+    docstring-name: Finance dashboard: cash and spend
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasAnyModuleAccess]
+    rbac_modules = ["finance"]
+
+    def get(self, request):
+        from .dashboard import DashboardReader
+        from .dashboard_spend import spend_view
+
+        entity = resolve_entity(request)
+        return success_response(
+            message="Cash and spend dashboard retrieved.",
+            data=spend_view(
+                entity,
+                reader=DashboardReader.for_user(request.user, getattr(request.user, "tenant", None)),
+                window=request.query_params.get("window"),
+                period=_resolve_period(entity, request),
+                user=request.user,
+            ),
+        )
+
+
 # Group endpoint behavior for A R Aging View.
 class ARAgingView(APIView):
     """Customer balances by age bucket, with CSV, XLSX and PDF export.
