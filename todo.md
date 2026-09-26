@@ -556,6 +556,86 @@ narrowed reader with whole-school actuals; a branch statutory pack is not a
 filing and may be better withheld.
 VERIFIED (working tree before commit): vs_finance 805 OK.
 
+### D18. A branch administrator reads shared staff and changes only their own (33473d77, 2026-09-26)
+MODULES: M12 staff management, M04 roles and permissions, MRD.
+- Reading stays inclusive (own branch plus school-wide people); changing does
+  not. A branch-bound caller may change a staff record only when every posting
+  of that person sits inside the caller's branches. School-wide people, and
+  people also posted to a branch the caller does not cover, are read-only to
+  them: every staff write (record PATCH, posting, lifecycle, account actions,
+  resend, revoke invitation, qualifications, documents, leave filed for
+  somebody else, bulk posting, bulk role) answers 403
+  `SHARED_RECORD_READ_ONLY`. A person still changes their own record under the
+  existing self-edit rules. Every list and detail row carries `can_manage`.
+- Postings stay inside the caller's branches: naming another branch, or
+  school-wide, answers 403 `BRANCH_OUTSIDE_REACH`. A new person added by a
+  caller covering exactly one branch is filed under it.
+- `multi_branch` on the staff endpoints is now per viewer: false for a viewer
+  who works in one branch, so `branch_name`, `posted_school_wide`, the branch
+  filter, the header's branch breakdown (role breakdown instead) and the
+  roster (404) all recede for them. Imports still read the school-level rule.
+- The roster answers only for a branch the caller works in (404 otherwise).
+- Role grants (`vs_rbac.grant_reach`): a branch-bound caller may grant, change,
+  replace or revoke only a grant whose reach is non-empty and inside their
+  branches, held by somebody posted only there. A school-wide grant from them is
+  refused. Applies to `/rbac/tenants/<slug>/role-assignments/` create, update,
+  revoke and replace, and to the staff bulk role grant. The assignment list and
+  detail show a branch-bound caller only holders at their branches or
+  school-wide.
+MUST SAY: for M12, the read/write asymmetry, the two error codes, `can_manage`,
+the per-viewer posting dimension and roster scoping; for M04, the grant reach
+rule and the narrowed holder list. D19 extends the same rule to the academic
+structure and the calendar.
+VERIFIED (working tree before commit): schools.vs_staff 287 OK plus 21 new in
+test_branch_write_scope; vs_rbac 855 OK (7 new in test_grant_reach); vs_user 414 OK.
+
+### D19. Shared academic and calendar rows are read-only to a branch administrator (33473d77, 2026-09-26)
+MODULES: M12 staff management (teaching duties), the academic structure and
+calendar FRD(s), M04 roles and permissions, MRD.
+- One rule for every module, in `vs_rbac.scoping.caller_may_change`: a
+  branch-bound caller may change a row only when every branch it belongs to is
+  theirs; a shared row (no branch) is read-only to them, answered 403
+  `SHARED_RECORD_READ_ONLY` (`vs_rbac.exceptions.SharedRecordReadOnly`). Staff
+  (D18) now reads through the same predicate.
+- A row is judged by its own branch, else its parent's
+  (`vs_academics.services.scoping.row_branch_ids`): session by the branches it
+  covers, term by its session, exam by its exam period, timetable slot and exam
+  paper by its class. So Ikeja schedules its own classes' papers inside a
+  school-wide exam, but cannot create, rename or publish that exam.
+- Applied at each module's `get_object` (every detail view) and at every
+  hand-written write: class/subject/structure archive and restore, subject
+  offerings, session create/edit/activate/archive, adding a term, class
+  timetable put/duplicate/clear/publish, slot create, exam create, paper
+  create/update, exam publish, and staff teaching duties and class teacher.
+  Copying a year forward is whole-tenant only. Activating a year is refused
+  when it would narrow or end a shared year.
+- Subject offerings: an offering belongs to the narrower of subject and level.
+  A branch-bound caller editing a shared subject changes only offerings at
+  their own levels; offerings at other branches' levels are kept, where a plain
+  replace used to delete them. The replace is now also limited to the year being
+  edited; it used to delete the subject's offerings in every year.
+- Read leaks closed with it: calendar event, period, room, exam, exam paper and
+  timetable slot detail routes resolved by tenant only (another branch's row by
+  id was readable and writable); the exam list and exam paper lists were not
+  branch-scoped; the session list showed every branch's years.
+- Every academic and calendar row carries `can_manage`; school-fe hides the
+  write controls where it is false.
+BEHAVIOUR CHANGES A SCHOOL WILL NOTICE: a branch head can no longer create an
+exam under a school-wide exam period (they add their classes' papers to the one
+a school-wide administrator creates), and can no longer name the class teacher
+or give teaching duties on a school-wide class.
+MUST SAY: the rule, the error code, `can_manage`, the parent-scope table above,
+the two behaviour changes (both confirmed by the product owner on 2026-09-26),
+and the offerings fixes. school-fe also stops drawing where a row applies (the
+Scope column, "School-wide" and branch chips, "Applies to" lines, a room's branch
+suffix) for a reader who works in one branch, the academics and calendar
+counterpart of the staff posting receding per viewer; the API still returns the
+branch fields. NEEDS ATTENTION: school-fe offers no way for a branch head to add
+their own levels to a shared subject's offerings, though the endpoint allows it.
+VERIFIED (working tree before commit): schools.vs_academics 309 OK;
+schools.vs_calendar 251 OK (24 new in test_shared_rows_read_only);
+schools.vs_staff 288 OK; vs_rbac 855 OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
