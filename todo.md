@@ -704,6 +704,57 @@ MUST SAY: which account is a control or cash account is readable without the
 chart-of-accounts key; balances are not.
 VERIFIED (working tree before commit): vs_finance 828 OK.
 
+### D25. Exceptions and the organisation read as at a day; guardian names in parts on imports; audit types no longer vanish (e420d602, 2026-09-26)
+MODULES: M03 identity, team and organogram; M04 roles and permissions; M05 audit and activity logging; M11 student management (both imports).
+- AUDIT VOCABULARY. `FIELD_REGISTRY_SYNCED`, `FIELD_ACCESS_CHANGED`,
+  `FIELD_ACCESS_RESET`, `FIELD_OVERRIDE_CREATED` and `FIELD_OVERRIDE_LIFTED`
+  are registered `AuditActionType` values (vs_audit 0016). Before this they
+  reached `RBACAuditLog` and were dropped from the central trail without an
+  error. Permission-group create, update and delete use CREATE, UPDATE and
+  DELETE with entity_type `permission_group`, not dotted names.
+  `record_rbac_audit` raises on an unregistered type; a source scan test holds
+  every literal passed to `emit_audit_event` or `record_rbac_audit`.
+- EXCEPTIONS AS AT A DAY. `UserFieldAccessOverride` is tracked by vs_history.
+  `GET .../users/<id>/field-access-overrides/?as_at=` and
+  `.../permission-overrides/?as_at=` list what stood at the end of that day,
+  paginated, with `as_at` and `history_starts`; `is_expired` is judged at that
+  moment; `role_state` and `granted_by_role` are null (role switches and a
+  role's permissions keep no history). Same keys as the live list.
+- LIST HISTORY START. `vs_history.TrackingStart` (vs_history 0002) records when
+  tracking reached each model; `baseline_record_history` stamps it once
+  (earliest version, else the run). A list read as at a day is refused with 409
+  HISTORY_NOT_KEPT before the later of the owner's history and the model's
+  tracking start.
+- CX PROFILE ORGANISATION AS AT A DAY. `OrgNode` and `Position` are tracked
+  (shape only: name, code, kind, parent, is_active; title, code, org_node,
+  reports_to, is_active). A past profile names the primary seat held that day
+  (`PositionAssignment` dates, a tenure ending on a day is over that day), its
+  unit chain as it stood, and as line manager the holder of the reports-to seat
+  that day. Before the organisation's tracking start the unit, department,
+  division and line manager are null and `as_at.organisation_history_starts`
+  names the first day they are known. The live profile is unchanged.
+- GUARDIAN NAMES ON IMPORTS. Students and guardians templates gain Guardian
+  First, Middle and Last Name ahead of Guardian Name (vs_import_data 0020);
+  Guardian Name becomes optional. Parts win and create an unflagged guardian;
+  one line alone imports with a warning and is split and flagged; once any part
+  is given, first and last are both required. Every template column is a
+  required header, so a school's old downloaded template is refused until it
+  downloads the new one.
+MUST SAY: a past view never fills anything in from today; exceptions on a past
+view carry no role comparison; the RBAC audit refuses a type the central trail
+would drop.
+RESOLVES: the M03 attention row "A past CX staff view reads the organisation
+around the seat from today" and the M04 row "Field exceptions keep no history";
+the MRD M12 box sentence "Field exceptions are not yet kept in the record
+history" is no longer true.
+TOOLING: start from the versions in 51385f40 (MRD v2.87, M03 v1.17, M05 v1.6,
+M12 v2.10). When cloning rows or tables, run `repair_ooxml()` and
+`normalise_change_log()` from docs/frd/tools/patch_staff_id_and_auth_events_docs.py
+before saving, and use its `set_status()` for a new requirement's status.
+VERIFIED: vs_history 23, vs_audit 96, vs_import_data 83, vs_students 327,
+vs_staff 316, vs_rbac 868, vs_user 421, all OK; driven in the console and the
+school app against backdated history, restored afterwards.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
