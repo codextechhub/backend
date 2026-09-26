@@ -534,6 +534,28 @@ screen. Remove from M19 NEEDS ATTENTION the D14 note that the list refuses a
 write-off holder.
 VERIFIED (working tree before commit): vs_finance 792 OK.
 
+### D17. Branch financial statements from the reader's own journals (4e3f3456, 2026-09-26)
+MODULES: M19 finance and accounting, MRD.
+- A branch-bound `finance.report.view` reader's trial balance, income statement,
+  balance sheet, cash flow, changes in equity, cost & dimension analysis,
+  statutory pack and AR reconciliation are built from the journal lines of
+  entries in their branches plus school-wide entries
+  (`vs_finance.branch_ledger`); a whole-school reader's figures are unchanged.
+  Every journal balances, so branch statements still balance and reconcile.
+- Each report payload and export carries `narrowed`; narrowed exports are
+  subtitled "the reader's branches and school-wide entries only".
+- A narrowed income statement has no budget column (the budget is the
+  school's plan). The Finance dashboard's cash, receivables, payables and net
+  income read the same branch ledger; revenue vs budget and the period close
+  remain whole-school only (supersedes the D15 rule that withheld all ledger
+  blocks from a narrowed reader).
+MUST SAY: branch statements and their inclusive branch rule, that a branch's
+cash is what its own entries moved (branches bank in shared accounts), and the
+budget exclusion. NEEDS ATTENTION for M19: the Budgets screen still compares a
+narrowed reader with whole-school actuals; a branch statutory pack is not a
+filing and may be better withheld.
+VERIFIED (working tree before commit): vs_finance 805 OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
