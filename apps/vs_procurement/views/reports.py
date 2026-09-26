@@ -450,7 +450,8 @@ class ProcurementDashboardView(_ProcBase):
     :func:`vs_procurement.dashboard.procurement_dashboard`), and every
     document-derived figure is narrowed to the caller's branch, so a branch-bound
     viewer's spend, order pipeline, overdue bills and approval cards reconcile with
-    the lists they can actually open.
+    the lists they can actually open. ``?window=`` picks this month, the
+    school's term or the year to date, as on the finance dashboard.
     """
     permission_classes = [IsAuthenticatedAndActive & HasAnyModuleAccess]
     rbac_modules = ["procurement"]
@@ -467,6 +468,7 @@ class ProcurementDashboardView(_ProcBase):
             data=procurement_dashboard(
                 entity, user=request.user, branch_scope=_scope(request, entity),
                 reader=DashboardReader.for_user(request.user, getattr(request.user, "tenant", None)),
+                window=request.query_params.get("window"),
             ),
         )
 

@@ -37,18 +37,18 @@ class ProcurementDashboardAccessTests(_BranchTenantsFixture, TestCase):
         )
 
         self.assertIsNotNone(data["kpis"]["pending_approvals"])
-        for kpi in ("total_spend_mtd", "open_purchase_orders", "overdue_invoices", "active_vendors"):
+        for kpi in ("spend", "open_purchase_orders", "overdue_invoices", "active_vendors"):
             self.assertIsNone(data["kpis"][kpi], kpi)
-        for block in ("spend_by_category", "purchase_order_status",
-                      "monthly_spend_trend", "recent_activity"):
+        for block in ("spend_by_category", "committed_vs_spent", "top_vendors",
+                      "exceptions", "bills_due", "contracts_ending", "recent_activity"):
             self.assertIsNone(data[block], block)
 
     def test_a_school_wide_analyst_gets_every_analytics_block(self):
         data = self.dashboard(self.reader("head@t.com", "procurement.analytics.view"))
 
         self.assertFalse(data["narrowed"])
-        self.assertIsNotNone(data["kpis"]["total_spend_mtd"])
-        self.assertIsNotNone(data["monthly_spend_trend"])
+        self.assertIsNotNone(data["kpis"]["spend"])
+        self.assertIsNotNone(data["committed_vs_spent"])
         self.assertIsNotNone(data["recent_activity"])
 
     def test_a_branch_analyst_does_not_get_the_unnarrowed_activity_feed(self):
@@ -57,7 +57,7 @@ class ProcurementDashboardAccessTests(_BranchTenantsFixture, TestCase):
         )
 
         self.assertTrue(data["narrowed"])
-        self.assertIsNotNone(data["kpis"]["total_spend_mtd"])
+        self.assertIsNotNone(data["kpis"]["spend"])
         self.assertIsNone(data["recent_activity"])
 
     def test_a_reader_with_no_procurement_key_is_refused(self):

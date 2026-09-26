@@ -6815,18 +6815,17 @@ class ProcurementDashboardTests(_P2PFixtureMixin, TestCase):
         other_bill.save(update_fields=["status", "subtotal", "tax_total", "total", "updated_at"])
 
         data = procurement_dashboard(entity, as_of=datetime.date(2026, 1, 20))
-        self.assertEqual(data["kpis"]["total_spend_mtd"]["value"]["kobo"], 2_000_000)
-        self.assertEqual(data["kpis"]["open_purchase_orders"], {"count": 1, "partial_count": 1})
-        self.assertEqual(
-            {item["key"]: item["count"] for item in data["purchase_order_status"]["items"]},
-            {"APPROVED": 0, "PARTIAL": 1, "PENDING": 0, "DRAFT": 0, "RECEIVED": 1},
-        )
+        self.assertEqual(data["kpis"]["spend"]["value"]["kobo"], 2_000_000)
+        orders = data["kpis"]["open_purchase_orders"]
+        self.assertEqual((orders["count"], orders["partial_count"]), (1, 1))
+        # The fully received order has left the pipeline; the part-received one is flagged.
+        self.assertEqual((data["pipeline"]["orders"]["count"], data["pipeline"]["orders"]["flag"]), (1, 1))
         self.assertEqual(data["kpis"]["overdue_invoices"]["count"], 1)
         self.assertEqual(data["kpis"]["overdue_invoices"]["amount"]["kobo"], 1_500_000)
         self.assertEqual(data["kpis"]["active_vendors"]["on_hold_count"], 1)
         self.assertEqual(data["spend_by_category"]["items"][0]["label"], "Cloud")
-        self.assertEqual(data["monthly_spend_trend"]["values"][-1], 2_000_000)
-        self.assertEqual(len(data["monthly_spend_trend"]["labels"]), 8)
+        self.assertEqual(data["committed_vs_spent"]["spent"][0], 2_000_000)
+        self.assertEqual(len(data["committed_vs_spent"]["labels"]), 12)
 
     def test_dashboard_approval_cards_are_actor_and_entity_scoped(self):
         from django.contrib.auth import get_user_model

@@ -68,19 +68,19 @@ FLOW_ORDER = (
 # Windows                                                                     #
 # --------------------------------------------------------------------------- #
 
-def _dates(window: Window, as_of: datetime.date) -> tuple[datetime.date, datetime.date]:
+def window_days(window: Window, as_of: datetime.date) -> tuple[datetime.date, datetime.date]:
     """The days a window covers up to today."""
     return window.start, min(window.end, as_of)
 
 
-def _same_point_before(entity, window: Window, as_of) -> tuple[datetime.date, datetime.date] | None:
+def same_point_before(entity, window: Window, as_of) -> tuple[datetime.date, datetime.date] | None:
     """The previous window cut to as many days as this one has run, for a fair comparison."""
     from .dashboard_receivables import previous_window
 
     before = previous_window(entity, window)
     if before is None:
         return None
-    start, end = _dates(window, as_of)
+    start, end = window_days(window, as_of)
     return before.start, min(before.end, before.start + (end - start))
 
 
@@ -193,7 +193,7 @@ def _cash_on(entity, day, cash_ids) -> int:
 
 def cash_movement(entity, window: Window, as_of, sets) -> dict:
     """Opening cash, each kind of money in and out over the window, and cash today."""
-    start, end = _dates(window, as_of)
+    start, end = window_days(window, as_of)
     opening = _cash_on(entity, start, sets["cash"])
     flows = _cash_flows(entity, start, end, sets)
     steps = [{"key": k, "amount": _m(flows[k])} for k in FLOW_ORDER if flows.get(k)]
@@ -277,10 +277,10 @@ def operating_spend(entity, window, as_of, sets, scope=UNNARROWED) -> dict:
     """Posted expense in the window, against the same point of the window before."""
     from .constants import JournalSource
 
-    start, end = _dates(window, as_of)
+    start, end = window_days(window, as_of)
     lines = _expense_lines(entity, start, end, scope, sets)
     amount = _spent(lines)
-    before = _same_point_before(entity, window, as_of)
+    before = same_point_before(entity, window, as_of)
     previous = _spent(_expense_lines(entity, *before, scope, sets)) if before else None
     payroll = _spent(lines.filter(entry__source=JournalSource.PAYROLL))
     return {
@@ -294,7 +294,7 @@ def operating_spend(entity, window, as_of, sets, scope=UNNARROWED) -> dict:
 
 def spending(entity, window, as_of, sets, scope=UNNARROWED) -> dict | None:
     """The window's spending by cost centre, or by expense account when nothing is tagged."""
-    start, end = _dates(window, as_of)
+    start, end = window_days(window, as_of)
     lines = _expense_lines(entity, start, end, scope, sets)
     by_centre = lines.filter(cost_center__isnull=False).exists()
     key, name = ("cost_center_id", "cost_center__name") if by_centre else ("account_id", "account__name")
@@ -388,7 +388,7 @@ def expense_claims(entity, window, as_of, sets, scope=UNNARROWED) -> dict:
     approved = claims.filter(status=DocumentStatus.POSTED).exclude(payment_status=InvoicePaymentStatus.PAID)
     submitted = waiting.aggregate(n=Count("id"), amount=Sum("total"))
     owed = approved.aggregate(n=Count("id"), amount=Sum(F("total") - F("amount_paid")))
-    start, end = _dates(window, as_of)
+    start, end = window_days(window, as_of)
     paid = scope.filter(
         JournalLine.objects.filter(
             entry__entity=entity, entry__status__in=LEDGER_STATUSES,
@@ -504,7 +504,7 @@ def fixed_assets(entity, window, as_of, scope=UNNARROWED) -> dict | None:
     )
     if not rows:
         return None
-    start, end = _dates(window, as_of)
+    start, end = window_days(window, as_of)
     charged = DepreciationSchedule.objects.filter(
         asset__in=assets, is_posted=True, depreciation_date__gte=start, depreciation_date__lte=end,
     ).aggregate(total=Sum("amount"))["total"]
