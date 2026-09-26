@@ -843,6 +843,27 @@ MODULES: M20 procurement.
   (after the finance dashboard demo; DEBUG only).
 VERIFIED (working tree before commit): vs_procurement 603 OK.
 
+### D30. The Spend & suppliers view of the Procurement dashboard (b7532f90, 2026-09-26)
+MODULES: M20 procurement.
+- `GET /procurement/reports/dashboard/suppliers/` (same `?window=`; opens to any
+  procurement key) returns `spend` (`value`, `prior_value`, `delta_pct`, `plan`,
+  `vendors_with_spend`, `vendors_for_80pct`), `vendors_paid`, `deliveries`,
+  `non_po`, `scorecard`, `open_rfqs`, `savings`, `by_branch`, `cycle_times`,
+  `vendor_base`.
+- `spend.plan` is the approved school budget on the expense accounts purchasing
+  posts to, net and year to date; `null` without one and for a branch reader.
+- `ProcurementSettings.non_po_spend_limit_pct` (0 to 100, default 2), read and
+  written through the procurement settings endpoint; migration 0035.
+- `cycle_times.steps[].key`: `approval` (request to REQUISITION_APPROVED audit),
+  `ordering`, `delivery`, `payment`; medians over steps ending in the window.
+- `seed_procurement_suppliers_demo --entity <CODE>` (after the dashboard demo;
+  DEBUG only). It approves the school's draft plan and opts the books in to
+  non-PO bills.
+MUST SAY: savings compare the awarded quote with the highest submitted quote on
+the same RFQ; vendor KYC documents carry no expiry, so the vendor base counts
+vendors still awaiting KYC instead.
+VERIFIED (working tree before commit): vs_procurement 614 OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
