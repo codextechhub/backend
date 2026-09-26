@@ -1192,7 +1192,15 @@ class WorkflowStageApproverOverrideViewSet(TenantScopedMixin, ModelViewSet):
 # ── Delegations ───────────────────────────────────────────────────────────────
 
 class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
-    """docstring-name: Approval delegations"""
+    """Hand one's approvals to somebody else for a period.
+
+    Open to every signed-in member of the tenant, since anybody who approves
+    may be away. ``document-types/`` lists what a delegation may be narrowed
+    to, by name, so the person filling the form picks "Leave request" rather
+    than typing ``leave.request``.
+
+    docstring-name: Approval delegations
+    """
     serializer_class = ApprovalDelegationSerializer
     permission_classes = [IsAuthenticatedAndActive]
 
@@ -1216,6 +1224,22 @@ class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
         # tenant the delegate was resolved inside and the tenant stored on the row
         # are the same expression and cannot drift into disagreeing.
         serializer.save(tenant=self.get_tenant(), delegator=self.request.user)
+
+    @action(detail=False, methods=["get"], url_path="document-types")
+    def document_types(self, request):
+        """GET /workflow/delegations/document-types/ - what a delegation can cover.
+
+        The document types this tenant raises, each with the name screens use,
+        ordered by that name. A delegation for any other type would never apply
+        to anything, so the serializer refuses one.
+        """
+        from vs_workflow.handlers.registry import handlers_raised_by
+
+        rows = [
+            {"value": t, "label": document_type_label(t)}
+            for t in handlers_raised_by(self.get_tenant())
+        ]
+        return Response(sorted(rows, key=lambda row: row["label"]))
 
     @action(detail=True, methods=["post"])
     def revoke(self, request, pk=None):

@@ -427,3 +427,56 @@ class DelegationWriteBoundaryTests(_TwoTenants):
         self.assertEqual(foreign.status_code, unknown.status_code)
         self.assertEqual(foreign.data, unknown.data)
         self.assertFalse(ApprovalDelegation.all_objects.exists())
+
+
+class DelegationDocumentTypeTests(_TwoTenants):
+    """A delegation is narrowed by choosing a named type, never by typing a code.
+
+    The engine matches ``document_type`` exactly, so a typed ``leave.requests``
+    used to save a delegation that never applied to anything and said nothing.
+    """
+
+    _payload = DelegationWriteBoundaryTests._payload
+    _field_errors = staticmethod(DelegationWriteBoundaryTests._field_errors)
+
+    def _types(self):
+        view = ApprovalDelegationViewSet.as_view({"get": "document_types"})
+        return _call(view, "get", self.admin, self.mine.tenant)
+
+    def _create_for(self, document_type):
+        colleague = make_school_admin(self.mine_branch, email=f"deleg-{next(_counter)}@test.com")
+        view = ApprovalDelegationViewSet.as_view({"post": "create"})
+        return _call(view, "post", self.admin, self.mine.tenant,
+                     self._payload(colleague.pk) | {"document_type": document_type})
+
+    def test_the_form_is_offered_the_types_this_school_raises_by_name(self):
+        rows = self._types().data
+
+        self.assertIn({"value": "schools.leave_request", "label": "Leave request"}, rows)
+        self.assertEqual([row["label"] for row in rows], sorted(row["label"] for row in rows))
+        # A platform-only type is not something a school can delegate.
+        self.assertNotIn("PLATFORM_USER_CREATION", [row["value"] for row in rows])
+
+    def test_a_listed_type_saves(self):
+        resp = self._create_for("schools.leave_request")
+
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+        self.assertEqual(ApprovalDelegation.all_objects.get().document_type, "schools.leave_request")
+
+    def test_a_mistyped_code_is_refused_rather_than_saved_to_apply_to_nothing(self):
+        resp = self._create_for("leave.requests")
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("document_type", self._field_errors(resp))
+        self.assertFalse(ApprovalDelegation.all_objects.exists())
+
+    def test_a_type_only_the_platform_raises_is_refused_to_a_school(self):
+        resp = self._create_for("PLATFORM_USER_CREATION")
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_blank_still_means_every_type(self):
+        resp = self._create_for("")
+
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+        self.assertEqual(ApprovalDelegation.all_objects.get().document_type, "")

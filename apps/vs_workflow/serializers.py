@@ -471,9 +471,9 @@ class ApprovalDelegationSerializer(
         return document_type_label(obj.document_type)
 
     def validate(self, attrs):
-        """Fallback tenancy check on the delegate.
+        """Fallback tenancy check on the delegate, and a real document type.
 
-        Unreachable through the API - the field above already resolves inside the
+        The delegate check is unreachable through the API - the field above already resolves inside the
         tenant - and kept as the backstop for a binding that could not reach one
         (the mixin refuses those outright, so this covers a future field-level
         change too). It raises the identical message the lookup does, so neither
@@ -486,6 +486,20 @@ class ApprovalDelegationSerializer(
         delegate = attrs.get("delegate") or getattr(self.instance, "delegate", None)
         if delegate is not None and getattr(delegate, "tenant_id", None) != tenant.pk:
             raise serializers.ValidationError({"delegate": USER_NOT_FOUND})
+
+        # Blank covers every type. Anything else must be a type this tenant
+        # raises, because the engine matches it exactly and a typo would save a
+        # delegation that never applies.
+        document_type = (attrs.get("document_type") or "").strip()
+        if "document_type" in attrs:
+            attrs["document_type"] = document_type
+        if document_type:
+            from vs_workflow.handlers.registry import handlers_raised_by
+
+            if document_type not in handlers_raised_by(tenant):
+                raise serializers.ValidationError({
+                    "document_type": "Choose a document type from the list, or leave it as all types.",
+                })
         return attrs
 
 
