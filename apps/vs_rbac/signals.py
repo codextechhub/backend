@@ -532,6 +532,26 @@ def audit_permission_action_deleted(sender, instance, **kwargs):
 # TenantUserRoleAssignment - role assignment / revocation
 # ---------------------------------------------------------------------------
 
+def _grant_request_metadata(instance) -> dict:
+    """Who approved a grant that went through the ladder, and whether it was the requester.
+
+    Set by ``apply_role_grant_request`` on the instance it saves. "Who approved
+    their own grant" is a question the audit log has to answer, so it is a flag
+    rather than something to reconstruct from two ids.
+    """
+    request = getattr(instance, "_grant_request", None)
+    if request is None:
+        return {}
+    reviewer = getattr(instance, "_grant_reviewer", None)
+    reviewer_id = getattr(reviewer, "pk", None)
+    return {
+        "grant_request_id": str(request.pk),
+        "requested_by_id": str(request.requested_by_id),
+        "approved_by_id": str(reviewer_id) if reviewer_id else None,
+        "self_approved": reviewer_id == request.requested_by_id,
+    }
+
+
 @receiver(post_save, sender=TenantUserRoleAssignment)
 # Audit tenant-scoped role assignment and revocation events.
 def audit_tenant_role_assignment(sender, instance, created, **kwargs):
@@ -556,6 +576,7 @@ def audit_tenant_role_assignment(sender, instance, created, **kwargs):
                 "assignment_id": str(instance.pk),
                 "tenant_id": str(instance.tenant_id),
                 "role_id": str(instance.role_id),
+                **_grant_request_metadata(instance),
             },
         )
         return

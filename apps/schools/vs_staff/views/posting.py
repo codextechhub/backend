@@ -254,7 +254,7 @@ class StaffBulkRoleView(StaffViewMixin, APIView):
         )
         assert_caller_may_grant(request.user, self.tenant, role, branch)
 
-        granted, already = roles.grant_to_many(
+        granted, already, pending = roles.grant_to_many(
             tenant=self.tenant, role=role, branch=branch,
             people=[found[pk] for pk in data["staff_ids"]], actor=request.user,
         )
@@ -272,11 +272,11 @@ class StaffBulkRoleView(StaffViewMixin, APIView):
                 for row in rows
             ]
 
+        message = f"{role.name} granted to {len(granted)}."
+        if pending:
+            message += f" {len(pending)} waiting for approval."
         return success_response(
-            message=(
-                f"{role.name} granted to {len(granted)}. Existing roles are "
-                f"untouched."
-            ),
+            message=f"{message} Existing roles are untouched.",
             data={
                 "role": {"id": role.pk, "key": role.key, "name": role.name},
                 "reach": branch.name if branch else ", ".join(selected_names) if selected_names else "School-wide",
@@ -284,6 +284,9 @@ class StaffBulkRoleView(StaffViewMixin, APIView):
                 # Named rather than counted: "2 already had it" sends somebody
                 # back through a list of forty to work out which two.
                 "already_held": named(already),
+                # A restricted role the granter does not hold waits on the
+                # ladder, one request per person.
+                "pending_approval": named(pending),
             },
         )
 

@@ -140,7 +140,7 @@ class _RestrictionRules(_SchoolShape):
         self.assertNotIn(UPDATE, _granted(self.storekeeper))
         self.assertEqual(self._pending(response), [UPDATE])
 
-    def test_giving_yourself_a_role_that_carries_it_is_refused_by_the_ceiling(self):
+    def test_giving_yourself_a_role_that_carries_it_waits_for_approval(self):
         make_role_permission(self.storekeeper, Permission.objects.get(key=UPDATE))
         url = reverse("rbac-assignment-list-create", kwargs={"tenant_slug": self.slug})
         response = _client(self.okafor).post(
@@ -148,8 +148,13 @@ class _RestrictionRules(_SchoolShape):
             {"user": self.okafor.pk, "role": self.storekeeper.pk},
             format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN, response.data)
-        self.assertIn("grant authority", str(response.data["message"]))
+        # Pinned to Lekki in the multi-branch school, he may not grant a
+        # school-wide role at all, and that refusal comes before any ladder.
+        expected = (
+            status.HTTP_400_BAD_REQUEST if self.multi_branch
+            else status.HTTP_202_ACCEPTED
+        )
+        self.assertEqual(response.status_code, expected, response.data)
         self.assertFalse(
             TenantUserRoleAssignment.objects.filter(
                 user=self.okafor, role=self.storekeeper,

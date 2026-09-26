@@ -58,6 +58,29 @@ class EmptyShapeTests(StaffFixture):
         )
         response = self.get(self.admin, "staff-roles", pk=bare.pk)
         self.assertEqual(response.data["data"]["roles"], [])
+        self.assertEqual(response.data["data"]["pending"], [])
+
+    def test_a_grant_waiting_for_approval_is_listed_apart_from_the_roles(self):
+        """It confers nothing yet, so it must not read as a role they hold."""
+        from vs_rbac.services import grant_role
+        from vs_rbac.tests.helpers import make_permission, make_role, make_role_permission
+
+        finance = make_role(self.school, name="Finance Admin", key="finance_admin")
+        make_role_permission(
+            finance, make_permission("finance.journal.post", is_restricted=True),
+        )
+        grant_role(
+            tenant=self.tenant, user=self.eze.user, role=finance, branch=None,
+            actor=self.admin,
+        )
+
+        data = self.get(self.admin, "staff-roles", pk=self.eze.pk).data["data"]
+
+        self.assertNotIn("finance_admin", [row["role_key"] for row in data["roles"]])
+        self.assertEqual(
+            [(row["role_key"], row["status"]) for row in data["pending"]],
+            [("finance_admin", "PENDING")],
+        )
 
 
 class QueryCountTests(StaffFixture):

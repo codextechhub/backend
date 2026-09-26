@@ -1728,6 +1728,126 @@ class TenantRoleChangeDeltaItem(TimeStampedModel):
         return f"{self.request_id} {self.operation} {self.permission_id}"
 
 
+class TenantRoleGrantRequest(TimeStampedModel):
+    """A role grant waiting on the approval ladder.
+
+    Giving somebody a role whose restricted permissions the granter does not
+    hold is not refused and not written: it is raised here and routed through
+    the ``rbac.role_grant`` ladder, the same way a restricted addition to a role
+    is routed through ``rbac.role_change``. The grant is written only when the
+    ladder approves, by :func:`vs_rbac.services.apply_role_grant_request`, and
+    it names the requester as the person who granted it.
+
+    The refusal this replaces could never be satisfied in a school with one
+    administrator. Nobody there holds the finance keys before a Finance Admin
+    exists, so nobody could seat the first one, and the only way out was CodeX
+    reaching into the tenant. The ladder lets the requester decide their own
+    when nobody else can, and records that they did.
+
+    ``replaces`` is set when the request came from changing one grant into
+    another. The old grant stays in force until approval and is withdrawn in
+    the same transaction that writes the new one, so the person is never left
+    between the two.
+
+    ``assignment`` is the grant the approval wrote, or null while pending and
+    when the request closed without one.
+    """
+
+    workflow_document_type = "rbac.role_grant"
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        APPROVED = "APPROVED", "Approved"
+        DENIED = "DENIED", "Denied"
+        APPLY_FAILED = "APPLY_FAILED", "Apply Failed"
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant",
+        on_delete=models.PROTECT,
+        related_name="role_grant_requests",
+    )
+    requested_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="tenant_role_grant_requests_made",
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="tenant_role_grant_requests",
+    )
+    role = models.ForeignKey(
+        TenantRoleTemplate,
+        on_delete=models.PROTECT,
+        related_name="grant_requests",
+    )
+    branch = models.ForeignKey(
+        Branch,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="role_grant_requests",
+    )
+    replaces = models.ForeignKey(
+        TenantUserRoleAssignment,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="replacement_requests",
+    )
+    reason_note = models.TextField(blank=True)
+
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    reviewer = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tenant_role_grant_requests_reviewed",
+    )
+    reviewer_notes = models.TextField(blank=True)
+    submitted_at = models.DateTimeField(default=timezone.now)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    assignment = models.OneToOneField(
+        TenantUserRoleAssignment,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="grant_request",
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["tenant", "status", "submitted_at"]),
+            models.Index(fields=["tenant", "user", "status"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"TRGR:{self.id} ({self.status})"
+
+    def clean(self):
+        # Every reference sits inside the request's tenant.
+        for name in ("role", "branch", "replaces"):
+            related = getattr(self, name, None)
+            if related is not None and self.tenant_id and related.tenant_id != self.tenant_id:
+                raise ValidationError(f"{name} must belong to the same tenant as the request.")
+
+    def _decide(self, status, reviewer, notes: str):
+        self.status = status
+        self.reviewer = reviewer
+        self.reviewer_notes = notes
+        self.decided_at = timezone.now()
+
+    def mark_denied(self, reviewer, notes: str):
+        self._decide(self.Status.DENIED, reviewer, notes)
+
+    def mark_approved(self, reviewer, notes: str = ""):
+        self._decide(self.Status.APPROVED, reviewer, notes)
+
+    def mark_apply_failed(self, reviewer, notes: str):
+        self._decide(self.Status.APPLY_FAILED, reviewer, notes)
+
+
 # ---------------------------------------------------------------------------
 # RBACAuditLog - authoritative, append-only audit for RBAC actions
 # ---------------------------------------------------------------------------

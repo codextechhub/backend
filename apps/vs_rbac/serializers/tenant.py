@@ -25,6 +25,7 @@ from ..models import (
     PermissionScope,
     TenantRoleChangeDeltaItem,
     TenantRoleChangeRequest,
+    TenantRoleGrantRequest,
     TenantRoleGroup,
     TenantRolePermission,
     TenantRoleTemplate,
@@ -759,12 +760,17 @@ class TenantUserRoleAssignmentSerializer(
     or branch belonging to another tenant is reported exactly like one that does
     not exist. Nothing is ever accepted across a tenant boundary.
 
-    Assignment carries its own restricted rule and does not need a second one
-    here: ``missing_restricted_grant_authority`` refuses a role whose restricted
-    keys the assigner does not already hold, whoever the role is being given to.
-    That covers giving it to yourself, which is why this serializer has no
-    self-assignment clause of its own - a duplicate would be a second place for
-    the same rule to drift.
+    **A new grant is validated here and written by**
+    :func:`~vs_rbac.services.grant_role`, **not by this serializer.** A role
+    carrying restricted keys the assigner does not hold is not refused: it goes
+    to the approval ladder as a :class:`TenantRoleGrantRequest`, whoever it is
+    for, the assigner included. So the restricted rule is not checked on create
+    here - ``grant_role`` is where it lives, and every entry point that grants a
+    school role goes through it.
+
+    Changing the role on an existing grant has no ladder behind it and still
+    refuses a restricted role the editor does not hold, in one sentence rather
+    than a list of permission keys.
     """
 
     user = TenantScopedRelatedField(
@@ -959,26 +965,18 @@ class TenantUserRoleAssignmentSerializer(
             )
 
         if (
-            new_status == TenantUserRoleAssignment.AssignmentStatus.ACTIVE
+            self.instance is not None
+            and new_status == TenantUserRoleAssignment.AssignmentStatus.ACTIVE
             and role is not None
+            and role.pk != self.instance.role_id
         ):
             request = self.context.get("request")
             actor = request.user if request and request.user.is_authenticated else None
             if actor is not None:
-                from ..validators import (
-                    missing_restricted_grant_authority,
-                    role_restricted_permission_keys,
-                )
+                from ..services import grant_needs_approval
 
-                missing = missing_restricted_grant_authority(
-                    actor, role_restricted_permission_keys(role),
-                )
-                if missing:
-                    raise PermissionDenied(
-                        "You cannot assign a role carrying restricted "
-                        "permissions outside your grant authority: "
-                        f"{', '.join(sorted(missing))}."
-                    )
+                if grant_needs_approval(actor, role):
+                    raise PermissionDenied(restricted_grant_refusal(role))
 
         # A branch-bound caller grants, changes and removes only grants that
         # stay inside their branches, for people posted only there.
@@ -1027,11 +1025,10 @@ class TenantUserRoleAssignmentSerializer(
         return attrs
 
     def create(self, validated_data):
-        request = self.context.get("request")
-        actor = request.user if request and request.user.is_authenticated else None
-        validated_data["tenant"] = self._tenant()
-        validated_data["assigned_by"] = actor
-        return super().create(validated_data)
+        raise NotImplementedError(
+            "A new grant is written by vs_rbac.services.grant_role, which may "
+            "raise a request for approval instead."
+        )
 
     def update(self, instance, validated_data):
         new_status = validated_data.get("assignment_status", instance.assignment_status)
@@ -1053,6 +1050,64 @@ class TenantUserRoleAssignmentSerializer(
 
         instance.save()
         return instance
+
+
+def restricted_grant_refusal(role, *, adding: bool = False) -> str:
+    """The sentence for a restricted role somebody may not hand out directly.
+
+    One sentence, not the keys: a role like Finance Admin carries dozens of
+    restricted permissions, and listing them buries the reason. ``adding`` is
+    for a person being created, who has no profile to grant it from yet.
+    """
+    route = (
+        "Add them without it, then grant it from their profile"
+        if adding else "Grant it from their profile instead"
+    )
+    return (
+        f"{role.name} carries restricted permissions you do not hold, so you "
+        f"cannot give it this way. {route}, where it goes for approval."
+    )
+
+
+class TenantRoleGrantRequestSerializer(serializers.ModelSerializer):
+    """A grant waiting on the approval ladder, as the profile shows it."""
+
+    role_key = serializers.CharField(source="role.key", read_only=True)
+    role_name = serializers.CharField(source="role.name", read_only=True)
+    branch_id = serializers.IntegerField(read_only=True, allow_null=True)
+    branch_name = serializers.SerializerMethodField()
+    requested_by_name = serializers.SerializerMethodField()
+    replaces_role_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TenantRoleGrantRequest
+        fields = [
+            "id",
+            "status",
+            "user_id",
+            "role_key",
+            "role_name",
+            "branch_id",
+            "branch_name",
+            "replaces_id",
+            "replaces_role_name",
+            "reason_note",
+            "requested_by_name",
+            "submitted_at",
+        ]
+        read_only_fields = fields
+
+    def get_branch_name(self, obj):
+        if obj.branch_id:
+            return obj.branch.name
+        return "The role's own branches" if obj.role.branch_ids else "School-wide"
+
+    def get_requested_by_name(self, obj):
+        user = obj.requested_by
+        return f"{user.first_name} {user.last_name}".strip() or user.email
+
+    def get_replaces_role_name(self, obj):
+        return obj.replaces.role.name if obj.replaces_id else None
 
 
 # -----------------------------------------------------------------------------

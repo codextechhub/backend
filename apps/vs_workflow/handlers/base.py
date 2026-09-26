@@ -34,6 +34,13 @@ class BaseWorkflowHandler:
     #: a question the audit answers by comparing two columns.
     allows_requester_self_approval: bool = False
 
+    #: Narrows the exemption above to the case it exists for. When True, the
+    #: requester is an approver only if nobody else is on the stage: a school
+    #: with one administrator can still close its own request, and one with a
+    #: second administrator gets that person's decision rather than the
+    #: requester's. Ignored unless ``allows_requester_self_approval`` is True.
+    self_approval_only_when_alone: bool = False
+
     #: The fields of this document type a Dynamic Role condition may test,
     #: beyond those every document has - its amount and branch, and the person
     #: who raised it. Each is a :class:`~vs_workflow.conditions.fields.ConditionField`

@@ -403,6 +403,21 @@ def requester_may_self_approve(instance: WorkflowInstance) -> bool:
     return bool(getattr(handler, "allows_requester_self_approval", False))
 
 
+def _self_approval_only_when_alone(instance: WorkflowInstance) -> bool:
+    """Whether the type lets its requester decide only when nobody else can.
+
+    See ``BaseWorkflowHandler.self_approval_only_when_alone``.
+    """
+    from vs_workflow.exceptions import UnknownDocumentTypeError
+    from vs_workflow.handlers import get_handler
+
+    try:
+        handler = get_handler(instance.document_type)
+    except UnknownDocumentTypeError:
+        return False
+    return bool(getattr(handler, "self_approval_only_when_alone", False))
+
+
 def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[EligibleApprover]:
     """Build the full eligible approver list for a stage at the moment it activates.
 
@@ -494,12 +509,12 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     # document type that opts out says so on its handler, which is also the one
     # place to look for which types those are - see
     # ``BaseWorkflowHandler.allows_requester_self_approval``.
-    if not requester_may_self_approve(instance):
-        base_users = [
-            u for u in base_users if u is not None and u.pk != instance.requested_by_id
-        ]
-    else:
-        base_users = [u for u in base_users if u is not None]
+    base_users = [u for u in base_users if u is not None]
+    others = [u for u in base_users if u.pk != instance.requested_by_id]
+    if not requester_may_self_approve(instance) or (
+        others and _self_approval_only_when_alone(instance)
+    ):
+        base_users = others
 
     base_ids = {u.pk for u in base_users}
 

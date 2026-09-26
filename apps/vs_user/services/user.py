@@ -54,20 +54,11 @@ class UserCreationService:
     def _enforce_role_grant_ceiling(role_instance, requesting_user) -> None:
         if role_instance is None:
             return
-        from vs_rbac.validators import (
-            missing_restricted_grant_authority,
-            role_restricted_permission_keys,
-        )
+        from vs_rbac.serializers import restricted_grant_refusal
+        from vs_rbac.services import grant_needs_approval
 
-        missing = missing_restricted_grant_authority(
-            requesting_user, role_restricted_permission_keys(role_instance),
-        )
-        if missing:
-            raise PermissionDenied(
-                "You cannot assign a role carrying restricted permissions "
-                "outside your grant authority: "
-                f"{', '.join(sorted(missing))}."
-            )
+        if grant_needs_approval(requesting_user, role_instance):
+            raise PermissionDenied(restricted_grant_refusal(role_instance, adding=True))
 
     @staticmethod
     def _next_employee_id(tenant) -> str:

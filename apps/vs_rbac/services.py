@@ -11,6 +11,7 @@ Handles:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from django.db import transaction
 from django.utils import timezone
@@ -27,6 +28,7 @@ from .models import (
     PrebuiltRoleTemplate,
     TenantRoleChangeDeltaItem,
     TenantRoleChangeRequest,
+    TenantRoleGrantRequest,
     TenantRoleGroup,
     TenantRolePermission,
     TenantRoleTemplate,
@@ -680,6 +682,188 @@ def apply_role_change_request(obj: TenantRoleChangeRequest, reviewer, notes: str
         obj.save(update_fields=[
             "status", "reviewer", "reviewer_notes", "decided_at", "updated_at",
         ])
+
+
+@dataclass(frozen=True)
+class GrantOutcome:
+    """What asking to grant a role produced: the grant, or the request for it."""
+
+    assignment: TenantUserRoleAssignment | None = None
+    request: TenantRoleGrantRequest | None = None
+
+    @property
+    def pending(self) -> bool:
+        return self.request is not None
+
+
+def grant_needs_approval(actor, role) -> bool:
+    """True when *role* carries a restricted key *actor* does not hold."""
+    from .validators import (
+        missing_restricted_grant_authority,
+        role_restricted_permission_keys,
+    )
+
+    return bool(missing_restricted_grant_authority(
+        actor, role_restricted_permission_keys(role),
+    ))
+
+
+@transaction.atomic
+def grant_role(*, tenant, user, role, branch, actor, replaces=None,
+               reason_note: str = "") -> GrantOutcome:
+    """Give *user* *role* at *branch*, or ask the ladder to.
+
+    The one place a school role is granted, so the restricted rule cannot be
+    written in one entry point and forgotten in another. A granter who holds
+    every restricted key the role carries grants it on the spot. Anybody else
+    raises a :class:`TenantRoleGrantRequest`, and the grant is written when the
+    ``rbac.role_grant`` ladder approves it.
+
+    The caller has already refused what no approval can make right: a role or
+    branch from another tenant, a duplicate grant, a reach outside a
+    branch-bound caller's branches.
+
+    ``replaces`` is an active grant this one takes the place of. Granted
+    directly, it is withdrawn here; requested, it stays in force until approval.
+    """
+    if grant_needs_approval(actor, role):
+        return GrantOutcome(request=raise_role_grant_request(
+            tenant=tenant, requested_by=actor, user=user, role=role,
+            branch=branch, replaces=replaces, reason_note=reason_note,
+        ))
+    if replaces is not None:
+        _retire(replaces, by_user=actor, role=role, reason_note=reason_note)
+    assignment = TenantUserRoleAssignment.objects.create(
+        tenant=tenant, user=user, role=role, branch=branch, assigned_by=actor,
+        reason_note=reason_note,
+    )
+    return GrantOutcome(assignment=assignment)
+
+
+def _retire(assignment, *, by_user, role, reason_note: str) -> None:
+    """Withdraw the grant *role* replaces, saying what replaced it."""
+    reason = reason_note or f"Role changed from {assignment.role.name} to {role.name}."
+    assignment.revoke(by_user=by_user, reason=f"Changed to {role.name}. {reason}")
+    assignment.save(update_fields=[
+        "assignment_status", "revoked_at", "revoked_by", "reason_note", "updated_at",
+    ])
+
+
+def pending_grant_requests(*, tenant, user=None):
+    """Grant requests still on the ladder, for the profile that shows them."""
+    qs = TenantRoleGrantRequest.objects.filter(
+        tenant=tenant, status=TenantRoleGrantRequest.Status.PENDING,
+    ).select_related("role", "branch", "requested_by", "replaces__role")
+    if user is not None:
+        qs = qs.filter(user=user)
+    return qs.order_by("submitted_at")
+
+
+# Raise a role grant request and start its approval ladder.
+@transaction.atomic
+def raise_role_grant_request(*, tenant, requested_by, user, role, branch,
+                             replaces=None, reason_note: str = "") -> TenantRoleGrantRequest:
+    """Create a grant request and submit it for approval, as one act.
+
+    One transaction for the reason :func:`raise_role_change_request` gives: a
+    request the engine never heard of is one nobody can decide.
+
+    A second request for the same person, role and reach while the first is
+    still waiting is refused under ``role``, so pressing Grant twice does not
+    put the same decision in front of the approver twice.
+    """
+    from vs_workflow.services.submission import submit_for_approval
+
+    waiting = pending_grant_requests(tenant=tenant, user=user).filter(role=role)
+    waiting = waiting.filter(branch=branch) if branch is not None else waiting.filter(branch__isnull=True)
+    if waiting.exists():
+        raise ValidationError({
+            "role": f"{role.name} is already waiting for approval for this person.",
+        })
+
+    request = TenantRoleGrantRequest.objects.create(
+        tenant=tenant,
+        requested_by=requested_by,
+        user=user,
+        role=role,
+        branch=branch,
+        replaces=replaces,
+        reason_note=reason_note,
+    )
+    submit_for_approval(request, requested_by)
+    return request
+
+
+# Apply an approved role grant request.
+def apply_role_grant_request(obj: TenantRoleGrantRequest, reviewer, notes: str = ""):
+    """Write the grant the ladder approved, naming the requester as granter.
+
+    Who may decide was settled by the engine before this runs, so the
+    restricted rule is not asked again: the ladder is the authority on it. The
+    reviewer is recorded on the request, and the audit row for the grant says
+    whether the requester approved their own.
+
+    The world may have moved while the request waited. If the person already
+    holds the role at that reach, the request is approved and nothing is
+    written twice. If the role was archived meanwhile, the request is marked
+    APPLY_FAILED with the reason, because granting an archived role is what the
+    roles screen exists to prevent.
+    """
+    with transaction.atomic():
+        obj = (
+            TenantRoleGrantRequest.objects.select_for_update(of=("self",))
+            .select_related("role", "user", "branch", "replaces", "requested_by", "tenant")
+            .get(pk=obj.pk)
+        )
+        if obj.status != TenantRoleGrantRequest.Status.PENDING:
+            raise ValidationError(f"Request already decided ({obj.status}).")
+
+        fields = ["status", "reviewer", "reviewer_notes", "decided_at", "updated_at"]
+
+        if obj.role.status != TenantRoleTemplate.Status.ACTIVE:
+            obj.mark_apply_failed(
+                reviewer=reviewer,
+                notes=f"{obj.role.name} was archived before this was approved.",
+            )
+            obj.save(update_fields=fields)
+            return obj
+
+        replaces = obj.replaces
+        if replaces is not None:
+            replaces = TenantUserRoleAssignment.objects.select_for_update().get(pk=replaces.pk)
+        still_replacing = (
+            replaces is not None
+            and replaces.assignment_status == TenantUserRoleAssignment.AssignmentStatus.ACTIVE
+        )
+
+        held = TenantUserRoleAssignment.conflicting_active_grants(
+            tenant=obj.tenant, user=obj.user, role=obj.role, branch=obj.branch,
+            exclude_pk=replaces.pk if still_replacing else None,
+        ).exists()
+        if held:
+            obj.mark_approved(
+                reviewer=reviewer,
+                notes=notes or "Already held when approved, so nothing was written.",
+            )
+            obj.save(update_fields=fields)
+            return obj
+
+        if still_replacing:
+            _retire(replaces, by_user=obj.requested_by, role=obj.role, reason_note=obj.reason_note)
+
+        assignment = TenantUserRoleAssignment(
+            tenant=obj.tenant, user=obj.user, role=obj.role, branch=obj.branch,
+            assigned_by=obj.requested_by, reason_note=obj.reason_note,
+        )
+        # Read by the assignment audit signal.
+        assignment._grant_request = obj
+        assignment._grant_reviewer = reviewer
+        assignment.save()
+
+        obj.assignment = assignment
+        obj.mark_approved(reviewer=reviewer, notes=notes)
+        obj.save(update_fields=[*fields, "assignment"])
+        return obj
 
 
 # Transfer the single Vision super-admin assignment and demote the previous holder.

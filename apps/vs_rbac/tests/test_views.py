@@ -658,14 +658,12 @@ class TenantRoleTemplateViewTests(TestCase):
         self.assertTrue(bursar.role_permissions.filter(permission=perm, granted=True).exists())
         self.assertFalse(TenantRoleChangeRequest.objects.exists())
 
-    def test_giving_yourself_that_role_is_still_refused_by_the_grant_ceiling(self):
-        """The other half of the door, and it was already shut.
+    def test_giving_yourself_that_role_waits_for_approval(self):
+        """The other half of the door: holding the role editor is not holding the keys.
 
-        Editing a role you do not hold is allowed; handing it to yourself is
-        not, unless you already hold what it carries.
-        ``missing_restricted_grant_authority`` is the rule - "a restricted grant
-        may be approved or assigned only by somebody who already holds that key"
-        - and it answers for every recipient, so it covers the actor too.
+        Handing yourself a role whose restricted keys you do not hold is not
+        written. It is raised on the ``rbac.role_grant`` ladder, and the answer
+        is a 202 carrying the request, so the screen can say it is waiting.
         """
         bursar = make_role(self.school, name="Bursar")
         make_role_permission(
@@ -679,11 +677,16 @@ class TenantRoleTemplateViewTests(TestCase):
             format="json",
         )
 
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.data)
-        self.assertIn("grant authority", str(resp.data["message"]))
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED, resp.data)
+        self.assertEqual(resp.data["data"]["role_key"], bursar.key)
+        self.assertEqual(resp.data["data"]["status"], "PENDING")
+        self.assertIn("waiting for approval", resp.data["message"])
+        self.assertFalse(
+            TenantUserRoleAssignment.objects.filter(user=self.admin, role=bursar).exists()
+        )
 
-    def test_giving_it_to_somebody_else_is_refused_by_the_same_ceiling(self):
-        """The ceiling is about what the ASSIGNER holds, not who receives it."""
+    def test_giving_it_to_somebody_else_waits_the_same_way(self):
+        """The rule is about what the ASSIGNER holds, not who receives it."""
         bursar = make_role(self.school, name="Bursar")
         make_role_permission(
             bursar, make_permission("finance.account.create", is_restricted=True),
@@ -697,7 +700,25 @@ class TenantRoleTemplateViewTests(TestCase):
             format="json",
         )
 
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.data)
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED, resp.data)
+        self.assertFalse(
+            TenantUserRoleAssignment.objects.filter(user=colleague, role=bursar).exists()
+        )
+
+    def test_pressing_grant_again_while_it_waits_is_refused_under_the_role(self):
+        bursar = make_role(self.school, name="Bursar")
+        make_role_permission(
+            bursar, make_permission("finance.account.create", is_restricted=True),
+        )
+        url = _q(reverse("rbac-assignment-list-create",
+                         kwargs={"tenant_slug": self.slug}), self.slug)
+        body = {"user": self.admin.pk, "role": bursar.pk}
+
+        _token_client(self.admin).post(url, body, format="json")
+        resp = _token_client(self.admin).post(url, body, format="json")
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, resp.data)
+        self.assertIn("already waiting", str(resp.data["error"]["detail"]["role"]))
 
     def test_update_permissions_requires_reason(self):
         role = make_role(self.school, name="Teacher")
@@ -842,7 +863,7 @@ class TenantUserRoleAssignmentViewTests(TestCase):
         self.assertEqual(resp.data["data"]["assigned_by_id"], str(self.admin.id))
         self.assertEqual(resp.data["data"]["assigned_by_name"], self.admin.full_name)
 
-    def test_cannot_assign_restricted_role_above_grant_ceiling(self):
+    def test_a_restricted_role_above_what_you_hold_waits_for_approval(self):
         restricted = make_permission(
             "payments.payout.create", is_restricted=True,
             sensitivity_level=Permission.Sensitivity.CRITICAL,
@@ -855,7 +876,7 @@ class TenantUserRoleAssignmentViewTests(TestCase):
             format="json",
         )
 
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED, resp.data)
         self.assertFalse(
             TenantUserRoleAssignment.objects.filter(
                 user=self.admin, role=self.role,
@@ -1009,7 +1030,7 @@ class TenantUserRoleAssignmentViewTests(TestCase):
         self.assertEqual(replacement.reason_note, "Promotion")
         self.assertEqual(resp.data["data"]["assigned_by_name"], self.admin.full_name)
 
-    def test_replace_rejects_restricted_role_above_grant_ceiling(self):
+    def test_replace_with_a_restricted_role_waits_and_keeps_the_old_grant(self):
         old = make_assignment(self.school, self.staff, self.role)
         restricted_role = make_role(self.school, name="Payout Officer")
         restricted = make_permission(
@@ -1024,7 +1045,8 @@ class TenantUserRoleAssignmentViewTests(TestCase):
             format="json",
         )
 
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED, resp.data)
+        self.assertEqual(resp.data["data"]["replaces_id"], old.id)
         old.refresh_from_db()
         self.assertEqual(old.assignment_status, "ACTIVE")
         self.assertFalse(

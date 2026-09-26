@@ -32,6 +32,11 @@ class StaffRolesView(StaffViewMixin, APIView):
     deleted: "what could this person do before" is the question asked after
     something has gone wrong.
 
+    ``pending`` lists grants waiting on the approval ladder: a role carrying
+    restricted permissions its granter does not hold is requested rather than
+    written. They are listed apart from ``roles`` because they confer nothing
+    yet, and answered empty on an ``as_at`` read, which asks what was held.
+
     ``?as_at=YYYY-MM-DD`` answers with the grants, reach and exceptions as they
     stood at the end of that day (``as_at.py``).
 
@@ -66,6 +71,7 @@ class StaffRolesView(StaffViewMixin, APIView):
 
         return success_response(data={
             "roles": [self._grant(grant, branch_names) for grant in active],
+            "pending": [] if as_at is not None else self._pending(staff),
             "revoked": [self._revoked(grant, branch_names) for grant in revoked],
             "reach": {
                 "school_wide": school_wide,
@@ -98,6 +104,14 @@ class StaffRolesView(StaffViewMixin, APIView):
             "granted_at": grant.assigned_at,
             "granted_by": self._actor(grant.assigned_by),
         }
+
+    def _pending(self, staff):
+        from vs_rbac.serializers import TenantRoleGrantRequestSerializer
+        from vs_rbac.services import pending_grant_requests
+
+        return TenantRoleGrantRequestSerializer(
+            pending_grant_requests(tenant=self.tenant, user=staff.user), many=True,
+        ).data
 
     def _revoked(self, grant, branch_names):
         payload = self._grant(grant, branch_names)

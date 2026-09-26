@@ -65,9 +65,10 @@ def role_restricted_permission_keys(role) -> Set[str]:
 def missing_restricted_grant_authority(actor, permission_keys) -> Set[str]:
     """Restricted keys outside the actor's effective grant ceiling.
 
-    A restricted grant may be approved or assigned only by somebody who
-    already holds that key. The Vision super admin is the bootstrap authority
-    and may provision the first holder.
+    A restricted grant is made directly only by somebody who already holds
+    that key; anybody else's goes to the approval ladder, which
+    :func:`vs_rbac.services.grant_role` decides by asking this. The Vision
+    super admin holds every key for this purpose.
     """
     restricted = restricted_permission_keys(permission_keys)
     if not restricted:

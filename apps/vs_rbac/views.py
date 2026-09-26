@@ -38,6 +38,7 @@ from .serializers import (
     PermissionResourceSerializer,
     PermissionSerializer,
     TenantRoleChangeRequestSerializer,
+    TenantRoleGrantRequestSerializer,
     TenantRoleTemplateDetailSerializer,
     TenantRoleTemplateListSerializer,
     TenantUserRoleAssignmentSerializer,
@@ -1010,6 +1011,40 @@ class TenantUserRoleAssignmentListCreateView(TenantScopedRBACMixin, CreateModelM
             self.rbac_permission = ROLE_VIEW_KEYS
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
+    def create(self, request, *args, **kwargs):
+        """Grant the role, or raise it for approval and answer 202.
+
+        A 202 carries the waiting request rather than a grant, so a screen can
+        say "waiting for approval" instead of "granted".
+        """
+        from .services import grant_role
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        outcome = grant_role(
+            tenant=self.get_tenant(),
+            user=data["user"],
+            role=data["role"],
+            branch=data.get("branch"),
+            actor=request.user,
+            reason_note=data.get("reason_note", ""),
+        )
+        if outcome.pending:
+            return success_response(
+                message=(
+                    f"{outcome.request.role.name} is waiting for approval. It "
+                    f"takes effect once approved."
+                ),
+                data=TenantRoleGrantRequestSerializer(outcome.request).data,
+                status=status.HTTP_202_ACCEPTED,
+            )
+        return success_response(
+            message="Created successfully.",
+            data=self.get_serializer(outcome.assignment).data,
+            status=status.HTTP_201_CREATED,
+        )
+
     def get_queryset(self):
         tenant = self.get_tenant()
         qs = _holders_in_caller_branches(self.request.user, tenant, (
@@ -1221,26 +1256,6 @@ class TenantUserRoleAssignmentReplaceView(TenantScopedRBACMixin, APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        from .validators import (
-            missing_restricted_grant_authority,
-            role_restricted_permission_keys,
-        )
-
-        missing = missing_restricted_grant_authority(
-            request.user, role_restricted_permission_keys(target_role),
-        )
-        if missing:
-            return error_response(
-                message=(
-                    "You cannot assign a role carrying restricted permissions "
-                    "outside your grant authority."
-                ),
-                error={"role": [
-                    f"Missing grant authority: {', '.join(sorted(missing))}."
-                ]},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
         from .grant_reach import assert_caller_may_grant
 
         # Both the grant being retired and the one replacing it must sit inside
@@ -1286,27 +1301,33 @@ class TenantUserRoleAssignmentReplaceView(TenantScopedRBACMixin, APIView):
         supplied_reason = (request.data.get("reason_note") or "").strip()
         reason = supplied_reason or f"Role changed from {assignment.role.name} to {target_role.name}."
 
-        assignment.revoke(
-            by_user=request.user,
-            reason=f"Changed to {target_role.name}. {reason}",
-        )
-        assignment.save(update_fields=[
-            "assignment_status", "revoked_at", "revoked_by", "reason_note", "updated_at",
-        ])
+        from .services import grant_role
 
-        replacement = TenantUserRoleAssignment.objects.create(
+        # A restricted target the caller does not hold waits for approval, and
+        # the grant being replaced stays in force until it is given.
+        outcome = grant_role(
             tenant=tenant,
-            branch=assignment.branch,
             user=assignment.user,
             role=target_role,
-            assigned_by=request.user,
+            branch=assignment.branch,
+            actor=request.user,
+            replaces=assignment,
             reason_note=reason,
         )
+        if outcome.pending:
+            return success_response(
+                message=(
+                    f"{target_role.name} is waiting for approval. "
+                    f"{assignment.role.name} stays in place until it is approved."
+                ),
+                data=TenantRoleGrantRequestSerializer(outcome.request).data,
+                status=status.HTTP_202_ACCEPTED,
+            )
 
         return success_response(
             message="Role changed successfully.",
             data=TenantUserRoleAssignmentSerializer(
-                replacement, context={"request": request, "tenant": tenant}
+                outcome.assignment, context={"request": request, "tenant": tenant}
             ).data,
             status=status.HTTP_201_CREATED,
         )

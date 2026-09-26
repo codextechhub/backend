@@ -76,12 +76,19 @@ def grant_to_many(*, tenant, role, branch, people, actor):
     One role and one reach for the whole selection: a bulk action that varied
     per person would be a form pretending to be a spreadsheet.
 
-    Returns ``(granted, already_held)``, both as lists of ``StaffProfile``.
-    Somebody who already holds that role at that reach is reported and left
-    alone, because granting it twice is what the database's own constraints
-    exist to refuse and reporting it is what the screen asks for.
+    Returns ``(granted, already_held, pending)``, each a list of
+    ``StaffProfile``. Somebody who already holds that role at that reach, or
+    already has it waiting for approval, is reported and left alone, because
+    granting it twice is what the database's own constraints exist to refuse
+    and reporting it is what the screen asks for.
+
+    Each grant goes through :func:`vs_rbac.services.grant_role`, so a role
+    carrying restricted keys the actor does not hold raises one approval
+    request per person rather than being written. A bulk grant is not a way
+    round the rule a single grant keeps.
     """
     from vs_rbac.models import TenantUserRoleAssignment
+    from vs_rbac.services import grant_role, pending_grant_requests
 
     if branch is not None:
         role_ids = role.branch_ids
@@ -92,8 +99,15 @@ def grant_to_many(*, tenant, role, branch, people, actor):
         if role_ids and branch.pk not in role_ids:
             raise ValidationError({"branch": "This branch is outside the role's reach."})
 
-    granted, already = [], []
+    waiting = pending_grant_requests(tenant=tenant).filter(role=role)
+    waiting = waiting.filter(branch=branch) if branch is not None else waiting.filter(branch__isnull=True)
+    waiting_user_ids = set(waiting.values_list("user_id", flat=True))
+
+    granted, already, pending = [], [], []
     for person in people:
+        if person.user_id in waiting_user_ids:
+            pending.append(person)
+            continue
         exists = TenantUserRoleAssignment.objects.filter(
             tenant=tenant, user=person.user, role=role, branch=branch,
             assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
@@ -110,12 +124,11 @@ def grant_to_many(*, tenant, role, branch, people, actor):
         ).exists():
             already.append(person)
             continue
-        TenantUserRoleAssignment.objects.create(
-            tenant=tenant, user=person.user, role=role, branch=branch,
-            assigned_by=actor,
+        outcome = grant_role(
+            tenant=tenant, user=person.user, role=role, branch=branch, actor=actor,
         )
-        granted.append(person)
-    return granted, already
+        (pending if outcome.pending else granted).append(person)
+    return granted, already, pending
 
 
 def resolve_role(tenant, key_or_id, *, onboarding_keys=None):

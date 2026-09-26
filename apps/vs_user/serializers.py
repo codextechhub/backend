@@ -419,20 +419,11 @@ class UserCreateSerializer(serializers.Serializer):
                         {'role': 'A Vision Super Admin already exists. Only one is allowed.'}
                     )
 
-            from vs_rbac.validators import (
-                missing_restricted_grant_authority,
-                role_restricted_permission_keys,
-            )
+            from vs_rbac.serializers import restricted_grant_refusal
+            from vs_rbac.services import grant_needs_approval
 
-            missing = missing_restricted_grant_authority(
-                actor, role_restricted_permission_keys(role),
-            )
-            if missing:
-                raise PermissionDenied(
-                    "You cannot assign a role carrying restricted permissions "
-                    "outside your grant authority: "
-                    f"{', '.join(sorted(missing))}."
-                )
+            if grant_needs_approval(actor, role):
+                raise PermissionDenied(restricted_grant_refusal(role, adding=True))
 
             attrs['role'] = role.name
             attrs['role_instance'] = role
