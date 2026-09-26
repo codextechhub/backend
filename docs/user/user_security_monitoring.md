@@ -16,8 +16,8 @@ at `/v1/user/sessions/`, `/v1/user/auth-attempts/`, `/v1/user/account-lockouts/`
   `end-mine`, `end-all-mine`, `end-other-mine`) need nothing but an active
   account; the administrative lists need a permission key
   (`views/security.py:74-81,281-285`).
-- `/auth-events/` does **not** read `AuthEventLog`. It reads `IDENTITY`-module
-  rows from the central `vs_audit` store (`views/security.py:467-512`).
+- `/auth-events/` reads `IDENTITY`-module rows from the central `vs_audit`
+  store (`views/security.py:467-512`).
 
 **This is not the lockout policy.** Failure counting and locking happen during
 login (`user_authentication` §4); this slice only shows and clears the result.
@@ -32,12 +32,10 @@ The three tables are described in `user_authentication` §2 (`LoginSession`,
 | `vs_audit.AuditEvent` | `vs_audit/models.py:174-355` | Append-only; edits and deletes raise; `objects` is `TenantAwareManager(include_global=True)`, so rows with a null tenant are visible from **every** tenant (`vs_audit/models.py:587-592`) |
 | `core.BackgroundJob` | `views/jobs.py:23-63` | One row per tracked Celery job: kind, label, status, progress, owner, timings, result/error |
 
-`vs_user.AuthEventLog` is still declared, migrated, serialized
-(`AuthEventLogReadSerializer`) and referenced by the `Event` enum that
-`log_auth_event` switches on - but nothing in the product writes a row to it.
-Only the dev-data seeder does (`models.py:641-692`; `serializers.py:661-668`;
-`core/management/commands/seed_dev_data.py:664`). Treat the model as a
-vocabulary, not as storage.
+There is no separate auth-event table. The event names `log_auth_event` records
+in `metadata['auth_event']` are `vs_user.auth_events.AuthEvent`; the rows are
+`AuditEvent`s (the `AuthEventLog` model that once held the enum was dropped in
+`vs_user` migration 0015, having never been written outside the dev seeder).
 
 ## 3. Endpoint map
 
@@ -141,7 +139,7 @@ working. Passing a session id that is not the caller's own active session answer
 ## 8. Gotchas / known limitations
 
 - **The identity audit trail is readable by every authenticated user, in every
-  tenant.** `AuthEventLogViewSet` lists `IsAuthenticatedAndActive` and
+  tenant.** `AuthEventViewSet` lists `IsAuthenticatedAndActive` and
   `HasRBACPermission` but never sets `rbac_permission`, and `HasRBACPermission`
   passes when no key is declared (`views/security.py:476` against
   `vs_rbac/permissions.py:172-210`). The queryset adds no tenant filter of its
@@ -229,7 +227,8 @@ with a comment explaining why (`views/security.py:152,198,247`).
 | `views/security.py` | Session, attempt, lockout and auth-event viewsets; password-reset admin list and revoke |
 | `views/jobs.py` | "My queues": background job list, summary, and the admin-scope gate |
 | `services/audit.py` | `log_auth_event`, `record_attempt`, the three blacklist helpers, the stale-session sweep |
-| `models.py` | `LoginSession`, `AuthAttempt`, `AccountLockout`, and the vestigial `AuthEventLog` |
+| `models.py` | `LoginSession`, `AuthAttempt`, `AccountLockout` |
+| `auth_events.py` | `AuthEvent`, the names of identity events recorded as `AuditEvent`s |
 | `serializers.py` | Session/attempt/lockout read shapes and the force-logout / unlock inputs |
 | `export_datasets.py` | `admin.sign_ins` dataset, with IP and user agent marked sensitive |
 | `vs_audit/models.py` | The store `/auth-events/` actually reads |

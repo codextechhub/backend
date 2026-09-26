@@ -30,7 +30,6 @@ from .models import (
     AuthAttempt,
     AccountLockout,
     PasswordResetRequest,
-    AuthEventLog,
     PlatformStaffProfile,
     OrgNode,
     Position,
@@ -604,7 +603,20 @@ class ActivationPreviewSerializer(serializers.ModelSerializer):
 # =============================================================================
 
 class LoginRequestSerializer(serializers.Serializer):
+    """What a sign-in may name the account by: an email address, a school's own
+    staff number, or (platform only) an ID card key. Exactly one of them.
+
+    ``identifier`` is the single box a sign-in page offers. It is read as an
+    email address when it holds an ``@`` and as a staff number otherwise, and
+    the result lands in ``email`` or ``staff_number`` so the service never sees
+    the raw box. A staff number is only unique inside one school, so the service
+    refuses one that arrives without a tenant, whatever the tenant switch says.
+    """
+
     email            = serializers.EmailField(required=False)
+    identifier       = serializers.CharField(
+        required=False, allow_blank=True, default='', max_length=254,
+    )
     card_id          = serializers.CharField(required=False, allow_blank=True, default='')
     password         = serializers.CharField(write_only=True, trim_whitespace=False)
     # The slug of the tenant the caller is signing in to, which the frontend
@@ -624,12 +636,20 @@ class LoginRequestSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         email = normalize_email(attrs.get('email'))
+        staff_number = ''
+        identifier = str(attrs.get('identifier') or '').strip()
+        if identifier and not email:
+            if '@' in identifier:
+                email = normalize_email(identifier)
+            else:
+                staff_number = identifier
         card_id = str(attrs.get('card_id') or '').strip().lower()
-        if bool(email) == bool(card_id):
+        if sum(bool(value) for value in (email, staff_number, card_id)) != 1:
             raise serializers.ValidationError({
-                'credentials': 'Provide either an email address or an ID card identifier.',
+                'credentials': 'Provide an email address, a staff ID or an ID card identifier.',
             })
         attrs['email'] = email
+        attrs['staff_number'] = staff_number
         attrs['card_id'] = card_id
         attrs['tenant'] = (attrs.get('tenant') or '').strip().lower()
         return attrs
@@ -679,15 +699,38 @@ class PasswordChangeSerializer(serializers.Serializer):
 
 
 class PasswordResetRequestSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    """Who a reset is for: an email address or a school's staff number.
+
+    ``identifier`` is read exactly as :class:`LoginRequestSerializer` reads it,
+    so the box on the forgot-password page accepts whatever the sign-in box
+    does. Either way the link goes to the account's email on file, never to
+    anything typed here.
+    """
+
+    email = serializers.EmailField(required=False)
+    identifier = serializers.CharField(
+        required=False, allow_blank=True, default='', max_length=254,
+    )
     # Same optional tenant slug as LoginRequestSerializer, for the same reasons.
     tenant = serializers.CharField(required=False, allow_blank=True, default='')
 
-    def validate_email(self, value):
-        return value.lower().strip()
-
-    def validate_tenant(self, value):
-        return (value or '').strip().lower()
+    def validate(self, attrs):
+        email = normalize_email(attrs.get('email'))
+        staff_number = ''
+        identifier = str(attrs.get('identifier') or '').strip()
+        if identifier and not email:
+            if '@' in identifier:
+                email = normalize_email(identifier)
+            else:
+                staff_number = identifier
+        if not email and not staff_number:
+            raise serializers.ValidationError({
+                'identifier': 'Enter your email address or staff ID.',
+            })
+        attrs['email'] = email
+        attrs['staff_number'] = staff_number
+        attrs['tenant'] = (attrs.get('tenant') or '').strip().lower()
+        return attrs
 
 
 class PasswordResetPreviewSerializer(serializers.Serializer):
@@ -728,7 +771,7 @@ class UserInvitationReadSerializer(serializers.ModelSerializer):
 
 
 # =============================================================================
-# Session, Lockout, Attempt, AuthEvent serializers
+# Session, Lockout and Attempt serializers
 # =============================================================================
 
 class LoginSessionReadSerializer(serializers.ModelSerializer):
@@ -836,16 +879,6 @@ class UnlockAccountSerializer(serializers.Serializer):
     user_id              = AdministrableUserField(source='user')
     reason               = serializers.CharField(required=False, allow_blank=True)
     force_password_reset = serializers.BooleanField(default=False)
-
-
-class AuthEventLogReadSerializer(serializers.ModelSerializer):
-    class Meta:
-        model  = AuthEventLog
-        fields = (
-            'id', 'actor', 'subject', 'tenant', 'event',
-            'ip_address', 'user_agent', 'metadata', 'created_at',
-        )
-        read_only_fields = fields
 
 
 class PasswordResetAdminSerializer(serializers.ModelSerializer):

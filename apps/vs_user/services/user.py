@@ -12,7 +12,8 @@ from rest_framework.exceptions import PermissionDenied
 logger = logging.getLogger(__name__)
 
 from ..email_normalization import normalize_email
-from ..models import LoginSession, User, AuthEventLog
+from ..auth_events import AuthEvent
+from ..models import LoginSession, User
 from .audit import log_auth_event, blacklist_all_user_tokens
 from .email_availability import email_refusal
 from vs_rbac.models import TenantUserRoleAssignment
@@ -201,7 +202,7 @@ class UserCreationService:
 
         log_auth_event(
             actor=requesting_user, subject=user, tenant=user.tenant,
-            event=AuthEventLog.Event.USER_CREATED, request=request,
+            event=AuthEvent.USER_CREATED, request=request,
         )
 
         return user
@@ -252,7 +253,7 @@ class UserCreationService:
 
         log_auth_event(
             actor=requesting_user, subject=user, tenant=user.tenant,
-            event=AuthEventLog.Event.USER_CREATED, request=request,
+            event=AuthEvent.USER_CREATED, request=request,
         )
         return user
 
@@ -305,10 +306,19 @@ class EmailChangeService:
 
     @staticmethod
     @transaction.atomic
-    def change_email(target_user, new_email: str, requesting_user, request=None) -> User:
+    def change_email(target_user, new_email: str, requesting_user, request=None, note: str = "") -> User:
         """
         Changes a user's email immediately.
         Ends all active sessions - the user must log in again with the new email.
+
+        An account still waiting to be activated has its invitation reissued to
+        the new address. The usual reason for the change is a mistyped
+        invitation, and the link already sent to the wrong inbox would otherwise
+        stay live: whoever holds it could set the password and walk in as the
+        new member of staff. Reissuing rotates the token, so that link dies here
+        and the right person receives a working one.
+
+        ``note`` is the administrator's reason, recorded with the event.
         """
         new_email      = normalize_email(new_email)
         previous_email = target_user.email
@@ -343,10 +353,20 @@ class EmailChangeService:
             actor=requesting_user,
             subject=target_user,
             tenant=target_user.tenant,
-            event=AuthEventLog.Event.EMAIL_CHANGED,
+            event=AuthEvent.EMAIL_CHANGED,
             request=request,
-            metadata={'previous_email': previous_email, 'new_email': new_email},
+            metadata={
+                'previous_email': previous_email, 'new_email': new_email,
+                **({'note': note.strip()} if note and note.strip() else {}),
+            },
         )
+
+        if target_user.status == User.Status.PENDING:
+            from .invitation import InvitationService
+
+            invitation = getattr(target_user, 'invitation', None)
+            if invitation is None or not invitation.is_used:
+                InvitationService.resend(target_user, requesting_user, request=request)
 
         return target_user
 
@@ -376,7 +396,7 @@ class  UserStatusService:
         log_auth_event(
             actor=requesting_user, subject=target_user,
             tenant=target_user.tenant,
-            event=AuthEventLog.Event.ACCOUNT_SUSPENDED, request=request,
+            event=AuthEvent.ACCOUNT_SUSPENDED, request=request,
         )
         return target_user
 
@@ -393,7 +413,7 @@ class  UserStatusService:
         log_auth_event(
             actor=requesting_user, subject=target_user,
             tenant=target_user.tenant,
-            event=AuthEventLog.Event.ACCOUNT_REACTIVATED, request=request,
+            event=AuthEvent.ACCOUNT_REACTIVATED, request=request,
         )
         return target_user
 
@@ -414,7 +434,7 @@ class  UserStatusService:
         log_auth_event(
             actor=requesting_user, subject=target_user,
             tenant=target_user.tenant,
-            event=AuthEventLog.Event.ACCOUNT_DEACTIVATED, request=request,
+            event=AuthEvent.ACCOUNT_DEACTIVATED, request=request,
         )
         return target_user
 
@@ -453,7 +473,7 @@ class  UserStatusService:
         log_auth_event(
             actor=requesting_user, subject=target_user,
             tenant=target_user.tenant,
-            event=AuthEventLog.Event.ACCOUNT_UNLOCKED, request=request,
+            event=AuthEvent.ACCOUNT_UNLOCKED, request=request,
             metadata=metadata or {},
         )
         return target_user

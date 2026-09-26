@@ -8,7 +8,7 @@
 #   INVITATION - ActivationPreviewView, ActivationView, InvitationResendView
 #   PASSWORD   - PasswordChangeView, PasswordResetRequestView, PasswordResetConfirmView, AdminPasswordResetView
 #   USERS      - UserAccountViewSet, UserEmailChangeView, UserSuspendView, UserReactivateView, UserUnlockView
-#   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet
+#   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventViewSet
 
 from __future__ import annotations
 from django.db import transaction
@@ -26,8 +26,9 @@ from core.mixins import (
 )
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
+from ..auth_events import AuthEvent
 from ..models import (
-    AuthEventLog, Position, User,
+    Position, User,
 )
 from ..serializers import (
     UserReadSerializer, UserListSerializer, UserCreateSerializer, UserUpdateSerializer,
@@ -359,7 +360,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             actor=request.user,
             subject=user,
             tenant=user.tenant,
-            event=AuthEventLog.Event.CARD_LOGIN_ROTATED,
+            event=AuthEvent.CARD_LOGIN_ROTATED,
             request=request,
         )
         return success_response(

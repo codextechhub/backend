@@ -12,9 +12,10 @@ from django.db import transaction
 from django.utils import timezone
 
 from ..action_tokens import issue_password_reset_token, password_reset_token_digest
-from ..models import User, PasswordResetRequest, AuthEventLog, AccountLockout
+from ..auth_events import AuthEvent
+from ..models import User, PasswordResetRequest, AccountLockout
 from .audit import log_auth_event, blacklist_all_user_tokens, get_client_ip
-from .sign_in_scope import resolve_sign_in_account
+from .sign_in_scope import resolve_sign_in_account, resolve_staff_number_account
 
 logger = logging.getLogger(__name__)
 
@@ -72,11 +73,13 @@ class PasswordService:
 
         log_auth_event(
             actor=user, subject=user, tenant=user.tenant,
-            event=AuthEventLog.Event.PASSWORD_CHANGED, request=request,
+            event=AuthEvent.PASSWORD_CHANGED, request=request,
         )
 
     @staticmethod
-    def request_reset(email: str, tenant: str | None = None, request=None):
+    def request_reset(
+        email: str = "", tenant: str | None = None, request=None, staff_number: str = "",
+    ):
         """
         Self-service password reset request.
         Silently does nothing if the email is not found -- prevents enumeration.
@@ -92,10 +95,19 @@ class PasswordService:
         account instead - silently, and looking correct in every log. The
         refusal stays silent because a reset request must never say whether the
         address exists, here or anywhere else on the platform.
+
+        A school staff member may name themselves by ``staff_number`` instead.
+        It resolves only inside the asserted school, as at sign-in, and the
+        link still goes to the email on the account.
         """
-        user, _resolved, scope_failure = resolve_sign_in_account(
-            email=email, tenant=tenant,
-        )
+        if staff_number:
+            user, _resolved, scope_failure = resolve_staff_number_account(
+                staff_number=staff_number, tenant=tenant,
+            )
+        else:
+            user, _resolved, scope_failure = resolve_sign_in_account(
+                email=email, tenant=tenant,
+            )
 
         # The status test is the shared one now. It used to name DEACTIVATED
         # alone, which meant a request against a REJECTED hire sent them a live
@@ -137,7 +149,7 @@ class PasswordService:
         log_auth_event(
             actor=requesting_user, subject=target_user,
             tenant=target_user.tenant,
-            event=AuthEventLog.Event.PASSWORD_RESET_REQUESTED,
+            event=AuthEvent.PASSWORD_RESET_REQUESTED,
             request=request,
             metadata={"initiated_by": str(requesting_user.id), "origin": "ADMIN"},
         )
@@ -248,7 +260,7 @@ class PasswordService:
 
         log_auth_event(
             actor=None, subject=user, tenant=user.tenant,
-            event=AuthEventLog.Event.PASSWORD_RESET_COMPLETED,
+            event=AuthEvent.PASSWORD_RESET_COMPLETED,
             request=request,
             metadata={"origin": pr.requested_by},
         )

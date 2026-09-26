@@ -9,7 +9,6 @@ Contents (in order):
   AuthAttempt           - every login attempt, success or failure
   AccountLockout        - per-user brute-force lockout state
   PasswordResetRequest  - hashed reset token store
-  AuthEventLog          - append-only audit event log
 """
 from __future__ import annotations
 
@@ -1120,65 +1119,6 @@ class PasswordResetRequest(TimeStampedModel):
                 name='one_active_reset_per_user',
             ),
         ]
-
-# =============================================================================
-# AuthEventLog
-# =============================================================================
-
-class AuthEventLog(TimeStampedModel):
-
-    class Event(models.TextChoices):
-        USER_CREATED             = 'USER_CREATED',             'User Created'
-        INVITATION_SENT          = 'INVITATION_SENT',          'Invitation Sent'
-        ACCOUNT_ACTIVATED        = 'ACCOUNT_ACTIVATED',        'Account Activated'
-        LOGIN_SUCCESS            = 'LOGIN_SUCCESS',            'Login Success'
-        LOGIN_FAILURE            = 'LOGIN_FAILURE',            'Login Failure'
-        TOKEN_REVOKED            = 'TOKEN_REVOKED',            'Token Revoked'
-        FORCE_LOGOUT             = 'FORCE_LOGOUT',             'Force Logout'
-        ACCOUNT_LOCKED           = 'ACCOUNT_LOCKED',           'Account Locked'
-        ACCOUNT_UNLOCKED         = 'ACCOUNT_UNLOCKED',         'Account Unlocked'
-        ACCOUNT_SUSPENDED        = 'ACCOUNT_SUSPENDED',        'Account Suspended'
-        ACCOUNT_REACTIVATED      = 'ACCOUNT_REACTIVATED',      'Account Reactivated'
-        ACCOUNT_DEACTIVATED      = 'ACCOUNT_DEACTIVATED',      'Account Deactivated'
-        PASSWORD_RESET_REQUESTED = 'PASSWORD_RESET_REQUESTED', 'Password Reset Requested'
-        PASSWORD_RESET_COMPLETED = 'PASSWORD_RESET_COMPLETED', 'Password Reset Completed'
-        PASSWORD_CHANGED         = 'PASSWORD_CHANGED',         'Password Changed'
-        EMAIL_CHANGED            = 'EMAIL_CHANGED',            'Email Changed'
-        CARD_LOGIN_ROTATED       = 'CARD_LOGIN_ROTATED',       'Card Login Rotated'
-
-    # Who performed the action - could be the user themselves or an admin.
-    actor = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
-        null=True, blank=True, related_name='auth_events_as_actor',
-    )
-
-    # Who the action was performed on.
-    subject = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
-        null=True, blank=True, related_name='auth_events_as_subject',
-    )
-
-    tenant = models.ForeignKey(
-        "vs_tenants.Tenant", on_delete=models.SET_NULL,
-        null=True, blank=True, related_name='auth_events',
-    )
-
-    event      = models.CharField(max_length=40, choices=Event.choices)
-    ip_address = models.GenericIPAddressField(null=True, blank=True)
-    user_agent = models.TextField(blank=True, default='')
-    metadata   = models.JSONField(default=dict, blank=True)
-
-    objects = TenantAwareManager()
-    all_objects = models.Manager()
-
-    class Meta:
-        default_manager_name = "objects"
-        base_manager_name = "all_objects"
-        ordering = ['-created_at']
-
-    def __str__(self) -> str:
-        return f'AuthEvent<{self.event}>'
-
 
 # =============================================================================
 # PlatformStaffProfile

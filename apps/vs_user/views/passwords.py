@@ -8,7 +8,7 @@
 #   INVITATION - ActivationPreviewView, ActivationView, InvitationResendView
 #   PASSWORD   - PasswordChangeView, PasswordResetRequestView, PasswordResetConfirmView, AdminPasswordResetView
 #   USERS      - UserAccountViewSet, UserEmailChangeView, UserSuspendView, UserReactivateView, UserUnlockView
-#   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet
+#   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventViewSet
 
 from __future__ import annotations
 from rest_framework import status
@@ -98,6 +98,9 @@ class PasswordResetRequestView(APIView):
     Always returns 200 regardless of whether the email exists
     - prevents user enumeration.
 
+    The account is named by ``email`` or by ``identifier`` (an email address or
+    the school's staff number); the link always goes to the email on file.
+
     Takes the same optional ``tenant`` body key as login (the slug the frontend
     reads off the subdomain). When present the account is looked up only within
     that tenant, so a reset asked for at one can never rewrite the password of
@@ -120,6 +123,7 @@ class PasswordResetRequestView(APIView):
         # found in the tenant the request named.
         PasswordService.request_reset(
             email=ser.validated_data['email'],
+            staff_number=ser.validated_data['staff_number'],
             tenant=ser.validated_data.get('tenant', ''),
             request=request,
         )

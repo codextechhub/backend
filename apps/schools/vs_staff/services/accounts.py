@@ -75,7 +75,7 @@ def unlock(staff, *, actor, request=None):
     return _call(UserStatusService.unlock, staff.user, actor, request)
 
 
-def change_email(staff, new_email, *, actor, request=None):
+def change_email(staff, new_email, *, actor, request=None, note=""):
     """Change the address an account signs in with.
 
     Refused for an address already in use at this school, and it reveals nothing
@@ -86,7 +86,7 @@ def change_email(staff, new_email, *, actor, request=None):
 
     try:
         return EmailChangeService.change_email(
-            staff.user, new_email, actor, request=request,
+            staff.user, new_email, actor, request=request, note=note,
         )
     except ValueError as error:
         payload = error.args[0] if error.args else {}

@@ -808,6 +808,10 @@ class RevokeInvitationSerializer(serializers.Serializer):
 
 class EmailChangeSerializer(serializers.Serializer):
     email = serializers.EmailField()
+    #: Why the address changed, in the administrator's words. Optional.
+    note = serializers.CharField(
+        required=False, allow_blank=True, default="", max_length=200,
+    )
 
 
 class ClassTeacherSerializer(serializers.Serializer):

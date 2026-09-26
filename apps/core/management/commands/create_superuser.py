@@ -11,10 +11,10 @@ from django.db import transaction
 
 from vs_tenants.references import find_tenant
 from vs_user.email_normalization import normalize_email
+from vs_user.auth_events import AuthEvent
 from vs_user.models import User
 from vs_user.services.email_availability import email_refusal
 from vs_user.services.audit import log_auth_event
-from vs_user.models import AuthEventLog
 from vs_rbac.models import (
     TenantRoleTemplate,
     TenantUserRoleAssignment,
@@ -260,7 +260,7 @@ class Command(BaseCommand):
             actor=None,
             subject=user,
             tenant=user.tenant,
-            event=AuthEventLog.Event.USER_CREATED,
+            event=AuthEvent.USER_CREATED,
             metadata={
                 'bootstrap': True,
                 'is_superuser': True,

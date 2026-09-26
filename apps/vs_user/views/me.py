@@ -8,7 +8,7 @@
 #   INVITATION - ActivationPreviewView, ActivationView, InvitationResendView
 #   PASSWORD   - PasswordChangeView, PasswordResetRequestView, PasswordResetConfirmView, AdminPasswordResetView
 #   USERS      - UserAccountViewSet, UserEmailChangeView, UserSuspendView, UserReactivateView, UserUnlockView
-#   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet
+#   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventViewSet
 
 from __future__ import annotations
 from datetime import timedelta

@@ -8,7 +8,7 @@
 #   INVITATION - ActivationPreviewView, ActivationView, InvitationResendView
 #   PASSWORD   - PasswordChangeView, PasswordResetRequestView, PasswordResetConfirmView, AdminPasswordResetView
 #   USERS      - UserAccountViewSet, UserEmailChangeView, UserSuspendView, UserReactivateView, UserUnlockView
-#   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet
+#   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventViewSet
 
 from __future__ import annotations
 from django.db import transaction
@@ -22,9 +22,10 @@ from vs_rbac.permissions import IsAuthenticatedAndActive, IsVisionStaff, HasRBAC
 from vs_tenants.models import Tenant
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
+from ..auth_events import AuthEvent
 from ..models import (
     LoginSession, AuthAttempt, AccountLockout,
-    AuthEventLog, PasswordResetRequest,
+    PasswordResetRequest,
 )
 from ..serializers import (
     LoginSessionReadSerializer, EndOtherSessionsSerializer, ForceLogoutSerializer, AuthAttemptReadSerializer, AccountLockoutReadSerializer,
@@ -144,7 +145,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             actor=request.user,
             subject=request.user,
             tenant=request.user.tenant,
-            event=AuthEventLog.Event.FORCE_LOGOUT,
+            event=AuthEvent.FORCE_LOGOUT,
             request=request,
             metadata={'ended_sessions': ended, 'reason': 'SELF_SIGNOUT'},
         )
@@ -165,7 +166,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             actor=request.user,
             subject=request.user,
             tenant=request.user.tenant,
-            event=AuthEventLog.Event.FORCE_LOGOUT,
+            event=AuthEvent.FORCE_LOGOUT,
             request=request,
             metadata={'ended_sessions': ended, 'reason': 'SUSPECTED_COMPROMISE'},
         )
@@ -212,7 +213,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             actor=request.user,
             subject=request.user,
             tenant=request.user.tenant,
-            event=AuthEventLog.Event.FORCE_LOGOUT,
+            event=AuthEvent.FORCE_LOGOUT,
             request=request,
             metadata={'ended_sessions': ended, 'reason': 'SELF_SIGNOUT_OTHERS'},
         )
@@ -259,7 +260,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             actor=request.user,
             subject=target_user if target_user else (session.user if session else None),
             tenant=request.user.tenant,
-            event=AuthEventLog.Event.FORCE_LOGOUT,
+            event=AuthEvent.FORCE_LOGOUT,
             request=request,
             metadata={'ended_sessions': ended, 'reason': reason},
         )
@@ -492,7 +493,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         return success_response(message="Account unlocked successfully.")
 
 
-class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+class AuthEventViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     GET /auth-events/
     Returns identity/auth AuditEvents from the central vs_audit store.

@@ -156,3 +156,47 @@ def resolve_sign_in_account(*, email: str, tenant: str | None):
     if user is None:
         return None, resolved, FAILURE_TENANT_MISMATCH
     return user, resolved, ''
+
+
+def resolve_staff_number_account(*, staff_number: str, tenant: str | None):
+    """Find the school account a sign-in names by its staff number.
+
+    Returns the same ``(user, tenant, failure_code)`` triple as
+    :func:`resolve_sign_in_account`, and refuses in the same indistinguishable
+    way.
+
+    A staff number is the school's own label (``BFS/STF/0012``), unique inside
+    one school and nowhere else, so this lookup is ALWAYS scoped: a request that
+    names no tenant is refused whatever ``REQUIRE_TENANT_ON_SIGN_IN`` says,
+    because there is no platform-wide answer to "who is STF/0012".
+
+    The match ignores case, since nobody should fail to sign in over ``stf`` and
+    ``STF``. The stored uniqueness is case-sensitive, so two rows may differ only
+    in case; that is ambiguous, and an ambiguous number signs nobody in rather
+    than picking one of them. A blank number never matches, because a blank
+    identifier never reaches here.
+
+    Only an employee's own row is consulted, through ``all_objects`` with the
+    tenant named explicitly: there is no ambient tenant before sign-in.
+    """
+    from schools.vs_staff.models import StaffProfile
+
+    slug = normalize_tenant(tenant)
+    number = (staff_number or '').strip()
+    if not slug:
+        return None, None, FAILURE_TENANT_REQUIRED
+
+    resolved = Tenant.objects.filter(
+        slug=slug, status__in=Tenant.AUTHENTICABLE_STATUSES,
+    ).first()
+
+    matches = list(
+        StaffProfile.all_objects.select_related('user__tenant')
+        .filter(
+            tenant_id=resolved.pk if resolved is not None else _NO_SUCH_TENANT_ID,
+            staff_number__iexact=number,
+        )[:2]
+    )
+    if len(matches) != 1:
+        return None, resolved, FAILURE_TENANT_MISMATCH
+    return matches[0].user, resolved, ''

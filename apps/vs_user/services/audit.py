@@ -8,33 +8,32 @@ logger = logging.getLogger('vs_user.audit')
 
 from vs_audit.models import AuditModuleKey, AuditActionType, AuditStatus
 from vs_audit.services import emit_audit_event
+from ..auth_events import AuthEvent
 
-from ..models import AuthEventLog
-
-# Maps AuthEventLog.Event strings → AuditActionType choices.
+# Maps AuthEvent strings → AuditActionType choices.
 _AUTH_EVENT_TO_ACTION: dict[str, str] = {
-    AuthEventLog.Event.USER_CREATED:             AuditActionType.USER_CREATED,
-    AuthEventLog.Event.INVITATION_SENT:          AuditActionType.USER_INVITED,
-    AuthEventLog.Event.ACCOUNT_ACTIVATED:        AuditActionType.ACCOUNT_ACTIVATED,
-    AuthEventLog.Event.LOGIN_SUCCESS:            AuditActionType.LOGIN_SUCCESS,
-    AuthEventLog.Event.LOGIN_FAILURE:            AuditActionType.LOGIN_FAILED,
-    AuthEventLog.Event.TOKEN_REVOKED:            AuditActionType.TOKEN_REVOKED,
-    AuthEventLog.Event.FORCE_LOGOUT:             AuditActionType.FORCE_LOGOUT,
-    AuthEventLog.Event.ACCOUNT_LOCKED:           AuditActionType.ACCOUNT_LOCKED,
-    AuthEventLog.Event.ACCOUNT_UNLOCKED:         AuditActionType.ACCOUNT_UNLOCKED,
-    AuthEventLog.Event.ACCOUNT_SUSPENDED:        AuditActionType.ACCOUNT_SUSPENDED,
-    AuthEventLog.Event.ACCOUNT_REACTIVATED:      AuditActionType.ACCOUNT_REACTIVATED,
-    AuthEventLog.Event.ACCOUNT_DEACTIVATED:      AuditActionType.ACCOUNT_DEACTIVATED,
-    AuthEventLog.Event.PASSWORD_RESET_REQUESTED: AuditActionType.PASSWORD_RESET_REQUESTED,
-    AuthEventLog.Event.PASSWORD_RESET_COMPLETED: AuditActionType.PASSWORD_RESET,
-    AuthEventLog.Event.PASSWORD_CHANGED:         AuditActionType.PASSWORD_CHANGED,
-    AuthEventLog.Event.EMAIL_CHANGED:            AuditActionType.EMAIL_CHANGED,
+    AuthEvent.USER_CREATED:             AuditActionType.USER_CREATED,
+    AuthEvent.INVITATION_SENT:          AuditActionType.USER_INVITED,
+    AuthEvent.ACCOUNT_ACTIVATED:        AuditActionType.ACCOUNT_ACTIVATED,
+    AuthEvent.LOGIN_SUCCESS:            AuditActionType.LOGIN_SUCCESS,
+    AuthEvent.LOGIN_FAILURE:            AuditActionType.LOGIN_FAILED,
+    AuthEvent.TOKEN_REVOKED:            AuditActionType.TOKEN_REVOKED,
+    AuthEvent.FORCE_LOGOUT:             AuditActionType.FORCE_LOGOUT,
+    AuthEvent.ACCOUNT_LOCKED:           AuditActionType.ACCOUNT_LOCKED,
+    AuthEvent.ACCOUNT_UNLOCKED:         AuditActionType.ACCOUNT_UNLOCKED,
+    AuthEvent.ACCOUNT_SUSPENDED:        AuditActionType.ACCOUNT_SUSPENDED,
+    AuthEvent.ACCOUNT_REACTIVATED:      AuditActionType.ACCOUNT_REACTIVATED,
+    AuthEvent.ACCOUNT_DEACTIVATED:      AuditActionType.ACCOUNT_DEACTIVATED,
+    AuthEvent.PASSWORD_RESET_REQUESTED: AuditActionType.PASSWORD_RESET_REQUESTED,
+    AuthEvent.PASSWORD_RESET_COMPLETED: AuditActionType.PASSWORD_RESET,
+    AuthEvent.PASSWORD_CHANGED:         AuditActionType.PASSWORD_CHANGED,
+    AuthEvent.EMAIL_CHANGED:            AuditActionType.EMAIL_CHANGED,
 }
 
 # Events that represent a failure outcome.
 _FAILED_EVENTS = {
-    AuthEventLog.Event.LOGIN_FAILURE,
-    AuthEventLog.Event.ACCOUNT_LOCKED,
+    AuthEvent.LOGIN_FAILURE,
+    AuthEvent.ACCOUNT_LOCKED,
 }
 
 

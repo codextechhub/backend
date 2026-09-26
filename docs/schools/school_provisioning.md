@@ -294,7 +294,7 @@ stays a system row (`owner=None`).
 
 Note the account is created through `User.objects.create_user` directly, not
 through `vs_user`'s `UserCreationService` - so none of that service's own
-guards, its workflow submission or its `AuthEventLog` entry apply here.
+guards, its workflow submission or its `USER_CREATED` audit event apply here.
 
 ### `provision_books_for_school`
 

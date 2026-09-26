@@ -8,7 +8,7 @@
 #   INVITATION - ActivationPreviewView, ActivationView, InvitationResendView
 #   PASSWORD   - PasswordChangeView, PasswordResetRequestView, PasswordResetConfirmView, AdminPasswordResetView
 #   USERS      - UserAccountViewSet, UserEmailChangeView, UserSuspendView, UserReactivateView, UserUnlockView
-#   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet
+#   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventViewSet
 
 from __future__ import annotations
 from uuid import UUID
@@ -30,8 +30,9 @@ from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 from vs_tenants.models import Tenant
 from core.response import success_response, error_response
 from ..account_scope import administrable_user
+from ..auth_events import AuthEvent
 from ..models import (
-    User, LoginSession, AuthEventLog,
+    User, LoginSession,
 )
 from ..serializers import (
     ActivationSerializer, ActivationPreviewSerializer, LoginRequestSerializer, TokenRefreshSerializer,
@@ -72,6 +73,10 @@ class LoginView(APIView):
     Handles lockout checks, session creation and audit logging - all via
     LoginService.
 
+    The account is named by ``email``, by ``identifier`` (an email address or
+    the school's staff number, typed into one box), or by a platform ``card_id``.
+    See LoginRequestSerializer.
+
     The body may carry an optional ``tenant`` - the slug the frontend reads off
     the subdomain the request came from (a school's page at
     bright-star.xvs.codexng.com sends "bright-star"). When present the tenant is
@@ -106,6 +111,7 @@ class LoginView(APIView):
                 tenant=ser.validated_data.get('tenant', ''),
                 request=request,
                 card_id=ser.validated_data.get('card_id', ''),
+                staff_number=ser.validated_data.get('staff_number', ''),
             )
         except ValueError as e:
             payload = e.args[0] if e.args else {}
@@ -243,7 +249,7 @@ class LogoutView(APIView):
             actor=token_user,
             subject=token_user,
             tenant=token_user.tenant,
-            event=AuthEventLog.Event.TOKEN_REVOKED,
+            event=AuthEvent.TOKEN_REVOKED,
             request=request,
         )
 

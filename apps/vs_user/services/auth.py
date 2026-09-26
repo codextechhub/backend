@@ -11,11 +11,12 @@ from django.utils import timezone
 
 from vs_tenants.models import Tenant
 
-from ..models import User, LoginSession, AccountLockout, AuthAttempt, AuthEventLog
+from ..auth_events import AuthEvent
+from ..models import User, LoginSession, AccountLockout, AuthAttempt
 from ..tokens import CodeXRefreshToken
 from ..serializers import UserReadSerializer, school_public_info
 from .audit import log_auth_event, record_attempt, blacklist_all_user_tokens, get_client_ip, get_device_label
-from .sign_in_scope import resolve_sign_in_account
+from .sign_in_scope import resolve_sign_in_account, resolve_staff_number_account
 
 class LoginService:
 
@@ -26,6 +27,7 @@ class LoginService:
         tenant: str | None = None,
         request=None,
         card_id: str = "",
+        staff_number: str = "",
     ) -> dict:
         """
         Authenticates a user and returns tokens + user data.
@@ -47,6 +49,11 @@ class LoginService:
         A card sign-in supplies ``card_id`` instead of ``email``. The random,
         revocable identifier resolves only inside the platform tenant. The
         account email remains server-side throughout the card flow.
+
+        A school staff member may supply their ``staff_number`` instead of
+        ``email``. It resolves only inside the asserted school, and the attempt
+        log records the number as typed, so support reading a failed attempt
+        sees what the person actually entered.
 
         Steps:
           1. Resolve the asserted tenant, then find the user inside it
@@ -70,6 +77,11 @@ class LoginService:
             user, tenant = LoginService._resolve_card_login_account(card_id)
             email = user.email if user else ""
             scope_failure = None
+        elif staff_number:
+            user, tenant, scope_failure = resolve_staff_number_account(
+                staff_number=staff_number, tenant=tenant,
+            )
+            email = staff_number.strip()
         else:
             user, tenant, scope_failure = resolve_sign_in_account(email=email, tenant=tenant)
 
@@ -170,7 +182,7 @@ class LoginService:
         )
         log_auth_event(
             actor=authed, subject=authed, tenant=authed.tenant,
-            event=AuthEventLog.Event.LOGIN_SUCCESS,
+            event=AuthEvent.LOGIN_SUCCESS,
             request=request,
             metadata={'session_id': session.id},
         )
@@ -328,7 +340,7 @@ class LoginService:
             if just_locked:
                 log_auth_event(
                     actor=None, subject=user, tenant=user.tenant,
-                    event=AuthEventLog.Event.ACCOUNT_LOCKED, request=request,
+                    event=AuthEvent.ACCOUNT_LOCKED, request=request,
                 )
 
         # Always record the email as ENTERED - for unknown accounts this is the

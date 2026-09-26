@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 
 from core.pagination import XVSPagination
 from core.response import success_response
+from vs_rbac.field_enforcement import assert_writable
 
 from ..constants import (
     PERM_ACCOUNT_REACTIVATE,
@@ -166,51 +167,58 @@ class StaffHistoryView(StaffViewMixin, APIView):
         return success_response(data={"entries": timeline})
 
     def _account_events(self, staff, as_at=None):
-        """The identity layer's half, read from its own log.
+        """The identity layer's half, read from the audit trail it writes to.
 
-        Read from ``AuthEventLog`` rather than from the audit trail, and that is
-        a deliberate choice about who may see it. The audit trail is gated on
-        ``platform.audit.view``, which no school role holds and should not, so a
-        school reading its own people's history through it would see the
-        employment half and an empty space where the account half belongs. The
-        auth log carries the same events, is scoped to this tenant and this
-        subject, and is the identity layer's own record of them.
+        Every account action is recorded by ``vs_user.services.audit.
+        log_auth_event`` as an identity ``AuditEvent`` about the account, with
+        the auth event's name in ``metadata.auth_event``. That is the only
+        record of them (see ``vs_user.auth_events``).
 
-        An actor is an id and a display name and never an email address, which
-        is the rule the platform already applies to ``created_by`` and matters
-        most here, because a history is the most widely read part of a profile.
+        Read under this view's own key, not through the audit endpoints. Those
+        are gated on ``platform.audit.view``, which no school role holds, and
+        the rows are narrowed here to this tenant, this person and the events
+        in ``ACCOUNT_EVENTS``. Nothing from the metadata leaves except the note
+        an administrator wrote on an email change: the addresses, IP and device
+        stay behind, because a history is the most widely read part of a
+        profile and the email is itself under Field Access.
+
+        An actor is an id and a display name and never an email address.
         """
-        from vs_user.models import AuthEventLog
+        from vs_audit.models import AuditEvent
+        from vs_user.auth_events import AuthEvent
 
+        labels = dict(AuthEvent.choices)
         rows = (
-            AuthEventLog.objects.filter(
-                tenant=self.tenant, subject_id=staff.user_id,
-                event__in=self.ACCOUNT_EVENTS,
-                **({"created_at__lt": as_at.moment} if as_at is not None else {}),
+            AuditEvent.objects.filter(
+                tenant=self.tenant, entity_type="User",
+                entity_id=str(staff.user_id),
+                metadata__auth_event__in=self.ACCOUNT_EVENTS,
+                **({"event_at__lt": as_at.moment} if as_at is not None else {}),
             )
-            .select_related("actor")
-            .order_by("-created_at")[:100]
+            .select_related("actor_user")
+            .order_by("-event_at")[:100]
         )
-        return [
-            {
+        entries = []
+        for row in rows:
+            event = row.metadata.get("auth_event", "")
+            actor = row.actor_user
+            entries.append({
                 "kind": "account",
-                "at": row.created_at,
-                "event": row.event,
-                "label": row.get_event_display(),
+                "at": row.event_at,
+                "event": event,
+                "label": labels.get(event, event),
+                "note": str(row.metadata.get("note") or "") if event == "EMAIL_CHANGED" else "",
                 "actor": (
                     {
-                        "id": row.actor_id,
+                        "id": actor.pk,
                         "name": " ".join(
-                            part for part in (
-                                row.actor.first_name, row.actor.last_name,
-                            ) if part
+                            part for part in (actor.first_name, actor.last_name) if part
                         ).strip(),
                     }
-                    if row.actor_id else None
+                    if actor is not None else None
                 ),
-            }
-            for row in rows
-        ]
+            })
+        return entries
 
 
 class _AccountActionView(StaffViewMixin, APIView):
@@ -285,6 +293,13 @@ class StaffAccountEmailView(StaffViewMixin, APIView):
     about any other: the uniqueness is per tenant, so the same address may
     legitimately be an account elsewhere and a school must not learn so.
 
+    The address is also the registered ``email`` field of ``school.teachers``,
+    so a role whose Field Access leaves it read-only is refused with 403 even
+    when it holds the account key. An account still waiting to be activated has
+    its invitation reissued to the new address (see EmailChangeService).
+
+    An optional ``note`` says why, and is shown on the person's history.
+
     docstring-name: Change a staff account's email
     """
 
@@ -294,9 +309,11 @@ class StaffAccountEmailView(StaffViewMixin, APIView):
         staff = self.get_staff_for_write(pk)
         payload = EmailChangeSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
+        assert_writable(request, "school.teachers", {"email": payload.validated_data["email"]})
         accounts.change_email(
             staff, payload.validated_data["email"],
             actor=request.user, request=request,
+            note=payload.validated_data["note"],
         )
         return success_response(
             message="Email address changed.",

@@ -21,7 +21,8 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
-from vs_user.models import AccountLockout, AuthAttempt, AuthEventLog, LoginSession, User
+from vs_user.auth_events import AuthEvent
+from vs_user.models import AccountLockout, AuthAttempt, LoginSession, User
 from vs_user.services.auth import LoginService
 
 
@@ -2932,7 +2933,7 @@ class CardLoginRotationEndpointTests(TestCase):
         self.assertTrue(AuditEvent.objects.filter(
             actor_user=self.actor,
             entity_id=str(self.target.id),
-            metadata__auth_event=AuthEventLog.Event.CARD_LOGIN_ROTATED,
+            metadata__auth_event=AuthEvent.CARD_LOGIN_ROTATED,
         ).exists())
 
     def test_rotation_requires_the_backend_update_permission(self):
@@ -4480,12 +4481,11 @@ class IdentityAuditEventsCarryTheTenantTests(TestCase):
 
     def test_a_failed_sign_in_is_filed_under_the_tenant_it_happened_at(self):
         from vs_audit.models import AuditActionType, AuditEvent
-        from vs_user.models import AuthEventLog
         from vs_user.services.audit import log_auth_event
 
         log_auth_event(
             actor=None, subject=self.bola, tenant=self.bola.tenant,
-            event=AuthEventLog.Event.LOGIN_FAILURE,
+            event=AuthEvent.LOGIN_FAILURE,
         )
 
         event = AuditEvent.objects.get(action_type=AuditActionType.LOGIN_FAILED)
@@ -4493,12 +4493,11 @@ class IdentityAuditEventsCarryTheTenantTests(TestCase):
 
     def test_a_platform_wide_identity_event_with_no_tenant_stays_null(self):
         from vs_audit.models import AuditActionType, AuditEvent
-        from vs_user.models import AuthEventLog
         from vs_user.services.audit import log_auth_event
 
         log_auth_event(
             actor=None, subject=self.bola, tenant=None,
-            event=AuthEventLog.Event.PASSWORD_RESET_REQUESTED,
+            event=AuthEvent.PASSWORD_RESET_REQUESTED,
         )
 
         event = AuditEvent.objects.get(
@@ -5123,7 +5122,7 @@ class PersonaConfersNoAuthorityTests(TestCase):
                 )
 
 
-class AuthEventLogTenantIsolationTests(TestCase):
+class AuthEventTenantIsolationTests(TestCase):
     """``GET /v1/user/auth-events/`` is the identity half of the audit trail.
 
     It reads ``AuditEvent`` rows directly, so it needs the same key and the same

@@ -47,7 +47,7 @@ from .views import (
     SessionViewSet,
     AuthAttemptViewSet,
     AccountLockoutViewSet,
-    AuthEventLogViewSet,
+    AuthEventViewSet,
     # Platform staff profiles
     PlatformStaffProfileViewSet,
     # Organogram
@@ -63,7 +63,7 @@ router.register(r'users',             UserAccountViewSet,         basename='user
 router.register(r'sessions',          SessionViewSet,             basename='sessions')
 router.register(r'auth-attempts',     AuthAttemptViewSet,         basename='auth-attempts')
 router.register(r'account-lockouts',  AccountLockoutViewSet,      basename='account-lockouts')
-router.register(r'auth-events',       AuthEventLogViewSet,        basename='auth-events')
+router.register(r'auth-events',       AuthEventViewSet,        basename='auth-events')
 router.register(r'platform-staff-profiles', PlatformStaffProfileViewSet, basename='platform-staff-profiles')
 router.register(r'organogram/nodes',        OrgNodeViewSet,             basename='org-nodes')
 router.register(r'organogram/positions',    PositionViewSet,            basename='org-positions')

@@ -18,7 +18,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from ..action_tokens import invitation_token_digest, issue_invitation_token
-from ..models import User, UserInvitation, AuthEventLog, PlatformStaffProfile
+from ..auth_events import AuthEvent
+from ..models import User, UserInvitation, PlatformStaffProfile
 from ..services.audit import log_auth_event
 from ..tokens import CodeXRefreshToken
 
@@ -227,7 +228,7 @@ class InvitationService:
             actor=user,
             subject=user,
             tenant=user.tenant,
-            event=AuthEventLog.Event.ACCOUNT_ACTIVATED,
+            event=AuthEvent.ACCOUNT_ACTIVATED,
             request=request,
         )
 
@@ -292,7 +293,7 @@ class InvitationService:
             actor=requested_by,
             subject=user,
             tenant=user.tenant,
-            event=AuthEventLog.Event.INVITATION_SENT,
+            event=AuthEvent.INVITATION_SENT,
             request=request,
         )
 

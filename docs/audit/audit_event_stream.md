@@ -390,7 +390,7 @@ An entity with no event this caller may read is a `404`, not an empty trail.
   uses (`views.py:412-415`, `443-448`). Same shape as the task monitor
   (`docs/console/console_task_monitor.md` §8).
 - **The identity stream reads `AuditEvent` through a second copy of the
-  predicate.** `AuthEventLogViewSet` (`vs_user/views/security.py:467`) serves
+  predicate.** `AuthEventViewSet` (`vs_user/views/security.py`) serves
   `GET /v1/user/auth-events/` from this same table, filtered to
   `module_key=IDENTITY`, and gates it on `platform.audit.view` (`:478-491`).
   Until `9227d9e` it named `HasRBACPermission` and set no `rbac_permission` at
@@ -496,7 +496,7 @@ leaks.
 | `vs_tenants/context.py:52-93` | `resolve_audit_identity`, `mark_audit_event_emitted`, `add_proxy_audit_metadata` |
 | `vs_tenants/middleware.py:98-176` | The proxy fallback events this app's counter suppresses |
 | `vs_user/services/audit.py` | `log_auth_event` - the identity/auth vocabulary and the biggest single writer |
-| `vs_user/views/security.py:467-556` | `AuthEventLogViewSet` - a second reader of this table, with its own copy of the predicate |
+| `vs_user/views/security.py` | `AuthEventViewSet` - a second reader of this table, sharing `vs_audit.scoping` |
 | `vs_rbac/audit.py`, `vs_finance/audit.py`, `vs_tickets/services/audit.py` | Authoritative module logs that mirror here best-effort |
 
 ## 11. Test coverage & gaps

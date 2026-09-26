@@ -647,7 +647,9 @@ class Command(BaseCommand):
         import uuid as _uuid
 
         from vs_admin_console.models import ImpersonationSession
-        from vs_user.models import AuthAttempt, AuthEventLog, LoginSession, User
+        from vs_user.auth_events import AuthEvent
+        from vs_user.models import AuthAttempt, LoginSession, User
+        from vs_user.services.audit import log_auth_event
 
         self.stdout.write(self.style.MIGRATE_HEADING("CX security history..."))
         staff = list(
@@ -680,9 +682,9 @@ class Command(BaseCommand):
                         result="FAIL", failure_code="INVALID_CREDENTIALS",
                         ip_address=ip, user_agent=ua,
                     )
-                AuthEventLog.objects.create(
+                log_auth_event(
                     actor=user, subject=user, tenant=user.tenant,
-                    event="LOGIN_SUCCESS", ip_address=ip, user_agent=ua,
+                    event=AuthEvent.LOGIN_SUCCESS,
                 )
                 attempts += 1
 
