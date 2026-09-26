@@ -21,6 +21,7 @@ from vs_rbac.evaluator import ANY_BRANCH, get_effective_permissions, has_permiss
 from vs_rbac.models import TenantUserRoleAssignment
 from vs_rbac.scoping import (
     WHOLE_TENANT,
+    branch_reach_payload,
     branch_scope_for_user,
     visible_branch_ids,
 )
@@ -557,3 +558,67 @@ class BranchScopeQueryCostTests(_BranchGrantFixture):
             self.assertEqual(
                 visible_branch_ids(legacy, self.tenant), frozenset({self.lekki.pk}),
             )
+
+
+class BranchReachPayloadTests(_BranchGrantFixture):
+    """The branch reach a client is told at sign-in and on every ``/me``.
+
+    A branch picker is only a real choice when the reader may work in more
+    than one branch. The school's branch list cannot answer that, so the
+    session payload carries the reader's own reach.
+    """
+
+    def me_payload(self, user):
+        from rest_framework.test import APIRequestFactory, force_authenticate
+
+        from vs_user.views.me import CurrentUserView
+
+        request = APIRequestFactory().get("/v1/user/auth/me/")
+        force_authenticate(request, user=user)
+        request.tenant = user.tenant
+        response = CurrentUserView.as_view()(request)
+        self.assertEqual(response.status_code, 200)
+        return response.data["data"]
+
+    def test_whole_tenant_grant_reads_as_the_whole_tenant(self):
+        head = self.person(self.tenant, "reach-head@grant.test")
+        make_assignment(self.tenant, head, self.role_granting(self.tenant, "Proprietor"))
+
+        self.assertEqual(
+            branch_reach_payload(head, self.tenant),
+            {"whole_tenant": True, "branch_ids": []},
+        )
+
+    def test_grants_at_two_of_three_branches_name_exactly_those_two(self):
+        ngozi = self.person(self.tenant, "reach-ngozi@grant.test")
+        role = self.role_granting(self.tenant, "Bursar")
+        make_assignment(self.tenant, ngozi, role, branch=self.lekki)
+        make_assignment(self.tenant, ngozi, role, branch=self.ikeja)
+
+        self.assertEqual(
+            branch_reach_payload(ngozi, self.tenant),
+            {"whole_tenant": False, "branch_ids": sorted([self.ikeja.pk, self.lekki.pk])},
+        )
+
+    def test_a_withdrawn_branch_leaves_an_empty_reach_not_the_whole_tenant(self):
+        tunde = self.person(self.tenant, "reach-tunde@grant.test")
+        make_assignment(
+            self.tenant, tunde, self.role_granting(self.tenant, "Bursar"), branch=self.ikeja,
+        )
+        self.ikeja.suspend(actor_id="test", reason="Closed for the term")
+
+        self.assertEqual(
+            branch_reach_payload(tunde, self.tenant),
+            {"whole_tenant": False, "branch_ids": []},
+        )
+
+    def test_me_carries_the_readers_own_reach(self):
+        chika = self.person(self.tenant, "reach-chika@grant.test")
+        make_assignment(
+            self.tenant, chika, self.role_granting(self.tenant, "Bursar"), branch=self.yaba,
+        )
+
+        self.assertEqual(
+            self.me_payload(chika)["branch_reach"],
+            {"whole_tenant": False, "branch_ids": [self.yaba.pk]},
+        )

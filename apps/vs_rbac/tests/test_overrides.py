@@ -436,7 +436,7 @@ class UserPermissionOverrideTests(TestCase):
             self.assertNotIn(signal, blob)
         self.assertEqual(
             set(payload.keys()),
-            {"user", "tenant", "school", "permissions", "field_access"},
+            {"user", "tenant", "school", "permissions", "field_access", "branch_reach"},
         )
         for field in payload["user"]:
             self.assertNotIn("override", field.lower())

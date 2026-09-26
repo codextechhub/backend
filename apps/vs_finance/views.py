@@ -563,11 +563,20 @@ class AccountActivityView(APIView):
 class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
     """GET /finance/periods/?entity= - the entity's fiscal periods.
 
+    Open to anyone holding a finance key, the same rule as the entity list and
+    the posting window. Every finance report offers a period filter built from
+    this list, and a period is a name, two dates and a status for books the
+    caller is already entitled to. Gating it on ``finance.period.view`` left a
+    bursar who may run reports unable to pick which month to run them for.
+    That key still gates the Fiscal Periods setup screen, and closing,
+    reopening or locking a period each keep their own key.
+
     docstring-name: Fiscal periods
     """
 
     serializer_class = FiscalPeriodSerializer
-    rbac_permission = "finance.period.view"
+    permission_classes = [IsAuthenticatedAndActive & HasAnyModuleAccess]
+    rbac_modules = ["finance"]
 
     def list(self, request, *args, **kwargs):
         """Return one complete year when ``?all=true&year=``; paginate otherwise."""

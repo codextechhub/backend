@@ -49,6 +49,7 @@ class CurrentUserView(APIView):
     def get(self, request):
         from vs_rbac.evaluator import get_effective_permissions
         from vs_rbac.field_enforcement import field_access_payload
+        from vs_rbac.scoping import branch_reach_payload
         from vs_tenants.context import tenant_context_block
         # request.tenant is bound by TenantJWTAuthentication; fall back to the
         # user's home tenant for auth paths that bypass it (e.g. force_authenticate).
@@ -68,6 +69,7 @@ class CurrentUserView(APIView):
             # What the screens may not show and may not offer to change, for
             # the forms and columns that have no record to ask.
             "field_access": field_access_payload(request.user, tenant),
+            "branch_reach": branch_reach_payload(request.user, tenant),
         }
 
         # Browser reloads deliberately persist no proxy credential. Tell the

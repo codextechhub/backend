@@ -283,6 +283,26 @@ def visible_branch_ids(user, tenant=None) -> Optional[FrozenSet[int]]:
     return scope
 
 
+def branch_reach_payload(user, tenant=None) -> dict:
+    """:func:`visible_branch_ids` in the shape the session payload carries.
+
+    ``whole_tenant`` is true when nothing narrows the caller; ``branch_ids`` is
+    then empty and means nothing. Otherwise ``branch_ids`` is exactly the set
+    of branches the caller may work in, and may be empty, which means they see
+    no branch rows at all.
+
+    The sign-in response and ``/me`` both carry it so a client can tell "this
+    school has two branches" apart from "this person may work in two
+    branches". The branch list endpoint answers the first; only this answers
+    the second, and a branch picker built from the first offers a choice the
+    server would then refuse to honour.
+    """
+    scope = visible_branch_ids(user, tenant)
+    if scope is WHOLE_TENANT:
+        return {"whole_tenant": True, "branch_ids": []}
+    return {"whole_tenant": False, "branch_ids": sorted(scope)}
+
+
 # --------------------------------------------------------------------------- #
 # Turning the answer into a filter                                            #
 # --------------------------------------------------------------------------- #

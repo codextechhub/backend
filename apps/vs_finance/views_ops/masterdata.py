@@ -6,6 +6,11 @@ from __future__ import annotations
 from rest_framework.exceptions import ValidationError
 
 from core.response import success_response
+from vs_rbac.permissions import (
+    HasAnyModuleAccess,
+    HasRBACPermission,
+    IsAuthenticatedAndActive,
+)
 
 from ..views import resolve_entity
 from ..models import (
@@ -181,24 +186,34 @@ class TaxCodeListCreateView(_FinanceBase):
 class CostCenterListCreateView(_FinanceBase):
     """GET (list) / POST (create) cost centres for an entity.
 
+    Reading is open to anyone working in finance, and to the requisition
+    writers whose forms pick a cost centre. A cost centre is a name and a code
+    for books the caller is already entitled to, with no amounts, and every
+    finance report that can be narrowed by one needs this list for its filter.
+    Gating the read on ``finance.costcenter.view`` refused a bursar the filter
+    on reports they were allowed to run. Creating one still needs
+    ``finance.costcenter.create``.
+
     docstring-name: Cost centers
     """
 
+    rbac_modules = ["finance"]
+
     @property
-    # Handle the rbac permission workflow.
     def rbac_permission(self):
+        """The create key for a write; the requisition grants for a read."""
         if self.request.method == "POST":
             return "finance.costcenter.create"
-        # Cost centres are non-sensitive, entity-scoped reference data needed by
-        # requisition forms. Tenant procurement roles are administrator-owned and
-        # have no canonical requester/buyer template to backfill safely, so allow
-        # only the requisition grants that actually need this picker. Mutation
-        # remains exclusively behind the Finance create permission above.
         return [
-            "finance.costcenter.view",
             "procurement.requisition.create",
             "procurement.requisition.update",
         ]
+
+    def get_permissions(self):
+        """A read passes on any finance key or on a requisition grant."""
+        if self.request.method == "POST":
+            return super().get_permissions()
+        return [(IsAuthenticatedAndActive & (HasAnyModuleAccess | HasRBACPermission))()]
 
     # Handle GET requests for this endpoint.
     def get(self, request):
@@ -239,14 +254,26 @@ class CostCenterListCreateView(_FinanceBase):
 class DimensionListCreateView(_FinanceBase):
     """GET (list) / POST (create) analytical dimensions for an entity.
 
+    Reading is open to anyone working in finance: a dimension is a name and
+    its allowed values, with no amounts, and the journal screen and the
+    dimension analysis report both need the list for their filters. Creating
+    one still needs ``finance.dimension.create``.
+
     docstring-name: Dimensions
     """
 
+    rbac_modules = ["finance"]
+
     @property
-    # Handle the rbac permission workflow.
     def rbac_permission(self):
-        return "finance.dimension.create" if self.request.method == "POST" \
-            else "finance.dimension.view"
+        """The create key; reads are gated by module membership instead."""
+        return "finance.dimension.create"
+
+    def get_permissions(self):
+        """A read passes on any finance key; a write needs the create key."""
+        if self.request.method == "POST":
+            return super().get_permissions()
+        return [(IsAuthenticatedAndActive & HasAnyModuleAccess)()]
 
     # Handle GET requests for this endpoint.
     def get(self, request):
