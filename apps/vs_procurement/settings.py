@@ -25,6 +25,7 @@ SETTING_FIELDS = (
     "rfq_closing_soon_days",
     "minimum_rfq_invited_vendors",
     "minimum_submitted_quotations_before_award",
+    "non_po_spend_limit_pct",
 )
 
 
@@ -55,6 +56,7 @@ def serialize_procurement_settings(settings):
         "minimum_submitted_quotations_before_award": (
             settings.minimum_submitted_quotations_before_award
         ),
+        "non_po_spend_limit_pct": settings.non_po_spend_limit_pct,
         "updated_at": settings.updated_at.isoformat() if settings.pk else None,
         "updated_by": settings.updated_by.email if settings.pk and settings.updated_by else None,
     }
@@ -136,6 +138,17 @@ def _validated_values(data):
         if value < 1 or value > 50:
             raise ValidationError({field: "Use a value from 1 to 50 vendors."})
         values[field] = value
+    if "non_po_spend_limit_pct" in data:
+        value = data["non_po_spend_limit_pct"]
+        if isinstance(value, bool):
+            raise ValidationError({"non_po_spend_limit_pct": "Enter a whole percentage."})
+        try:
+            value = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"non_po_spend_limit_pct": "Enter a whole percentage."}) from exc
+        if value < 0 or value > 100:
+            raise ValidationError({"non_po_spend_limit_pct": "Use a value from 0 to 100 percent."})
+        values["non_po_spend_limit_pct"] = value
     return values
 
 

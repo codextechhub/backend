@@ -71,4 +71,9 @@ PROCUREMENT_SETTING_CONSUMERS = {
         "vs_procurement.sourcing",
         "Blocks award below the submitted-quotation minimum unless an exception is authorized.",
     ),
+    "non_po_spend_limit_pct": _consumer(
+        "Procurement dashboard",
+        "vs_procurement.dashboard_suppliers",
+        "Marks spend on bills without a purchase order as over the school's limit.",
+    ),
 }

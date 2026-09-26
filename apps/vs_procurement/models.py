@@ -162,6 +162,10 @@ class ProcurementSettings(TimeStampedModel):
         default=1, validators=[MinValueValidator(1), MaxValueValidator(50)],
         help_text="Minimum submitted quotations required before an RFQ can be awarded.",
     )
+    non_po_spend_limit_pct = models.PositiveSmallIntegerField(
+        default=2, validators=[MaxValueValidator(100)],
+        help_text="Share of spend the school accepts on bills raised without a purchase order.",
+    )
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="procurement_settings_updates", null=True, blank=True,

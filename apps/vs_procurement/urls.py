@@ -158,6 +158,8 @@ urlpatterns = [
 
     # AP reports
     path("reports/dashboard/", views.ProcurementDashboardView.as_view(), name="proc-dashboard"),
+    path("reports/dashboard/suppliers/", views.ProcurementSuppliersDashboardView.as_view(),
+         name="proc-dashboard-suppliers"),
     # "ap-aging/vendor" is registered before "ap-aging" (both literal; order harmless here).
     path("reports/ap-aging/vendor/", views.APAgingVendorDetailView.as_view(), name="proc-ap-aging-vendor"),
     path("reports/ap-aging/", views.APAgingView.as_view(), name="proc-ap-aging"),

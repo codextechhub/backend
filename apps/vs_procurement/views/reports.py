@@ -473,6 +473,32 @@ class ProcurementDashboardView(_ProcBase):
         )
 
 
+class ProcurementSuppliersDashboardView(_ProcBase):
+    """The Spend & suppliers tab of the Procurement dashboard.
+
+    Same opening rule and ``?window=`` as :class:`ProcurementDashboardView`; each
+    block needs the key of the screen it summarises and answers under the
+    caller's branches. See :mod:`vs_procurement.dashboard_suppliers`.
+    """
+    permission_classes = [IsAuthenticatedAndActive & HasAnyModuleAccess]
+    rbac_modules = ["procurement"]
+
+    def get(self, request):
+        from vs_finance.dashboard import DashboardReader
+
+        from ..dashboard_suppliers import suppliers_view
+
+        entity = resolve_entity(request)
+        return success_response(
+            "Spend and suppliers dashboard retrieved.",
+            data=suppliers_view(
+                entity, user=request.user, branch_scope=_scope(request, entity),
+                reader=DashboardReader.for_user(request.user, getattr(request.user, "tenant", None)),
+                window=request.query_params.get("window"),
+            ),
+        )
+
+
 class SpendAnalysisView(_ProcBase):
     """Analyze posted invoice spend across isolated date/category filters."""
     rbac_permission = "procurement.analytics.view"
