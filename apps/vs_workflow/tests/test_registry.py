@@ -19,6 +19,7 @@ class HandlerRegistryTests(SimpleTestCase):
     def test_register_and_get(self):
         @register_handler("test.docReg")
         class H(BaseWorkflowHandler):
+            noun = "Test document"
             approval_releases_nothing = True
             def resolve_default_template_code(self, d): return "x"
         self.assertEqual(get_handler("test.docReg").document_type, "test.docReg")
@@ -26,13 +27,37 @@ class HandlerRegistryTests(SimpleTestCase):
     def test_duplicate_raises(self):
         @register_handler("test.docDup")
         class H1(BaseWorkflowHandler):
+            noun = "Test document"
             approval_releases_nothing = True
             def resolve_default_template_code(self, d): return "x"
         with self.assertRaises(HandlerAlreadyRegisteredError):
             @register_handler("test.docDup")
             class H2(BaseWorkflowHandler):
+                noun = "Test document"
                 approval_releases_nothing = True
                 def resolve_default_template_code(self, d): return "y"
+
+    def test_a_handler_with_no_noun_cannot_register(self):
+        """Screens would otherwise show the approver the raw document type."""
+        with self.assertRaises(TypeError):
+            @register_handler("test.docUnnamed")
+            class Unnamed(BaseWorkflowHandler):
+                approval_releases_nothing = True
+                def resolve_default_template_code(self, d): return "x"
+
+    def test_every_registered_type_has_a_label_of_its_own(self):
+        """No live type falls back to its code in words."""
+        from vs_workflow.conditions.fields import document_type_label
+        from vs_workflow.handlers.registry import list_registered_handlers
+
+        for document_type in list_registered_handlers():
+            if document_type.startswith("test."):
+                continue
+            with self.subTest(document_type=document_type):
+                self.assertEqual(
+                    document_type_label(document_type),
+                    get_handler(document_type).noun,
+                )
 
     def test_unknown_raises(self):
         with self.assertRaises(UnknownDocumentTypeError):
@@ -50,6 +75,28 @@ class ConditionRegistryTests(SimpleTestCase):
         with self.assertRaises(ConditionFunctionAlreadyRegisteredError):
             @register_condition("test.dupReg")
             def fn2(d, a=None): return False
+
+    def test_a_handler_with_no_noun_cannot_register(self):
+        """Screens would otherwise show the approver the raw document type."""
+        with self.assertRaises(TypeError):
+            @register_handler("test.docUnnamed")
+            class Unnamed(BaseWorkflowHandler):
+                approval_releases_nothing = True
+                def resolve_default_template_code(self, d): return "x"
+
+    def test_every_registered_type_has_a_label_of_its_own(self):
+        """No live type falls back to its code in words."""
+        from vs_workflow.conditions.fields import document_type_label
+        from vs_workflow.handlers.registry import list_registered_handlers
+
+        for document_type in list_registered_handlers():
+            if document_type.startswith("test."):
+                continue
+            with self.subTest(document_type=document_type):
+                self.assertEqual(
+                    document_type_label(document_type),
+                    get_handler(document_type).noun,
+                )
 
     def test_unknown_raises(self):
         with self.assertRaises(UnknownConditionFunctionError):

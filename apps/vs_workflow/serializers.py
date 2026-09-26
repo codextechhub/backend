@@ -4,6 +4,8 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from rest_framework import serializers
 
+from vs_workflow.conditions.fields import document_type_label
+
 from vs_rbac.serializers.tenant import (
     USER_NOT_FOUND, TenantScopedRelatedField, TenantScopedSerializerMixin,
 )
@@ -118,10 +120,14 @@ class WorkflowTemplateReadSerializer(serializers.ModelSerializer):
 
     stages = serializers.SerializerMethodField()
     routes = WorkflowRoutePathReadSerializer(many=True, read_only=True)
+    document_type_label = serializers.SerializerMethodField()
     is_platform = serializers.SerializerMethodField()
     tenant_has_own = serializers.SerializerMethodField()
     platform_updated_at = serializers.SerializerMethodField()
     platform_changed_since = serializers.SerializerMethodField()
+
+    def get_document_type_label(self, obj) -> str:
+        return document_type_label(obj.document_type)
 
     def get_stages(self, obj):
         active = (
@@ -168,7 +174,7 @@ class WorkflowTemplateReadSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkflowTemplate
         fields = [
-            "id", "tenant", "branch", "document_type", "code",
+            "id", "tenant", "branch", "document_type", "document_type_label", "code",
             "name", "description", "notification_events", "is_active",
             "is_platform", "tenant_has_own",
             "platform_updated_at", "platform_changed_since",
@@ -302,18 +308,38 @@ class WorkflowAuditLogReadSerializer(serializers.ModelSerializer):
 
 
 class WorkflowInstanceListSerializer(serializers.ModelSerializer):
+    """One instance as a queue row.
+
+    ``document_type_label`` is what people call the document type, and
+    ``document_title`` the title its handler gave this document when it was
+    submitted ("JV-0042", "Finance Admin for Emeka Obi"), read from the stored
+    summary so a page of rows costs no extra queries. Blank where the handler
+    gave none.
+    """
+
     template_code       = serializers.CharField(source="template.code",  read_only=True)
     current_stage_code  = serializers.CharField(source="current_stage.code",  read_only=True, default=None)
     current_stage_label = serializers.CharField(source="current_stage.label", read_only=True, default=None)
+    document_type_label = serializers.SerializerMethodField()
+    document_title      = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkflowInstance
         fields = [
-            "id", "document_type", "document_object_id",
+            "id", "document_type", "document_type_label", "document_title",
+            "document_object_id",
             "template_code",
             "status", "current_stage_code", "current_stage_label",
             "requested_by", "submitted_at", "completed_at", "updated_at",
         ]
+
+    def get_document_type_label(self, obj) -> str:
+        return document_type_label(obj.document_type)
+
+    def get_document_title(self, obj) -> str:
+        summary = obj.document_summary if isinstance(obj.document_summary, dict) else {}
+        title = summary.get("title")
+        return title if isinstance(title, str) else ""
 
 
 class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
@@ -427,16 +453,22 @@ class ApprovalDelegationSerializer(
         tenant_lookup="tenant",
         not_found=USER_NOT_FOUND,
     )
+    # Blank for a delegation that covers every document type.
+    document_type_label = serializers.SerializerMethodField()
 
     class Meta:
         model = ApprovalDelegation
         fields = [
             "id", "delegator", "delegate", "starts_at", "ends_at",
-            "document_type", "exclusive", "reason", "created_at", "revoked_at",
+            "document_type", "document_type_label", "exclusive", "reason",
+            "created_at", "revoked_at",
         ]
         # delegator is set from request.user in the view's perform_create - it
         # must be read-only so DRF validation doesn't require the client to send it.
         read_only_fields = ["id", "delegator", "created_at", "revoked_at"]
+
+    def get_document_type_label(self, obj) -> str:
+        return document_type_label(obj.document_type)
 
     def validate(self, attrs):
         """Fallback tenancy check on the delegate.
@@ -757,6 +789,7 @@ class WorkflowDynamicRoleSerializer(serializers.ModelSerializer):
         return [
             {"template_id": s.template_id, "template_name": s.template.name,
              "document_type": s.template.document_type,
+             "document_type_label": document_type_label(s.template.document_type),
              "stage_code": s.code, "stage_label": s.label}
             for s in stages
         ]

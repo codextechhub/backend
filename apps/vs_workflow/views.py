@@ -24,6 +24,7 @@ from vs_rbac.scoping import branch_q
 from vs_tenants.models import Tenant
 from vs_rbac.permissions import user_has_rbac_permission
 
+from vs_workflow.conditions.fields import document_type_label
 from vs_workflow.exceptions import TemplateInvalidError
 from vs_workflow.constants import (
     PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_UPDATE,
@@ -844,8 +845,9 @@ class TeamLoadView(TenantScopedMixin, APIView):
             buckets[key]["count"] += 1
             buckets[key]["stage_label"] = row["stage__label"]
         return Response([
-            {"document_type": dt, "stage_code": code,
-             "stage_label": info["stage_label"], "active_count": info["count"]}
+            {"document_type": dt, "document_type_label": document_type_label(dt),
+             "stage_code": code, "stage_label": info["stage_label"],
+             "active_count": info["count"]}
             for (dt, code), info in sorted(buckets.items())
         ])
 
@@ -1073,7 +1075,7 @@ class WorkflowDynamicRoleViewSet(TenantScopedMixin, ModelViewSet):
         since the engine nominates no other.
         """
         from vs_rbac.models import TenantRoleTemplate
-        from vs_workflow.conditions.fields import areas_for, catalogue, document_type_label
+        from vs_workflow.conditions.fields import areas_for, catalogue
         from vs_workflow.handlers.registry import handlers_raised_by
 
         try:

@@ -56,6 +56,7 @@ def _enqueue_dispatch(batch_id, instance_id, actor_id) -> None:
 @register_handler("payments.payout_batch")
 class PayoutBatchApprovalHandler(BaseWorkflowHandler):
     """Approval handler for a bulk :class:`~vs_payments.models.PayoutBatch`."""
+    noun = "Payout batch"
 
     # Both kinds of tenant disburse. A school pays its own vendors, is provisioned
     # with an approval path for doing so, and assembles a batch against its own

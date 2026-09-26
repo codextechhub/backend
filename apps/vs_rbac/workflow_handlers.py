@@ -44,6 +44,7 @@ PLATFORM_TEMPLATE_CODE = "role-change-platform"
 
 @register_handler(DOCUMENT_TYPE)
 class RoleChangeWorkflowHandler(BaseWorkflowHandler):
+    noun = "Role permission change"
     document_type = DOCUMENT_TYPE
     # Schools and the platform both administer roles.
     audience = DocumentAudience.ALL
@@ -212,6 +213,7 @@ class RoleGrantWorkflowHandler(BaseWorkflowHandler):
     :meth:`on_approved` has run, so a rejection leaves nothing to take back.
     """
 
+    noun = "Restricted role grant"
     document_type = GRANT_DOCUMENT_TYPE
     audience = DocumentAudience.ALL
     allows_requester_self_approval = True

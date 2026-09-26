@@ -37,20 +37,13 @@ from vs_workflow.services.approvers import (
     resolve_group_users, role_holder_ids, stage_role_key,
 )
 
+from vs_workflow.conditions.fields import document_type_label
+
 from .constants import (
     PROCUREMENT_APPROVAL_TYPES,
     WF_DEFAULT_TEMPLATE_CODE,
 )
 
-
-#: Human labels for the four approvable document types, so the screen never has to
-#: display a ``document_type`` token. Domain-neutral on purpose.
-DOCUMENT_TYPE_LABELS = {
-    "procurement.requisition": "Requisition",
-    "procurement.purchase_order": "Purchase order",
-    "procurement.vendor_invoice": "Vendor invoice",
-    "procurement.vendor_payment": "Vendor payment",
-}
 
 #: Where the rules being reported came from, in cascade order.
 RULES_SOURCE_BRANCH = "BRANCH"
@@ -260,7 +253,7 @@ def approval_coverage(tenant, *, branches=None, include_entity_level=True) -> di
             ]
             document_rows.append({
                 "document_type": document_type,
-                "document_type_label": DOCUMENT_TYPE_LABELS[document_type],
+                "document_type_label": document_type_label(document_type),
                 # "Configured" means a ladder that will actually route this to
                 # somebody, which is why an empty template counts as unconfigured
                 # rather than configured-with-no-gaps. The shared platform row always

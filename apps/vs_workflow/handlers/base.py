@@ -7,6 +7,13 @@ from vs_workflow.exceptions import ReversalNotAllowedError
 # Contract each app implements to connect documents to the workflow engine.
 class BaseWorkflowHandler:
     document_type: str = ""
+
+    #: What people call one of these documents: "Journal entry", "Leave
+    #: request". Every screen that names a document type reads it through
+    #: :func:`vs_workflow.conditions.fields.document_type_label`, so an
+    #: approver sees "Customer refund" rather than ``finance.refund``.
+    #: ``register_handler`` refuses a handler that leaves it empty.
+    noun: str = ""
     document_model: Optional[Type] = None
     # Most document types may use the generic release for an unstaffed stage. A
     # handler can turn it off when terminal approval is itself a safety boundary.

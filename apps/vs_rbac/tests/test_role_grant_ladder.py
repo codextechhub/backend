@@ -110,6 +110,15 @@ class RoleGrantLadderTests(TestCase):
         self.assertEqual(len(changes["items"]), 1)
         self.assertTrue(changes["items"][0]["restricted"])
 
+    def test_the_queue_row_names_the_document_in_words(self):
+        """The inbox shows "Restricted role grant", never ``rbac.role_grant``."""
+        from vs_workflow.serializers import WorkflowInstanceListSerializer
+
+        row = WorkflowInstanceListSerializer(self._instance(self._grant().request)).data
+
+        self.assertEqual(row["document_type_label"], "Restricted role grant")
+        self.assertEqual(row["document_title"], "Finance Admin for School Admin")
+
     # ── Deciding ─────────────────────────────────────────────────────────────
 
     def test_the_only_administrator_approves_her_own_and_it_is_recorded(self):

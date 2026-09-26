@@ -11,6 +11,7 @@ from vs_workflow.presentation import document_details, fields_section
 
 @register_handler("PLATFORM_USER_CREATION")
 class UserCreationWorkflowHandler(BaseWorkflowHandler):
+    noun = "Platform user account"
     document_type = "PLATFORM_USER_CREATION"
     # Only the platform tenant creates platform users.
     audience = DocumentAudience.PLATFORM

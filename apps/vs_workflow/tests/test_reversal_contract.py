@@ -51,6 +51,7 @@ class UndeclaredTypeTests(SimpleTestCase):
         with self.assertRaises(ReversalContractNotDeclaredError):
             @register_handler("test.reversalSilent")
             class Silent(BaseWorkflowHandler):
+                noun = "Test document"
                 def resolve_default_template_code(self, document):
                     return "x"
 
@@ -65,6 +66,7 @@ class UndeclaredTypeTests(SimpleTestCase):
         skip is the answer itself, and the answer inherited from the base is no.
         """
         class Silent(BaseWorkflowHandler):
+            noun = "Test document"
             document_type = "test.reversalUnregistered"
 
         with self.assertRaises(ReversalNotAllowedError) as caught:
@@ -74,6 +76,7 @@ class UndeclaredTypeTests(SimpleTestCase):
     def test_saying_something_is_released_without_saying_what_blocks_is_silence(self):
         """``approval_releases_nothing = False`` answers nothing and is not a declaration."""
         class Silent(BaseWorkflowHandler):
+            noun = "Test document"
             approval_releases_nothing = False
 
         self.assertFalse(declares_reversal_answer(Silent))
@@ -86,6 +89,7 @@ class DeclaredTypeTests(SimpleTestCase):
         @register_handler("test.reversalFree")
         class Free(BaseWorkflowHandler):
             """Approval here writes nothing outside the engine."""
+            noun = "Test document"
 
             approval_releases_nothing = True
 
@@ -99,6 +103,7 @@ class DeclaredTypeTests(SimpleTestCase):
         """One hook per type, one exception for the administrator to read."""
         @register_handler("test.reversalGuarded")
         class Guarded(BaseWorkflowHandler):
+            noun = "Test document"
             def resolve_default_template_code(self, document):
                 return "x"
 
@@ -123,6 +128,7 @@ class DeclaredTypeTests(SimpleTestCase):
         """
         @register_handler("test.reversalLocked")
         class Locked(BaseWorkflowHandler):
+            noun = "Test document"
             def resolve_default_template_code(self, document):
                 return "x"
 
@@ -138,10 +144,12 @@ class DeclaredTypeTests(SimpleTestCase):
     def test_a_module_base_answers_once_for_every_type_it_carries(self):
         """Six finance types and one answer between them, which is the real shape."""
         class _ModuleBase(BaseWorkflowHandler):
+            noun = "Test document"
             def validate_reversal(self, instance, context):
                 return None
 
         class Concrete(_ModuleBase):
+            noun = "Test document"
             pass
 
         self.assertTrue(declares_reversal_answer(Concrete))

@@ -22,6 +22,7 @@ from vs_workflow.models import (
     WorkflowStageApprover,
     WorkflowInstance,
 )
+from vs_workflow.conditions.fields import document_type_label
 from vs_workflow.serializers import StageActionWriteSerializer
 from vs_workflow.services import actions as workflow_actions
 from vs_workflow.services.routing import preview_next_approval_stage
@@ -44,13 +45,6 @@ DOCUMENT_MODELS = {
     WF_DOCTYPE_PURCHASE_ORDER: PurchaseOrder,
     WF_DOCTYPE_VENDOR_INVOICE: VendorInvoice,
     WF_DOCTYPE_VENDOR_PAYMENT: VendorPayment,
-}
-
-DOCUMENT_LABELS = {
-    WF_DOCTYPE_REQUISITION: "Requisition",
-    WF_DOCTYPE_PURCHASE_ORDER: "Purchase Order",
-    WF_DOCTYPE_VENDOR_INVOICE: "Vendor Invoice",
-    WF_DOCTYPE_VENDOR_PAYMENT: "Vendor Payment",
 }
 
 
@@ -158,7 +152,7 @@ def _list_row(entity, snapshot, document, object_id):
     return {
         "id": instance.id,
         "document_type": instance.document_type,
-        "document_type_label": DOCUMENT_LABELS[instance.document_type],
+        "document_type_label": document_type_label(instance.document_type),
         "document_id": object_id,
         "reference": document.document_number or str(document.pk),
         "title": _document_title(document, instance.document_type),

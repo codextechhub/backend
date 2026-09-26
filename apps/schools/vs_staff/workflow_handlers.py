@@ -27,6 +27,7 @@ from .constants import LEAVE_DOCUMENT_TYPE, LEAVE_TEMPLATE_CODE, LeaveStatus, Le
 
 @register_handler(LEAVE_DOCUMENT_TYPE)
 class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
+    noun = "Leave request"
     document_type = LEAVE_DOCUMENT_TYPE
     # Leave is kept on a school's staff records; the platform keeps none.
     audience = DocumentAudience.SCHOOL

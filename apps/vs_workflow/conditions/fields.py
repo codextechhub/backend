@@ -225,10 +225,18 @@ def _handler(document_type: str):
 
 
 def document_type_label(document_type: str) -> str:
-    """What the screen calls a document type: its handler's noun, or its code in words."""
+    """What the screen calls a document type: its handler's noun.
+
+    The one place a document type becomes words, so the approval inbox, the
+    template list, delegations and procurement's own queue cannot disagree.
+    A type with no registered handler, such as one retired while instances of
+    it remain, falls back to its code in words.
+    """
+    if not document_type:
+        return ""
     handler = _handler(document_type)
     noun = getattr(handler, "noun", "") if handler is not None else ""
-    if noun and noun != "Document":
+    if noun:
         return noun
     return document_type.rsplit(".", 1)[-1].replace("_", " ").capitalize()
 

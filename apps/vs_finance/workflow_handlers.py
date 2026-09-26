@@ -239,6 +239,7 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
 # Workflow handler for manual journal approvals.
 class JournalHandler(_FinancePostOnApprove):
     """Approval handler for a manual :class:`~vs_finance.models.JournalEntry`."""
+    noun = "Journal entry"
 
     @property
     # Concrete model for finance.journal instances.
@@ -324,6 +325,7 @@ class JournalHandler(_FinancePostOnApprove):
 # Workflow handler for customer refund approvals.
 class RefundHandler(_FinancePostOnApprove):
     """Approval handler for a customer :class:`~vs_finance.models.Refund` (cash out)."""
+    noun = "Customer refund"
 
     condition_fields = (
         ConditionField("document.method", "Refund method", "document",
@@ -425,6 +427,7 @@ class WriteOffHandler(_FinancePostOnApprove):
     status, not the request's, and :func:`post_write_off_request` accepts an APPROVED
     request - so no DRAFT-override is needed.
     """
+    noun = "Bad-debt write-off"
 
     @property
     # Concrete model for finance.write_off instances.
@@ -524,6 +527,7 @@ class ConcessionHandler(_FinancePostOnApprove):
     ``_mark_approved`` (flip to APPROVED first) would break it. This mirrors the refund
     handler and hands the service a DRAFT document instead.
     """
+    noun = "Concession"
 
     @property
     # Concrete model for finance.concession instances.
@@ -627,6 +631,7 @@ class CreditNoteHandler(_FinancePostOnApprove):
     :func:`post_credit_note` guards ``status == DRAFT``, so the document is handed over
     DRAFT rather than pre-flipped, as for refunds and concessions.
     """
+    noun = "Credit or debit note"
 
     @property
     # Concrete model for finance.credit_note instances.
@@ -712,6 +717,7 @@ class CreditNoteHandler(_FinancePostOnApprove):
 @register_handler("finance.expense_claim")
 class ExpenseClaimHandler(_FinancePostOnApprove):
     """Post a staff expense claim only after its approval route completes."""
+    noun = "Expense claim"
 
     @property
     def document_model(self):

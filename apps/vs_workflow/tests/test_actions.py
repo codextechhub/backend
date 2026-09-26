@@ -318,6 +318,7 @@ class _StubHandler(BaseWorkflowHandler):
     standing up a real document, and its ``refuse``/``fail_after`` switches are
     the two points at which a module can answer no.
     """
+    noun = "Test document"
 
     document_type = "TEST_DOC"
 

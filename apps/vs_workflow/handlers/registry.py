@@ -11,10 +11,10 @@ _REGISTRY: Dict[str, BaseWorkflowHandler] = {}
 
 # Register the document handler that owns a workflow document_type.
 def register_handler(document_type: str):
-    """Claim ``document_type`` for this handler, on two conditions.
+    """Claim ``document_type`` for this handler, on three conditions.
 
-    It must be a handler, and it must have said what an approval of its type
-    releases. The second is checked here rather than at the moment somebody
+    It must be a handler, it must have a ``noun`` for screens to call its
+    documents by, and it must have said what an approval of its type releases. The second is checked here rather than at the moment somebody
     reverses one, because registration happens as the apps load: a type that
     has not answered stops the process that would serve it, instead of shipping
     and reversing silently until the day an administrator undoes an approval
@@ -26,6 +26,12 @@ def register_handler(document_type: str):
     def _decorate(cls: Type[BaseWorkflowHandler]):
         if not issubclass(cls, BaseWorkflowHandler):
             raise TypeError(f"{cls.__name__} must subclass BaseWorkflowHandler")
+        if not (getattr(cls, "noun", "") or "").strip():
+            raise TypeError(
+                f"{cls.__name__} has no noun, so screens would show "
+                f"'{document_type}' to the people approving it. Set noun to "
+                f"what they call one, such as \"Journal entry\"."
+            )
         if not declares_reversal_answer(cls):
             raise ReversalContractNotDeclaredError(
                 f"{cls.__name__} has not said what approving a "

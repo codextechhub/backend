@@ -75,8 +75,8 @@ class _ProcApprovalHandler(BaseWorkflowHandler):
     # Schools and the platform both buy, so every procurement document is raised by all of them.
     audience = DocumentAudience.ALL
 
-    #: Built into the summary subtitle ("Requisition", "Purchase order", …).
-    noun = "Document"
+    #: Also the summary subtitle ("Purchase requisition", "Purchase order", …).
+    noun = ""
     source_path = ""
 
     def resolve_default_template_code(self, document) -> str:
