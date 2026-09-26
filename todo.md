@@ -777,6 +777,27 @@ MUST SAY: "This term" is by the fee's term, not by dates; finance itself holds n
 school concepts.
 VERIFIED (working tree before commit): vs_finance 843 OK; schools.core.fal and branch audit 228 OK.
 
+### D27. The Receivables & collections view of the finance dashboard (fb3ccf16, 2026-09-26)
+MODULES: M19 finance and accounting; the school finance layer.
+- `GET /finance/reports/dashboard/receivables/` (same `?window=` and `?period=`
+  as the overview; opens to any finance key) returns `collections`,
+  `days_to_pay`, `receivables_summary`, `credit`, `curve` (weekly cumulative %,
+  previous window, `target_pct`, `projection_pct`), `plans`, `groups`,
+  `dunning`, `concessions`, `adjustments`, `largest`. Each block needs its key
+  and answers under the reader's branches.
+- `FinanceDocumentSettings.term_collection_target_pct` (1 to 100, default 90),
+  read and written through the documents settings endpoint.
+- `FINANCE_PAYER_GROUP_PROVIDER` groups payers for "collection by group"; the
+  school layer answers with each child's current class.
+- The term provider reads archived sessions too (never draft), so the term
+  before the current one is found for comparison.
+- `seed_finance_receivables_demo --entity <CODE>` adds reminders, concessions,
+  a credit note, overpayments and pending refunds and write-offs (DEBUG only).
+  Both demo commands keep customer email copies off until after commit.
+MUST SAY: the curve compares like with like (a term's fees against the previous
+term's fees at the same week); the target is the school's own setting.
+VERIFIED (working tree before commit): vs_finance 855 OK; schools.core.fal and branch audit 228 OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
