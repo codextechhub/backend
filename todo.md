@@ -864,6 +864,29 @@ the same RFQ; vendor KYC documents carry no expiry, so the vendor base counts
 vendors still awaiting KYC instead.
 VERIFIED (working tree before commit): vs_procurement 614 OK.
 
+### D31. The Stock & receiving view, stock issued to a cost centre, and a restock draft (0b490743, 2026-09-26)
+MODULES: M20 procurement (inventory).
+- `GET /procurement/reports/dashboard/stock/` (same `?window=`; opens to any
+  procurement key) returns `position`, `running_low`, `by_store`, `issued`,
+  `movements`, `turns`, `adjustments` (need `procurement.stock.view`),
+  `receipts`, `unbilled` (need `procurement.goods_receipt.view`) and `expected`
+  (needs `procurement.purchase_order.view`).
+- Stock figures read the caller's stores (their branches' and school-wide);
+  `position.below_reorder` holds something, `out_of_stock` holds nothing, as the
+  stock summary counts them.
+- `StockMovement.cost_center` (migration 0036); the issue endpoint takes
+  `cost_center` (id or code, active, same books) and the movement serializer
+  returns `cost_center_id`/`cost_center_name`. The expense journal line carries
+  it too. `GET /finance/cost-centers/` now also opens to `procurement.stock.issue`.
+- `POST /procurement/stock-items/restock-requisition/` (`item_ids` optional)
+  drafts one requisition from `dashboard_stock.low_stock`; needs
+  `procurement.requisition.create` and stock view; 400 when nothing is low.
+- `seed_procurement_stock_demo --entity <CODE>` (after the suppliers demo;
+  DEBUG only).
+MUST SAY: stock has no transfers and no stock-take record, so the tab shows
+adjustments in the window instead of a stock-take variance.
+VERIFIED (committed tree): vs_procurement 630 OK.
+
 ## Undone
 
 Three items. Each says what is wrong, how to fix it, and what is stopping it.
