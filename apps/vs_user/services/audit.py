@@ -6,6 +6,7 @@ from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, Bl
 
 logger = logging.getLogger('vs_user.audit')
 
+from core.client_ip import get_client_ip  # noqa: F401  (re-exported to auth and password)
 from vs_audit.models import AuditModuleKey, AuditActionType, AuditStatus
 from vs_audit.services import emit_audit_event
 from ..auth_events import AuthEvent
@@ -176,19 +177,6 @@ def expire_stale_login_sessions(*, user=None, tenant=None) -> int:
         ended_at=timezone.now(),
         end_reason='EXPIRED',
     )
-
-
-def get_client_ip(request) -> str | None:
-    """
-    Extracts the real client IP, handling reverse proxy X-Forwarded-For headers.
-    Tolerates request=None (service-layer callers without an HTTP request).
-    """
-    if request is None:
-        return None
-    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-    if x_forwarded_for:
-        return x_forwarded_for.split(',')[0].strip()
-    return request.META.get('REMOTE_ADDR')
 
 
 def _get_ch_header(request, header: str) -> str:

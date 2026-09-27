@@ -23,6 +23,7 @@ from django.http import HttpResponse
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.views import APIView
 
+from core.client_ip import get_client_ip
 from core.pagination import XVSPagination
 from core.response import success_response
 from vs_finance.views import resolve_entity
@@ -820,8 +821,7 @@ class FileDownloadView(_ExportBase):
         if file is None:
             raise NotFound("No file matches that id.")
 
-        ip = request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip() or \
-            request.META.get("REMOTE_ADDR", "")
+        ip = get_client_ip(request) or ""
         allowed, reason = services.authorise_download(file, request.user, self.tenant)
         if not allowed:
             services.log_download(

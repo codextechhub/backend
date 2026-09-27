@@ -665,6 +665,56 @@ class WebhookReceiverThrottleTests(_PaymentsFixtureMixin, TestCase):
             PaymentEvent.objects.filter(action="WEBHOOK_REJECTED").count(), rate + 1,
         )  # The throttled request added none; the other address added one.
 
+    def test_a_new_forwarded_for_on_every_request_buys_no_new_allowance(self):
+        """The header is the caller's to write, so the budget ignores it."""
+        from rest_framework.test import APIClient
+        from rest_framework.throttling import ScopedRateThrottle
+
+        self.build()
+        client = APIClient()
+        rate = 2
+        with patch.object(ScopedRateThrottle, "THROTTLE_RATES",
+                          {"payments_webhook": f"{rate}/minute"}):
+            statuses = [
+                client.post(
+                    self.URL, data=b'{"event": "charge.success", "data": {}}',
+                    content_type="application/json", HTTP_X_FAKE_SIGNATURE="deadbeef",
+                    REMOTE_ADDR="203.0.113.7", HTTP_X_FORWARDED_FOR=f"198.51.100.{n}",
+                ).status_code
+                for n in range(rate + 1)
+            ]
+
+        self.assertEqual(statuses, [401] * rate + [429])
+
+    def test_behind_cloudflare_the_budget_follows_cf_connecting_ip(self):
+        """Every request shares Render's internal peer address; Cloudflare's
+        header is what tells one caller from another."""
+        from django.test import override_settings
+        from rest_framework.test import APIClient
+        from rest_framework.throttling import ScopedRateThrottle
+
+        self.build()
+        client = APIClient()
+        rate = 2
+
+        def forged(cf_ip, n):
+            return client.post(
+                self.URL, data=b'{"event": "charge.success", "data": {}}',
+                content_type="application/json", HTTP_X_FAKE_SIGNATURE="deadbeef",
+                REMOTE_ADDR="10.201.3.14", HTTP_CF_CONNECTING_IP=cf_ip,
+                HTTP_X_FORWARDED_FOR=f"198.51.100.{n}, {cf_ip}, 172.70.1.1",
+            ).status_code
+
+        with override_settings(
+            CLIENT_IP_HEADERS=("HTTP_CF_CONNECTING_IP", "HTTP_TRUE_CLIENT_IP"),
+        ), patch.object(ScopedRateThrottle, "THROTTLE_RATES",
+                        {"payments_webhook": f"{rate}/minute"}):
+            statuses = [forged("203.0.113.7", n) for n in range(rate + 1)]
+            elsewhere = forged("203.0.113.8", 99)
+
+        self.assertEqual(statuses, [401] * rate + [429])
+        self.assertEqual(elsewhere, 401)
+
     def test_the_receiver_is_in_the_payments_webhook_scope(self):
         from django.conf import settings
 

@@ -913,6 +913,15 @@ class ExportDownloadTests(_ExportFixture, TestCase):
         self.assertEqual(log.outcome, DownloadOutcome.ALLOWED)
         self.assertEqual(log.user_id, self.admin.pk)
 
+    def test_the_log_records_the_peer_address_not_a_forwarded_for_claim(self):
+        response = TenantAPIClient(user=self.admin).get(
+            f"/v1/exports/files/{self.file.pk}/download/",
+            REMOTE_ADDR="192.0.2.10", HTTP_X_FORWARDED_FOR="203.0.113.99",
+        )
+        self.assertEqual(response.status_code, 200)
+        log = ExportDownload.objects.get(file=self.file)
+        self.assertEqual(log.ip_address, "192.0.2.10")
+
     def test_expired_file_is_refused_and_the_refusal_is_logged(self):
         self.file.available_until = timezone.now() - datetime.timedelta(minutes=1)
         self.file.save(update_fields=["available_until"])

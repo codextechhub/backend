@@ -253,6 +253,8 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.ScopedRateThrottle",
     ],
+    # Throttles key on REMOTE_ADDR alone, never X-Forwarded-For. See core.client_ip.
+    "NUM_PROXIES": 0,
     "DEFAULT_THROTTLE_RATES": {
         "login":          "5/minute",
         "password_reset": "3/minute",
@@ -360,7 +362,12 @@ INSTALLED_APPS = [
     'vs_health',
 ]
 
+# The client address every later reader sees. See core.client_ip.
+CLIENT_IP_HEADERS: tuple[str, ...] = ()
+
 MIDDLEWARE = [
+    # First, so nothing reads REMOTE_ADDR before it is decided.
+    "core.client_ip.ClientIPMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",

@@ -38,6 +38,8 @@ NAMES = (
     "HEALTH_PROBE_BASE_URL",
     "HEALTH_SSL_DOMAIN",
     "CSRF_TRUSTED_ORIGINS",
+    "CLIENT_IP_HEADERS",
+    "MIDDLEWARE",
 )
 
 try:
@@ -191,3 +193,26 @@ class DeployedAddressTests(SimpleTestCase):
 
         self.assertEqual(outcome.get("error"), "ImproperlyConfigured", outcome)
         self.assertIn("HEALTH_SSL_DOMAIN", outcome["message"])
+
+    def test_the_client_address_comes_from_cloudflare(self):
+        """Render puts Cloudflare in front of the service, and the headers it
+        overwrites are the only ones trusted for the caller's address.
+
+        The middleware that applies them runs before anything else, and adding
+        WhiteNoise does not move it.
+        """
+        outcome = self._resolve(**_STAGING_ADDRESSES)
+
+        self.assertNotIn("error", outcome, outcome)
+        resolved = outcome["settings"]
+        self.assertEqual(
+            resolved["CLIENT_IP_HEADERS"],
+            ["HTTP_CF_CONNECTING_IP", "HTTP_TRUE_CLIENT_IP"],
+        )
+        middleware = resolved["MIDDLEWARE"]
+        self.assertEqual(middleware[0], "core.client_ip.ClientIPMiddleware")
+        self.assertEqual(
+            middleware[1:3],
+            ["corsheaders.middleware.CorsMiddleware",
+             "whitenoise.middleware.WhiteNoiseMiddleware"],
+        )

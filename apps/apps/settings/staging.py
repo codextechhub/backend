@@ -55,8 +55,15 @@ DATABASES = {
     }
 }
 
-# WhiteNoise - insert after SecurityMiddleware
-MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
+# WhiteNoise, directly after CORS
+MIDDLEWARE.insert(
+    MIDDLEWARE.index("corsheaders.middleware.CorsMiddleware") + 1,
+    "whitenoise.middleware.WhiteNoiseMiddleware",
+)
+
+# Render fronts the service with Cloudflare, which overwrites these two with the
+# connecting address. See core.client_ip.
+CLIENT_IP_HEADERS = ("HTTP_CF_CONNECTING_IP", "HTTP_TRUE_CLIENT_IP")
 
 STORAGES = {
     **STORAGES,
