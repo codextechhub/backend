@@ -31,9 +31,8 @@ def provision_approval_ladders(entity):
     submitted against it is refused as unconfigured rather than approved unseen, and
     goes out only when somebody confirms it in as many words, recorded against them.
 
-    A tenant that wants the default threshold-gated ladder asks for it, through the
-    approval-template setup endpoint or the seeding command, and that publishes the
-    steps and the groups they name.
+    A tenant that wants the default threshold-gated ladder asks for it through the
+    seeding command, and that publishes the steps and the groups they name.
 
     Non-destructive by contract: a tenant that already has a route for a document type
     keeps exactly what is configured, steps included, which is what makes this safe to
