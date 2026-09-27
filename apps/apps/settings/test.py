@@ -56,12 +56,15 @@ PAYMENTS_FAKE_WEBHOOK_SECRET = config(
     "PAYMENTS_FAKE_WEBHOOK_SECRET", default="fake-test-secret",
 )
 
-# Disable throttling in tests - they hammer endpoints far faster than the
-# configured rates allow.
+# Throttling off: tests hammer endpoints far faster than the rates allow. Rates
+# are zeroed, never removed, because a view naming its own throttle_classes
+# needs every scope to resolve (see the ci.py module docstring).
 REST_FRAMEWORK = {
     **REST_FRAMEWORK,
     "DEFAULT_THROTTLE_CLASSES": [],
-    "DEFAULT_THROTTLE_RATES": {},
+    "DEFAULT_THROTTLE_RATES": dict.fromkeys(
+        REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"], None,
+    ),
 }
 
 # vs_health: no background metric-flush thread under tests (see ci.py).

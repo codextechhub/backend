@@ -273,6 +273,7 @@ REST_FRAMEWORK = {
         # than to pace a browser.
         "school_brand":      "240/hour",
         "guide_analytics": "120/minute",
+        "payments_webhook": "120/minute",
         # ID-card login is bounded by both the caller IP and the random card
         # identifier, so distributed callers cannot work one copied card.
         "login_preview":      "10/minute",

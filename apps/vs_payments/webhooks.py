@@ -19,6 +19,10 @@ account), so there is no local intent to find. Those are resolved by the account
 event says was credited and the intent is created on the spot - see
 :func:`_deposit_collection`. The provider's transaction reference becomes that intent's
 reference, which is what keeps a re-delivery or a replay from creating a second one.
+
+An event only ever resolves a record of the provider that signed it. A signature proves
+which provider sent the event, and nothing more: it does not make that provider an
+authority over another provider's collections or payouts. See :func:`_find_record`.
 """
 from __future__ import annotations
 
@@ -41,6 +45,15 @@ from .exceptions import (
 )
 from .models import CollectionIntent, PayoutInstruction, VirtualAccount, WebhookEvent
 from .providers.registry import get_provider
+
+
+class _ForeignRecordError(Exception):
+    """An event named a record that belongs to a different provider.
+
+    Raised by :func:`_find_record` rather than returned as ``None``, so a caller that
+    forgets to handle it fails closed instead of acting on another provider's record.
+    ``args[0]`` is the operator-facing reason stored on the event.
+    """
 
 
 # Handle the ingest webhook workflow.
@@ -90,9 +103,12 @@ def ingest_webhook(*, provider: str, raw_body: bytes, headers: dict | None = Non
     if not created and event.status == WebhookStatus.PROCESSED:  # A processed event is a true duplicate retry.
         raise DuplicateWebhookError()
 
-    if created:  # Audit-once: only the first sighting emits a WEBHOOK_RECEIVED row (a not-yet-processed
-        record = _find_record(parsed, provider)  # retry re-enters here but must not add a second audit line). Resolve the target once
-        audit.record(  # so the audit row is attributed to the matched record's entity (shows in its log).
+    if created:  # Audit once, on first sighting, attributed to the matched record's entity.
+        try:
+            record = _find_record(parsed, provider)
+        except _ForeignRecordError:  # Another provider's record: attribute to nobody.
+            record = None
+        audit.record(
             action=PaymentAuditAction.WEBHOOK_RECEIVED, provider=provider,
             entity=getattr(record, "entity", None),  # Attribute the event to the matched record's entity.
             reference=parsed.reference, message=f"{parsed.event_type} ({parsed.direction}).",
@@ -123,7 +139,9 @@ def process_stored_event(event_id: int) -> WebhookEvent | None:
     the (already-acked) PSP. An event whose provider this deployment no longer offers
     (a stored ``FAKE`` event once the Fake provider is switched off) is marked
     ``FAILED`` with that reason: it can be neither verified nor booked, and it stays on
-    the needs-attention list for an operator to see.
+    the needs-attention list for an operator to see. So is an event that names another
+    provider's record (see :func:`_find_record`); it is left linked to nothing, which
+    puts it on the CX-staff unattributed list rather than on any tenant's screen.
     """
     event = WebhookEvent.objects.filter(pk=event_id).first()  # Load the stored event, if it still exists.
     if event is None or event.status == WebhookStatus.PROCESSED:  # Nothing to do for a gone/handled event.
@@ -141,7 +159,14 @@ def process_stored_event(event_id: int) -> WebhookEvent | None:
         raw_body=(event.raw_body or "").encode(),  # Rebuild the raw bytes the parser may inspect.
         headers=event.headers or {},
     )
-    record = _find_record(parsed, event.provider)  # Resolve the target collection/payout for dispatch.
+    try:
+        record = _find_record(parsed, event.provider)
+    except _ForeignRecordError as exc:  # Nothing is linked, re-verified or booked.
+        event.status = WebhookStatus.FAILED
+        event.error = str(exc)[:255]
+        event.processed_at = timezone.now()
+        event.save(update_fields=["status", "error", "processed_at", "updated_at"])
+        return event
 
     try:  # Dispatch can fail after the webhook is safely stored.
         _dispatch(event, parsed, record)
@@ -203,33 +228,56 @@ def _dispatch(event: WebhookEvent, parsed, record=None) -> None:
     ])
 
 
-# Support the find record workflow.
 def _find_record(parsed, provider: str):
-    """Resolve the local collection/payout this event targets (or None if unmatched).
+    """Resolve the local collection/payout this event targets, or ``None`` if unmatched.
 
     Resolving once here lets us attribute the WEBHOOK_RECEIVED audit row to the record's
     entity and hand the same object to :func:`_dispatch` without a second query.
-    ``provider`` scopes the virtual-account lookup, whose uniqueness is per provider.
+
+    An event may only resolve a record whose ``provider`` is the provider that signed
+    it. Without that, anyone holding one provider's webhook secret (the Fake provider's
+    test secret is the obvious one) could name a Paystack collection by its reference,
+    and the event would be linked to it and trigger a re-verify through Paystack. Every
+    lookup path passes through here, so the check is made once, on the result:
+
+    * ``reference`` is our own key and unique across providers, so it is looked up
+      unscoped and a hit on another provider's record is refused outright;
+    * ``provider_reference`` is the provider's key and may repeat across providers, so
+      it is looked up within ``provider`` only, where a hit is unambiguous;
+    * a virtual-account deposit resolves the account within ``provider``, but its
+      reference can still collide with an existing intent of another provider.
+
+    Raises :class:`_ForeignRecordError` for a record of another provider. ``provider``
+    is compared upper case, the form every stored provider name takes.
     """
-    if parsed.direction == PaymentDirection.COLLECTION:  # Money-in events map to a collection intent.
-        return _find_collection(parsed, provider)
-    if parsed.direction == PaymentDirection.PAYOUT:  # Money-out events map to a payout instruction.
-        return _find_payout(parsed)
-    return None  # Unknown direction has no attributable record.
+    provider = provider.upper()
+    if parsed.direction == PaymentDirection.COLLECTION:
+        record, kind = _find_collection(parsed, provider), "collection"
+    elif parsed.direction == PaymentDirection.PAYOUT:
+        record, kind = _find_payout(parsed, provider), "payout"
+    else:
+        return None
+    if record is not None and (record.provider or "").upper() != provider:
+        raise _ForeignRecordError(
+            f"Event from {provider} names a {record.provider} {kind} "
+            f"'{record.reference}'; an event may only settle its own provider's records."
+        )
+    return record
 
 
-# Support the find collection workflow.
 def _find_collection(parsed, provider: str):
-    qs = CollectionIntent.objects.all()
-    if parsed.reference:  # Prefer the merchant/provider reference when present.
-        intent = qs.filter(reference=parsed.reference).first()
-        if intent:  # Return immediately on an exact match.
+    """The collection intent an event names, by reference, then provider reference, then deposit."""
+    if parsed.reference:  # Our own key: unique across providers.
+        intent = CollectionIntent.objects.filter(reference=parsed.reference).first()
+        if intent:
             return intent
-    if parsed.provider_reference:  # Fall back to the PSP reference if needed.
-        intent = qs.filter(provider_reference=parsed.provider_reference).first()
-        if intent:  # Return immediately on an exact match.
+    if parsed.provider_reference:  # The provider's key: only unique within the provider.
+        intent = CollectionIntent.objects.filter(
+            provider=provider, provider_reference=parsed.provider_reference,
+        ).first()
+        if intent:
             return intent
-    return _deposit_collection(parsed, provider)  # Last resort: an unsolicited virtual-account transfer.
+    return _deposit_collection(parsed, provider)  # An unsolicited virtual-account transfer.
 
 
 # Support the deposit collection workflow.
@@ -287,16 +335,17 @@ def _unmatched_collection_reason(parsed) -> str:
     )[:255]
 
 
-# Support the find payout workflow.
-def _find_payout(parsed):
-    qs = PayoutInstruction.objects.all()
-    if parsed.reference:  # Prefer the merchant/provider reference when present.
-        payout = qs.filter(reference=parsed.reference).first()
-        if payout:  # Return immediately on an exact match.
+def _find_payout(parsed, provider: str):
+    """The payout instruction an event names, by reference, then provider reference."""
+    if parsed.reference:  # Our own key: unique across providers.
+        payout = PayoutInstruction.objects.filter(reference=parsed.reference).first()
+        if payout:
             return payout
-    if parsed.provider_reference:  # Fall back to the PSP reference if the merchant reference is missing.
-        return qs.filter(provider_reference=parsed.provider_reference).first()
-    return None  # No local payout matched the webhook.
+    if parsed.provider_reference:  # The provider's key: only unique within the provider.
+        return PayoutInstruction.objects.filter(
+            provider=provider, provider_reference=parsed.provider_reference,
+        ).first()
+    return None
 
 
 # Support the signature workflow.

@@ -458,6 +458,224 @@ class WebhookTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)  # booked once
 
 
+class WebhookProviderBindingTests(_PaymentsFixtureMixin, TestCase):
+    """An event only ever settles a record of the provider that signed it.
+
+    A signature proves which provider sent an event and nothing more. Corona Secondary
+    School collects fees through Paystack; if the Fake provider's test secret leaks, a
+    Fake-signed ``charge.success`` naming the reference of a parent's Paystack checkout
+    must not be linked to that collection, must not trigger a re-check through Paystack
+    and must not book a receipt. It is kept as a FAILED event linked to nothing, which is
+    what puts it in front of CX staff rather than on the school's own screen.
+
+    The fixture registers one Fake instance under both provider names, so both events
+    verify and the only thing that differs between them is the provider they arrive as.
+    Every lookup path is covered: our reference, the provider's reference, and the
+    account number of a virtual-account deposit.
+    """
+
+    def _ingest(self, provider, **event):
+        """Ingest one signed event as ``provider`` and run its worker; returns the event."""
+        raw, headers = self.fake.build_webhook(**event)
+        with self.captureOnCommitCallbacks(execute=True):
+            stored = webhooks.ingest_webhook(provider=provider, raw_body=raw, headers=headers)
+        stored.refresh_from_db()
+        return stored
+
+    def test_a_fake_event_naming_a_paystack_collection_is_refused(self):
+        entity, customer, _ = self.build()
+        inv = self.make_posted_invoice(entity, customer, amount=40000)
+        intent = services.initiate_collection(
+            entity=entity, amount=40000, customer=customer, invoice=inv,
+        )
+        self.assertEqual(intent.provider, "PAYSTACK")
+        self.fake.forced_status[intent.reference] = "SUCCEEDED"  # A re-check would book it.
+
+        with patch.object(services, "confirm_collection") as confirm:
+            event = self._ingest(
+                "FAKE", event="charge.success", reference=intent.reference,
+                status="SUCCEEDED", amount=40000,
+            )
+
+        confirm.assert_not_called()  # No re-check with the collection's provider.
+        self.assertEqual(event.status, "FAILED")
+        self.assertIn("PAYSTACK", event.error)
+        self.assertIsNone(event.collection_id)  # Linked to nothing.
+        intent.refresh_from_db()
+        self.assertNotEqual(intent.status, CollectionStatus.SUCCEEDED)
+        self.assertFalse(Payment.objects.filter(entity=entity).exists())
+        # The arrival is audited, but not in the school's own log.
+        received = PaymentEvent.objects.get(action="WEBHOOK_RECEIVED", provider="FAKE")
+        self.assertIsNone(received.entity_id)
+
+    def test_the_same_event_from_the_collections_own_provider_books(self):
+        entity, customer, _ = self.build()
+        inv = self.make_posted_invoice(entity, customer, amount=40000)
+        intent = services.initiate_collection(
+            entity=entity, amount=40000, customer=customer, invoice=inv,
+        )
+        self.fake.forced_status[intent.reference] = "SUCCEEDED"
+
+        event = self._ingest(
+            "PAYSTACK", event="charge.success", reference=intent.reference,
+            status="SUCCEEDED", amount=40000,
+        )
+
+        self.assertEqual(event.status, "PROCESSED")
+        self.assertEqual(event.collection_id, intent.pk)
+        intent.refresh_from_db()
+        self.assertEqual(intent.status, CollectionStatus.SUCCEEDED)
+        self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)
+
+    def test_a_refused_event_stays_refused_on_replay(self):
+        entity, customer, _ = self.build()
+        intent = services.initiate_collection(entity=entity, amount=40000, customer=customer)
+        self.fake.forced_status[intent.reference] = "SUCCEEDED"
+        event = self._ingest(
+            "FAKE", event="charge.success", reference=intent.reference,
+            status="SUCCEEDED", amount=40000,
+        )
+
+        webhooks.process_stored_event(event.id)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, "FAILED")
+        self.assertIsNone(event.collection_id)
+        self.assertFalse(Payment.objects.filter(entity=entity).exists())
+
+    def test_a_provider_reference_only_matches_within_its_own_provider(self):
+        entity, customer, _ = self.build()
+        intent = services.initiate_collection(entity=entity, amount=40000, customer=customer)
+        self.assertTrue(intent.provider_reference)
+        self.fake.forced_status[intent.reference] = "SUCCEEDED"
+
+        event = self._ingest(
+            "FAKE", event="charge.success", reference="", status="SUCCEEDED",
+            amount=40000, provider_id=intent.provider_reference,
+        )
+
+        self.assertEqual(event.status, "IGNORED")  # Unmatched, as for any unknown charge.
+        self.assertIsNone(event.collection_id)
+        intent.refresh_from_db()
+        self.assertNotEqual(intent.status, CollectionStatus.SUCCEEDED)
+        self.assertFalse(Payment.objects.filter(entity=entity).exists())
+
+    def test_a_deposit_into_a_fake_account_cannot_claim_a_paystack_reference(self):
+        entity, customer, _ = self.build()
+        va = services.create_virtual_account(entity=entity, customer=customer, provider="FAKE")
+        intent = services.initiate_collection(entity=entity, amount=40000, customer=customer)
+        self.fake.forced_status[intent.reference] = "SUCCEEDED"
+
+        event = self._ingest(
+            "FAKE", event="charge.success", reference=intent.reference,
+            status="SUCCEEDED", amount=40000, receiver_account_number=va.account_number,
+        )
+
+        self.assertEqual(event.status, "FAILED")
+        self.assertIsNone(event.collection_id)
+        self.assertEqual(CollectionIntent.objects.filter(entity=entity).count(), 1)
+        intent.refresh_from_db()
+        self.assertNotEqual(intent.status, CollectionStatus.SUCCEEDED)
+        self.assertFalse(Payment.objects.filter(entity=entity).exists())
+
+    def test_a_fake_event_naming_a_paystack_payout_is_refused(self):
+        entity, _, vendor = self.build()
+        payout = self.make_processing_payout(entity, vendor, amount=7000)
+        self.fake.forced_status[payout.reference] = "PAID"
+
+        with patch.object(services, "confirm_payout") as confirm:
+            event = self._ingest(
+                "FAKE", event="transfer.success", reference=payout.reference,
+                status="SUCCESS", amount=7000,
+            )
+
+        confirm.assert_not_called()
+        self.assertEqual(event.status, "FAILED")
+        self.assertIn("payout", event.error)
+        self.assertIsNone(event.payout_id)
+        payout.refresh_from_db()
+        self.assertEqual(payout.status, PayoutStatus.PROCESSING)
+        self.assertFalse(VendorPayment.objects.filter(entity=entity).exists())
+
+    def test_a_payout_provider_reference_only_matches_within_its_own_provider(self):
+        entity, _, vendor = self.build()
+        payout = self.make_processing_payout(entity, vendor, amount=7000)
+        self.fake.forced_status[payout.reference] = "PAID"
+
+        event = self._ingest(
+            "FAKE", event="transfer.success", reference="", status="SUCCESS",
+            amount=7000, provider_id=payout.provider_reference,
+        )
+
+        self.assertEqual(event.status, "IGNORED")
+        self.assertIsNone(event.payout_id)
+        payout.refresh_from_db()
+        self.assertEqual(payout.status, PayoutStatus.PROCESSING)
+
+
+class WebhookReceiverThrottleTests(_PaymentsFixtureMixin, TestCase):
+    """The public receiver is rate limited per client address, before anything is written.
+
+    Anyone can post to ``/payments/webhooks/<provider>/``, and every badly signed body
+    writes a WEBHOOK_REJECTED audit row. The throttle answers 429 before the signature
+    is read, so a flood past the limit stores nothing and audits nothing.
+
+    The rate is patched onto the throttle class rather than set with
+    ``override_settings``: DRF binds ``THROTTLE_RATES`` onto the class at import, so a
+    settings override never reaches it. Two requests show the limit as well as the
+    deployed rate would.
+    """
+
+    URL = "/v1/payments/webhooks/PAYSTACK/"
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()  # Throttle counters live in the cache and would carry between tests.
+        self.addCleanup(cache.clear)
+
+    def _forged(self, client, *, ip):
+        return client.post(
+            self.URL, data=b'{"event": "charge.success", "data": {}}',
+            content_type="application/json", HTTP_X_FAKE_SIGNATURE="deadbeef",
+            REMOTE_ADDR=ip,
+        )
+
+    def test_the_request_past_the_limit_is_429_and_writes_no_audit_row(self):
+        from rest_framework.test import APIClient
+        from rest_framework.throttling import ScopedRateThrottle
+
+        self.build()
+        client = APIClient()
+        rate = 2
+        with patch.object(ScopedRateThrottle, "THROTTLE_RATES",
+                          {"payments_webhook": f"{rate}/minute"}):
+            statuses = [self._forged(client, ip="203.0.113.7").status_code
+                        for _ in range(rate)]
+            rejected = PaymentEvent.objects.filter(action="WEBHOOK_REJECTED").count()
+            throttled = self._forged(client, ip="203.0.113.7")
+            # Another address has a budget of its own.
+            elsewhere = self._forged(client, ip="198.51.100.9")
+
+        self.assertEqual(statuses, [401] * rate)
+        self.assertEqual(rejected, rate)
+        self.assertEqual(throttled.status_code, 429)
+        self.assertEqual(elsewhere.status_code, 401)
+        self.assertEqual(
+            PaymentEvent.objects.filter(action="WEBHOOK_REJECTED").count(), rate + 1,
+        )  # The throttled request added none; the other address added one.
+
+    def test_the_receiver_is_in_the_payments_webhook_scope(self):
+        from django.conf import settings
+
+        from .views import WebhookView
+
+        self.assertEqual(WebhookView.throttle_scope, "payments_webhook")
+        self.assertIn(
+            "payments_webhook", settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"],
+        )
+
+
 # Group tests for Virtual Account Deposit Tests.
 class VirtualAccountDepositTests(_PaymentsFixtureMixin, TestCase):
     """Unsolicited transfers into a dedicated NUBAN have to become receipts.
@@ -3712,8 +3930,8 @@ class FailedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
         raw, headers = self.fake.build_webhook(
             event="charge.success", reference=intent.reference,
             status="SUCCEEDED", amount=50000)
-        event = webhooks.ingest_webhook(
-            provider="FAKE", raw_body=raw, headers=headers)
+        event = webhooks.ingest_webhook(  # From the collection's own provider.
+            provider=intent.provider, raw_body=raw, headers=headers)
         webhooks.process_stored_event(event.id)
         event.refresh_from_db()
         return intent, event
@@ -3922,7 +4140,8 @@ class UnattributedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
         raw, headers = self.fake.build_webhook(
             event="charge.success", reference=intent.reference,
             status="SUCCEEDED", amount=50000)
-        event = webhooks.ingest_webhook(provider="FAKE", raw_body=raw, headers=headers)
+        event = webhooks.ingest_webhook(  # From the collection's own provider.
+            provider=intent.provider, raw_body=raw, headers=headers)
         webhooks.process_stored_event(event.id)
         event.refresh_from_db()
         return event

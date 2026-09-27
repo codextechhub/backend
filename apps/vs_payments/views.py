@@ -23,6 +23,7 @@ from django.utils import timezone
 from rest_framework import generics
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from core.pagination import XVSPagination
@@ -1108,11 +1109,23 @@ class WebhookView(APIView):
     the route did not exist: nothing is verified, stored or audited, and the response
     does not reveal that the name is a provider somewhere else.
 
+    The route is public, so it is throttled per client address under the
+    ``payments_webhook`` scope. There is no user to key on (no authentication runs), so
+    DRF keys the bucket by IP. The throttle runs before the handler, which means a
+    refused request is answered 429 before its signature is checked: it is not stored
+    and writes no audit row, so a flood of badly signed bodies cannot fill the audit
+    log. The rate is set well above a provider's own retry bursts, which arrive from a
+    small pool of addresses. The throttle class is named on the view rather than taken
+    from ``DEFAULT_THROTTLE_CLASSES``, so this limit does not depend on the project
+    default staying as it is.
+
     docstring-name: PSP webhook receiver
     """
 
     authentication_classes: list = []  # Webhooks authenticate by signature, not session/JWT.
     permission_classes = [AllowAny]  # Public endpoint for PSP callbacks.
+    throttle_scope = "payments_webhook"
+    throttle_classes = [ScopedRateThrottle]
 
     # Handle POST requests for this endpoint.
     def post(self, request, provider):
