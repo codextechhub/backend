@@ -1,9 +1,9 @@
 # notification_templates_settings
 
 The administration half of the module: **who can turn a notification off**
-(the effective settings matrix and its overrides, which belong to XVS alone),
-**what it says** (template CRUD and live preview), and **what events exist at
-all** (the read-only catalogue). Routes are mounted at `/v1/notify/` (`apps/urls.py:29`):
+(the effective settings matrix and its overrides), **what it says** (template
+CRUD and live preview), and **what events exist at all** (the read-only
+catalogue). Routes are mounted at `/v1/notify/` (`apps/urls.py:29`):
 `settings/`, `settings/update/`, `templates/`, `templates/available-events/`,
 `templates/<uuid>/`, `templates/<uuid>/preview/`, `event-types/`,
 `event-types/<uuid>/`.
@@ -17,13 +17,11 @@ all** (the read-only catalogue). Routes are mounted at `/v1/notify/` (`apps/urls
   the resolved value and the layer that produced it
   (`views.py:464-524`). `PATCH settings/update/` upserts override rows addressed
   by `(event_type_key, channel)`, never by row id (`views.py:539-652`).
-- **Notification settings are platform-only.** The matrix decides which events
-  send email for every tenant, and it belongs to XVS. No school role may view
-  or change it: the key is `PLATFORM`-scoped (vs_rbac migration `0030`), so a
-  school admin or branch admin gets `403` on both routes. The platform tenant
-  (CX staff) manages the **tenant-NULL default layer** every tenant inherits,
-  not codex's own rows, and cannot target one school's rows from here
-  (`views.py:510-530`).
+- **Scope comes from the asserted tenant, not a parameter.** There is no
+  `?school=`. A business tenant manages its own override rows; a `PLATFORM`-kind
+  tenant (CX staff) manages the **tenant-NULL default layer** every tenant
+  inherits, not codex's own rows (`views.py:449-462`). CX staff cannot target
+  one school's settings from here.
 - **Templates are a global catalogue, not tenant data.** One
   `NotificationTemplate` per `(event_type, channel)`, enforced by
   `unique_together` (`models.py:256`). Editing one changes the message **every
@@ -78,11 +76,7 @@ it.
 `?tenant=<slug>` is required on all eight routes
 (`vs_rbac/authentication.py:123-126`).
 
-### Settings - key `communication.communication_permissions.enforce`, `PLATFORM` scope (`views.py:473-605`)
-
-Only the platform tenant reaches these. Any other tenant is refused with `403`
-by the permission check, and again by `_resolve_scope` with
-`ACCESS_DENIED` should a grant ever slip past the registry.
+### Settings - key `communication.communication_permissions.enforce` (`views.py:444-445`)
 
 | Method + path | body | response |
 |---|---|---|
@@ -155,11 +149,10 @@ that template on its previous wording forever.
 - **`source` is computed from the same rows** that produced `is_enabled`
   (`views.py:489-514`): a transactional or inactive event reports `"default"`
   regardless, then a tenant row wins, then a platform row, then `"default"`.
-- **The scope resolver has one rule** (`views.py:510-530`): the `PLATFORM`-kind
-  tenant resolves to `None`, meaning the tenant-NULL layer, and any other
-  tenant is refused with `403 ACCESS_DENIED`. Writing codex-tenant rows instead
-  would be inert for schools, because dispatch resolution only ever reads
-  `tenant IS NULL OR tenant = <own>`.
+- **The scope resolver is two lines and one rule** (`views.py:449-462`): a
+  `PLATFORM`-kind tenant resolves to `None`, meaning the tenant-NULL layer.
+  Writing codex-tenant rows instead would be inert for schools, because dispatch
+  resolution only ever reads `tenant IS NULL OR tenant = <own>`.
 - **`variables` is derived from the copy, not maintained separately.**
   `template_variables` scans `subject`, `body`, `cta_label`, `cta_url` and
   `html_body` for `{{ name }}`, `{% if name %}` and `{% for x in name %}`
@@ -223,7 +216,7 @@ that template on its previous wording forever.
 ## 7. Worked example
 
 ```text
-GET /v1/notify/settings/?tenant=codex
+GET /v1/notify/settings/?tenant=alpha-nt
 ```
 
 ```json
@@ -240,14 +233,13 @@ GET /v1/notify/settings/?tenant=codex
 ```
 
 ```text
-PATCH /v1/notify/settings/update/?tenant=codex
+PATCH /v1/notify/settings/update/?tenant=alpha-nt
 { "updates": [ { "event_type_key": "billing.invoice_overdue",
                  "channel": "email", "is_enabled": false } ] }
 ```
 
-writes the platform default row every tenant inherits and returns that entry
-with `"is_enabled": false, "source": "platform"`. The same two requests from a
-school admin with `?tenant=alpha-nt` return `403`. Sending the same body for `user.invited` returns `400`
+writes one tenant row and returns that entry with `"is_enabled": false,
+"source": "tenant"`. Sending the same body for `user.invited` returns `400`
 with `TRANSACTIONAL_NOT_CONFIGURABLE`; sending `"channel": "in_app",
 "is_enabled": false` returns `IN_APP_ALWAYS_ENABLED`.
 
@@ -265,20 +257,26 @@ payload at all.
 Full evidence in **`docs/notifications/notification_code_issues.md`**. This
 slice's items:
 
-- **Tenant rows still steer dispatch, and nobody can see them here.** The
-  tenant layer of `NotificationSetting` is still read by dispatch
-  (`services/settings.py`), and rows written while schools held the key, or
-  materialised by `seed_notification_settings`, keep deciding that school's
-  channels. The platform tenant cannot target them from this view, so a school
-  row pinning an email off (or on) silently overrides the platform default for
-  that school. What to do with those rows is an open decision.
+- **A school's settings decide whether CX staff get notified.** For events
+  dispatched with `tenant=<school>` to platform-tenant recipients, the
+  resolution reads the *school's* rows, so a school admin turning off
+  `ticket.created` email silences the CX support queue
+  (`notification_code_issues.md` §2).
 - **Three list endpoints are unpaginated**: the settings matrix, the template
   list and the event-type catalogue (`views.py:528-535,679-702,869-873`). The
   matrix is currently 56 rows and grows with the registry
   (`notification_code_issues.md` §8).
+- **`branch_admin` holds the same settings key as `school_admin`** with no
+  branch narrowing (`seed_notification_permissions.py:25-29`), because
+  `NotificationSetting` has no branch column. A branch admin edits the whole
+  tenant's settings.
 - **Duplicate-template detection is string matching on an exception**:
   `if "unique" in str(exc).lower()` (`views.py:725-734`). A wording change in
   the driver turns a `409` into a `500`.
+- **`_resolve_scope` returns a `(tenant, denied)` tuple whose second element is
+  always `None`** (`views.py:449-462`), and both call sites branch on it
+  (`views.py:530-532,543-545`). Dead scaffolding from an earlier permission
+  model.
 - **The engine's seed command imports `vs_schools`**
   (`management/commands/seed_notification_settings.py:63`), which the platform
   rules forbid (`notification_code_issues.md` §10).
@@ -299,32 +297,28 @@ slice's items:
 
 | Surface | Key | Sensitivity | Seeded to |
 |---|---|---|---|
-| Settings GET + PATCH | `communication.communication_permissions.enforce` | `SENSITIVE`, restricted, `PLATFORM` scope | platform roles **only** |
-| Template CRUD + preview + available-events | `communication.notification_templates.configure` | `SENSITIVE`, restricted, `PLATFORM` scope | platform roles **only** |
+| Settings GET + PATCH | `communication.communication_permissions.enforce` | `SENSITIVE`, restricted | platform roles + `school_admin`, `branch_admin` |
+| Template CRUD + preview + available-events | `communication.notification_templates.configure` | `SENSITIVE`, restricted | platform roles **only** |
 | Event-type catalogue | `IsAuthenticated` | n/a | everyone |
 
 `seed_notification_permissions.py` seeds only the three keys the views actually
 check; the other six constants in `NotificationPermission`
-(`constants.py:113-122`) are reserved for future messaging work and are seeded
-when something enforces them (`seed_notification_permissions.py:1-22`). The two
-keys in `PLATFORM_KEYS` are created `PLATFORM`-scoped. The command also
-backfills existing tenant role templates whose key matches a prebuilt school
-role, with the history key only.
+(`constants.py:93-102`) are reserved for future messaging work and are seeded
+when something enforces them (`seed_notification_permissions.py:1-14`). The
+command also backfills existing tenant role templates whose key matches a
+prebuilt school role (`seed_notification_permissions.py:139-164`).
 
-**Notification settings are platform-only.** A school cannot hold the settings
-key: the grant models refuse it on a role, a group, a prebuilt default and a
-personal override (`vs_rbac.models.assert_tenant_may_hold`), and the evaluator
-drops it for any tenant that is not the platform. vs_rbac migration `0030`
-reclassified the key and took back every grant schools had been seeded with.
-The view refuses a non-platform tenant a second time in `_resolve_scope`. The
-platform's own scope is the tenant-NULL layer; it cannot assert a school's
-slug here, because the view does not opt in via `platform_cross_tenant_param`.
-Tested in `SettingsArePlatformOnlyTests` and
-`vs_rbac/tests/test_notification_settings_are_platform_only.py`.
+**Settings isolation holds.** The scope is `request.tenant`, the auth layer
+refuses a slug that is not the caller's own with `404`, and this view does not
+opt in via `platform_cross_tenant_param` - so not even CX staff can reach one
+school's rows from here. Tested at `tests.py:702-715,748-763`.
 
 **Template isolation does not exist, and should not.** The catalogue is global
-by design, and the key is `PLATFORM`-scoped for the same reason, so no school
-role can hold `notification_templates.configure` and edit every tenant's copy.
+by design. The residual risk is the platform-wide one recorded against
+`vs_audit`: nothing in the RBAC write path prevents a `communication.*` key
+being attached to a school-tenant role
+(`docs/audit/audit_event_stream.md` §8), and a school role holding
+`notification_templates.configure` would be editing every tenant's copy.
 
 ## 10. Code map
 
@@ -344,19 +338,11 @@ role can hold `notification_templates.configure` and edit every tenant's copy.
 
 ## 11. Test coverage & gaps
 
-- `SettingsApiTests` - `403` without the key, cross-school read refused, a
-  school admin refused its own school's matrix and its PATCH writing nothing,
-  matrix shape and the `source` field, a platform upsert creating the
-  tenant-NULL row, and all three rejection codes (in-app disable, transactional
-  toggle, unknown event).
-- `SettingsArePlatformOnlyTests` - the seeded `school_admin` and `branch_admin`
-  roles do not hold the key and both get `403` on GET and PATCH, the grant
-  guard refuses the key on a school role and as a personal override, the view
-  refuses a school a second time when the permission check is bypassed, a
-  platform admin holding the key through a role reads and writes the matrix,
-  and cannot assert a school's slug.
-- `vs_rbac/tests/test_notification_settings_are_platform_only.py` - migration
-  `0030` forward and reverse.
+- `SettingsApiTests` (`tests.py:696-800`) - `403` without the key, cross-school
+  read refused, own-school read, matrix shape and the `source` field, upsert
+  creating an override row, school-scoped write landing on a school row, and
+  all three rejection codes (in-app disable, transactional toggle, unknown
+  event).
 - `TemplatePreviewApiTests` (`tests.py:1182-1332`) - permission gate on preview
   and on `available-events`, GET preview with no payload, POST context
   overrides, preview writing nothing, the variables list and search, draft
@@ -370,21 +356,21 @@ role can hold `notification_templates.configure` and edit every tenant's copy.
   tags survive escaping, a standard template follows its message, a hand-edited
   one is left alone, clearing the flag restores the design, and dispatch sends
   the stored markup.
-- `SeedNotificationPermissionsTests` - platform roles granted in the tenant
-  table, native school role backfilled with the history key and not the
-  settings key.
+- `SeedNotificationPermissionsTests` (`tests.py:1349-1390`) - platform roles
+  granted in the tenant table, native school role backfilled.
 - `ResponseShapeTests` (`tests.py:1340-1347`) - the settings matrix returns a
   list.
-- `NotificationChangeAuditTests` - the platform switching a channel off is
-  recorded with actor and diff; switching back is a second record;
+- `NotificationChangeAuditTests` - a school switching a channel off is
+  recorded with actor, tenant and diff; switching back is a second record;
   re-sending the stored value and a refused PATCH record nothing; the platform
   layer is recorded as such; a template edit records what changed and a create
   is recorded.
 
 This is the best-covered part of the module. Gaps:
 
-1. **Inheritance.** No test asserts that a school inherits the `tenant=NULL`
-   row a platform PATCH writes.
+1. **The CX/platform scope.** No test asserts that a `PLATFORM`-kind caller's
+   PATCH writes a `tenant=NULL` row and that a school then inherits it; only
+   the school-scoped write is covered (`tests.py:748-763`).
 2. **Template list and CRUD** - no `403` test on `GET templates/` or
    `POST templates/` for a non-platform caller, and no test of the `409`
    duplicate path or the string-matching that produces it.

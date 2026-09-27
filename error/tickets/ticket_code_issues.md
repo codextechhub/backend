@@ -118,10 +118,6 @@ So Bola can `PATCH settings/update/` with
 and **the CX support team stops being emailed about new tickets from Bright
 Star**. Nobody at Codex is told, and nothing in the ticket module notices.
 
-**No longer possible.** Settings resolve per recipient tenant (`373a918`), and
-the settings key is platform-scoped (vs_rbac migration `0030`), so no school
-role holds it and Bola's PATCH is refused with `403`.
-
 ### The fix
 
 The engine-side fixes are in the notifications issues file. What belongs here:

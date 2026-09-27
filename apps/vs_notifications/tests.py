@@ -180,9 +180,12 @@ class _NotifFixture(TestCase):
             name="Beta", slug="beta-nt", code="BETNT", status="ACTIVE",
         )
 
-        # A tenant administrator in school A. Suites that need a grant give it.
+        # School-scoped admin in school A, granted the settings permission.
         self.admin_a = User.objects.create_user(
             email="admin-a@test.com", password="x", status="ACTIVE", first_name="Ada", last_name="Admin", tenant=self.school_a.tenant,
+        )
+        _grant_school_permission(
+            self.admin_a, self.school_a, NotificationPermission.ENFORCE_PERMISSIONS,
         )
 
         # A plain school user with no RBAC grants (for 403 tests).
@@ -899,10 +902,11 @@ class SettingsApiTests(_NotifFixture):
         )
         self.assertEqual(resp.status_code, 404)
 
-    def test_a_tenant_admin_cannot_read_even_their_own_tenant(self):
-        """The matrix is the platform's; a tenant does not get its own copy."""
+    def test_school_admin_can_read_own_school(self):
+        # No explicit ?tenant → TenantAPIClient appends the admin's own home
+        # tenant, which they are entitled to read.
         resp = self._client(self.admin_a).get("/v1/notify/settings/")
-        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.status_code, 200)
 
     def test_matrix_shape_and_source_field(self):
         resp = self._client(self.cx).get("/v1/notify/settings/")
@@ -936,18 +940,20 @@ class SettingsApiTests(_NotifFixture):
         self.assertEqual(entries[0]["event_type_key"], "ticket.created")
         self.assertFalse(entries[0]["is_enabled"])
 
-    def test_a_tenant_admin_patch_is_refused_and_writes_nothing(self):
-        before = list(NotificationSetting.all_objects.order_by("pk").values_list("pk", "is_enabled"))
-        resp = self._client(self.admin_a).patch(
+    def test_patch_school_scoped_writes_school_row(self):
+        # A school admin's PATCH resolves to their own tenant assertion, writing
+        # a tenant-scoped override row (no ?school= needed any more).
+        self._client(self.admin_a).patch(
             "/v1/notify/settings/update/",
             {"updates": [{"event_type_key": "ticket.created",
                           "channel": "email", "is_enabled": False}]},
             format="json",
         )
-        self.assertEqual(resp.status_code, 403)
-        self.assertEqual(
-            list(NotificationSetting.all_objects.order_by("pk").values_list("pk", "is_enabled")),
-            before,
+        self.assertTrue(
+            NotificationSetting.all_objects.filter(
+                tenant=self.school_a.tenant, event_type__key="ticket.created",
+                channel="email", is_enabled=False,
+            ).exists()
         )
 
     def test_patch_reject_disable_in_app(self):
@@ -984,156 +990,14 @@ class SettingsApiTests(_NotifFixture):
         self.assertEqual(resp.status_code, 400)
 
 
-class SettingsArePlatformOnlyTests(_NotifFixture):
-    """The settings matrix is XVS's, and no other tenant's role reaches it.
-
-    Built from the real seed rather than a hand-made grant: the tenant roles are
-    the ones ``seed_notification_permissions`` backfills, so a regression in the
-    seed that handed the key back to tenant administrators would show up here as
-    a 200.
-    """
-
-    SETTINGS = "/v1/notify/settings/"
-    UPDATE = "/v1/notify/settings/update/"
-    BODY = {"updates": [{"event_type_key": "ticket.created",
-                         "channel": "email", "is_enabled": False}]}
-
-    def setUp(self):
-        super().setUp()
-        from django.core.management import call_command
-        from vs_rbac.models import TenantRoleTemplate
-
-        call_command("seed_actions", verbosity=0)
-        self.tenant_admin_role = TenantRoleTemplate.objects.create(
-            tenant=self.school_a.tenant, key="school_admin", name="Admin",
-            is_system_role=True,
-        )
-        self.branch_admin_role = TenantRoleTemplate.objects.create(
-            tenant=self.school_a.tenant, key="branch_admin", name="Branch Admin",
-            is_system_role=True,
-        )
-        call_command("seed_notification_permissions", verbosity=0)
-
-        self.branch_admin = User.objects.create_user(
-            email="branch-admin-a@test.com", password="x", status="ACTIVE",
-            first_name="Bola", last_name="Branch", tenant=self.school_a.tenant,
-        )
-        self._assign(self.admin_a, self.tenant_admin_role)
-        self._assign(self.branch_admin, self.branch_admin_role)
-
-    def _assign(self, user, role):
-        from vs_rbac.models import TenantUserRoleAssignment
-
-        TenantUserRoleAssignment.objects.create(
-            tenant=role.tenant, user=user, role=role, assignment_status="ACTIVE",
-        )
-
-    def _platform_admin(self):
-        """A platform operator who holds the key through a role, not the bypass."""
-        from vs_rbac.models import TenantRoleTemplate
-
-        user = User.objects.create_user(
-            tenant=_platform_tenant(), email="ops@test.com", password="x",
-            status="ACTIVE", first_name="Ope", last_name="Ops",
-        )
-        self._assign(user, TenantRoleTemplate.objects.get(
-            tenant=user.tenant, key="xvs_platform_admin",
-        ))
-        return user
-
-    def _assert_refused_both_ways(self, user):
-        client = self._client(user)
-        self.assertEqual(client.get(self.SETTINGS).status_code, 403)
-        before = NotificationSetting.all_objects.count()
-        self.assertEqual(client.patch(self.UPDATE, self.BODY, format="json").status_code, 403)
-        self.assertEqual(NotificationSetting.all_objects.count(), before)
-
-    def test_the_seeded_tenant_roles_do_not_hold_the_key(self):
-        from vs_rbac.models import Permission, PermissionScope, TenantRolePermission
-
-        key = NotificationPermission.ENFORCE_PERMISSIONS
-        self.assertEqual(Permission.objects.get(key=key).scope, PermissionScope.PLATFORM)
-        for role in (self.tenant_admin_role, self.branch_admin_role):
-            held = set(TenantRolePermission.objects.filter(role=role)
-                       .values_list("permission_id", flat=True))
-            self.assertNotIn(key, held, role.key)
-            self.assertIn(NotificationPermission.AUDIT_ACTIVITY, held, role.key)
-
-    def test_a_tenant_admin_is_refused_get_and_patch(self):
-        self._assert_refused_both_ways(self.admin_a)
-
-    def test_a_branch_admin_is_refused_get_and_patch(self):
-        self._assert_refused_both_ways(self.branch_admin)
-
-    def test_the_grant_guard_refuses_the_key_inside_a_tenant(self):
-        from django.core.exceptions import ValidationError
-        from vs_rbac.models import TenantRolePermission, UserPermissionOverride
-
-        key = NotificationPermission.ENFORCE_PERMISSIONS
-        with self.assertRaises(ValidationError):
-            TenantRolePermission.objects.create(
-                role=self.tenant_admin_role, permission_id=key, granted=True,
-            )
-        with self.assertRaises(ValidationError):
-            UserPermissionOverride.objects.create(
-                tenant=self.school_a.tenant, user=self.branch_admin,
-                permission_id=key, mode=UserPermissionOverride.Mode.ALLOW,
-                reason="Wants the matrix.",
-            )
-
-    def test_the_view_refuses_a_tenant_even_past_the_permission_check(self):
-        """The second gate: a stray grant still cannot read or write the matrix."""
-        with mock.patch(
-            "vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True,
-        ):
-            client = self._client(self.admin_a)
-            read = client.get(self.SETTINGS)
-            write = client.patch(self.UPDATE, self.BODY, format="json")
-
-        for resp in (read, write):
-            self.assertEqual(resp.status_code, 403, resp.content)
-            self.assertEqual(resp.json()["code"], NotificationErrorCode.ACCESS_DENIED)
-        self.assertFalse(
-            NotificationSetting.all_objects.filter(tenant=self.school_a.tenant).exists(),
-        )
-
-    def test_a_platform_admin_holding_the_key_reads_and_writes_the_matrix(self):
-        client = self._client(self._platform_admin())
-
-        read = client.get(self.SETTINGS)
-        self.assertEqual(read.status_code, 200, read.content)
-        self.assertTrue(read.json()["data"])
-
-        write = client.patch(self.UPDATE, self.BODY, format="json")
-        self.assertEqual(write.status_code, 200, write.content)
-        self.assertFalse(
-            NotificationSetting.all_objects.get(
-                tenant__isnull=True, event_type__key="ticket.created", channel="email",
-            ).is_enabled,
-        )
-
-    def test_a_platform_admin_cannot_assert_a_tenant_here(self):
-        """The view does not cross tenants, so a tenant's own rows stay out of reach."""
-        client = self._client(self._platform_admin())
-        resp = client.get(f"{self.SETTINGS}?tenant={self.school_a.slug}")
-        self.assertEqual(resp.status_code, 404)
-
-
 class NotificationChangeAuditTests(_NotifFixture):
     """Every administrative change here leaves a row in the platform audit trail.
 
-    A CodeX operator who switches off an email for every tenant, or who rewrites
-    the invoice email every tenant receives, changes what people are sent.
-    Somebody later asking why the emails stopped has to be able to find out who
-    did it.
+    A school admin who switches off fee-payment emails for the whole school, or
+    a CodeX editor who rewrites the invoice email every school receives, changes
+    what people are sent. Somebody later asking why the emails stopped has to be
+    able to find out who did it.
     """
-
-    def setUp(self):
-        super().setUp()
-        # No stored platform row, so the first PATCH is recorded as a creation.
-        NotificationSetting.all_objects.filter(
-            tenant__isnull=True, event_type__key="ticket.created", channel="email",
-        ).delete()
 
     def _events(self, entity_type):
         from vs_audit.models import AuditEvent
@@ -1148,12 +1012,13 @@ class NotificationChangeAuditTests(_NotifFixture):
             format="json",
         )
 
-    def test_switching_a_channel_off_is_recorded(self):
-        resp = self._patch_setting(self.cx, False)
+    def test_a_school_switching_a_channel_off_is_recorded(self):
+        resp = self._patch_setting(self.admin_a, False)
         self.assertEqual(resp.status_code, 200, resp.content)
 
         event = self._events("NotificationSetting").get()
-        self.assertEqual(event.actor_user, self.cx)
+        self.assertEqual(event.actor_user, self.admin_a)
+        self.assertEqual(event.tenant_id, self.school_a.tenant_id)
         self.assertEqual(event.module_key, "CONFIG")
         self.assertEqual(event.action_type, "CONFIG_CHANGED")
         self.assertTrue(event.metadata["created"])
@@ -1161,8 +1026,8 @@ class NotificationChangeAuditTests(_NotifFixture):
         self.assertEqual(event.diff_data, {"is_enabled": {"before": None, "after": False}})
 
     def test_switching_it_back_is_a_second_record(self):
-        self._patch_setting(self.cx, False)
-        self._patch_setting(self.cx, True)
+        self._patch_setting(self.admin_a, False)
+        self._patch_setting(self.admin_a, True)
 
         events = list(self._events("NotificationSetting"))
         self.assertEqual([e.metadata["created"] for e in events], [True, False])
@@ -1171,8 +1036,8 @@ class NotificationChangeAuditTests(_NotifFixture):
         )
 
     def test_resending_the_stored_value_records_nothing(self):
-        self._patch_setting(self.cx, False)
-        self._patch_setting(self.cx, False)
+        self._patch_setting(self.admin_a, False)
+        self._patch_setting(self.admin_a, False)
         self.assertEqual(self._events("NotificationSetting").count(), 1)
 
     def test_a_refused_patch_records_nothing(self):
@@ -2467,7 +2332,7 @@ class SeedNotificationPermissionsTests(TestCase):
             .filter(role=role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        self.assertNotIn("communication.communication_permissions.enforce", keys)
+        self.assertIn("communication.communication_permissions.enforce", keys)
         self.assertIn("communication.message_activity.audit", keys)
 
 
@@ -2501,11 +2366,11 @@ class PendingTenantInboxAccessTests(_NotifFixture):
             email="pending-admin@test.com", password="x", status="ACTIVE", first_name="Pat", last_name="Pending",
             tenant=self.pending_tenant,
         )
-        # Granted deliberately: with the permission held, a 403 on the history
+        # Granted deliberately: with the permission held, a 403 on the settings
         # endpoint can only be the surface gate, never a missing grant.
         _grant_school_permission(
             self.pending_admin, self.pending_school,
-            NotificationPermission.AUDIT_ACTIVITY,
+            NotificationPermission.ENFORCE_PERMISSIONS,
         )
 
         self.onboarding_notification = Notification.objects.create(
@@ -2570,6 +2435,9 @@ class PendingTenantInboxAccessTests(_NotifFixture):
 
         inbox = client.get("/v1/notify/")
         self.assertEqual(inbox.status_code, 200, inbox.data)
+
+        settings_matrix = client.get("/v1/notify/settings/")
+        self.assertEqual(settings_matrix.status_code, 200, settings_matrix.data)
 
         catalogue = client.get("/v1/notify/event-types/")
         self.assertEqual(catalogue.status_code, 200, catalogue.data)

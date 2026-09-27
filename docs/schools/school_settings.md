@@ -31,12 +31,8 @@ Routes covered by this slice, mounted at `/v1/i/` (`apps/urls.py`):
   inherits.
 - **Live schools only.** Neither settings view declares
   `pending_tenant_surface`, so a PENDING school is refused with
-  `403 TENANT_NOT_LIVE`. Neither setting is part of onboarding.
-- **Notification settings are not a school setting.** Which events send email
-  is decided by XVS on the platform's notification settings matrix
-  (`/v1/notify/settings/`). Its key is platform-scoped, so no school role can
-  hold it and every school caller gets `403`. See
-  `docs/notifications/notification_templates_settings.md`.
+  `403 TENANT_NOT_LIVE`, the same as its notification settings. Neither setting
+  is part of onboarding.
 - **The rules are the engine's, not a copy.** Security saves through
   `vs_config.services.curated_settings.save_security_settings`, the function the
   console uses. Payroll scope writes through `vs_config.services.resolution.set_value`,

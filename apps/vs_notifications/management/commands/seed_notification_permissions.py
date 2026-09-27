@@ -8,18 +8,10 @@ for future messaging work and gets seeded when something enforces it):
     communication.communication_permissions.enforce  - settings matrix GET/PATCH
     communication.message_activity.audit             - delivery history log
 
-Platform roles receive all three. The first two are ``PLATFORM``-scoped
-(:data:`PLATFORM_KEYS`), so no other tenant may hold them:
-
-* templates are a global catalogue, one row set for the whole platform, so a
-  tenant able to edit one would rewrite the mail every other tenant receives;
-* the settings matrix decides which events send email, and that decision
-  belongs to XVS rather than to the tenant being emailed.
-
-The ``school_admin`` and ``branch_admin`` prebuilt roles receive the history
-key only, because the history log is scoped to the caller's own tenant (see
-the NotificationHistoryViewSet docstring), and the backfill below gives
-existing tenant roles built from those prebuilts the same, and nothing more.
+Platform roles receive all three. School admin/branch admin prebuilt roles
+receive the settings + history keys, because the backend already scopes both
+endpoints to the caller's own school (see NotificationSettingViewSet /
+NotificationHistoryViewSet docstrings).
 """
 import re
 
@@ -32,12 +24,8 @@ PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
 _PLATFORM_ROLE_NAMES = {"xvs_super_admin": "XVS Super Admin", "xvs_platform_admin": "XVS Platform Admin"}
 SCHOOL_ROLE_KEYS = ["school_admin", "branch_admin"]
 SCHOOL_DEFAULT_KEYS = {
-    "communication.message_activity.audit",
-}
-#: Keys no tenant but the platform may hold. See the module docstring.
-PLATFORM_KEYS = {
-    "communication.notification_templates.configure",
     "communication.communication_permissions.enforce",
+    "communication.message_activity.audit",
 }
 _RESTRICTED = {"SENSITIVE", "CRITICAL"}
 
@@ -104,9 +92,14 @@ class Command(BaseCommand):
                         sensitivity_level=sensitivity,
                         is_restricted=sensitivity in _RESTRICTED,
                         is_active=True,
+                        # Templates are a GLOBAL catalogue: one row set for the whole platform,
+                        # with no tenant column and no platform guard on the ViewSet. A school
+                        # holding notification_templates.configure could rewrite the mail every
+                        # other school receives. Everything else here is the recipient's own post
+                        # and stays tenant-holdable.
                         scope=(
                             PermissionScope.PLATFORM
-                            if expected_key in PLATFORM_KEYS
+                            if expected_key == "communication.notification_templates.configure"
                             else PermissionScope.TENANT
                         ),
                     )

@@ -12,9 +12,7 @@ suite does not currently catch. Nothing here is speculative - every claim is
 traced to a file and line.
 
 **Status: §1 and §2 are FIXED (`373a918`, 26 August 2026) and §9 is FIXED
-(27 September 2026). Notification settings are platform-only since vs_rbac
-migration `0030`, which also resolves the `_resolve_scope` item in §11;
-everything else is recorded, not yet fixed.** Each fixed item keeps its original account so the
+(27 September 2026); everything else is recorded, not yet fixed.** Each fixed item keeps its original account so the
 defect stays readable, with the resolution stated at the top of the section.
 
 ---
@@ -170,9 +168,7 @@ by owning tenant and calls `resolve_channels` once for each
 (`services/dispatch.py:179-196`), so a school switching off `ticket.created`
 email silences it for its own people and for nobody else's.
 `NotificationOwnershipTests.test_the_recipients_own_settings_decide_their_channels`
-covers it. Separately, no school can change settings at all any more: the
-settings key is platform-scoped (vs_rbac migration `0030`) and was taken back
-from `school_admin` and `branch_admin`. The original account follows, unchanged, with its line references pointing at the pre-fix code. Its line references are to the code as it was before the fix; the current ones are above.
+covers it. The original account follows, unchanged, with its line references pointing at the pre-fix code. Its line references are to the code as it was before the fix; the current ones are above.
 
 **High. Same root cause as §1, different consequence.**
 
@@ -467,10 +463,13 @@ school-ism in the engine is gone.
   A driver wording change turns a `409` into a `500`. Catch `IntegrityError`, or
   validate the `(event_type, channel)` pair in the serializer.
 
-- ~~**`_resolve_scope` returns a tuple whose second element is always `None`.**~~
-  **Resolved with the platform-only settings change:** the second element is
-  the `403 ACCESS_DENIED` response for any tenant that is not the platform, so
-  both call sites' branch is live.
+- **`_resolve_scope` returns a tuple whose second element is always `None`.**
+  ```python
+  # views.py:449-462
+  return None, None   /   return tenant, None
+  ```
+  Both call sites branch on it (`views.py:530-532`, `543-545`). Dead scaffolding
+  from an earlier permission model.
 
 - **`_apply_filters` takes an `is_vision_staff` argument it never reads**
   (`views.py:333`), computed at `views.py:381` from a `User` property
