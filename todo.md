@@ -889,7 +889,7 @@ VERIFIED (committed tree): vs_procurement 630 OK.
 
 ## Undone
 
-Three items. Each says what is wrong, how to fix it, and what is stopping it.
+Four items. Each says what is wrong, how to fix it, and what is stopping it.
 Verified against the code on 2026-09-13, re-checked 2026-09-14; eight earlier
 items were removed because they were finished or no longer true, and what
 replaced them is noted at the end.
@@ -924,6 +924,29 @@ FIX: drop the Role column from the seeded staff template, have the row handler
 grant the starting role through `roles.starting_role` exactly as the single add
 does, and update `schools/vs_staff/tests/test_imports.py`.
 BLOCKED BY: nothing; deferred to keep the Add staff change small.
+
+### 4. School settings left out until the gradebook exists (2026-09-27)
+The school Settings console (/settings) was surveyed for every rule a school
+might want to set its own way. Three were left out on purpose; revisit them
+when the gradebook is built.
+(a) GRADING AND REPORT CARDS. Grading scales, continuous-assessment and exam
+weightings, pass marks and report-card layout. Nothing exists to configure:
+`gradebook` is only a price-list item (vs_config seed_config_catalogue) with no
+permissions (vs_rbac capability_map), and REPORT_CARD is only a student
+document type. Promotion by results (pass or repeat on marks) waits on the same
+thing; today repeating is a manual override in the promotion run.
+(b) TEACHER LOAD LIMITS. A maximum number of periods a week per teacher.
+schools/vs_calendar/services/teachers.py rules it out deliberately ("no maximum
+load ... no workload figure carrying a threshold") because nothing records the
+data a fair limit needs. Needs a product decision before any work.
+(c) STUDENT STATUS RULES. Which status may follow which, whether a reason is
+required, and when a suspension releases its class seat
+(schools/vs_students/constants.py, services/status.py). Kept fixed because
+promotion, workflow conditions and the audit trail all read the same state
+machine, so a per-school variant would ripple through all three.
+FIX: design each as a Settings section once the gradebook defines what a
+result is; (b) and (c) need a decision first, not code.
+BLOCKED BY: the gradebook module, and the two decisions above.
 
 ## Done
 # The blank class column and the missing dry run are both fixed (2026-08-30, 182 FAL tests green). CLASS LABEL: `DebtorRow.class_label` and `FeeRow.class_label` were hardcoded to "" behind a comment saying there was no student app to ask - false since M11 landed. They now read the child's active enrolment in the newest session, via `_class_labels` + `_labelled`, applied to the built page rather than inside the row builder so a long debtor list costs ONE extra query instead of one per row (the test asserts the invariant - a class of thirty costs what a class of two costs - not a magic number). A CROSS-TENANT LEAK WAS FOUND AND CLOSED IN THAT SAME FIX, before it shipped: `Customer.source_id` is a loose string, not an FK, so a school that imported receivables before its roll can hold a reference like "7" that means nothing locally while ANOTHER school's pupil genuinely has pk 7. Unscoped, the first school's debtor list would print the second school's class against a child it has never heard of. The lookup is tenant-scoped and a test fails without it. Entity scoping upstream cannot catch this, because the leak enters through a value the ledger merely stores. DRY RUN: `generate_cohort_invoices(..., dry_run=True)` runs the REAL generation inside a transaction and rolls it back, rather than re-deriving the amounts. Deliberate: fee items are priced and taxed inside `post_invoice`, so a second implementation would quote a pre-tax figure and be wrong in exactly the case a bursar most needs it right. Running the real code also means every refusal a real run would raise is raised in the preview, so a preview cannot promise a run that then fails. `InvoiceGenerationResult` gained `dry_run` and `students_to_bill`; the preview returns no invoice pks, because they stop existing when the block exits. The in-memory fake was updated too, or a test that previewed then billed would see its own preview come back as an idempotent skip.
