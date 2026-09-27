@@ -43,6 +43,21 @@ def _full_name(user) -> str:
     return " ".join(part for part in (user.first_name, user.last_name) if part).strip()
 
 
+def _media_link(field, request):
+    """A fetchable link to a stored file, or None when there is none.
+
+    Signed for the reader and absolute to the API, through ``core.media``.
+    ``FieldFile.url`` is the storage's bare ``/media/`` path, which the media
+    view refuses without a signature and which a browser would resolve against
+    the frontend's own origin besides.
+    """
+    from core.media import signed_url
+
+    if not field:
+        return None
+    return signed_url(field.name, absolute_for=request) or None
+
+
 def _actor(user):
     """An id and a display name, and never an email address.
 
@@ -415,7 +430,7 @@ class DocumentSerializer(serializers.ModelSerializer):
     def get_file_url(self, obj):
         if obj.pk in self.context.get("retired_document_ids", ()):
             return None
-        return obj.file.url if obj.file else None
+        return _media_link(obj.file, self.context.get("request"))
 
     def get_file_retired(self, obj) -> bool:
         """Held on the day asked about and replaced since, so its file is gone."""
@@ -624,7 +639,7 @@ class StaffDetailSerializer(StaffListSerializer):
         }
 
     def get_photo_url(self, obj):
-        return obj.photo.url if obj.photo else None
+        return _media_link(obj.photo, self.context.get("request"))
 
     def get_created_by(self, obj):
         return _actor(obj.created_by)
