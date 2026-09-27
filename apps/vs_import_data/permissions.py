@@ -3,6 +3,8 @@ from vs_rbac.permissions import HasRBACPermission, has_permission
 # the school as a whole and stays reachable from every site.
 from vs_rbac.scoping import branch_q
 
+from .constants import ImportPermission
+
 #: ``dataset_type`` -> the owning module's own import key.
 #:
 #: A domain app registers its pair from ``AppConfig.ready``; this engine
@@ -17,8 +19,34 @@ _DATASET_IMPORT_KEYS: dict[str, str] = {
 }
 
 
+#: The engine keys a dataset's own import key may stand in for.
+#:
+#: These are the steps of taking one file through the wizard: reading the batch,
+#: its file, its issues and its jobs, validating it, starting the import, and
+#: abandoning it before anything is written. ``batches.create`` is here for that
+#: last step only: cancel names it, and the cancel view itself confines a caller
+#: without ``batches.update`` or ``batches.delete`` to batches they uploaded.
+#:
+#: Everything else the engine guards unwinds or administers data already
+#: written - rewriting or deleting a batch, resolving an issue in place, rolling
+#: back, and the rollback history, audit and notification feeds - and needs the
+#: engine's own key for that action. A school corrects an import by uploading a
+#: fixed file; a rollback takes every imported row off again and is a support
+#: action, not a step of the wizard.
+_WIZARD_KEYS: frozenset[str] = frozenset({
+    ImportPermission.BATCH_VIEW,
+    ImportPermission.BATCH_CREATE,
+    ImportPermission.BATCH_VALIDATE,
+    ImportPermission.BATCH_IMPORT,
+    ImportPermission.VALIDATION_VIEW,
+    ImportPermission.JOB_VIEW,
+})
+
+
 def register_dataset_import_key(dataset_type: str, permission_key: str) -> None:
-    """Let *permission_key* stand in for the generic import keys on this dataset.
+    """Let *permission_key* stand in for the wizard's engine keys on this dataset.
+
+    See ``_WIZARD_KEYS`` for which actions that covers.
 
     Idempotent by dataset type, so a second ``ready()`` - Django calls it once
     per process, but test runners and management commands can re-enter -
@@ -28,15 +56,20 @@ def register_dataset_import_key(dataset_type: str, permission_key: str) -> None:
 
 
 class HasImportBatchRBACPermission(HasRBACPermission):
-    """Allow the generic import key or the owning module's scoped import key.
+    """Allow the engine's import key, or the owning module's key for a wizard step.
 
     A finance user should not need broad ``import.*`` access merely to finish a
     bank-statement wizard, and a school administrator should not need it to
-    load their students. The fallback stays deliberately object-aware: it
-    applies only to a batch of the dataset the key belongs to, resolved against
-    the request's asserted tenant and against the branches the caller is
-    entitled to work in, so holding one module's import key never opens another
-    module's file and never reaches across sites.
+    load their students. The module key stands in only where the view asks for
+    one of ``_WIZARD_KEYS``: a view guarded by anything else (rollback, delete,
+    update, issue resolution, the rollback, audit and notification feeds) is
+    refused here before any lookup, so it answers the same for every batch id.
+
+    The fallback stays deliberately object-aware: it applies only to a batch of
+    the dataset the key belongs to, resolved against the request's asserted
+    tenant and against the branches the caller is entitled to work in, so
+    holding one module's import key never opens another module's file and never
+    reaches across sites.
 
     The branch narrowing is the same rule the views apply when they resolve a
     batch, spelled again here because this runs first and on its own: an
@@ -49,6 +82,12 @@ class HasImportBatchRBACPermission(HasRBACPermission):
     def has_permission(self, request, view):
         if super().has_permission(request, view):
             return True
+
+        required = getattr(view, "rbac_permission", None)
+        if isinstance(required, str):
+            required = [required]
+        if not required or _WIZARD_KEYS.isdisjoint(required):
+            return False
 
         tenant = getattr(request, "tenant", None)
         batch_id = getattr(view, "kwargs", {}).get(

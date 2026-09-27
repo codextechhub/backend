@@ -205,7 +205,7 @@ class ImportBatchModuleKeyBranchScopeTests(_BranchScopeFixture):
     """The permission fallback is narrowed too, not only the view's lookup.
 
     ``HasImportBatchRBACPermission`` lets a module's own import key stand in for
-    the generic ``import.batches.*`` ones, and it resolves the batch id itself to
+    the engine's wizard keys, and it resolves the batch id itself to
     decide. That second resolution has to ask the same branch question as the
     first, or the two gates disagree about one id and the refusal a caller meets
     depends on which key they happen to hold.
