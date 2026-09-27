@@ -943,6 +943,69 @@ sitting two papers at once is still refused at the write. Class timetables are
 unchanged: their clashes still block publishing.
 MUST SAY: the exam publish rule, and that the two warnings are not a gate.
 
+### D38. A dataset's import key reaches the wizard steps, not rollback or delete (e02e9304, 2026-09-27)
+MODULES: M10 bulk data import, M04 roles and permissions.
+`HasImportBatchRBACPermission` let a dataset's own import key stand in for any
+engine key a view asked for, so a school admin holding the student import key
+could roll back or delete a student import by API. It now stands in only for the
+wizard keys (batches view, create, run, import; validations view; jobs view).
+Rollback, rollback history, delete, edit, issue resolution, audit log and import
+notifications need the engine's own key; a refusal is 403 whether or not the
+batch exists. Upload unchanged. A finance user holding only the bank-statement
+import key no longer rolls back by API. The school app offers Roll back only to
+holders of the rollback key and no longer promises a 7-day window (a9fbdde).
+MUST SAY: the substitution rule and its limit, the list of actions that need the
+engine key, and that school imports are corrected by re-uploading.
+
+### D39. A school's fee run bills the children named, at the price list's branch (324401bc, 2026-09-27)
+MODULES: M17 billing and invoicing; the school finance layer (FAL). Check M19.
+The school app generates fee invoices through the FAL cohort route rather than
+the engine's all-active generate (FinPro v0.7.24 host slot, school-fe 9686919).
+The route bills a named cohort only; a named child outside the caller's branch
+reach answers 404; a structure with a branch is that branch's price list and a
+child at another branch is refused 409 WRONG_BRANCH; the link-term route answers
+a read (finance.feestructure.view); the dry run returns the due date the school's
+rule writes; fee structures carry branch_id. The console keeps all-active.
+MUST SAY: the cohort rule, the two refusals, the due-date preview, and that
+the school no longer bills every active customer.
+
+### D40. Payments: Fake provider gated; webhooks bound to their provider and rate limited (786596d5, c916e0b6, 2026-09-27)
+MODULES: M18 payments and collections, MRD.
+Fake exists only where PAYMENTS_FAKE_PROVIDER_ENABLED is on (local, test, ci);
+off, FAKE is refused like an unknown provider, its webhook is 404 before the
+body is read, stored FAKE events end FAILED on replay, old rows still read.
+The signing secret comes from settings. A webhook event settles only records of
+the provider that signed it (a cross-provider event ends FAILED, nothing linked,
+re-checked or booked). The public receiver is throttled per client IP
+(payments_webhook 120/minute) before the signature is read.
+MUST SAY: the provider gate, the binding rule, the throttle, and remove any
+Needs Attention item these close.
+
+### D41. The client address is decided once, from Cloudflare's header on Render (15d9ac3d, 2026-09-27)
+MODULES: M03 identity (sign-in throttle, lockout, login history), M05 audit,
+M26 exports (download log), M18 payments (webhook throttle), MRD.
+Every reader took the left of X-Forwarded-For, which the caller writes: per-IP
+throttles were bypassable, recorded addresses were caller-chosen, and a junk
+value failed the lockout write so wrong passwords went uncounted.
+`core.client_ip.ClientIPMiddleware` sets REMOTE_ADDR from CLIENT_IP_HEADERS
+(CF-Connecting-IP then True-Client-IP in staging, which Render runs); DRF
+throttles key on REMOTE_ADDR (NUM_PROXIES 0).
+MUST SAY: where the recorded address comes from, and remove any gap it closes.
+
+### D42. A school being set up can record guide events (bf518f2c, 2026-09-27)
+MODULES: M31 support tickets (how-to guides), M09 onboarding (pending surfaces).
+GuideAnalyticsEventView is a pending tenant surface; the summary stays closed.
+The school app has its own how-to guides (school-fe dfb6090, 3f629f8: guides home
+and articles, header search, help panel, walkthroughs, guide_id on tickets),
+committed and pending release.
+MUST SAY: the pending surface, and the school app's guide integration state.
+
+### D43. A second main teacher is refused in the screen's words (13bd0da0, 2026-09-27)
+MODULES: M12 staff management (teaching duties). Copy only: the LeadAlreadySet
+message says main teacher and Move to assisting. The school app confirms before
+removing a teacher from a subject and offers Make main only when there is none
+(584e15a). Document only if M12 quotes the message or the removal flow.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
