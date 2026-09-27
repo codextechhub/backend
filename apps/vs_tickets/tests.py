@@ -256,6 +256,16 @@ class GuideAnalyticsTests(TicketFixtureMixin, TestCase):
         self.assertNotIn("Ada", event.search_query)
         self.assertNotIn("8842", event.search_query)
 
+    def test_a_school_search_keeps_its_task_words_and_drops_the_child(self):
+        """A school's miss is useful to editors only if its words survive."""
+        from vs_tickets.analytics import sanitise_search_query
+
+        self.assertEqual(
+            sanitise_search_query("enrol student Chiamaka into JSS1 class"),
+            "enrol student [redacted] class",
+        )
+        self.assertEqual(sanitise_search_query("promote pupils"), "promote pupils")
+
     def test_summary_requires_platform_health_permission_and_exposes_no_tenant_split(self):
         GuideAnalyticsEvent.objects.create(
             name=GuideAnalyticsEventName.GUIDE_VIEWED,

@@ -41,6 +41,18 @@ SAFE_SEARCH_TERMS = frozenset({
     "task", "tax", "template", "tenant", "ticket", "transaction", "transfer", "trial",
     "unlock", "upload", "user", "vendor", "virtual", "walkthrough", "webhook",
     "workflow", "write", "writeoff",
+    # The school app's own tasks. Common nouns and verbs only, with the plurals
+    # people type, so no name can pass as one of them.
+    "admission", "admit", "applicant", "applicants", "arm", "arms", "bell",
+    "calendar", "class", "classes", "department", "departments", "document",
+    "documents", "duties", "duty", "enrol", "enroll", "enrolment", "event",
+    "events", "exam", "exams", "graduate", "guardian", "guardians", "holiday",
+    "holidays", "leave", "level", "levels", "number", "parent", "parents",
+    "period", "periods", "photo", "posting", "programme", "programmes", "promote",
+    "promotion", "pupil", "pupils", "record", "records", "result", "results",
+    "room", "rooms", "sessions", "structure", "student", "students", "subject",
+    "subjects", "suspend", "teacher", "teachers", "teaching", "term", "terms",
+    "timetable", "timetables", "withdraw",
 })
 
 _TOKEN_RE = re.compile(r"[a-z]+")
