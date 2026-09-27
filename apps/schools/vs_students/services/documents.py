@@ -67,13 +67,14 @@ def face_url(student, *, request=None):
     **This reads the passport photograph, not ``Student.photo``.** That column
     exists, is serialised as ``photo_url``, and is written by nothing at all -
     no route, no serializer, no service anywhere in the codebase sets it. So
-    every school that had done what the module asked and uploaded the required
-    passport photograph still saw initials on every screen, and there appeared
+    every school that had uploaded a passport photograph as a document still
+    saw initials on every screen, and there appeared
     to be nowhere to upload a photograph even though they already had.
 
     The photograph was never missing. It was in ``StudentDocument`` under
-    ``PASSPORT_PHOTO`` - a required document since FR-015 - being read by
-    nothing but the checklist. One source, read here.
+    ``PASSPORT_PHOTO``, being read by nothing but the checklist. One source,
+    read here. It is an optional document, not a required one: see
+    ``REQUIRED_DOCUMENTS`` for why a school is not prompted for it.
 
     ``Student.photo`` still wins if a row ever carries one, so nothing that
     might populate it later is silently ignored.
