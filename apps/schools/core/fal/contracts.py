@@ -535,6 +535,12 @@ class InvoiceGenerationResult:
     before they commit is the number they get after. ``students_to_bill`` is
     filled either way, so a preview and the posting that follows it can be
     compared rather than trusted.
+
+    ``due_date`` is the date the run puts on every bill, resolved from the
+    school's due-date rule against the term this structure bills. It is carried
+    on a preview as well, so the date a bursar is shown is the one the posting
+    writes rather than one worked out against whichever term is running today.
+    ``None`` only from an implementation that does not resolve one.
     """
 
     fee_structure_ref: FeeStructureRef
@@ -544,6 +550,7 @@ class InvoiceGenerationResult:
     total_billed: Kobo
     students_to_bill: tuple[StudentRef, ...] = ()
     dry_run: bool = False
+    due_date: Optional[date] = None
 
 
 # --------------------------------------------------------------------------- #

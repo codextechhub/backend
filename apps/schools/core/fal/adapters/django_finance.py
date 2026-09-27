@@ -898,6 +898,7 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
                 total_billed=sum(inv.total for inv in invoices),
                 students_to_bill=billable,
                 dry_run=dry_run,
+                due_date=due_date,
             )
 
         if not dry_run:

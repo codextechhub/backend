@@ -77,6 +77,8 @@ def generation_payload(result) -> dict:
         "students_to_bill": list(result.students_to_bill),
         "students_skipped": list(result.students_skipped),
         "total_billed": result.total_billed,
+        # ISO date, or null from a bridge that resolves none.
+        "due_date": result.due_date.isoformat() if result.due_date else None,
         "counts": {
             "to_bill": len(result.students_to_bill),
             "skipped": len(result.students_skipped),

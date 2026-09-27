@@ -92,6 +92,53 @@ class _FalView(APIView):
             raise NotFound("No such fee structure.")
         return structure
 
+    def refuse_unseen_students(self, student_refs):
+        """404 if the cohort names a child this caller cannot see.
+
+        The structure is scoped above, but a cohort is a list of ids the caller
+        typed, and the bridge checks only that each child is this school's. A
+        bursar pinned to Ikeja who can read one Lekki pupil's id would otherwise
+        bill that child from an Ikeja screen that never listed them. Students
+        are read exclusively, as they are everywhere else: a child always
+        belongs to one branch.
+
+        Only references that name a student row are checked. A reference that
+        is not a student's primary key is an imported receivable the bridge
+        resolves by entity, and a child of another school is the bridge's
+        ``CrossTenantError``, which also answers 404.
+        """
+        from schools.vs_students.models import Student
+        from schools.vs_students.services.scoping import scope_students
+
+        ids = {int(ref) for ref in student_refs if str(ref).isdigit()}
+        if not ids:
+            return
+        tenant = self.request.tenant
+        named = Student.all_objects.filter(tenant=tenant, pk__in=ids)
+        visible = scope_students(named, self.request.user, tenant).values("pk")
+        if named.exclude(pk__in=visible).exists():
+            raise NotFound("No such student.")
+
+    def students_off_the_price_list(self, structure, student_refs):
+        """How many named children attend a branch other than the structure's.
+
+        A structure with a branch is that branch's price list: Lekki's JSS 1
+        fee is not Ikeja's. A caller who sees every branch can still name any
+        child, so the rule is held here rather than left to the screen that
+        lists the classes. A school-wide structure (no branch) prices every
+        branch and is never refused.
+        """
+        from schools.vs_students.models import Student
+
+        if not structure.branch_id:
+            return 0
+        ids = {int(ref) for ref in student_refs if str(ref).isdigit()}
+        return (
+            Student.all_objects.filter(tenant=self.request.tenant, pk__in=ids)
+            .exclude(branch_id=structure.branch_id)
+            .count()
+        )
+
     def refuse(self, exc: FALError):
         for kind, (code, slug) in _REFUSALS.items():
             if isinstance(exc, kind):
@@ -104,13 +151,49 @@ class _FalView(APIView):
 
 
 class LinkTermView(_FalView):
-    """Attach a fee structure to an academic term.
+    """Read or set the academic term a fee structure bills.
 
     A structure prices exactly one term and cannot be billed until it is linked,
     so this is the first step of the fees chain rather than a setting.
+
+    The read lets a billing screen say which term a run is for, and load that
+    year's classes, before anybody is chosen. Without it the only way to learn
+    the link was a dry run, which needs a cohort, so a bursar picked classes
+    first and was told afterwards that nothing could be billed. An unlinked
+    structure answers ``{"linked": false}`` rather than 404, because it exists
+    and simply has no term yet.
     """
 
-    rbac_permission = "finance.feestructure.edit"
+    @property
+    def rbac_permission(self):
+        return "finance.feestructure.view" if self.request.method == "GET" \
+            else "finance.feestructure.edit"
+
+    def get(self, request, pk):
+        from .contracts import FeeTermLink
+        from .models import FeeStructureTermLink
+
+        structure = self.get_structure(pk)
+        link = (
+            FeeStructureTermLink.objects.filter(fee_structure=structure)
+            .select_related("session", "term").first()
+        )
+        if link is None:
+            return success_response(
+                message="Fee structure is not linked to a term.",
+                data={"linked": False},
+            )
+        return success_response(
+            message="Fee structure link retrieved.",
+            data={"linked": True, **link_payload(FeeTermLink(
+                fee_structure_ref=structure.pk,
+                session_ref=link.session_id,
+                term_ref=link.term_id,
+                entity_ref=structure.entity_id,
+                session_label=link.session.name,
+                term_label=link.term.name if link.term_id else "",
+            ))},
+        )
 
     def post(self, request, pk):
         structure = self.get_structure(pk)
@@ -153,6 +236,18 @@ class GenerateInvoicesView(_FalView):
         payload = GenerateInvoicesSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         dry_run = payload.validated_data["dry_run"]
+        self.refuse_unseen_students(payload.validated_data["students"])
+        off_list = self.students_off_the_price_list(
+            structure, payload.validated_data["students"],
+        )
+        if off_list:
+            return error_response(
+                f"{off_list} of the children named attend another branch. "
+                "This fee structure prices one branch only; bill them from "
+                "their own branch's structure.",
+                status=status.HTTP_409_CONFLICT,
+                code="WRONG_BRANCH",
+            )
 
         try:
             result = get_fee_term_bridge().generate_cohort_invoices(

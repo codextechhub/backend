@@ -398,6 +398,10 @@ class FeeStructureSerializer(serializers.ModelSerializer):
     total_with_tax_naira = serializers.SerializerMethodField()
     applies_to_display = serializers.CharField(
         source="get_applies_to_display", read_only=True)
+    # The branch whose price list this is; null for a template shared across the
+    # tenant. A screen billing from it keeps to that branch. The id rather than
+    # a nested name, so the list stays one query.
+    branch_id = serializers.IntegerField(read_only=True, allow_null=True)
     # Usage/activity - only computed for the detail view (context with_usage=True),
     # so the list endpoint stays a single query per page.
     created_by_name = serializers.SerializerMethodField()
@@ -407,7 +411,7 @@ class FeeStructureSerializer(serializers.ModelSerializer):
         model = FeeStructure
         fields = [
             "id", "code", "name", "applies_to", "applies_to_display",
-            "description", "is_active", "items",
+            "branch_id", "description", "is_active", "items",
             "total", "total_naira", "tax_total", "tax_total_naira",
             "total_with_tax", "total_with_tax_naira",
             "created_at", "created_by_name", "usage",

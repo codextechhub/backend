@@ -228,6 +228,20 @@ class BranchPinnedReadsTests(_FinanceBranchFixture):
         self.assertIn(self.fee_ikeja.id, seen)
         self.assertNotIn(self.fee_lekki.id, seen)
 
+    def test_each_fee_structure_says_which_branch_it_prices(self):
+        """A screen billing from a structure keeps to its branch, so it must know it.
+
+        Null is the shared template, not a missing value.
+        """
+        by_id = {
+            row["id"]: row["branch_id"]
+            for row in self.bursar.get(
+                f"/v1/finance/fee-structures/?entity={self.books.code}",
+            ).data["data"]
+        }
+        self.assertEqual(by_id[self.fee_ikeja.id], self.ikeja.id)
+        self.assertIsNone(by_id[self.fee_shared.id])
+
     def test_the_invoice_list_narrows_and_keeps_the_school_wide_invoice(self):
         seen = self.ids(self.bursar, "invoices/", self.books)
 
