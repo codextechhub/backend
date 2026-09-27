@@ -79,16 +79,15 @@ from .services.connections import (
     test_payment_connection,
 )
 from .services.resolution import clear_value, resolve_value, set_value
+from .services.curated_settings import save_curated_values, save_security_settings
 from .services.scopes import resolve_request_scope
 from .platform_settings import ALL_FIELDS, ONBOARDING_FIELDS, PROFILE_FIELDS, resolve_platform_settings
 from .runtime_settings import (
     INTEGRATION_FIELDS,
     PRODUCT_OWNED_KEYS,
-    SECURITY_FIELDS,
     PROTECTED_SETTING_KEYS,
     resolve_integration_settings,
     resolve_security_settings,
-    validate_security_compliance,
 )
 from schools.vs_schools.models import Currency, OwnershipType, TermStructure
 from vs_tenants.models import Tenant
@@ -422,41 +421,6 @@ class PlatformSettingsView(ConfigAPIView):
         return success_response("Platform settings saved.", self.payload())
 
 
-def _save_curated_values(
-    *, field_map, validated_data, actor, reason, tenant=None, branch=None,
-    compliance_validator=None,
-):
-    submitted = {
-        field_map[field]: value
-        for field, value in validated_data.items()
-        if field in field_map
-    }
-    definitions = {
-        item.key: item
-        for item in ConfigurationDefinition.objects.filter(key__in=submitted, is_active=True)
-    }
-    missing = sorted(set(submitted) - set(definitions))
-    if missing:
-        raise ValidationError({"settings": f"Missing definitions: {', '.join(missing)}."})
-    for key, value in submitted.items():
-        if value is None:
-            clear_value(
-                definition=definitions[key], actor=actor, tenant=tenant,
-                branch=branch, reason=reason,
-            )
-        else:
-            if compliance_validator:
-                field = next(name for name, mapped_key in field_map.items() if mapped_key == key)
-                try:
-                    compliance_validator(field, value, tenant=tenant, branch=branch)
-                except ValueError as exc:
-                    raise ValidationError({field: str(exc)})
-            set_value(
-                definition=definitions[key], value=value, actor=actor,
-                tenant=tenant, branch=branch, reason=reason,
-            )
-
-
 # Runtime authentication controls, guarded by dedicated special-config permissions.
 class SecuritySettingsView(ConfigAPIView):
     permission_map = {
@@ -477,18 +441,15 @@ class SecuritySettingsView(ConfigAPIView):
         serializer.is_valid(raise_exception=True)
         tenant, branch = resolve_request_scope(request)
         reason = serializer.validated_data.get("reason") or "Updated from Security Settings"
-        _save_curated_values(
-            field_map=SECURITY_FIELDS,
-            validated_data=serializer.validated_data,
-            actor=request.user,
-            reason=reason,
-            tenant=tenant,
-            branch=branch,
-            compliance_validator=validate_security_compliance,
-        )
         return success_response(
             "Security settings saved.",
-            resolve_security_settings(tenant=tenant, branch=branch),
+            save_security_settings(
+                validated_data=serializer.validated_data,
+                actor=request.user,
+                reason=reason,
+                tenant=tenant,
+                branch=branch,
+            ),
         )
 
 
@@ -508,7 +469,7 @@ class IntegrationSettingsView(ConfigAPIView):
         serializer = IntegrationSettingsUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         reason = serializer.validated_data.get("reason") or "Updated from Integration Settings"
-        _save_curated_values(
+        save_curated_values(
             field_map=INTEGRATION_FIELDS,
             validated_data=serializer.validated_data,
             actor=request.user,

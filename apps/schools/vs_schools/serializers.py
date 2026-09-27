@@ -34,6 +34,7 @@ from vs_audit.models import AuditModuleKey, AuditActionType, AuditSeverity
 from vs_audit.services import AuditDiffService, emit_audit_event
 from vs_config.models import Capability, CapabilityEntitlement
 from vs_config.services.capabilities import set_entitlement
+from vs_finance.payroll import PAYROLL_SCOPE_CHOICES
 from vs_user.email_normalization import normalize_email
 from vs_tenants.app_urls import school_app_url
 
@@ -1979,8 +1980,20 @@ class SchoolProfileSerializer(serializers.ModelSerializer):
         a file, so it has its own multipart endpoint. A client asking "may I
         change the logo?" wants one answer, not a note about how the transport
         differs.
+
+        Once the school has been live, the fields in
+        ``SchoolProfileUpdateSerializer.LOCKED_ONCE_LIVE`` drop out, because the
+        update serializer refuses to change them from then on.
         """
-        return [*SchoolProfileUpdateSerializer.Meta.fields, "logo"]
+        locked = (
+            set(SchoolProfileUpdateSerializer.LOCKED_ONCE_LIVE)
+            if obj.has_ever_been_live()
+            else set()
+        )
+        return [
+            *(f for f in SchoolProfileUpdateSerializer.Meta.fields if f not in locked),
+            "logo",
+        ]
 
 
 class SchoolProfileUpdateSerializer(SchoolUpdateSerializer):
@@ -1999,10 +2012,39 @@ class SchoolProfileUpdateSerializer(SchoolUpdateSerializer):
     nested ``ImageField`` reached through a JSON body cannot receive one, so
     leaving it here would advertise a write that silently does nothing. The logo
     has its own multipart endpoint - see ``SchoolLogoView``.
+
+    ``currency`` and ``term_structure`` are the school's to set while it is
+    onboarding and fixed once it has been live (``School.has_ever_been_live``,
+    the same test that freezes the slug). Every invoice, fee schedule and
+    academic session the school has created is denominated in that currency and
+    laid out in those terms, so changing either is a migration CodeX runs
+    through the platform's own update endpoint, not a form field. Sending the
+    stored value unchanged is not a change and is not refused.
     """
+
+    #: Fields a school may no longer change once it has been live.
+    LOCKED_ONCE_LIVE = ("currency", "term_structure")
+    LOCKED_ONCE_LIVE_MESSAGE = (
+        "This is fixed once the school is live. Contact XVS to change it."
+    )
 
     slug = None
     branding = None
+
+    def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+        attrs = super().validate(attrs)
+        instance = self.instance
+        if instance is None:
+            return attrs
+        changing = [
+            field for field in self.LOCKED_ONCE_LIVE
+            if field in attrs and attrs[field] != getattr(instance, field)
+        ]
+        if changing and instance.has_ever_been_live():
+            raise serializers.ValidationError(
+                {field: [self.LOCKED_ONCE_LIVE_MESSAGE] for field in changing}
+            )
+        return attrs
 
     class Meta(SchoolUpdateSerializer.Meta):
         model = School
@@ -2143,3 +2185,10 @@ class SchoolBranchSerializer(serializers.ModelSerializer):
             "classes_count",
         ]
         read_only_fields = fields
+
+
+class PayrollScopeUpdateSerializer(serializers.Serializer):
+    """The body of ``PATCH /v1/i/me/settings/payroll-scope/``."""
+
+    scope = serializers.ChoiceField(choices=PAYROLL_SCOPE_CHOICES)
+    reason = serializers.CharField(required=False, allow_blank=True, default="")

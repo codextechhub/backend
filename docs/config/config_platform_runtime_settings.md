@@ -27,7 +27,7 @@ that make a scoped override safe.
   generic definition endpoints, and its value cannot be written through the
   generic `POST /values/` route (`views.py:278-289`) or reset through
   `DELETE /values/<key>/` (`views.py:322-327`). Security and integration keys
-  have their own `manage` permissions and their own screens; that separation is
+  have their own `update` permissions and their own screens; that separation is
   enforced in both directions.
 - **Only settings with a real consumer belong here.** The module docstring is
   explicit (`runtime_settings.py:1-6`), and `SETTING_CONSUMERS`
@@ -41,8 +41,11 @@ that make a scoped override safe.
 - **Security settings are the only scoped ones.** Platform and integration
   settings resolve at platform scope unconditionally
   (`platform_settings.py:41-54`, `runtime_settings.py:288`). Security settings
-  resolve through the full branch/tenant/platform chain and are the only place
-  in the module where a school may legitimately write.
+  resolve through the full branch/tenant/platform chain, and a school or branch
+  value is a legitimate thing to store. A school does not write it through this
+  module's endpoints, though: every `config.*` key is platform-only (§9), so a
+  school's own form is `/v1/i/me/settings/security/`
+  (`docs/schools/school_settings.md`), which saves through the same service.
 - **A scoped security value is clamped at read time, not just at write time.**
   `resolve_security_settings` returns the *enforced* value under `settings` and
   the *stored* value under `configured` (`runtime_settings.py:222-283`). A
@@ -111,10 +114,10 @@ Together they are what the generic endpoints refuse to touch.
 | `GET /platform-settings/` | `config.value.view` | yes (`views.py:353`) | no, always platform |
 | `PATCH /platform-settings/` | `config.value.update` | yes | no |
 | `GET /security-settings/` | `config.security.view` | no | yes |
-| `PATCH /security-settings/` | `config.security.manage` | no | yes |
-| `GET /integration-settings/` | `config.integration.view` | yes (`views.py:495`) | no |
-| `PATCH /integration-settings/` | `config.integration.manage` | yes | no |
-| `POST /integration-settings/test/` | `config.integration.manage` | yes (`views.py:519`) | no |
+| `PATCH /security-settings/` | `config.security.update` | no | yes |
+| `GET /integration-settings/` | `config.integration.view` | yes (`views.py:458`) | no |
+| `PATCH /integration-settings/` | `config.integration.update` | yes | no |
+| `POST /integration-settings/test/` | `config.integration.trigger` | yes (`views.py:482`) | no |
 
 ### Request bodies actually read
 
@@ -132,7 +135,7 @@ that is a defect (`config_code_issues.md` §16).
 
 `PATCH /security-settings/` (`serializers.py:149-173`) takes the six flat
 integer fields plus `reason`. `null` clears the override at the current scope
-(`views.py:439-444`). At least one field is required.
+(`services/curated_settings.py:52-56`). At least one field is required.
 
 `PATCH /integration-settings/` (`serializers.py:176-197`) takes the four flat
 fields plus `reason`; `null` clears. `email_sender_name` is stripped and a
@@ -221,7 +224,7 @@ baseline because the stored value is weaker.
 - **Write-time validation and read-time clamping are both present, on purpose**
   (`runtime_settings.py:331-341` and `:265-282`). `validate_security_compliance`
   rejects a weakening write with a 400 naming the boundary
-  (`views.py:446-451`), so an operator gets told rather than silently ignored.
+  (`services/curated_settings.py:57-63`), so an operator gets told rather than silently ignored.
   The read-time clamp catches the case validation cannot: a value that was legal
   when written and became illegal when the parent tightened.
 
@@ -231,7 +234,7 @@ baseline because the stored value is weaker.
   `max_value` bounds are the only ceiling there.
 
 - **Clearing does not run the compliance validator**
-  (`views.py:439-444`). Removing an override can only ever return the scope to
+  (`services/curated_settings.py:52-56`). Removing an override can only ever return the scope to
   its parent, which is by definition compliant.
 
 - **Platform profile falls back to the deployment issuer**
@@ -255,10 +258,10 @@ baseline because the stored value is weaker.
 - **The connection test is rate limited per actor per connection**
   (`services/connections.py:21-24`): a 30 second cache slot, claimed with
   `cache.add`. A second attempt inside the window is a 400 telling the operator
-  to wait (`views.py:531-534`).
+  to wait (`views.py:494-497`).
 
 - **Test failures are deliberately opaque to the caller**
-  (`views.py:535-544`). Provider and SMTP exceptions can carry endpoints and
+  (`views.py:498-506`). Provider and SMTP exceptions can carry endpoints and
   response bodies, so the response says only that the test failed and the
   traceback goes to the server log. The audit event records the outcome, not
   the reason.
@@ -267,18 +270,18 @@ baseline because the stored value is weaker.
 
 Every PATCH here funnels into `set_value` / `clear_value`, so each changed field
 produces its own `config.value.updated` or `config.value.cleared` audit row,
-inside the request transaction (`views.py:378`, `472`, `504`).
+inside the request transaction (`views.py:379`, `438`, `467`).
 
 Consequences worth knowing:
 
 - Saving five security fields writes five audit rows, each with the same
   `reason`. The default reason is `"Updated from Security Settings"` when the
-  caller supplies none (`views.py:477`).
+  caller supplies none (`views.py:443`).
 - The audit target for an update is the value row; for a clear it is the
   definition. So a field that has been set and later cleared has its history
   under two different target ids (`config_code_issues.md` §15).
 - The connection test writes `config.integration.connection_tested` against a
-  synthetic `IntegrationConnection` target (`views.py:546-551`,
+  synthetic `IntegrationConnection` target (`views.py:507-512`,
   `services/connections.py:14-18`), with the result in `metadata`. The audit
   serializer renders that target as `"Email connection"` /
   `"Payments connection"` (`serializers.py:525-526`).
@@ -371,7 +374,7 @@ this slice:
   Outbound mail identity is a platform property, and the keys are seeded
   platform-only.
 - **Justified by design:** the connection test tells the operator nothing about
-  *why* it failed (`views.py:535-544`). The traceback is the single place that
+  *why* it failed (`views.py:498-506`). The traceback is the single place that
   answer lives, and it is server-side.
 - **Justified by design:** the platform screen is gated on both GET and PATCH
   (`views.py:353`), even though `config.value.view` is a NORMAL permission. The
@@ -384,24 +387,39 @@ this slice:
 |---|---|---|---|
 | Platform settings read/write | `config.value.view` / `config.value.update` | NORMAL / SENSITIVE | no / yes |
 | Security read | `config.security.view` | SENSITIVE | yes |
-| Security write | `config.security.manage` | **CRITICAL** | yes |
+| Security write | `config.security.update` | **CRITICAL** | yes |
 | Integration read | `config.integration.view` | SENSITIVE | yes |
-| Integration write + test | `config.integration.manage` | **CRITICAL** | yes |
+| Integration write | `config.integration.update` | **CRITICAL** | yes |
+| Integration connection test | `config.integration.trigger` | **CRITICAL** | yes |
 
-Seeded at `seed_config_permissions.py:13-14`, granted to `xvs_super_admin` and
-`xvs_platform_admin` only (`:16`, `:59-75`).
+Seeded at `vs_config/management/commands/seed_config_permissions.py:13-14`, all
+`PermissionScope.PLATFORM`, and granted to the CodeX roles only. vs_rbac
+migration `0008_config_is_platform_only` made every `config.*` key
+platform-scoped, so the RBAC grant guard (`assert_tenant_may_hold`) refuses to
+write one onto a school role and the evaluator's `_holdable_filter` drops any
+that exists anyway.
 
 **The two-key split is real and tested.** A holder of `config.value.update`
 cannot save security settings: the generic value route refuses
 `SPECIAL_MANAGED_KEYS` outright (`views.py:278-289`, tested at
-`tests.py:725-743`), and the security route demands `config.security.manage`
+`tests.py:725-743`), and the security route demands `config.security.update`
 (tested at `tests.py:601-614`). A holder of `config.security.view` cannot write
 either.
 
-**Security settings are the one place a school may legitimately write**, and the
-compliance clamp is what makes that safe: a school can only ever be stricter
-than the platform, and a branch stricter than its school. Both directions are
-tested (`tests.py:615-640`, `tests.py:695-724`).
+**A school sets its own security values through its own endpoint, not this
+one.** Because no school can hold `config.security.*`, `/security-settings/`
+answers 403 to every school admin, and that is intended. The school's form is
+`GET/PATCH /v1/i/me/settings/security/`, gated on `school.settings.view` /
+`school.settings.update` and bound to `request.tenant`
+(`schools/vs_schools/views/settings.py`, documented in
+`docs/schools/school_settings.md`). Both endpoints save through
+`services/curated_settings.py:save_security_settings`, so the rules are one
+copy: the compliance clamp lets a school only ever be stricter than the
+platform, and a branch stricter than its school. Both directions are tested
+here (`tests.py:732-840`) and on the school endpoint
+(`schools/vs_schools/tests_settings_endpoints.py`). The school-role tests in
+`tests.py` grant `config.security.*` to a school role, which production refuses;
+they exercise the clamp, not a route a school can use.
 
 Platform and integration settings are gated on the caller's **home** tenant
 being a PLATFORM tenant (`views.py:137-144`), which means an impersonated CX
@@ -421,10 +439,10 @@ school user.
 | `runtime_settings.py:286-328` | `resolve_integration_settings` - including deployment status |
 | `runtime_settings.py:331-377` | `validate_security_compliance` and the four fail-safe readers |
 | `services/connections.py` | Cooldown slot, email backend probe, provider healthcheck |
-| `views.py:352-420` | `PlatformSettingsView` |
-| `views.py:423-455` | `_save_curated_values` - shared save/clear/validate loop |
-| `views.py:459-490` | `SecuritySettingsView` |
-| `views.py:494-563` | `IntegrationSettingsView`, `IntegrationConnectionTestView` |
+| `views.py:353-421` | `PlatformSettingsView` |
+| `services/curated_settings.py` | `save_curated_values` (the shared save/clear/validate loop) and `save_security_settings`, used by both the console and the school's own endpoint |
+| `views.py:424-453` | `SecuritySettingsView` |
+| `views.py:456-530` | `IntegrationSettingsView`, `IntegrationConnectionTestView` |
 | `serializers.py:119-201` | The four curated write serializers |
 
 ### Who actually reads these settings

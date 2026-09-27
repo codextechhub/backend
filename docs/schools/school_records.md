@@ -164,6 +164,11 @@ that vocabulary sitting in the model file
 
 All six carry `IsAuthenticatedAndActive & HasRBACPermission`.
 
+These are CodeX's routes. A school's own view of itself is separate:
+`/v1/i/me/profile/` (`school.profile.view` / `.update`), which refuses changes to
+`currency` and `term_structure` once the school has been live, and its settings
+screens under `/v1/i/me/settings/`. Both are in `school_settings`.
+
 The `?q=` search on the list spans the school's own columns **and** its
 branches' `state`, `country` and `name`, with `.distinct()` to undo the join
 multiplication (`views/school.py:63-72`).
@@ -366,6 +371,10 @@ slug-keyed trail splits down the middle the moment the slug is corrected
 is what the Event Explorer's free-text search reads.
 
 ### `PATCH /v1/i/<slug>/update/`
+
+Not subject to the go-live lock on `currency` and `term_structure` that the
+school's own `me/profile/` applies: CodeX can still change both on a live school
+here (`school_settings` §5).
 
 `serializers.py:1360-1454`. Snapshot → apply → refuse if nothing changed
 (`{"detail": "No changes detected in update payload."}`) → `full_clean` as field

@@ -12,6 +12,7 @@ import base64
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
+from django.utils import timezone
 from django.urls import reverse
 from rest_framework.test import APIClient
 
@@ -23,11 +24,13 @@ from vs_rbac.tests.helpers import (
     make_role_permission,
     make_school,
     make_school_admin,
+    make_vision_user,
 )
 from vs_tenants.models import BranchStatus, Tenant
 from vs_user.tokens import CodeXRefreshToken
 
 from .models import School, SchoolStatus
+from .serializers import SchoolProfileSerializer
 
 
 class SchoolProfileEndpointTests(TestCase):
@@ -215,6 +218,123 @@ class SchoolProfileEndpointTests(TestCase):
         self.assertEqual(response.status_code, 400, response.data)
         self.school.refresh_from_db()
         self.assertEqual(self.school.currency, "NGN")
+
+
+class LiveSchoolProfileEndpointTests(TestCase):
+    """The same endpoint once the school has gone live.
+
+    The profile stays the school's to maintain, except for the two fields every
+    fee, invoice and academic session is laid out in. Those are fixed from
+    go-live, and only CodeX, through the platform's own update endpoint, moves
+    them.
+
+    Not a subclass of the pending tests: it needs a different school, and
+    inheriting would run every pending test a second time against it.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        # Stamped the way go-live stamps it, so "has been live" survives a suspension.
+        cls.school = make_school(
+            slug="corona-live", name="Corona Live", status=SchoolStatus.ACTIVE,
+            activated_at=timezone.now(),
+        )
+        cls.branch = make_branch(cls.school, name="Main Branch")
+        cls.tenant = cls.school.tenant
+
+        view_perm = make_permission("school.profile.view")
+        update_perm = make_permission("school.profile.update")
+        role = make_role(cls.school, name="School Admin", key="school_admin")
+        make_role_permission(role, view_perm)
+        make_role_permission(role, update_perm)
+        cls.admin = make_school_admin(
+            None, email="admin@corona-live.example.com", tenant=cls.tenant,
+        )
+        make_assignment(cls.school, cls.admin, role, branch=None)
+
+    def _client(self, user):
+        token = str(CodeXRefreshToken.for_user(user).access_token)
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        return client
+
+    def _get(self):
+        return self._client(self.admin).get(
+            reverse("school-profile"), {"tenant": self.tenant.slug},
+        )
+
+    def _patch(self, payload):
+        return self._client(self.admin).patch(
+            f"{reverse('school-profile')}?tenant={self.tenant.slug}",
+            payload, format="json",
+        )
+
+    def test_a_live_school_reads_its_profile(self):
+        self.assertTrue(self.school.has_ever_been_live())
+        response = self._get()
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["status"], SchoolStatus.ACTIVE)
+
+    def test_editable_fields_drop_currency_and_term_structure(self):
+        editable = self._get().data["data"]["editable_fields"]
+        self.assertNotIn("currency", editable)
+        self.assertNotIn("term_structure", editable)
+        for field in ("ownership_type", "address", "website", "motto", "logo"):
+            self.assertIn(field, editable)
+
+    def test_the_address_is_still_the_schools_to_change(self):
+        response = self._patch({"address": "12 Allen Avenue, Ikeja"})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.school.refresh_from_db()
+        self.assertEqual(self.school.address, "12 Allen Avenue, Ikeja")
+
+    def test_currency_and_term_structure_are_refused_by_field(self):
+        response = self._patch({
+            "currency": "USD", "term_structure": "2_SEMESTERS", "motto": "Onward",
+        })
+        self.assertEqual(response.status_code, 400, response.data)
+        detail = response.data["error"]["detail"]
+        message = "This is fixed once the school is live. Contact XVS to change it."
+        self.assertEqual(detail["currency"], [message])
+        self.assertEqual(detail["term_structure"], [message])
+
+        self.school.refresh_from_db()
+        self.assertEqual(self.school.currency, "NGN")
+        self.assertEqual(self.school.term_structure, "3_TERMS")
+        self.assertNotEqual(self.school.motto, "Onward")
+
+    def test_sending_the_stored_value_back_is_not_a_change(self):
+        """A form that posts every field it shows must not trip on the locked two."""
+        response = self._patch({
+            "currency": self.school.currency,
+            "term_structure": self.school.term_structure,
+            "website": "https://corona-live.example.com",
+        })
+        self.assertEqual(response.status_code, 200, response.data)
+        self.school.refresh_from_db()
+        self.assertEqual(self.school.website, "https://corona-live.example.com")
+
+    def test_a_suspended_school_that_was_live_stays_locked(self):
+        """Live at any point, the same test that freezes the slug."""
+        School.objects.filter(pk=self.school.pk).update(status=SchoolStatus.SUSPENDED)
+        self.assertTrue(School.objects.get(pk=self.school.pk).has_ever_been_live())
+        self.assertNotIn(
+            "currency",
+            SchoolProfileSerializer(School.objects.get(pk=self.school.pk)).data["editable_fields"],
+        )
+
+    def test_codex_can_still_change_them_through_the_platform_endpoint(self):
+        operator = make_vision_user(email="operator@codex.example.com", super_admin=True)
+        client = APIClient()
+        client.force_authenticate(user=operator)
+        response = client.patch(
+            reverse("school-update", kwargs={"slug": self.school.slug}),
+            {"currency": "USD", "term_structure": "2_SEMESTERS"}, format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.school.refresh_from_db()
+        self.assertEqual(self.school.currency, "USD")
+        self.assertEqual(self.school.term_structure, "2_SEMESTERS")
 
 
 #: The smallest valid PNG there is. Real bytes, because the upload validator

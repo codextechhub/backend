@@ -17,6 +17,7 @@ from .views.school import (
     SchoolUpdateView,
     SchoolStatsView,
 )
+from .views.settings import SchoolPayrollScopeView, SchoolSecuritySettingsView
 from .views.branch import (
     BranchListView,
     BranchCreateView, 
@@ -49,6 +50,17 @@ urlpatterns = [
     # the reserved list.
     path("me/profile/", SchoolProfileView.as_view(), name="school-profile"),
     path("me/profile/logo/", SchoolLogoView.as_view(), name="school-profile-logo"),
+    # The school's own settings screens. See views/settings.py.
+    path(
+        "me/settings/security/",
+        SchoolSecuritySettingsView.as_view(),
+        name="school-settings-security",
+    ),
+    path(
+        "me/settings/payroll-scope/",
+        SchoolPayrollScopeView.as_view(),
+        name="school-settings-payroll-scope",
+    ),
     # Readable with no session: the sign-in page needs it before anyone has one.
     path("public/schools/<str:slug>/logo/", PublicSchoolLogoView.as_view(),
          name="public-school-logo"),
