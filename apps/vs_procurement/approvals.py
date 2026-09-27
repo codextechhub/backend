@@ -216,7 +216,7 @@ def ensure_tenant_approval_templates(
 
     * **True** publishes the two-stage ladder and the approver groups its stages name.
       This is for a tenant that has *asked* for the default rules, which is what the
-      setup endpoint and the seed command each are.
+      seed command is.
     * **False** publishes the same row carrying no stages, and creates no groups. This
       is for a tenant that has asked for nothing yet, where a ladder would be a guess
       at who approves its spend and a group would be structure on its screens that

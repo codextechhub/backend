@@ -125,6 +125,6 @@ class Command(BaseCommand):
                 return
 
         self.stdout.write(self.style.SUCCESS(
-            "Done. Approval rules are in place; nobody can approve until the approving "
-            "permission is granted, so the first submission will park until it is.",
+            "Done. Approval rules are in place; nobody can approve until somebody is added "
+            "to the approver groups the stages name, so the first submission parks until then.",
         ))
