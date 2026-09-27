@@ -318,19 +318,58 @@ def role_holder_ids(*, role_key: str, tenant, branch) -> frozenset:
     )
 
 
+#: The organogram each tenant kind climbs, registered by the app that owns it.
+#:
+#: The engine never imports a domain app, so a tenant's own org chart reaches it
+#: the way a document handler does: the app that keeps the chart registers it
+#: here as it loads. See :func:`register_tenant_organogram`.
+_TENANT_ORGANOGRAMS: dict = {}
+
+
+def register_tenant_organogram(tenant_kind: str, organogram) -> None:
+    """Name the organogram a requester of *tenant_kind* is climbed through.
+
+    *organogram* answers ``resolve_direct_manager(user, tenant)``,
+    ``resolve_n_levels_up(user, levels, tenant)`` and
+    ``resolve_department_head(user, tenant)``, each returning users of that
+    tenant and never the requester. Registering again replaces the earlier
+    entry, so an app whose ``ready`` runs twice at startup does not fail.
+    """
+    _TENANT_ORGANOGRAMS[tenant_kind] = organogram
+
+
 # Resolve organogram-based approvers relative to the requester.
 def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
-    """Resolve base approvers by climbing the CX organogram relative to the requester.
+    """Resolve base approvers by climbing an organogram relative to the requester.
 
-    Opt-in strategy (ApproverSource.ORGANOGRAM). Degrades gracefully to an empty
-    list if vs_user / the organogram service is unavailable, mirroring the RBAC
-    path's defensive ImportError handling. The requester is excluded inside the
-    service helpers, so they can never approve their own submission.
+    Opt-in strategy (ApproverSource.ORGANOGRAM). Which organogram depends on who
+    raised the document. A platform user is climbed through the CX chart in
+    ``vs_user``. Anybody else is climbed through the chart registered for the
+    instance's tenant kind (:func:`register_tenant_organogram`), inside that
+    tenant, so a school's leave request reaches the school's own head of
+    department and never a seat on somebody else's chart.
 
-    The seats this climbs are platform-global, so the holders it returns are not
-    contained by anything here. ``resolve_approvers`` contains them, once, for
-    every source; do not add a second containment filter to this function.
+    SPECIFIC_POSITION resolves to nobody for a tenant requester. The stage's
+    seat is a platform position, which no tenant's chart contains, and a named
+    seat on another chart is exactly the reach across tenants this engine
+    refuses everywhere else.
+
+    Degrades gracefully to an empty list when the chart a requester needs is
+    unavailable - ``vs_user`` not installed, or no chart registered for the
+    tenant kind - mirroring the RBAC path's defensive ImportError handling. An
+    empty list parks every ladder that does not skip. The requester is excluded
+    inside the resolvers, so they can never approve their own submission.
+
+    The holders a climb returns are not contained by anything here.
+    ``resolve_approvers`` contains them, once, for every source; do not add a
+    second containment filter to this function.
     """
+    requester = instance.requested_by
+    target = stage.organogram_target
+
+    if requester is not None and not requester.is_platform_user:
+        return _tenant_organogram_users(stage, instance, requester, target)
+
     try:
         from vs_user.services.organogram import OrganogramService
     except ImportError:
@@ -338,9 +377,6 @@ def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> 
         logging.getLogger(__name__).warning(
             "vs_user organogram not available; ORGANOGRAM stage resolved to no approvers.")
         return []
-
-    requester = instance.requested_by
-    target = stage.organogram_target
 
     if target == OrganogramTarget.DIRECT_MANAGER:
         return OrganogramService.resolve_direct_manager(requester)
@@ -352,6 +388,25 @@ def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> 
         return OrganogramService.resolve_specific_position(
             stage.organogram_position, exclude_user=requester,
         )
+    return []
+
+
+def _tenant_organogram_users(stage, instance, requester, target) -> list:
+    """The climb through the requesting tenant's own chart. See the function above."""
+    tenant = instance.tenant
+    organogram = _TENANT_ORGANOGRAMS.get(getattr(tenant, "kind", None))
+    if organogram is None:
+        import logging
+        logging.getLogger(__name__).warning(
+            "No organogram registered for tenant kind %s; ORGANOGRAM stage "
+            "resolved to no approvers.", getattr(tenant, "kind", None))
+        return []
+    if target == OrganogramTarget.DIRECT_MANAGER:
+        return organogram.resolve_direct_manager(requester, tenant)
+    if target == OrganogramTarget.N_LEVELS_UP:
+        return organogram.resolve_n_levels_up(requester, stage.organogram_levels, tenant)
+    if target == OrganogramTarget.DEPARTMENT_HEAD:
+        return organogram.resolve_department_head(requester, tenant)
     return []
 
 
@@ -432,8 +487,9 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
         Dynamic Role sends to - a role's holders, a person, or an approver
         group. A stage without a named Dynamic Role uses its own rules, whose
         first match names a role.
-      - ORGANOGRAM: the holder(s) of the seat reached by climbing the CX
-        organogram relative to the requester.
+      - ORGANOGRAM: the holder(s) of the seat reached by climbing an
+        organogram relative to the requester: the CX chart for a platform
+        user, and the requesting tenant's own chart for anybody else.
 
     Any other source raises :class:`~vs_workflow.exceptions.UnknownApproverSourceError`
     rather than resolving to nobody. An empty list is a legitimate answer that a

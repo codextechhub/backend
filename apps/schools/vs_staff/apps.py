@@ -42,3 +42,12 @@ class VsStaffConfig(AppConfig):
         from .constants import PERM_IMPORT
 
         register_dataset_import_key("staff", PERM_IMPORT)
+
+        # The org chart a school requester's ORGANOGRAM approval stage climbs.
+        # Same direction again: the engine is told, and imports nothing.
+        from vs_tenants.models import Tenant
+        from vs_workflow.services.approvers import register_tenant_organogram
+
+        from .services.organogram import StaffOrganogramService
+
+        register_tenant_organogram(Tenant.Kind.SCHOOL, StaffOrganogramService)

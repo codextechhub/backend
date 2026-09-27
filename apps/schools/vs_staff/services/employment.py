@@ -27,6 +27,7 @@ from ..constants import (
     ACCOUNT_EFFECT,
     EMPLOYMENT_TRANSITIONS,
     LAST_WORKING_DAY_REQUIRED_FOR,
+    OFF_ROLL_STATUSES,
     REASON_REQUIRED_FOR,
     UNACCEPTED_ACCOUNT_STATUSES,
     EmploymentStatus,
@@ -154,6 +155,11 @@ def change_status(staff, *, to_status, actor, effective_date=None, reason="",
     :data:`ACCOUNT_EFFECT_TEXT` and the cover list from
     :func:`assignments_needing_cover`; neither is computed here, because a
     service that formats a sentence is a service two screens later disagree with.
+
+    Leaving ends the person's appointments on the organogram, on their last
+    working day and in this same transaction. The posts stay on the chart,
+    vacant, with their reports still under them, so whoever is appointed next
+    inherits the line without anybody redrawing it.
     """
     from ..models import StaffEmploymentEvent
 
@@ -198,6 +204,10 @@ def change_status(staff, *, to_status, actor, effective_date=None, reason="",
         to_status=to_status, reason=reason or "", effective_date=effective_date,
         last_working_day=last_working_day, note=note or "", changed_by=actor,
     )
+    if to_status in OFF_ROLL_STATUSES:
+        from .organogram import StaffOrganogramService
+
+        StaffOrganogramService.close_for_exit(staff, last_working_day or effective_date)
     _apply_account_effect(staff, to_status, actor, request)
     audit.emit_employment_status_changed(staff, event, actor=actor)
     return staff, event

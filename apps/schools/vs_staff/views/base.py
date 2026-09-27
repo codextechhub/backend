@@ -29,9 +29,9 @@ and nobody else's.
 Absence means closed. The directory, the invite, the record and the posting are
 open because "Add Staff & Invitations" is a step on the school's own onboarding
 checklist, and a closed surface would leave a school unable to finish onboarding
-and unable to go live. Teaching, coverage, leave and the lifecycle are closed:
-nobody resigns during onboarding, and there is nothing to teach before a session
-exists.
+and unable to go live. Teaching, coverage, leave, the lifecycle and the organogram are
+closed: nobody resigns during onboarding, there is nothing to teach before a
+session exists, and drawing the org chart is not a step of the checklist.
 """
 from __future__ import annotations
 

@@ -20,12 +20,17 @@ from .constants import (
     EmploymentStatus,
     EmploymentType,
     LeaveType,
+    OrgUnitKind,
     TeachingPart,
 )
 from .models import (
     LeaveRequest,
     StaffDocument,
     StaffEmploymentEvent,
+    StaffMatrixReport,
+    StaffOrgNode,
+    StaffPosition,
+    StaffPositionAssignment,
     StaffProfile,
     StaffQualification,
     TeachingAssignment,
@@ -583,14 +588,40 @@ class StaffDetailSerializer(StaffListSerializer):
     lifecycle = serializers.SerializerMethodField()
     counts = serializers.SerializerMethodField()
     created_by = serializers.SerializerMethodField()
+    #: Their primary post, its unit, their line manager and whether they are
+    #: acting. On the record only, never on a directory row: it costs two or
+    #: three queries, and a page of twenty-five would pay that twenty-five times.
+    organogram = serializers.SerializerMethodField()
 
     class Meta(StaffListSerializer.Meta):
         fields = StaffListSerializer.Meta.fields + [
             "account", "first_name", "middle_name", "last_name",
             "date_of_birth", "phone", "gender",
             "photo_url", "exit_date", "tenure", "lifecycle", "counts",
-            "created_by",
+            "created_by", "organogram",
         ]
+
+    def get_organogram(self, obj):
+        """Where they sit on the chart, as at the day asked about where one was.
+
+        None for somebody with no primary post, which is an ordinary answer: a
+        school that has not drawn its chart has nobody on it.
+        """
+        from .services.organogram import primary_line_for
+
+        as_at = self.context.get("as_at")
+        line = primary_line_for(obj, on=as_at.date if as_at else None)
+        if line is None:
+            return None
+        return {
+            "position": position_inline(line["position"]),
+            "org_node": org_node_inline(line["org_node"]),
+            "line_manager": (
+                staff_holder(line["line_manager"], self.context)
+                if line["line_manager"] is not None else None
+            ),
+            "is_acting": line["is_acting"],
+        }
 
     def get_photo_url(self, obj):
         return obj.photo.url if obj.photo else None
@@ -819,3 +850,352 @@ class ClassTeacherSerializer(serializers.Serializer):
     #: Null clears the designation, which is a real thing a school does when
     #: somebody leaves and nobody has taken the class yet.
     staff = serializers.IntegerField(required=False, allow_null=True)
+
+
+# =============================================================================
+# The organogram
+# =============================================================================
+#
+# Every payload here is read by every member of staff, so a person on the chart
+# is a StaffHolder and nothing more: a name, a photograph, a job title and two
+# ids. No email address, no phone number, no pay and no leave, on any of them.
+# The records behind the chart stay behind the directory's own keys.
+#
+# Units, posts, appointments and dotted lines each carry ``can_manage``, so a
+# screen can hide the controls a branch administrator would be refused.
+
+
+def branch_ref(branch):
+    """A branch as ``{id, name}``, or None for school-wide."""
+    if branch is None:
+        return None
+    return {"id": branch.pk, "name": branch.name}
+
+
+def _photos_readable(context) -> bool:
+    """Whether this viewer may see staff photographs, asked once per request.
+
+    The photograph is a registered field of ``school.teachers``, so a school
+    that switched it off for a role has it switched off on the chart as well.
+    The name and job title are not asked about: a chart without them is not a
+    chart, and every member of staff reading the whole school's chart is the
+    point of it.
+    """
+    cached = context.get("_photos_readable")
+    if cached is None:
+        from vs_rbac.field_enforcement import can_read
+
+        cached = can_read(context.get("request"), "school.teachers.photo")
+        context["_photos_readable"] = cached
+    return cached
+
+
+def staff_holder(staff, context) -> dict:
+    """One person as the chart draws them.
+
+    ``id`` is the account's id, because that is what the rest of the platform
+    links a person by; ``staff_id`` is the staff record, for opening it. The
+    photograph is a signed URL bound to the viewer, as every media link is.
+    """
+    from core.media import signed_url
+
+    user = staff.user
+    request = context.get("request")
+    photo = None
+    if staff.photo and _photos_readable(context):
+        photo = signed_url(staff.photo.name, absolute_for=request) or None
+    return {
+        "id": str(user.pk),
+        "staff_id": staff.pk,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "full_name": _full_name(user),
+        "photo": photo,
+        "job_title": staff.job_title,
+    }
+
+
+def org_node_inline(node):
+    if node is None:
+        return None
+    return {"id": node.pk, "name": node.name, "code": node.code, "kind": node.kind}
+
+
+def position_inline(position):
+    if position is None:
+        return None
+    return {
+        "id": position.pk,
+        "title": position.title,
+        "code": position.code,
+        "org_node": org_node_inline(position.org_node) if position.org_node_id else None,
+    }
+
+
+class _Managed:
+    """Adds ``can_manage`` to a row, from the branch the row belongs to."""
+
+    def to_representation(self, instance):
+        from schools.vs_academics.services.scoping import add_manage_flag
+
+        return add_manage_flag(self, instance, super().to_representation(instance))
+
+
+class StaffOrgNodeSerializer(_Managed, serializers.ModelSerializer):
+    """One unit, with its parent, its head post and whoever holds that post."""
+
+    branch = serializers.SerializerMethodField()
+    parent = serializers.SerializerMethodField()
+    head_position = serializers.SerializerMethodField()
+    head = serializers.SerializerMethodField()
+    children_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StaffOrgNode
+        fields = [
+            "id", "name", "code", "kind", "branch", "parent", "head_position",
+            "head", "description", "is_active", "children_count",
+            "created_at", "updated_at",
+        ]
+
+    def get_branch(self, obj):
+        return branch_ref(obj.branch)
+
+    def get_parent(self, obj):
+        return org_node_inline(obj.parent)
+
+    def get_head_position(self, obj):
+        return position_inline(obj.head_position)
+
+    def get_head(self, obj):
+        from .services.organogram import holders_of
+
+        if obj.head_position_id is None:
+            return None
+        holders = holders_of(obj.head_position)
+        return staff_holder(holders[0], self.context) if holders else None
+
+    def get_children_count(self, obj) -> int:
+        annotated = getattr(obj, "children_total", None)
+        return annotated if annotated is not None else obj.children.count()
+
+
+class StaffPositionSerializer(_Managed, serializers.ModelSerializer):
+    """One post, its unit and branch, its line upward, and who is in it."""
+
+    org_node = serializers.SerializerMethodField()
+    branch = serializers.SerializerMethodField()
+    reports_to = serializers.SerializerMethodField()
+    current_holders = serializers.SerializerMethodField()
+    is_vacant = serializers.SerializerMethodField()
+    open_seats = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StaffPosition
+        fields = [
+            "id", "title", "code", "org_node", "branch", "reports_to",
+            "headcount", "is_active", "current_holders", "is_vacant",
+            "open_seats", "created_at", "updated_at",
+        ]
+
+    def _holders(self, obj):
+        from .services.organogram import holders_of
+
+        cached = getattr(obj, "_holders_cache", None)
+        if cached is None:
+            cached = holders_of(obj)
+            obj._holders_cache = cached
+        return cached
+
+    def get_org_node(self, obj):
+        return org_node_inline(obj.org_node)
+
+    def get_branch(self, obj):
+        return branch_ref(obj.org_node.branch)
+
+    def get_reports_to(self, obj):
+        return position_inline(obj.reports_to)
+
+    def get_current_holders(self, obj):
+        return [staff_holder(staff, self.context) for staff in self._holders(obj)]
+
+    def get_is_vacant(self, obj) -> bool:
+        return not self._holders(obj)
+
+    def get_open_seats(self, obj) -> int:
+        return max(obj.headcount - len(self._holders(obj)), 0)
+
+
+class StaffPositionAssignmentSerializer(_Managed, serializers.ModelSerializer):
+    """One appointment, dated. The history, which only the register's keys read."""
+
+    staff = serializers.SerializerMethodField()
+    position = serializers.SerializerMethodField()
+    is_current = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = StaffPositionAssignment
+        fields = [
+            "id", "staff", "position", "is_primary", "is_acting", "start_date",
+            "end_date", "is_current", "created_at", "updated_at",
+        ]
+
+    def get_staff(self, obj):
+        return staff_holder(obj.staff, self.context)
+
+    def get_position(self, obj):
+        return position_inline(obj.position)
+
+    def to_representation(self, instance):
+        """``can_manage`` needs both halves: the post's branch and the person.
+
+        Appointing is refused unless the caller may change the post and manage
+        the person, so a row that shows the controls for one and not the other
+        would offer an end date the server then refuses.
+        """
+        data = super().to_representation(instance)
+        if data.get("can_manage"):
+            from .services.scoping import caller_manages
+
+            request = self.context.get("request")
+            data["can_manage"] = caller_manages(
+                request.user, getattr(request, "tenant", None), instance.staff,
+            )
+        return data
+
+
+class StaffMatrixReportSerializer(_Managed, serializers.ModelSerializer):
+    """A dotted line between two posts."""
+
+    position = serializers.SerializerMethodField()
+    reports_to = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StaffMatrixReport
+        fields = [
+            "id", "position", "reports_to", "relationship_label",
+            "created_at", "updated_at",
+        ]
+
+    def get_position(self, obj):
+        return position_inline(obj.position)
+
+    def get_reports_to(self, obj):
+        return position_inline(obj.reports_to)
+
+
+def tree_node(node, context) -> dict:
+    """One node of :meth:`StaffOrganogramService.build_tree`, and all below it."""
+    return {
+        "id": node["id"],
+        "title": node["title"],
+        "code": node["code"],
+        "org_node": org_node_inline(node["org_node"]),
+        "branch": branch_ref(node["branch"]),
+        "holders": [staff_holder(staff, context) for staff in node["holders"]],
+        "is_vacant": node["is_vacant"],
+        "direct_reports": [tree_node(child, context) for child in node["direct_reports"]],
+    }
+
+
+def current_assignment(assignment, context) -> dict:
+    """The chart's view of an appointment: who, which post, and whether acting.
+
+    No dates and no history. Who covered a post last spring is the register's
+    business, not every colleague's.
+    """
+    return {
+        "staff": staff_holder(assignment.staff, context),
+        "position": position_inline(assignment.position),
+        "is_acting": assignment.is_acting,
+    }
+
+
+# ── What a form may send ──────────────────────────────────────────────────
+
+
+class _TenantScoped(serializers.Serializer):
+    """Resolves every ``*_id`` field inside the caller's school.
+
+    An id from another school is reported exactly like an id that does not
+    exist, so a form field cannot be used to learn what another school has.
+    Built without a tenant in its context, every id names nothing.
+    """
+
+    scoped_fields: dict = {}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        tenant = self.context.get("tenant")
+        if tenant is None:
+            return
+        for name, model in self.scoped_fields.items():
+            if name in self.fields:
+                self.fields[name].queryset = model.all_objects.filter(tenant=tenant)
+
+
+class OrgNodeWriteSerializer(_TenantScoped):
+    scoped_fields = {"parent_id": StaffOrgNode, "head_position_id": StaffPosition}
+
+    name = serializers.CharField(max_length=150)
+    #: Sent without its tier prefix or with it; stored with it.
+    code = serializers.CharField(max_length=37)
+    kind = serializers.ChoiceField(choices=OrgUnitKind.choices)
+    parent_id = serializers.PrimaryKeyRelatedField(
+        source="parent", queryset=StaffOrgNode.all_objects.none(),
+        required=False, allow_null=True,
+    )
+    head_position_id = serializers.PrimaryKeyRelatedField(
+        source="head_position", queryset=StaffPosition.all_objects.none(),
+        required=False, allow_null=True,
+    )
+    description = serializers.CharField(required=False, allow_blank=True)
+    is_active = serializers.BooleanField(required=False)
+    #: Absent, null and an id are three different answers: see the view.
+    branch_id = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+
+
+class PositionWriteSerializer(_TenantScoped):
+    scoped_fields = {"org_node_id": StaffOrgNode, "reports_to_id": StaffPosition}
+
+    title = serializers.CharField(max_length=150)
+    code = serializers.CharField(max_length=40)
+    org_node_id = serializers.PrimaryKeyRelatedField(
+        source="org_node", queryset=StaffOrgNode.all_objects.none(),
+    )
+    reports_to_id = serializers.PrimaryKeyRelatedField(
+        source="reports_to", queryset=StaffPosition.all_objects.none(),
+        required=False, allow_null=True,
+    )
+    headcount = serializers.IntegerField(required=False, min_value=1, max_value=500)
+    is_active = serializers.BooleanField(required=False)
+
+
+class AppointmentWriteSerializer(_TenantScoped):
+    scoped_fields = {"position_id": StaffPosition}
+
+    staff_id = serializers.IntegerField(min_value=1)
+    position_id = serializers.PrimaryKeyRelatedField(
+        source="position", queryset=StaffPosition.all_objects.none(),
+    )
+    is_primary = serializers.BooleanField(required=False, default=True)
+    is_acting = serializers.BooleanField(required=False, default=False)
+    start_date = serializers.DateField(required=False, allow_null=True, default=None)
+
+
+class AppointmentCloseSerializer(serializers.Serializer):
+    end_date = serializers.DateField(required=False, allow_null=True, default=None)
+
+
+class MatrixReportWriteSerializer(_TenantScoped):
+    scoped_fields = {"position_id": StaffPosition, "reports_to_id": StaffPosition}
+
+    position_id = serializers.PrimaryKeyRelatedField(
+        source="position", queryset=StaffPosition.all_objects.none(),
+    )
+    reports_to_id = serializers.PrimaryKeyRelatedField(
+        source="reports_to", queryset=StaffPosition.all_objects.none(),
+    )
+    relationship_label = serializers.CharField(
+        max_length=120, required=False, allow_blank=True, default="",
+    )

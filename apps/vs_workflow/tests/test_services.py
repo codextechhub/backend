@@ -1235,19 +1235,18 @@ class OrganogramSourceResolutionTests(TestCase):
     document ACTIVE and unstaffed (parked) and wait for a human. The failure mode
     being excluded is the opposite one: a silent auto-skip that walks spend to a
     terminal APPROVED decision because the requester happens to have no manager.
+
+    The requester here is CX staff, because the CX chart is the one a platform
+    user climbs and the only people it can seat. A school requester climbs the
+    school's own chart instead, which ``schools.vs_staff`` registers with the
+    engine and tests in ``tests/test_organogram.py``.
     """
 
     def setUp(self):
-        from vs_rbac.tests.helpers import make_branch, make_school
-
-        self.school = make_school(slug="organogram-school")
-        self.branch = make_branch(self.school)
-        self.tenant = self.school.tenant
-        self.requester = _make_user_in_branch("org-req@test.com", self.branch)
+        self.tenant = _platform_tenant()
+        self.requester = self._cx_staff("org-req@test.com")
         self.template = _make_template(doc_type="ORG_DOC")
         self.instance = _make_instance(self.template, self.requester)
-        self.instance.branch = self.branch
-        self.instance.save(update_fields=["branch"])
 
     # -- fixtures ------------------------------------------------------------ #
 
@@ -1293,10 +1292,7 @@ class OrganogramSourceResolutionTests(TestCase):
 
     def _reporting_line(self, *, manager_email=None):
         """Seat the requester under a manager seat, filled or vacant."""
-        manager = (
-            None if manager_email is None
-            else _make_user_in_branch(manager_email, self.branch)
-        )
+        manager = None if manager_email is None else self._cx_staff(manager_email)
         top = self._seat("ORG-MGR", title="Head of Operations", holder=manager)
         self._seat("ORG-STAFF", title="Officer", reports_to=top,
                    holder=self.requester)
@@ -1485,6 +1481,26 @@ class OrganogramSourceResolutionTests(TestCase):
         return get_user_model().objects.create_user(tenant=_platform_tenant(), 
             email=email, status="ACTIVE",
             first_name="Platform", last_name="Staff",
+        )
+
+    def test_a_school_requester_never_climbs_the_platform_chart(self):
+        """A school user seated on the CX chart is not climbed through it.
+
+        The model refuses that seating, so this is a shape only a direct write
+        makes. The school requester's stage asks the school's own chart, where
+        they hold nothing, and reaches nobody rather than the CX manager.
+        """
+        from vs_rbac.tests.helpers import make_branch, make_school
+
+        school = make_school(slug="organogram-school")
+        requester = _make_user_in_branch("org-school@test.com", make_branch(school))
+        instance = _make_instance(self.template, requester)
+        manager = self._cx_staff("org-sch-mgr@test.com")
+        top = self._seat("ORG-SCH-MGR", title="Head", holder=manager)
+        self._seat("ORG-SCH-STAFF", title="Officer", reports_to=top, holder=requester)
+
+        self.assertEqual(
+            resolve_approvers(self._stage(code="org-school"), instance), [],
         )
 
     def test_a_climb_reaching_another_tenants_user_resolves_to_nobody(self):

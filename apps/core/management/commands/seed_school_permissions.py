@@ -148,6 +148,19 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "leave", "update",              _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "leave", "cancel",              _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
 
+    # The school's own org chart. Every member of staff reads it, so a teacher
+    # holds view: knowing who you report to is not an administrator's secret.
+    # Drawing it and appointing people to it stay with the two admin roles, and
+    # a branch admin's writes reach their own branch's units and posts only.
+    # All NORMAL: nothing here grants anybody a permission, and the dated
+    # history, the vacancies and the summary are read with the register's
+    # school.teachers.update rather than with any key of this resource.
+    ("school", "organogram", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
+    ("school", "organogram", "create",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "organogram", "update",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "organogram", "delete",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "organogram", "assign",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+
     ("school", "administrators", "view",       _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "administrators", "create",     _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "administrators", "update",     _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
@@ -322,6 +335,7 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("school", "staff"):          "Loading the staff list in bulk from a spreadsheet",
     ("school", "staff_records"):  "Staff qualifications, certificates and documents",
     ("school", "leave"):          "Staff leave requests",
+    ("school", "organogram"):     "The school's org chart: units, posts, appointments and reporting lines",
     ("school", "administrators"): "School administrator accounts",
     ("school", "fees"):           "Fees and billing",
     ("school", "settings"):       "School settings",

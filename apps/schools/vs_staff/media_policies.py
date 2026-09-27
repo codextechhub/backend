@@ -12,12 +12,15 @@ teacher with no staff key at all can open the CV she uploaded. And **nobody
 reads anybody else's without** ``school.teachers.view``, plus the branch
 narrowing the directory itself applies, so a file can never be reachable by a
 caller the profile is not.
+
+One widening, for the photograph alone: a colleague who may read the org chart
+may see the faces on it. See :func:`_may_read_photo`.
 """
 from __future__ import annotations
 
 from core.media import register_policy
 
-from .constants import PERM_VIEW
+from .constants import PERM_ORG_VIEW, PERM_VIEW
 from .models import StaffDocument, StaffProfile
 
 
@@ -50,6 +53,26 @@ def _may_read_document(request, document) -> bool:
     return _may_read_staff_file(request, document.staff)
 
 
+def _may_read_photo(request, staff) -> bool:
+    """A photograph is also readable by anybody who reads the org chart.
+
+    The chart shows every member of staff in the school to every colleague
+    holding ``school.organogram.view``, photograph included, whatever branch
+    either of them works in. Without this a Lekki teacher would see an Ikeja
+    colleague's name on the chart beside a broken image. It widens the
+    photograph alone: a document still needs the directory's rule above.
+    """
+    if _may_read_staff_file(request, staff):
+        return True
+    from vs_rbac.permissions import has_permission
+
+    tenant = getattr(request, "tenant", None)
+    user = getattr(request, "user", None)
+    if tenant is None or user is None or staff.tenant_id != getattr(tenant, "pk", None):
+        return False
+    return has_permission(user, PERM_ORG_VIEW, tenant=tenant)
+
+
 def register() -> None:
-    register_policy(StaffProfile, _may_read_staff_file)
+    register_policy(StaffProfile, _may_read_photo)
     register_policy(StaffDocument, _may_read_document)

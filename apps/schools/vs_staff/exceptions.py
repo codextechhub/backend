@@ -197,3 +197,23 @@ class BranchOutsideReach(StaffError):
     error_code = "BRANCH_OUTSIDE_REACH"
     default_message = "You can only post staff to your own branches."
     http_status = 403
+
+
+class OrganogramInUse(StaffError):
+    """Deleting a unit or a post that something on the chart still hangs off.
+
+    409 with what is in the way counted in ``extra``, so the screen can say
+    "move its 3 posts first" instead of leaving an administrator to find them.
+    """
+
+    error_code = "ORGANOGRAM_IN_USE"
+    default_message = "Something on the chart still depends on this."
+    http_status = 409
+
+
+class NotEligibleForPost(StaffError):
+    """An appointment the posting, the post or the person's status rules out."""
+
+    error_code = "NOT_ELIGIBLE_FOR_POST"
+    default_message = "This person cannot be appointed to that post."
+    http_status = 422

@@ -72,7 +72,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             )
 
     def test_total_key_count(self):
-        """The school and academics modules register exactly 89 keys.
+        """The school and academics modules register exactly 94 keys.
 
         Deliberately a hand-maintained number: the school permission surface
         growing is something a person should have to notice and agree to, so
@@ -94,6 +94,9 @@ class SeedSchoolPermissionsKeyTests(TestCase):
           the resource DESCRIPTION says "Staff records" instead.
           ``school.staff`` exists for the spreadsheet import alone.
         * ``school.field_access`` carries view and update for Field Access.
+        * ``school.organogram`` is the school's own org chart, a resource of
+          its own because every member of staff reads it while the register's
+          dated history stays with the administrators.
         * There is no key for a child's medical details. Blood group, allergies
           and conditions are registered fields of ``school.students``, so who
           reads and corrects them is a switch on the role, set on the Field
@@ -102,7 +105,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            89,
+            94,
         )
 
     def test_field_access_view_is_open_and_update_is_restricted(self):
@@ -220,8 +223,8 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         )
 
     def test_school_admin_gets_all_keys(self):
-        """A school admin holds every key in both modules, all 89 of them."""
-        self.assertEqual(len(self._defaults("school_admin")), 89)
+        """A school admin holds every key in both modules, all 94 of them."""
+        self.assertEqual(len(self._defaults("school_admin")), 94)
         self.assertIn("school.field_access.update", self._defaults("school_admin"))
 
     def test_only_school_admin_gets_field_access_by_default(self):
@@ -253,7 +256,10 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         self.assertFalse(overrides & self._defaults("teacher"))
 
     def test_branch_admin_default_count(self):
-        """47 permissions cover branch-level school operations.
+        """52 permissions cover branch-level school operations.
+
+        A branch admin draws the org chart and appoints people to it, and the
+        views keep those writes to their own branch's units and posts.
 
         A branch admin reads and corrects a child's blood group, allergies and
         conditions exactly where the school turns those switches on for their
@@ -286,7 +292,8 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         not delete an exam, promote the roll, or change employment status.
         """
         branch_admin = self._defaults("branch_admin")
-        self.assertEqual(len(branch_admin), 47)
+        self.assertEqual(len(branch_admin), 52)
+        self.assertIn("school.organogram.assign", branch_admin)
         self.assertIn("school.staff.import", branch_admin)
         self.assertNotIn("school.students.import", branch_admin)
         self.assertIn("school.teachers.assign", branch_admin)
@@ -303,7 +310,10 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         self.assertNotIn("school.profile.update", self._defaults("branch_admin"))
 
     def test_teacher_default_count(self):
-        """12 = 11, plus academics.exam.view: a teacher reads the exam
+        """13 = 12, plus school.organogram.view: every member of staff reads
+        the school's org chart, and draws none of it.
+
+        12 = 11, plus academics.exam.view: a teacher reads the exam
         schedule they are invigilating without being able to change it.
 
         11 = 10, plus the one key M12 gives a teacher: school.leave.apply.
@@ -323,7 +333,9 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         this module took.
         """
         keys = self._defaults("teacher")
-        self.assertEqual(len(keys), 12)
+        self.assertEqual(len(keys), 13)
+        self.assertIn("school.organogram.view", keys)
+        self.assertNotIn("school.organogram.create", keys)
         # M12 gives a teacher exactly one key: applying for their own leave.
         # Reading a colleague's is not something every colleague may do, so
         # school.leave.view stops at the two admin roles.
@@ -378,7 +390,7 @@ class SeedSchoolBackfillTests(TestCase):
             .values_list("permission_id", flat=True)
         )
         # school_admin defaults are every school and academics key.
-        self.assertEqual(len(keys), 89)
+        self.assertEqual(len(keys), 94)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
         self.assertIn("school.roles.approve", keys)
@@ -430,7 +442,7 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=teacher_role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        self.assertEqual(len(keys), 12)
+        self.assertEqual(len(keys), 13)
         self.assertIn("school.students.view", keys)
         self.assertNotIn("school.students.create", keys)
 

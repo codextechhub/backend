@@ -34,6 +34,7 @@ CAPABILITY_MODULE = {
     ("school", "teachers"): "teachers",
     ("school", "staff_records"): "teachers",
     ("school", "leave"): "teachers",
+    ("school", "organogram"): "teachers",
     ("academics", "calendar"): "calendar",
     ("academics", "timetable"): "calendar",
     ("academics", "exam"): "calendar",
@@ -99,6 +100,9 @@ RESOURCE_BANDS = {
     ("school", "teachers"): CORE,
     ("school", "leave"): PLUS,
     ("school", "staff_records"): PLUS,
+    # Core, because an ORGANOGRAM approval stage climbs this chart: a school
+    # that could not draw one would have leave requests with nobody to route to.
+    ("school", "organogram"): CORE,
     ("school", "user_overrides"): CORE,
     ("school", "impersonation"): PLATFORM,
 

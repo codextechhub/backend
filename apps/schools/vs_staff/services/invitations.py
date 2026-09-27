@@ -10,6 +10,9 @@ event recording the revocation, because a school that invited the wrong address
 has a record of having done so, and deleting it is how the same mistake gets
 made twice.
 
+**A post reserved for them is released.** An invited person may be appointed
+to a post before they arrive; they never will, so the appointment ends today.
+
 **Nothing is emailed.** There is no notification event for a withdrawn
 invitation, and inventing one would tell somebody they had been un-hired by a
 school they had not yet joined.
@@ -24,6 +27,7 @@ from django.utils import timezone
 from ..constants import EmploymentStatus
 from ..exceptions import InvitationAlreadyAccepted, ReasonRequired
 from . import audit
+from .organogram import StaffOrganogramService
 
 
 @transaction.atomic
@@ -71,6 +75,8 @@ def revoke(staff, *, reason, actor, request=None):
         last_working_day=timezone.localdate(),
         note="Invitation withdrawn before it was accepted.", changed_by=actor,
     )
+    # A post reserved for them ahead of their first day is released too.
+    StaffOrganogramService.close_for_exit(staff, timezone.localdate())
     UserStatusService.deactivate(staff.user, actor, request=request)
     audit.emit_invitation_revoked(staff, reason, actor=actor)
     return staff

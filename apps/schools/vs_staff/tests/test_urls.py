@@ -26,6 +26,15 @@ class LiteralSegmentTests(SimpleTestCase):
         "staff-bulk-role": "/v1/i/me/staff/roles/bulk/",
         "staff-teaching-coverage": "/v1/i/me/staff/teaching/coverage/",
         "staff-class-teacher": "/v1/i/me/staff/teaching/class-teacher/",
+        "staff-org-nodes": "/v1/i/me/staff/organogram/nodes/",
+        "staff-org-positions": "/v1/i/me/staff/organogram/positions/",
+        "staff-org-tree": "/v1/i/me/staff/organogram/positions/tree/",
+        "staff-org-vacancies": "/v1/i/me/staff/organogram/positions/vacancies/",
+        "staff-org-assignments": "/v1/i/me/staff/organogram/assignments/",
+        "staff-org-assignments-current": "/v1/i/me/staff/organogram/assignments/current/",
+        "staff-org-assignments-mine": "/v1/i/me/staff/organogram/assignments/mine/",
+        "staff-org-matrix-reports": "/v1/i/me/staff/organogram/matrix-reports/",
+        "staff-org-summary": "/v1/i/me/staff/organogram/summary/",
     }
 
     def test_each_literal_segment_reverses_to_the_path_it_claims(self):
@@ -54,6 +63,20 @@ class LiteralSegmentTests(SimpleTestCase):
             ("staff-document-detail", "/v1/i/me/staff/documents/3/"),
             ("staff-leave-detail", "/v1/i/me/staff/leave/3/"),
             ("staff-teaching-detail", "/v1/i/me/staff/teaching/3/"),
+        ):
+            with self.subTest(route=name):
+                self.assertEqual(resolve(path).url_name, name)
+
+    def test_an_organogram_row_is_not_a_person_or_a_literal(self):
+        """``organogram/positions/3/`` is post 3, and ``tree/`` is not a post."""
+        for name, path in (
+            ("staff-org-node-detail", "/v1/i/me/staff/organogram/nodes/3/"),
+            ("staff-org-position-detail", "/v1/i/me/staff/organogram/positions/3/"),
+            ("staff-org-assignment-detail", "/v1/i/me/staff/organogram/assignments/3/"),
+            ("staff-org-assignment-close",
+             "/v1/i/me/staff/organogram/assignments/3/close/"),
+            ("staff-org-matrix-report-detail",
+             "/v1/i/me/staff/organogram/matrix-reports/3/"),
         ):
             with self.subTest(route=name):
                 self.assertEqual(resolve(path).url_name, name)
@@ -94,6 +117,12 @@ class SurfaceTests(SimpleTestCase):
         "StaffTeachingView", "TeachingAssignmentDetailView",
         "ClassTeacherView", "TeachingCoverageView",
         "StaffLeaveView", "LeaveDetailView",
+        "OrgNodeListCreateView", "OrgNodeDetailView",
+        "PositionListCreateView", "PositionTreeView", "PositionVacanciesView",
+        "PositionDetailView", "AppointmentListCreateView", "AppointmentDetailView",
+        "AppointmentCloseView", "CurrentAppointmentsView", "MyAppointmentsView",
+        "MatrixReportListCreateView", "MatrixReportDetailView",
+        "OrganogramSummaryView",
     }
 
     def _views(self):

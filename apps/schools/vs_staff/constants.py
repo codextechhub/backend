@@ -44,6 +44,18 @@ PERM_LEAVE_VIEW = "school.leave.view"
 PERM_LEAVE_UPDATE = "school.leave.update"
 PERM_LEAVE_CANCEL = "school.leave.cancel"
 
+#: The school's own organogram: units, posts, appointments and dotted lines.
+#:
+#: Its own resource rather than more verbs on the register, because the chart
+#: is read by every member of staff while the register's history, dates and
+#: counts are not. ``assign`` is appointing somebody to a post and ending that
+#: appointment, which is a different act from drawing the post.
+PERM_ORG_VIEW = "school.organogram.view"
+PERM_ORG_CREATE = "school.organogram.create"
+PERM_ORG_UPDATE = "school.organogram.update"
+PERM_ORG_DELETE = "school.organogram.delete"
+PERM_ORG_ASSIGN = "school.organogram.assign"
+
 PERM_ACCOUNT_UPDATE = "school.administrators.update"
 PERM_ACCOUNT_SUSPEND = "school.administrators.suspend"
 PERM_ACCOUNT_REACTIVATE = "school.administrators.reactivate"
@@ -281,3 +293,45 @@ LEAVE_TEMPLATE_NAME = "Leave-request approval"
 #: filed request parks rather than being approved unseen, which is the
 #: seeded-blocked-not-seeded-open contract every other ladder here keeps.
 LEAVE_APPROVER_GROUP_CODE = "leave-approvers"
+
+
+# ── Organogram ─────────────────────────────────────────────────────────────
+class OrgUnitKind(models.TextChoices):
+    """The three tiers of a school's org chart, widest first.
+
+    The same tiers the platform chart uses, so a person who has drawn one has
+    drawn the other: a division sits at the top, a department under a division,
+    and a team under a department.
+    """
+
+    DIVISION = "DIVISION", "Division"
+    DEPARTMENT = "DEPARTMENT", "Department"
+    TEAM = "TEAM", "Team"
+
+
+#: Which tier each kind must sit under. None means it must be at the top.
+ORG_UNIT_PARENT_KIND: dict[str, str | None] = {
+    OrgUnitKind.DIVISION: None,
+    OrgUnitKind.DEPARTMENT: OrgUnitKind.DIVISION,
+    OrgUnitKind.TEAM: OrgUnitKind.DEPARTMENT,
+}
+
+#: The prefix a unit's code carries, so a code says which tier it names.
+ORG_UNIT_CODE_PREFIX: dict[str, str] = {
+    OrgUnitKind.DIVISION: "DV-",
+    OrgUnitKind.DEPARTMENT: "DT-",
+    OrgUnitKind.TEAM: "TM-",
+}
+
+#: Employment statuses that never count as holding a post.
+#:
+#: An invited person may be appointed ahead of their first day, so the seat is
+#: reserved for them, but it reads vacant until they accept: a chart naming
+#: somebody who has never signed in names somebody who may never arrive. The
+#: two exit statuses are here as a belt, because leaving closes the appointment
+#: in the same transaction and no open appointment of theirs should remain.
+NON_HOLDING_STATUSES = frozenset({
+    EmploymentStatus.INVITED,
+    EmploymentStatus.RESIGNED,
+    EmploymentStatus.TERMINATED,
+})

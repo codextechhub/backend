@@ -143,6 +143,18 @@ class BandedPermissionsTests(_Seeded):
                 )
 
 
+    def test_the_school_organogram_is_core_staff(self):
+        # An ORGANOGRAM approval stage climbs it, so no plan may be without it.
+        for action in ("view", "create", "update", "delete", "assign"):
+            with self.subTest(action=action):
+                self.assertEqual(
+                    Permission.objects.get(
+                        key=f"school.organogram.{action}",
+                    ).capability.key,
+                    "teachers_core",
+                )
+
+
 class KeysThatMustStayUnbandedTests(_Seeded):
     """Absence is a decision, and two kinds of key depend on it."""
 
