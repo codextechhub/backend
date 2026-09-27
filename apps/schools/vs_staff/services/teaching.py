@@ -67,9 +67,9 @@ def assign(*, tenant, staff, school_class, subject, session, part, actor):
         held = current_lead(tenant, session, school_class, subject)
         if held is not None and held.staff_id != staff.pk:
             raise LeadAlreadySet(
-                f"{_name(held.staff)} is already the lead for {subject.name} in "
-                f"{school_class.name}. Step them back first, then make this "
-                f"person lead.",
+                f"{_name(held.staff)} is already the main teacher for "
+                f"{subject.name} in {school_class.name}. Move them to assisting "
+                f"first, then make this person main.",
                 current_lead=_name(held.staff),
             )
 
@@ -98,9 +98,9 @@ def set_part(assignment, part, *, actor):
         )
         if held is not None and held.pk != assignment.pk:
             raise LeadAlreadySet(
-                f"{_name(held.staff)} is already the lead for "
+                f"{_name(held.staff)} is already the main teacher for "
                 f"{assignment.subject.name} in {assignment.school_class.name}. "
-                f"Step them back first, then make this person lead.",
+                f"Move them to assisting first, then make this person main.",
                 current_lead=_name(held.staff),
             )
     assignment.part = part

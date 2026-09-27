@@ -106,7 +106,7 @@ class LeadAlreadySet(StaffError):
     """
 
     error_code = "LEAD_ALREADY_SET"
-    default_message = "This class already has a lead teacher for that subject."
+    default_message = "This class already has a main teacher for that subject."
     http_status = 422
 
 
