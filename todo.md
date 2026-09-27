@@ -1033,6 +1033,35 @@ than '[redacted]'. Names still redact.
 MUST SAY: that school searches are kept, and remove the limit that said they
 were lost.
 
+### D46. An uploaded import file and its rows follow the role's field switches (2e446e27, 2026-09-27)
+MODULES: M10 bulk data import, M04 roles and permissions.
+The download refused nobody holding the view key, whatever the "Uploaded file"
+switch said; it now asks the detail serializer's own rule
+(FieldAccessMixin.can_read_field) and refuses 403 `field_read_denied`, a new
+code, before the file is looked up. The issue detail, the validate response and
+the issues CSV follow the "Preview rows" switch and leave cell values out.
+MUST SAY: for M10, the download and issue-values rule; for M04, the new
+read-refusal code beside `field_write_denied`.
+
+### D47. The chart of accounts shows a branch reader their own balances (a5c36920, 2026-09-27)
+MODULES: M19 finance and accounting.
+Chart with balances, account drawer and account activity used the whole ledger
+for any finance.account.view holder; they now use the statements' reader scope,
+so a branch reader's chart agrees with their trial balance.
+MUST SAY: the rule, and remove the gap M19 v1.12 leads its section 9 with.
+
+### D48. Bulk finance runs stay in the caller's branches; batches confirm like singles (8cd97cae, 2026-09-27)
+MODULES: M17 billing, M19 finance and accounting, M20 adjustments and concessions.
+Fee generate all_active bills only customers in the caller's reach, and a
+structure with a branch refuses named customers from elsewhere (409
+WRONG_BRANCH); dunning generate stays in a branch reader's reach (scheduled
+runs stay school-wide); adjustment batch lines resolve within reach (404). A
+refund or write-off batch now requires the same approval confirmation as the
+single post against an empty route and records one entry per document.
+MUST SAY: M17 FR-002/FR-011 and the all_active gap (remove it); M19 FR-019 and
+section 9 (remove the all_active gap), dunning; M20 FR-006 (batch no longer
+bypasses), FR-008 and section 9 (remove the batch-confirmation gap).
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
