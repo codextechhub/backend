@@ -34,7 +34,11 @@ from .constants import (
     PaymentDirection,
     WebhookStatus,
 )
-from .exceptions import DuplicateWebhookError, WebhookSignatureError
+from .exceptions import (
+    DuplicateWebhookError,
+    ProviderNotConfiguredError,
+    WebhookSignatureError,
+)
 from .models import CollectionIntent, PayoutInstruction, VirtualAccount, WebhookEvent
 from .providers.registry import get_provider
 
@@ -113,16 +117,25 @@ def process_stored_event(event_id: int) -> WebhookEvent | None:
 
     Idempotent by design: a missing or already-``PROCESSED`` event is a no-op, so a task
     retry (or a provider re-delivery that lands on the same row) can never double-book.
-    Runs the same :func:`_dispatch` the synchronous path used to; on failure the event is
-    marked ``FAILED`` and the exception is *swallowed* - mirroring the platform's
-    "eager-mode first failure is final": the PSP re-delivers and ``confirm_*`` are
-    idempotent, so re-raising would only surface a spurious 500 to the (already-acked) PSP.
+    On failure the event is marked ``FAILED`` and the exception is *swallowed* -
+    mirroring the platform's "eager-mode first failure is final": the PSP re-delivers
+    and ``confirm_*`` are idempotent, so re-raising would only surface a spurious 500 to
+    the (already-acked) PSP. An event whose provider this deployment no longer offers
+    (a stored ``FAKE`` event once the Fake provider is switched off) is marked
+    ``FAILED`` with that reason: it can be neither verified nor booked, and it stays on
+    the needs-attention list for an operator to see.
     """
     event = WebhookEvent.objects.filter(pk=event_id).first()  # Load the stored event, if it still exists.
     if event is None or event.status == WebhookStatus.PROCESSED:  # Nothing to do for a gone/handled event.
         return event  # Idempotent no-op on re-entry.
 
-    client = get_provider(event.provider)  # Resolve the adapter that stored this event.
+    try:  # A provider switched off since the event was stored has nothing to verify with.
+        client = get_provider(event.provider)
+    except ProviderNotConfiguredError as exc:
+        event.status = WebhookStatus.FAILED
+        event.error = str(getattr(exc, "message", exc))[:255]
+        event.save(update_fields=["status", "error", "updated_at"])
+        return event
     parsed = client.parse_webhook(  # Re-derive the neutral view from the persisted body.
         payload=event.payload or {},
         raw_body=(event.raw_body or "").encode(),  # Rebuild the raw bytes the parser may inspect.

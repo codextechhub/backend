@@ -1,10 +1,15 @@
-"""In-memory fake provider for tests and local development.  # Deterministic PSP stand-in.
+"""In-memory fake provider for tests and local development.
 
 Implements the full :class:`~vs_payments.providers.base.Provider` contract without any
 network I/O, so the whole collection/payout/webhook flow is exercisable deterministically.
 Signatures use HMAC-SHA512 over the raw body with :attr:`secret` (mirrors the real
 providers' scheme), and :meth:`build_webhook` produces a correctly-signed event body a
-test can feed straight into the webhook ingestion path.  # Keep tests fully offline and predictable.
+test can feed straight into the webhook ingestion path.
+
+The secret has no default. The registry builds this provider only where
+``PAYMENTS_FAKE_PROVIDER_ENABLED`` is on, and passes ``PAYMENTS_FAKE_WEBHOOK_SECRET``;
+a test that constructs one names its own secret. An empty secret verifies nothing,
+because an HMAC keyed with the empty string is one anybody can compute.
 """
 from __future__ import annotations
 
@@ -30,7 +35,7 @@ class FakeProvider(Provider):
 
     name = "FAKE"  # Registry key for the fake provider.
 
-    def __init__(self, *, secret: str = "fake-secret", bank_name: str = "Fake MFB"):
+    def __init__(self, *, secret: str, bank_name: str = "Fake MFB"):
         self.secret = secret  # HMAC secret used to sign fake webhooks.
         self.bank_name = bank_name  # Display bank name used for virtual accounts.
         # Lets a test force the next verify result without a webhook round-trip.  # Override verification outcomes.
@@ -104,6 +109,8 @@ class FakeProvider(Provider):
 
     # Handle the verify signature workflow.
     def verify_signature(self, *, raw_body: bytes, headers: dict) -> bool:
+        if not self.secret:  # No key means no event can be authentic.
+            return False
         sent = ""  # Hold the supplied signature if we find one.
         for key, value in (headers or {}).items():  # Walk headers case-insensitively.
             if key.lower() == SIGNATURE_HEADER:  # Look for the fake signature header.

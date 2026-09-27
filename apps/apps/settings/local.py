@@ -80,6 +80,15 @@ EMAIL_USE_TLS = False
 CELERY_TASK_ALWAYS_EAGER     = True
 CELERY_TASK_EAGER_PROPAGATES = True
 
+# The in-memory Fake payment provider, for development and the test suite. Set
+# PAYMENTS_FAKE_PROVIDER_ENABLED=False in .env to work against Paystack alone.
+PAYMENTS_FAKE_PROVIDER_ENABLED = config(
+    "PAYMENTS_FAKE_PROVIDER_ENABLED", default=True, cast=bool,
+)
+PAYMENTS_FAKE_WEBHOOK_SECRET = config(
+    "PAYMENTS_FAKE_WEBHOOK_SECRET", default="fake-dev-secret",
+)
+
 # Frontend URL - must point to the React dev server, not the Django backend
 FRONTEND_BASE_URL = 'http://localhost:5173'  # Console (console-fe)
 # The school app, where a paying parent goes. Its slug is inserted as a

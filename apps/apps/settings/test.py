@@ -50,6 +50,12 @@ EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 CELERY_TASK_ALWAYS_EAGER = True
 CELERY_TASK_EAGER_PROPAGATES = True
 
+# The in-memory Fake payment provider, which the payments suites run against.
+PAYMENTS_FAKE_PROVIDER_ENABLED = True
+PAYMENTS_FAKE_WEBHOOK_SECRET = config(
+    "PAYMENTS_FAKE_WEBHOOK_SECRET", default="fake-test-secret",
+)
+
 # Disable throttling in tests - they hammer endpoints far faster than the
 # configured rates allow.
 REST_FRAMEWORK = {

@@ -45,9 +45,10 @@ from .exceptions import (
     PaymentStateError,
     PayoutApprovalRequiredError,
     ProviderDispatchInTransactionError,
+    ProviderNotConfiguredError,
 )
 from .models import CollectionIntent, PayoutBatch, PayoutInstruction, VirtualAccount
-from .providers.registry import get_provider
+from .providers.registry import available_providers, get_provider, is_available
 
 _logger = logging.getLogger("vs_payments.services")  # Diagnostics for off-request dispatch work.
 
@@ -113,6 +114,32 @@ def _new_reference(entity) -> str:
     )
 
 
+def resolve_provider_name(provider=None) -> str:
+    """The provider a new collection, virtual account or payout batch is made with.
+
+    Normalises ``provider`` (any case) and refuses a name this deployment does not
+    offer before any row is written, so a disabled provider such as ``FAKE`` can never
+    be recorded against new money. A name the caller chose is their input and is
+    refused as a 400 on ``provider``. With no name the configured default is used, and
+    a default this deployment does not offer is a configuration fault, not the
+    caller's, so it is refused as :class:`ProviderNotConfiguredError` instead.
+    """
+    from django.conf import settings
+
+    if provider not in (None, ""):
+        name = str(provider).strip().upper()
+        if not is_available(name):
+            raise ValidationError({"provider": (
+                f"'{name[:32]}' is not a payment provider this service offers. "
+                f"Choose one of: {', '.join(available_providers())}."
+            )})
+        return name
+    name = str(getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")).strip().upper()
+    if not is_available(name):
+        raise ProviderNotConfiguredError(f"Unknown payment provider '{name}'.")
+    return name
+
+
 # Support the entity currency workflow.
 def _entity_currency(entity):
     return getattr(entity, "base_currency", None)  # Prefer the entity's configured base currency.
@@ -152,10 +179,8 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
     ledger entry is made yet - the receipt is booked only when the collection is
     *confirmed* (webhook or verify).
     """
-    from django.conf import settings
-
     channel = channel or CollectionChannel.CHECKOUT  # Default to a checkout-style collection.
-    provider_name = provider or getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")  # Fall back to the configured PSP.
+    provider_name = resolve_provider_name(provider)  # Refuse a provider this deployment does not offer.
     client = get_provider(provider_name)  # Resolve the PSP client once for this request.
     reference = _new_reference(entity)  # Generate a unique reference for the provider and our ledger.
     callback_url = callback_url or default_callback_url()  # Use the environment's return URL if none is provided.
@@ -283,9 +308,7 @@ def record_virtual_account_deposit(*, virtual_account, reference, amount,
 def create_virtual_account(*, entity, customer, provider=None, deposit_account=None,
                            bank_code="", actor_user=None):
     """Provision a dedicated virtual NUBAN for ``customer`` and store it."""
-    from django.conf import settings
-
-    provider_name = provider or getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")  # Resolve the PSP to use.
+    provider_name = resolve_provider_name(provider)  # Refuse a provider this deployment does not offer.
     
     if VirtualAccount.objects.filter(
         entity=entity, provider=provider_name, customer=customer,
@@ -839,15 +862,11 @@ def create_payout_batch(
     optional ``vendor`` / ``narration`` / ``wht_amount`` / ``metadata`` / ``source_account``.
     Nothing is sent to the provider yet - call :func:`submit_payout_batch` for that.
     """
-    from django.conf import settings
-
     items = list(items)  # Materialize the iterable so it can be counted and iterated safely.
     if not items:  # A batch with no items is not meaningful.
         raise PaymentStateError("A payout batch must contain at least one item.")
 
-    provider_name = str(
-        provider or getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")
-    ).strip().upper()  # Resolve the batch PSP.
+    provider_name = resolve_provider_name(provider)  # Refuse a provider this deployment does not offer.
     currency = currency or _entity_currency(entity)  # Default the batch currency to the entity currency.
     fingerprint = payout_request_fingerprint(
         items=items, provider=provider_name, source_account=source_account,

@@ -548,6 +548,12 @@ PAYMENTS_DEFAULT_PROVIDER = config("PAYMENTS_DEFAULT_PROVIDER", default="PAYSTAC
 # vs_payments.services.default_callback_url() derives it at call time. See
 # the module docstring.
 PAYMENTS_CALLBACK_URL = config("PAYMENTS_CALLBACK_URL", default="")
+# The in-memory Fake provider moves no money, so it is off here and is not read
+# from the environment: only the development and test settings modules turn it
+# on. With it off, FAKE is refused everywhere as an unknown provider. See
+# vs_payments.providers.registry.
+PAYMENTS_FAKE_PROVIDER_ENABLED = False
+PAYMENTS_FAKE_WEBHOOK_SECRET = ""
 
 # --------------------------------------------------------------------------- #
 # Where a PAYING CUSTOMER is sent                                              #

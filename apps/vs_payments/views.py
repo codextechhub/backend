@@ -45,6 +45,7 @@ from .constants import (
     WebhookStatus,
 )
 from .exceptions import DuplicateWebhookError, PayoutApprovalRequiredError
+from .providers.registry import is_available as provider_is_available
 from .models import (
     CollectionIntent,
     PaymentEvent,
@@ -1102,6 +1103,11 @@ class MovementsSummaryView(APIView):
 class WebhookView(APIView):
     """POST /webhooks/<provider>/ - raw signed PSP event. No JWT; signature is the auth.
 
+    A provider this deployment does not offer (an unknown name, or ``FAKE`` where the
+    Fake provider is switched off) answers 404 before the body is read, exactly as if
+    the route did not exist: nothing is verified, stored or audited, and the response
+    does not reveal that the name is a provider somewhere else.
+
     docstring-name: PSP webhook receiver
     """
 
@@ -1110,6 +1116,8 @@ class WebhookView(APIView):
 
     # Handle POST requests for this endpoint.
     def post(self, request, provider):
+        if not provider_is_available(provider):  # Unknown or disabled provider: no receiver here.
+            raise NotFound()
         try:  # Duplicate events are expected and should be acknowledged.
             event = webhooks.ingest_webhook(  # Hand the raw signed request to the webhook ingestion layer.
                 provider=provider, raw_body=request.body, headers=dict(request.headers),
