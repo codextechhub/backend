@@ -28,9 +28,10 @@ commits, not third-party or collected assets, so whatever is added there is
 the project's own writing. A checkout with no ``docs/`` directory, such as a
 deployed image, is read without it.
 
-One line is allowed, in the development seed: it renames branches that older
-runs of the seed stored under the old name, and it has to spell that name to
-match those rows. ``ALLOWED_LINES`` records it by its path from the repository
+Two lines are allowed. One is in the development seed: it renames branches
+that older runs of the seed stored under the old name, and it has to spell that
+name to match those rows. The other is a test asserting that a screen's labels
+never use the word, which has to spell it to look for it. ``ALLOWED_LINES`` records it by its path from the repository
 root and its exact content. Each entry excuses a single line, so a copy of it
 still fails, and a second test fails once the line is gone, so the exception
 cannot outlive the code it excuses.
@@ -60,6 +61,11 @@ ALLOWED_LINES = frozenset({
     (
         "apps/schools/vs_schools/dev/fixtures.py",
         'tenant=tenant, name=f"{name} Main Campus",',
+    ),
+    # A guard that the payroll options never say it, which has to spell it.
+    (
+        "apps/schools/vs_schools/tests_settings_endpoints.py",
+        'self.assertNotIn("campus", (option["label"] + option["description"]).lower())',
     ),
 })
 
