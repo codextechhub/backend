@@ -240,8 +240,11 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
       gating them on ``finance.account.view`` left a bursar who may build a
       budget with no account to put on a line, and one who may add a customer
       with no receivable account to choose.
-    * The balances are the whole entity's ledger, so ``with_balance`` keeps
-      ``finance.account.view``.
+    * The balances are the ledger, so ``with_balance`` keeps
+      ``finance.account.view``, and a branch-bound reader's balances are the
+      journals of their branches plus the school-wide ones, read through
+      :func:`vs_finance.branch_ledger.ledger_balances` exactly as their financial
+      statements are. A whole-school reader's balances are unchanged.
     * Creating an account keeps ``finance.account.create``.
 
     docstring-name: Chart of accounts
@@ -318,7 +321,7 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
     def entity_qs(self, entity):
         qs = Account.objects.filter(entity=entity).select_related("parent").order_by("code")
         params = self.request.query_params
-        if self._with_balance():
+        if self._with_balance() and not _reader_scope(self.request).is_narrowed:
             from django.db.models import F, Sum
             from django.db.models.functions import Coalesce
             qs = qs.annotate(
@@ -369,9 +372,33 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
         # node); the picker mode keeps the standard paginated response.
         if self._whole_tree():
             qs = self.filter_queryset(self.get_queryset())
+            scope = _reader_scope(request)
+            if self._with_balance() and scope.is_narrowed:
+                qs = _with_branch_balances(list(qs), self.entity, scope)
             data = self.get_serializer(qs, many=True).data
             return success_response("Chart of accounts retrieved.", data=data)
         return super().list(request, *args, **kwargs)
+
+
+def _with_branch_balances(accounts, entity, scope):
+    """Set each account's ``_bal_dr``/``_bal_cr`` from the journals in ``scope``.
+
+    The narrowed twin of the chart's ``AccountBalance`` annotation, summed from
+    :func:`vs_finance.branch_ledger.ledger_balances` so the chart agrees with the
+    same reader's trial balance to the kobo.
+    """
+    from .branch_ledger import ledger_balances
+
+    totals = {}
+    for row in ledger_balances(entity, scope):
+        dr, cr = totals.get(row.account_id, (0, 0))
+        totals[row.account_id] = (
+            dr + row.opening_debit + row.debit_total,
+            cr + row.opening_credit + row.credit_total,
+        )
+    for account in accounts:
+        account._bal_dr, account._bal_cr = totals.get(account.id, (0, 0))
+    return accounts
 
 
 # Group endpoint behavior for Account Detail View.
@@ -381,6 +408,11 @@ class AccountDetailView(APIView):
     GET returns the account, a balance summary (current, fiscal-year opening,
     line/journal counts) and its posted journal-line activity (newest first, with
     a running balance) - feeds the Chart-of-Accounts detail drawer.
+
+    A branch-bound reader's summary and activity cover the journals of their
+    branches plus the school-wide ones (the rule of their financial statements,
+    :func:`_reader_scope`); the account itself is the school's and reads the same
+    for everyone.
 
     docstring-name: Account detail & ledger
     """
@@ -407,16 +439,17 @@ class AccountDetailView(APIView):
         from .reports import _accounts_gl_net
 
         entity = resolve_entity(request)
+        scope = _reader_scope(request)
         acc = self._get(entity, pk)
         sign = 1 if acc.normal_balance == NormalBalance.DEBIT else -1
         account_ids = {acc.id} if acc.is_postable else account_subtree_ids(acc)
 
         # Header summaries roll up the full descendant subtree. Activity remains a
         # leaf-only view because journals cannot post directly to header accounts.
-        summary_lines = JournalLine.objects.filter(
+        summary_lines = scope.filter(JournalLine.objects.filter(
             account_id__in=account_ids,
             entry__status__in=[DocumentStatus.POSTED, DocumentStatus.REVERSED],
-        )
+        ), "entry__")
         # Fiscal-year opening = net of everything posted before the current FY starts.
         today = datetime.date.today()
         fy = (
@@ -474,7 +507,9 @@ class AccountDetailView(APIView):
                 "account": AccountSerializer(acc).data,
                 "type_label": AccountType(acc.account_type).label if acc.account_type else "",
                 "summary": {
-                    "current_balance": _money(_accounts_gl_net(account_ids, acc.normal_balance)),
+                    "current_balance": _money(_accounts_gl_net(
+                        account_ids, acc.normal_balance, entity=entity, scope=scope,
+                    )),
                     "opening_balance": _money(opening),
                     "line_count": line_count,
                     "journal_count": journal_count,
@@ -508,7 +543,12 @@ class AccountDetailView(APIView):
 
 
 class AccountActivityView(APIView):
-    """Paginated posted activity for an account or non-postable account group."""
+    """Paginated posted activity for an account or non-postable account group.
+
+    Narrowed like :class:`AccountDetailView`: a branch-bound reader sees the lines
+    of their branches' journals and the school-wide ones, and the totals add up
+    only those lines.
+    """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.account.view"
@@ -526,13 +566,13 @@ class AccountActivityView(APIView):
             raise NotFound("No such account in this entity.")
 
         account_ids = {account.id} if account.is_postable else account_subtree_ids(account)
-        lines = (
+        lines = _reader_scope(request).filter(
             JournalLine.objects.filter(
                 account_id__in=account_ids,
                 entry__status__in=[DocumentStatus.POSTED, DocumentStatus.REVERSED],
-            )
-            .select_related("account", "entry", "cost_center")
-        )
+            ),
+            "entry__",
+        ).select_related("account", "entry", "cost_center")
 
         date_from = _resolve_date_param(request, "date_from")
         date_to = _resolve_date_param(request, "date_to")

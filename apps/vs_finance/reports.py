@@ -621,12 +621,27 @@ def _account_gl_net(account) -> int:
     return _accounts_gl_net([account.id], account.normal_balance)
 
 
-def _accounts_gl_net(account_ids, normal_balance) -> int:
-    """Net GL movement for an account set, signed to one roll-up balance."""
+def _accounts_gl_net(account_ids, normal_balance, *, entity=None, scope=None) -> int:
+    """Net GL movement for an account set, signed to one roll-up balance.
+
+    A narrowed ``scope`` (with the ``entity`` it reads) sums only the journals in
+    the reader's reach, through :func:`vs_finance.branch_ledger.ledger_balances`,
+    the same source a branch reader's statements use. Otherwise the per-period
+    ``AccountBalance`` aggregates are read for the whole entity, as before.
+    """
     from django.db.models import F, Sum
     from django.db.models.functions import Coalesce
     from .constants import NormalBalance
     from .models import AccountBalance
+
+    if scope is not None and scope.is_narrowed:
+        from .branch_ledger import ledger_balances
+
+        rows = list(ledger_balances(entity, scope).filter(account_id__in=account_ids))
+        debit = sum(r.opening_debit + r.debit_total for r in rows)
+        credit = sum(r.opening_credit + r.credit_total for r in rows)
+        net = debit - credit
+        return net if normal_balance == NormalBalance.DEBIT else -net
 
     totals = AccountBalance.objects.filter(account_id__in=account_ids).aggregate(
         debit=Coalesce(Sum(F("opening_debit") + F("debit_total")), 0),

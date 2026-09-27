@@ -166,3 +166,88 @@ class BranchReportEndpointTests(_LedgerFixture):
         client = self.client_holding("rec-ikeja@corona.test", "finance.report.view", branch=self.ikeja)
         data = self.get(client, "ar-reconciliation").data["data"]
         self.assertTrue(data["is_reconciled"], data)
+
+
+class ChartOfAccountsNarrowsTests(_LedgerFixture):
+    """The chart's balances and an account's lines follow the reader's statements.
+
+    The Ikeja bursar's income statement shows Ikeja's revenue and the school-wide
+    invoice. Her chart of accounts, the account drawer and the account's activity
+    must show the same figures, not the whole school's ledger one click away.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.revenue = Account.objects.get(entity=self.books, code="4100")
+        self.cash = Account.objects.get(entity=self.books, code="1100")
+        self.ikeja_reader = self.client_holding(
+            "coa-ikeja@corona.test", branch=self.ikeja)
+        self.hq_reader = self.client_holding("coa-hq@corona.test")
+
+    def client_holding(self, email, *, branch=None):
+        user = self.grant(
+            self.user_for(self.tenant, email), "finance.account.view",
+            tenant=self.tenant, role_key=f"role-{email}", branch=branch,
+        )
+        return TenantAPIClient(user=user)
+
+    def chart(self, client):
+        response = client.get(
+            f"/v1/finance/accounts/?entity={self.books.code}&with_balance=true")
+        self.assertEqual(response.status_code, 200, response.data)
+        return {row["code"]: row["balance"]["kobo"] for row in response.data["data"]}
+
+    def detail(self, client, account):
+        response = client.get(f"/v1/finance/accounts/{account.pk}/?entity={self.books.code}")
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["data"]
+
+    def activity(self, client, account):
+        response = client.get(
+            f"/v1/finance/accounts/{account.pk}/activity/?entity={self.books.code}")
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data
+
+    def test_a_branch_readers_chart_shows_her_branchs_balances(self):
+        balances = self.chart(self.ikeja_reader)
+
+        self.assertEqual(balances["4100"], 2 * INVOICE)
+        self.assertEqual(balances["1100"], 60_000)
+
+    def test_a_branch_readers_chart_agrees_with_her_trial_balance(self):
+        tb = {r.code: r for r in trial_balance(self.books, scope=self.ikeja_scope).rows}
+        balances = self.chart(self.ikeja_reader)
+
+        self.assertEqual(balances["4100"], tb["4100"].credit - tb["4100"].debit)
+        self.assertEqual(balances["1100"], tb["1100"].debit - tb["1100"].credit)
+
+    def test_a_school_wide_readers_chart_is_unchanged(self):
+        balances = self.chart(self.hq_reader)
+
+        self.assertEqual(balances["4100"], 5 * INVOICE)
+        self.assertEqual(balances["1100"], 90_000)
+
+    def test_the_account_drawer_shows_her_branchs_balance_and_lines(self):
+        data = self.detail(self.ikeja_reader, self.revenue)
+
+        self.assertEqual(data["summary"]["current_balance"]["kobo"], 2 * INVOICE)
+        self.assertEqual(len(data["activity"]), 2)
+        self.assertEqual(data["summary"]["line_count"], 2)
+
+    def test_the_account_drawer_is_unchanged_for_a_school_wide_reader(self):
+        data = self.detail(self.hq_reader, self.revenue)
+
+        self.assertEqual(data["summary"]["current_balance"]["kobo"], 5 * INVOICE)
+        self.assertEqual(len(data["activity"]), 5)
+
+    def test_the_account_activity_lists_only_her_reach(self):
+        data = self.activity(self.ikeja_reader, self.cash)
+
+        self.assertEqual(data["pagination"]["totalItems"], 1)
+        self.assertEqual(data["totals"]["net_movement"]["kobo"], 60_000)
+
+    def test_the_account_activity_is_unchanged_for_a_school_wide_reader(self):
+        data = self.activity(self.hq_reader, self.cash)
+
+        self.assertEqual(data["pagination"]["totalItems"], 2)
+        self.assertEqual(data["totals"]["net_movement"]["kobo"], 90_000)
