@@ -205,23 +205,25 @@ class ExamPublishTests(_ExamBase):
             Exam.all_objects.get(pk=self.exam.pk).status, PublishState.PUBLISHED,
         )
 
-    def test_a_room_clash_blocks_publication(self):
+    def test_a_shared_hall_publishes(self):
+        """Two classes really do sit in the Main Hall together, and publish."""
         self.paper()
         self.paper(school_class=self.jss1b.pk, room=self.room_a1.pk)
         response = self.post(
             self.admin, "calendar-exam-publish", exam_id=self.exam.pk,
         )
-        self.assertEqual(response.status_code, 409, response.data)
-        self.assertEqual(response.data["error"]["code"], "TIMETABLE_HAS_CLASHES")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            Exam.all_objects.get(pk=self.exam.pk).status, PublishState.PUBLISHED,
+        )
 
-    def test_an_invigilator_clash_also_blocks_publication(self):
-        """It warns on write and blocks here - the two are different moments."""
+    def test_an_invigilator_between_two_rooms_publishes(self):
         self.paper()
         self.paper(school_class=self.jss1b.pk, room=self.room_a2.pk)
         response = self.post(
             self.admin, "calendar-exam-publish", exam_id=self.exam.pk,
         )
-        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.status_code, 200, response.data)
 
     def test_publishing_needs_its_own_key(self):
         from vs_rbac.models import TenantRolePermission

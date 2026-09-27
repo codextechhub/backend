@@ -1,6 +1,7 @@
 """Moving a timetable from draft to published, and the one refusal that matters.
 
-**This is the module's only hard refusal on a clash**, and putting it here
+**This is the module's only hard refusal on a clash**, for a class timetable,
+and putting it here
 rather than on every write is a product decision worth stating so that it is not
 undone. A school builds a grid over several sittings and must be able to save a
 state it knows is wrong; publication is the one moment it asserts the grid is
@@ -24,6 +25,10 @@ first fixes the right thing. Incompleteness is only reachable by duplicating
 another class's week without its teachers or rooms - nothing else can write a
 slot with a gap in it - which is why it is checked at the gate rather than at
 the write.
+
+**An exam timetable is not gated.** Its only impossible clash, a class sitting
+two papers at once, is refused at the write; the rest are things a school does
+on purpose. See publish_exam.
 """
 from __future__ import annotations
 
@@ -34,7 +39,7 @@ from vs_rbac.scoping import WHOLE_TENANT
 
 from ..exceptions import TimetableHasClashes, TimetableIncomplete
 from ..models import DayOfWeek, ExamSlot, PublishState, TimetableSlot
-from .clashes import exam_clashes, grid_clashes
+from .clashes import grid_clashes
 from .scoping import can_see_branch
 from .timetable import timetable_for
 
@@ -110,24 +115,17 @@ def publish_class_timetable(tenant, session, school_class, *, actor, visible):
 
 @transaction.atomic
 def publish_exam(tenant, exam, *, actor, visible):
-    """Publish an exam timetable, or refuse and say why.
+    """Publish an exam timetable.
 
-    Note which clashes block: a room used twice and an invigilator in two rooms
-    both warn on write and both block here. A class sitting two papers at once
-    never reaches this, because the unique constraint refused it at the write.
+    Nothing that reaches here blocks it. A class sitting two papers at once is
+    refused at the write by the unique constraint, because it is physically
+    impossible. The other two clashes, a room holding several classes' papers
+    and one invigilator between two rooms, are what a school legitimately does
+    (the Main Hall seats JSS1 to JSS3 together), and the editor already warned
+    about each one as it was written. Refusing them here refused the same thing
+    on the same guess, with no way to say "we mean it", so a school with one
+    hall could never publish. See exam_slot_warnings.
     """
-    every = exam_clashes(tenant, exam, visible=WHOLE_TENANT)
-    if every:
-        shown = exam_clashes(tenant, exam, visible=visible)
-        count = len(every)
-        raise TimetableHasClashes(
-            f"{count} {'clash is' if count == 1 else 'clashes are'} "
-            f"unresolved. Fix {'it' if count == 1 else 'them'} and publish "
-            f"again.",
-            items=[w.detail for w in shown],
-            slot_ids=sorted({pk for w in shown for pk in w.slot_ids}),
-        )
-
     exam.status = PublishState.PUBLISHED
     exam.published_at = timezone.now()
     exam.save(update_fields=["status", "published_at", "updated_at"])
