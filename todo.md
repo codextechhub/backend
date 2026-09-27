@@ -887,6 +887,62 @@ MUST SAY: stock has no transfers and no stock-take record, so the tab shows
 adjustments in the window instead of a stock-take variance.
 VERIFIED (committed tree): vs_procurement 630 OK.
 
+### D32. A school sets its own security and payroll scope; currency locks at go-live (bf517f8b, 2026-09-27)
+MODULES: M01 school records, the identity/security module, M19 finance (payroll), MRD.
+- `GET/PATCH /v1/i/me/settings/security/` (`school.settings.view` / `.update`,
+  live schools only, optional `?branch=`): the six security values a school or
+  branch may TIGHTEN, never loosen, below the platform. Same body as the
+  console's `/config/security-settings/`, which stays platform-only.
+- `GET/PATCH /v1/i/me/settings/payroll-scope/` (same keys): CENTRAL or
+  PER_BRANCH; the finance guard's refusal names up to ten unassigned staff in
+  the sentence (400 INVALID_CONFIGURATION_VALUE).
+- `me/profile/` refuses `currency` and `term_structure` once
+  `School.has_ever_been_live()`, and drops both from `editable_fields`; the
+  platform's `<slug>/update/` can still change them.
+MUST SAY: `school.settings.*` is now checked by these two endpoints (it was
+registered and unused); no `config.*` key is school-holdable.
+
+### D33. Notification settings and template changes are audited (570410e1, 2026-09-27)
+MODULES: M08 notifications, M05 audit.
+Every settings change (one record per real change) and every template create
+and edit writes a CONFIG_CHANGED audit record. MUST SAY: remove "settings
+changes are not audited" wherever it is stated.
+
+### D34. A branch sets its own notification emails (98e98798, 2026-09-27)
+MODULES: M08 notifications, MRD.
+- `NotificationSetting.branch` (migration 0019) and
+  `NotificationEventType.branch_scoped`. Resolution is branch, then school,
+  then platform, then default. `dispatch.send(..., branch=)`; invoices,
+  receipts, statements, notes, dunning and the four workflow emails pass the
+  document's branch.
+- `GET/PATCH /v1/notify/settings/` take `?branch=`; rows gain `branch_scoped`
+  and `can_edit`, and `source` may be "branch". `is_enabled: null` at a branch
+  removes its own value. A branch-reach-limited caller editing the whole school
+  gets 403 BRANCH_SCOPE_REQUIRED; a non-branch event at a branch is refused per
+  item with BRANCH_NOT_CONFIGURABLE; a null without a branch, RESET_NEEDS_BRANCH.
+- Kept from the reverted 02e3bb29 (reverted by 63b5cf07, notification settings
+  stay the school's): `vs_rbac.scope_withdrawal.withdraw_from_tenants` also
+  removes ADD lines on PENDING role changes when a key becomes platform-only.
+MUST SAY: notification SETTINGS are the school's; notification TEMPLATES are
+the platform's (unchanged since rbac 0008). A branch administrator edits only
+their own branches' settings.
+
+### D35. Students: the admission-number rule at confirmation, and the age bound on the server (79d01ebc, 0a11452a, 2026-09-27)
+MODULES: M11 student records.
+- Confirming an applicant with no number now raises ADMISSION_NUMBER_REQUIRED
+  when the school's rule requires one, unless the applicant already has one.
+- The 2-to-25 age bound (and "not in the future") is enforced by the enrol and
+  edit endpoints as well as the import, from `vs_students/ages.py`.
+MUST SAY: both rules are server-side, not only on the form.
+
+### D36. An exam timetable with a shared hall can be published (9526abd2, 2026-09-27)
+MODULES: the calendar/timetables module (exams); check which M covers exams.
+`publish_exam` no longer refuses over a room holding several classes' papers
+or one invigilator between two rooms; both stay warnings on write. A class
+sitting two papers at once is still refused at the write. Class timetables are
+unchanged: their clashes still block publishing.
+MUST SAY: the exam publish rule, and that the two warnings are not a gate.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
