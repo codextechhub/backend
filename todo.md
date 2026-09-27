@@ -953,7 +953,7 @@ rows of the same file (`duplicate_in_file`, column Staff ID).
 MUST SAY: staff IDs compare without case, as admission numbers and staff
 sign-in by ID already do.
 
-### D38. A promotion that overfills a class waits to be told (94b4eebe, 2026-09-27)
+### D45. A promotion that overfills a class waits to be told (94b4eebe, 2026-09-27)
 MODULES: M11 student records (promotion).
 The preview returns `over_capacity` (per target class: capacity, seats taken,
 pupils arriving, over by). The run refuses those classes with 422
