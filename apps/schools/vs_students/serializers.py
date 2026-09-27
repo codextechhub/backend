@@ -792,6 +792,8 @@ class PromotionRunSerializer(serializers.Serializer):
     overrides = serializers.DictField(
         child=serializers.CharField(), required=False,
     )
+    #: Go ahead although the preview listed classes over capacity.
+    allow_over_capacity = serializers.BooleanField(default=False)
 
 
 class AdmissionPolicySerializer(serializers.Serializer):

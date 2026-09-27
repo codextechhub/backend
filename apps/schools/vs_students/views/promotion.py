@@ -35,6 +35,9 @@ def _plan_payload(plan):
             "excluded": len(plan.student_exceptions),
         },
         "level_map": plan.level_map,
+        # Target classes the run would fill past capacity; the run refuses them
+        # until allow_over_capacity is sent.
+        "over_capacity": plan.over_capacity,
         # Class-wide causes collapse to one entry however many students they
         # cover; per-student causes get one each. A list that repeated a
         # class-wide cause per student would bury the rows that need a decision
@@ -129,6 +132,7 @@ class PromotionRunView(_PromotionBase):
             self.tenant, request.user,
             from_session=from_session, to_session=to_session,
             overrides=data.get("overrides"), branch=self.branch_filter,
+            allow_over_capacity=data.get("allow_over_capacity", False),
         )
         return success_response(
             f"{batch.promoted} promoted, {batch.graduated} graduated, "

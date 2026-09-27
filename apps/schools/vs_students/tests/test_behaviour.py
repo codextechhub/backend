@@ -887,6 +887,48 @@ class PromotionTests(StudentsFixture):
         self.assertEqual(row["to_class"], "JSS2 A")
         self.assertEqual(row["outcome"], PromotionOutcome.PROMOTE)
 
+    def _crowd_next_jss2(self, capacity):
+        """Next year's JSS2 A holds one seat less than this run needs."""
+        self.next_jss2_a.capacity = capacity
+        self.next_jss2_a.save(update_fields=["capacity"])
+        second = self.student(first="Tunde", last="Bello")
+        self.place(second, self.shared_class)
+
+    def test_the_preview_names_a_class_the_run_would_overfill(self):
+        self._crowd_next_jss2(capacity=1)
+        rows = self._preview().data["data"]["over_capacity"]
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]["class_name"], "JSS2 A")
+        self.assertEqual(
+            (rows[0]["capacity"], rows[0]["used"], rows[0]["adding"], rows[0]["over_by"]),
+            (1, 0, 2, 1),
+        )
+
+    def test_a_run_that_overfills_a_class_waits_for_an_acknowledgement(self):
+        """The rule enrolling one child into a full class already keeps."""
+        self._crowd_next_jss2(capacity=1)
+        refused = self.post(self.admin, "student-promotion-run", {
+            "to_session": self.next_year.pk,
+        })
+        self.assertEqual(refused.status_code, 422, refused.data)
+        self.assertEqual(refused.data["error"]["code"], "PROMOTION_OVER_CAPACITY")
+        self.assertEqual(
+            ClassEnrolment.all_objects.filter(session=self.next_year).count(), 0,
+        )
+
+        allowed = self.post(self.admin, "student-promotion-run", {
+            "to_session": self.next_year.pk, "allow_over_capacity": True,
+        })
+        self.assertEqual(allowed.status_code, 201, allowed.data)
+        self.assertEqual(allowed.data["data"]["promoted"], 2)
+
+    def test_a_class_with_room_or_no_capacity_is_not_listed(self):
+        self._crowd_next_jss2(capacity=2)
+        self.assertEqual(self._preview().data["data"]["over_capacity"], [])
+        self.next_jss2_a.capacity = None
+        self.next_jss2_a.save(update_fields=["capacity"])
+        self.assertEqual(self._preview().data["data"]["over_capacity"], [])
+
     def test_the_level_map_names_next_years_class_not_this_years(self):
         response = self._preview()
         entry = response.data["data"]["level_map"][0]

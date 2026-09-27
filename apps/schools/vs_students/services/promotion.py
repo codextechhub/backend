@@ -93,6 +93,8 @@ class Plan:
     #: Per-student causes, one entry each.
     student_exceptions: list = field(default_factory=list)
     level_map: list = field(default_factory=list)
+    #: Target classes the run would fill past their capacity, one entry each.
+    over_capacity: list = field(default_factory=list)
 
     def counts(self):
         out = {v: 0 for v in PromotionOutcome.values}
@@ -336,7 +338,62 @@ def classify(tenant, user, *, from_session, to_session, overrides=None,
             "students": per_class_counts.get(source.pk, 0),
         })
     plan.level_map.sort(key=lambda r: r["from"])
+    plan.over_capacity = _over_capacity(plan.candidates, to_session)
     return plan
+
+
+def _over_capacity(candidates, to_session):
+    """The target classes this run would fill past their capacity.
+
+    The same arithmetic as placing one child (placement.capacity_state): seats
+    already taken in the target year plus the pupils this run adds, against a
+    capacity where one is set. A pupil already placed in the target year is
+    skipped by the run, so they are counted once, as a seat taken, and never
+    again as an arrival. Two queries whatever the size of the cohort.
+    """
+    from django.db.models import Count
+
+    placed = set(
+        ClassEnrolment.objects.filter(
+            session=to_session, is_active=True,
+            student_id__in=[c.student.pk for c in candidates],
+        ).values_list("student_id", flat=True),
+    )
+    arriving: dict = {}
+    classes: dict = {}
+    for cand in candidates:
+        if cand.student.pk in placed:
+            continue
+        target = (
+            cand.repeat_class if cand.outcome == PromotionOutcome.REPEAT
+            else cand.target_class if cand.outcome == PromotionOutcome.PROMOTE
+            else None
+        )
+        if target is None or target.capacity is None:
+            continue
+        arriving[target.pk] = arriving.get(target.pk, 0) + 1
+        classes[target.pk] = target
+    if not arriving:
+        return []
+    taken = dict(
+        ClassEnrolment.objects.filter(
+            school_class_id__in=list(arriving), session=to_session, is_active=True,
+        ).values("school_class_id").annotate(n=Count("id")).values_list(
+            "school_class_id", "n",
+        ),
+    )
+    out = []
+    for pk, adding in arriving.items():
+        school_class = classes[pk]
+        used = taken.get(pk, 0)
+        if used + adding > school_class.capacity:
+            out.append({
+                "class": pk, "class_name": school_class.name,
+                "capacity": school_class.capacity, "used": used,
+                "adding": adding, "over_by": used + adding - school_class.capacity,
+            })
+    out.sort(key=lambda r: r["class_name"])
+    return out
 
 
 @transaction.atomic
@@ -395,11 +452,16 @@ def _apply_one(cand, *, to_session, actor):
     return cand.outcome
 
 
-def run(tenant, user, *, from_session, to_session, overrides=None, branch=None):
+def run(tenant, user, *, from_session, to_session, overrides=None, branch=None,
+        allow_over_capacity=False):
     """Run the promotion and record what happened.
 
     Each student is its own transaction, so one failure does not undo the
     students already moved - which is what makes the batch restartable.
+
+    A run that would fill classes past their capacity is refused until the
+    caller acknowledges it (``allow_over_capacity``), exactly as enrolling one
+    child into a full class is. The preview lists those classes first.
     """
     # The branch travels INTO the classification, not just onto the batch row.
     # Stamped on the record alone, a run labelled "Main Branch" promotes every
@@ -408,6 +470,18 @@ def run(tenant, user, *, from_session, to_session, overrides=None, branch=None):
         tenant, user, from_session=from_session, to_session=to_session,
         overrides=overrides, branch=branch,
     )
+    if plan.over_capacity and not allow_over_capacity:
+        from ..exceptions import PromotionOverCapacity
+
+        names = ", ".join(
+            f"{row['class_name']} ({row['used'] + row['adding']} of {row['capacity']})"
+            for row in plan.over_capacity
+        )
+        raise PromotionOverCapacity(
+            f"This promotion would put {names} over capacity. You can go ahead "
+            f"anyway.",
+            classes=plan.over_capacity,
+        )
     batch = StudentPromotionBatch.objects.create(
         tenant=tenant, branch=branch, from_session=from_session,
         to_session=to_session, initiated_by=user,

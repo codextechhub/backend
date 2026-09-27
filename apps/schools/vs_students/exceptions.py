@@ -101,6 +101,22 @@ class ClassAtCapacity(StudentsError):
     http_status = 422
 
 
+class PromotionOverCapacity(StudentsError):
+    """A promotion that would fill classes past their capacity, unacknowledged.
+
+    The same rule as enrolling one child into a full class: refused until the
+    caller says they mean it. ``classes`` lists each class, its capacity, the
+    seats already taken and how many the run would add.
+    """
+
+    error_code = "PROMOTION_OVER_CAPACITY"
+    default_message = (
+        "This promotion would put classes over capacity. You can go ahead "
+        "anyway."
+    )
+    http_status = 422
+
+
 class GuardianRequired(StudentsError):
     error_code = "GUARDIAN_REQUIRED"
     default_message = "Every student needs at least one guardian."
