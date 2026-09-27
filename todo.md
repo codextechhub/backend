@@ -1006,6 +1006,15 @@ message says main teacher and Move to assisting. The school app confirms before
 removing a teacher from a subject and offers Make main only when there is none
 (584e15a). Document only if M12 quotes the message or the removal flow.
 
+### D44. A school's missed guide search keeps its task words (b4a3d00a, 2026-09-27)
+MODULES: M31 support tickets (guide analytics).
+SAFE_SEARCH_TERMS gains the school app's task nouns and verbs (student, enrol,
+class, subject, teacher, guardian, term, timetable, exam, promote and the like,
+with plurals), so a school's no-result search is stored as its words rather
+than '[redacted]'. Names still redact.
+MUST SAY: that school searches are kept, and remove the limit that said they
+were lost.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
