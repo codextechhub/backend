@@ -66,12 +66,17 @@ class StaffIdSignInTests(StaffFixture):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.data["error"]["code"], "INVALID_CREDENTIALS")
 
-    def test_two_numbers_differing_only_in_case_sign_nobody_in(self):
-        self.make_staff(
-            "okon@brightfield.test", "Emem", "Okon", staff_number="bfs/stf/0012",
-        )
-        response = self.sign_in("BFS/STF/0012")
-        self.assertEqual(response.status_code, 401)
+    def test_two_numbers_differing_only_in_case_cannot_exist(self):
+        """Sign-in compares without case, and so does the constraint.
+
+        So a school can never hold two IDs that would sign in as each other.
+        """
+        from django.db import IntegrityError, transaction
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self.make_staff(
+                "okon@brightfield.test", "Emem", "Okon", staff_number="bfs/stf/0012",
+            )
 
     def test_the_attempt_log_records_the_number_as_typed(self):
         self.sign_in("BFS/STF/0012", password="not-it")

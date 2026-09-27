@@ -23,6 +23,7 @@ import datetime as dt
 from dataclasses import dataclass, field as dc_field
 
 from .constants import EmploymentType
+from .services.numbers import staff_number_taken
 
 #: The template's columns, in the order a school reads them.
 #:
@@ -147,8 +148,6 @@ def resolve_row(payload: dict, *, tenant, batch_branch=None, multi_branch=False)
     from vs_tenants.models import Branch
     from vs_user.email_normalization import normalize_email
 
-    from .models import StaffProfile
-
     row = ResolvedRow(
         first_name=_text(payload, "first_name"),
         middle_name=_text(payload, "middle_name"),
@@ -185,9 +184,7 @@ def resolve_row(payload: dict, *, tenant, batch_branch=None, multi_branch=False)
                 ),
             ))
 
-    if row.staff_number and StaffProfile.objects.filter(
-        tenant=tenant, staff_number=row.staff_number,
-    ).exists():
+    if staff_number_taken(tenant, row.staff_number):
         row.issues.append(RowIssue(
             code="duplicate_staff_number", field="staff_number",
             value=row.staff_number,
@@ -383,6 +380,7 @@ def validate_rows(import_batch) -> list[dict]:
     # spreadsheet is looking for "First Name", not `first_name`.
     header = {c.target_field: c.column_name for c in columns}
     seen: dict[str, int] = {}
+    seen_numbers: dict[str, int] = {}
     issues = []
 
     for number, raw_row in enumerate(import_batch.preview_rows or [], start=1):
@@ -414,4 +412,20 @@ def validate_rows(import_batch) -> list[dict]:
                 })
             else:
                 seen[row.email] = number
+        if row.staff_number:
+            key = row.staff_number.strip().lower()
+            if key in seen_numbers:
+                issues.append({
+                    "row_number": number,
+                    "column_name": header.get("staff_number", "staff_number"),
+                    "value": row.staff_number,
+                    "code": "duplicate_in_file",
+                    "message": (
+                        f"Staff ID {row.staff_number} is also on row "
+                        f"{seen_numbers[key]}. One ID is one person."
+                    ),
+                    "severity": "error",
+                })
+            else:
+                seen_numbers[key] = number
     return issues

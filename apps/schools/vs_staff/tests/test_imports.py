@@ -133,6 +133,25 @@ class ValidationReadsTheFileTests(_ImportFixture):
         )
         self.assertEqual(issues, [], issues)
 
+    def test_a_staff_id_already_held_in_other_case_is_refused(self):
+        issues = validate_rows(self.batch(self.row(**{"Staff ID": "bfs/stf/0012"})))
+        self.assertIn("duplicate_staff_number", [i["code"] for i in issues], issues)
+
+    def test_one_staff_id_twice_in_a_file_is_refused_on_the_second_row(self):
+        issues = validate_rows(
+            self.batch(
+                self.row(),
+                self.row(**{
+                    "First Name": "Sunday", "Last Name": "Ekpo",
+                    "Email": "sunday.ekpo@brightfield.test",
+                    "Staff ID": "bfs/imp/001",
+                }),
+            ),
+        )
+        dupes = [i for i in issues if i["code"] == "duplicate_in_file"]
+        self.assertEqual([i["row_number"] for i in dupes], [2], issues)
+        self.assertEqual(dupes[0]["column_name"], "Staff ID")
+
     def test_an_issue_names_the_column_the_way_the_file_does(self):
         """A reader is looking at a spreadsheet, not at a field name.
 
@@ -166,10 +185,13 @@ class RowRefusalTests(_ImportFixture):
         """Two rows that each pass alone would create one account, then fail."""
         issues = validate_rows(self.batch(self.row(), self.row()))
         duplicates = [i for i in issues if i["code"] == "duplicate_in_file"]
-        self.assertEqual(len(duplicates), 1)
-        self.assertEqual(duplicates[0]["row_number"], 2)
-        self.assertIn("row 1", duplicates[0]["message"])
-        self.assertEqual(duplicates[0]["column_name"], "Email")
+        # The same row twice repeats both the address and the staff ID.
+        self.assertEqual(
+            sorted(i["column_name"] for i in duplicates), ["Email", "Staff ID"],
+        )
+        email = next(i for i in duplicates if i["column_name"] == "Email")
+        self.assertEqual(email["row_number"], 2)
+        self.assertIn("row 1", email["message"])
 
     def test_a_batch_with_no_template_is_not_an_exception(self):
         """Nothing to translate through, so nothing to say about the rows."""

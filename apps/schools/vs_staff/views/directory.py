@@ -455,7 +455,15 @@ class StaffDetailView(StaffViewMixin, APIView):
             posting.set_posting(staff, branch, actor=request.user)
 
         if "staff_number" in data:
+            from ..services.numbers import staff_number_taken
+
             data["staff_number"] = (data["staff_number"] or "").strip()
+            if staff_number_taken(self.tenant, data["staff_number"], exclude_pk=staff.pk):
+                from rest_framework.exceptions import ValidationError
+
+                raise ValidationError(
+                    {"staff_number": "Somebody at this school already has that staff ID."},
+                )
 
         for field, value in data.items():
             setattr(staff, field, value)

@@ -811,8 +811,9 @@ class StaffCreateSerializer(FieldAccessMixin, serializers.Serializer):
         value = (value or "").strip()
         if not value:
             return value
-        tenant = self.context["tenant"]
-        if StaffProfile.objects.filter(tenant=tenant, staff_number=value).exists():
+        from .services.numbers import staff_number_taken
+
+        if staff_number_taken(self.context["tenant"], value):
             raise serializers.ValidationError(
                 "Somebody at this school already has that staff ID.",
             )

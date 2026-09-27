@@ -34,6 +34,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import Q
+from django.db.models.functions import Lower
 from django.utils import timezone
 
 from vs_history.queryset import VersionedManager
@@ -172,10 +173,12 @@ class StaffProfile(_Owned):
         constraints = [
             # Partial, so a school that numbers nobody is not forced to invent
             # one number per person to satisfy the index.
+            # Case-insensitive, as admission numbers are: see
+            # services/numbers.py.
             models.UniqueConstraint(
-                fields=["tenant", "staff_number"],
+                Lower("staff_number"), "tenant",
                 condition=~Q(staff_number=""),
-                name="uq_staff_number_per_tenant",
+                name="uq_staff_number_per_tenant_ci",
             ),
         ]
         indexes = [

@@ -51,6 +51,27 @@ class CreationTests(StaffFixture):
         self.assertEqual(response.status_code, 400, response.data)
         self.assertIn("staff_number", str(response.data))
 
+    def test_a_staff_number_differing_only_in_case_is_the_same_number(self):
+        response = self.post(
+            self.admin, "staff-list",
+            self.invite_body(staff_number="bfs/stf/0012"),
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("staff_number", str(response.data))
+
+    def test_editing_to_another_person_s_number_in_other_case_is_refused(self):
+        other = self.make_staff(
+            "okon@brightfield.test", "Emem", "Okon", staff_number="BFS/STF/0077",
+        )
+        response = self.patch(
+            self.admin, "staff-detail", {"staff_number": "bfs/stf/0012"},
+            pk=other.pk,
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("staff_number", str(response.data))
+        other.refresh_from_db()
+        self.assertEqual(other.staff_number, "BFS/STF/0077")
+
     def test_creating_writes_an_audit_event(self):
         """Asserted to EXIST, never by the absence of an exception.
 
