@@ -11,8 +11,8 @@ Baseline: the `vs_notifications` suite is **85 tests, all green**
 suite does not currently catch. Nothing here is speculative - every claim is
 traced to a file and line.
 
-**Status: §1 and §2 are FIXED (`373a918`, 26 August 2026) and §9 is FIXED
-(27 September 2026); everything else is recorded, not yet fixed.** Each fixed item keeps its original account so the
+**Status: §1 and §2 are FIXED (`373a918`, 26 August 2026), and §9 and §12 are
+FIXED (27 September 2026); everything else is recorded, not yet fixed.** Each fixed item keeps its original account so the
 defect stays readable, with the resolution stated at the top of the section.
 
 ---
@@ -32,6 +32,7 @@ defect stays readable, with the resolution stated at the top of the section.
 | 9 | ~~No audit event for template edits or settings changes~~ | **Fixed** |
 | 10 | An engine app imports `vs_schools` | **Medium** |
 | 11 | Smaller defects and dead code | **Low** |
+| 12 | ~~A branch admin edits the whole school's notification settings~~ | **Fixed** |
 
 ---
 
@@ -463,13 +464,9 @@ school-ism in the engine is gone.
   A driver wording change turns a `409` into a `500`. Catch `IntegrityError`, or
   validate the `(event_type, channel)` pair in the serializer.
 
-- **`_resolve_scope` returns a tuple whose second element is always `None`.**
-  ```python
-  # views.py:449-462
-  return None, None   /   return tenant, None
-  ```
-  Both call sites branch on it (`views.py:530-532`, `543-545`). Dead scaffolding
-  from an earlier permission model.
+- ~~**`_resolve_scope` returns a tuple whose second element is always `None`.**~~
+  Fixed with §12: it returns `(tenant, branch, whole_reach)`, and every element
+  is read.
 
 - **`_apply_filters` takes an `is_vision_staff` argument it never reads**
   (`views.py:333`), computed at `views.py:381` from a `User` property
@@ -532,6 +529,35 @@ school-ism in the engine is gone.
   seeded nowhere. That is deliberate and documented
   (`seed_notification_permissions.py:1-14`), but it means the class reads as a
   permission catalogue when only three entries are real.
+
+---
+
+## 12. A branch admin edits the whole school's notification settings
+
+**FIXED (27 September 2026).** `NotificationSetting` has a `branch` column, and
+the settings endpoints take `?branch=<id>`. A caller whose branch reach is
+limited (`vs_rbac.scoping.visible_branch_ids` answers a set, not the whole
+tenant) may write only their own branches' rows: a PATCH without `?branch=` is
+a `403` `BRANCH_SCOPE_REQUIRED`, and their whole-school GET reports
+`can_edit: false` on every row. A branch outside their reach, or in another
+school, is a `404`. A branch may set only events whose every sender passes the
+branch the event is about (`NotificationEventType.branch_scoped`); anything else
+is refused with `BRANCH_NOT_CONFIGURABLE`. Dispatch resolves branch → tenant →
+platform → default, and only for recipients owned by the branch's own tenant.
+Covered by `tests_branch_settings.py`. The original account follows.
+
+**High** (original account below).
+
+`communication.communication_permissions.enforce` is a tenant-scoped key seeded
+to both `school_admin` and `branch_admin` (`seed_notification_permissions.py`).
+`NotificationSetting` had no branch column, so there was nothing narrower than
+the tenant for a branch admin to write. The Ikeja branch admin at Bright Star,
+wanting to stop fee emails to Ikeja's parents during a billing correction,
+switched off `billing.invoice_issued` email - and Lekki's parents stopped
+receiving invoices too, with nothing on Lekki's screens to say why.
+
+**Fix:** add the branch layer and narrow the write to the caller's reach, which
+is what the fix above does.
 
 ---
 

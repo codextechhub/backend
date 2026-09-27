@@ -48,9 +48,9 @@ read APIs are in `notification_feed_history`; the admin APIs are in
 
 | Model | File | Purpose |
 |---|---|---|
-| `NotificationEventType` | `models.py:32` | The registry row: `key`, `label`, `source_module`, `supported_channels` (JSON list), `default_enabled`, `is_transactional`, `is_active` |
+| `NotificationEventType` | `models.py:32` | The registry row: `key`, `label`, `source_module`, `supported_channels` (JSON list), `default_enabled`, `is_transactional`, `branch_scoped`, `is_active` |
 | `NotificationTemplate` | `models.py:127` | One per `(event_type, channel)`: `subject`, `body`, `cta_label`, `cta_url`, `html_body`, `html_is_custom`, `is_active` |
-| `NotificationSetting` | `models.py:311` | The on/off toggle: `tenant?` (null = platform default), `event_type`, `channel`, `is_enabled` |
+| `NotificationSetting` | `models.py` | The on/off toggle: `tenant?` (null = platform default), `branch?` (null = the tenant's row for all branches), `event_type`, `channel`, `is_enabled` |
 | `Notification` | `models.py:414` | The dispatch record: `tenant` (the OWNER - the recipient's own tenant), `origin_tenant?` (what the message is ABOUT), `recipient?`, `unregistered_email`, `event_type`, `channel`, rendered `subject`/`body`/`html_body`, `metadata`, `status`, `failure_reason`, `retry_count`, `is_read`, `read_at`, `dispatched_at` |
 
 **Three kill switches, in precedence order** (`services/settings.py:83-106`):
@@ -58,7 +58,12 @@ read APIs are in `notification_feed_history`; the admin APIs are in
 1. `event_type.is_active = False` - every channel off, transactional included.
 2. `event_type.is_transactional = True` - every supported channel on, settings
    rows ignored entirely.
-3. Otherwise the layered lookup: tenant row → platform row → `default_enabled`.
+3. Otherwise the layered lookup: branch row → tenant row → platform row →
+   `default_enabled`. The branch row counts only when `send(..., branch=)`
+   names a branch, the event is `branch_scoped`, and the branch belongs to the
+   recipient-owner tenant being resolved; a school's branch never decides what
+   platform staff receive. See `notification_templates_settings.md` §9 for
+   which events are branch-scoped and why.
 
 **Manager choice is load-bearing and inconsistent across the module.**
 `Notification.objects` is `TenantAwareManager()` with `all_objects` as the

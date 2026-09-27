@@ -20,7 +20,8 @@ def seed_event_types() -> dict:
     Uses update_or_create on the `key` field, so:
       - New keys are inserted.
       - Existing keys have their metadata updated (label, description,
-        supported_channels, default_enabled, is_active).
+        supported_channels, default_enabled, is_transactional, branch_scoped,
+        is_active).
       - Records for keys no longer in the registry are NOT deleted -
         set is_active=False manually if retiring an event type.
 
@@ -43,6 +44,7 @@ def seed_event_types() -> dict:
                 "supported_channels": entry["supported_channels"],
                 "default_enabled":    entry.get("default_enabled", True),
                 "is_transactional":   entry.get("is_transactional", False),
+                "branch_scoped":      entry.get("branch_scoped", False),
                 # Registry-driven: events stay inactive until a module emits them.
                 "is_active":          entry.get("is_active", True),
             },
@@ -96,6 +98,7 @@ def seed_platform_settings() -> dict:
             # Preserve admin changes; only missing platform rows are inserted.
             _, created = NotificationSetting.all_objects.get_or_create(
                 tenant=None,
+                branch=None,
                 event_type=event_type,
                 channel=channel,
                 defaults={"is_enabled": event_type.default_enabled},
@@ -146,6 +149,7 @@ def seed_school_settings(school) -> dict:
             # Preserve school admin changes; onboarding only fills missing rows.
             _, created = NotificationSetting.all_objects.get_or_create(
                 tenant=school.tenant,
+                branch=None,
                 event_type=event_type,
                 channel=channel,
                 defaults={"is_enabled": event_type.default_enabled},

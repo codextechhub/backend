@@ -32,6 +32,11 @@ For inviting users who have no account yet, pass unregistered_recipients:
 history and pick up a school's settings overrides; omit it for school-less
 recipients (CX staff, invitees).
 
+`branch` is OPTIONAL too: the vs_tenants.Branch the event is about, such as
+the branch an invoice is filed under. For an event registered branch_scoped,
+that branch's own settings win over the tenant's. Pass it wherever the branch
+is at hand; an event becomes branch_scoped only once every sender does.
+
 All valid event_key values are listed in vs_notifications/constants.py
 under EVENT_TYPE_REGISTRY.
 """
@@ -51,6 +56,7 @@ def send_notification(
     recipients: list,
     tenant=None,
     school=None,
+    branch=None,
     suppress: bool = False,
     unregistered_recipients: Optional[list[UnregisteredRecipient]] = None,
     metadata: Optional[dict] = None,
@@ -68,6 +74,8 @@ def send_notification(
         school:                  Optional School instance. Stored on each record for
                                  filtering/history and used to resolve school-specific
                                  settings overrides. Defaults to None (platform scope).
+        branch:                  Optional vs_tenants.Branch the event is about. A
+                                 branch_scoped event consults its settings first.
         suppress:                Pass True to skip dispatch entirely - useful when
                                  bulk-creating records where notifications would be noise.
         unregistered_recipients: List of UnregisteredRecipient(email, name) for
@@ -92,6 +100,7 @@ def send_notification(
         recipients=recipients,
         tenant=tenant,
         school=school,
+        branch=branch,
         suppress=suppress,
         unregistered_recipients=unregistered_recipients,
         metadata=metadata,

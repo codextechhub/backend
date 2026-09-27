@@ -222,6 +222,7 @@ class NotificationEventTypeSerializer(serializers.ModelSerializer):
             "supported_channels",
             "default_enabled",
             "is_transactional",
+            "branch_scoped",
             "is_active",
         ]
         read_only_fields = fields
@@ -515,10 +516,15 @@ class EffectiveSettingSerializer(serializers.Serializer):
 # ---------------------------------------------------------------------------
 
 class SettingUpdateItemSerializer(serializers.Serializer):
-    """One override to upsert, addressed by (event_type_key, channel)."""
+    """One override to upsert, addressed by (event_type_key, channel).
+
+    ``is_enabled`` must be present. ``null`` means "remove this layer's row and
+    inherit again", which only a branch layer supports; the view refuses it at
+    any other scope.
+    """
     event_type_key = serializers.CharField()
     channel        = serializers.CharField()
-    is_enabled     = serializers.BooleanField()
+    is_enabled     = serializers.BooleanField(allow_null=True)
 
 
 class SettingsBulkUpdateSerializer(serializers.Serializer):
@@ -534,9 +540,11 @@ class SettingsBulkUpdateSerializer(serializers.Serializer):
         }
 
     Rows are addressed by (event_type_key, channel) and upserted, not updated by
-    row id. All updates in a single request commit atomically. Business rules
-    (unknown key/channel, unsupported channel, IN_APP disable, transactional
-    toggle) are enforced in the view against the resolved event types.
+    row id, at the scope the view resolved (a branch, the tenant, or the
+    platform layer). All updates in a single request commit atomically. Business
+    rules (unknown key/channel, unsupported channel, IN_APP disable, transactional
+    toggle, an event a branch cannot set, a reset with no branch) are enforced in
+    the view against the resolved event types.
     """
     updates = serializers.ListField(
         child=SettingUpdateItemSerializer(),

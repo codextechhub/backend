@@ -16,6 +16,9 @@ Scoping model (scope comes from the ASSERTED TENANT, not a query parameter):
   * A PLATFORM-kind tenant (CX staff) is Codex's own tenant. In the settings
     endpoints it resolves to the PLATFORM scope - the tenant-NULL default rows
     every tenant inherits, NOT codex's own rows.
+  * The settings endpoints alone also take ``?branch=<id>``, which narrows a
+    business tenant's scope to one of its branches; see
+    NotificationSettingViewSet for who may name which branch.
 
 NOTE on managers: view scoping is done EXPLICITLY (recipient=… / tenant=… /
 all_objects) rather than relying on the ambient TenantAwareManager - the
@@ -29,6 +32,7 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated
 
 from core.pagination import XVSPagination
@@ -65,7 +69,7 @@ from .services.audit import (
     record_template_change,
     template_snapshot,
 )
-from .services.settings import resolve_channels_bulk
+from .services.settings import SOURCE_DEFAULT, resolve_settings_bulk, settings_rows
 from .services.routing import notification_route_q
 
 
@@ -474,22 +478,37 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
     """
     Notification settings - the EFFECTIVE matrix and per-scope overrides.
 
-    GET   /notifications/settings/        - full effective matrix for the scope.
-    PATCH /notifications/settings/update/ - upsert override rows by
-                                            (event_type_key, channel).
+    GET   /notify/settings/        - full effective matrix for the scope.
+    PATCH /notify/settings/update/ - upsert (or, for a branch, remove) override
+                                     rows by (event_type_key, channel).
 
-    Scope resolution (same for GET and PATCH) follows the asserted tenant; there
-    is no ?school= parameter:
-      * Business tenant → its own override rows, overlaid on platform defaults.
-        Asserting another tenant's ?tenant= slug is refused with 404 by the auth
-        layer (this view does not set platform_cross_tenant_param), so the
-        no-leak guarantee still holds.
+    Scope resolution (same for GET and PATCH) follows the asserted tenant plus an
+    optional ``?branch=<id>``; there is no ?school= parameter:
+      * Business tenant, no branch → the tenant's own rows, overlaid on the
+        platform defaults. Asserting another tenant's ?tenant= slug is refused
+        with 404 by the auth layer (this view does not set
+        platform_cross_tenant_param), so the no-leak guarantee still holds.
+      * Business tenant with ?branch= → that branch's rows, overlaid on the
+        tenant's. The branch must belong to the asserted tenant and be one the
+        caller may work in (vs_rbac.scoping.visible_branch_ids); anything else
+        is the same 404 whether the branch is unknown, foreign or not theirs.
       * PLATFORM-kind tenant (CX staff) → the platform DEFAULT layer, the
-        tenant-NULL rows. It cannot target one tenant's rows from here.
+        tenant-NULL rows. It cannot target one tenant's rows from here, and the
+        platform layer has no branches, so ?branch= is a 404 there.
 
-    Transactional event types appear in the matrix flagged
-    ``is_transactional: true`` and are read-only (they bypass settings) - a
-    PATCH touching one is rejected.
+    Who may change what. The key (communication_permissions.enforce) opens the
+    screen; the caller's branch reach decides the scope they may write. A caller
+    with whole-tenant reach writes the tenant's rows and any branch's rows. A
+    caller whose reach is limited to some branches (a branch admin) writes only
+    their own branches' rows: a PATCH at the tenant scope is a 403
+    (BRANCH_SCOPE_REQUIRED), and their GET at the tenant scope reports
+    ``can_edit: false`` on every row.
+
+    Each row carries ``source`` ("branch" | "tenant" | "platform" | "default"),
+    ``branch_scoped`` (the event is sent with a branch, so a branch may set it)
+    and ``can_edit`` (this caller may change this row at this scope). A branch
+    may set only branch_scoped events; transactional events and the in-app
+    channel are never editable, at any scope.
 
     Permission: communication.communication_permissions.enforce (RBAC).
 
@@ -502,107 +521,161 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
 
     def _resolve_scope(self, request):
         """
-        Resolve the settings scope from the asserted tenant.
+        Resolve (tenant, branch, whole_reach) for this request.
 
-        A business tenant manages its own override rows. A PLATFORM-kind tenant
-        (Codex staff) manages the platform DEFAULT layer - the tenant-NULL rows
-        every school inherits. Writing codex-tenant rows here would be inert for
-        schools: dispatch resolution only reads (tenant IS NULL | own tenant).
-        Returns (tenant_or_none, None); None means the platform layer.
+        ``tenant`` None is the platform DEFAULT layer: a PLATFORM-kind tenant
+        (Codex staff) manages the tenant-NULL rows every tenant inherits, since
+        codex-tenant rows would be inert for everybody else. ``branch`` is the
+        named branch, or None for the tenant scope. ``whole_reach`` says whether
+        the caller may act for the whole scope resolved: always true once a
+        branch has been accepted, and at the tenant scope only for a caller no
+        branch grant narrows.
+
+        The two ?branch= rules mirror vs_config.services.scopes: the branch must
+        live under the asserted tenant, and it must be one the caller is
+        entitled to. Every refusal raises the same NotFound, so the parameter
+        cannot confirm that another tenant's or another branch's id exists.
         """
-        tenant = request.tenant
-        if getattr(tenant, "kind", None) == "PLATFORM":
-            return None, None
-        return tenant, None
+        from vs_rbac.scoping import visible_branch_ids
+        from vs_tenants.references import find_branch_in_tenant
 
-    def _build_matrix(self, tenant):
+        asserted = request.tenant
+        is_platform = getattr(asserted, "kind", None) == "PLATFORM"
+        reach = visible_branch_ids(request.user, asserted)
+        branch_ref = (request.query_params.get("branch") or "").strip()
+
+        if not branch_ref:
+            return (None if is_platform else asserted), None, reach is None
+
+        branch = None if is_platform else find_branch_in_tenant(asserted, branch_ref)
+        if branch is None or (reach is not None and branch.pk not in reach):
+            raise NotFound("Notification settings scope not found.")
+        return asserted, branch, True
+
+    def _build_matrix(self, tenant, branch=None, *, editable=True):
         """
         Build the effective settings matrix for a scope.
 
         For each active event type × supported channel, resolve the effective
-        value and record which layer produced it. resolve_channels_bulk owns the
-        is_active / transactional / layering logic; the same fetched rows also
-        feed the `source` label ("tenant" / "platform" / "default") so the UI
-        can render provenance. Total cost: 1 event-type query + 1 settings query.
+        value and the layer that produced it. resolve_settings_bulk owns the
+        is_active / transactional / layering logic, provenance included, so this
+        method only shapes rows and decides ``can_edit``. ``editable`` is whether
+        the caller may write at this scope at all. Total cost: 1 event-type
+        query + 1 settings query.
         """
         event_types = list(
             NotificationEventType.objects.filter(is_active=True)
             .order_by("source_module", "key")
         )
-
-        # One settings query for the whole matrix. Materialised to a list so it
-        # feeds both the provenance sets below and the bulk resolver without
-        # re-querying.
-        scope_q = Q(tenant__isnull=True) | Q(tenant=tenant)
-        rows = list(
-            NotificationSetting.all_objects.filter(
-                scope_q, event_type__in=event_types,
-            ).values("event_type_id", "channel", "is_enabled", "tenant_id")
+        rows = settings_rows(event_types, tenant=tenant, branch=branch)
+        resolved_by_et = resolve_settings_bulk(
+            event_types, tenant=tenant, branch=branch, rows=rows,
         )
-
-        # Which (event_type_id, channel) have a school row / platform row?
-        school_rows = set()
-        platform_rows = set()
-        for r in rows:
-            key = (r["event_type_id"], r["channel"])
-            if r["tenant_id"] is None:
-                platform_rows.add(key)
-            else:
-                school_rows.add(key)
-
-        # Layering rules live in the service - pass the pre-fetched rows through.
-        resolved_by_et = resolve_channels_bulk(event_types, tenant=tenant, rows=rows)
 
         matrix = []
         for et in event_types:
             resolved = resolved_by_et[et.id]
             for channel in et.supported_channels:
-                key = (et.id, channel)
-                if et.is_transactional or not et.is_active:
-                    source = "default"
-                elif tenant is not None and key in school_rows:
-                    source = "tenant"
-                elif key in platform_rows:
-                    source = "platform"
-                else:
-                    source = "default"
+                is_enabled, source = resolved.get(channel, (False, SOURCE_DEFAULT))
+                can_edit = (
+                    editable
+                    and not et.is_transactional
+                    and channel != ChannelChoices.IN_APP
+                    and (branch is None or et.branch_scoped)
+                )
                 matrix.append({
                     "event_type_key":   et.key,
                     "event_type_label": et.label,
                     "source_module":    et.source_module,
                     "channel":          channel,
-                    "is_enabled":       resolved.get(channel, False),
+                    "is_enabled":       is_enabled,
                     "is_transactional": et.is_transactional,
                     "source":           source,
+                    "branch_scoped":    et.branch_scoped,
+                    "can_edit":         can_edit,
                 })
         return matrix
 
     # ── Read ───────────────────────────────────────────────────────────────
 
     def list(self, request):
-        """GET /notifications/settings/ - the effective matrix for the scope."""
-        tenant, denied = self._resolve_scope(request)
-        if denied is not None:
-            return denied
-
-        matrix = self._build_matrix(tenant)
+        """GET /notify/settings/ - the effective matrix for the scope."""
+        tenant, branch, whole_reach = self._resolve_scope(request)
+        matrix = self._build_matrix(tenant, branch, editable=whole_reach)
         return success_response("Settings retrieved.", data=matrix)
 
     # ── Write ──────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _item_error(et, key, channel, is_enabled, branch):
+        """The per-item refusal for one update, or None when it may be written."""
+        if et is None:
+            return (
+                NotificationErrorCode.UNKNOWN_EVENT_TYPE,
+                f"Unknown or inactive event type: '{key}'.",
+            )
+        if channel not in ChannelChoices.ALL:
+            # Reject unknown channel strings before checking event-specific support.
+            return NotificationErrorCode.UNKNOWN_CHANNEL, f"Unknown channel: '{channel}'."
+        if channel not in et.supported_channels:
+            return (
+                NotificationErrorCode.UNSUPPORTED_CHANNEL,
+                f"Channel '{channel}' is not supported by '{key}'.",
+            )
+        if et.is_transactional:
+            # Must-send events ignore settings rows, so overrides would be misleading.
+            return (
+                NotificationErrorCode.TRANSACTIONAL_NOT_CONFIGURABLE,
+                f"'{key}' is a transactional event and cannot be "
+                "configured - it always dispatches.",
+            )
+        if branch is not None and not et.branch_scoped:
+            # A branch row for an event sent without a branch would never be read.
+            return (
+                NotificationErrorCode.BRANCH_NOT_CONFIGURABLE,
+                f"'{key}' is not sent for a particular branch, so it can only "
+                "be set for all branches together.",
+            )
+        if channel == ChannelChoices.IN_APP and is_enabled is False:
+            # Product policy keeps the in-app audit/feed trail always enabled.
+            return (
+                NotificationErrorCode.IN_APP_ALWAYS_ENABLED,
+                "The in-app channel cannot be disabled.",
+            )
+        if is_enabled is None and branch is None:
+            return (
+                NotificationErrorCode.RESET_NEEDS_BRANCH,
+                "Only a branch's setting can be reset to follow the setting "
+                "for all branches. Switch this one on or off instead.",
+            )
+        return None
+
     def partial_update(self, request):
         """
-        PATCH /notifications/settings/update/
-        Upsert override rows by (event_type_key, channel). Atomic.
+        PATCH /notify/settings/update/[?branch=<id>]
+        Upsert override rows by (event_type_key, channel) at the resolved scope.
+        With a branch, ``is_enabled: null`` removes that branch's row so it
+        inherits again. Atomic: one refused item writes nothing.
 
-        Rejections (400 with field errors):
-          * unknown event key / unknown or unsupported channel
-          * disabling IN_APP (IN_APP_ALWAYS_ENABLED)
-          * toggling a transactional event type (TRANSACTIONAL_NOT_CONFIGURABLE)
+        Refusals:
+          * 404 - the branch is unknown, another tenant's, or not the caller's.
+          * 403 BRANCH_SCOPE_REQUIRED - no branch named by a caller whose reach
+            is limited to some branches.
+          * 400 with per-item errors - unknown event key, unknown or unsupported
+            channel, disabling IN_APP (IN_APP_ALWAYS_ENABLED), toggling a
+            transactional event (TRANSACTIONAL_NOT_CONFIGURABLE), a branch
+            setting an event that is not branch_scoped (BRANCH_NOT_CONFIGURABLE),
+            ``null`` without a branch (RESET_NEEDS_BRANCH).
         """
-        tenant, denied = self._resolve_scope(request)
-        if denied is not None:
-            return denied
+        tenant, branch, whole_reach = self._resolve_scope(request)
+        if not whole_reach:
+            return error_response(
+                "Your access covers only some branches, so you cannot change "
+                "notification settings for all branches at once. Choose one of "
+                "your branches to change its settings.",
+                status=status.HTTP_403_FORBIDDEN,
+                code=NotificationErrorCode.BRANCH_SCOPE_REQUIRED,
+            )
 
         serializer = SettingsBulkUpdateSerializer(data=request.data)
         if not serializer.is_valid():
@@ -623,53 +696,12 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
 
         errors = []
         for idx, item in enumerate(updates):
-            key = item["event_type_key"]
-            channel = item["channel"]
-            is_enabled = item["is_enabled"]
-
-            et = event_types.get(key)
-            if et is None:
-                errors.append({
-                    "index": idx,
-                    "error_code": NotificationErrorCode.UNKNOWN_EVENT_TYPE,
-                    "message": f"Unknown or inactive event type: '{key}'.",
-                })
-                continue
-            if channel not in ChannelChoices.ALL:
-                # Reject unknown channel strings before checking event-specific support.
-                errors.append({
-                    "index": idx,
-                    "error_code": NotificationErrorCode.UNKNOWN_CHANNEL,
-                    "message": f"Unknown channel: '{channel}'.",
-                })
-                continue
-            if channel not in et.supported_channels:
-                # A known channel can still be invalid for this event type.
-                errors.append({
-                    "index": idx,
-                    "error_code": NotificationErrorCode.UNSUPPORTED_CHANNEL,
-                    "message": f"Channel '{channel}' is not supported by '{key}'.",
-                })
-                continue
-            if et.is_transactional:
-                # Must-send events ignore settings rows, so overrides would be misleading.
-                errors.append({
-                    "index": idx,
-                    "error_code": NotificationErrorCode.TRANSACTIONAL_NOT_CONFIGURABLE,
-                    "message": (
-                        f"'{key}' is a transactional event and cannot be "
-                        "configured - it always dispatches."
-                    ),
-                })
-                continue
-            if channel == ChannelChoices.IN_APP and is_enabled is False:
-                # Product policy keeps the in-app audit/feed trail always enabled.
-                errors.append({
-                    "index": idx,
-                    "error_code": NotificationErrorCode.IN_APP_ALWAYS_ENABLED,
-                    "message": "The in-app channel cannot be disabled.",
-                })
-                continue
+            refusal = self._item_error(
+                event_types.get(item["event_type_key"]), item["event_type_key"],
+                item["channel"], item["is_enabled"], branch,
+            )
+            if refusal is not None:
+                errors.append({"index": idx, "error_code": refusal[0], "message": refusal[1]})
 
         if errors:
             return error_response(
@@ -678,38 +710,41 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # All valid - upsert override rows by (tenant, event_type, channel).
+        # The full PATCH is all-or-nothing so settings cannot partially apply.
         with transaction.atomic():
-            # The full PATCH is all-or-nothing so settings cannot partially apply.
+            layer = NotificationSetting.all_objects.filter(tenant=tenant, branch=branch)
             stored = {
                 (row["event_type_id"], row["channel"]): row["is_enabled"]
-                for row in NotificationSetting.all_objects.filter(
-                    tenant=tenant,
+                for row in layer.filter(
                     event_type__in=event_types.values(),
                 ).values("event_type_id", "channel", "is_enabled")
             }
             for item in updates:
                 et = event_types[item["event_type_key"]]
-                NotificationSetting.all_objects.update_or_create(
-                    tenant=tenant,
-                    event_type=et,
-                    channel=item["channel"],
-                    defaults={
-                        "is_enabled": item["is_enabled"],
-                        "updated_by": request.user,
-                    },
-                )
+                channel, is_enabled = item["channel"], item["is_enabled"]
+                if is_enabled is None:
+                    layer.filter(event_type=et, channel=channel).delete()
+                else:
+                    NotificationSetting.all_objects.update_or_create(
+                        tenant=tenant,
+                        branch=branch,
+                        event_type=et,
+                        channel=channel,
+                        defaults={"is_enabled": is_enabled, "updated_by": request.user},
+                    )
                 record_setting_change(
                     actor=request.user,
                     tenant=tenant,
+                    branch=branch,
                     event_type=et,
-                    channel=item["channel"],
-                    before=stored.get((et.id, item["channel"])),
-                    after=item["is_enabled"],
+                    channel=channel,
+                    before=stored.get((et.id, channel)),
+                    after=is_enabled,
                 )
+                stored[(et.id, channel)] = is_enabled
 
-        # Return the updated effective entries (fresh resolve).
-        matrix = self._build_matrix(tenant)
+        # Return the updated effective entries (fresh resolve) at the same scope.
+        matrix = self._build_matrix(tenant, branch, editable=whole_reach)
         touched = {(u["event_type_key"], u["channel"]) for u in updates}
         updated_entries = [
             row for row in matrix

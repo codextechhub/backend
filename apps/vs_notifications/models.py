@@ -1,15 +1,16 @@
 """Models:
   NotificationEventType   - platform-defined event registry (seeded)
   NotificationTemplate    - per-(event_type, channel) editable template
-  NotificationSetting     - enable/disable toggle per channel; school-scoped
-                            OR platform-wide (school=NULL)
+  NotificationSetting     - enable/disable toggle per channel, for one branch,
+                            one tenant, or the whole platform (tenant=NULL)
   Notification            - dispatch record, one per recipient per channel
 
 The platform is global: school users are only a fraction of notification
 consumers (CX staff and future user types have no school). Notifications are
 therefore RECIPIENT-centric - `Notification.school` is a nullable filter/
 history anchor, not a dispatch requirement. Settings layer the same way:
-a NotificationSetting with school=NULL is a platform-wide default.
+a NotificationSetting with tenant=NULL is a platform-wide default, and one
+with a branch is that branch's own choice inside its tenant.
 """
 import uuid
 
@@ -79,10 +80,10 @@ class NotificationEventType(models.Model):
     default_enabled = models.BooleanField(
         default=True,
         help_text=(
-            "Principled fallback when no NotificationSetting row (school or "
-            "platform) exists for a (event_type, channel). Resolution order is: "
-            "school row → platform row → this value. Also the value used to seed "
-            "platform rows."
+            "Principled fallback when no NotificationSetting row (branch, tenant "
+            "or platform) exists for a (event_type, channel). Resolution order is: "
+            "branch row → tenant row → platform row → this value. Also the value "
+            "used to seed platform rows."
         ),
     )
     is_transactional = models.BooleanField(
@@ -99,6 +100,15 @@ class NotificationEventType(models.Model):
         help_text=(
             "Platform-level kill switch. Inactive event types are never dispatched "
             "regardless of school settings. Use this to retire an event type."
+        ),
+    )
+    branch_scoped = models.BooleanField(
+        default=False,
+        help_text=(
+            "True when every place that sends this event says which branch it is "
+            "about, so a branch may switch its channels on or off for itself. "
+            "False keeps the event a whole-tenant setting: a branch row for it "
+            "cannot be written and would never be read."
         ),
     )
     created_at = models.DateTimeField(auto_now_add=True)
@@ -314,26 +324,34 @@ class NotificationSetting(models.Model):
     """
     Per-event-type, per-channel enable/disable toggle.
 
-    Two flavours, distinguished by `school`:
-      * school-scoped  (school=<School>)  - a school's override.
-      * platform-wide  (school=NULL)      - the default for every recipient
-                                            that has no school-specific override.
+    Three layers, distinguished by `tenant` and `branch`:
+      * branch-scoped  (tenant=<Tenant>, branch=<Branch>) - one branch's own
+                                            choice, for an event that is
+                                            ``branch_scoped``.
+      * tenant-scoped  (tenant=<Tenant>, branch=NULL)     - the tenant's choice
+                                            for all of its branches.
+      * platform-wide  (tenant=NULL, branch=NULL)         - the default for every
+                                            tenant that has not chosen.
 
-    Resolution (most specific wins, see services/settings.resolve_channels):
-        school row → platform row → event_type.default_enabled.
+    Resolution (most specific wins, see services/settings.resolve_settings_bulk):
+        branch row → tenant row → platform row → event_type.default_enabled.
+    A branch row is consulted only when the event is branch_scoped and the send
+    names that branch, and only for recipients owned by the branch's tenant.
 
     Platform rows are seeded from each event type's default_enabled (by the
-    data migration and seed command). School rows are written by School Admins
-    via PATCH; CX staff write platform rows (or a specific school's rows).
+    data migration and seed command). Tenant and branch rows are written by the
+    tenant's administrators via PATCH; a caller whose reach is limited to some
+    branches writes only those branches' rows. CX staff write platform rows.
 
     The IN_APP channel cannot be disabled - enforced where settings are WRITTEN
-    (serializer/service). resolve_channels only reads rows; it does not silently
+    (serializer/service). The resolver only reads rows; it does not silently
     override a persisted value.
 
-    The default manager is TenantAware with include_global=True: a school-scoped
-    request sees its own rows PLUS the platform (school=NULL) rows. `all_objects`
-    is the unscoped escape hatch used by the service layer (Celery has no
-    thread-local tenant context) and by explicit view scoping.
+    The default manager is TenantAware with include_global=True: a tenant-scoped
+    request sees its own rows (every branch's included) PLUS the platform
+    (tenant=NULL) rows. `all_objects` is the unscoped escape hatch used by the
+    service layer (Celery has no thread-local tenant context) and by explicit
+    view scoping, which is also where branch narrowing happens.
     """
 
     id = models.UUIDField(
@@ -345,6 +363,15 @@ class NotificationSetting(models.Model):
         "vs_tenants.Tenant", on_delete=models.PROTECT,
         related_name="notification_settings", null=True, blank=True,
         help_text="Null only for platform-wide defaults.",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.CASCADE,
+        related_name="notification_settings", null=True, blank=True,
+        help_text=(
+            "Set only on a branch's own row, which must belong to the same tenant. "
+            "Null is the tenant's row for all of its branches. A branch that is "
+            "deleted takes its own choices with it: nothing else reads them."
+        ),
     )
     event_type = models.ForeignKey(
         NotificationEventType,
@@ -381,11 +408,17 @@ class NotificationSetting(models.Model):
         default_manager_name = "objects"
         base_manager_name = "all_objects"
         constraints = [
-            # A school may hold at most one row per (event_type, channel).
+            # A tenant may hold at most one whole-tenant row per (event_type, channel).
             models.UniqueConstraint(
                 fields=["tenant", "event_type", "channel"],
-                condition=Q(tenant__isnull=False),
+                condition=Q(tenant__isnull=False, branch__isnull=True),
                 name="uq_notif_setting_tenant_scoped",
+            ),
+            # A branch may hold at most one row per (event_type, channel).
+            models.UniqueConstraint(
+                fields=["tenant", "branch", "event_type", "channel"],
+                condition=Q(branch__isnull=False),
+                name="uq_notif_setting_branch_scoped",
             ),
             # At most one platform-wide row per (event_type, channel).
             models.UniqueConstraint(
@@ -393,19 +426,33 @@ class NotificationSetting(models.Model):
                 condition=Q(tenant__isnull=True),
                 name="uq_notif_setting_platform",
             ),
+            # A branch row always names its tenant; the platform layer has no branches.
+            models.CheckConstraint(
+                condition=Q(branch__isnull=True) | Q(tenant__isnull=False),
+                name="ck_notif_setting_branch_has_tenant",
+            ),
         ]
         indexes = [
-            # resolve_channels fetches both the school row and the platform row
-            # (school IN (<id>, NULL)) for one (event_type) in a single query.
+            # The resolver fetches the platform, tenant and branch rows for a set
+            # of event types in a single query.
             models.Index(fields=["event_type", "channel", "tenant"]),
             models.Index(fields=["tenant", "channel", "is_enabled"]),
         ]
         verbose_name = "Notification setting"
         verbose_name_plural = "Notification settings"
 
+    def clean(self):
+        """Refuse a branch row whose branch belongs to another tenant."""
+        from django.core.exceptions import ValidationError
+
+        if self.branch_id is not None and self.branch.tenant_id != self.tenant_id:
+            raise ValidationError({"branch": "The branch must belong to this tenant."})
+
     def __str__(self):
         status = "on" if self.is_enabled else "off"
         scope = self.tenant_id if self.tenant_id else "platform"
+        if self.branch_id:
+            scope = f"{scope}/branch {self.branch_id}"
         return f"{scope} / {self.event_type.key} / {self.channel} ({status})"
 
 

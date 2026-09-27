@@ -12,16 +12,23 @@ catalogue). Routes are mounted at `/v1/notify/` (`apps/urls.py:29`):
 
 ## 1. What it is (and what it is NOT)
 
-- **Settings are a three-layer resolve, exposed as a flat matrix.** `GET
+- **Settings are a four-layer resolve, exposed as a flat matrix.** `GET
   settings/` returns one row per `(active event type × supported channel)` with
-  the resolved value and the layer that produced it
-  (`views.py:464-524`). `PATCH settings/update/` upserts override rows addressed
-  by `(event_type_key, channel)`, never by row id (`views.py:539-652`).
-- **Scope comes from the asserted tenant, not a parameter.** There is no
-  `?school=`. A business tenant manages its own override rows; a `PLATFORM`-kind
-  tenant (CX staff) manages the **tenant-NULL default layer** every tenant
-  inherits, not codex's own rows (`views.py:449-462`). CX staff cannot target
-  one school's settings from here.
+  the resolved value and the layer that produced it. `PATCH settings/update/`
+  upserts override rows addressed by `(event_type_key, channel)`, never by row
+  id. The layers, most specific first: **branch → tenant → platform → default**.
+- **Scope comes from the asserted tenant, narrowed by an optional branch.**
+  There is no `?school=`. A business tenant manages its own override rows, and
+  `?branch=<id>` narrows that to one of its branches. A `PLATFORM`-kind tenant
+  (CX staff) manages the **tenant-NULL default layer** every tenant inherits,
+  not codex's own rows; the platform layer has no branches, so `?branch=` there
+  is a `404`. CX staff cannot target one school's settings from here.
+- **A branch counts only for events that are sent with one.** An email belongs
+  to the branch the event is ABOUT: the branch an invoice, receipt, note or
+  statement is filed under, the branch a workflow document belongs to. An event
+  whose every sender passes that branch is `branch_scoped` and may be set per
+  branch. An event sent without one (an export being ready, a ticket reply,
+  onboarding) stays a whole-school setting.
 - **Templates are a global catalogue, not tenant data.** One
   `NotificationTemplate` per `(event_type, channel)`, enforced by
   `unique_together` (`models.py:256`). Editing one changes the message **every
@@ -34,19 +41,21 @@ catalogue). Routes are mounted at `/v1/notify/` (`apps/urls.py:29`):
 - **Preview writes nothing.** It renders the stored template, or an unsaved
   draft, against generated sample values and returns JSON. No `Notification`
   row, no mail (`views.py:814-851`).
-- **Three things cannot be configured**, and each is refused with its own error
+- **Four things cannot be configured**, and each is refused with its own error
   code rather than silently ignored: a transactional event
   (`TRANSACTIONAL_NOT_CONFIGURABLE`), the in-app channel being switched off
-  (`IN_APP_ALWAYS_ENABLED`), and a channel the event does not support
-  (`UNSUPPORTED_CHANNEL`) (`views.py:584-618`).
+  (`IN_APP_ALWAYS_ENABLED`), a channel the event does not support
+  (`UNSUPPORTED_CHANNEL`), and, at a branch, an event that is not
+  `branch_scoped` (`BRANCH_NOT_CONFIGURABLE`). Transactional events always send
+  and in-app is always on, at every scope.
 
 ## 2. Domain model
 
 | Model | File | Notes |
 |---|---|---|
-| `NotificationEventType` | `models.py:32` | 47 registry entries, 34 active, 10 transactional, 13 registered-but-inactive |
+| `NotificationEventType` | `models.py` | 47 registry entries, 34 active, 10 transactional, 13 registered-but-inactive; `branch_scoped` on 10 (see §9) |
 | `NotificationTemplate` | `models.py:127` | `subject`, `body`, `cta_label`, `cta_url`, `html_body`, `html_is_custom`, `is_active`, `created_by`, `updated_by` |
-| `NotificationSetting` | `models.py:311` | `tenant?`, `event_type`, `channel`, `is_enabled`, `updated_by` |
+| `NotificationSetting` | `models.py` | `tenant?`, `branch?`, `event_type`, `channel`, `is_enabled`, `updated_by` |
 
 **`is_active=False` on an event type is an honesty flag, not a bug.** The
 registry comment is explicit: an event stays inactive until a domain module
@@ -56,11 +65,13 @@ currently in that state, and they are correctly absent from the settings matrix
 (`views.py:475`), the catalogue (`views.py:871`) and the creatable template set
 (`views.py:796`).
 
-**Two conditional unique constraints** keep the layering honest
-(`models.py:381-394`): at most one row per `(tenant, event_type, channel)` where
-tenant is not null, and at most one per `(event_type, channel)` where it is.
-Postgres enforces both, and the test suite runs on Postgres for exactly that
-reason (`tests.py:12-13`).
+**Three conditional unique constraints and a check** keep the layering honest:
+at most one whole-tenant row per `(tenant, event_type, channel)` (branch null),
+at most one branch row per `(tenant, branch, event_type, channel)`, at most one
+platform row per `(event_type, channel)` (tenant null), and a branch row always
+names its tenant. Postgres enforces all four, and the test suite runs on
+Postgres for exactly that reason. A deleted branch takes its own rows with it
+(`CASCADE`): nothing else reads them.
 
 **`NotificationTemplate.save()` is where the markup stays honest**
 (`models.py:265-285`). For an email template with `html_is_custom=False` it
@@ -76,22 +87,41 @@ it.
 `?tenant=<slug>` is required on all eight routes
 (`vs_rbac/authentication.py:123-126`).
 
-### Settings - key `communication.communication_permissions.enforce` (`views.py:444-445`)
+### Settings - key `communication.communication_permissions.enforce`
 
-| Method + path | body | response |
+| Method + path | query / body | response |
 |---|---|---|
-| `GET settings/` | - | Flat list of matrix rows, **unpaginated** (`views.py:528-535`) |
-| `PATCH settings/update/` | `{"updates": [{"event_type_key", "channel", "is_enabled"}, …]}`, min 1 | The touched rows, freshly resolved (`views.py:539-652`) |
+| `GET settings/` | optional `?branch=<id>` | Flat list of matrix rows at that scope, **unpaginated** |
+| `PATCH settings/update/` | optional `?branch=<id>`; `{"updates": [{"event_type_key", "channel", "is_enabled"}, …]}`, min 1 | The touched rows, freshly resolved at the same scope |
 
-Matrix row shape (`serializers.py:499-514`): `event_type_key`,
-`event_type_label`, `source_module`, `channel`, `is_enabled`,
-`is_transactional`, `source` - where `source` is `"tenant"`, `"platform"` or
-`"default"`.
+Matrix row shape: `event_type_key`, `event_type_label`, `source_module`,
+`channel`, `is_enabled`, `is_transactional`, `source`, `branch_scoped`,
+`can_edit`.
+
+- `source` is `"branch"`, `"tenant"`, `"platform"` or `"default"`: the layer the
+  value came from. `"branch"` appears only with `?branch=`, on a
+  `branch_scoped` event that branch has set.
+- `branch_scoped` says the event is sent with a branch, so a branch may set it.
+- `can_edit` says whether **this caller** may change **this row** at **this
+  scope**. It is false for a transactional event, for the in-app channel, for
+  a non-`branch_scoped` event when `?branch=` is given, and for every row at
+  the whole-school scope when the caller's branch reach is limited (a branch
+  admin).
+
+`?branch=` must name a branch of the asserted tenant that the caller may work
+in (`vs_rbac.scoping.visible_branch_ids`). Anything else - unknown, malformed,
+another tenant's, or a branch outside the caller's reach - is the same `404`,
+so the parameter cannot confirm an id exists.
+
+At a branch, `is_enabled: true | false` writes that branch's row and
+`is_enabled: null` removes it, so the branch follows the school again. Without
+a branch, `null` is refused (`RESET_NEEDS_BRANCH`): the whole-school row is on
+or off. A caller whose reach is limited to some branches gets `403`
+`BRANCH_SCOPE_REQUIRED` on a PATCH without `?branch=`.
 
 The PATCH is **all-or-nothing**: every item is validated first, and any error
 returns `400` with a per-index list of `{index, error_code, message}` before a
-single row is written (`views.py:570-625`). Only then does one atomic block
-upsert them all (`views.py:628-640`).
+single row is written. Only then does one atomic block write them all.
 
 ### Templates - key `communication.notification_templates.configure` (`views.py:674-675`)
 
@@ -142,17 +172,27 @@ that template on its previous wording forever.
 
 ## 5. Derivations
 
-- **The matrix costs two queries.** One for active event types, one for every
-  relevant settings row under `tenant IS NULL OR tenant = <tenant>`, then
-  `resolve_channels_bulk` is handed the pre-fetched rows so it does not
-  re-query (`views.py:474-500`). Asserted at `tests.py:236-243`.
-- **`source` is computed from the same rows** that produced `is_enabled`
-  (`views.py:489-514`): a transactional or inactive event reports `"default"`
-  regardless, then a tenant row wins, then a platform row, then `"default"`.
-- **The scope resolver is two lines and one rule** (`views.py:449-462`): a
-  `PLATFORM`-kind tenant resolves to `None`, meaning the tenant-NULL layer.
-  Writing codex-tenant rows instead would be inert for schools, because dispatch
-  resolution only ever reads `tenant IS NULL OR tenant = <own>`.
+- **The matrix costs two queries, at either scope.** One for active event
+  types, one for every relevant settings row (`services/settings.settings_rows`:
+  the platform rows, the tenant's whole-tenant rows and, with a branch, that
+  branch's rows and no other branch's). `resolve_settings_bulk` is handed the
+  pre-fetched rows so it does not re-query.
+- **`source` comes out of the resolver with the value**
+  (`services/settings.resolve_settings_bulk`), so provenance and value cannot
+  disagree: a transactional or inactive event reports `"default"` regardless,
+  then a branch row (branch_scoped events only), then a tenant row, then a
+  platform row, then `"default"`. Dispatch uses the same function.
+- **The branch speaks only inside its own tenant.** The resolver ignores a
+  branch whose tenant is not the one being resolved. Dispatch resolves per
+  recipient-owner tenant, so a school's branch choice never reaches platform
+  staff who receive the same event.
+- **The scope resolver** (`NotificationSettingViewSet._resolve_scope`) returns
+  `(tenant, branch, whole_reach)`. A `PLATFORM`-kind tenant resolves to `None`,
+  meaning the tenant-NULL layer. Writing codex-tenant rows instead would be
+  inert for schools, because dispatch resolution only ever reads
+  `tenant IS NULL OR tenant = <own>`. `whole_reach` is true once a branch has
+  been accepted, and at the whole-school scope only for a caller no branch
+  grant narrows.
 - **`variables` is derived from the copy, not maintained separately.**
   `template_variables` scans `subject`, `body`, `cta_label`, `cta_url` and
   `html_body` for `{{ name }}`, `{% if name %}` and `{% for x in name %}`
@@ -187,9 +227,9 @@ that template on its previous wording forever.
 
 - **`PATCH settings/update/`** writes `NotificationSetting` rows through
   `all_objects.update_or_create` inside one atomic block, stamping
-  `updated_by` (`views.py:628-640`). It uses `all_objects` because the target
-  tenant may be `None` (the platform layer), which the tenant-aware manager
-  would not select.
+  `updated_by`, and at a branch deletes the row for an `is_enabled: null` item.
+  It uses `all_objects` because the target tenant may be `None` (the platform
+  layer), which the tenant-aware manager would not select.
 - **`POST`/`PATCH templates/`** writes the template and stamps `created_by` /
   `updated_by` from `request.user` (`serializers.py:316-323`). Every write
   passes through `NotificationTemplate.save()`, so `html_body` is refreshed or
@@ -202,16 +242,20 @@ that template on its previous wording forever.
 
 - a settings PATCH writes one event per `(event type, channel)` whose stored
   value at that layer changed, entity `NotificationSetting`, id
-  `<event_type_key>:<channel>`, diff `{"is_enabled": {"before", "after"}}`
-  (`before` is `null` when the layer had no row), filed under the tenant or,
-  for a platform caller, the platform. Re-sending the stored value records
-  nothing;
+  `<event_type_key>:<channel>` (with `:branch-<id>` appended for a branch row),
+  diff `{"is_enabled": {"before", "after"}}` (`before` is `null` when the layer
+  had no row, `after` is `null` when a branch row was removed), filed under the
+  tenant or, for a platform caller, the platform. `metadata.layer` is
+  `"branch"`, `"tenant"` or `"platform"`, and a branch event also carries
+  `branch_id` and `branch_name`; the summary names the branch. Re-sending the
+  stored value records nothing;
 - a template create or edit writes one event, entity `NotificationTemplate`,
   with the changed columns before and after (`subject`, `body`, `cta_label`,
   `cta_url`, `html_body`, `html_is_custom`, `is_active`). An edit that changes
   none of them records nothing.
 
-`metadata.created` says whether the row was new.
+`metadata.created` says whether the row was new, and `metadata.removed`
+whether a branch row was removed.
 
 ## 7. Worked example
 
@@ -225,10 +269,12 @@ GET /v1/notify/settings/?tenant=alpha-nt
     { "event_type_key": "billing.invoice_overdue",
       "event_type_label": "Invoice overdue", "source_module": "vs_billing",
       "channel": "email", "is_enabled": true,
-      "is_transactional": false, "source": "platform" },
+      "is_transactional": false, "source": "platform",
+      "branch_scoped": true, "can_edit": true },
     { "event_type_key": "user.invited", "event_type_label": "User invited",
       "source_module": "vs_user", "channel": "email", "is_enabled": true,
-      "is_transactional": true, "source": "default" }
+      "is_transactional": true, "source": "default",
+      "branch_scoped": false, "can_edit": false }
   ] }
 ```
 
@@ -242,6 +288,25 @@ writes one tenant row and returns that entry with `"is_enabled": false,
 "source": "tenant"`. Sending the same body for `user.invited` returns `400`
 with `TRANSACTIONAL_NOT_CONFIGURABLE`; sending `"channel": "in_app",
 "is_enabled": false` returns `IN_APP_ALWAYS_ENABLED`.
+
+Bright Star runs Ikeja and Lekki. Its school admin has switched overdue-invoice
+emails off for the whole school; Lekki's parents still want them. The Lekki
+branch admin sends:
+
+```text
+PATCH /v1/notify/settings/update/?tenant=bright-star&branch=<lekki id>
+{ "updates": [ { "event_type_key": "billing.invoice_overdue",
+                 "channel": "email", "is_enabled": true } ] }
+```
+
+and gets the row back with `"is_enabled": true, "source": "branch",
+"can_edit": true`. An overdue notice on a Lekki invoice now emails the parent;
+one on an Ikeja invoice, or on an invoice filed for the whole school, does not.
+Sending `"is_enabled": null` to the same address removes Lekki's row, and
+Lekki follows the school again. The same admin sending
+`"event_type_key": "ticket.created"` there gets `400`
+`BRANCH_NOT_CONFIGURABLE`; naming Ikeja's id gets `404`; leaving `?branch=` out
+gets `403` `BRANCH_SCOPE_REQUIRED`.
 
 ```text
 GET /v1/notify/templates/<uuid>/preview/?tenant=codex
@@ -266,17 +331,9 @@ slice's items:
   list and the event-type catalogue (`views.py:528-535,679-702,869-873`). The
   matrix is currently 56 rows and grows with the registry
   (`notification_code_issues.md` §8).
-- **`branch_admin` holds the same settings key as `school_admin`** with no
-  branch narrowing (`seed_notification_permissions.py:25-29`), because
-  `NotificationSetting` has no branch column. A branch admin edits the whole
-  tenant's settings.
 - **Duplicate-template detection is string matching on an exception**:
   `if "unique" in str(exc).lower()` (`views.py:725-734`). A wording change in
   the driver turns a `409` into a `500`.
-- **`_resolve_scope` returns a `(tenant, denied)` tuple whose second element is
-  always `None`** (`views.py:449-462`), and both call sites branch on it
-  (`views.py:530-532,543-545`). Dead scaffolding from an earlier permission
-  model.
 - **The engine's seed command imports `vs_schools`**
   (`management/commands/seed_notification_settings.py:63`), which the platform
   rules forbid (`notification_code_issues.md` §10).
@@ -308,10 +365,40 @@ when something enforces them (`seed_notification_permissions.py:1-14`). The
 command also backfills existing tenant role templates whose key matches a
 prebuilt school role (`seed_notification_permissions.py:139-164`).
 
+**Who may do what with settings.** The key opens the screen; the caller's
+branch reach decides the scope they may write.
+
+| Caller | Whole school (no `?branch=`) | Their own branch | Another branch, or another school's |
+|---|---|---|---|
+| School admin (whole-tenant grant) | read and write | read and write | read and write any branch of their school; another school's is `404` |
+| Branch admin (grant pinned to a branch) | read only (`can_edit` false everywhere), PATCH `403` | read and write `branch_scoped` rows | `404` |
+| CX staff (platform tenant) | the platform default layer | `404` (the platform layer has no branches) | `404` |
+| Anyone without the key | `403` | `403` | `403` |
+
+The same holds in a school with one branch: its branch admin is still narrowed
+to that branch, and its school admin may write either scope.
+
+The events a branch may set are exactly those whose every sender passes the
+branch the event is about:
+
+| Event | branch_scoped | Why |
+|---|---|---|
+| `billing.invoice_issued`, `billing.payment_received`, `billing.statement_issued` | true | Sent only by `vs_finance.document_email`, with the invoice's or receipt's branch, or the customer's for a statement |
+| `billing.debit_note_issued`, `billing.credit_note_issued` | true | Sent only by `vs_finance.notifications`, with the note's branch |
+| `billing.invoice_overdue` | true | Sent only by `vs_finance.dunning`, with the overdue invoice's branch |
+| `workflow.stage_activated`, `workflow.rejected`, `workflow.returned`, `workflow.final_approved` | true | Sent only by `vs_workflow.tasks.dispatch_notification`, with the instance's branch (copied from the document) |
+| `ticket.*`, `export.*`, `task.*`, `todo.task_completed`, `onboarding.*` (non-transactional), `payments.unbooked_receipts_digest` | false | Not about a branch: sent for a person, a job, a ticket or the whole tenant |
+| Every transactional event | false | Settings never apply to it at any scope |
+| Every inactive event (`student.*`, `workflow.submitted` and the rest) | false | No sender exists yet; the flag is set in the change that wires one |
+
+A branch that is `null` on the document (an invoice filed for the whole school)
+resolves at the school row, which is what a null branch means.
+
 **Settings isolation holds.** The scope is `request.tenant`, the auth layer
 refuses a slug that is not the caller's own with `404`, and this view does not
 opt in via `platform_cross_tenant_param` - so not even CX staff can reach one
-school's rows from here. Tested at `tests.py:702-715,748-763`.
+school's rows from here. A `?branch=` outside the tenant is the same `404`.
+Covered in `tests.py` (`SettingsApiTests`) and `tests_branch_settings.py`.
 
 **Template isolation does not exist, and should not.** The catalogue is global
 by design. The residual risk is the platform-wide one recorded against
@@ -324,14 +411,14 @@ being attached to a school-tenant role
 
 | File | Responsibility |
 |---|---|
-| `views.py:419-652` | `NotificationSettingViewSet` - scope, matrix build, the validated bulk upsert |
+| `views.py` | `NotificationSettingViewSet` - scope (tenant, branch, reach), matrix build, the validated bulk upsert |
 | `views.py:659-851` | `NotificationTemplateViewSet` - CRUD, `available-events`, preview |
 | `views.py:858-891` | `NotificationEventTypeViewSet` - the read-only catalogue |
 | `serializers.py:238-364` | `NotificationTemplateSerializer` and the markup-ownership resolver |
 | `serializers.py:371-492` | Draft + preview serializers, including `_apply_draft` |
 | `serializers.py:499-549` | Matrix row shape and the bulk-update payload validator |
 | `services/preview.py` | `template_variables`, `sample_context` |
-| `services/settings.py` | `resolve_channels_bulk` - shared with dispatch |
+| `services/settings.py` | `settings_rows`, `resolve_settings_bulk` (value and provenance), `resolve_channels_bulk` - shared with dispatch |
 | `models.py:265-304` | `NotificationTemplate.save()` and `standard_html()` |
 | `services/seed.py` | `seed_event_types`, `seed_platform_settings`, `seed_school_settings`, `seed_notification_templates` |
 | `management/commands/` | The four seed commands, including the permissions seed |
@@ -365,6 +452,15 @@ being attached to a school-tenant role
   re-sending the stored value and a refused PATCH record nothing; the platform
   layer is recorded as such; a template edit records what changed and a create
   is recorded.
+- `tests_branch_settings.py` - a branch admin writing their own branch, `404`
+  for another branch and for another school's, `403` on the whole-school PATCH,
+  `can_edit` at both scopes; a school admin writing both scopes and `null`
+  resetting a branch row; `BRANCH_NOT_CONFIGURABLE`, the transactional and
+  in-app refusals at a branch, all-or-nothing, `RESET_NEEDS_BRANCH`; the
+  platform layer refusing a branch; cross-tenant isolation and a single-branch
+  school; branch audit; the resolver's layering; dispatch obeying Ikeja's row
+  for Ikeja sends only and never for another tenant's recipients; the
+  migration forward and in reverse.
 
 This is the best-covered part of the module. Gaps:
 
@@ -380,5 +476,3 @@ This is the best-covered part of the module. Gaps:
 5. **Inactive event types** - nothing asserts that the 13 registered-but-inactive
    entries stay out of the matrix, the catalogue and `available-events`.
 6. **`event-types/`** has no test at all, list or detail.
-7. **A settings PATCH mixing a valid and an invalid item** - the all-or-nothing
-   guarantee is implemented (`views.py:620-625`) but never asserted.

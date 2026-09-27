@@ -138,6 +138,8 @@ def notify_credit_note_issued(note, *, actor_user=None):
             context=context,
             recipients=[],
             school=school,
+            # The branch the note is filed under decides whose settings apply.
+            branch=note.branch,
             unregistered_recipients=[
                 UnregisteredRecipient(email=customer.billing_email or "", name=customer.name),
             ],

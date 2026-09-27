@@ -337,6 +337,7 @@ def _dispatch_notice(notice, *, actor_user=None):
             context=context,  # Render variables for template.
             recipients=[],  # No registered portal recipients are targeted here.
             school=school,  # Optional school scope.
+            branch=invoice.branch,  # The overdue invoice's branch decides whose settings apply.
             unregistered_recipients=[  # Billing emails can receive without portal accounts.
                 UnregisteredRecipient(  # Customer recipient payload.
                     email=customer.billing_email or "", name=customer.name,  # Recipient email and display name.

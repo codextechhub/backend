@@ -1,8 +1,9 @@
 """The administrative changes to notifications that must leave a record.
 
 Two things an administrator changes here decide what people receive. A
-notification setting switches a channel on or off for one event, for one tenant
-or, at the platform layer, for every tenant that has not chosen for itself. A
+notification setting switches a channel on or off for one event, for one branch,
+for one tenant or, at the platform layer, for every tenant that has not chosen
+for itself. A
 template is the wording of a message, and it is global: one row per event and
 channel, sent to every tenant on the platform. A bursar who stops getting
 payment emails, or a school whose invoice email suddenly reads differently,
@@ -29,37 +30,57 @@ TEMPLATE_AUDIT_FIELDS = (
 )
 
 
-def record_setting_change(*, actor, tenant, event_type, channel, before, after):
-    """Record one setting row switched, created or re-pinned at one layer.
+def record_setting_change(*, actor, tenant, event_type, channel, before, after, branch=None):
+    """Record one setting row switched, created, re-pinned or removed at one layer.
 
     *before* is the value stored at this layer before the write, or ``None``
-    when the layer had no row and the value was inherited. *tenant* ``None``
-    is the platform default layer. A write that leaves the stored value as it
-    was is not a change and records nothing.
+    when the layer had no row and the value was inherited. *after* is the value
+    written, or ``None`` when the row was removed so the layer inherits again.
+    *tenant* ``None`` is the platform default layer; a *branch* makes it that
+    branch's own layer, and the branch is named in the entity id, the summary
+    and the metadata so one branch's history never reads as the tenant's. A
+    write that leaves the stored value as it was is not a change and records
+    nothing.
     """
     if before == after:
         return None
-    layer = "platform default" if tenant is None else "tenant"
-    state = "on" if after else "off"
+    if tenant is None:
+        layer, layer_label = "platform", "platform default"
+    elif branch is not None:
+        layer, layer_label = "branch", f"branch {branch.name}"
+    else:
+        layer, layer_label = "tenant", "tenant"
+    if after is None:
+        change = "reset to inherit"
+    else:
+        change = f"turned {'on' if after else 'off'}"
+    entity_id = f"{event_type.key}:{channel}"
+    if branch is not None:
+        entity_id = f"{entity_id}:branch-{branch.pk}"
+    metadata = {
+        "event_type_key": event_type.key,
+        "channel": channel,
+        "layer": layer,
+        "created": before is None,
+        "removed": after is None,
+    }
+    if branch is not None:
+        metadata["branch_id"] = branch.pk
+        metadata["branch_name"] = branch.name
     return emit_audit_event(
         module_key=AuditModuleKey.CONFIG,
         action_type=AuditActionType.CONFIG_CHANGED,
         entity_type="NotificationSetting",
-        entity_id=f"{event_type.key}:{channel}",
+        entity_id=entity_id,
         entity_label=f"{event_type.label} ({channel})",
         actor_user=actor,
         tenant=tenant,
-        summary=f"Notification {event_type.key} by {channel} turned {state} ({layer})",
+        summary=f"Notification {event_type.key} by {channel} {change} ({layer_label})",
         before_data={"is_enabled": before},
         diff_data=AuditDiffService.diff_dicts(
             {"is_enabled": before}, {"is_enabled": after},
         ),
-        metadata={
-            "event_type_key": event_type.key,
-            "channel": channel,
-            "layer": "platform" if tenant is None else "tenant",
-            "created": before is None,
-        },
+        metadata=metadata,
     )
 
 

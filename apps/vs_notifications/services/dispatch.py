@@ -17,10 +17,16 @@ tenant and each group resolves its own channel settings, so a school muting
 an event cannot silence the platform staff reading the same event. CX staff
 and any other school-less recipients are first-class.
 
+A send may also name the BRANCH the event is about: the branch an invoice is
+filed under, the branch a workflow document belongs to. For a ``branch_scoped``
+event that branch's own settings are consulted first, so Lekki can switch off
+fee emails for Lekki alone. The branch speaks only for recipients its own
+tenant owns; the resolver drops it for any other owner group.
+
 Responsibilities:
   - Validate the event key
-  - Resolve which channels fire (resolve_channels - school row → platform row
-    → default_enabled; transactional events bypass settings)
+  - Resolve which channels fire (resolve_channels - branch row → tenant row
+    → platform row → default_enabled; transactional events bypass settings)
   - Render templates (subject, plain body, optional HTML body)
   - Create Notification records (storing metadata + html_body)
   - Enqueue Celery tasks via transaction.on_commit (email only)
@@ -88,6 +94,7 @@ class NotificationService:
         recipients: list,
         tenant=None,
         school=None,
+        branch=None,
         suppress: bool = False,
         unregistered_recipients: Optional[list[UnregisteredRecipient]] = None,
         metadata: Optional[dict] = None,
@@ -108,6 +115,11 @@ class NotificationService:
             school:                  Optional School instance, read for its
                                      tenant when `tenant` is not given.
                                      Defaults to None (platform scope).
+            branch:                  Optional vs_tenants.Branch the event is
+                                     ABOUT. Consulted for branch_scoped events,
+                                     and only for recipients owned by the
+                                     branch's own tenant. None means the event
+                                     belongs to the tenant as a whole.
             suppress:                If True, return immediately without dispatching.
             unregistered_recipients: Optional list of UnregisteredRecipient - for
                                      recipients who have no User account yet.
@@ -168,17 +180,15 @@ class NotificationService:
         all_targets = _build_targets(recipients, unregistered_recipients or [])
         groups = _group_by_owner_tenant(all_targets, origin_tenant)
 
-        # ── 3. Resolve which channels fire, per OWNER tenant (owner row →
-        #        platform → default; transactional events bypass settings). The
-        #        recipient's own settings decide what reaches the recipient: a
-        #        school muting an event must not silence platform staff.
+        # ── 3. Resolve which channels fire, per OWNER tenant (branch row →
+        #        owner row → platform → default; transactional events bypass
+        #        settings). The recipient's own settings decide what reaches the
+        #        recipient: a school muting an event must not silence platform
+        #        staff, and the resolver ignores a branch from another tenant.
         plans = []
         for owner_tenant, targets in groups:
-            enabled_channels = [
-                channel
-                for channel, on in resolve_channels(event_type, tenant=owner_tenant).items()
-                if on
-            ]
+            resolved = resolve_channels(event_type, tenant=owner_tenant, branch=branch)
+            enabled_channels = [channel for channel, on in resolved.items() if on]
             if not enabled_channels:
                 logger.debug(
                     "All channels disabled for event_key=%s (owner tenant=%s) - "

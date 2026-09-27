@@ -26,6 +26,13 @@ Each registry entry defines one ``NotificationEventType`` row:
     Optional, default False. True bypasses every ``NotificationSetting``
     check and always dispatches on the supported channels, ``is_active``
     still winning. For password resets, invitations and other must-send mail.
+``branch_scoped``
+    Optional, default False. True when every place that sends the event
+    passes ``branch=``, the branch the event is about, so a branch may switch
+    the event's channels on or off for itself. Set it in the same change that
+    wires the last sender; an event some sender fires without a branch stays a
+    whole-tenant setting, because a branch choice it could not honour would be
+    a switch that does nothing.
 ``is_active``
     Optional, default True. False registers the event but keeps it out of the
     settings matrix, the admin catalogue and dispatch. It is an honesty flag:
@@ -84,6 +91,9 @@ class NotificationErrorCode:
     IN_APP_ALWAYS_ENABLED                 = "IN_APP_ALWAYS_ENABLED"
     TRANSACTIONAL_NOT_CONFIGURABLE        = "TRANSACTIONAL_NOT_CONFIGURABLE"
     FILTER_REQUIRED                       = "FILTER_REQUIRED"
+    BRANCH_NOT_CONFIGURABLE               = "BRANCH_NOT_CONFIGURABLE"
+    RESET_NEEDS_BRANCH                    = "RESET_NEEDS_BRANCH"
+    BRANCH_SCOPE_REQUIRED                 = "BRANCH_SCOPE_REQUIRED"
     ACCESS_DENIED                         = "ACCESS_DENIED"
     NO_EMAIL_ADDRESS                      = "NO_EMAIL_ADDRESS"
 
@@ -325,6 +335,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_workflow",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "branch_scoped": True,
     },
     {
         "key": "workflow.submitted",
@@ -351,6 +362,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_workflow",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "branch_scoped": True,
     },
     {
         "key": "workflow.returned",
@@ -359,6 +371,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_workflow",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "branch_scoped": True,
     },
     {
         "key": "workflow.final_approved",
@@ -367,6 +380,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_workflow",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "branch_scoped": True,
     },
     {
         "key": "workflow.escalated",
@@ -387,6 +401,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_billing",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "branch_scoped": True,
     },
     {
         "key": "billing.statement_issued",
@@ -397,6 +412,7 @@ EVENT_TYPE_REGISTRY = [
         # so there is no in-app inbox to deliver a statement to.
         "supported_channels": [ChannelChoices.EMAIL],
         "default_enabled": True,
+        "branch_scoped": True,
     },
     {
         "key": "billing.debit_note_issued",
@@ -405,6 +421,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_finance",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "branch_scoped": True,
     },
     {
         "key": "billing.credit_note_issued",
@@ -413,6 +430,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_finance",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "branch_scoped": True,
     },
     {
         "key": "billing.payment_received",
@@ -421,6 +439,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_billing",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "branch_scoped": True,
     },
     {
         "key": "billing.invoice_overdue",
@@ -429,6 +448,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_billing",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "branch_scoped": True,
     },
     # Payment gateway operations (vs_payments). Money has already moved at the
     # provider by the time either of these fires, so they are operational alarms

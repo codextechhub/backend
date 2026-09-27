@@ -164,10 +164,15 @@ def _audit(delivery, action, message, *, actor_user=None, status=FinanceAuditSta
 # --------------------------------------------------------------------------- #
 
 def _render(delivery):
-    """Build the PDF and the template context for one delivery.
+    """Build the PDF, the template context, the filename and the branch for one delivery.
 
     Loading the document here, rather than passing the object through from the
     caller, is what lets a retry reproduce a delivery from its stored row alone.
+
+    The branch is the one the email is about, which decides whose notification
+    settings apply: the branch an invoice or receipt is filed under, and for a
+    statement the customer's own branch. None means the document belongs to the
+    tenant as a whole.
     """
     document_type = delivery.document_type
     customer = delivery.customer
@@ -180,7 +185,7 @@ def _render(delivery):
             "customer", "entity__tenant", "branch",
         ).prefetch_related("lines__tax_code", "lines__cost_center", "lines__revenue_account").get(pk=delivery.document_id)
         return invoice_pdf(invoice, note=delivery.note), _invoice_context(invoice, delivery), \
-            f"Invoice-{invoice.document_number}.pdf"
+            f"Invoice-{invoice.document_number}.pdf", invoice.branch
 
     if document_type == FinanceDeliveryDocument.RECEIPT:
         from .models import Payment
@@ -190,14 +195,15 @@ def _render(delivery):
             "customer", "entity__tenant", "branch",
         ).prefetch_related("allocations__invoice").get(pk=delivery.document_id)
         return receipt_pdf(payment, note=delivery.note), _receipt_context(payment, delivery), \
-            f"Receipt-{payment.document_number}.pdf"
+            f"Receipt-{payment.document_number}.pdf", payment.branch
 
     from .pdf import statement_pdf
 
     pdf = statement_pdf(
         customer, start_date=delivery.period_start, end_date=delivery.period_end, note=delivery.note,
     )
-    return pdf, _statement_context(customer, delivery), f"Statement-{customer.code}.pdf"
+    return pdf, _statement_context(customer, delivery), f"Statement-{customer.code}.pdf", \
+        customer.branch
 
 
 def _naira(kobo) -> str:
@@ -281,7 +287,7 @@ def _queue(delivery_id: int, *, actor_user=None):
             "This customer has no billing email. Add one on the customer record first."
         )
 
-    pdf, context, filename = _render(delivery)
+    pdf, context, filename, branch = _render(delivery)
     delivery.pdf_file.save(filename, ContentFile(pdf), save=False)
     delivery.queued_at = timezone.now()
     delivery.failure_reason = ""
@@ -293,6 +299,7 @@ def _queue(delivery_id: int, *, actor_user=None):
         context=context,
         recipients=[],
         school=school,
+        branch=branch,
         unregistered_recipients=[
             UnregisteredRecipient(email=email, name=delivery.customer.name)
             for email in delivery.recipients

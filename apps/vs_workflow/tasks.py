@@ -15,7 +15,7 @@ def dispatch_notification(*, instance_id: str, event_key: str,
         return
     from vs_workflow.models import WorkflowInstance
     try:
-        instance = WorkflowInstance.objects.select_related("template").get(pk=instance_id)
+        instance = WorkflowInstance.objects.select_related("template", "branch").get(pk=instance_id)
     except WorkflowInstance.DoesNotExist:
         return
     # The school's own switch comes first: off means this tenant's approvals
@@ -42,6 +42,8 @@ def dispatch_notification(*, instance_id: str, event_key: str,
             event_key=event_key,
             recipients=recipients,
             school=instance.school,
+            # The document's branch decides whose notification settings apply.
+            branch=instance.branch,
             metadata={"workflow_instance_id": str(instance.id)},
             context={"workflow_instance_id": str(instance.id),
                      "document_type": instance.document_type,

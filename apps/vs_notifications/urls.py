@@ -40,8 +40,9 @@ history_detail = NotificationHistoryViewSet.as_view({"get": "retrieve"})
 
 # ── Settings endpoints (school admin + CX staff) ──────────────────────────────
 # GET returns the EFFECTIVE matrix for the caller's scope; PATCH upserts overrides
-# by (event_type_key, channel). The scope is the asserted tenant; a PLATFORM-kind
-# tenant resolves to the tenant-NULL default layer. There is no ?school= param.
+# by (event_type_key, channel). The scope is the asserted tenant, narrowed to one
+# of its branches by ?branch=<id>; a PLATFORM-kind tenant resolves to the
+# tenant-NULL default layer. There is no ?school= param.
 settings_list   = NotificationSettingViewSet.as_view({"get": "list"})
 settings_update = NotificationSettingViewSet.as_view({"patch": "partial_update"})
 
