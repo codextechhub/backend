@@ -16,6 +16,7 @@ from core.response import success_response, error_response
 
 from vs_notifications.services.acknowledge import acknowledge_record
 from vs_notifications.services.routing import RecordFamily
+from vs_rbac.field_enforcement import FieldReadDenied
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 # ``include_shared=True`` spelled out at each ``branch_q`` call site. A batch
 # with no branch was uploaded for the school as a whole, which is a normal shape
@@ -58,6 +59,7 @@ from .serializers import (
     RollbackImportSerializer,
     StartImportSerializer,
     ValidateImportBatchSerializer,
+    batch_field_readable,
 )
 from .services.audit_service import create_import_audit_log
 from .services.import_executor import execute_import
@@ -89,24 +91,29 @@ def _is_platform(user) -> bool:
     return getattr(getattr(user, "tenant", None), "kind", None) == "PLATFORM"
 
 
-def _format_validation_issues(issues: list[dict]) -> list[dict]:
+def _format_validation_issues(issues: list[dict], *, with_cells: bool = True) -> list[dict]:
     """
     Return a flat, sorted list of validation issues ready for API responses.
     File-level issues (no row) come first, then row issues sorted by row number.
+
+    ``with_cells=False`` leaves out ``raw_value``, the cell each issue quotes
+    from the upload, for a caller who may not read the batch's rows.
     """
+    formatted = []
+    for issue in issues:
+        row = {
+            "severity":  issue.get("severity", "error"),
+            "code":      issue.get("code", ""),
+            "row":       issue.get("row_number"),
+            "column":    issue.get("column_name") or None,
+            "message":   issue.get("message", ""),
+            "help_text": issue.get("help_text") or "",
+        }
+        if with_cells:
+            row["raw_value"] = issue.get("raw_value")
+        formatted.append(row)
     return sorted(
-        [
-            {
-                "severity":  issue.get("severity", "error"),
-                "code":      issue.get("code", ""),
-                "row":       issue.get("row_number"),
-                "column":    issue.get("column_name") or None,
-                "message":   issue.get("message", ""),
-                "raw_value": issue.get("raw_value"),
-                "help_text": issue.get("help_text") or "",
-            }
-            for issue in issues
-        ],
+        formatted,
         key=lambda i: (i["row"] is not None, i["row"] or 0, i["column"] or ""),
     )
 
@@ -690,6 +697,12 @@ class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
     tenants would hand a branch administrator the file behind a batch they
     cannot open, list, validate or read a single issue from.
 
+    The file is a registered field of the batch (``import.batches.file``), so
+    a caller whose role has it switched off is refused with
+    ``field_read_denied`` by the rule the batch detail uses to leave it out.
+    The rule is asked before the file is looked for, so the refusal says
+    nothing about whether the batch holds one.
+
     Read through the file's own storage rather than off the filesystem, and
     served here rather than as a redirect to a media URL, so the bytes come
     back through the same authenticated request that asked for them.
@@ -714,6 +727,8 @@ class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
 
     def get(self, request, **_kwargs):
         batch = self.get_import_batch()
+        if not batch_field_readable(request, batch, "file"):
+            raise FieldReadDenied(["file"])
 
         if not batch.file:
             raise Http404("No file attached to this batch.")
@@ -779,7 +794,10 @@ class ValidateImportBatchView(ImportBatchContextMixin, APIView):
             message="Validation completed successfully.",
             data={
                 "summary": result["summary"],
-                "issues": _format_validation_issues(result["issues"]),
+                "issues": _format_validation_issues(
+                    result["issues"],
+                    with_cells=batch_field_readable(request, import_batch, "preview_rows"),
+                ),
             },
         )
 
@@ -875,6 +893,10 @@ class ImportValidationIssueExportView(ImportBatchContextMixin, APIView):
     """
     GET -> download all validation issues for a batch as a CSV file.
 
+    The Raw Value column quotes the upload cell by cell, so it is left out for
+    a caller who may not read the batch's rows, as the issue detail leaves out
+    the same values. The rest of the report is what fixing the file needs.
+
     docstring-name: Export validation issues
     """
     # FR-012. Importing initial data is a step on the school's own
@@ -889,7 +911,10 @@ class ImportValidationIssueExportView(ImportBatchContextMixin, APIView):
 
     def get(self, request, **_kwargs):
         import_batch = self.get_import_batch()
-        content = generate_validation_issues_csv(import_batch)
+        content = generate_validation_issues_csv(
+            import_batch,
+            with_cells=batch_field_readable(request, import_batch, "preview_rows"),
+        )
         filename = f"validation_issues_batch_{import_batch.id}.csv"
         response = HttpResponse(content, content_type="text/csv")
         response["Content-Disposition"] = f'attachment; filename="{filename}"'

@@ -2,14 +2,17 @@
 
 :mod:`vs_rbac.field_evaluator` decides who may read and write each registered
 field; this module is the only place that acts on the answer. Every surface
-goes through one of four doors, so a rule is never stated twice and never
+goes through one of five doors, so a rule is never stated twice and never
 forgotten in one place while being kept in another:
 
 * :class:`FieldAccessMixin` for DRF serializers;
 * :func:`visible` for a response a view builds by hand;
 * :func:`assert_writable` for a body a view applies without a serializer;
 * :func:`can_read` for a block a view includes or omits as a whole, where the
-  block is not a key of a row and so has no name :func:`visible` could match.
+  block is not a key of a row and so has no name :func:`visible` could match;
+* :meth:`FieldAccessMixin.can_read_field` for a route that serves one field of
+  a record on its own, such as a file download, and so must answer exactly as
+  the record's serializer would, owner rule included.
 
 What enforcement means
 ----------------------
@@ -23,7 +26,9 @@ be refused.
 
 A submitted field the caller cannot write is refused with
 :class:`FieldWriteDenied` (403), naming every offending field at once, and
-nothing is saved. A hidden field and a read-only one are refused in the same
+nothing is saved. A route whose whole response is one field the caller cannot
+read is refused with :class:`FieldReadDenied` (403): there is nothing left to
+serve once the field is withheld. A hidden field and a read-only one are refused in the same
 words, so a refusal tells a caller nothing they did not already know.
 
 Three submissions are dropped rather than refused, because none of them
@@ -77,6 +82,9 @@ SYSTEM_CONTEXT_KEY = "field_access_system_surface"
 #: hidden field and a read-only one alike.
 WRITE_DENIED_MESSAGE = "You do not have permission to change this field."
 
+#: What a caller is told when a route serves nothing but a field they may not read.
+READ_DENIED_MESSAGE = "You do not have permission to read this field."
+
 #: Renders that run for nobody, and why each one may.
 #:
 #: A render inside a request is normally filtered as the person making it. The
@@ -99,6 +107,31 @@ SYSTEM_SURFACES: dict[str, str] = {
 
 _MAP_ATTR = "_rbac_field_access_map"
 _ENTRIES_ATTR = "_rbac_field_access_entries"
+
+
+class FieldReadDenied(APIException):
+    """A caller asked a route for a field their roles do not let them read.
+
+    For a route whose response *is* the field, such as the download of a
+    record's uploaded file. A serializer drops an unreadable field and serves
+    the rest; here nothing would be left, so the request is refused instead.
+    The same envelope as :class:`FieldWriteDenied`, and it is asked before the
+    field's own value is looked at, so the refusal says nothing about whether
+    the record holds one.
+    """
+
+    status_code = 403
+    error_code = "field_read_denied"
+    http_status = 403
+    default_detail = READ_DENIED_MESSAGE
+
+    def __init__(self, fields):
+        self.fields = sorted(set(fields))
+        self.extra = {name: [READ_DENIED_MESSAGE] for name in self.fields}
+        self.message = (
+            "You do not have permission to read: " + ", ".join(self.fields) + "."
+        )
+        super().__init__(self.extra)
 
 
 class FieldWriteDenied(APIException):
@@ -465,6 +498,22 @@ class FieldAccessMixin:
         if user is None or not getattr(user, "is_authenticated", False):
             return False
         return bool(rule(instance, user))
+
+    def can_read_field(self, name: str, instance) -> bool:
+        """Whether this serializer would show *name* of *instance* to its caller.
+
+        The same answer :meth:`to_representation` gives, for a route that serves
+        one field on its own and has no payload to filter: an owner reads
+        everything, a render acting for nobody passes, and otherwise the
+        caller's Read switch on the registered field decides. A name that is
+        not a registered field of this resource reads True, as it does in a
+        payload.
+        """
+        access = self._field_access()
+        if access is None or self._is_owner(instance):
+            return True
+        entry = self._entry_for(name, self._field_entries())
+        return entry is None or access.can_read(entry.key)
 
     def _emits_read_only_fields(self) -> bool:
         return self.field_access_detail and not isinstance(self.parent, ListSerializer)

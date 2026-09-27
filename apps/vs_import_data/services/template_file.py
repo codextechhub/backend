@@ -97,35 +97,36 @@ def generate_template_csv(template: ImportTemplate) -> str:
     return output.getvalue()
 
 
-def generate_validation_issues_csv(import_batch: ImportBatch) -> str:
+def generate_validation_issues_csv(import_batch: ImportBatch, *, with_cells: bool = True) -> str:
     """
     Generate a CSV of all validation issues for an import batch.
     File-level issues (no row) appear first, then row issues sorted by row number.
+
+    ``with_cells=False`` omits the Raw Value column, which quotes the upload cell
+    by cell, for a reader who may not read the batch's rows. The column is
+    absent rather than blank, as a hidden field is absent from a payload.
     """
     output = StringIO()
     writer = csv.writer(output)
 
-    writer.writerow([
-        "Row",
-        "Column",
-        "Severity",
-        "Error Code",
-        "Message",
-        "Raw Value",
-        "Help Text",
-        "Resolved",
-    ])
+    header = ["Row", "Column", "Severity", "Error Code", "Message"]
+    if with_cells:
+        header.append("Raw Value")
+    writer.writerow(header + ["Help Text", "Resolved"])
 
     issues = import_batch.validation_issues.order_by("row_number", "column_name", "created_at")
 
     for issue in issues:
-        writer.writerow([
+        row = [
             issue.row_number if issue.row_number is not None else "File",
             issue.column_name or "",
             issue.severity.upper(),
             issue.code,
             issue.message,
-            issue.raw_value or "",
+        ]
+        if with_cells:
+            row.append(issue.raw_value or "")
+        writer.writerow(row + [
             issue.help_text or "",
             "Yes" if issue.is_resolved else "No",
         ])

@@ -378,6 +378,22 @@ class ImportValidationIssueDetailSerializer(serializers.ModelSerializer):
             "full_name": getattr(user, "full_name", ""),
         }
 
+    def to_representation(self, instance):
+        """The issue, without the cells it quotes to a caller who may not read the rows.
+
+        ``raw_value``, ``normalized_value`` and ``metadata`` are what the uploaded
+        row said, one cell at a time, so they follow the batch's ``preview_rows``
+        switch. The issue itself (row, column, code, message) stays: it is what
+        the reader needs to fix the file.
+        """
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        batch = self.context.get("import_batch") or instance.import_batch
+        if request is not None and not batch_field_readable(request, batch, "preview_rows"):
+            for name in UPLOADED_CELL_FIELDS:
+                data.pop(name, None)
+        return data
+
 
 class ImportValidationIssueResolveSerializer(serializers.ModelSerializer):
     """
@@ -754,6 +770,22 @@ class ImportBatchDetailSerializer(
             "closing_balance_major": str(to_naira(context.closing_balance)),
             "published_statement_id": context.published_statement_id,
         }
+
+
+def batch_field_readable(request, batch, name) -> bool:
+    """Whether the batch detail would show field *name* of *batch* to this caller.
+
+    Asked by every route that serves part of a batch without rendering the
+    detail: the file download, and the validation issues that quote cells of
+    the upload. Answered by :class:`ImportBatchDetailSerializer` itself, so the
+    per-role switch and the finance importer's owner rule decide these routes
+    exactly as they decide the detail, and cannot drift from it.
+    """
+    return ImportBatchDetailSerializer(context={"request": request}).can_read_field(name, batch)
+
+
+#: What a validation issue quotes from the uploaded rows.
+UPLOADED_CELL_FIELDS = ("raw_value", "normalized_value", "metadata")
 
 
 class ImportBatchUploadSerializer(serializers.ModelSerializer):
