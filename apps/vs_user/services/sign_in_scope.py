@@ -171,10 +171,10 @@ def resolve_staff_number_account(*, staff_number: str, tenant: str | None):
     because there is no platform-wide answer to "who is STF/0012".
 
     The match ignores case, since nobody should fail to sign in over ``stf`` and
-    ``STF``. The stored uniqueness is case-sensitive, so two rows may differ only
-    in case; that is ambiguous, and an ambiguous number signs nobody in rather
-    than picking one of them. A blank number never matches, because a blank
-    identifier never reaches here.
+    ``STF``, and so does the stored uniqueness (``uq_staff_number_per_tenant_ci``),
+    so one school holds at most one row per number. Should two rows ever match,
+    the number is ambiguous and signs nobody in rather than picking one of them.
+    A blank number never matches, because a blank identifier never reaches here.
 
     Only an employee's own row is consulted, through ``all_objects`` with the
     tenant named explicitly: there is no ambient tenant before sign-in.
