@@ -911,8 +911,11 @@ def staff_holder(staff, context) -> dict:
     ``id`` is the account's id, because that is what the rest of the platform
     links a person by; ``staff_id`` is the staff record, for opening it. The
     photograph is a signed URL bound to the viewer, as every media link is.
+    ``is_suspended`` is true while their employment or their account is
+    suspended: they keep their post on the chart and the chart says so.
     """
     from core.media import signed_url
+    from vs_user.models import User
 
     user = staff.user
     request = context.get("request")
@@ -927,6 +930,10 @@ def staff_holder(staff, context) -> dict:
         "full_name": _full_name(user),
         "photo": photo,
         "job_title": staff.job_title,
+        "is_suspended": (
+            staff.employment_status == EmploymentStatus.SUSPENDED
+            or user.status == User.Status.SUSPENDED
+        ),
     }
 
 

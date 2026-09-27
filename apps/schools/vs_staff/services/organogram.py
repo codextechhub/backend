@@ -12,9 +12,17 @@ would be a way for one school's document to reach another school's staff.
 
 **Holding a post is narrower than being appointed to it.** An appointment is
 open until it is ended; a holder is somebody in an open appointment who has
-accepted their invitation, still works here, and whose account is active. The
-rule is :func:`holding_q`, written once, because the chart, the vacancies, the
-summary and the approver climbs all have to agree on who is in a seat.
+accepted their invitation and still works here. The rule is :func:`holding_q`,
+written once, because the chart, the vacancies, the summary and a person's line
+manager all have to agree on who is in a seat.
+
+**A suspended person still holds their post.** A teacher suspended for a week
+is still the Annex's class teacher, and a chart that emptied the seat for that
+week would read as a post to fill. The chart draws them in it, marked
+suspended. What they cannot do is approve anything, since their account is
+closed and they cannot sign in: the approver climbs ask
+:func:`approving_q`, which also requires an active account, so a suspended
+manager is passed over rather than handed a document nobody can decide.
 """
 from __future__ import annotations
 
@@ -32,9 +40,14 @@ from ..exceptions import NotEligibleForPost
 def holding_q(prefix: str = "") -> Q:
     """Open appointments whose person is in the seat today. See the module docstring."""
     return (
-        Q(**{f"{prefix}end_date__isnull": True, f"{prefix}staff__user__is_active": True})
+        Q(**{f"{prefix}end_date__isnull": True})
         & ~Q(**{f"{prefix}staff__employment_status__in": tuple(NON_HOLDING_STATUSES)})
     )
+
+
+def approving_q(prefix: str = "") -> Q:
+    """Holders who can act on a document: :func:`holding_q` with an active account."""
+    return holding_q(prefix) & Q(**{f"{prefix}staff__user__is_active": True})
 
 
 def holders_prefetch(to_attr: str = "current_appointments") -> Prefetch:
@@ -393,7 +406,7 @@ class StaffOrganogramService:
 
         rows = (
             StaffPositionAssignment.all_objects.filter(position_id=position_id)
-            .filter(holding_q())
+            .filter(approving_q())
             .select_related("staff__user")
             .order_by("-is_primary", "id")
         )

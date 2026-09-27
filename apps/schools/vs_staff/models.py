@@ -989,14 +989,13 @@ class StaffPositionAssignment(_Owned):
     def is_holding(self) -> bool:
         """Whether this appointment puts somebody in the seat today.
 
-        Open, held by somebody still employed who has accepted their invitation,
-        and whose account is active. A suspended person's account is closed, so
-        their seat reads vacant for as long as the suspension lasts.
+        Open, and held by somebody still employed who has accepted their
+        invitation. A suspended person still holds their seat; they are only
+        passed over as an approver (``services.organogram.approving_q``).
         """
         return (
             self.end_date is None
             and self.staff.employment_status not in NON_HOLDING_STATUSES
-            and self.staff.user.is_active
         )
 
     def clean(self):

@@ -498,6 +498,36 @@ class ChartInvariantTests(OrganogramFixture):
         post = self.get(self.admin, "staff-org-position-detail", pk=self.ikeja_teacher_post.pk)
         self.assertEqual(post.json()["data"]["current_holders"], [])
 
+    def test_a_suspended_person_keeps_their_post_marked_suspended(self):
+        self.appoint(self.ikeja_teacher, self.ikeja_hod)
+        employment.change_status(
+            self.ikeja_teacher, to_status=EmploymentStatus.SUSPENDED, actor=self.admin,
+            reason="Under review",
+        )
+        self.ikeja_teacher.user.refresh_from_db()
+        self.assertFalse(self.ikeja_teacher.user.is_active)
+
+        post = self.get(self.admin, "staff-org-position-detail", pk=self.ikeja_hod.pk)
+        data = post.json()["data"]
+        self.assertFalse(data["is_vacant"])
+        self.assertEqual(data["open_seats"], 0)
+        [holder] = data["current_holders"]
+        self.assertEqual(holder["staff_id"], self.ikeja_teacher.pk)
+        self.assertTrue(holder["is_suspended"])
+
+        tree = self.get(self.admin, "staff-org-tree").json()["data"]
+        [root] = tree
+        [ikeja] = [n for n in root["direct_reports"] if n["id"] == self.ikeja_hod.pk]
+        self.assertTrue(ikeja["holders"][0]["is_suspended"])
+        self.assertNotIn(self.ikeja_hod.pk, [
+            p["id"] for p in self.get(self.admin, "staff-org-vacancies").json()["data"]
+        ])
+
+    def test_a_holder_in_good_standing_is_not_marked_suspended(self):
+        self.appoint(self.ikeja_teacher, self.ikeja_hod)
+        post = self.get(self.admin, "staff-org-position-detail", pk=self.ikeja_hod.pk)
+        self.assertFalse(post.json()["data"]["current_holders"][0]["is_suspended"])
+
     def test_resigning_ends_the_appointment_and_the_post_keeps_its_reports(self):
         appointment = self.appoint(self.ikeja_teacher, self.ikeja_hod)
         last_day = dt.date.today() + dt.timedelta(days=14)
@@ -696,6 +726,19 @@ class WorkflowClimbTests(OrganogramFixture):
     def test_a_vacant_manager_post_parks_rather_than_reaching_further(self):
         StaffOrganogramService.close_for_exit(self.hod)
         self.assertEqual(self._resolved(self.ikeja_teacher.user, "DIRECT_MANAGER"), [])
+
+    def test_a_suspended_manager_is_passed_over_as_an_approver(self):
+        # She keeps her post on the chart but cannot sign in to decide anything.
+        employment.change_status(
+            self.hod, to_status=EmploymentStatus.SUSPENDED, actor=self.admin,
+            reason="Under review",
+        )
+        self.assertEqual(self._resolved(self.ikeja_teacher.user, "DIRECT_MANAGER"), [])
+        # The department head climb walks on to the next unit's head instead.
+        self.assertEqual(
+            self._resolved(self.ikeja_teacher.user, "DEPARTMENT_HEAD"),
+            [self.registrar.user.pk],
+        )
 
     def test_specific_position_reaches_nobody_for_a_school_requester(self):
         self.assertEqual(self._resolved(self.ikeja_teacher.user, "SPECIFIC_POSITION"), [])
