@@ -436,6 +436,9 @@ class GuideAnalyticsEventView(APIView):
 
     permission_classes = [IsAuthenticatedAndActive]
     throttle_scope = "guide_analytics"
+    # A school still being set up reads the guides more than anyone, and an
+    # event carries no tenant or user, so there is nothing here to withhold.
+    pending_tenant_surface = True
 
     def post(self, request):
         serializer = GuideAnalyticsEventSerializer(data=request.data)

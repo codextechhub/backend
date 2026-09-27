@@ -190,6 +190,17 @@ class GuideAnalyticsTests(TicketFixtureMixin, TestCase):
         self.assertEqual(refused.status_code, 400)
         self.assertEqual(GuideAnalyticsEvent.objects.count(), 1)
 
+    def test_a_school_being_set_up_can_record_guide_events(self):
+        """The guides are read most before go-live; the summary is not a school's."""
+        from rest_framework.test import APIRequestFactory
+
+        from vs_rbac.permissions import _view_opens_to_pending_tenant
+        from vs_tickets.views import GuideAnalyticsSummaryView
+
+        request = APIRequestFactory().post("/v1/support/guides/analytics/events/")
+        self.assertTrue(_view_opens_to_pending_tenant(GuideAnalyticsEventView(), request))
+        self.assertFalse(_view_opens_to_pending_tenant(GuideAnalyticsSummaryView(), request))
+
     def test_event_ingest_is_scoped_and_rate_limited_per_user(self):
         payload = {
             "name": GuideAnalyticsEventName.GUIDE_VIEWED,
