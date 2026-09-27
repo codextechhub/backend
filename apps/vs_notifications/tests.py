@@ -990,6 +990,120 @@ class SettingsApiTests(_NotifFixture):
         self.assertEqual(resp.status_code, 400)
 
 
+class NotificationChangeAuditTests(_NotifFixture):
+    """Every administrative change here leaves a row in the platform audit trail.
+
+    A school admin who switches off fee-payment emails for the whole school, or
+    a CodeX editor who rewrites the invoice email every school receives, changes
+    what people are sent. Somebody later asking why the emails stopped has to be
+    able to find out who did it.
+    """
+
+    def _events(self, entity_type):
+        from vs_audit.models import AuditEvent
+
+        return AuditEvent.objects.filter(entity_type=entity_type).order_by("event_at")
+
+    def _patch_setting(self, user, is_enabled):
+        return self._client(user).patch(
+            "/v1/notify/settings/update/",
+            {"updates": [{"event_type_key": "ticket.created",
+                          "channel": "email", "is_enabled": is_enabled}]},
+            format="json",
+        )
+
+    def test_a_school_switching_a_channel_off_is_recorded(self):
+        resp = self._patch_setting(self.admin_a, False)
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+        event = self._events("NotificationSetting").get()
+        self.assertEqual(event.actor_user, self.admin_a)
+        self.assertEqual(event.tenant_id, self.school_a.tenant_id)
+        self.assertEqual(event.module_key, "CONFIG")
+        self.assertEqual(event.action_type, "CONFIG_CHANGED")
+        self.assertTrue(event.metadata["created"])
+        self.assertEqual(event.entity_id, "ticket.created:email")
+        self.assertEqual(event.diff_data, {"is_enabled": {"before": None, "after": False}})
+
+    def test_switching_it_back_is_a_second_record(self):
+        self._patch_setting(self.admin_a, False)
+        self._patch_setting(self.admin_a, True)
+
+        events = list(self._events("NotificationSetting"))
+        self.assertEqual([e.metadata["created"] for e in events], [True, False])
+        self.assertEqual(
+            events[1].diff_data, {"is_enabled": {"before": False, "after": True}},
+        )
+
+    def test_resending_the_stored_value_records_nothing(self):
+        self._patch_setting(self.admin_a, False)
+        self._patch_setting(self.admin_a, False)
+        self.assertEqual(self._events("NotificationSetting").count(), 1)
+
+    def test_a_refused_patch_records_nothing(self):
+        resp = self._client(self.cx).patch(
+            "/v1/notify/settings/update/",
+            {"updates": [
+                {"event_type_key": "ticket.created", "channel": "email", "is_enabled": False},
+                {"event_type_key": "ticket.created", "channel": "in_app", "is_enabled": False},
+            ]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(self._events("NotificationSetting").exists())
+
+    def test_the_platform_default_layer_is_recorded_as_such(self):
+        resp = self._patch_setting(self.cx, False)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        event = self._events("NotificationSetting").get()
+        self.assertEqual(event.actor_user, self.cx)
+        self.assertEqual(event.metadata["layer"], "platform")
+
+    def test_editing_a_template_is_recorded_with_what_changed(self):
+        from .models import NotificationTemplate
+
+        template = NotificationTemplate.objects.get(
+            event_type=self._event("user.invited"), channel=ChannelChoices.EMAIL,
+        )
+        old_subject = template.subject
+        resp = self._client(self.cx).patch(
+            f"/v1/notify/templates/{template.id}/",
+            {"subject": "Your invitation to XVS"}, format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+        event = self._events("NotificationTemplate").get()
+        self.assertEqual(event.actor_user, self.cx)
+        self.assertEqual(event.action_type, "CONFIG_CHANGED")
+        self.assertFalse(event.metadata["created"])
+        self.assertEqual(event.entity_id, str(template.pk))
+        self.assertEqual(
+            event.diff_data["subject"],
+            {"before": old_subject, "after": "Your invitation to XVS"},
+        )
+        self.assertEqual(event.before_data["subject"], old_subject)
+
+    def test_creating_a_template_is_recorded(self):
+        from .models import NotificationTemplate
+
+        template = NotificationTemplate.objects.get(
+            event_type=self._event("ticket.created"), channel=ChannelChoices.EMAIL,
+        )
+        event_type_id, channel = template.event_type_id, template.channel
+        template.delete()
+
+        resp = self._client(self.cx).post(
+            "/v1/notify/templates/",
+            {"event_type": str(event_type_id), "channel": channel,
+             "subject": "New ticket", "body": "A ticket was raised."},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        event = self._events("NotificationTemplate").get()
+        self.assertTrue(event.metadata["created"])
+        self.assertEqual(event.diff_data["body"], {"before": None, "after": "A ticket was raised."})
+
+
 # ---------------------------------------------------------------------------
 # History - school scoping
 # ---------------------------------------------------------------------------

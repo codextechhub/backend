@@ -11,8 +11,8 @@ Baseline: the `vs_notifications` suite is **85 tests, all green**
 suite does not currently catch. Nothing here is speculative - every claim is
 traced to a file and line.
 
-**Status: §1 and §2 are FIXED (`373a918`, 26 August 2026); everything else is
-recorded, not yet fixed.** Each fixed item keeps its original account so the
+**Status: §1 and §2 are FIXED (`373a918`, 26 August 2026) and §9 is FIXED
+(27 September 2026); everything else is recorded, not yet fixed.** Each fixed item keeps its original account so the
 defect stays readable, with the resolution stated at the top of the section.
 
 ---
@@ -29,7 +29,7 @@ defect stays readable, with the resolution stated at the top of the section.
 | 6 | `mark-read` leaks a fact about notification ids the caller does not own | **Medium** |
 | 7 | Date filters are raw strings, so a malformed value is a 500 | **Medium** |
 | 8 | Three list endpoints are unpaginated | **Medium** |
-| 9 | No audit event for template edits or settings changes | **Medium** |
+| 9 | ~~No audit event for template edits or settings changes~~ | **Fixed** |
 | 10 | An engine app imports `vs_schools` | **Medium** |
 | 11 | Smaller defects and dead code | **Low** |
 
@@ -388,7 +388,16 @@ if it does, say so in the response contract rather than leaving it implicit.
 
 ## 9. No audit event for template edits or settings changes
 
-**Medium.**
+**FIXED (27 September 2026),** as this section asked: every write path now goes
+through `services/audit.py`, which emits `CONFIG` / `CONFIG_CHANGED` with the
+setting or template as the entity. A settings PATCH records one event per row
+whose stored value actually changed (`before` is `None` when the layer had no
+row), with the tenant, or the platform layer for a platform caller. A template
+create or edit records the changed columns, before and after, and records
+nothing when an edit changes none of them. A refused PATCH records nothing,
+because nothing is written. Tested in `NotificationChangeAuditTests`.
+
+**Medium** (original account below).
 
 Editing a `NotificationTemplate` changes the message **every tenant on the
 platform** receives. It records `updated_by` and `updated_at` on the row

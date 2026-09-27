@@ -197,10 +197,21 @@ that template on its previous wording forever.
 - **Nothing else writes.** The catalogue, `available-events` and preview are
   reads.
 
-**No audit event is written for any of it.** Changing the copy that every
-tenant on the platform receives, or turning off a tenant's notification channel,
-leaves `updated_by` and `updated_at` on the row and nothing in `vs_audit`
-(`notification_code_issues.md` §9).
+**Every change is audited** through `services/audit.py`, as `CONFIG` /
+`CONFIG_CHANGED` in `vs_audit`:
+
+- a settings PATCH writes one event per `(event type, channel)` whose stored
+  value at that layer changed, entity `NotificationSetting`, id
+  `<event_type_key>:<channel>`, diff `{"is_enabled": {"before", "after"}}`
+  (`before` is `null` when the layer had no row), filed under the tenant or,
+  for a platform caller, the platform. Re-sending the stored value records
+  nothing;
+- a template create or edit writes one event, entity `NotificationTemplate`,
+  with the changed columns before and after (`subject`, `body`, `cta_label`,
+  `cta_url`, `html_body`, `html_is_custom`, `is_active`). An edit that changes
+  none of them records nothing.
+
+`metadata.created` says whether the row was new.
 
 ## 7. Worked example
 
@@ -255,8 +266,6 @@ slice's items:
   list and the event-type catalogue (`views.py:528-535,679-702,869-873`). The
   matrix is currently 56 rows and grows with the registry
   (`notification_code_issues.md` §8).
-- **No audit event for template or settings changes**
-  (`notification_code_issues.md` §9).
 - **`branch_admin` holds the same settings key as `school_admin`** with no
   branch narrowing (`seed_notification_permissions.py:25-29`), because
   `NotificationSetting` has no branch column. A branch admin edits the whole
@@ -351,6 +360,11 @@ being attached to a school-tenant role
   granted in the tenant table, native school role backfilled.
 - `ResponseShapeTests` (`tests.py:1340-1347`) - the settings matrix returns a
   list.
+- `NotificationChangeAuditTests` - a school switching a channel off is
+  recorded with actor, tenant and diff; switching back is a second record;
+  re-sending the stored value and a refused PATCH record nothing; the platform
+  layer is recorded as such; a template edit records what changed and a create
+  is recorded.
 
 This is the best-covered part of the module. Gaps:
 

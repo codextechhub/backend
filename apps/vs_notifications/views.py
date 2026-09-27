@@ -60,6 +60,11 @@ from .serializers import (
     NotificationTemplateSerializer,
     SettingsBulkUpdateSerializer,
 )
+from .services.audit import (
+    record_setting_change,
+    record_template_change,
+    template_snapshot,
+)
 from .services.settings import resolve_channels_bulk
 from .services.routing import notification_route_q
 
@@ -676,6 +681,13 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
         # All valid - upsert override rows by (tenant, event_type, channel).
         with transaction.atomic():
             # The full PATCH is all-or-nothing so settings cannot partially apply.
+            stored = {
+                (row["event_type_id"], row["channel"]): row["is_enabled"]
+                for row in NotificationSetting.all_objects.filter(
+                    tenant=tenant,
+                    event_type__in=event_types.values(),
+                ).values("event_type_id", "channel", "is_enabled")
+            }
             for item in updates:
                 et = event_types[item["event_type_key"]]
                 NotificationSetting.all_objects.update_or_create(
@@ -686,6 +698,14 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
                         "is_enabled": item["is_enabled"],
                         "updated_by": request.user,
                     },
+                )
+                record_setting_change(
+                    actor=request.user,
+                    tenant=tenant,
+                    event_type=et,
+                    channel=item["channel"],
+                    before=stored.get((et.id, item["channel"])),
+                    after=item["is_enabled"],
                 )
 
         # Return the updated effective entries (fresh resolve).
@@ -782,6 +802,7 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
                 )
             raise
 
+        record_template_change(actor=request.user, template=template)
         return success_response(
             "Template created.",
             data=NotificationTemplateSerializer(template).data,
@@ -823,7 +844,9 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        before = template_snapshot(template)
         updated = serializer.save()
+        record_template_change(actor=request.user, template=updated, before=before)
         return success_response(
             "Template updated.",
             data=NotificationTemplateSerializer(updated).data,
