@@ -379,7 +379,55 @@ MRD and affected existing FRDs were checked and why no version change was needed
 8. Use the document creation and render workflow for `.docx` files. Render every
    page and correct clipping, stale version labels, split headings, orphaned
    notes, broken tables, stale contents, and inconsistent page numbers before
-   presenting the documents.
+   presenting the documents. See **Checking a revision** below for how.
+
+### Checking a revision
+
+Two checks, two tools, and neither of them is Microsoft Word. Opening a
+document in Word stops for a file-access grant and sometimes fails to open at
+all, and nothing in this workflow needs it.
+
+**Pages: LibreOffice, headless.** It lays a document out the way Word does
+closely enough to catch every fault in step 8, and it runs with no window and no
+prompt. **Only with the documents' own fonts installed**: the MRD and most FRDs
+are set in Aptos Narrow and some FRDs in Calibri and Consolas. Without them
+LibreOffice substitutes Arial Narrow, every line changes width, and the page
+breaks it shows are not Word's (the MRD came out at 45 pages instead of 48).
+They are installed for this Mac's user from Word's own bundle,
+`/Applications/Microsoft Word.app/Contents/Resources/DFonts`; on another machine,
+copy them from there to `~/Library/Fonts` first, and check with `pdffonts` that
+the PDF names Aptos rather than a substitute. With them, MRD v2.93, M03 v1.18.1
+and M12 v2.12 render to exactly Word's page counts, and M07 v1.19 one page
+shorter, where its long change-log table breaks differently: a difference in
+where a long table breaks is not a fault, a clipped or split row is.
+
+Work on the file where the generator wrote it, send the output outside the repo,
+and give it a profile of its own so it never touches a desktop session:
+
+```bash
+soffice --headless --norestore \
+  -env:UserInstallation=file:///tmp/xvs-lo-profile \
+  --convert-to pdf --outdir /tmp/xvs-render <file>.docx
+pdftoppm -jpeg -r 60 /tmp/xvs-render/<file>.pdf /tmp/xvs-render/page
+```
+
+Look at every page, then at full size wherever a table, a heading or a new
+requirement was added. `soffice` is `/Applications/LibreOffice.app/Contents/MacOS/soffice`,
+linked onto the PATH. Schema-check each new file against the version it
+supersedes as well, with the docx skill's `validate.py --original`.
+
+**Content: the console's Documents screen.** Sign in to console-fe as the local
+platform operator (`create_superuser`) and open Documents: every MRD and FRD
+version on disk is listed and opens in an in-browser reader, which is the
+quickest way to read wording, tables and version labels, and the place to send
+the user to review. Three limits:
+
+- It is a preview. Fonts and page breaks are its own, so layout judgements come
+  from the LibreOffice render, never from this.
+- It is read-only by design. A correction goes into the `tools/` patch script
+  and the document is regenerated, never edited anywhere else.
+- The library is scanned once per backend process. Restart `runserver` after
+  generating a version, or the new file is not listed.
 
 ### Version selection
 
@@ -400,7 +448,8 @@ MRD and affected existing FRDs were checked and why no version change was needed
 ### Review and commit gate
 
 Generate revised MRD and FRD versions after implementation and verification,
-then give the user the code summary and new documents for review. Do not stage or
+then give the user the code summary and new documents for review, naming the
+versions to open on the console's Documents screen. Do not stage or
 commit the implementation or generated documents until the user approves them,
 unless the user explicitly waives this review gate. After approval, stage only
 the intended files, never use `git add -A`, and never include Office lock files,
