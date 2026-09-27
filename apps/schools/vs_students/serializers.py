@@ -6,12 +6,12 @@ Three rules run through every serializer here.
 not conditions, not the emergency contact. A list is the response that gets
 paged, cached and exported; a child's medical history has no business in one.
 
-**Three of the five medical fields carry Field Access switches, and the
-emergency contact does not.** Blood group, allergies and conditions are
-registered fields of ``school.students``, so a school decides per role who
-reads and corrects them. An emergency contact only a school administrator can
-read is useless in the emergency it exists for, and it is an adult's name and
-phone number rather than a child's medical history.
+**Every medical field carries a Field Access switch.** Blood group, allergies,
+conditions and the emergency contact's name and phone are registered fields of
+``school.students`` (see field_access.py), so a school decides per role who
+reads and corrects them. The emergency contact's switches start open: a
+contact only a school administrator can read is useless in the emergency it
+exists for.
 
 **A file is a signed, user-bound, expiring URL, never a path.** An unsigned
 ``/media/<name>`` inside its window is a bearer token.

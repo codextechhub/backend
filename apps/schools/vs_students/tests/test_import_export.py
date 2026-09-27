@@ -856,7 +856,7 @@ class GuardianImportTests(_ImportFixture):
             self.mother,
         )
 
-    def test_the_template_exists_with_all_eleven_columns(self):
+    def test_the_template_exists_with_every_column(self):
         from vs_import_data.models import ImportTemplate
 
         from schools.vs_students.guardian_imports import COLUMNS

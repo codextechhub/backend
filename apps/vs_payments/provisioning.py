@@ -24,8 +24,9 @@ def provision_payout_approval(entity):
     The empty row is not the same as no row. It stands in front of the shared platform
     route, so a change to that shared row can never begin governing this tenant's
     cash-out. A batch submitted against it is refused as unconfigured rather than paid
-    unseen, and goes out only when somebody confirms it in as many words, recorded
-    against them.
+    unseen. Dispatch still needs one human approver other than the requester, or two
+    for a high-value batch (see the payout approval check in services), so a
+    confirmation alone never releases it.
 
     A tenant that wants the default checker and high-value ladder asks for it, through
     the seeding command, and that publishes the steps and the groups they name.
