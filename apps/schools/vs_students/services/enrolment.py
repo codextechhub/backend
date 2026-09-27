@@ -204,12 +204,20 @@ def enrol(
 
 @transaction.atomic
 def confirm_applicant(student, *, actor, reason="", effective_date=None, number=None):
-    """APPLICANT to ENROLLED. Placement is a separate act and reaches ACTIVE."""
+    """APPLICANT to ENROLLED. Placement is a separate act and reaches ACTIVE.
+
+    The school's admission-number rule holds here as it does at enrolment: a
+    school that requires a number does not get an enrolled child without one
+    because the number was left out of the confirmation. An applicant given a
+    number when they applied keeps it and needs none now.
+    """
     if number is not None:
         value = assert_number_allowed(student.tenant, number)
         value = assert_number_free(student.tenant, value, exclude_pk=student.pk)
         student.student_number = value
         student.save(update_fields=["student_number", "updated_at"])
+    elif not (student.student_number or "").strip():
+        assert_number_allowed(student.tenant, "")
     return transition(
         student, StudentStatus.ENROLLED, actor=actor,
         reason=reason or "Application confirmed.",

@@ -467,6 +467,38 @@ class StatusMachineTests(StudentsFixture):
         )
         self.assertEqual(confirm.status_code, 422)
 
+    def test_confirming_without_a_number_is_refused_when_the_school_requires_one(self):
+        from ..services.policy import write_policy
+
+        write_policy(self.tenant, self.admin, required=True, pattern="", hint="")
+        applicant = self.student(
+            status=StudentStatus.APPLICANT, first="Tunde", last="Bello",
+        )
+        refused = self.post(self.admin, "student-confirm", {}, pk=applicant.pk)
+        self.assertEqual(refused.status_code, 422, refused.data)
+        self.assertEqual(
+            refused.data["error"]["code"], "ADMISSION_NUMBER_REQUIRED",
+        )
+        applicant.refresh_from_db()
+        self.assertEqual(applicant.status, StudentStatus.APPLICANT)
+
+        confirmed = self.post(
+            self.admin, "student-confirm", {"student_number": "BS/0142"},
+            pk=applicant.pk,
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.data)
+
+    def test_an_applicant_numbered_on_application_confirms_without_one(self):
+        from ..services.policy import write_policy
+
+        write_policy(self.tenant, self.admin, required=True, pattern="", hint="")
+        applicant = self.student(
+            status=StudentStatus.APPLICANT, first="Amaka", last="Bello",
+            number="BS/0143",
+        )
+        response = self.post(self.admin, "student-confirm", {}, pk=applicant.pk)
+        self.assertEqual(response.status_code, 200, response.data)
+
     def test_rejecting_a_non_applicant_is_refused(self):
         response = self.post(
             self.admin, "student-reject", {"reason": "x"}, pk=self.row.pk,
