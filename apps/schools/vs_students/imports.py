@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field as dc_field
 
+from .ages import date_of_birth_problem
 from .constants import Gender, Relationship, StudentStatus
 
 #: The template's columns, in the order a school reads them.
@@ -186,10 +187,6 @@ MAX_LENGTHS = {
     "guardian_phone": 32,
 }
 
-#: Under 2 or over 25 is a typed year, not a pupil. The same bounds the enrol
-#: form applies, so a file and a form refuse the same child for the same reason.
-MIN_AGE_YEARS = 2
-MAX_AGE_YEARS = 25
 
 
 def _digits(raw: str) -> str:
@@ -255,21 +252,11 @@ def resolve_row(payload: dict, *, tenant, session, batch_branch, multi_branch, p
             "date_of_birth", raw_dob,
         ))
     else:
-        # The year is the digit a spreadsheet gets wrong: 1998 for 2008 puts a
-        # 28-year-old on a school roll and nothing downstream would question it.
-        years = dt.date.today().year - row.date_of_birth.year
-        if years < MIN_AGE_YEARS:
+        # The year is the digit a spreadsheet gets wrong. See ages.py.
+        problem = date_of_birth_problem(row.date_of_birth)
+        if problem:
             row.issues.append(RowIssue(
-                "business_rule",
-                f"That would make the student under {MIN_AGE_YEARS} years old. "
-                f"Check the year.",
-                "date_of_birth", raw_dob,
-            ))
-        elif years > MAX_AGE_YEARS:
-            row.issues.append(RowIssue(
-                "business_rule",
-                f"That would make the student over {MAX_AGE_YEARS}. Check the year.",
-                "date_of_birth", raw_dob,
+                "business_rule", problem, "date_of_birth", raw_dob,
             ))
 
     raw_gender = _text(payload, "gender")

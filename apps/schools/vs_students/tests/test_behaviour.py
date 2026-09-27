@@ -55,6 +55,35 @@ class EnrolmentTests(StudentsFixture):
         )
         self.assertEqual(student.guardian_links.filter(is_primary=True).count(), 1)
 
+    def test_a_birth_date_no_pupil_has_is_refused_as_the_import_refuses_it(self):
+        """1998 for 2008 is the digit a form gets wrong as often as a file."""
+        import datetime as dt
+
+        this_year = dt.date.today().year
+        for dob, words in (
+            (f"{this_year - 28}-05-01", "over 25"),
+            (f"{this_year}-01-01", "under 2"),
+            (f"{this_year + 1}-01-01", "in the future"),
+        ):
+            response = self.post(
+                self.admin, "student-list",
+                self.enrolment_body(date_of_birth=dob),
+            )
+            self.assertEqual(response.status_code, 400, (dob, response.data))
+            self.assertIn(words, str(response.data), dob)
+        self.assertFalse(Student.all_objects.filter(first_name="Zainab").exists())
+
+    def test_editing_a_birth_date_keeps_the_same_bounds(self):
+        import datetime as dt
+
+        pupil = self.student()
+        response = self.patch(
+            self.admin, "student-detail",
+            {"date_of_birth": f"{dt.date.today().year - 30}-01-01"}, pk=pupil.pk,
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("over 25", str(response.data))
+
     def test_two_status_log_rows_are_written_enrolled_then_active(self):
         """Confirmed on the 8th, started on the 11th is a real distinction.
 

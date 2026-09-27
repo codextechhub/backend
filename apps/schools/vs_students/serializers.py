@@ -455,6 +455,16 @@ class StudentDetailSerializer(FieldAccessMixin, _BranchAware):
         ]
 
 
+def _plausible_birth_date(value):
+    """Refuse a birth date no pupil has, with the import's own sentence."""
+    from .ages import date_of_birth_problem
+
+    problem = date_of_birth_problem(value) if value else ""
+    if problem:
+        raise serializers.ValidationError(problem)
+    return value
+
+
 class StudentWriteSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Editing a record. Class and status are deliberately absent.
 
@@ -479,6 +489,9 @@ class StudentWriteSerializer(FieldAccessMixin, serializers.ModelSerializer):
             "emergency_contact_name", "emergency_contact_phone",
             "enrolment_date",
         ]
+
+    def validate_date_of_birth(self, value):
+        return _plausible_birth_date(value)
 
     def validate(self, attrs):
         # Refused explicitly rather than silently dropped: a school that types
@@ -561,6 +574,9 @@ class EnrolmentWriteSerializer(FieldAccessMixin, serializers.Serializer):
     confirm_duplicate = serializers.BooleanField(default=False)
 
     guardians = GuardianWriteSerializer(many=True)
+
+    def validate_date_of_birth(self, value):
+        return _plausible_birth_date(value)
 
     def validate(self, attrs):
         if not attrs.get("as_applicant") and not attrs.get("school_class"):
