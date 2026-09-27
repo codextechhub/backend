@@ -10992,6 +10992,157 @@ class AdjustmentThresholdGateTests(TestCase):
         self.assertEqual(_count(9), _count(1), "the gate is being resolved per row")
 
 
+class AdjustmentBatchConfirmationTests(TestCase):
+    """A batch posts under the same approval guards as one document posted on its own.
+
+    Every school starts with its adjustment routes published but empty, which is
+    approval-undecided: a single refund or write-off is refused until the bursar
+    confirms it goes out without approval, and the confirmation is recorded
+    against her. A batch of a hundred is the same hundred decisions, so it is
+    held to the same confirmation and leaves the same hundred records.
+    """
+
+    def setUp(self):
+        import io
+
+        from django.core.management import call_command
+        from schools.vs_schools.models import School
+
+        from core.test_utils import TenantAPIClient
+        from vs_finance.approvals import ensure_tenant_approval_templates
+
+        call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
+        seed_currencies()
+
+        school = School.objects.create(
+            name="Bright Star School", slug="bright-star-batch", code="BSBAT", status="ACTIVE")
+        self.entity = LedgerEntity.objects.create(
+            name="Bright Star Books", code="BSBBK", kind=LedgerEntity.Kind.TENANT,
+            tenant=school.tenant,
+        )
+        seed_chart_of_accounts(self.entity)
+        year = FiscalYear.objects.create(
+            entity=self.entity, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        FiscalPeriod.objects.create(
+            entity=self.entity, fiscal_year=year, period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+            status=PeriodStatus.OPEN,
+        )
+        self.customer = Customer.objects.create(
+            entity=self.entity, code="CBATCH", name="Okafor Family",
+            receivable_account=Account.objects.get(entity=self.entity, code="1200"),
+        )
+        ensure_tenant_approval_templates(school.tenant, with_default_stages=False)
+
+        self.bursar = _school_finance_requester(school, "bursar-batch@test.com")
+        self.client = TenantAPIClient(user=self.bursar)
+        self.invoices = [self._invoice(amount) for amount in (70_000, 90_000)]
+
+    def _invoice(self, amount):
+        invoice = Invoice.objects.create(
+            entity=self.entity, customer=self.customer,
+            invoice_date=datetime.date(2026, 1, 10), due_date=datetime.date(2026, 1, 20),
+        )
+        InvoiceLine.objects.create(
+            invoice=invoice, line_no=1, quantity=1, unit_price=amount,
+            revenue_account=Account.objects.get(entity=self.entity, code="4100"),
+        )
+        post_invoice(invoice)
+        return invoice
+
+    def _batch(self, **extra):
+        return self.client.post(
+            f"/v1/finance/ar-adjustments/batch/?entity={self.entity.code}",
+            {
+                "kind": "WRITEOFF", "action": "POST", "date": "2026-01-25",
+                "reason": "Balances confirmed uncollectable",
+                "items": [{"invoice": invoice.pk} for invoice in self.invoices],
+                **extra,
+            },
+            format="json",
+        )
+
+    def _recorded(self):
+        from vs_audit.models import AuditEvent
+
+        return set(AuditEvent.objects.filter(
+            action_type="POSTED_WITHOUT_APPROVAL", entity_type="WriteOffRequest",
+        ).values_list("entity_id", "actor_user_id"))
+
+    def test_an_unconfirmed_batch_is_refused_and_leaves_nothing_behind(self):
+        response = self._batch()
+
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertFalse(WriteOffRequest.objects.filter(entity=self.entity).exists())
+        for invoice in self.invoices:
+            invoice.refresh_from_db()
+            self.assertGreater(invoice.balance_due, 0)
+        self.assertEqual(self._recorded(), set())
+
+    def test_a_confirmed_batch_posts_and_records_each_document_against_her(self):
+        response = self._batch(confirm_without_approval=True, reason="Head agreed")
+
+        self.assertEqual(response.status_code, 201, response.content)
+        posted = WriteOffRequest.objects.filter(
+            entity=self.entity, status=DocumentStatus.POSTED)
+        self.assertEqual(posted.count(), 2)
+        self.assertEqual(
+            self._recorded(), {(str(w.pk), self.bursar.pk) for w in posted})
+
+    def test_the_single_route_refuses_and_records_the_same_way(self):
+        """The rule the batch now matches, asserted here so the two cannot drift."""
+        from vs_finance.models import WriteOffRequest as Request
+
+        write_off = Request.objects.create(
+            entity=self.entity, invoice=self.invoices[0], amount=70_000,
+            write_off_date=datetime.date(2026, 1, 25), reason="Uncollectable",
+            created_by=self.bursar,
+        )
+        url = f"/v1/finance/write-offs/{write_off.pk}/post/?entity={self.entity.code}"
+
+        refused = self.client.post(url, {}, format="json")
+        confirmed = self.client.post(url, {"confirm_without_approval": True}, format="json")
+
+        self.assertEqual(refused.status_code, 409, refused.content)
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        self.assertEqual(self._recorded(), {(str(write_off.pk), self.bursar.pk)})
+
+    def test_an_unconfirmed_refund_batch_is_refused_too(self):
+        """Both kinds go through one guard, so a refund batch cannot slip past it."""
+        from vs_finance.models import BankAccount
+
+        payer = Customer.objects.create(
+            entity=self.entity, code="CBATCR", name="Adeyemi Family",
+            receivable_account=Account.objects.get(entity=self.entity, code="1200"),
+        )
+        payment = Payment.objects.create(
+            entity=self.entity, customer=payer, amount=50_000,
+            payment_date=datetime.date(2026, 1, 12),
+            deposit_account=Account.objects.get(entity=self.entity, code="1100"),
+        )
+        post_payment(payment)
+        bank = BankAccount.objects.create(
+            entity=self.entity, name="GTBank Operations",
+            gl_account=Account.objects.get(entity=self.entity, code="1100"),
+        )
+
+        response = self.client.post(
+            f"/v1/finance/ar-adjustments/batch/?entity={self.entity.code}",
+            {
+                "kind": "REFUND", "action": "POST", "date": "2026-01-18",
+                "bank_account": bank.pk,
+                "items": [{"customer": payer.code, "amount": 20_000}],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertFalse(Refund.objects.filter(entity=self.entity).exists())
+
+
+
 # Group tests for Adjustment Threshold Repair Migration Tests.
 class AdjustmentThresholdRepairMigrationTests(TestCase):
     """Migration 0021, which moves the threshold onto already-seeded ladders.

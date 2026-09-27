@@ -99,8 +99,14 @@ def _stage_for(stages, days_overdue: int):
 
 @transaction.atomic
 # Generate overdue invoice reminders.
-def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_user=None):
+def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_user=None,
+                     scope=None):
     """Raise dunning notices for ``entity``'s overdue invoices as at ``as_of`` (today default).
+
+    ``scope`` (a :class:`vs_rbac.scoping.BranchScope`) limits the run to the invoices
+    a branch-bound caller can reach, so a bursar at Lekki chases Lekki's debtors and
+    the school-wide ones, never Ikeja's. ``None`` runs over the whole entity, which is
+    what the scheduled daily run does.
 
     For each posted, not-fully-paid invoice with an outstanding balance, days-overdue is
     measured from its due date (falling back to its invoice date) and the invoice is
@@ -131,7 +137,7 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
     today = timezone.now().date()
     cutoff = None if as_of >= today else as_of  # Only rebuild when looking backwards.
     snapshot_invoices, _dns, settled_by_invoice, _sn, _credit = _ar_snapshot(
-        entity, as_of=cutoff, customer=customer,
+        entity, as_of=cutoff, customer=customer, scope=scope,
     )
     invoice_list = []  # Overdue, still-owing invoices as at the run date.
     for invoice in snapshot_invoices:

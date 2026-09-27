@@ -21,7 +21,7 @@ from django.http import HttpResponse
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from core.pagination import XVSPagination
-from core.response import success_response
+from core.response import error_response, success_response
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 # ``include_shared=True`` is spelled out at every call site rather than left to the
 # default: a null branch means "shared across the school", so a school-wide fee
@@ -1316,12 +1316,40 @@ class FeeStructureDuplicateView(_FinanceBase):
         )
 
 
+def _customers_off_the_price_list(structure, customers):
+    """How many of *customers* a branch fee structure may not bill.
+
+    A structure with a branch is that branch's price list, so every customer it
+    bills must be filed under that branch. A school-wide customer is not: its
+    receivable would be filed school-wide at one branch's prices. A school-wide
+    structure (no branch) prices every branch and refuses nobody.
+    """
+    if not structure.branch_id:
+        return 0
+    return sum(1 for customer in customers if customer.branch_id != structure.branch_id)
+
+
 # Group endpoint behavior for Fee Structure Generate View.
 class FeeStructureGenerateView(_FinanceBase):
     """POST - raise a posted invoice per customer from this fee structure.
 
     Body: ``{customers:[code|id, ...]}`` or ``{all_active:true}``; optional
     ``invoice_date``, ``due_date`` (ISO). Returns the invoices created.
+
+    Who can be billed is bounded twice, and both bounds hold for both forms of
+    the body:
+
+    * **The caller's branch reach.** A bursar pinned to Lekki bills Lekki's
+      families and the school-wide ones, never Ikeja's. ``all_active`` means
+      every active customer *she* can reach, not every customer in the books,
+      and a named customer outside her reach answers 404 exactly as an unknown
+      code does, through :func:`_resolve_customer`.
+    * **The structure's branch.** A structure with a branch is that branch's
+      price list, the same rule the FAL's cohort route holds for children: a
+      named customer filed anywhere else, school-wide included, is refused with
+      409 ``WRONG_BRANCH``, and ``all_active`` selects only that branch's
+      customers. A school-wide structure prices every branch and narrows
+      nothing.
 
     docstring-name: Generate invoices from a fee structure
     """
@@ -1342,13 +1370,24 @@ class FeeStructureGenerateView(_FinanceBase):
         invoice_date = _date(body.get("invoice_date"), "invoice_date") or datetime.date.today()
         due_date = _date(body.get("due_date"), "due_date")
         if body.get("all_active"):
-            customers = list(Customer.objects.filter(entity=entity, is_active=True))
+            qs = _branch_visible(request, Customer.objects.filter(entity=entity, is_active=True))
+            if structure.branch_id:  # A branch price list bills only that branch.
+                qs = qs.filter(branch_id=structure.branch_id)
+            customers = list(qs.order_by("id"))
         else:
             refs = body.get("customers") or []
             if not refs:
                 raise ValidationError(
                     {"customers": "Provide a customers list or all_active=true."})
             customers = [_resolve_customer(request, entity, r, "customers") for r in refs]
+            off_list = _customers_off_the_price_list(structure, customers)
+            if off_list:
+                return error_response(
+                    f"{off_list} of the customers named are filed under another "
+                    "branch. This fee structure prices one branch only; bill them "
+                    "from their own branch's structure.",
+                    status=409, code="WRONG_BRANCH",
+                )
         invoices = generate_invoices(
             structure, customers,
             invoice_date=invoice_date,
@@ -2161,8 +2200,13 @@ def _batch_items(body):
     return items
 
 
-def _batch_customers(entity, items):
-    """Resolve and lock a batch's customer refs with one scoped query."""
+def _batch_customers(request, entity, items):
+    """Resolve and lock a batch's customer refs with one scoped query.
+
+    Narrowed to the caller's branch reach like :func:`_resolve_customer`, so a
+    line naming another branch's customer answers the same 404 as an unknown
+    code rather than a refusal that confirms the customer exists.
+    """
     refs = [str(item.get("customer") or "").strip() for item in items]
     if any(not ref for ref in refs):
         index = next(index for index, ref in enumerate(refs) if not ref)
@@ -2172,9 +2216,8 @@ def _batch_customers(entity, items):
     codes = [ref.upper() for ref in refs]
     ids = [int(ref) for ref in refs if ref.isdigit()]
     customers = list(
-        Customer.objects.select_for_update().filter(entity=entity).filter(
-            Q(code__in=codes) | Q(pk__in=ids)
-        )
+        _branch_visible(request, Customer.objects.select_for_update().filter(entity=entity))
+        .filter(Q(code__in=codes) | Q(pk__in=ids))
     )
     by_code = {customer.code.upper(): customer for customer in customers}
     by_id = {customer.pk: customer for customer in customers}
@@ -2191,8 +2234,12 @@ def _batch_customers(entity, items):
     return resolved
 
 
-def _batch_invoices(entity, items):
-    """Resolve and lock a batch's invoice refs with one scoped related read."""
+def _batch_invoices(request, entity, items):
+    """Resolve and lock a batch's invoice refs with one scoped related read.
+
+    Narrowed to the caller's branch reach like :func:`_resolve_invoice`, for the
+    same reason as :func:`_batch_customers`.
+    """
     refs = [str(item.get("invoice") or "").strip() for item in items]
     if any(not ref for ref in refs):
         index = next(index for index, ref in enumerate(refs) if not ref)
@@ -2202,8 +2249,8 @@ def _batch_invoices(entity, items):
     ids = [int(ref) for ref in refs if ref.isdigit()]
     numbers = [ref for ref in refs if not ref.isdigit()]
     invoices = list(
-        Invoice.objects.select_for_update().select_related("customer")
-        .filter(entity=entity)
+        _branch_visible(request, Invoice.objects.select_for_update().select_related("customer")
+                        .filter(entity=entity))
         .filter(Q(pk__in=ids) | Q(document_number__in=numbers))
     )
     by_id = {invoice.pk: invoice for invoice in invoices}
@@ -2219,12 +2266,38 @@ def _batch_invoices(entity, items):
     return resolved
 
 
+def _post_batch_directly(request, gate, documents, *, noun, post):
+    """Post a batch's documents under the same two guards as their single ``/post/`` route.
+
+    A document a ladder would stop refuses the whole batch, which must be submitted
+    instead. A document whose route has no stages yet is approval-undecided, the
+    state every school starts in, and needs ``confirm_without_approval`` in the
+    batch body exactly as a single post does; each confirmed document is recorded
+    against the caller by :func:`approvals.confirm_unconfigured_post`, one record
+    per document, as if it had been posted on its own. Every document is confirmed
+    before any is posted, and the view's transaction undoes the batch on a refusal.
+    """
+    from .approvals import confirm_unconfigured_post
+
+    if any(gate.required(document) for document in documents):
+        raise ValidationError({
+            "action": f"One or more {noun}s are approval-gated; submit this batch "
+                      f"for approval instead of posting it.",
+        })
+    for document in documents:
+        confirm_unconfigured_post(document, request, noun=noun)
+    for document in documents:
+        post(document, actor_user=request.user)
+
+
 class ARAdjustmentBatchView(_FinanceBase):
     """Create and optionally advance up to 100 refunds or write-offs atomically.
 
     Every line becomes the existing first-class Refund or WriteOffRequest document
-    and goes through the same posting/workflow service as its single-item endpoint.
-    If any line fails, the enclosing transaction rolls the whole batch back.
+    and goes through the same posting/workflow service as its single-item endpoint,
+    and a direct post passes the same approval guards the single ``/post/`` route
+    does (see :func:`_post_batch_directly`). If any line fails, the enclosing
+    transaction rolls the whole batch back.
     """
 
     # The exact create + lifecycle pair is enforced below after the entity has been
@@ -2265,7 +2338,7 @@ class ARAdjustmentBatchView(_FinanceBase):
 
             bank_account = _resolve_bank_account(
                 entity, body.get("bank_account"), required=True)
-            customers = _batch_customers(entity, items)
+            customers = _batch_customers(request, entity, items)
             # The whole batch shares one accounting date, so availability is measured
             # on that date - not today. A batch dated before the credit arrived is
             # refused per line here rather than blowing up mid-loop in the posting
@@ -2307,20 +2380,16 @@ class ARAdjustmentBatchView(_FinanceBase):
                 ))
 
             if action == "POST":
-                if any(gate.required(document) for document in documents):
-                    raise ValidationError({
-                        "action": "One or more refunds are approval-gated; submit this "
-                                  "batch for approval instead of posting it.",
-                    })
-                for refund in documents:
-                    post_refund(refund, actor_user=request.user)
+                _post_batch_directly(
+                    request, gate, documents, noun="refund", post=post_refund,
+                )
             elif action == "SUBMIT":
                 for refund in documents:
                     submit_for_approval(refund, requested_by=request.user)
         else:
             write_off_account = _resolve_account(
                 entity, body.get("write_off_account"), "write_off_account")
-            invoices = _batch_invoices(entity, items)
+            invoices = _batch_invoices(request, entity, items)
             for index, (item, invoice) in enumerate(zip(items, invoices)):
                 if invoice.pk in seen_targets:
                     raise ValidationError({
@@ -2381,13 +2450,9 @@ class ARAdjustmentBatchView(_FinanceBase):
                 ))
 
             if action == "POST":
-                if any(gate.required(document) for document in documents):
-                    raise ValidationError({
-                        "action": "One or more write-offs are approval-gated; submit "
-                                  "this batch for approval instead of posting it.",
-                    })
-                for write_off in documents:
-                    post_write_off_request(write_off, actor_user=request.user)
+                _post_batch_directly(
+                    request, gate, documents, noun="write-off", post=post_write_off_request,
+                )
             elif action == "SUBMIT":
                 for write_off in documents:
                     submit_for_approval(write_off, requested_by=request.user)
@@ -3404,7 +3469,7 @@ class DunningGenerateView(_FinanceBase):
 
         notices = generate_dunning(
             entity, as_of=as_of, policy=policy, customer=customer,
-            actor_user=request.user,
+            actor_user=request.user, scope=branch_scope(request, include_shared=True),
         )
         return success_response(
             f"Generated {len(notices)} dunning notice(s).",

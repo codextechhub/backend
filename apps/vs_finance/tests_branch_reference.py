@@ -286,3 +286,199 @@ class TenantBoundaryUnchangedTests(_ReferenceFixture):
 
         request = type("R", (), {"user": self.head.acting_user})()
         self.assertEqual(len(branch_q(request, include_shared=True)), 0)
+
+
+class FeeRunBillsOnlyWhatTheCallerReachesTests(_ReferenceFixture):
+    """Billing from a fee structure raises debt, so who is billed is the whole question.
+
+    Two bounds, and each is asserted for both forms of the body (``all_active``
+    and a named list): the caller's branch reach, and the structure's own
+    branch. Corona's Ikeja bursar reaches Ikeja's families and the school-wide
+    ones; a Lekki price list bills Lekki's families and nobody else's.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from vs_finance.models import Account, FeeItem
+
+        revenue = Account.objects.get(entity=self.books, code="4100")
+        for structure in (self.lekki_fees, self.shared_fees):
+            FeeItem.objects.create(
+                structure=structure, line_no=1, description="Tuition",
+                revenue_account=revenue, amount=5_000_000,
+            )
+
+    def run_fees(self, client, structure, body, books=None):
+        return self.post(
+            client, f"fee-structures/{structure.code}/generate/", books or self.books,
+            {"invoice_date": "2026-01-15", **body},
+        )
+
+    def billed(self, structure):
+        from vs_finance.models import Invoice
+
+        return set(
+            Invoice.objects.filter(reference=f"FEE:{structure.code}")
+            .values_list("customer__code", flat=True)
+        )
+
+    def test_a_pinned_bursars_all_active_run_bills_only_her_reach(self):
+        """Ikeja's family and the school-wide one; Lekki's family is not hers to bill."""
+        response = self.run_fees(self.bursar, self.shared_fees, {"all_active": True})
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(
+            self.billed(self.shared_fees),
+            {self.ikeja_family.code, self.shared_family.code},
+        )
+
+    def test_naming_another_branchs_family_answers_as_an_unknown_code_does(self):
+        """404, not 403, and nothing is billed, not even the lines she could reach."""
+        response = self.run_fees(
+            self.bursar, self.shared_fees,
+            {"customers": [self.ikeja_family.code, self.lekki_family.code]},
+        )
+        invented = self.run_fees(self.bursar, self.shared_fees, {"customers": ["NOSUCH"]})
+
+        self.assertEqual(response.status_code, 404, response.data)
+        self.assertEqual(invented.status_code, 404, invented.data)
+        self.assertEqual(
+            str(response.data["message"]).replace(self.lekki_family.code, "X"),
+            str(invented.data["message"]).replace("NOSUCH", "X"),
+        )
+        self.assertEqual(self.billed(self.shared_fees), set())
+
+    def test_a_whole_school_callers_all_active_run_is_unchanged(self):
+        response = self.run_fees(self.head, self.shared_fees, {"all_active": True})
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(
+            self.billed(self.shared_fees),
+            {self.ikeja_family.code, self.lekki_family.code, self.shared_family.code},
+        )
+
+    def test_a_branch_price_list_refuses_a_family_filed_at_another_branch(self):
+        """The FAL cohort route's rule, held on the engine's own route too."""
+        response = self.run_fees(
+            self.head, self.lekki_fees,
+            {"customers": [self.lekki_family.code, self.ikeja_family.code]},
+        )
+
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data.get("code"), "WRONG_BRANCH")
+        self.assertEqual(self.billed(self.lekki_fees), set())
+
+    def test_a_branch_price_list_refuses_a_school_wide_family(self):
+        """Its bill would be filed school-wide at Lekki's prices."""
+        response = self.run_fees(
+            self.head, self.lekki_fees, {"customers": [self.shared_family.code]},
+        )
+
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data.get("code"), "WRONG_BRANCH")
+
+    def test_a_branch_price_list_bills_its_own_branchs_family(self):
+        response = self.run_fees(
+            self.head, self.lekki_fees, {"customers": [self.lekki_family.code]},
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(self.billed(self.lekki_fees), {self.lekki_family.code})
+
+    def test_all_active_from_a_branch_price_list_bills_only_that_branch(self):
+        """Selected, not refused: every other branch's family simply is not in the run."""
+        response = self.run_fees(self.head, self.lekki_fees, {"all_active": True})
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(self.billed(self.lekki_fees), {self.lekki_family.code})
+
+    def test_a_single_branch_school_bills_every_family(self):
+        from vs_finance.models import Account, FeeItem
+
+        solo_fees = self.fee_structure(self.solo_books, "SOLOFEE", None)
+        FeeItem.objects.create(
+            structure=solo_fees, line_no=1, description="Tuition",
+            revenue_account=Account.objects.get(entity=self.solo_books, code="4100"),
+            amount=5_000_000,
+        )
+
+        response = self.run_fees(
+            self.solo_bursar, solo_fees, {"all_active": True}, books=self.solo_books,
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(
+            self.billed(solo_fees),
+            {self.solo_family.code, self.solo_shared_family.code},
+        )
+
+
+class BulkRunsNarrowToTheCallersReachTests(_ReferenceFixture):
+    """The other AR routes that act on many rows at once, by the same two rules.
+
+    A dunning run with no customer chases every overdue invoice it can see, and
+    an adjustment batch resolves many references in one query. Each is a place a
+    per-row resolver is not called, so each needs the narrowing of its own.
+    """
+
+    KEYS = _ReferenceFixture.KEYS + (
+        "finance.dunning.generate", "finance.writeoff.create",
+    )
+
+    def setUp(self):
+        super().setUp()
+        from vs_finance.dunning import ensure_default_policy
+        from vs_finance.models import Account
+        from vs_finance.receivables import post_invoice
+
+        ensure_default_policy(self.books)
+
+        self.ikeja_bill = self.invoice(self.books, self.ikeja_family, self.ikeja)
+        self.lekki_bill = self.invoice(self.books, self.lekki_family, self.lekki)
+        self.shared_bill = self.invoice(self.books, self.shared_family, None)
+        postable = Account.objects.get(entity=self.books, code="4100")
+        for bill in (self.ikeja_bill, self.lekki_bill, self.shared_bill):
+            bill.lines.update(revenue_account=postable)
+            post_invoice(bill)
+            bill.refresh_from_db()
+
+    def chased(self):
+        from vs_finance.models import DunningNotice
+
+        return set(DunningNotice.objects.filter(entity=self.books)
+                   .values_list("invoice_id", flat=True))
+
+    def test_a_pinned_bursars_dunning_run_chases_only_her_reach(self):
+        response = self.post(self.bursar, "dunning/generate/", self.books, {"as_of": "2026-01-31"})
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.chased(), {self.ikeja_bill.pk, self.shared_bill.pk})
+
+    def test_a_whole_school_callers_dunning_run_is_unchanged(self):
+        response = self.post(self.head, "dunning/generate/", self.books, {"as_of": "2026-01-31"})
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            self.chased(),
+            {self.ikeja_bill.pk, self.lekki_bill.pk, self.shared_bill.pk},
+        )
+
+    def test_a_write_off_batch_naming_another_branchs_invoice_is_not_found(self):
+        """Refused as an unknown number is, before anything is drafted."""
+        from vs_finance.models import WriteOffRequest
+
+        response = self.post(self.bursar, "ar-adjustments/batch/", self.books, {
+            "kind": "WRITEOFF", "action": "DRAFT", "date": "2026-01-31",
+            "items": [{"invoice": self.lekki_bill.document_number}],
+        })
+
+        self.assertEqual(response.status_code, 404, response.data)
+        self.assertFalse(WriteOffRequest.objects.filter(invoice=self.lekki_bill).exists())
+
+    def test_a_write_off_batch_on_her_own_branchs_invoice_drafts(self):
+        response = self.post(self.bursar, "ar-adjustments/batch/", self.books, {
+            "kind": "WRITEOFF", "action": "DRAFT", "date": "2026-01-31",
+            "items": [{"invoice": self.ikeja_bill.document_number}],
+        })
+
+        self.assertEqual(response.status_code, 201, response.data)
