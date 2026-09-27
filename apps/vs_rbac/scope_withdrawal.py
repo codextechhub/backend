@@ -3,8 +3,9 @@
 Reclassifying a permission to ``PLATFORM`` settles who may hold it from now on.
 It says nothing about the grants already written, and those sit on more surfaces
 than the one that comes to mind: a tenant's own role, the prebuilt library every
-new tenant copies its roles from, a tenant-scoped permission group, and a
-personal ALLOW override.
+new tenant copies its roles from, a tenant-scoped permission group, a personal
+ALLOW override, and a role change still waiting on its approval ladder that asks
+to add the key.
 
 A leftover row confers nothing - :func:`vs_rbac.evaluator.get_effective_permissions`
 filters out every key that is not ``TENANT`` for a tenant that is not the
@@ -30,12 +31,15 @@ _MODELS = (
     "PrebuiltRolePermission",
     "GroupPermission",
     "UserPermissionOverride",
+    "TenantRoleChangeDeltaItem",
 )
 
 TENANT_SCOPE = "TENANT"
 PLATFORM_SCOPE = "PLATFORM"
 PLATFORM_KIND = "PLATFORM"
 ALLOW = "ALLOW"
+ADD = "ADD"
+PENDING = "PENDING"
 
 
 def _resolve(apps):
@@ -65,6 +69,12 @@ def withdraw_from_tenants(keys=None, *, apps=None):
       anything.
     * **DENY overrides.** A DENY is not a grant. Removing one hands the person
       back whatever it was taking away.
+    * **Decided role changes, and removals.** Only an ``ADD`` line on a
+      ``PENDING`` request is taken: approving it would ask the scope guard to
+      write a grant it refuses, so the deciding vote would fail on a key the
+      approver cannot give. A decided request is history, and a
+      ``REMOVE`` line asks for nothing the guard refuses. The request keeps its
+      other lines.
 
     Returns a dict keyed by surface, so a caller can say what it took back.
     """
@@ -81,7 +91,7 @@ def withdraw_from_tenants(keys=None, *, apps=None):
     if not keys:
         return {surface: 0 for surface in
                 ("role_permissions", "prebuilt_defaults",
-                 "group_memberships", "overrides")}
+                 "group_memberships", "overrides", "pending_role_changes")}
 
     role_permissions, _ = (
         models["TenantRolePermission"].objects
@@ -108,10 +118,17 @@ def withdraw_from_tenants(keys=None, *, apps=None):
         .exclude(tenant__kind=PLATFORM_KIND)
         .delete()
     )
+    pending_role_changes, _ = (
+        models["TenantRoleChangeDeltaItem"].objects
+        .filter(permission_id__in=keys, operation=ADD, request__status=PENDING)
+        .exclude(request__tenant__kind=PLATFORM_KIND)
+        .delete()
+    )
 
     return {
         "role_permissions": role_permissions,
         "prebuilt_defaults": prebuilt_defaults,
         "group_memberships": group_memberships,
         "overrides": overrides,
+        "pending_role_changes": pending_role_changes,
     }

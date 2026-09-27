@@ -478,20 +478,27 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
     PATCH /notifications/settings/update/ - upsert override rows by
                                             (event_type_key, channel).
 
-    Scope resolution (same for GET and PATCH) follows the asserted tenant; there
-    is no ?school= parameter:
-      * Business tenant → its own override rows, overlaid on platform defaults.
-        Asserting another tenant's ?tenant= slug is refused with 404 by the auth
-        layer (this view does not set platform_cross_tenant_param), so the
-        no-leak guarantee still holds.
-      * PLATFORM-kind tenant (CX staff) → the platform DEFAULT layer, the
-        tenant-NULL rows. It cannot target one tenant's rows from here.
+    The matrix belongs to the platform. It decides which events send email for
+    every tenant, and no other tenant may see or change it:
+
+      * The key, communication.communication_permissions.enforce, is
+        ``PLATFORM``-scoped. No role outside the platform tenant can hold it and
+        the evaluator never returns it there, so any other tenant's caller is
+        refused with 403 before this view runs.
+      * The platform tenant (CX staff) manages the platform DEFAULT layer, the
+        tenant-NULL rows every tenant inherits. It cannot target one tenant's
+        rows from here: this view does not set platform_cross_tenant_param, so
+        asserting another tenant's ?tenant= slug is refused with 404 by the auth
+        layer.
+      * :meth:`_resolve_scope` refuses any other tenant again, with 403, so a
+        grant that slipped past the registry still cannot write that tenant's
+        rows.
 
     Transactional event types appear in the matrix flagged
     ``is_transactional: true`` and are read-only (they bypass settings) - a
     PATCH touching one is rejected.
 
-    Permission: communication.communication_permissions.enforce (RBAC).
+    Permission: communication.communication_permissions.enforce (RBAC, PLATFORM).
 
     docstring-name: Notification settings
     """
@@ -504,16 +511,23 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
         """
         Resolve the settings scope from the asserted tenant.
 
-        A business tenant manages its own override rows. A PLATFORM-kind tenant
-        (Codex staff) manages the platform DEFAULT layer - the tenant-NULL rows
-        every school inherits. Writing codex-tenant rows here would be inert for
-        schools: dispatch resolution only reads (tenant IS NULL | own tenant).
-        Returns (tenant_or_none, None); None means the platform layer.
+        Returns ``(None, None)`` for the platform tenant, meaning the platform
+        DEFAULT layer: the tenant-NULL rows every tenant inherits. Writing
+        codex-tenant rows instead would be inert for everyone else, because
+        dispatch resolution only reads (tenant IS NULL | own tenant).
+
+        Any other tenant gets ``(None, <403 response>)``. The key is
+        platform-scoped, so such a caller is normally refused before the view
+        runs; this is the second gate, and it keeps a stray grant from writing
+        that tenant's own rows.
         """
-        tenant = request.tenant
-        if getattr(tenant, "kind", None) == "PLATFORM":
+        if getattr(request.tenant, "kind", None) == "PLATFORM":
             return None, None
-        return tenant, None
+        return None, error_response(
+            "Notification settings are managed by the platform.",
+            status=status.HTTP_403_FORBIDDEN,
+            code=NotificationErrorCode.ACCESS_DENIED,
+        )
 
     def _build_matrix(self, tenant):
         """
@@ -540,15 +554,15 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
             ).values("event_type_id", "channel", "is_enabled", "tenant_id")
         )
 
-        # Which (event_type_id, channel) have a school row / platform row?
-        school_rows = set()
+        # Which (event_type_id, channel) have a tenant row / platform row?
+        tenant_rows = set()
         platform_rows = set()
         for r in rows:
             key = (r["event_type_id"], r["channel"])
             if r["tenant_id"] is None:
                 platform_rows.add(key)
             else:
-                school_rows.add(key)
+                tenant_rows.add(key)
 
         # Layering rules live in the service - pass the pre-fetched rows through.
         resolved_by_et = resolve_channels_bulk(event_types, tenant=tenant, rows=rows)
@@ -560,7 +574,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
                 key = (et.id, channel)
                 if et.is_transactional or not et.is_active:
                     source = "default"
-                elif tenant is not None and key in school_rows:
+                elif tenant is not None and key in tenant_rows:
                     source = "tenant"
                 elif key in platform_rows:
                     source = "platform"

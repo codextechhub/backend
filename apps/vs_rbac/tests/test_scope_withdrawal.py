@@ -24,6 +24,8 @@ from vs_rbac.models import (
     PermissionScope,
     PrebuiltRolePermission,
     PrebuiltRoleTemplate,
+    TenantRoleChangeDeltaItem,
+    TenantRoleChangeRequest,
     TenantRolePermission,
     UserPermissionOverride,
 )
@@ -126,7 +128,11 @@ class LibraryLeftoverBreaksTenantProvisioningTests(TestCase):
 
 
 class WithdrawalReachesEverySurfaceTests(TestCase):
-    """Four surfaces can hold a grant, and a sweep that misses one is a bug."""
+    """Five surfaces can hold a grant, and a sweep that misses one is a bug.
+
+    The fifth is a role change still waiting on its ladder: approving its ``ADD``
+    line would ask the scope guard for a grant it refuses.
+    """
 
     def setUp(self):
         self.school = make_school(slug="greenfield", name="Greenfield School")
@@ -157,6 +163,15 @@ class WithdrawalReachesEverySurfaceTests(TestCase):
             mode=UserPermissionOverride.Mode.ALLOW, reason="Covering month end.",
         )
 
+        request = TenantRoleChangeRequest.objects.create(
+            tenant=self.school.tenant, requested_by=self.user,
+            target_role=self.role, justification="Month end.",
+        )
+        TenantRoleChangeDeltaItem.objects.create(
+            request=request, permission=self.permission,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
+        )
+
         reclassify(ENTITY_CREATE)
 
     def test_every_tenant_side_grant_goes(self):
@@ -167,6 +182,7 @@ class WithdrawalReachesEverySurfaceTests(TestCase):
             "prebuilt_defaults": 1,
             "group_memberships": 1,
             "overrides": 1,
+            "pending_role_changes": 1,
         })
         self.assertFalse(TenantRolePermission.objects.filter(
             permission_id=ENTITY_CREATE).exists())
@@ -175,6 +191,8 @@ class WithdrawalReachesEverySurfaceTests(TestCase):
         self.assertFalse(GroupPermission.objects.filter(
             permission_id=ENTITY_CREATE).exists())
         self.assertFalse(UserPermissionOverride.objects.filter(
+            permission_id=ENTITY_CREATE).exists())
+        self.assertFalse(TenantRoleChangeDeltaItem.objects.filter(
             permission_id=ENTITY_CREATE).exists())
 
     def test_called_with_no_keys_it_sweeps_whatever_the_registry_refuses(self):

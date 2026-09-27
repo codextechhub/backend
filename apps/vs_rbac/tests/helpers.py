@@ -34,13 +34,19 @@ def scope_for_key(key):
     scope is refused by the grant guards - correctly, but it would make every
     such fixture fail for the wrong reason. This mirrors what the seeders do,
     including the two families inside the ``platform`` module that a tenant
-    role legitimately holds, so a fixture grants exactly what production would.
+    role legitimately holds and the ``communication`` keys only the platform
+    may hold, so a fixture grants exactly what production would.
     """
     from core.management.commands.seed_platform_permissions import (
         TENANT_HOLDABLE_KEYS,
     )
+    from vs_notifications.management.commands.seed_notification_permissions import (
+        PLATFORM_KEYS as NOTIFICATION_PLATFORM_KEYS,
+    )
     from vs_rbac.models import PermissionScope
 
+    if key in NOTIFICATION_PLATFORM_KEYS:
+        return PermissionScope.PLATFORM
     module = (key or "").split(".")[0]
     if module != "platform" or key in TENANT_HOLDABLE_KEYS:
         return PermissionScope.TENANT
