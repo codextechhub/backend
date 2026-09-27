@@ -31,6 +31,9 @@ class JobProgressCommitsOutsideTheCallerTests(TransactionTestCase):
     in an uncommitted transaction the progress connection could never read.
     """
 
+    # Restore the migration-seeded rows after each flush (see test_transaction_test_cases).
+    serialized_rollback = True
+
     def setUp(self):
         self.tenant = Tenant.objects.create(
             name="Progress School", slug="progress-school",
