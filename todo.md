@@ -943,6 +943,24 @@ sitting two papers at once is still refused at the write. Class timetables are
 unchanged: their clashes still block publishing.
 MUST SAY: the exam publish rule, and that the two warnings are not a gate.
 
+### D37. A staff ID is unique at its school whatever its case (447a6f0e, 2026-09-27)
+MODULES: M12 staff management, M10 bulk data import.
+Constraint `uq_staff_number_per_tenant_ci` (migration 0008, which refuses by
+name any school already holding a case-only pair) replaces the case-sensitive
+one. The add form, the edit endpoint and the staff import all check through
+`services/numbers.staff_number_taken`; the import also refuses one ID on two
+rows of the same file (`duplicate_in_file`, column Staff ID).
+MUST SAY: staff IDs compare without case, as admission numbers and staff
+sign-in by ID already do.
+
+### D38. A promotion that overfills a class waits to be told (94b4eebe, 2026-09-27)
+MODULES: M11 student records (promotion).
+The preview returns `over_capacity` (per target class: capacity, seats taken,
+pupils arriving, over by). The run refuses those classes with 422
+PROMOTION_OVER_CAPACITY until it is sent `allow_over_capacity: true`. A class
+with no capacity is unlimited.
+MUST SAY: promotion keeps the same capacity rule as enrolling one child.
+
 ### D38. A dataset's import key reaches the wizard steps, not rollback or delete (e02e9304, 2026-09-27)
 MODULES: M10 bulk data import, M04 roles and permissions.
 `HasImportBatchRBACPermission` let a dataset's own import key stand in for any
