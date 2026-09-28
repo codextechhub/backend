@@ -1,6 +1,8 @@
+from collections.abc import Iterable
+
 from vs_rbac.permissions import HasRBACPermission, has_permission
 # ``include_shared=True`` throughout: a batch with no branch was uploaded for
-# the school as a whole and stays reachable from every site.
+# the school as a whole and stays reachable from every branch.
 from vs_rbac.scoping import branch_q
 
 from .constants import ImportPermission
@@ -30,7 +32,8 @@ _DATASET_IMPORT_KEYS: dict[str, str] = {
 #: Everything else the engine guards unwinds or administers data already
 #: written - rewriting or deleting a batch, resolving an issue in place, rolling
 #: back, and the rollback history, audit and notification feeds - and needs the
-#: engine's own key for that action. A school corrects an import by uploading a
+#: engine's own key for that action, unless the dataset declares that key in
+#: ``_DATASET_EXTRA_ENGINE_KEYS``. A school corrects an import by uploading a
 #: fixed file; a rollback takes every imported row off again and is a support
 #: action, not a step of the wizard.
 _WIZARD_KEYS: frozenset[str] = frozenset({
@@ -43,33 +46,82 @@ _WIZARD_KEYS: frozenset[str] = frozenset({
 })
 
 
-def register_dataset_import_key(dataset_type: str, permission_key: str) -> None:
-    """Let *permission_key* stand in for the wizard's engine keys on this dataset.
+#: ``dataset_type`` -> engine keys past the wizard that its own key also covers.
+#:
+#: Empty for a dataset that is not listed, which is every school dataset: a
+#: registrar corrects a roll by uploading a fixed file, and taking 400 children
+#: off it again stays a support action.
+#:
+#: Bank statements declare the rollback. Finance refuses to edit a
+#: bulk-imported statement line by line, because the lines must stay the ones
+#: the file carried, and sends the bursar to roll the statement back and import
+#: it again. Without the rollback, a bursar who loads March into the April
+#: account has no way to correct it. The finance rollback itself refuses once
+#: any line of the statement has been matched, ignored or posted, so this
+#: removes only statements nothing has touched yet. The rollback history read
+#: is not declared: the job detail already carries the rollback's start and
+#: finish, and no finance screen reads the history.
+_DATASET_EXTRA_ENGINE_KEYS: dict[str, frozenset[str]] = {
+    "bank_statements": frozenset({ImportPermission.ROLLBACK_RUN}),
+}
 
-    See ``_WIZARD_KEYS`` for which actions that covers.
+
+def register_dataset_import_key(
+    dataset_type: str,
+    permission_key: str,
+    *,
+    extra_engine_keys: Iterable[str] = (),
+) -> None:
+    """Let *permission_key* stand in for the engine's keys on this dataset.
+
+    By default it covers the wizard alone (see ``_WIZARD_KEYS``).
+    *extra_engine_keys* names engine keys past the wizard that the owning module
+    has decided its own key should also reach, on batches of this dataset and
+    no other; a key that unwinds or erases data belongs here only when the
+    module has no other way to correct an import (see
+    ``_DATASET_EXTRA_ENGINE_KEYS``).
 
     Idempotent by dataset type, so a second ``ready()`` - Django calls it once
     per process, but test runners and management commands can re-enter -
-    replaces rather than accumulates.
+    replaces rather than accumulates, the extra keys included.
     """
     _DATASET_IMPORT_KEYS[dataset_type] = permission_key
+    extra = frozenset(extra_engine_keys)
+    if extra:
+        _DATASET_EXTRA_ENGINE_KEYS[dataset_type] = extra
+    else:
+        _DATASET_EXTRA_ENGINE_KEYS.pop(dataset_type, None)
+
+
+def _stand_in_keys(dataset_type: str) -> frozenset[str]:
+    """The engine keys a dataset's own import key covers on its batches."""
+    return _WIZARD_KEYS | _DATASET_EXTRA_ENGINE_KEYS.get(dataset_type, frozenset())
+
+
+def _any_stand_in_keys() -> frozenset[str]:
+    """Every engine key some dataset's import key covers on some batch."""
+    return _WIZARD_KEYS.union(*_DATASET_EXTRA_ENGINE_KEYS.values())
 
 
 class HasImportBatchRBACPermission(HasRBACPermission):
-    """Allow the engine's import key, or the owning module's key for a wizard step.
+    """Allow the engine's import key, or the owning module's key where it stands in.
 
     A finance user should not need broad ``import.*`` access merely to finish a
     bank-statement wizard, and a school administrator should not need it to
     load their students. The module key stands in only where the view asks for
-    one of ``_WIZARD_KEYS``: a view guarded by anything else (rollback, delete,
-    update, issue resolution, the rollback, audit and notification feeds) is
-    refused here before any lookup, so it answers the same for every batch id.
+    one of ``_WIZARD_KEYS``, or for one of the extra engine keys its dataset
+    declares (``_DATASET_EXTRA_ENGINE_KEYS``: the rollback, for bank statements
+    alone). A view guarded by a key no dataset declares (delete, update, issue
+    resolution, the rollback, audit and notification feeds) is refused here
+    before any lookup, so it answers the same for every batch id. A declared
+    extra key is checked against the batch's own dataset after the lookup, so
+    the bank-statement key rolls back a statement and never a student roll.
 
     The fallback stays deliberately object-aware: it applies only to a batch of
     the dataset the key belongs to, resolved against the request's asserted
     tenant and against the branches the caller is entitled to work in, so
     holding one module's import key never opens another module's file and never
-    reaches across sites.
+    reaches across branches.
 
     The branch narrowing is the same rule the views apply when they resolve a
     batch, spelled again here because this runs first and on its own: an
@@ -86,7 +138,7 @@ class HasImportBatchRBACPermission(HasRBACPermission):
         required = getattr(view, "rbac_permission", None)
         if isinstance(required, str):
             required = [required]
-        if not required or _WIZARD_KEYS.isdisjoint(required):
+        if not required or _any_stand_in_keys().isdisjoint(required):
             return False
 
         tenant = getattr(request, "tenant", None)
@@ -102,6 +154,9 @@ class HasImportBatchRBACPermission(HasRBACPermission):
             branch_q(request, include_shared=True), pk=batch_id, tenant=tenant,
         ).first()
         if batch is None:
+            return False
+
+        if _stand_in_keys(batch.dataset_type).isdisjoint(required):
             return False
 
         key = _DATASET_IMPORT_KEYS.get(batch.dataset_type)
