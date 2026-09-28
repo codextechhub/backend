@@ -27,6 +27,7 @@ from vs_config.clock import tenant_today
 from vs_audit.services import emit_audit_event
 
 from ..constants import (
+    ALLOWED_TRANSITIONS,
     CapacityMode,
     EXC_LEVEL_NOT_WIRED,
     EXC_NO_CLASS_AT_NEXT_LEVEL,
@@ -107,7 +108,7 @@ class Plan:
         return out
 
 
-def _target_class(source_class, target_classes_by_level_code):
+def _target_class(source_class, target_classes_by_level_code, branch_id):
     """Where a source class promotes to, in the **target** session.
 
     Levels and classes belong to a year, and a year's structure is seeded from
@@ -122,6 +123,8 @@ def _target_class(source_class, target_classes_by_level_code):
 
     Same arm first - JSS1 B goes to JSS2 B - then any class at that level,
     because a school that renamed its arms should not have its cohort blocked.
+    Only classes a pupil at *branch_id* may join are considered (see
+    :func:`_class_at`).
     """
     level = source_class.level
     if level is None:
@@ -135,12 +138,25 @@ def _target_class(source_class, target_classes_by_level_code):
     if level.next_level_id is None:
         return None, EXC_LEVEL_NOT_WIRED
 
-    found = _class_at(source_class, level.next_level, target_classes_by_level_code)
+    found = _class_at(
+        source_class, level.next_level, target_classes_by_level_code, branch_id,
+    )
     return (found, None) if found else (None, EXC_NO_CLASS_AT_NEXT_LEVEL)
 
 
-def _class_at(source_class, level, target_classes_by_level_code):
-    """The target year's class at *level*, same arm first.
+def _reachable(classes, branch_id):
+    """The classes among *classes* a pupil at *branch_id* may join.
+
+    A school-wide class or one at the pupil's own branch, the rule an ordinary
+    placement keeps (``scoping.assert_class_reachable``). A whole-school run
+    sees every branch's classes, and without this a Lekki pupil whose arm has
+    no class at Lekki next year lands in Ikeja's.
+    """
+    return [c for c in classes if c.branch_id is None or c.branch_id == branch_id]
+
+
+def _class_at(source_class, level, target_classes_by_level_code, branch_id):
+    """The target year's class at *level* a pupil at *branch_id* may join, same arm first.
 
     Same arm because JSS1 B should become JSS2 B; any class at the level as a
     fallback, because a school that renamed its arms should not have its
@@ -148,7 +164,10 @@ def _class_at(source_class, level, target_classes_by_level_code):
     """
     if level is None:
         return None
-    candidates = target_classes_by_level_code.get((level.code or "").lower(), [])
+    candidates = _reachable(
+        target_classes_by_level_code.get((level.code or "").lower(), []),
+        branch_id,
+    )
     if not candidates:
         return None
     arm = (getattr(source_class, "arm", "") or "").lower()
@@ -158,7 +177,7 @@ def _class_at(source_class, level, target_classes_by_level_code):
     return same_arm or candidates[0]
 
 
-def _repeat_class(source_class, target_classes_by_level_code):
+def _repeat_class(source_class, target_classes_by_level_code, branch_id):
     """Where a repeating student lands: the SAME level, in the target year.
 
     Not the class they are already in. That row belongs to the year being
@@ -169,6 +188,7 @@ def _repeat_class(source_class, target_classes_by_level_code):
     """
     return _class_at(
         source_class, source_class.level, target_classes_by_level_code,
+        branch_id,
     )
 
 
@@ -242,6 +262,9 @@ def classify(tenant, user, *, from_session, to_session, overrides=None,
 
     seen_class_cause: set[tuple[int, str]] = set()
     per_class_counts: dict[int, int] = {}
+    # Pupils each class-wide cause covers: a school-wide class holds pupils of
+    # several branches, and a cause can reach some of them and not others.
+    per_cause_counts: dict[tuple[int, str], int] = {}
 
     for student in on_roll:
         enrolment = enrolments.get(student.pk)
@@ -270,18 +293,28 @@ def classify(tenant, user, *, from_session, to_session, overrides=None,
 
         source = enrolment.school_class
         per_class_counts[source.pk] = per_class_counts.get(source.pk, 0) + 1
-        target, cause = _target_class(source, by_level_code)
-        repeat_target = _repeat_class(source, by_level_code)
+        target, cause = _target_class(source, by_level_code, student.branch_id)
+        repeat_target = _repeat_class(source, by_level_code, student.branch_id)
+        can_graduate = StudentStatus.GRADUATED in ALLOWED_TRANSITIONS.get(
+            student.status, frozenset(),
+        )
 
-        if cause is not None and (source.pk, cause) not in seen_class_cause:
-            seen_class_cause.add((source.pk, cause))
-            plan.class_exceptions.append({
-                "class": source.pk, "class_name": source.name,
-                "cause": cause, "reason": EXCEPTION_TEXT[cause],
-                "students": 0,
-            })
+        if cause is not None:
+            key = (source.pk, cause)
+            per_cause_counts[key] = per_cause_counts.get(key, 0) + 1
+            if key not in seen_class_cause:
+                seen_class_cause.add(key)
+                plan.class_exceptions.append({
+                    "class": source.pk, "class_name": source.name,
+                    "cause": cause, "reason": EXCEPTION_TEXT[cause],
+                    "students": 0,
+                })
 
-        if cause == EXC_TERMINAL_LEVEL:
+        if cause == EXC_TERMINAL_LEVEL and not can_graduate:
+            # Only an active pupil can graduate; the transition table refuses
+            # anyone else, and the run would count them as failed.
+            default = PromotionOutcome.HOLD
+        elif cause == EXC_TERMINAL_LEVEL:
             default = PromotionOutcome.GRADUATE
         elif cause in (EXC_NO_CLASS_AT_NEXT_LEVEL, EXC_LEVEL_NOT_WIRED):
             # Held, never graduated. An unwired level is a gap in the school's
@@ -298,29 +331,30 @@ def classify(tenant, user, *, from_session, to_session, overrides=None,
         outcome = overrides.get(str(student.pk), overrides.get(student.pk, default))
         if outcome not in PromotionOutcome.values:
             outcome = default
+        if outcome == PromotionOutcome.GRADUATE and not can_graduate:
+            outcome = PromotionOutcome.HOLD
 
         # A repeat with nowhere to land is named too, and only when it is the
         # chosen outcome: every class is missing from a year nobody has rolled
         # forward, and saying so about classes nobody is repeating is noise.
-        if (
-            outcome == PromotionOutcome.REPEAT
-            and repeat_target is None
-            and (source.pk, EXC_NO_CLASS_TO_REPEAT) not in seen_class_cause
-        ):
-            seen_class_cause.add((source.pk, EXC_NO_CLASS_TO_REPEAT))
-            plan.class_exceptions.append({
-                "class": source.pk, "class_name": source.name,
-                "cause": EXC_NO_CLASS_TO_REPEAT,
-                "reason": EXCEPTION_TEXT[EXC_NO_CLASS_TO_REPEAT],
-                "students": 0,
-            })
+        if outcome == PromotionOutcome.REPEAT and repeat_target is None:
+            key = (source.pk, EXC_NO_CLASS_TO_REPEAT)
+            per_cause_counts[key] = per_cause_counts.get(key, 0) + 1
+            if key not in seen_class_cause:
+                seen_class_cause.add(key)
+                plan.class_exceptions.append({
+                    "class": source.pk, "class_name": source.name,
+                    "cause": EXC_NO_CLASS_TO_REPEAT,
+                    "reason": EXCEPTION_TEXT[EXC_NO_CLASS_TO_REPEAT],
+                    "students": 0,
+                })
 
         plan.candidates.append(
             Candidate(student, enrolment, target, repeat_target, outcome),
         )
 
     for entry in plan.class_exceptions:
-        entry["students"] = per_class_counts.get(entry["class"], 0)
+        entry["students"] = per_cause_counts.get((entry["class"], entry["cause"]), 0)
 
     seen_map = set()
     for cand in plan.candidates:

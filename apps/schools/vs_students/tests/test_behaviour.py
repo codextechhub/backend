@@ -1155,6 +1155,88 @@ class PromotionTests(StudentsFixture):
             403,
         )
 
+    def test_a_whole_school_run_keeps_a_pupil_at_their_own_branch(self):
+        """Tobi is at Lekki in JSS1 B; next year's only JSS2 B is Ikeja's.
+
+        The same arm is not somewhere he can go, so he lands in the
+        school-wide JSS2 A, the class an ordinary placement would allow.
+        """
+        SchoolClass.all_objects.create(
+            tenant=self.tenant, level=self.next_jss2, session=self.next_year,
+            name="JSS2 B", code="N-JSS2B", arm="B", capacity=30,
+            branch=self.ikeja,
+        )
+        tobi = self.student(first="Tobi", last="Adeyemi", branch=self.lekki)
+        self.place(tobi, self.lekki_class)
+
+        rows = {r["id"]: r for r in self._preview().data["data"]["students"]}
+        self.assertEqual(rows[tobi.pk]["to_class"], "JSS2 A")
+
+        self.post(self.admin, "student-promotion-run", {
+            "to_session": self.next_year.pk,
+        })
+        placed = ClassEnrolment.all_objects.get(
+            student=tobi, session=self.next_year, is_active=True,
+        )
+        self.assertEqual(placed.school_class_id, self.next_jss2_a.pk)
+
+    def test_a_pupil_with_no_class_at_their_branch_is_held_and_counted(self):
+        """Next year's JSS2 is Ikeja's alone, so Lekki's pupils have nowhere to go.
+
+        The school-wide JSS1 A holds a Lekki pupil and an Ikeja one. Only the
+        Lekki pupil is held, and the class-wide entry counts only her.
+        """
+        self.next_jss2_a.branch = self.ikeja
+        self.next_jss2_a.save(update_fields=["branch"])
+        ikeja_pupil = self.student(first="Ifeoma", last="Obi", branch=self.ikeja)
+        self.place(ikeja_pupil, self.shared_class)
+
+        data = self._preview().data["data"]
+        rows = {r["id"]: r for r in data["students"]}
+        self.assertEqual(rows[self.mover.pk]["outcome"], PromotionOutcome.HOLD)
+        self.assertEqual(rows[ikeja_pupil.pk]["outcome"], PromotionOutcome.PROMOTE)
+        entry = next(
+            e for e in data["exceptions"]["by_class"]
+            if e["cause"] == "NO_CLASS_AT_NEXT_LEVEL"
+        )
+        self.assertEqual(entry["students"], 1)
+
+    def test_a_pupil_who_cannot_graduate_is_held_rather_than_failed(self):
+        """Emeka is confirmed but not placed, in a class whose level pupils leave after.
+
+        The transition table lets only an active pupil graduate, so a default
+        or an override of GRADUATE for him would fail in the run and be
+        counted as a failure with no reason. He is held instead, and the
+        preview says so.
+        """
+        self.jss1.next_level = None
+        self.jss1.is_terminal = True
+        self.jss1.save(update_fields=["next_level", "is_terminal"])
+        emeka = self.student(
+            first="Emeka", last="Okafor", status=StudentStatus.ENROLLED,
+        )
+        self.place(emeka, self.shared_class)
+
+        rows = {
+            r["id"]: r
+            for r in self._preview(
+                overrides={str(emeka.pk): PromotionOutcome.GRADUATE},
+            ).data["data"]["students"]
+        }
+        self.assertEqual(rows[emeka.pk]["outcome"], PromotionOutcome.HOLD)
+        self.assertEqual(rows[self.mover.pk]["outcome"], PromotionOutcome.GRADUATE)
+
+        response = self.post(self.admin, "student-promotion-run", {
+            "to_session": self.next_year.pk,
+        })
+        self.assertEqual(response.status_code, 201, response.data)
+        data = response.data["data"]
+        self.assertEqual(
+            (data["graduated"], data["held"], data["failed"]), (1, 1, 0),
+        )
+        emeka.refresh_from_db()
+        self.assertEqual(emeka.status, StudentStatus.ENROLLED)
+
 
 class UnwiredLevelTests(StudentsFixture):
     """A level nobody has wired must hold its students, never graduate them.
