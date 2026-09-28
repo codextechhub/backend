@@ -48,6 +48,14 @@ reports and the per-branch close controls are absent, not disabled.
     percentages the school sets instead.
 12. A staff member's pay is charged to one branch by default, with an optional
     percentage split across branches on their salary record.
+13. In branch-balanced mode a new record's branch is always a deliberate choice:
+    a branch, or School-wide. Blank is refused. Shared books keep today's rule,
+    where blank means shared.
+14. In branch-balanced mode the existing entity selector also chooses the branch:
+    **All branches** or one branch. It is hidden whenever the caller has only one
+    option. School-wide is not a selector option (see section 12).
+15. In shared-books mode there is no selector. Finance lists and reports get a
+    per-screen branch filter instead, as procurement already has.
 
 ---
 
@@ -216,7 +224,67 @@ balances"), so a tenant that remaps it is honoured.
 
 ---
 
-## 12. Staff at more than one branch
+## 12. Working branch by branch
+
+A finance admin with access to every branch still needs to work on one branch at
+a time. How depends on the mode, because the question differs: in branch-balanced
+mode each branch keeps books that balance, so "which branch" is "which books"; in
+shared-books mode there is one set of books and a branch is only a label.
+
+### Branch-balanced mode: the selector
+
+The entity selector (hidden today when a tenant has one entity) also offers the
+branches:
+
+| Option | What the caller gets |
+| --- | --- |
+| **All branches** | Everything, the shared pot included. Inter-branch amounts cancel out. |
+| **Ikeja / Lekki / Abuja** | That branch's books: its lists, statements, close and inter-branch balances. |
+
+- The options are the branches in the caller's reach. A caller who covers only
+  Lekki has one option and sees no selector. A caller who covers Ikeja and Lekki
+  sees each of them and "All my branches".
+- **School-wide is not an option.** "All branches" and "School-wide" read as the
+  same thing to a school, and they are not: one is everything added up, the other
+  is the pot the audit fee sits in. The pot is reached where it is needed instead:
+  - on a new record, "School-wide" is a choice in the branch field;
+  - on the close screen, it is a row beside each branch, with its own close;
+  - on lists and reports under All branches, a "School-wide only" filter.
+- **Creating a record.** With one branch selected, the form shows that branch and
+  sends it with the record. Under All branches the form asks for a branch or
+  School-wide and preselects neither (decision 13). An admin who sits on All
+  branches all day and records Lekki's diesel bill must pick Lekki; the bill
+  cannot fall into the shared pot because she forgot a field.
+- The selection lives in the page address beside `?entity=`, never in stored
+  preferences, so two tabs can sit on two branches without interfering, and the
+  branch a record is filed under is always the one visible on its form.
+
+### Shared-books mode: the filter
+
+- No selector. Finance lists and reports take a `?branch=` filter per screen,
+  with the procurement meanings: a branch id, or `none` for school-wide rows only.
+- A filtered report says so in its title and in its export ("filtered to Lekki"),
+  because on shared books Lekki has no books of its own and the figures are a
+  slice, not a statement.
+
+### Backend
+
+- `resolve_entity` is the one place every finance, procurement and payments view
+  (about 300 call sites) resolves `?entity=`. A branch resolver beside it reads
+  `?branch=`, ANDs it with the caller's grants (`vs_rbac.scoping`), and returns
+  the scope every list and report narrows by. One rule, reached from every screen,
+  rather than added screen by screen as payroll's `_filter_by_branch` was.
+- A branch outside the caller's reach is reported exactly like an unknown one, so
+  the parameter cannot be used to enumerate a tenant's branches.
+- The entities list returns, per entity, the selector options this caller may use
+  (none in shared-books mode), so the frontend never works out reach itself.
+- Writes never take their branch from `?branch=`. The branch travels in the body,
+  as it does today, and `raised_branch` gains the branch-balanced rule that a
+  blank branch is refused unless School-wide is named explicitly.
+
+---
+
+## 13. Staff at more than one branch
 
 - A salary record is charged to one branch by default, as it is today.
 - It may instead carry a percentage split across branches (Mr Eze teaches at
@@ -227,7 +295,7 @@ balances"), so a tenant that remaps it is honoured.
 
 ---
 
-## 13. Tax
+## 14. Tax
 
 This holds in both modes. VAT and withholding tax stay tenant-wide (one tax
 number). Payroll tax (PAYE) is owed to the state where the staff member works, so
@@ -235,15 +303,18 @@ PAYE obligations group by the branch's state (`Branch.state`).
 
 ---
 
-## 14. Build order
+## 15. Build order
 
 1. Line-level branch and the resolution rule (both modes). Carries every later step.
-2. Inter-branch account, the balancing rule in `post_journal`, reversal mirroring.
-3. Per-branch period status and close.
-4. Bank, petty cash and collection accounts per branch; branch transfer document.
-5. Mode setting and the switch-on setup step.
-6. Line-branch reports and the inter-branch grid.
-7. Pupil branch move (students app, FAL operation, customer branch sync).
-8. Stock transfer and consolidated purchase orders.
-9. Shared-cost split run, with count and fixed-percentage weights.
-10. Salary split across branches.
+2. The branch resolver beside `resolve_entity` and the `?branch=` filter on every
+   finance list and report (both modes; useful to shared-books schools at once).
+3. Inter-branch account, the balancing rule in `post_journal`, reversal mirroring.
+4. Per-branch period status and close.
+5. Bank, petty cash and collection accounts per branch; branch transfer document.
+6. Mode setting, the switch-on setup step, the must-choose branch rule on writes,
+   and the selector options in the entities list.
+7. Line-branch reports and the inter-branch grid.
+8. Pupil branch move (students app, FAL operation, customer branch sync).
+9. Stock transfer and consolidated purchase orders.
+10. Shared-cost split run, with count and fixed-percentage weights.
+11. Salary split across branches.
