@@ -118,14 +118,6 @@ class WorkflowTemplate(models.Model):
     def __str__(self):
         return f"{self.code} ({self.document_type})"
 
-    @property
-    def school(self):
-        return getattr(self.tenant, "school_profile", None) if self.tenant_id else None
-
-    @property
-    def school_id(self):
-        return getattr(self.school, "pk", None)
-
 
 class WorkflowApproverGroup(models.Model):
     """A named, reusable pool of approvers owned by one tenant.
@@ -179,14 +171,6 @@ class WorkflowApproverGroup(models.Model):
 
     def __str__(self):
         return f"{self.name} [{self.code}]"
-
-    @property
-    def school(self):
-        return getattr(self.tenant, "school_profile", None)
-
-    @property
-    def school_id(self):
-        return getattr(self.school, "pk", None)
 
 
 class WorkflowApproverGroupMember(models.Model):
@@ -485,9 +469,10 @@ class WorkflowStage(models.Model):
     # Number of levels to climb when organogram_target == N_LEVELS_UP.
     organogram_levels = models.PositiveSmallIntegerField(default=1)
     # The post named when organogram_target == SPECIFIC_POSITION: a CX chart
-    # seat, or a post on the template tenant's own chart. Never both.
+    # seat, or a post on the template tenant's own chart. Never both. A seat a
+    # stage names cannot be deleted, as a school's post cannot.
     organogram_position = models.ForeignKey(
-        "vs_user.Position", on_delete=models.SET_NULL,
+        "vs_user.Position", on_delete=models.PROTECT,
         null=True, blank=True, related_name="workflow_stages",
     )
     organogram_tenant_position_id = models.PositiveBigIntegerField(null=True, blank=True)
@@ -785,14 +770,6 @@ class WorkflowInstance(models.Model):
         return f"{self.document_type}#{self.document_object_id} [{self.status}]"
 
     @property
-    def school(self):
-        return getattr(self.tenant, "school_profile", None)
-
-    @property
-    def school_id(self):
-        return getattr(self.school, "pk", None)
-
-    @property
     def is_terminal(self) -> bool:
         return self.status in WORKFLOW_TERMINAL_STATUSES
 
@@ -950,14 +927,6 @@ class ApprovalDelegation(models.Model):
 
     objects = TenantAwareManager()
     all_objects = models.Manager()
-
-    @property
-    def school(self):
-        return getattr(self.tenant, "school_profile", None)
-
-    @property
-    def school_id(self):
-        return getattr(self.school, "pk", None)
 
     class Meta:
         default_manager_name = "objects"

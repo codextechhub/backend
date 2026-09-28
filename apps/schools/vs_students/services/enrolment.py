@@ -17,9 +17,9 @@ from __future__ import annotations
 
 from django.db import IntegrityError, transaction
 from django.db.models.functions import Lower
-from django.utils import timezone
 
 from vs_audit.models import AuditActionType, AuditModuleKey
+from vs_config.clock import tenant_today
 from vs_audit.services import emit_audit_event
 
 from ..constants import StudentStatus
@@ -173,11 +173,11 @@ def enrol(
             student_number=student_number,
             status=StudentStatus.APPLICANT,
             enrolment_date=(
-                timezone.localdate() if as_applicant
-                else (data.get("enrolment_date") or timezone.localdate())
+                tenant_today(tenant) if as_applicant
+                else (data.get("enrolment_date") or tenant_today(tenant))
             ),
             applied_for=data.get("applied_for") if as_applicant else None,
-            applied_on=timezone.localdate() if as_applicant else None,
+            applied_on=tenant_today(tenant) if as_applicant else None,
             created_by=actor,
             **personal,
         )
@@ -309,4 +309,27 @@ def confirm_applicant(student, *, actor, reason="", effective_date=None, number=
         student, StudentStatus.ENROLLED, actor=actor,
         reason=reason or "Application confirmed.",
         effective_date=effective_date,
+    )
+
+
+def change_status(
+    student, to_status, *, actor, reason="", effective_date=None,
+    destination_school="",
+):
+    """Move *student* to *to_status* through whichever path owns that move.
+
+    Confirming an applicant is more than a status change: the branch's
+    admission-number rule applies, and so does anything else
+    :func:`confirm_applicant` checks. The generic status routes (one student
+    and in bulk) therefore hand APPLICANT to ENROLLED to it, so a school's
+    confirmation rules hold whichever route a registrar takes. Every other
+    move is a plain :func:`transition`.
+    """
+    if student.status == StudentStatus.APPLICANT and to_status == StudentStatus.ENROLLED:
+        return confirm_applicant(
+            student, actor=actor, reason=reason, effective_date=effective_date,
+        )
+    return transition(
+        student, to_status, actor=actor, reason=reason,
+        effective_date=effective_date, destination_school=destination_school,
     )

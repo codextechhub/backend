@@ -100,6 +100,8 @@ class WorkflowNotificationTests(TestCase):
         rows = self._feed_rows(self.approver, "workflow.stage_activated")
         self.assertEqual(rows.count(), 1)
         self.assertIn("awaiting your decision", rows.first().body)
+        # CodeX's own approvals name their tenant too, not only a school's.
+        self.assertEqual(rows.first().origin_tenant_id, instance.tenant_id)
 
     def test_returned_notifies_requester(self):
         """A RETURNED vote notifies the requester with the comment."""

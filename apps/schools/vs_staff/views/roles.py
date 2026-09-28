@@ -78,7 +78,7 @@ class StaffRolesView(StaffViewMixin, APIView):
             tenant=self.tenant, pk__in=branch_ids,
         ).values_list("pk", "name"))
 
-        return success_response(data={
+        data = {
             "roles": [self._grant(grant, branch_names) for grant in active],
             "pending": [] if as_at is not None else self._pending(staff),
             "revoked": [self._revoked(grant, branch_names) for grant in revoked],
@@ -95,8 +95,11 @@ class StaffRolesView(StaffViewMixin, APIView):
                     for branch, via in reach_rows
                 ],
             },
-            "overrides": self._overrides(staff),
-        })
+        }
+        overrides = self._overrides(staff)
+        if overrides is not None:
+            data["overrides"] = overrides
+        return success_response(data=data)
 
     def _grant(self, grant, branch_names):
         role = getattr(grant, "role", None)

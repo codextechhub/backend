@@ -15,6 +15,7 @@ from django.utils import timezone
 from rest_framework.exceptions import NotFound
 
 from vs_audit.models import AuditActionType, AuditModuleKey
+from vs_config.clock import tenant_today
 from vs_audit.services import emit_audit_event
 
 from ..constants import CapacityMode, EnrolmentOutcome, StudentStatus
@@ -230,7 +231,7 @@ def place(
     enrolment = write_enrolment(
         student=student, school_class=school_class, intended_year=session,
         actor=actor, is_active=True,
-        effective_date=effective_date or timezone.localdate(),
+        effective_date=effective_date or tenant_today(student.tenant),
         reason=(reason or "") if is_transfer else "",
         outcome=EnrolmentOutcome.CURRENT,
         assigned_by=actor,

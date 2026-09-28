@@ -1548,6 +1548,26 @@ class OrganogramSourceResolutionTests(TestCase):
 
         self.assertEqual(resolve_approvers(stage, self.instance), [])
 
+    def test_a_seat_a_stage_names_cannot_be_deleted(self):
+        """Deleting the Group Auditor seat must not quietly unroute the stage.
+
+        The stage kept the seat as a nullable key, so deleting the seat
+        emptied it and every document then reached a stage naming nobody. The
+        delete is refused instead, as it is for a post on a school's chart and
+        for a seat an approver group names.
+        """
+        from django.db.models import ProtectedError
+
+        seat = self._seat("ORG-KEEP-SEAT", title="Group Auditor")
+        stage = self._stage(code="org-keep-seat", target="SPECIFIC_POSITION")
+        stage.organogram_position = seat
+        stage.save(update_fields=["organogram_position"])
+
+        with self.assertRaises(ProtectedError):
+            seat.delete()
+        stage.refresh_from_db()
+        self.assertEqual(stage.organogram_position_id, seat.pk)
+
     def test_a_same_tenant_organogram_approver_survives_containment(self):
         """Containment must remove only outsiders, never the legitimate approver.
 

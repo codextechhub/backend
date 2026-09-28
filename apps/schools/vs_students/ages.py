@@ -42,8 +42,10 @@ def date_of_birth_problem(
         else:
             bounds = (MIN_AGE_YEARS, MAX_AGE_YEARS)
     youngest, oldest = bounds
-    # TODO: take the day from vs_config.clock.tenant_today(tenant).
-    today = today or dt.date.today()
+    if today is None:
+        from vs_config.clock import tenant_today
+
+        today = tenant_today(tenant)
     if dob > today:
         return "That date is in the future."
     years = today.year - dob.year

@@ -41,7 +41,8 @@ def dispatch_notification(*, instance_id: str, event_key: str,
         NotificationService.send(
             event_key=event_key,
             recipients=recipients,
-            school=instance.school,
+            # The tenant the approval belongs to: a school, or CodeX's own.
+            tenant=instance.tenant,
             # The document's branch decides whose notification settings apply.
             branch=instance.branch,
             metadata={"workflow_instance_id": str(instance.id)},

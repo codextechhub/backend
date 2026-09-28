@@ -25,7 +25,6 @@ FRD M11 v2.4 sections 7 and 12.1.
 """
 from __future__ import annotations
 
-from django.utils import timezone
 from rest_framework import serializers
 
 from vs_rbac.field_enforcement import FieldAccessMixin
@@ -59,10 +58,13 @@ from .models import (
 from .services import documents as document_service
 
 
-def _age_on(dob, when=None):
+def _age_on(dob, when=None, *, tenant=None):
+    """Age in whole years on *when*, or on the school's own today."""
+    from vs_config.clock import tenant_today
+
     if not dob:
         return None
-    when = when or timezone.localdate()
+    when = when or tenant_today(tenant)
     return when.year - dob.year - ((when.month, when.day) < (dob.month, dob.day))
 
 
@@ -475,7 +477,11 @@ class StudentDetailSerializer(FieldAccessMixin, _BranchAware):
 
     def get_age(self, obj):
         as_at = self.context.get("as_at")
-        return _age_on(obj.date_of_birth, as_at.date if as_at else None)
+        # The school is asked for only when no day is given: a record read as
+        # at a past day is a history snapshot, which carries no tenant.
+        if as_at:
+            return _age_on(obj.date_of_birth, as_at.date)
+        return _age_on(obj.date_of_birth, tenant=obj.tenant)
 
     def _enrolment(self, obj):
         installed = getattr(obj, "_active_enrolments", None)

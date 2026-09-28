@@ -296,6 +296,46 @@ class SelfServiceTests(StaffFixture):
         self.assertEqual(response.status_code, 403, response.data)
 
 
+class DocumentFileTests(StaffFixture):
+    """A staff document's file follows the Documents tab's key, not the directory's.
+
+    Brightfield gives its front desk a role that lists staff to find a
+    colleague's extension, and nothing else. The desk may not open the
+    Documents tab, so it may not open Chika's passport scan by pasting the
+    file's link either. The records officer, who holds the records key, may.
+    """
+
+    def reader(self, *keys):
+        from rest_framework.test import APIRequestFactory
+
+        from vs_rbac.tests.helpers import make_role, make_role_permission
+        from schools.vs_staff.tests.base import make_assignment, make_school_admin
+
+        role = make_role(self.school, name="Desk " + "-".join(keys), key="desk-" + str(len(keys)))
+        for key in keys:
+            make_role_permission(role, self.permissions[key])
+        user = make_school_admin(None, email=f"desk{len(keys)}@brightfield.test", tenant=self.tenant)
+        make_assignment(self.school, user, role, branch=None)
+        request = APIRequestFactory().get("/")
+        request.user = user
+        request.tenant = self.tenant
+        return request
+
+    def test_the_directory_key_alone_does_not_open_a_document(self):
+        from schools.vs_staff.media_policies import _may_read_document, _may_read_photo
+        from schools.vs_staff.models import StaffDocument
+
+        chika = self.make_staff("chika.file@brightfield.test", "Chika", "Obi", branch=self.lekki)
+        document = StaffDocument(tenant=self.tenant, staff=chika)
+
+        desk = self.reader("school.teachers.view")
+        self.assertFalse(_may_read_document(desk, document))
+        self.assertTrue(_may_read_photo(desk, chika))
+
+        officer = self.reader("school.teachers.view", "school.staff_records.view")
+        self.assertTrue(_may_read_document(officer, document))
+
+
 class PermissionOverrideVisibilityTests(StaffFixture):
     def test_a_caller_without_the_override_key_sees_no_override_block(self):
         """Absent, not empty.
@@ -310,7 +350,8 @@ class PermissionOverrideVisibilityTests(StaffFixture):
             role=self.role, permission__key="school.user_overrides.view",
         ).delete()
         response = self.get(self.admin, "staff-roles", pk=self.eze.pk)
-        self.assertIsNone(response.data["data"]["overrides"])
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertNotIn("overrides", response.data["data"])
 
     def test_a_school_admin_holding_the_key_sees_the_block(self):
         response = self.get(self.admin, "staff-roles", pk=self.eze.pk)
