@@ -1534,3 +1534,50 @@ class PhotographsAreOptionalTests(StudentsFixture):
             r for r in rows if r["document_type"] == DocumentType.BIRTH_CERTIFICATE
         )
         self.assertTrue(cert["required"])
+
+
+class YearListIncludesTheUnplacedTests(StudentsFixture):
+    """A year's list is its roll as it was, plus the children not yet placed.
+
+    An applicant or a child waiting for a class has no placement row, so a
+    list narrowed by placements alone could never show one: the applicants
+    board read empty at every school with a year set up.
+    """
+
+    def _names(self, session, **params):
+        response = self.get(
+            self.admin, "student-list", {"session": session.pk, **params},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return {row["first_name"] for row in response.data["data"]}
+
+    def test_an_applicant_is_listed_under_the_year_they_applied_for(self):
+        self.student(status=StudentStatus.APPLICANT, first="Zainab", applied_for=self.jss1)
+        self.assertIn("Zainab", self._names(self.year, status=StudentStatus.APPLICANT))
+        self.assertNotIn("Zainab", self._names(self.next_year, status=StudentStatus.APPLICANT))
+
+    def test_an_applicant_who_named_no_level_belongs_to_the_running_year(self):
+        self.student(status=StudentStatus.APPLICANT, first="Ifeanyi")
+        self.assertIn("Ifeanyi", self._names(self.year, status=StudentStatus.APPLICANT))
+        self.assertNotIn("Ifeanyi", self._names(self.next_year, status=StudentStatus.APPLICANT))
+
+    def test_a_child_waiting_for_a_class_is_listed_as_unassigned(self):
+        self.student(status=StudentStatus.ENROLLED, first="Tunde")
+        self.assertIn(
+            "Tunde",
+            self._names(self.year, status=StudentStatus.ENROLLED, **{"class": "unassigned"}),
+        )
+
+    def test_a_placed_child_still_reads_as_the_roll_was(self):
+        placed = self.student(first="Amaka")
+        self.place(placed, self.shared_class)
+        self.assertIn("Amaka", self._names(self.year))
+        self.assertNotIn("Amaka", self._names(self.next_year))
+
+    def test_the_summary_counts_the_same_children_as_the_list(self):
+        self.student(status=StudentStatus.APPLICANT, first="Zainab", applied_for=self.jss1)
+        response = self.get(
+            self.admin, "student-summary", {"session": self.year.pk},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["applicants"], 1)

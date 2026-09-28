@@ -18,6 +18,8 @@ FRD M11 v2.5 FR-011.
 """
 from __future__ import annotations
 
+from django.db.models import Q
+
 from ..exceptions import YearIsClosed
 
 
@@ -34,3 +36,23 @@ def assert_year_is_open(session, *, what="change"):
         session=session.pk,
         session_name=session.name,
     )
+
+
+def in_year(session):
+    """Who belongs to *session*'s list: the roll as it was, and those not yet placed.
+
+    A child with a placement that year belongs to it, and nobody who only
+    exists in another one: the roll AS IT WAS. A child with no placement at all
+    (an applicant, an application closed before a class, a child enrolled and
+    waiting for one) has no roll row to read, so they belong to the year of
+    the level they applied for, and to the running year when they named none.
+    Filtering on placements alone left every applicant and every unplaced child
+    out of any year's list, which emptied the applicants board at every school
+    with a year set up.
+    """
+    from schools.vs_academics.models import SessionStatus
+
+    unplaced_here = Q(applied_for__session=session)
+    if session.status == SessionStatus.ACTIVE:
+        unplaced_here |= Q(applied_for__isnull=True)
+    return Q(enrolments__session=session) | (Q(enrolments__isnull=True) & unplaced_here)
