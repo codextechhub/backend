@@ -555,7 +555,9 @@ unique constraint, moves to the next suggestion, up to five times; five in a
 row is a 409 `DUPLICATE_STUDENT_NUMBER` asking to save again. When there is no
 suggestion (no series yet, or the next number would break the pattern) the
 rule applies as if automatic numbers were off: required refuses, optional
-leaves the number blank. The import does not issue numbers.
+leaves the number blank. The student import follows the same rule: a blank
+number passes validation where the child's branch issues numbers and a next one
+can be worked out, and each row is given the next number in turn when written.
 
 ## 12. Guardian settings
 
