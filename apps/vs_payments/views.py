@@ -41,6 +41,7 @@ from vs_rbac.permissions import (
 from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 
 from . import reconciliation, services, webhooks
+from .reach import PaymentsReach
 from .constants import (
     COLLECTION_GROUPS,
     PAYOUT_GROUPS,
@@ -49,14 +50,7 @@ from .constants import (
 )
 from .exceptions import DuplicateWebhookError, PayoutApprovalRequiredError
 from .providers.registry import is_available as provider_is_available
-from .models import (
-    CollectionIntent,
-    PaymentEvent,
-    PayoutBatch,
-    PayoutInstruction,
-    VirtualAccount,
-    WebhookEvent,
-)
+from .models import WebhookEvent
 from .serializers import (
     CollectionIntentSerializer,
     PaymentEventSerializer,
@@ -77,6 +71,16 @@ def _paginate(request, qs, serializer_cls, view, **ser_kwargs):
     page = paginator.paginate_queryset(qs, request, view=view)  # Slice the queryset for the current page.
     ser_kwargs.setdefault("context", {"request": request})
     return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)  # Wrap the serialized page.
+
+
+def _reach(request):
+    """The entity this request names and the gateway records in it the caller may see.
+
+    Every payments read and status change starts here rather than from a model
+    manager; see :mod:`vs_payments.reach` for the rule and why.
+    """
+    entity = resolve_entity(request)
+    return entity, PaymentsReach.for_request(request, entity)
 
 
 # Support the entity obj workflow.
@@ -189,10 +193,8 @@ class CollectionListCreateView(APIView):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
-        entity = resolve_entity(request)  # Resolve the tenant entity from the request.
-        qs = CollectionIntent.objects.filter(entity=entity).select_related(
-            "customer", "payment",
-        )
+        _, reach = _reach(request)
+        qs = reach.collections().select_related("customer", "payment")
         if (group := request.query_params.get("group")) in COLLECTION_GROUPS:
             qs = qs.filter(status__in=COLLECTION_GROUPS[group])
         elif (status_ := request.query_params.get("status")):
@@ -250,9 +252,8 @@ class CollectionSummaryView(APIView):
         from django.db.models import Count, Q, Sum
         from django.db.models.functions import Coalesce
 
-        entity = resolve_entity(request)  # Scope the summary to the current entity.
-
-        qs = CollectionIntent.objects.filter(entity=entity)
+        _, reach = _reach(request)
+        qs = reach.collections()
         if (provider := request.query_params.get("provider")):
             qs = qs.filter(provider=provider)
 
@@ -296,12 +297,9 @@ class CollectionDetailView(APIView):
 
     # Handle GET requests for this endpoint.
     def get(self, request, pk):
-        entity = resolve_entity(request)  # Resolve the tenant entity.
+        _, reach = _reach(request)
+        intent = reach.get_or_404(reach.collections(), pk, "No such collection in this entity.")
 
-        intent = CollectionIntent.objects.filter(entity=entity, pk=pk).first()
-        if intent is None:  # Return 404 when the record does not exist in this tenant.
-            raise NotFound("No such collection in this entity.")
-        
         if request.query_params.get("verify") in ("1", "true", "True"):
             intent = services.confirm_collection(intent, actor_user=request.user)  # Confirm against the provider before returning.
             
@@ -334,8 +332,8 @@ class VirtualAccountListCreateView(APIView):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
-        entity = resolve_entity(request)  # Resolve the tenant entity.
-        base = VirtualAccount.objects.filter(entity=entity)
+        _, reach = _reach(request)
+        base = reach.virtual_accounts()
         kpis = {  # Compute the summary KPIs used by the list header.
             "total": base.count(),
             "active": base.filter(status=VirtualAccountStatus.ACTIVE).count(),
@@ -398,12 +396,10 @@ class VirtualAccountDetailView(APIView):
 
     # Support the get workflow.
     def _get(self, request, pk):
-        entity = resolve_entity(request)  # Resolve the tenant entity.
-        va = (VirtualAccount.objects
-              .filter(entity=entity, pk=pk)
-              .select_related("customer", "deposit_account", "currency").first())
-        if va is None:  # Return 404 when the record doesn't belong to this entity.
-            raise NotFound("No virtual account matches this id for the entity.")
+        entity, reach = _reach(request)
+        va = reach.get_or_404(
+            reach.virtual_accounts().select_related("customer", "deposit_account", "currency"),
+            pk, "No virtual account matches this id for the entity.")
         return entity, va  # Return the resolved pair for reuse by GET/PATCH.
 
     # Handle GET requests for this endpoint.
@@ -451,8 +447,8 @@ class PayoutListCreateView(APIView):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
-        entity = resolve_entity(request)  # Resolve the tenant entity.
-        qs = PayoutInstruction.objects.filter(entity=entity)
+        _, reach = _reach(request)
+        qs = reach.payouts()
         if (group := request.query_params.get("group")) in PAYOUT_GROUPS:
             qs = qs.filter(status__in=PAYOUT_GROUPS[group])
         elif (status_ := request.query_params.get("status")):
@@ -522,8 +518,8 @@ class PayoutSummaryView(APIView):
         from django.db.models import Count, Q, Sum
         from django.db.models.functions import Coalesce
 
-        entity = resolve_entity(request)  # Scope the summary to the current entity.
-        qs = PayoutInstruction.objects.filter(entity=entity)
+        _, reach = _reach(request)
+        qs = reach.payouts()
         if (provider := request.query_params.get("provider")):
             qs = qs.filter(provider=provider)
         cutoff = timezone.now() - datetime.timedelta(days=7)
@@ -568,8 +564,8 @@ class PayoutBatchListCreateView(APIView):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
-        entity = resolve_entity(request)  # Resolve the tenant entity.
-        qs = PayoutBatch.objects.filter(entity=entity)
+        _, reach = _reach(request)
+        qs = reach.batches()
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
         return _paginate(request, qs.order_by("-created_at", "-id"), PayoutBatchSummarySerializer, self)
@@ -646,8 +642,8 @@ class PayoutBatchSummaryView(APIView):
 
         from .constants import PayoutStatus  # In-flight statuses backing the queued-money KPI.
 
-        entity = resolve_entity(request)  # Resolve the tenant entity.
-        qs = PayoutBatch.objects.filter(entity=entity)
+        _, reach = _reach(request)
+        qs = reach.batches()
         cutoff = timezone.now() - datetime.timedelta(days=7)
         agg = qs.aggregate(
             total=Count("id"),
@@ -656,8 +652,8 @@ class PayoutBatchSummaryView(APIView):
         )
         # "queued" money must reflect only genuinely in-flight child instructions, not the
         # batch total - a PROCESSING batch can carry FAILED children that never left.  # Sum child amounts, not batch totals.
-        queued_kobo = PayoutInstruction.objects.filter(
-            entity=entity, batch__isnull=False,
+        queued_kobo = reach.payouts().filter(
+            batch__isnull=False,
             status__in=[PayoutStatus.PENDING, PayoutStatus.PROCESSING],
         ).aggregate(s=Coalesce(Sum("amount"), 0))["s"]
         return success_response("Payout batches summary retrieved.", data={
@@ -688,10 +684,8 @@ class PayoutBatchDetailView(APIView):
 
     # Handle GET requests for this endpoint.
     def get(self, request, pk):
-        entity = resolve_entity(request)  # Resolve the tenant entity.
-        batch = PayoutBatch.objects.filter(entity=entity, pk=pk).first()
-        if batch is None:  # Return 404 when the batch does not belong to this tenant.
-            raise NotFound("No such payout batch in this entity.")
+        _, reach = _reach(request)
+        batch = reach.get_or_404(reach.batches(), pk, "No such payout batch in this entity.")
         return success_response(
             "Payout batch retrieved.",
             data=PayoutBatchSerializer(batch, context={"request": request}).data,
@@ -699,10 +693,8 @@ class PayoutBatchDetailView(APIView):
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
-        entity = resolve_entity(request)  # Resolve the tenant entity.
-        batch = PayoutBatch.objects.filter(entity=entity, pk=pk).first()
-        if batch is None:  # Return 404 when the batch does not belong to this tenant.
-            raise NotFound("No such payout batch in this entity.")
+        _, reach = _reach(request)
+        batch = reach.get_or_404(reach.batches(), pk, "No such payout batch in this entity.")
         raise PayoutApprovalRequiredError(
             "Direct payout batch submission is disabled. Submit the batch for approval.",
         )
@@ -724,10 +716,8 @@ class PayoutBatchSubmitForApprovalView(APIView):
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
-        entity = resolve_entity(request)  # Resolve the tenant entity.
-        batch = PayoutBatch.objects.filter(entity=entity, pk=pk).first()
-        if batch is None:  # Return 404 when the batch does not belong to this tenant.
-            raise NotFound("No such payout batch in this entity.")
+        _, reach = _reach(request)
+        batch = reach.get_or_404(reach.batches(), pk, "No such payout batch in this entity.")
         from vs_workflow.services import release as release_svc
 
         instance = services.submit_payout_batch_for_approval(
@@ -850,7 +840,7 @@ class SettlementReconciliationView(APIView):
     def get(self, request):
         import datetime
 
-        entity = resolve_entity(request)  # Resolve the tenant entity.
+        entity, reach = _reach(request)
 
         # Support the date workflow.
         def _date(name):
@@ -864,7 +854,7 @@ class SettlementReconciliationView(APIView):
 
         recon = reconciliation.settlement_reconciliation(  # Build the read-only reconciliation snapshot.
             entity, start_date=_date("start_date"), end_date=_date("end_date"),
-            provider=request.query_params.get("provider"),
+            provider=request.query_params.get("provider"), reach=reach,
         )
         data = {  # Convert the dataclass into a JSON-safe response payload.
             "entity_code": recon.entity_code,
@@ -943,8 +933,8 @@ class TransactionsLogView(APIView):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
-        entity = resolve_entity(request)  # Resolve the tenant entity.
-        qs = PaymentEvent.objects.filter(entity=entity).select_related("actor_user")
+        _, reach = _reach(request)
+        qs = reach.events().select_related("actor_user")
         if (action := request.query_params.get("action")):
             qs = qs.filter(action=action)
         if (provider := request.query_params.get("provider")):
@@ -976,13 +966,13 @@ _MOVEMENT_COLS = [  # Common projection shape for the movements feed.
 
 
 # Support the movement querysets workflow.
-def _movement_querysets(entity, *, provider=None, group=None):
+def _movement_querysets(reach, *, provider=None, group=None):
     """The collection (in) + payout (out) value-querysets projected to a common shape."""
     from django.db.models import CharField, F, Value
     from django.db.models.functions import Coalesce
 
-    cols = CollectionIntent.objects.filter(entity=entity)
-    pos = PayoutInstruction.objects.filter(entity=entity)
+    cols = reach.collections()
+    pos = reach.payouts()
     if provider:  # Optional PSP filter applied to both sides.
         cols = cols.filter(provider=provider)
         pos = pos.filter(provider=provider)
@@ -1043,11 +1033,11 @@ class MovementsView(APIView):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
-        entity = resolve_entity(request)  # Resolve the tenant entity.
+        _, reach = _reach(request)
         provider = request.query_params.get("provider")
         group = request.query_params.get("group")
         direction = request.query_params.get("direction")
-        cv, pv = _movement_querysets(entity, provider=provider, group=group)  # Build the projected querysets.
+        cv, pv = _movement_querysets(reach, provider=provider, group=group)  # Build the projected querysets.
 
         parts = []  # Collect whichever sides the caller requested.
         if direction != "out":  # Include collections unless the caller asked for payouts only.
@@ -1095,10 +1085,10 @@ class MovementsSummaryView(APIView):
         from django.db.models import Count, Q, Sum
         from django.db.models.functions import Coalesce
 
-        entity = resolve_entity(request)  # Resolve the tenant entity.
+        _, reach = _reach(request)
         provider = request.query_params.get("provider")
-        cols = CollectionIntent.objects.filter(entity=entity)
-        pos = PayoutInstruction.objects.filter(entity=entity)
+        cols = reach.collections()
+        pos = reach.payouts()
         if provider:  # Apply the provider filter to both sides when requested.
             cols = cols.filter(provider=provider)
             pos = pos.filter(provider=provider)
@@ -1176,23 +1166,6 @@ class WebhookView(APIView):
 NEEDS_ATTENTION_STATUSES = (WebhookStatus.FAILED, WebhookStatus.IGNORED)
 
 
-# Restrict webhook events to those belonging to one entity.
-def _entity_webhooks(entity):
-    """Webhook events attributable to ``entity`` through their collection or payout.
-
-    :class:`~vs_payments.models.WebhookEvent` carries no entity of its own - it is a
-    raw provider event, stored before we know what it concerns - so tenancy is derived
-    from the record it was matched to. An event we could not match to anything has no
-    entity and is therefore never returned here, because showing one tenant an
-    unattributable reference would leak another tenant's transaction. Those events are
-    not lost: they belong to the platform-scope view below
-    (:class:`UnattributedWebhookListView`), which is CX-staff only.
-    """
-    return WebhookEvent.objects.filter(
-        Q(collection__entity=entity) | Q(payout__entity=entity),
-    ).select_related("collection__customer", "payout")
-
-
 class WebhookEventListView(APIView):
     """GET /payments/webhooks/ - inbound provider events, newest first.
 
@@ -1212,8 +1185,8 @@ class WebhookEventListView(APIView):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
-        entity = resolve_entity(request)
-        qs = _entity_webhooks(entity)
+        _, reach = _reach(request)
+        qs = reach.webhooks().select_related("collection__customer", "payout")
 
         status_filter = (request.query_params.get("status") or "").upper()
         if status_filter == "ALL":
@@ -1249,8 +1222,8 @@ class WebhookEventSummaryView(APIView):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
-        entity = resolve_entity(request)
-        qs = _entity_webhooks(entity)
+        _, reach = _reach(request)
+        qs = reach.webhooks().select_related("collection__customer", "payout")
         counts = {
             row["status"]: row["count"]
             for row in qs.values("status").annotate(count=Count("id"))
@@ -1308,10 +1281,10 @@ class WebhookEventReplayView(APIView):
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
-        entity = resolve_entity(request)
-        event = _entity_webhooks(entity).filter(pk=pk).first()
-        if event is None:
-            raise NotFound("Webhook event not found for this entity.")
+        _, reach = _reach(request)
+        event = reach.get_or_404(
+            reach.webhooks().select_related("collection__customer", "payout"),
+            pk, "Webhook event not found for this entity.")
         return _replay_event(event)
 
 
@@ -1323,7 +1296,7 @@ class WebhookEventReplayView(APIView):
 def _unattributed_webhooks():
     """Webhook events that matched neither a collection nor a payout.
 
-    The exact complement of :func:`_entity_webhooks`: an event links to a collection or
+    The exact complement of :meth:`vs_payments.reach.PaymentsReach.webhooks`: an event links to a collection or
     a payout (and is then shown on that entity's screen) or it links to neither, in
     which case there is no entity to scope it to and no tenant may be shown it. What is
     left is genuine debris - a staging PSP pointed at production, a reference that no

@@ -22,9 +22,10 @@ from dataclasses import dataclass, field
 
 from vs_finance.models import BankStatementLine
 from vs_finance.money import format_naira
+from vs_rbac.scoping import UNNARROWED
 
 from .constants import CollectionStatus, PayoutStatus
-from .models import CollectionIntent, PayoutInstruction
+from .reach import PaymentsReach
 
 
 @dataclass
@@ -146,21 +147,22 @@ class SettlementReconciliation:
 
 
 # Handle the settlement reconciliation workflow.
-def settlement_reconciliation(entity, *, start_date=None, end_date=None, provider=None):
+def settlement_reconciliation(entity, *, start_date=None, end_date=None, provider=None,
+                              reach=None):
     """Reconcile gateway-confirmed movements against ``entity``'s imported bank lines.
 
     ``start_date``/``end_date`` bound both the gateway confirmation date and the bank line
-    transaction date (inclusive). ``provider`` optionally narrows to one PSP. Returns a
-    :class:`SettlementReconciliation`.
+    transaction date (inclusive). ``provider`` optionally narrows to one PSP. ``reach``
+    (a :class:`vs_payments.reach.PaymentsReach`) narrows the gateway records and the
+    bank lines to one caller's branches; without it the whole entity is reconciled.
+    Returns a :class:`SettlementReconciliation`.
     """
+    if reach is None:
+        reach = PaymentsReach(entity, UNNARROWED)
     rows: list[SettlementRow] = []  # Collect gateway movements into reconciliation rows.
 
-    collections = CollectionIntent.objects.filter(
-        entity=entity, status=CollectionStatus.SUCCEEDED,
-    )
-    payouts = PayoutInstruction.objects.filter(
-        entity=entity, status=PayoutStatus.PAID,
-    )
+    collections = reach.collections().filter(status=CollectionStatus.SUCCEEDED)
+    payouts = reach.payouts().filter(status=PayoutStatus.PAID)
     if provider:  # Optional PSP filter narrows the report to one provider.
         collections = collections.filter(provider=provider)
         payouts = payouts.filter(provider=provider)
@@ -188,7 +190,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
             amount=-int(po.amount), confirmed_at=confirmed,
         ))
 
-    bank_qs = BankStatementLine.objects.filter(bank_account__entity=entity)
+    bank_qs = reach.bank_lines(BankStatementLine.objects.filter(bank_account__entity=entity))
     if start_date is not None:  # Apply the start date filter only when provided.
         bank_qs = bank_qs.filter(txn_date__gte=start_date)
     if end_date is not None:  # Apply the end date filter only when provided.
