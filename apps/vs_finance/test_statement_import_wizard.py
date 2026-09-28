@@ -630,6 +630,51 @@ class BankStatementImportWizardTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(rolled_back.status_code, 200, rolled_back.content)
         self.assertNotIn(statement_id, self._listed_statements())
 
+    def test_a_long_statement_rolls_back_in_the_request(self):
+        rows, balance = [], 1000
+        for day in range(60):
+            balance += 10
+            rows.append(
+                f"2026-01-{day // 3 + 1:02d},Receipt {day},R-{day},10.00,,TX-{day},{balance}.00\n"
+            )
+        upload = self._upload("".join(rows), closing=f"{balance}.00")
+        self.assertTrue(upload.json()["data"]["is_ready_for_import"], upload.content)
+        batch_id = upload.json()["data"]["id"]
+        publish = self.client.post(
+            f"/v1/import/batches/{batch_id}/start-import/",
+            {"run_async": False},
+            format="json",
+        )
+        job_id = int(publish.json()["data"]["job_id"])
+        self.assertEqual(BankStatementLine.objects.count(), 60)
+
+        # Sixty lines is over the inline limit, but the rollback is one delete.
+        rolled_back = self.client.post(
+            f"/v1/import/batches/{batch_id}/jobs/{job_id}/rollback/",
+            {"reason": "Wrong account"},
+            format="json",
+        )
+        self.assertEqual(rolled_back.status_code, 200, rolled_back.content)
+        self.assertNotIn("queued", rolled_back.json()["data"])
+        self.assertFalse(BankStatement.objects.exists())
+
+    def test_a_statement_being_rolled_back_names_no_import(self):
+        upload = self._upload(self._balanced_rows())
+        batch_id = upload.json()["data"]["id"]
+        publish = self.client.post(
+            f"/v1/import/batches/{batch_id}/start-import/",
+            {"run_async": False},
+            format="json",
+        )
+        job = ImportJob.objects.get(pk=int(publish.json()["data"]["job_id"]))
+        job.rollback_started_at = job.updated_at
+        job.save(update_fields=["rollback_started_at"])
+        statement_id = BankStatementImportContext.objects.get(
+            import_batch_id=batch_id,
+        ).published_statement_id
+
+        self.assertIsNone(self._listed_statements()[statement_id]["import_rollback"])
+
     def test_a_statement_keyed_in_by_hand_names_no_import(self):
         manual = self._manual_statement()
         self.assertIsNone(self._listed_statements()[manual.pk]["import_rollback"])

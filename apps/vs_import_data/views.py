@@ -1066,6 +1066,7 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
 
     def post(self, request, **_kwargs):
         from .constants import ROLLBACK_INLINE_ROW_LIMIT
+        from .services.rollback_service import rolls_back_in_one_step
         from .tasks import rollback_import_job_task
 
         job = self.get_job()
@@ -1080,7 +1081,10 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
         reversible_rows = job.row_results.exclude(target_object_pk="").count()
         run_async = serializer.validated_data.get("run_async")
         if run_async is None:
-            run_async = reversible_rows > ROLLBACK_INLINE_ROW_LIMIT
+            run_async = (
+                reversible_rows > ROLLBACK_INLINE_ROW_LIMIT
+                and not rolls_back_in_one_step(job)
+            )
 
         if run_async:
             # Claim the job before queueing. The task runs minutes later, and

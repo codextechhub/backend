@@ -1079,7 +1079,10 @@ bank-statement batch. School datasets unchanged. The school app's import wizard
 offers Roll back on a statement to the bank-key holder. A bank account's
 statements list now carries `import_rollback` ({batch_id, job_id}, or null for
 a manual statement, a reconciled one or one with a line acted on), and FinPro's
-banking screen offers Roll back on the statement row from it.
+banking screen offers Roll back on the statement row from it. A statement
+rollback always runs inside the request, whatever its line count
+(rolls_back_in_one_step), and a statement whose rollback is already running
+names no import.
 MUST SAY: M10 the extra-keys rule and its one entry (remove the "no
 self-service way back for a wrong bank statement" gap); M19 that a bursar can
 roll back a statement she imported, from the statement's own row, and the new

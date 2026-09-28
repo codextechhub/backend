@@ -34,6 +34,20 @@ def _rows_already_reverted(job) -> set[int]:
 
 
 @transaction.atomic
+def rolls_back_in_one_step(job) -> bool:
+    """Whether this job's rollback is one bulk step rather than a reversal per row.
+
+    A bank statement is rolled back by deleting the statement and all its lines
+    in one transaction (``rollback_bank_statement_import_job``), so its row
+    count says nothing about how long the rollback takes. The rollback endpoint
+    reads this so it never queues such a rollback: a queued one would answer
+    before the statement is gone, to a bursar whose key cannot read the
+    rollback history that reports the result.
+    """
+    template = job.import_batch.template
+    return bool(template and template.dataset_type == "bank_statements")
+
+
 def rollback_import_job(job, initiated_by=None, reason: str = ""):
     """
     Roll back imported rows for a job, and report honestly what happened.
@@ -49,10 +63,7 @@ def rollback_import_job(job, initiated_by=None, reason: str = ""):
     and act on, and which the rollback endpoint will accept again once whatever
     blocked a row has been dealt with.
     """
-    if (
-        job.import_batch.template
-        and job.import_batch.template.dataset_type == "bank_statements"
-    ):
+    if rolls_back_in_one_step(job):
         from vs_finance.statement_imports import rollback_bank_statement_import_job
 
         return rollback_bank_statement_import_job(

@@ -553,10 +553,15 @@ def rollback_bank_statement_import_job(job, *, initiated_by=None, reason=""):
 
 
 def _publishing_jobs():
-    """The import jobs that published a statement, newest first."""
+    """The import jobs that published a statement and are not being rolled back.
+
+    A rollback that has started and not finished leaves the job SUCCEEDED; the
+    rollback endpoint refuses a second one, so it is not offered either.
+    """
     from vs_import_data.models import ImportJob, ImportJobStatusChoices
 
     return ImportJob.objects.filter(
+        Q(rollback_started_at__isnull=True) | Q(rollback_completed_at__isnull=False),
         status=ImportJobStatusChoices.SUCCEEDED,
     ).order_by("-created_at")
 
