@@ -1656,7 +1656,16 @@ def _translate_procurement(exc):
     "the document is in the wrong state", believes it, and nobody looks. Those
     re-raise untouched, and a FAL error already raised inside the block passes
     through as itself.
+
+    Some of those rules are the checks ``vs_procurement``'s screens run, shared
+    with the FAL (the vendor-payment post, for one), and they refuse in DRF's
+    terms. A 404 or 403 there means the row is outside the acting user's branches
+    and becomes :class:`CrossBranchError`; a 400 is a refusal of the document's
+    state and becomes :class:`ProcurementStateError` carrying its message.
     """
+    from rest_framework.exceptions import NotFound, PermissionDenied
+    from rest_framework.exceptions import ValidationError as DRFValidationError
+
     from vs_finance.exceptions import FinanceError
     from vs_workflow.exceptions import WorkflowError
 
@@ -1665,6 +1674,10 @@ def _translate_procurement(exc):
 
     if isinstance(exc, FALError):
         return exc
+    if isinstance(exc, (NotFound, PermissionDenied)):
+        return CrossBranchError(str(exc.detail))
+    if isinstance(exc, DRFValidationError):
+        return ProcurementStateError(_drf_message(exc.detail))
     if not isinstance(exc, (FinanceError, WorkflowError)):
         return exc
     if isinstance(exc, proc_exc.ApprovalTemplateMissingError):
@@ -1675,6 +1688,15 @@ def _translate_procurement(exc):
                         proc_exc.ApprovalOverrideReasonError)):
         return OverrideNotPermittedError(str(exc))
     return ProcurementStateError(str(exc))
+
+
+def _drf_message(detail) -> str:
+    """The sentences of a DRF error ``detail``, however it nests, as one string."""
+    if isinstance(detail, dict):
+        return " ".join(_drf_message(value) for value in detail.values())
+    if isinstance(detail, (list, tuple)):
+        return " ".join(_drf_message(value) for value in detail)
+    return str(detail)
 
 
 def _amount_of(document):
@@ -2065,17 +2087,33 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
         So the chain is record, submit, approve, post, and this is the last step.
         A goods receipt does not appear here because a receipt is not an
         approvable document: ``receive_goods`` posts it directly.
+
+        The acting user is the caller, with the reach the procurement screens give
+        them: a bill they cannot reach is refused as another branch's, and a
+        payment posts through
+        :func:`vs_procurement.views.vendor_payments.post_payment_for_caller`, the
+        same checks the procurement post runs (its saved plan, the reach of its
+        bills, its branch and its bank account).
         """
+        from types import SimpleNamespace
+
         from vs_procurement import payables
+        from vs_procurement.views.base import _document_or_404
+        from vs_procurement.views.vendor_payments import post_payment_for_caller
 
         entity, document = self._resolve(doc)
         user = self._actor(entity, actor_ref)
+        caller = SimpleNamespace(user=user)
         try:
             with transaction.atomic():
                 if doc.doc_type is ProcDocType.VENDOR_INVOICE:
+                    _document_or_404(
+                        caller, type(document).objects.filter(entity=entity),
+                        document.pk, "No such vendor invoice in this entity.",
+                    )
                     payables.post_vendor_invoice(document, actor_user=user)
                 elif doc.doc_type is ProcDocType.VENDOR_PAYMENT:
-                    payables.post_vendor_payment(document, actor_user=user)
+                    post_payment_for_caller(caller, entity, document)
                 else:
                     raise ProcurementStateError(
                         f"A {doc.doc_type.value} is not posted through this method."
