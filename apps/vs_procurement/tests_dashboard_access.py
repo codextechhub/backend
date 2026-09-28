@@ -66,3 +66,56 @@ class ProcurementDashboardAccessTests(_BranchTenantsFixture, TestCase):
             f"/v1/procurement/reports/dashboard/?entity={self.multi.entity.code}",
         )
         self.assertEqual(response.status_code, 403)
+
+
+class ProcurementDashboardPlanTests(_BranchTenantsFixture, TestCase):
+    """A block needs the school's plan as well as the reader's key.
+
+    Multi Branch Group's head of procurement holds the requisition and analytics
+    keys. Analytics sits in a deeper band than requisitions. Below that band the
+    analytics screen refuses her, so the dashboard leaves out its spend figures
+    too; at that band she gets them, exactly as a key alone gave her before.
+    """
+
+    def head(self):
+        client = self.client_for(self.multi_tenant, "plan-head@t.com")
+        for key in ("procurement.requisition.view", "procurement.analytics.view"):
+            self.grant(client.test_user, key, tenant=self.multi_tenant,
+                       role_key="role-plan-head")
+        return client
+
+    def dashboard(self, client):
+        response = client.get(
+            f"/v1/procurement/reports/dashboard/?entity={self.multi.entity.code}",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.json()["data"]
+
+    def test_analytics_blocks_are_absent_below_their_band(self):
+        from vs_config.models import Capability
+        from vs_rbac.tests.helpers import put_on_plan
+
+        client = self.head()
+        put_on_plan(self.multi_tenant, Capability.Depth.PLUS,
+                    banded_keys=["procurement.analytics.view"],
+                    band_depth=Capability.Depth.ADVANCED)
+        data = self.dashboard(client)
+
+        self.assertIsNotNone(data["kpis"]["pending_approvals"])
+        self.assertIsNone(data["kpis"]["spend"])
+        self.assertIsNone(data["committed_vs_spent"])
+        self.assertIsNone(data["recent_activity"])
+
+    def test_analytics_blocks_are_present_at_their_band(self):
+        from vs_config.models import Capability
+        from vs_rbac.tests.helpers import put_on_plan
+
+        client = self.head()
+        put_on_plan(self.multi_tenant, Capability.Depth.ADVANCED,
+                    banded_keys=["procurement.analytics.view"],
+                    band_depth=Capability.Depth.ADVANCED)
+        data = self.dashboard(client)
+
+        self.assertIsNotNone(data["kpis"]["spend"])
+        self.assertIsNotNone(data["committed_vs_spent"])
+        self.assertIsNotNone(data["recent_activity"])

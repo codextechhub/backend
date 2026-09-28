@@ -26,6 +26,7 @@ from unittest import mock
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from vs_config.clock import tenant_today
 
 from .seed_procurement_dashboard_demo import MARK
 from .seed_procurement_suppliers_demo import Seeder as SuppliersSeeder
@@ -51,7 +52,7 @@ class Command(BaseCommand):
         if StockItem.objects.filter(entity=entity, code__startswith=MARK).exists():
             raise CommandError(f"{entity.code} already holds the stock demo data.")
         with mock.patch("vs_workflow.services.routing.notify", return_value=None), transaction.atomic():
-            Seeder(entity, datetime.date.today(), None, self.stdout).run_stock()
+            Seeder(entity, tenant_today(entity.tenant), None, self.stdout).run_stock()
 
 
 # (key, name, unit, reorder level, reorder qty, store, vendor, received, unit price, issues, cost centre)

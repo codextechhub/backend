@@ -149,7 +149,8 @@ class PayrollRunListCreateView(_FinanceBase):
             narration=body.get("narration", ""),
             currency=_resolve_currency(body.get("currency")),
             bank_account=_resolve_bank_account(
-                entity, body.get("bank_account"), required=False),
+                request, entity, body.get("bank_account"), required=False,
+                document_branch=branch, noun="payroll run"),
             created_by=request.user,
         )
         for i, ln in enumerate(lines, start=1):
@@ -269,7 +270,9 @@ class PayrollRunPayView(_PayrollActionBase):
 
         entity, run = self._run(request, pk)
         body = request.data or {}
-        bank = _resolve_bank_account(entity, body.get("bank_account"), required=False)
+        bank = _resolve_bank_account(
+            request, entity, body.get("bank_account"), required=False,
+            document_branch=run.branch_id, noun="payroll run")
         pay_payroll(
             run, bank_account=bank,
             pay_date=_date(body.get("pay_date"), "pay_date"),

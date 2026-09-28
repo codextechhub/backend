@@ -12,12 +12,12 @@ display string so a client never needs to know the divisor.
 from __future__ import annotations
 
 from rest_framework import serializers
-from django.utils import timezone
 
 from core.media import signed_url
 from vs_finance.constants import DocumentStatus
 from vs_finance.money import format_naira
 from vs_rbac.field_enforcement import FieldAccessMixin, can_read
+from vs_config.clock import tenant_today
 
 from .constants import ProcApprovalState, QuotationStatus
 from .purchasing import po_receipt_stage
@@ -168,18 +168,31 @@ class ContractMilestoneSerializer(serializers.ModelSerializer):
         return format_naira(obj.amount)
 
 
-def _contract_is_expired(contract) -> bool:
+def _row_today(row, context):
+    """The school's calendar day for ``row``, read once per entity per render.
+
+    ``context`` is the serializer's, which a list's rows share, so a page of rows
+    loads its entity's tenant once rather than once per row.
+    """
+    cache = context.setdefault("_tenant_today", {}) if context is not None else {}
+    if row.entity_id not in cache:
+        cache[row.entity_id] = tenant_today(row.entity.tenant)
+    return cache[row.entity_id]
+
+
+def _contract_is_expired(contract, context=None) -> bool:
     """Display-only overlay: an ACTIVE contract whose end_date has already passed.
 
-    Computed against today so the list/detail can flag a lapsed contract without a
-    scheduler rewriting its authoritative status (``mark_expired`` remains a batch job).
+    Computed against the school's today so the list/detail can flag a lapsed contract
+    without a scheduler rewriting its authoritative status (``mark_expired`` remains a
+    batch job).
     """
     from .constants import ContractStatus
 
     return bool(
         contract.status == ContractStatus.ACTIVE
         and contract.end_date is not None
-        and contract.end_date < timezone.localdate()
+        and contract.end_date < _row_today(contract, context)
     )
 
 
@@ -226,7 +239,7 @@ class VendorContractListSerializer(serializers.ModelSerializer):
         ]
 
     def get_is_expired(self, obj) -> bool:
-        return _contract_is_expired(obj)
+        return _contract_is_expired(obj, self.context)
 
     def get_contract_value_naira(self, obj) -> str:
         return format_naira(obj.contract_value)
@@ -262,7 +275,7 @@ class VendorContractSerializer(serializers.ModelSerializer):
         return format_naira(obj.contract_value)
 
     def get_is_expired(self, obj) -> bool:
-        return _contract_is_expired(obj)
+        return _contract_is_expired(obj, self.context)
 
     def get_renewed_by_reference(self, obj) -> str | None:
         # The successor that renews this contract, if one exists (reverse of ``renews``).
@@ -639,18 +652,19 @@ def _sourcing_activity(entity, target_type, target_id):
     ).select_related("actor").order_by("-created_at")[:20]]
 
 
-def _quotation_is_expired(quotation) -> bool:
+def _quotation_is_expired(quotation, context=None) -> bool:
     """Display-only overlay: a SUBMITTED quote whose validity date has passed.
 
-    Never persisted (there is no expiry scheduler); computed against today so the list
-    and drawer can flag a lapsed bid without rewriting its authoritative status.
+    Never persisted (there is no expiry scheduler); computed against the school's today
+    so the list and drawer can flag a lapsed bid without rewriting its authoritative
+    status.
     """
     from .constants import QuotationStatus
 
     return bool(
         quotation.quotation_status == QuotationStatus.SUBMITTED
         and quotation.valid_until is not None
-        and quotation.valid_until < timezone.localdate()
+        and quotation.valid_until < _row_today(quotation, context)
     )
 
 
@@ -712,7 +726,7 @@ class RfqQuotationSummarySerializer(serializers.ModelSerializer):
         ]
 
     def get_is_expired(self, obj) -> bool:
-        return _quotation_is_expired(obj)
+        return _quotation_is_expired(obj, self.context)
 
 
 class RfqDetailSerializer(serializers.ModelSerializer):
@@ -861,7 +875,7 @@ class QuotationListSerializer(serializers.ModelSerializer):
         return format_naira(obj.total)
 
     def get_is_expired(self, obj) -> bool:
-        return _quotation_is_expired(obj)
+        return _quotation_is_expired(obj, self.context)
 
 
 class QuotationDetailSerializer(serializers.ModelSerializer):
@@ -899,7 +913,7 @@ class QuotationDetailSerializer(serializers.ModelSerializer):
         return format_naira(obj.total)
 
     def get_is_expired(self, obj) -> bool:
-        return _quotation_is_expired(obj)
+        return _quotation_is_expired(obj, self.context)
 
     def get_activity(self, obj):
         return _sourcing_activity(obj.entity_id, "VendorQuotation", obj.pk)
@@ -1350,7 +1364,7 @@ class VendorInvoiceSerializer(serializers.ModelSerializer):
         # Overdue is a date/payment overlay, never a replacement for POSTED ledger status.
         return bool(
             obj.status == DocumentStatus.POSTED and obj.due_date
-            and obj.due_date < timezone.localdate() and obj.balance_due > 0
+            and obj.due_date < _row_today(obj, self.context) and obj.balance_due > 0
         )
 
     def get_display_status(self, obj) -> str:

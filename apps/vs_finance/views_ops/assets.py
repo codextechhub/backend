@@ -87,12 +87,12 @@ class FixedAssetListCreateView(_FinanceBase):
             useful_life_months=_int(
                 body.get("useful_life_months"), "useful_life_months", required=True, minimum=1),
             method=method,
-            asset_account=_resolve_account(entity, body.get("asset_account"), "asset_account"),
+            asset_account=_resolve_account(request, entity, body.get("asset_account"), "asset_account"),
             accumulated_depreciation_account=_resolve_account(
-                entity, body.get("accumulated_depreciation_account"),
+                request, entity, body.get("accumulated_depreciation_account"),
                 "accumulated_depreciation_account"),
             depreciation_expense_account=_resolve_account(
-                entity, body.get("depreciation_expense_account"),
+                request, entity, body.get("depreciation_expense_account"),
                 "depreciation_expense_account"),
             created_by=request.user,
         )
@@ -184,8 +184,10 @@ class FixedAssetAcquireView(_FixedAssetActionBase):
 
         entity, asset = self._asset(request, pk)
         body = request.data or {}
-        bank = _resolve_bank_account(entity, body.get("bank_account"), required=False)
-        credit = _resolve_account(entity, body.get("credit_account"), "credit_account")
+        bank = _resolve_bank_account(
+            request, entity, body.get("bank_account"), required=False,
+            document_branch=asset.branch_id, noun="asset")
+        credit = _resolve_account(request, entity, body.get("credit_account"), "credit_account")
         acquire_asset(
             asset, bank_account=bank, credit_account=credit, actor_user=request.user,
         )
@@ -284,8 +286,10 @@ class FixedAssetDisposeView(_FixedAssetActionBase):
             asset,
             disposal_date=_date(body.get("disposal_date"), "disposal_date", required=True),
             proceeds=_money(body.get("proceeds", 0), "proceeds"),
-            bank_account=_resolve_bank_account(entity, body.get("bank_account"), required=False),
-            gain_loss_account=_resolve_account(entity, body.get("gain_loss_account"), "gain_loss_account"),
+            bank_account=_resolve_bank_account(
+                request, entity, body.get("bank_account"), required=False,
+                document_branch=asset.branch_id, noun="asset"),
+            gain_loss_account=_resolve_account(request, entity, body.get("gain_loss_account"), "gain_loss_account"),
             actor_user=request.user,
         )
         asset.refresh_from_db()

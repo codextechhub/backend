@@ -16,6 +16,7 @@ from django.db.models import Q
 
 from vs_finance.audit import record
 from vs_finance.constants import FinanceAuditAction
+from vs_config.clock import tenant_today
 
 from .constants import CONTRACT_DOC_TYPE, ContractStatus, MilestoneStatus
 from .exceptions import ContractError
@@ -196,7 +197,7 @@ def complete_milestone(milestone, *, on=None, actor_user=None):
         supplied_milestone.updated_at = milestone.updated_at
         return supplied_milestone
     milestone.status = MilestoneStatus.COMPLETED
-    milestone.completed_date = on or datetime.date.today()
+    milestone.completed_date = on or tenant_today(milestone.contract.entity.tenant)
     milestone.save(update_fields=["status", "completed_date", "updated_at"])
     record(
         entity=milestone.contract.entity, action=FinanceAuditAction.CONTRACT_MILESTONE_COMPLETED,
@@ -217,7 +218,7 @@ def flag_missed_milestones(entity, *, as_of=None):
     A milestone due on ``as_of`` is still due today, not missed. Returns the bulk-update
     count without firing per-row saves or audit events.
     """
-    as_of = as_of or datetime.date.today()
+    as_of = as_of or tenant_today(entity.tenant)
     from .models import ContractMilestone
 
     return ContractMilestone.objects.filter(
@@ -236,7 +237,7 @@ def mark_expired(entity, *, as_of=None):
     End dates are inclusive, so a contract remains active through its stated final day.
     Returns the bulk-update count.
     """
-    as_of = as_of or datetime.date.today()
+    as_of = as_of or tenant_today(entity.tenant)
     from .models import VendorContract
 
     return VendorContract.objects.filter(
@@ -253,7 +254,7 @@ def expiring_contracts(entity, *, as_of=None, within_days=None):
     override every contract's own notice period with a single horizon
     (``end_date <= as_of + within_days``). Ordered soonest-expiring first.
     """
-    as_of = as_of or datetime.date.today()
+    as_of = as_of or tenant_today(entity.tenant)
     from .models import VendorContract
 
     qs = VendorContract.objects.filter(

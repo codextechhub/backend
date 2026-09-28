@@ -415,3 +415,49 @@ def make_platform_change_request(user, role, justification="Test justification",
         justification=justification,
         **defaults,
     )
+
+
+def put_on_plan(tenant, depth, *, banded_keys, band_depth, module="plan-test"):
+    """Sell ``tenant`` a module at ``depth``, with ``banded_keys`` in a deeper band.
+
+    Switches the platform's plan gate on, creates a module capability with one
+    band at ``band_depth`` beneath it, points each of ``banded_keys`` at that
+    band, and grants the tenant the module at ``depth``. Keys not named keep
+    whatever capability they had, which for keys made by the test helpers is
+    none: they stay core and every plan reaches them.
+    """
+    from vs_config.models import (
+        Capability,
+        CapabilityEntitlement,
+        ConfigurationDefinition,
+    )
+    from vs_config.services.capabilities import set_entitlement
+    from vs_config.services.resolution import set_value
+
+    actor = make_vision_user(email=f"{module}-operator@example.com")
+    definition, _ = ConfigurationDefinition.objects.get_or_create(
+        key="platform.entitlements.enforce",
+        defaults={
+            "label": "Enforce Plan Entitlements",
+            "description": "Test copy of the enforcement switch.",
+            "value_type": ConfigurationDefinition.ValueType.BOOLEAN,
+            "default_value": False,
+            "allowed_scopes": ["platform"],
+        },
+    )
+    set_value(
+        definition=definition, value=True, actor=actor,
+        tenant=None, branch=None, reason="test",
+    )
+    parent = Capability.objects.create(key=module, label="Plan Test Module")
+    band = Capability.objects.create(
+        key=f"{module}-band", label="Plan Test Band", parent=parent,
+        depth=band_depth, requires_entitlement=False,
+    )
+    Permission.objects.filter(key__in=banded_keys).update(capability=band)
+    set_entitlement(
+        capability=parent, tenant=tenant,
+        state=CapabilityEntitlement.State.GRANTED,
+        source=CapabilityEntitlement.Source.PACKAGE,
+        actor=actor, depth=depth,
+    )

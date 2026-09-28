@@ -31,24 +31,16 @@ from ..models import (
 # Shared resolution helpers                                                   #
 # --------------------------------------------------------------------------- #
 
-def _resolve_account(entity, ref, field):
-    """Resolve a GL account by **code** (e.g. "2100") or id within ``entity``.
+def _resolve_account(request, entity, ref, field):
+    """Resolve a GL account by **code** (e.g. "2100") or id within ``entity``, or ``None`` when blank.
 
-    Codes in the Chart of Accounts are numeric strings, so we match on code *first*
-    and only fall back to a primary-key lookup - otherwise "2100" would be mistaken
-    for a row id. Returns ``None`` when ``ref`` is blank.
+    Finance's resolver, so procurement names ledger accounts under the same rule:
+    a ledger account behind a bank account outside the caller's branches is
+    refused exactly as an unknown one is.
     """
-    if ref in (None, ""):
-        return None
-    from vs_finance.models import Account
+    from vs_finance.views_ops.base import _resolve_account as _finance_resolve_account
 
-    qs = Account.objects.filter(entity=entity)
-    acc = qs.filter(code=str(ref)).first()
-    if acc is None and str(ref).isdigit():
-        acc = qs.filter(pk=int(ref)).first()
-    if acc is None:
-        raise ValidationError({field: f"No account '{ref}' in this entity."})
-    return acc
+    return _finance_resolve_account(request, entity, ref, field)
 
 
 def _resolve_tax(entity, ref, field="tax_code"):
@@ -528,14 +520,14 @@ def _lead_time_days(value, field="lead_time_days"):
     return days
 
 
-def _resolve_expense_account(entity, ref, field="expense_account"):
+def _resolve_expense_account(request, entity, ref, field="expense_account"):
     """Resolve an active, postable **EXPENSE** account in ``entity`` (or ``None``).
 
     Sourcing line accounts must be genuinely postable expense accounts - the same rule
     the catalog/category defaults enforce - so an award cannot carry a header/income/
     inactive account onto the resulting PO line.
     """
-    account = _resolve_account(entity, ref, field)
+    account = _resolve_account(request, entity, ref, field)
     if account is None:
         return None
     from vs_finance.constants import AccountType
@@ -545,7 +537,7 @@ def _resolve_expense_account(entity, ref, field="expense_account"):
     return account
 
 
-def _resolve_asset_account(entity, ref, field="inventory_account"):
+def _resolve_asset_account(request, entity, ref, field="inventory_account"):
     """Resolve an active, postable **ASSET** account in ``entity`` (or ``None``).
 
     A stock item's inventory-value must be carried in a genuinely postable balance-sheet
@@ -553,7 +545,7 @@ def _resolve_asset_account(entity, ref, field="inventory_account"):
     for expenses - so an item can never carry its value onto a header/liability/inactive
     account.
     """
-    account = _resolve_account(entity, ref, field)
+    account = _resolve_account(request, entity, ref, field)
     if account is None:
         return None
     from vs_finance.constants import AccountType

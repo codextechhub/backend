@@ -51,6 +51,13 @@ class DocumentStatus(models.TextChoices):
     CANCELLED = "CANCELLED", "Cancelled"
 
 
+#: What "pending" means wherever a finance screen counts documents that way: still
+#: being prepared or waiting on an approver. A posted, reversed (voided) or
+#: cancelled document is finished, so the adjustments list and the dashboards
+#: count from this one definition and cannot disagree.
+PENDING_STATUSES = (DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL)
+
+
 # Define Doc Type values.
 class DocType(models.TextChoices):
     """Document-type tokens used by the numbering sequence.

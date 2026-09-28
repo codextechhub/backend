@@ -103,9 +103,9 @@ def _resolve_optional_vendor(request, entity, ref, field="preferred_vendor", *,
     return vendor
 
 
-def _resolve_expense(entity, ref, *, current_id=None):
+def _resolve_expense(request, entity, ref, *, current_id=None):
     """Resolve a usable expense default, retaining the current historical choice."""
-    account = _resolve_account(entity, ref, "default_expense_account")
+    account = _resolve_account(request, entity, ref, "default_expense_account")
     if account is None:
         return None
     valid = account.account_type == AccountType.EXPENSE and account.is_active and account.is_postable
@@ -250,7 +250,7 @@ class CatalogItemListCreateView(_ProcBase):
                 unit_of_measure=unit,
                 category=_resolve_category(entity, body.get("category")),
                 preferred_vendor=_resolve_optional_vendor(request, entity, body.get("preferred_vendor")),
-                default_expense_account=_resolve_expense(entity, body.get("default_expense_account")),
+                default_expense_account=_resolve_expense(request, entity, body.get("default_expense_account")),
                 default_tax_code=_resolve_purchase_tax(entity, body.get("default_tax_code")),
                 lead_time_days=_lead_time(body.get("lead_time_days")),
                 standard_unit_price=_strict_price(body.get("standard_unit_price", 0)),
@@ -310,7 +310,7 @@ class CatalogItemDetailView(_ProcBase):
             )
         if "default_expense_account" in body:
             item.default_expense_account = _resolve_expense(
-                entity, body.get("default_expense_account"), current_id=item.default_expense_account_id,
+                request, entity, body.get("default_expense_account"), current_id=item.default_expense_account_id,
             )
         if "default_tax_code" in body:
             item.default_tax_code = _resolve_purchase_tax(

@@ -31,6 +31,7 @@ from unittest import mock
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from vs_config.clock import tenant_today
 
 from .seed_procurement_dashboard_demo import MARK, Seeder as DashboardSeeder
 
@@ -55,7 +56,7 @@ class Command(BaseCommand):
         if VendorAssessment.objects.filter(entity=entity, notes__startswith=MARK).exists():
             raise CommandError(f"{entity.code} already holds the supplier demo data.")
         with mock.patch("vs_workflow.services.routing.notify", return_value=None), transaction.atomic():
-            Seeder(entity, datetime.date.today(), None, self.stdout).run_suppliers()
+            Seeder(entity, tenant_today(entity.tenant), None, self.stdout).run_suppliers()
 
 
 class Seeder(DashboardSeeder):

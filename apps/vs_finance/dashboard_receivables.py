@@ -34,7 +34,7 @@ from vs_config.clock import tenant_today
 from vs_rbac.scoping import UNNARROWED
 
 from .billing_periods import current_billing_period
-from .constants import DocumentStatus, InvoicePaymentStatus
+from .constants import PENDING_STATUSES, DocumentStatus, InvoicePaymentStatus
 from .dashboard_blocks import (
     Window,
     _m,
@@ -350,14 +350,14 @@ def adjustments(entity, window, as_of, reader) -> list[dict]:
     if reader.can("finance.refund.view"):
         refunds = scope.filter(Refund.objects.filter(entity=entity, refund_date__gte=start, refund_date__lte=end))
         done = refunds.filter(status=DocumentStatus.POSTED).aggregate(n=Count("id"), amount=Sum("amount"))
-        pending = refunds.filter(status__in=[DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL]).count()
+        pending = refunds.filter(status__in=PENDING_STATUSES).count()
         if done["n"] or pending:
             out.append({"key": "refunds", "label": "Refunds paid", "count": done["n"],
                         "pending": pending, "amount": _m(done["amount"])})
     if reader.can("finance.writeoff.view"):
         writeoffs = scope.filter(WriteOffRequest.objects.filter(entity=entity, created_at__date__gte=start))
         done = writeoffs.filter(status=DocumentStatus.POSTED).aggregate(n=Count("id"), amount=Sum("amount"))
-        pending = writeoffs.filter(status__in=[DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL]).count()
+        pending = writeoffs.filter(status__in=PENDING_STATUSES).count()
         if done["n"] or pending:
             out.append({"key": "write_offs", "label": "Write-offs", "count": done["n"],
                         "pending": pending, "amount": _m(done["amount"])})

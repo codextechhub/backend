@@ -117,7 +117,7 @@ class ExpenseClaimListCreateView(_FinanceBase):
                 claim=claim, line_no=i,
                 description=ln.get("description", ""),
                 expense_account=_resolve_account(
-                    entity, ln.get("expense_account"),
+                    request, entity, ln.get("expense_account"),
                     f"lines[{i}].expense_account", required=True),
                 quantity=_dec(ln.get("quantity", 1), f"lines[{i}].quantity"),
                 unit_price=_money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),
@@ -165,22 +165,25 @@ class ExpenseClaimDetailView(_ExpenseClaimActionBase):
 
 # Group endpoint behavior for Expense Claim Post View.
 class ExpenseClaimPostView(_ExpenseClaimActionBase):
-    """docstring-name: Post an expense claim"""
+    """Post a draft expense claim straight to the ledger.
+
+    A claim whose approval route has stages must be submitted instead. A school
+    starts with an expense-claim route that has no stages, and posting against
+    it needs ``confirm_without_approval`` and is recorded as posted without
+    approval, as refunds and write-offs are
+    (:func:`vs_finance.approvals.guard_direct_post`).
+
+    docstring-name: Post an expense claim
+    """
     rbac_permission = "finance.expenseclaim.post"
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
-        from rest_framework.exceptions import ValidationError
-
-        from ..approvals import approval_required
+        from ..approvals import guard_direct_post
         from ..expenses import post_expense_claim
 
         _, claim = self._claim(request, pk)
-        if approval_required(claim):
-            raise ValidationError({
-                "detail": "This expense claim is approval-gated; submit it for "
-                          "approval instead of posting it directly."
-            })
+        guard_direct_post(claim, request, noun="expense claim")
         post_expense_claim(claim, actor_user=request.user)
         claim.refresh_from_db()
         return success_response(
@@ -304,7 +307,9 @@ class ExpenseClaimSettleView(_ExpenseClaimActionBase):
 
         entity, claim = self._claim(request, pk)
         body = request.data or {}
-        bank = _resolve_bank_account(entity, body.get("bank_account"))
+        bank = _resolve_bank_account(
+            request, entity, body.get("bank_account"),
+            document_branch=claim.branch_id, noun="expense claim")
         amount = _money(body["amount"], "amount") if body.get("amount") not in (None, "") else None
         settle_expense_claim(
             claim, bank_account=bank,

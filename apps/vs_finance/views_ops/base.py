@@ -5,10 +5,11 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal, InvalidOperation
 
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.views import APIView
 
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 from vs_rbac.scoping import inherited_branch_id as _rbac_inherited_branch_id
 from vs_rbac.scoping import raised_branch as _rbac_raised_branch
 
@@ -93,21 +94,26 @@ def _inherited_branch_id(request, *sources, field="branch"):
 # --------------------------------------------------------------------------- #
 
 # Resolve account reference from request data.
-def _resolve_account(entity, ref, field, *, required=False):
-    """Resolve a GL account by **code** (e.g. "1100") or id within ``entity``.
+def _resolve_account(request, entity, ref, field, *, required=False):
+    """Resolve a GL account by **code** (e.g. "1100") or id within ``entity`` and the caller's reach.
 
     Codes are numeric strings, so match on code first, then fall back to a pk lookup.
-    Returns ``None`` for a blank ``ref`` unless ``required``.
+    Returns ``None`` for a blank ``ref`` unless ``required``. ``request`` is required
+    because a ledger account behind another branch's bank account is that bank's
+    money: it is refused exactly as an unknown account is (see
+    :func:`vs_finance.accounts.accounts_a_caller_may_name`).
     """
+    from ..accounts import accounts_a_caller_may_name
+
     if ref in (None, ""):  # Blank input means no account unless required.
         if required:  # Required account missing.
             raise ValidationError({field: "An account (code or id) is required."})
         return None
-    qs = Account.objects.filter(entity=entity)
+    qs = accounts_a_caller_may_name(request, Account.objects.filter(entity=entity))
     acc = qs.filter(code=str(ref)).first()
     if acc is None and str(ref).isdigit():  # Numeric refs may be primary keys.
         acc = qs.filter(pk=int(ref)).first()
-    if acc is None:  # Reject cross-entity or missing account refs.
+    if acc is None:  # Unknown, another entity's, or another branch's bank ledger.
         raise ValidationError({field: f"No account '{ref}' in this entity."})
     return acc  # Return resolved account.
 
@@ -251,20 +257,63 @@ def _resolve_currency(ref, field="currency"):
 
 
 # Resolve bank account by id or name.
-def _resolve_bank_account(entity, ref, field="bank_account", *, required=True):
-    """Resolve a bank account by id or name within ``entity``."""
+def _resolve_bank_account(request, entity, ref, field="bank_account", *, required=True,
+                          document_branch, noun):
+    """Resolve the bank account a document is paid from or into, by id or name.
+
+    Two rules, in this order, and every money-out route names its account here:
+
+    * **Reach.** The account must be one the caller can see in their bank list:
+      their own branches' accounts and the school-wide ones. Ikeja's bursar naming
+      Lekki's collection account gets the same 404 as a mistyped id, which neither
+      pays out of Lekki's money nor confirms the account exists.
+    * **The document's own branch.** A document that belongs to a branch is paid
+      from that branch's account or a school-wide one. Mrs Okafor covers Ikeja and
+      Lekki, so she can see Lekki's account, but an Ikeja refund paid from it would
+      leave Ikeja's books owing and Lekki's short; that is a 400 naming both. A
+      school-wide document (``document_branch`` None) may use any account in reach.
+
+    ``document_branch`` (a Branch, its id, or None) and ``noun`` ("refund") are
+    required so a new money route cannot forget the second rule.
+    """
     if ref in (None, ""):  # Blank input means missing bank account.
         if required:  # Most payment endpoints require a bank account.
             raise ValidationError({field: "A bank account (id or name) is required."})
         return None
-    qs = BankAccount.objects.filter(entity=entity)
+    qs = BankAccount.objects.filter(
+        branch_q(request, include_shared=True), entity=entity,
+    ).select_related("gl_account", "branch")
     ba = (  # Resolve by id for numeric refs, otherwise by name.
         qs.filter(pk=int(ref)).first() if str(ref).isdigit()
         else qs.filter(name=str(ref)).first()
     )
-    if ba is None:  # Reject missing/cross-entity bank refs.
-        raise ValidationError({field: f"No bank account '{ref}' in this entity."})
-    return ba  # Return resolved bank account.
+    if ba is None:  # Unknown, another entity's, or outside the caller's branches.
+        raise NotFound(f"No bank account '{ref}' in this entity.")
+    require_own_branch_bank(ba, document_branch, noun=noun, field=field)
+    return ba
+
+
+def require_own_branch_bank(bank, document_branch, *, noun, field="bank_account"):
+    """Refuse ``bank`` for a document of ``document_branch`` unless it is that branch's or school-wide.
+
+    Split out for the routes that learn the document's branch only after the
+    account is named (a batch, or a vendor payment whose branch comes from the
+    bills it settles). See :func:`_resolve_bank_account` for the rule.
+    """
+    from vs_tenants.models import Branch
+
+    branch_id = getattr(document_branch, "pk", document_branch)
+    if bank is None or branch_id is None or bank.branch_id is None or bank.branch_id == branch_id:
+        return
+    branch = (
+        document_branch if isinstance(document_branch, Branch)
+        else Branch.all_objects.get(pk=branch_id)
+    )
+    article = "an" if branch.name[:1].upper() in "AEIOU" else "a"
+    raise ValidationError({field: (
+        f"This {noun} belongs to {branch.name}. "
+        f"Pay it from {article} {branch.name} account or a school-wide one."
+    )})
 
 
 # Resolve fiscal year by label or id.

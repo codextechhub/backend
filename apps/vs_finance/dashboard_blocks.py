@@ -45,10 +45,13 @@ TOP_PAYERS = 5
 UPCOMING_LIMIT = 6
 
 #: Workflow document types an approver in finance acts on, and what to call them.
+#: Credit and debit notes share one document type and one approval route, so
+#: they are counted and named together.
 APPROVAL_TYPES = {
     "finance.write_off": ("write-off", "write-offs"),
     "finance.refund": ("refund", "refunds"),
     "finance.concession": ("concession", "concessions"),
+    "finance.credit_note": ("credit or debit note", "credit or debit notes"),
     "finance.expense_claim": ("expense claim", "expense claims"),
     "finance.journal": ("journal", "journals"),
     "payments.payout_batch": ("payout", "payouts"),

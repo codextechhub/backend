@@ -70,6 +70,7 @@ class FinanceAccountSettingsView(APIView):
     def patch(self, request):
         entity = resolve_entity(request)
         mappings = update_account_mappings(
+            request=request,
             entity=entity,
             values=(request.data or {}).get("mappings"),
             actor_user=request.user,

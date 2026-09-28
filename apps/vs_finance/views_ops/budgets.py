@@ -141,7 +141,7 @@ class BudgetListCreateView(_FinanceBase):
             entity,
             name=name,
             fiscal_year=_resolve_fiscal_year(entity, body.get("fiscal_year")),
-            lines=_resolve_lines(entity, body.get("lines")),
+            lines=_resolve_lines(request, entity, body.get("lines")),
             actor_user=request.user,
             branch=raised_branch(request, entity.tenant, body),
         )
@@ -152,7 +152,7 @@ class BudgetListCreateView(_FinanceBase):
 
 
 # Support the resolve lines workflow.
-def _resolve_lines(entity, raw):
+def _resolve_lines(request, entity, raw):
     """Resolve a body ``lines`` list into service dicts (account/cost_center resolved)."""
     if not raw:
         return []
@@ -161,7 +161,7 @@ def _resolve_lines(entity, raw):
     out = []
     for i, ln in enumerate(raw):
         out.append({
-            "account": _resolve_account(entity, ln.get("account"), f"lines[{i}].account", required=True),
+            "account": _resolve_account(request, entity, ln.get("account"), f"lines[{i}].account", required=True),
             "cost_center": _resolve_cost_center(entity, ln.get("cost_center"), f"lines[{i}].cost_center"),
             "period_no": _int(ln.get("period_no"), f"lines[{i}].period_no", required=True, minimum=1),
             "amount": _money(ln.get("amount", 0), f"lines[{i}].amount"),
@@ -252,7 +252,7 @@ class BudgetLineCreateView(_BudgetActionBase):
         body = request.data or {}
         add_budget_line(
             budget,
-            account=_resolve_account(entity, body.get("account"), "account", required=True),
+            account=_resolve_account(request, entity, body.get("account"), "account", required=True),
             period_no=_int(body.get("period_no"), "period_no", required=True, minimum=1),
             amount=_money(body.get("amount", 0), "amount"),
             cost_center=_resolve_cost_center(entity, body.get("cost_center"), "cost_center"),
@@ -268,7 +268,7 @@ class BudgetLineCreateView(_BudgetActionBase):
 
         entity, budget = self._budget(request, pk)
         body = request.data or {}
-        set_budget_lines(budget, _resolve_lines(entity, body.get("lines")))
+        set_budget_lines(budget, _resolve_lines(request, entity, body.get("lines")))
         budget.refresh_from_db()
         return success_response("Budget lines saved.", data=self._payload(request, budget))
 

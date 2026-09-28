@@ -11,7 +11,6 @@ import datetime
 
 from django.db import transaction
 from django.db.models import Count, F, Prefetch, Q, Sum
-from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from core.response import success_response
@@ -19,6 +18,7 @@ from vs_finance.constants import DocumentStatus
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 from vs_workflow.models import WorkflowInstance
+from vs_config.clock import tenant_today
 
 from .. import po_email, purchasing, sourcing, vendor_portal
 from ..constants import (
@@ -206,7 +206,7 @@ def purchase_order_summary(entity, *, as_of: datetime.date | None = None,
     keeps the entity-wide answer. The console passes its own, so the header totals
     count exactly the orders the list underneath them shows.
     """
-    as_of = as_of or timezone.localdate()
+    as_of = as_of or tenant_today(entity.tenant)
     month_start = as_of.replace(day=1)
     prior_month_end = month_start - datetime.timedelta(days=1)
     prior_month_start = prior_month_end.replace(day=1)
@@ -535,7 +535,7 @@ def _rfq_detail_queryset(entity):
     )
 
 
-def _write_rfq_lines(entity, rfq, lines, *, preserve_history=False):
+def _write_rfq_lines(request, entity, rfq, lines, *, preserve_history=False):
     """Validate and (re)create an RFQ's spec lines - a full replacement on edit.
 
     Shared by create and the draft PATCH so both apply identical validation:
@@ -569,7 +569,7 @@ def _write_rfq_lines(entity, rfq, lines, *, preserve_history=False):
             description=_text(ln.get("description"), "description", 255, required=True),
             quantity=_quantity(ln.get("quantity", 1), "quantity"),
             requisition_line=req_line,
-            expense_account=_resolve_expense_account(entity, ln.get("expense_account"), "expense_account"),
+            expense_account=_resolve_expense_account(request, entity, ln.get("expense_account"), "expense_account"),
             tax_code=_resolve_tax(entity, ln.get("tax_code")),
         )
 
@@ -660,7 +660,7 @@ class RfqListCreateView(_ProcBase):
             created_by=request.user if request.user.is_authenticated else None,
         )
         vendor_portal.ensure_exact_deadline(rfq)
-        _write_rfq_lines(entity, rfq, lines)
+        _write_rfq_lines(request, entity, rfq, lines)
         # Invited vendors may be empty at draft-create (issue is what requires ≥1); still
         # validate + persist any provided so the draft carries its addressee list.
         if "invited_vendors" in body:
@@ -724,7 +724,7 @@ class RfqDetailView(_ProcBase):
         ])
         vendor_portal.ensure_exact_deadline(rfq)
         if "lines" in body:
-            _write_rfq_lines(entity, rfq, _require_lines(body))
+            _write_rfq_lines(request, entity, rfq, _require_lines(body))
         # Replacing the invite set is subject to the responded-vendor protection in the service.
         if "invited_vendors" in body:
             sourcing.set_rfq_invitations(
@@ -802,7 +802,7 @@ class RfqSummaryView(_ProcBase):
     def get(self, request):
         """Return sourcing KPIs for the caller's visible events, not the page."""
         entity = resolve_entity(request)
-        today = timezone.localdate()
+        today = tenant_today(entity.tenant)
         from ..settings import resolve_procurement_settings
         policy = resolve_procurement_settings(entity)
         branch_filter = _branch_q(request, entity, request.query_params)
@@ -843,7 +843,7 @@ def _quotation_detail_queryset(entity):
     ).prefetch_related("lines", "lines__expense_account", "attachments", "submissions")
 
 
-def _write_quotation_lines(entity, quotation, rfq, lines):
+def _write_quotation_lines(request, entity, quotation, rfq, lines):
     """Validate and (re)create a quotation's priced lines - full replacement on edit.
 
     Every ``rfq_line`` reference must belong to *this* RFQ (not merely the entity),
@@ -857,7 +857,7 @@ def _write_quotation_lines(entity, quotation, rfq, lines):
             rfq_line = RfqLine.objects.filter(rfq=rfq, pk=ln["rfq_line"]).first()
             if rfq_line is None:
                 raise ValidationError({"rfq_line": f"No such RFQ line {ln['rfq_line']} on this RFQ."})
-        expense = _resolve_expense_account(entity, ln.get("expense_account"), "expense_account") \
+        expense = _resolve_expense_account(request, entity, ln.get("expense_account"), "expense_account") \
             or (rfq_line.expense_account if rfq_line else None)
         VendorQuotationLine.objects.create(
             quotation=quotation, rfq_line=rfq_line, line_no=ln.get("line_no", i),
@@ -952,7 +952,7 @@ class QuotationListCreateView(_ProcBase):
             notes=_text(body.get("notes"), "notes", 255),
             created_by=request.user if request.user.is_authenticated else None,
         )
-        _write_quotation_lines(entity, quotation, rfq, lines)
+        _write_quotation_lines(request, entity, quotation, rfq, lines)
         sourcing.price_quotation(quotation)
         quotation = _quotation_detail_queryset(entity).get(pk=quotation.pk)
         return success_response(
@@ -1013,7 +1013,7 @@ class QuotationDetailView(_ProcBase):
             "quote_date", "valid_until", "lead_time_days", "reference", "notes", "updated_at",
         ])
         if "lines" in body:
-            _write_quotation_lines(entity, quotation, quotation.rfq, _require_lines(body))
+            _write_quotation_lines(request, entity, quotation, quotation.rfq, _require_lines(body))
         sourcing.price_quotation(quotation)  # Re-roll net/tax/totals after any edit.
         quotation = _quotation_detail_queryset(entity).get(pk=quotation.pk)
         return success_response("Quotation updated.", data=QuotationDetailSerializer(quotation).data)

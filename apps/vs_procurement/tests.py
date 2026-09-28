@@ -3341,7 +3341,7 @@ class RequisitionConsoleAPITests(_P2PFixtureMixin, TestCase):
         return TenantAPIClient(user=user)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    @patch("vs_procurement.views.requisitions.timezone.localdate", return_value=datetime.date(2026, 1, 20))
+    @patch("vs_procurement.views.requisitions.tenant_today", return_value=datetime.date(2026, 1, 20))
     def test_summary_uses_entity_scoped_server_aggregates(self, _today, _permission):
         entity, _, _, _, _ = self.build_p2p()
         other = LedgerEntity.objects.create(

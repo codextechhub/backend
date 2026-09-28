@@ -41,7 +41,13 @@ def _paginate(request, qs, serializer_cls, view, **ser_kwargs):
     page = paginator.paginate_queryset(qs, request, view=view)
     return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)
 
-from .constants import DocumentStatus, FeeAppliesTo, FinanceAuditAction, FinanceAuditStatus
+from .constants import (
+    PENDING_STATUSES,
+    DocumentStatus,
+    FeeAppliesTo,
+    FinanceAuditAction,
+    FinanceAuditStatus,
+)
 from .money import format_naira
 from .models import (
     Concession,
@@ -73,6 +79,7 @@ from .serializers import (
     WriteOffRequestSerializer,
 )
 from .views import resolve_entity
+from .views_ops.base import require_own_branch_bank
 from .views_ops import (
     _FinanceBase,
     _date,
@@ -390,7 +397,7 @@ class CustomerListCreateView(_FinanceBase):
         # the entity's audited Accounts Receivable mapping.
         if body.get("receivable_account"):
             receivable = _resolve_account(
-                entity, body.get("receivable_account"),
+                request, entity, body.get("receivable_account"),
                 "receivable_account", required=True,
             )
         else:
@@ -623,7 +630,7 @@ class CustomerDetailView(_FinanceBase):
                 setattr(customer, field, body[field])
         if "receivable_account" in body:
             customer.receivable_account = _resolve_account(
-                entity, body.get("receivable_account"), "receivable_account", required=True)
+                request, entity, body.get("receivable_account"), "receivable_account", required=True)
         if "opening_balance" in body:
             opening_balance = _money(body.get("opening_balance"), "opening_balance")
             from .document_settings import resolve_finance_document_settings
@@ -675,7 +682,7 @@ class CustomerReceiptView(_FinanceBase):
             payment_date=_date(body.get("payment_date"), "payment_date", required=True),
             method=body.get("method") or "BANK_TRANSFER", amount=amount,
             deposit_account=_resolve_account(
-                entity, body.get("deposit_account"), "deposit_account", required=True),
+                request, entity, body.get("deposit_account"), "deposit_account", required=True),
             reference=body.get("reference", ""), narration=body.get("narration", ""),
             created_by=request.user,
         )
@@ -1079,7 +1086,7 @@ class InvoiceVoidView(_FinanceBase):
 # --------------------------------------------------------------------------- #
 
 # Support the build fee items workflow.
-def _build_fee_items(structure, entity, raw_items):
+def _build_fee_items(request, structure, entity, raw_items):
     """(Re)create a structure's fee items from a request ``items`` list."""
     if not raw_items:
         raise ValidationError({"items": "At least one fee item is required."})
@@ -1092,7 +1099,7 @@ def _build_fee_items(structure, entity, raw_items):
             code=str(item.get("code", "")).strip()[:32],
             description=str(item.get("description", "")).strip() or f"Fee {i}",
             revenue_account=_resolve_account(
-                entity, item.get("revenue_account"), f"items[{i}].revenue_account", required=True),
+                request, entity, item.get("revenue_account"), f"items[{i}].revenue_account", required=True),
             amount=amount,
             tax_code=_resolve_tax(
                 entity, item.get("tax_code"), f"items[{i}].tax_code",
@@ -1206,7 +1213,7 @@ class FeeStructureListCreateView(_FinanceBase):
             description=body.get("description", ""),
             is_active=bool(body.get("is_active", True)), created_by=request.user,
         )
-        _build_fee_items(structure, entity, body.get("items"))
+        _build_fee_items(request, structure, entity, body.get("items"))
         structure.refresh_from_db()
         return success_response(
             f"Fee structure {structure.code} created.",
@@ -1252,7 +1259,7 @@ class FeeStructureDetailView(_FinanceBase):
         structure.save()
         if "items" in body:  # full replace
             structure.items.all().delete()
-            _build_fee_items(structure, entity, body.get("items"))
+            _build_fee_items(request, structure, entity, body.get("items"))
         structure.refresh_from_db()
         return success_response(
             f"Fee structure {structure.code} updated.",
@@ -1481,7 +1488,7 @@ class CreditNoteListCreateView(_FinanceBase):
                 note=note, line_no=i,
                 description=ln.get("description", ""),
                 revenue_account=_resolve_account(
-                    entity, ln.get("revenue_account"),
+                    request, entity, ln.get("revenue_account"),
                     f"lines[{i}].revenue_account", required=True),
                 quantity=_dec(ln.get("quantity", 1), f"lines[{i}].quantity"),
                 unit_price=_money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),
@@ -1685,6 +1692,8 @@ class RefundAvailabilityView(_FinanceBase):
             "customer_id": customer.pk,
             "customer_code": customer.code,
             "customer_name": customer.name,
+            # The refund inherits it, so the screen offers only accounts it may use.
+            "branch_id": customer.branch_id,
             "refundable_credit": available[customer.pk],
             "refundable_credit_naira": format_naira(available[customer.pk]),
         } for customer in page]
@@ -1746,6 +1755,12 @@ def _build_refund(request, entity, body):
     actor_user = request.user
     customer = _resolve_customer(request, entity, body.get("customer"))
     customer = Customer.objects.select_for_update().get(pk=customer.pk)
+    # A refund continues the customer's chain: it hands back credit that arose on
+    # their account, so it belongs where they do, and is paid from there.
+    branch_id = _inherited_branch_id(request, customer)
+    bank_account = _resolve_bank_account(
+        request, entity, body.get("bank_account"), required=False,
+        document_branch=branch_id, noun="refund")
     refund_date = _date(body.get("refund_date"), "refund_date", required=True)
     # Measure the credit on the refund's own date, so a doomed backdated draft is
     # refused at creation rather than surviving all the way to the posting guard.
@@ -1755,15 +1770,12 @@ def _build_refund(request, entity, body):
     return Refund.objects.create(
         entity=entity,
         customer=customer,
-        # A refund continues the customer's chain: it hands back credit that
-        # arose on their account, so it belongs where they do.
-        branch_id=_inherited_branch_id(request, customer),
+        branch_id=branch_id,
         refund_date=refund_date,
         currency=_resolve_currency(body.get("currency")),
         method=body.get("method", "BANK_TRANSFER"),
         amount=amount,
-        bank_account=_resolve_bank_account(
-            entity, body.get("bank_account"), required=False),
+        bank_account=bank_account,
         reference=body.get("reference", ""),
         narration=body.get("narration", ""),
         created_by=actor_user,
@@ -1939,7 +1951,7 @@ def _build_write_off_request(request, entity, body):
         # stops a Lekki bursar writing off an Ikeja invoice she named by id.
         branch_id=_inherited_branch_id(request, invoice),
         write_off_account=_resolve_account(
-            entity, body.get("write_off_account"), "write_off_account"),
+            request, entity, body.get("write_off_account"), "write_off_account"),
         write_off_date=_date(body.get("write_off_date"), "write_off_date"),
         narration=body.get("narration", ""),
         reason=body.get("reason", ""),
@@ -2334,8 +2346,10 @@ class ARAdjustmentBatchView(_FinanceBase):
         if kind == "REFUND":
             from .receivables import customer_refund_available_balances
 
+            # The batch names one account; each refund's own branch is checked per line.
             bank_account = _resolve_bank_account(
-                entity, body.get("bank_account"), required=True)
+                request, entity, body.get("bank_account"), required=True,
+                document_branch=None, noun="refund")
             customers = _batch_customers(request, entity, items)
             # The whole batch shares one accounting date, so availability is measured
             # on that date - not today. A batch dated before the credit arrived is
@@ -2353,6 +2367,13 @@ class ARAdjustmentBatchView(_FinanceBase):
                         },
                     })
                 seen_targets.add(customer.pk)
+                # Per line, not per batch: a batch may span branches, and each
+                # refund belongs where its own customer does and is paid from there.
+                branch_id = _inherited_branch_id(request, customer)
+                try:
+                    require_own_branch_bank(bank_account, branch_id, noun="refund")
+                except ValidationError as exc:  # Re-key onto the offending batch line.
+                    raise ValidationError({"items": {index: exc.detail}}) from exc
                 try:
                     amount = _validated_refund_amount(
                         customer,
@@ -2365,9 +2386,7 @@ class ARAdjustmentBatchView(_FinanceBase):
                 documents.append(Refund.objects.create(
                     entity=entity,
                     customer=customer,
-                    # Per line, not per batch: a batch may span branches, and each
-                    # refund belongs where its own customer does.
-                    branch_id=_inherited_branch_id(request, customer),
+                    branch_id=branch_id,
                     refund_date=common_date,
                     method="BANK_TRANSFER",
                     amount=amount,
@@ -2386,7 +2405,7 @@ class ARAdjustmentBatchView(_FinanceBase):
                     submit_for_approval(refund, requested_by=request.user)
         else:
             write_off_account = _resolve_account(
-                entity, body.get("write_off_account"), "write_off_account")
+                request, entity, body.get("write_off_account"), "write_off_account")
             invoices = _batch_invoices(request, entity, items)
             for index, (item, invoice) in enumerate(zip(items, invoices)):
                 if invoice.pk in seen_targets:
@@ -2581,7 +2600,10 @@ class ARAdjustmentListView(_FinanceBase):
 
     Filters: ``?type=(refund|writeoff)`` and ``?search=``. The merged list is sorted
     by date and paginated; KPI totals (written-off YTD, pending count, refundable
-    credit) ride in the response so they stay accurate across pages.
+    credit) ride in the response so they stay accurate across pages. Pending
+    counts drafts and documents awaiting approval
+    (:data:`~vs_finance.constants.PENDING_STATUSES`), as the receivables dashboard
+    does, so a voided refund is not pending on one screen and finished on the other.
 
     Opens on either ``finance.refund.view`` or ``finance.writeoff.view``, and each
     kind of row, and each KPI drawn from it, goes only to a reader holding that
@@ -2652,9 +2674,9 @@ class ARAdjustmentListView(_FinanceBase):
         ) if sees_writeoffs else None
         # "Pending" spans the adjustment kinds this reader sees.
         pending = (
-            refunds.exclude(status=DocumentStatus.POSTED).count()
+            refunds.filter(status__in=PENDING_STATUSES).count()
             + (scope.filter(WriteOffRequest.objects.filter(entity=entity))
-               .exclude(status=DocumentStatus.POSTED).count() if sees_writeoffs else 0)
+               .filter(status__in=PENDING_STATUSES).count() if sees_writeoffs else 0)
         )
         refundable_credit = None
         if sees_refunds:
@@ -2738,7 +2760,7 @@ class InvoicePayView(_FinanceBase):
             method=body.get("method") or "BANK_TRANSFER",
             amount=amount,
             deposit_account=_resolve_account(
-                entity, body.get("deposit_account"), "deposit_account", required=True),
+                request, entity, body.get("deposit_account"), "deposit_account", required=True),
             currency=invoice.currency,
             reference=body.get("reference", ""),
             narration=body.get("narration", ""),
@@ -2889,7 +2911,7 @@ class ConcessionListCreateView(_FinanceBase):
             concession_date=_date(body.get("concession_date"), "concession_date", required=True),
             amount=_money(body.get("amount", 0), "amount"),
             allowance_account=_resolve_account(
-                entity, body.get("allowance_account"), "allowance_account", required=False),
+                request, entity, body.get("allowance_account"), "allowance_account", required=False),
             reason=body.get("reason", ""),
             reference=body.get("reference", ""),
             created_by=request.user,

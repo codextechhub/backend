@@ -13,12 +13,12 @@ from decimal import Decimal
 
 from django.db import IntegrityError, transaction
 from django.db.models import Count, Q, Sum
-from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from core.response import success_response
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
+from vs_config.clock import tenant_today
 
 from .. import payables, purchasing
 from ..models import (
@@ -83,7 +83,7 @@ def _resolve_stock_item(entity, ref):
     return item
 
 
-def _write_grn_lines(entity, grn, po, lines):
+def _write_grn_lines(request, entity, grn, po, lines):
     """Replace a draft receipt's lines from validated, entity-scoped input.
 
     Shared by create and draft-edit so both enforce the same rules - whole-unit
@@ -123,7 +123,7 @@ def _write_grn_lines(entity, grn, po, lines):
             })
         cost_center = po_line.cost_center if po_line else explicit_cost_center
         stock_item = _resolve_stock_item(entity, ln.get("stock_item"))
-        expense = _resolve_account(entity, ln.get("expense_account"), "expense_account") \
+        expense = _resolve_account(request, entity, ln.get("expense_account"), "expense_account") \
             or (po_line.expense_account if po_line else None) \
             or (stock_item.default_expense_account if stock_item else None)
         if expense is None:
@@ -214,7 +214,7 @@ class GoodsReceiptListCreateView(_ProcBase):
             received_by=request.user if request.user.is_authenticated else None,
             created_by=request.user if request.user.is_authenticated else None,
         )
-        _write_grn_lines(entity, grn, po, lines)
+        _write_grn_lines(request, entity, grn, po, lines)
         return success_response(
             "Goods receipt created.",
             data=GoodsReceivedNoteSerializer(_read_grn_for_response(entity, grn.pk)).data,
@@ -268,7 +268,7 @@ class GoodsReceiptDetailView(_ProcBase):
         grn.save(update_fields=["received_date", "reference", "narration", "updated_at"])
         if "lines" in body:
             # Same rewrite path as create - an edit may add, drop, or adjust lines.
-            _write_grn_lines(entity, grn, grn.purchase_order, _require_lines(body))
+            _write_grn_lines(request, entity, grn, grn.purchase_order, _require_lines(body))
         # Re-read so the response reflects the rewritten lines, not the pre-edit prefetch cache.
         return success_response(
             "Goods receipt draft updated.",
@@ -323,9 +323,11 @@ def _invoice_list_queryset(entity):
     )
 
 
-def _invoice_display_filter(qs, value):
-    """Map console tabs to persisted lifecycle fields without conflating them."""
-    today = timezone.localdate()
+def _invoice_display_filter(qs, value, *, today):
+    """Map console tabs to persisted lifecycle fields without conflating them.
+
+    ``today`` is the school's calendar day, which decides the overdue tab.
+    """
     if value == "DRAFT":
         return qs.filter(status="DRAFT", approval_state="NOT_SUBMITTED")
     if value == "PENDING_APPROVAL":
@@ -445,7 +447,7 @@ def _idempotent_invoice(entity, key, request_hash, actor):
     return invoice
 
 
-def _write_invoice_lines(entity, invoice, po, lines):
+def _write_invoice_lines(request, entity, invoice, po, lines):
     """Replace draft lines after validating every PO/GRN join inside the entity."""
     invoice.lines.all().delete()
     for i, ln in enumerate(lines, start=1):
@@ -485,7 +487,7 @@ def _write_invoice_lines(entity, invoice, po, lines):
                 "cost_center": "The invoice cost centre must match its purchase-order or receipt line.",
             })
         cost_center = authoritative_cost_center or explicit_cost_center
-        expense = _resolve_account(entity, ln.get("expense_account"), "expense_account") \
+        expense = _resolve_account(request, entity, ln.get("expense_account"), "expense_account") \
             or (po_line.expense_account if po_line else invoice.vendor.default_expense_account)
         if expense is None:
             raise ValidationError({"expense_account": "A line expense account is required."})
@@ -640,7 +642,7 @@ class VendorInvoiceListCreateView(_ProcBase):
         if (vendor := request.query_params.get("vendor")):
             qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
         if (display_status := request.query_params.get("display_status")):
-            qs = _invoice_display_filter(qs, display_status)
+            qs = _invoice_display_filter(qs, display_status, today=tenant_today(entity.tenant))
         if (search := request.query_params.get("search", "").strip()):
             qs = qs.filter(Q(document_number__icontains=search) | Q(vendor_reference__icontains=search)
                            | Q(vendor__code__icontains=search) | Q(vendor__name__icontains=search)
@@ -709,7 +711,7 @@ class VendorInvoiceListCreateView(_ProcBase):
                         data=_serialize_invoice_detail(replay),
                     )
             _raise_vendor_reference_conflict(exc)
-        _write_invoice_lines(entity, invoice, po, lines)
+        _write_invoice_lines(request, entity, invoice, po, lines)
         return success_response(
             "Vendor invoice created.", data=_serialize_invoice_detail(_invoice_queryset(entity).get(pk=invoice.pk)), status=201,
         )
@@ -730,7 +732,7 @@ class VendorInvoiceSummaryView(_ProcBase):
             request, entity, VendorInvoice.objects.filter(entity=entity),
             request.query_params,
         )
-        today = timezone.localdate()
+        today = tenant_today(entity.tenant)
         overdue = qs.filter(status="POSTED", due_date__lt=today).exclude(payment_status="PAID")
         data = {
             "as_of": today,
@@ -811,7 +813,7 @@ class VendorInvoiceDetailView(_ProcBase):
         except IntegrityError as exc:
             _raise_vendor_reference_conflict(exc)
         if "lines" in body:
-            _write_invoice_lines(entity, invoice, po, _require_lines(body))
+            _write_invoice_lines(request, entity, invoice, po, _require_lines(body))
         return success_response(
             "Vendor invoice draft updated.",
             data=_serialize_invoice_detail(_invoice_queryset(entity).get(pk=invoice.pk)),

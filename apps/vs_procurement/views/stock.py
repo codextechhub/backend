@@ -7,7 +7,6 @@ values are integer kobo.
 """
 from __future__ import annotations
 
-import datetime
 
 from django.db import IntegrityError, transaction
 from django.db.models import (
@@ -19,6 +18,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from core.response import success_response
 from vs_finance.money import format_naira
 from vs_finance.views import resolve_entity
+from vs_config.clock import tenant_today
 
 from .. import stock
 from ..models import (
@@ -527,7 +527,7 @@ class StockItemListCreateView(_ProcBase):
         # Inventory account must be an active, postable ASSET account (required); the
         # default expense account (debited on issue) an active, postable EXPENSE (optional).
         inventory = _resolve_asset_account(
-            entity, body.get("inventory_account"), "inventory_account")
+            request, entity, body.get("inventory_account"), "inventory_account")
         if inventory is None:
             raise ValidationError(
                 {"inventory_account": "An inventory asset account is required."})
@@ -545,7 +545,7 @@ class StockItemListCreateView(_ProcBase):
                     catalog_item=_resolve_catalog_item(entity, body.get("catalog_item")),
                     inventory_account=inventory,
                     default_expense_account=_resolve_expense_account(
-                        entity, body.get("default_expense_account"), "default_expense_account"),
+                        request, entity, body.get("default_expense_account"), "default_expense_account"),
                     reorder_level=_nonneg_qty(body.get("reorder_level", 0), "reorder_level"),
                     reorder_qty=_nonneg_qty(body.get("reorder_qty", 0), "reorder_qty"),
                     is_active=(
@@ -612,7 +612,7 @@ class StockItemDetailView(_ProcBase):
             )
         if "inventory_account" in body:
             # A changed inventory account must still be an active, postable ASSET account.
-            inv = _resolve_asset_account(entity, body.get("inventory_account"), "inventory_account")
+            inv = _resolve_asset_account(request, entity, body.get("inventory_account"), "inventory_account")
             if inv is None:
                 raise ValidationError(
                     {"inventory_account": "An inventory asset account is required."})
@@ -630,7 +630,7 @@ class StockItemDetailView(_ProcBase):
         if "default_expense_account" in body:
             # Active, postable EXPENSE (or cleared to None).
             item.default_expense_account = _resolve_expense_account(
-                entity, body.get("default_expense_account"), "default_expense_account")
+                request, entity, body.get("default_expense_account"), "default_expense_account")
         if "reorder_level" in body:
             item.reorder_level = _nonneg_qty(body.get("reorder_level", 0), "reorder_level")
         if "reorder_qty" in body:
@@ -664,13 +664,13 @@ class StockIssueView(_ProcBase):
             # quantity: strictly positive, finite, bounded (over-issue is caught in the service).
             quantity=_quantity(body.get("quantity"), "quantity"),
             movement_date=_date(body.get("movement_date"), "movement_date")
-            or datetime.date.today(),
+            or tenant_today(entity.tenant),
             # Which store it left. Optional for a caller with one; required once they
             # have more, so nobody has to guess which branch the stock came from.
             location=_movement_location(request, entity, body.get("location")),
             # An override expense account, if given, must be an active postable EXPENSE.
             expense_account=_resolve_expense_account(
-                entity, body.get("expense_account"), "expense_account"),
+                request, entity, body.get("expense_account"), "expense_account"),
             actor_user=request.user,
             reference=_text(body.get("reference", ""), "reference", 64),
             narration=_text(body.get("narration", ""), "narration", 255),
@@ -716,7 +716,7 @@ class StockRestockRequisitionView(_ProcBase):
         if item_ids is not None and (not isinstance(item_ids, list) or not all(str(i).isdigit() for i in item_ids)):
             raise ValidationError({"item_ids": "Give a list of stock item ids."})
         req = draft_restock_requisition(
-            entity, as_of=datetime.date.today(), branch=_raised_branch(request, entity, {}),
+            entity, as_of=tenant_today(entity.tenant), branch=_raised_branch(request, entity, {}),
             store_scope=_branch_scope(request, entity, include_shared=True),
             user=request.user, item_ids=item_ids,
         )
@@ -747,12 +747,12 @@ class StockAdjustView(_ProcBase):
             # a decrease against on-hand and picks the write-up/shrinkage accounts.
             quantity_delta=_signed_qty(body.get("quantity_delta"), "quantity_delta"),
             movement_date=_date(body.get("movement_date"), "movement_date")
-            or datetime.date.today(),
+            or tenant_today(entity.tenant),
             # A count corrects one shelf; say which, unless the caller has only one.
             location=_movement_location(request, entity, body.get("location")),
             # Adjustment account, if given, must be active postable EXPENSE (defaults to 5150).
             adjustment_account=_resolve_expense_account(
-                entity, body.get("adjustment_account"), "adjustment_account"),
+                request, entity, body.get("adjustment_account"), "adjustment_account"),
             # unit_cost only applies to an increase; strict integer kobo when provided.
             unit_cost=_strict_kobo(unit_cost, "unit_cost") if unit_cost not in (None, "") else None,
             actor_user=request.user,

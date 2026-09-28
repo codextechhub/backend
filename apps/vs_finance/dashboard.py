@@ -11,7 +11,8 @@ bills / approvals) are best-effort and degrade to empty rather than failing the
 whole dashboard, so a procurement hiccup never blanks the finance landing page.
 
 The dashboard opens to anyone working in finance, and each block is computed
-only for a reader who holds the key behind it (see :class:`DashboardReader`). A
+only for a reader who holds the key behind it, at a school whose plan reaches
+that key (see :class:`DashboardReader`). A
 block the reader may not see is ``None`` in the payload, not an empty value, so
 nothing about it leaves the server and the screen can leave the card out rather
 than draw an empty one.
@@ -56,7 +57,7 @@ VENDOR_DUE_DAYS = 7  # Forward-looking vendor due window.
 
 @dataclass(frozen=True)
 class DashboardReader:
-    """Who is reading a dashboard: which keys they hold and whose rows they see.
+    """Who is reading a dashboard: which keys they may use and whose rows they see.
 
     ``keys`` is ``None`` for a reader who holds every key, which is what callers
     without a request get by default (tests, internal reports). ``scope`` is the
@@ -81,13 +82,22 @@ class DashboardReader:
 
     @classmethod
     def for_user(cls, user, tenant) -> "DashboardReader":
-        """The reader behind a request's effective user."""
+        """The reader behind a request's effective user.
+
+        A key counts only when the role holds it and the school's plan reaches
+        it, the two questions the door asks of the screen behind each block.
+        A Procurement Admin holding the analytics key at a school whose plan
+        stops short of analytics gets no spend figures here, just as the
+        analytics screen refuses them. The plan's verdict is the door's own,
+        read through :func:`vs_rbac.plan_gate.keys_within_plan`.
+        """
         from vs_rbac.evaluator import get_effective_permissions
         from vs_rbac.permissions import is_vision_super_admin
+        from vs_rbac.plan_gate import keys_within_plan
         from vs_rbac.scoping import branch_scope_for_user
 
-        keys = None if is_vision_super_admin(user) else frozenset(
-            get_effective_permissions(user, tenant=tenant))
+        keys = None if is_vision_super_admin(user) else keys_within_plan(
+            get_effective_permissions(user, tenant=tenant), tenant)
         return cls(
             keys=keys,
             scope=branch_scope_for_user(user, include_shared=True, tenant=tenant),

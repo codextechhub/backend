@@ -141,7 +141,7 @@ class BankAccountListCreateView(_FinanceBase):
             raise ValidationError({"name": "A bank account name is required."})
         if BankAccount.objects.filter(entity=entity, name=name).exists():
             raise ValidationError({"name": f"A bank account named '{name}' already exists."})
-        gl_account = _resolve_account(entity, body.get("gl_account"), "gl_account", required=True)
+        gl_account = _resolve_account(request, entity, body.get("gl_account"), "gl_account", required=True)
         is_primary = _bool(body.get("is_primary", False), default=False)
         is_primary_collection = _bool(body.get("is_primary_collection", False), default=False)
         currency = _resolve_currency(body.get("currency"))
@@ -1152,10 +1152,13 @@ class BankStatementLineAdjustView(_StatementLineActionBase):
 
         entity, line = self._line(request, pk)
         body = request.data or {}
-        counter = _resolve_account(entity, body.get("counter_account"), "counter_account")
+        # Both spellings resolve here, under the caller's reach, never in the service.
+        counter = (
+            _resolve_account(request, entity, body.get("counter_account"), "counter_account")
+            or _resolve_account(request, entity, body.get("counter_code"), "counter_code")
+        )
         post_bank_adjustment(
             line, counter_account=counter,
-            counter_code=body.get("counter_code"),
             narration=body.get("narration", ""),
             posting_date=_date(body.get("posting_date"), "posting_date"),
             actor_user=request.user,

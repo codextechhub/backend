@@ -5,12 +5,12 @@ recording one needs the dedicated ``procurement.vendor_assessment.create`` key.
 """
 from __future__ import annotations
 
-import datetime
 
 from rest_framework.exceptions import ValidationError
 
 from core.response import success_response
 from vs_finance.views import resolve_entity
+from vs_config.clock import tenant_today
 
 from ..models import VendorAssessment
 from .base import _ProcBase, _date, _resolve_vendor, _text
@@ -95,7 +95,7 @@ class VendorAssessmentListCreateView(_ProcBase):
         assessment = VendorAssessment.objects.create(
             entity=entity, vendor=vendor, assessor=request.user,
             assessment_date=_date(body.get("assessment_date"), "assessment_date")
-            or datetime.date.today(),
+            or tenant_today(entity.tenant),
             on_time_delivery=_score(body.get("on_time_delivery"), "on_time_delivery"),
             quality_acceptance=_score(body.get("quality_acceptance"), "quality_acceptance"),
             invoice_accuracy=_score(body.get("invoice_accuracy"), "invoice_accuracy"),

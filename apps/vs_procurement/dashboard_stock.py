@@ -36,6 +36,7 @@ from decimal import ROUND_CEILING, Decimal
 from django.db.models import Count, Max, Min, Q, Sum
 
 from vs_finance.constants import DocumentStatus
+from vs_config.clock import tenant_today
 
 from .constants import StockMovementType
 from .dashboard import _money
@@ -358,14 +359,12 @@ def expected(entity, as_of, doc_scope) -> list:
 
 def stock_view(entity, *, user=None, as_of=None, doc_scope=None, store_scope=None, reader=None, window=None) -> dict:
     """The Stock & receiving payload for ``entity`` as ``reader`` may see it."""
-    from django.utils import timezone
-
     from vs_finance.dashboard import EVERY_BLOCK, _current_period
     from vs_finance.dashboard_blocks import books_kind, resolve_window
     from vs_finance.dashboard_spend import window_days
 
     reader = reader or EVERY_BLOCK
-    as_of = as_of or timezone.localdate()
+    as_of = as_of or tenant_today(entity.tenant)
     chosen, windows = resolve_window(entity, as_of, _current_period(entity, None), window)
     start, end = window_days(chosen, as_of)
     stock = reader.can("procurement.stock.view")

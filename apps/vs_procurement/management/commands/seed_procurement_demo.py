@@ -18,7 +18,6 @@ import datetime
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import F
-from django.utils import timezone
 
 from vs_tenants.models import Tenant
 from vs_finance.constants import DocumentStatus, PaymentMethod
@@ -49,6 +48,7 @@ from vs_procurement.sourcing import (
 from vs_workflow.constants import WorkflowInstanceStatus, WorkflowStageAction
 from vs_workflow.models import WorkflowStageApprover
 from vs_workflow.services import actions as workflow_actions
+from vs_config.clock import tenant_today
 
 
 class Command(BaseCommand):
@@ -227,8 +227,8 @@ class Command(BaseCommand):
             entity=entity, reference="CODEX-DEMO-CONTRACT-001",
             defaults={
                 "vendor": vendors[0], "title": "Cloud hosting and support",
-                "start_date": timezone.localdate().replace(month=1, day=1),
-                "end_date": timezone.localdate().replace(month=12, day=31),
+                "start_date": tenant_today(entity.tenant).replace(month=1, day=1),
+                "end_date": tenant_today(entity.tenant).replace(month=12, day=31),
                 "contract_value": 268_000_000, "payment_terms": "NET_30",
                 "created_by": actor,
             },
@@ -249,7 +249,7 @@ class Command(BaseCommand):
                 contract=active_contract, line_no=3, name="Annual renewal review",
                 due_date=active_contract.end_date - datetime.timedelta(days=30), amount=0)
 
-        today_c = timezone.localdate()
+        today_c = tenant_today(entity.tenant)
         # A draft contract (never activated) - exercises the DRAFT list/edit/activate path.
         VendorContract.objects.update_or_create(
             entity=entity, reference="CODEX-DEMO-CONTRACT-DRAFT",
@@ -302,7 +302,7 @@ class Command(BaseCommand):
                 copy_milestones=False, actor_user=actor,
             )
 
-        today = timezone.localdate()
+        today = tenant_today(entity.tenant)
 
         # ── Historical AP invoice trend ───────────────────────────────────────
         starts = []

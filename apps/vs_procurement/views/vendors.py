@@ -20,7 +20,6 @@ import re
 from django.db import IntegrityError, transaction
 from django.core.validators import validate_email
 from django.db.models import Count, F, Q, Sum
-from django.utils import timezone
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from core.response import success_response
@@ -28,6 +27,7 @@ from vs_finance.views import resolve_entity
 from vs_finance.constants import AccountType, DocumentStatus
 from vs_rbac.field_enforcement import assert_writable
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
+from vs_config.clock import tenant_today
 
 from ..constants import PAYMENT_TERM_DAYS, PaymentTerms, VendorKycStatus, VendorRisk
 from ..models import (
@@ -214,9 +214,9 @@ def _category_text(body, field, max_length, *, upper=False):
     return value
 
 
-def _category_account(entity, ref):
+def _category_account(request, entity, ref):
     """Resolve an optional active, postable expense default for a category."""
-    account = _resolve_account(entity, ref, "default_expense_account")
+    account = _resolve_account(request, entity, ref, "default_expense_account")
     return _validate_account_type(account, "default_expense_account", {AccountType.EXPENSE})
 
 
@@ -335,7 +335,7 @@ class VendorCategoryListCreateView(_ProcBase):
             cat = VendorCategory.objects.create(
                 entity=entity, code=code, name=name, parent=parent,
                 default_expense_account=_category_account(
-                    entity, body.get("default_expense_account")),
+                    request, entity, body.get("default_expense_account")),
                 is_active=is_active,
             )
         except IntegrityError as exc:
@@ -397,7 +397,7 @@ class VendorCategoryDetailView(_ProcBase):
                 raise ValidationError({"name": "Category name is required."})
         if "default_expense_account" in body:
             category.default_expense_account = _category_account(
-                entity, body.get("default_expense_account"),
+                request, entity, body.get("default_expense_account"),
             )
         desired_active = _validate_bool(body.get("is_active"), "is_active") \
             if "is_active" in body else category.is_active
@@ -427,7 +427,7 @@ class VendorCategoryInsightsView(_ProcBase):
     def get(self, request):
         """Return posted-invoice spend in integer kobo for bounded date windows."""
         entity = resolve_entity(request)
-        today = timezone.localdate()
+        today = tenant_today(entity.tenant)
         month_start = today.replace(day=1)
         prior_end = month_start - datetime.timedelta(days=1)
         prior_start = prior_end.replace(day=1)
@@ -524,7 +524,7 @@ class VendorListCreateView(_ProcBase):
         tax_id = _clean_text(body, "tax_id", 32, upper=True)
         if body.get("payable_account"):
             payable = _validate_account_type(
-                _resolve_account(entity, body.get("payable_account"), "payable_account"),
+                _resolve_account(request, entity, body.get("payable_account"), "payable_account"),
                 "payable_account", {AccountType.LIABILITY},
             )
         else:
@@ -534,7 +534,7 @@ class VendorListCreateView(_ProcBase):
                 entity, AccountMappingKey.ACCOUNTS_PAYABLE, label="payable account",
             )
         expense = _validate_account_type(
-            _resolve_account(entity, body.get("default_expense_account"), "default_expense_account"),
+            _resolve_account(request, entity, body.get("default_expense_account"), "default_expense_account"),
             "default_expense_account", {AccountType.EXPENSE},
         )
         from ..settings import resolve_procurement_settings
@@ -583,7 +583,7 @@ class VendorSummaryView(_ProcBase):
         """Return entity counts plus posted YTD spend in integer kobo."""
         entity = resolve_entity(request)
         vendors = _catalogue_visible(request, Vendor.objects.filter(entity=entity))
-        year_start = timezone.localdate().replace(month=1, day=1)
+        year_start = tenant_today(entity.tenant).replace(month=1, day=1)
         spend = VendorInvoice.objects.filter(
             entity=entity, status=DocumentStatus.POSTED, invoice_date__gte=year_start,
         ).aggregate(total=Sum("total"))["total"] or 0
@@ -678,12 +678,12 @@ class VendorDetailView(_ProcBase):
             vendor.tax_id_normalized = _normalise_tax_id(vendor.tax_id)
         if "payable_account" in body:
             vendor.payable_account = _validate_account_type(
-                _resolve_account(entity, body.get("payable_account"), "payable_account"),
+                _resolve_account(request, entity, body.get("payable_account"), "payable_account"),
                 "payable_account", {AccountType.LIABILITY},
             )
         if "default_expense_account" in body:
             vendor.default_expense_account = _validate_account_type(
-                _resolve_account(entity, body.get("default_expense_account"), "default_expense_account"),
+                _resolve_account(request, entity, body.get("default_expense_account"), "default_expense_account"),
                 "default_expense_account", {AccountType.EXPENSE},
             )
         if "default_wht_tax_code" in body:
@@ -740,7 +740,7 @@ class VendorInsightsView(_ProcBase):
             request, Vendor.objects.filter(entity=entity), pk,
             "No such vendor in this entity.",
         )
-        year_start = timezone.localdate().replace(month=1, day=1)
+        year_start = tenant_today(entity.tenant).replace(month=1, day=1)
         # Scope both reports to this vendor so the drawer doesn't recompute the whole entity.
         spend_row = next((row for row in spend_analysis(entity, start_date=year_start, vendor=vendor).by_vendor if row.key == vendor.code), None)
         perf_row = next((row for row in vendor_performance(entity, start_date=year_start, vendor=vendor).rows if row.vendor_id == vendor.id), None)
