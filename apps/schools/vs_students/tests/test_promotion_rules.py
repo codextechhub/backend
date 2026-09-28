@@ -370,22 +370,60 @@ class NotPlacedAtPromotionTests(_PromotionRulesFixture):
         )
         self.place(self.emeka, self.shared_class)
 
-    def test_hold_leaves_him_where_he_is(self):
+    def test_hold_leaves_him_where_he_is_and_enrolled(self):
         row = self.rows(self.preview())[self.emeka.pk]
         self.assertEqual(row["outcome"], PromotionOutcome.HOLD)
         response = self.run_promotion()
         self.assertEqual(response.data["data"]["held"], 1)
         self.assertIsNone(self.placement(self.emeka))
+        self.emeka.refresh_from_db()
+        self.assertEqual(self.emeka.status, StudentStatus.ENROLLED)
 
-    def test_promote_moves_him_up_with_his_class_and_keeps_his_status(self):
+    def test_promote_moves_him_up_and_makes_him_active(self):
+        """As giving him a class by hand would, with the reason in his history."""
+        from ..models import StudentStatusLog
+
         self.set_rules(not_placed="PROMOTE")
         row = self.rows(self.preview())[self.emeka.pk]
         self.assertEqual(row["outcome"], PromotionOutcome.PROMOTE)
-        response = self.run_promotion()
-        self.assertEqual(response.data["data"]["promoted"], 1)
-        self.assertEqual(self.placement(self.emeka), "JSS2 A")
         self.emeka.refresh_from_db()
         self.assertEqual(self.emeka.status, StudentStatus.ENROLLED)
+
+        response = self.run_promotion()
+        self.assertEqual(response.data["data"]["promoted"], 1)
+        self.assertEqual(response.data["data"]["failed"], 0)
+        self.assertEqual(self.placement(self.emeka), "JSS2 A")
+        self.emeka.refresh_from_db()
+        self.assertEqual(self.emeka.status, StudentStatus.ACTIVE)
+        log = StudentStatusLog.objects.filter(student=self.emeka).latest("id")
+        self.assertEqual(
+            (log.from_status, log.to_status),
+            (StudentStatus.ENROLLED, StudentStatus.ACTIVE),
+        )
+        self.assertEqual(
+            log.reason, "Placed in JSS2 A by the end-of-year promotion.",
+        )
+
+    def test_a_repeat_places_him_too_so_he_becomes_active(self):
+        self.set_rules(not_placed="PROMOTE")
+        response = self.run_promotion(overrides={str(self.emeka.pk): "REPEAT"})
+        self.assertEqual(response.data["data"]["repeated"], 1)
+        self.assertEqual(self.placement(self.emeka), "JSS1 A")
+        self.emeka.refresh_from_db()
+        self.assertEqual(self.emeka.status, StudentStatus.ACTIVE)
+
+    def test_a_suspended_pupil_moved_beside_him_stays_suspended(self):
+        self.set_rules(not_placed="PROMOTE", suspended="PROMOTE")
+        kelechi = self.student(
+            first="Kelechi", last="Eze", status=StudentStatus.SUSPENDED,
+        )
+        self.place(kelechi, self.shared_class)
+        response = self.run_promotion()
+        self.assertEqual(response.data["data"]["promoted"], 2)
+        kelechi.refresh_from_db()
+        self.emeka.refresh_from_db()
+        self.assertEqual(kelechi.status, StudentStatus.SUSPENDED)
+        self.assertEqual(self.emeka.status, StudentStatus.ACTIVE)
 
 
 class SpreadAtPromotionTests(_PromotionRulesFixture):

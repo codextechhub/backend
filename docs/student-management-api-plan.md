@@ -1068,12 +1068,15 @@ share, so the preview shows exactly what the run will do.
   (`STUDENT_SUSPENDED`, "Kelechi is suspended, so they are not promoted with
   the cohort. Lift the suspension first, or move them by hand afterwards.")
   and is not moved. Under PROMOTE they are an ordinary candidate: moved up with
-  their year group and still SUSPENDED afterwards, because the run changes no
-  status except to graduate. The review screen can hold or repeat any one of
-  them.
+  their year group and still SUSPENDED afterwards, because the suspension is
+  theirs and not the promotion's. The review screen can hold or repeat any one
+  of them.
 - **Pupils confirmed but not placed** (ENROLLED, holding a class in the year
-  being left). Under HOLD they default to HOLD; under PROMOTE to PROMOTE, and
-  their status stays ENROLLED.
+  being left). Under HOLD they default to HOLD and stay ENROLLED; under
+  PROMOTE to PROMOTE. The run makes any of them it places, promoted or
+  repeating, ACTIVE, as giving them a class by hand does, with the reason
+  "Placed in JSS2 A by the end-of-year promotion." in their status history.
+  The preview writes nothing.
 - **Arms.** SAME_ARM moves JSS1 B to next year's JSS2 B, or to the first class
   at the level by name when there is no B. SPREAD shares the pupils promoting
   into a level evenly across that level's classes in the target year. Pupils

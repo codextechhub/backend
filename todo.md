@@ -1382,7 +1382,9 @@ SHARED_RECORD_READ_ONLY "Only a school-wide administrator can change the
 school's promotion rules.", nothing written). Four school settings, each
 defaulting to the old behaviour: suspended HOLD or PROMOTE (moved up, still
 suspended, review screen can override); not_placed (ENROLLED with a class in
-the year being left) HOLD or PROMOTE, status unchanged; arms SAME_ARM or SPREAD
+the year being left) HOLD or PROMOTE, and the run makes any such pupil it
+places (promoted or repeating) ACTIVE, reason "Placed in JSS2 A by the
+end-of-year promotion."; arms SAME_ARM or SPREAD
 (pupils moving into a level shared evenly across its classes: emptiest first
 counting seats taken, repeaters arriving and pupils assigned so far, ties by
 class name, pupils by last name, first name, id; repeats keep their arm);
