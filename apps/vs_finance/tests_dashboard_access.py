@@ -12,6 +12,8 @@ page with no figures in it.
 """
 from __future__ import annotations
 
+import datetime
+
 from core.test_utils import TenantAPIClient
 from .tests_branch_scope import _FinanceBranchFixture
 
@@ -174,3 +176,77 @@ class FinanceDashboardPlanTests(_FinanceBranchFixture):
 
         data = self.blocks(Capability.Depth.ADVANCED)
         self.assertIsNotNone(data["recent_journals"])
+
+
+class ApprovalsWaitingOnYouTests(_FinanceBranchFixture):
+    """"Approvals waiting on you" counts every finance document an approver acts on.
+
+    Corona's head of finance approves credit and debit notes. With a credit note
+    and a refund both sitting at her stage, the dashboard tells her two things
+    wait on her, not one.
+    """
+
+    def waiting_stage(self, document_type, document, approver):
+        """An in-progress approval of ``document`` whose active stage names ``approver``."""
+        from django.contrib.contenttypes.models import ContentType
+        from vs_workflow.models import (
+            WorkflowInstance, WorkflowStageApprover, WorkflowStageInstance,
+        )
+        from vs_workflow.services.roles import ensure_approver_role
+        from vs_workflow.services.templates import publish_template
+
+        ensure_approver_role(self.tenant, "finance-head")
+        template = publish_template(
+            tenant=self.tenant, branch=None, document_type=document_type,
+            code="standard", name="Head approval",
+            stages_payload=[{
+                "code": "head", "label": "Head approval", "kind": "APPROVAL",
+                "order": 1, "approver_source": "ROLE", "approver_role_key": "finance-head",
+                "approver_scope": "SCHOOL", "advance_rule": "ANY",
+                "on_rejection": "RETURN_TO_REQUESTER", "skip_if_no_approvers": False,
+            }],
+        )
+        stage = template.stages.get()
+        instance = WorkflowInstance.all_objects.create(
+            tenant=self.tenant, template=template,
+            document_content_type=ContentType.objects.get_for_model(document),
+            document_object_id=str(document.pk), document_type=document_type,
+            status="IN_PROGRESS", requested_by=approver, current_stage=stage,
+        )
+        stage_instance = WorkflowStageInstance.objects.create(
+            instance=instance, stage=stage, status="ACTIVE",
+        )
+        WorkflowStageApprover.objects.create(stage_instance=stage_instance, user=approver)
+
+    def test_a_credit_note_waiting_on_her_is_counted_with_the_rest(self):
+        from vs_finance.dashboard_blocks import approvals_waiting_on
+        from vs_finance.models import CreditNote, Refund
+
+        e = self.books
+        head = self.user_for(self.tenant, "finance-head@corona.test")
+        customer = self.customer(e, "CNOTE", None)
+        note = CreditNote.objects.create(
+            entity=e, customer=customer, note_date=datetime.date(2026, 1, 12),
+        )
+        refund = Refund.objects.create(
+            entity=e, customer=customer, refund_date=datetime.date(2026, 1, 12),
+        )
+        self.waiting_stage("finance.credit_note", note, head)
+        self.waiting_stage("finance.refund", refund, head)
+
+        waiting = approvals_waiting_on(e, head)
+
+        self.assertEqual(waiting["total"], 2)
+        self.assertIn(
+            {"type": "finance.credit_note", "label": "credit or debit note", "count": 1},
+            waiting["items"],
+        )
+
+    def test_every_finance_approval_type_is_counted(self):
+        from vs_finance.dashboard_blocks import APPROVAL_TYPES
+        from vs_workflow.handlers.registry import list_registered_handlers
+
+        finance_types = {
+            t for t in list_registered_handlers() if t.startswith(("finance.", "payments."))
+        }
+        self.assertEqual(finance_types - set(APPROVAL_TYPES), set())
