@@ -1,32 +1,49 @@
-"""The one piece of a school's identity that is readable without signing in.
+"""Public sign-in branding for a school identified by its address.
 
-A parent or a member of staff arriving at ``holy-cross.xvs.codexng.com`` sees the
-sign-in page before they have any session, and the crest is what tells them they
-are at their own school rather than somewhere that merely looks like it. Every
-other path to that image needs either a session (the signed media URL is bound to
-its reader) or a pay token, so neither can serve this one.
-
-What it deliberately does not do:
-
-* it never lists schools. The slug has to be known before this route says
-  anything, which is the difference between confirming a guess and handing over
-  a customer list;
-* it answers 404 identically for a slug that is not a school, a school whose
-  tenant cannot sign in, and a school that has uploaded no crest. So what leaks
-  is "this slug has a logo", not "this slug exists";
-* it serves the bytes, never a path the caller chose. The file is picked by the
-  slug's own branding row, so there is nothing here to point at another
-  school's storage.
+The page at ``holy-cross.xvs.codexng.com`` needs the school's exact name and
+crest before anyone has a session. Both routes take a known slug and refuse a
+tenant that cannot sign in. Neither route lists schools or exposes private
+profile fields. The name route confirms that a known slug is a school; the logo
+route also returns 404 for a school without a crest. Logo bytes come from the
+slug's own branding row, never from a caller-selected file path.
 """
 from __future__ import annotations
 
 from django.http import HttpResponse
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.models import StoredFile
 from vs_tenants.models import Tenant
+
+from ..models import School
+
+
+class PublicSchoolNameView(APIView):
+    """Give a known, sign-in eligible school slug its display name.
+
+    The address supplies the slug before there is a session. This route returns
+    only the name needed for the sign-in heading and never lists schools.
+    """
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    tenant_param_required = False
+    throttle_scope = "school_brand"
+
+    def get(self, request, slug):
+        name = School.objects.filter(
+            slug=str(slug or "").strip().lower(),
+            tenant__status__in=Tenant.AUTHENTICABLE_STATUSES,
+        ).values_list("name", flat=True).first()
+        if not name:
+            raise NotFound("No school for this address.")
+
+        response = Response({"name": name})
+        response["Cache-Control"] = "public, max-age=3600"
+        return response
 
 
 class PublicSchoolLogoView(APIView):
