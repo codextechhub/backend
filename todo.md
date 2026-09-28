@@ -1303,6 +1303,45 @@ MUST SAY: M11 the multipart contract, its refusals and the DOCUMENTS_MISSING
 body at enrolment; M10 the applicant rows, the warning, what is skipped
 (placement, capacity, auto-issue) and the template sentence.
 
+### D66. A school-wide setting needs a school-wide caller (f7634bc3, 2026-09-28)
+MODULES: M04 roles and permissions, M11 student management, M01 school and
+branch management, M06 configuration and capability, M12 staff management,
+M07 workflow and approval engine, M17 billing and invoicing, MRD.
+A settings write asked only for its permission key, never for branch reach, so
+a branch administrator given `school.settings.update` for her own branch's
+switches could change rules that bind every branch. The rule is now one helper,
+`vs_rbac.scoping.assert_caller_may_configure`: a setting with no branch needs a
+caller whose reach is the whole school; a branch's own setting needs that
+branch in reach. The refusal is 403 `SHARED_RECORD_READ_ONLY` with a sentence,
+and nothing is written. Reads are unchanged. Routes and their sentences:
+PUT /v1/students/enrolment-rules/ ("Only a school-wide administrator can change
+the school's enrolment rules."), PUT /v1/students/admission-rules/ ("... the
+school's admission rules."), PUT /v1/students/guardian-rules/ ("... the
+school's guardian rules."), PUT /v1/students/admission-number-policy/ with no
+branch ("... the school's admission number rule. Choose one of your branches to
+set its own."; a branch's own rule, PUT or DELETE, still needs only that branch,
+another branch is still 404; the school rule still needs
+`school.students.update`, not `school.settings.update`), PATCH
+/v1/i/me/settings/security/ with no branch ("... the school's security
+settings. Choose one of your branches to set its own."), PATCH
+/v1/i/me/settings/payroll-scope/ ("... how the school runs payroll."), PATCH
+/v1/i/me/settings/display/ ("... the school's time zone."), PUT
+/v1/i/me/settings/staff-profiles/ ("... who reads staff profiles."), PATCH
+/v1/i/me/profile/ ("... the school's profile."), POST and DELETE
+/v1/i/me/profile/logo/ ("... the school's logo."), PATCH
+/v1/school-finance/settings/fee-due-policy/ ("... when the school's fee bills
+fall due."), PATCH /v1/workflow/notification-settings/ ("... whether approvals
+send notifications."). PATCH /v1/notify/settings/update/ already refused a
+branch-bound caller at school scope (403 BRANCH_SCOPE_REQUIRED) and is
+unchanged.
+MUST SAY: M04 the configure rule beside the shared-row rule, and that a
+settings key is not reach; each module's route table and permission section
+the reach requirement, the 403 code and its sentence for its own routes (M11
+the four student settings routes, M01 profile, logo, payroll scope and time
+zone, M06 the school security layer, M12 staff profile visibility, M17 the fee
+due policy, M07 the workflow notification switch). MRD: a branch-bound
+administrator reads school settings and cannot change them.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
