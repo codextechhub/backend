@@ -11,7 +11,6 @@ import datetime
 
 from django.db import transaction
 from django.db.models import Count, Q, Sum
-from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from core.response import success_response
@@ -20,6 +19,7 @@ from vs_finance.models import Budget, BudgetLine, FiscalPeriod
 from vs_finance.views import resolve_entity
 from vs_workflow.models import WorkflowInstance
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
+from vs_config.clock import tenant_today
 
 from .. import approval_override, approval_parking, approvals
 from ..constants import ProcApprovalState
@@ -254,7 +254,7 @@ class RequisitionSummaryView(_ProcBase):
     def get(self, request):
         """Return same-period KPI comparisons in integer kobo for the visible rows."""
         entity = resolve_entity(request)
-        as_of = timezone.localdate()
+        as_of = tenant_today(entity.tenant)
         current_start = as_of.replace(day=1)
         prior_month_end = current_start - datetime.timedelta(days=1)
         prior_start = prior_month_end.replace(day=1)
@@ -320,7 +320,7 @@ class RequisitionBudgetAvailabilityView(_ProcBase):
         cost_center = _resolve_cost_center(entity, request.query_params.get("cost_center"))
         if cost_center is None:
             raise ValidationError({"cost_center": "Select a cost centre to check its budget."})
-        as_of = _date(request.query_params.get("date"), "date") or timezone.localdate()
+        as_of = _date(request.query_params.get("date"), "date") or tenant_today(entity.tenant)
         period = FiscalPeriod.objects.filter(
             entity=entity, start_date__lte=as_of, end_date__gte=as_of,
         ).select_related("fiscal_year").first()

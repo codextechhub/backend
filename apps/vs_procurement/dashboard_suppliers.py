@@ -36,6 +36,7 @@ from collections import defaultdict
 from django.db.models import Count, Max, Min, Q, Sum
 
 from vs_finance.constants import DocumentStatus
+from vs_config.clock import tenant_today
 
 from .dashboard import _money, _spend_kobo
 from .models import (
@@ -352,8 +353,6 @@ def cycle_times(entity, start, end, branch_scope) -> dict:
 
 def suppliers_view(entity, *, user=None, as_of=None, branch_scope=None, reader=None, window=None) -> dict:
     """The Spend & suppliers payload for ``entity`` as ``reader`` may see it."""
-    from django.utils import timezone
-
     from vs_finance.dashboard import EVERY_BLOCK, _current_period
     from vs_finance.dashboard_blocks import books_kind, resolve_window
     from vs_finance.dashboard_spend import same_point_before, window_days
@@ -363,7 +362,7 @@ def suppliers_view(entity, *, user=None, as_of=None, branch_scope=None, reader=N
 
     reader = reader or EVERY_BLOCK
     narrowed = branch_scope is not None and branch_scope.is_narrowed
-    as_of = as_of or timezone.localdate()
+    as_of = as_of or tenant_today(entity.tenant)
     current = _current_period(entity, None)
     chosen, windows = resolve_window(entity, as_of, current, window)
     start, end = window_days(chosen, as_of)

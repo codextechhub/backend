@@ -20,7 +20,6 @@ reference guards against double-posting on re-run.
 """
 from __future__ import annotations
 
-import datetime
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -31,6 +30,7 @@ from vs_finance.seed import seed_chart_of_accounts
 
 from vs_procurement.constants import VENDOR_ADVANCE_CODE
 from vs_procurement.purchasing import resolve_account
+from vs_config.clock import tenant_today
 
 
 class Command(BaseCommand):
@@ -49,10 +49,10 @@ class Command(BaseCommand):
         if opts.get("entity"):
             entities = entities.filter(code=opts["entity"])
         commit = opts.get("commit")
-        today = datetime.date.today()
         total_posted = 0
 
         for entity in entities:
+            today = tenant_today(entity.tenant)  # Each school's own calendar day.
             seed_chart_of_accounts(entity)  # ensures 1240 exists on older entities
             payments = (
                 VendorPayment.objects

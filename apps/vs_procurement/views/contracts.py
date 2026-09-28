@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from django.db import models, transaction
 from django.db.models import Count
-from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
 from vs_finance.money import format_naira
 from vs_finance.views import resolve_entity
+from vs_config.clock import tenant_today
 
 from .. import contracts
 from ..constants import ContractStatus, PaymentTerms
@@ -131,7 +131,7 @@ class ContractListCreateView(_ProcBase):
     def get(self, request):
         """List entity contracts with bounded filters and milestone counts."""
         entity = resolve_entity(request)
-        today = timezone.localdate()
+        today = tenant_today(entity.tenant)
         qs = VendorContract.objects.filter(entity=entity).select_related("vendor").annotate(
             milestone_count=Count("milestones", distinct=True),
         )
@@ -262,7 +262,7 @@ class ContractSummaryView(_ProcBase):
     def get(self, request):
         """Derive date-honest KPIs and active value in integer kobo."""
         entity = resolve_entity(request)
-        today = timezone.localdate()
+        today = tenant_today(entity.tenant)
         qs = VendorContract.objects.filter(entity=entity)
         expiring_soon = contracts.expiring_contracts(entity, as_of=today).count()
         # A single aggregate over the contract table. Expiry is derived from dates (honest

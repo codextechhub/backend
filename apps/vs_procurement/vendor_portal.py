@@ -21,6 +21,7 @@ from core.uploads import validate_upload
 from vs_config.conf import get_config
 from vs_finance.documents import _issuer_block
 from vs_notifications.notify import UnregisteredRecipient, send_notification
+from vs_config.clock import tenant_today
 
 from . import sourcing
 from .constants import QuotationLineResponse, QuotationStatus, RfqInvitationStatus, RfqStatus
@@ -354,7 +355,7 @@ def _quotation(invitation: RfqInvitation, *, create: bool = False) -> VendorQuot
             # branch context of its own; the RFQ it answers is the only source.
             branch_id=invitation.rfq.branch_id,
             vendor_managed=True,
-            quote_date=timezone.localdate(), currency=invitation.rfq.entity.base_currency,
+            quote_date=tenant_today(invitation.rfq.entity.tenant), currency=invitation.rfq.entity.base_currency,
             subtotal=0, tax_total=0, total=0,
         )
     return quote
@@ -441,7 +442,7 @@ def save_draft(invitation: RfqInvitation, email: str, body: dict) -> dict:
     quote = _quotation(invitation, create=True)
     if quote.quotation_status != QuotationStatus.DRAFT:
         raise ValidationError({"quotation": "Request a revision before editing a submitted quotation."})
-    quote.quote_date = timezone.localdate()
+    quote.quote_date = tenant_today(quote.entity.tenant)
     if "valid_until" in body:
         raw_valid_until = body.get("valid_until")
         try:

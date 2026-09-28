@@ -12,10 +12,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from django.utils import timezone
 
 from vs_finance.reports import _account_gl_net
 from vs_finance.receivables import compute_line_net
+from vs_config.clock import tenant_today
 
 
 # --------------------------------------------------------------------------- #
@@ -223,7 +223,7 @@ def ap_aging(entity, *, as_of=None, branch_scope=None) -> APAgingReport:
     from .models import VendorInvoice
 
     cutoff = as_of
-    as_of = as_of or timezone.now().date()
+    as_of = as_of or tenant_today(entity.tenant)
     report = APAgingReport(entity_id=entity.id, as_of=as_of)
     rows: dict[int, AgingRow] = {}
 
@@ -400,7 +400,7 @@ def ap_cash_requirements(entity, *, as_of=None, branch_scope=None) -> CashRequir
     from .models import VendorInvoice
 
     cutoff = as_of
-    as_of = as_of or timezone.now().date()
+    as_of = as_of or tenant_today(entity.tenant)
     report = CashRequirementsForecast(entity_id=entity.id, as_of=as_of)
     rows: dict[int, CashRequirementRow] = {}
 
@@ -646,7 +646,7 @@ def grir_aging(entity, *, as_of=None, branch_scope=None) -> GRIRAgingReport:
     available, unchanged, on :func:`grir_balance`.
     """
     cutoff = as_of
-    as_of = as_of or timezone.now().date()
+    as_of = as_of or tenant_today(entity.tenant)
     report = GRIRAgingReport(entity_id=entity.id, as_of=as_of)
     attribution = _grir_attribution(entity, as_of=cutoff, branch_scope=branch_scope)
     posted_grns = {}
@@ -743,7 +743,7 @@ def ap_vendor_open_bills(entity, vendor, *, as_of=None, branch_scope=None) -> AP
     only their bills are.
     """
     cutoff = as_of
-    as_of = as_of or timezone.now().date()
+    as_of = as_of or tenant_today(entity.tenant)
     detail = APVendorDetail(
         vendor_id=vendor.id, code=vendor.code, name=vendor.name, as_of=as_of,
         buckets={b: 0 for b in AGING_BUCKETS},
@@ -814,7 +814,7 @@ def grir_grn_detail(entity, grn_id, *, as_of=None, branch_scope=None) -> GRIRGrn
     from .models import GoodsReceivedNote
 
     cutoff = as_of
-    as_of = as_of or timezone.now().date()
+    as_of = as_of or tenant_today(entity.tenant)
     grn_qs = GoodsReceivedNote.objects.filter(entity=entity, pk=grn_id)
     if branch_scope is not None:
         grn_qs = grn_qs.filter(branch_scope.q())
@@ -933,7 +933,7 @@ def grir_po_lines(entity, *, as_of=None, branch_scope=None) -> GRIRPoLinesReport
     from .models import GoodsReceivedNoteLine, PurchaseOrderLine, VendorInvoiceLine
 
     cutoff = as_of
-    as_of = as_of or timezone.now().date()
+    as_of = as_of or tenant_today(entity.tenant)
     report = GRIRPoLinesReport(entity_id=entity.id, as_of=as_of)
 
     # Live PO lines only - a cancelled/reversed order is not an open GR/IR obligation.

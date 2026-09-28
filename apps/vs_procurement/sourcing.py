@@ -9,7 +9,6 @@ is still the goods receipt on the resulting PO. All money is integer kobo.
 """
 from __future__ import annotations
 
-import datetime
 
 from django.db import transaction
 
@@ -17,6 +16,7 @@ from vs_finance.audit import record
 from vs_finance.constants import FinanceAuditAction
 from vs_finance.money import format_naira
 from vs_finance.receivables import compute_line_net, compute_tax
+from vs_config.clock import tenant_today
 
 from .constants import QuotationStatus, RfqStatus
 from .exceptions import SourcingError
@@ -399,7 +399,7 @@ def award_quotation(
     if not quotation.lines.exists():
         raise SourcingError("Cannot award a quotation with no lines.")
     # A lapsed offer is no longer a firm price - reject the award rather than commit to it.
-    if quotation.valid_until is not None and quotation.valid_until < datetime.date.today():
+    if quotation.valid_until is not None and quotation.valid_until < tenant_today(quotation.entity.tenant):
         raise SourcingError(
             f"Quotation {quotation.document_number} validity lapsed on "
             f"{quotation.valid_until:%Y-%m-%d}; it cannot be awarded.",
@@ -421,7 +421,7 @@ def award_quotation(
     po = PurchaseOrder.objects.create(
         entity=quotation.entity, branch=quotation.branch,
         vendor=vendor, requisition=rfq.requisition,
-        order_date=order_date or datetime.date.today(),
+        order_date=order_date or tenant_today(quotation.entity.tenant),
         currency=quotation.currency, created_by=actor_user,
         # Awarded POs inherit the vendor's configured terms when no buyer form is involved.
         payment_terms=vendor.payment_terms,

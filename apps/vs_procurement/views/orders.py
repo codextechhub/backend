@@ -11,7 +11,6 @@ import datetime
 
 from django.db import transaction
 from django.db.models import Count, F, Prefetch, Q, Sum
-from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from core.response import success_response
@@ -19,6 +18,7 @@ from vs_finance.constants import DocumentStatus
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 from vs_workflow.models import WorkflowInstance
+from vs_config.clock import tenant_today
 
 from .. import po_email, purchasing, sourcing, vendor_portal
 from ..constants import (
@@ -206,7 +206,7 @@ def purchase_order_summary(entity, *, as_of: datetime.date | None = None,
     keeps the entity-wide answer. The console passes its own, so the header totals
     count exactly the orders the list underneath them shows.
     """
-    as_of = as_of or timezone.localdate()
+    as_of = as_of or tenant_today(entity.tenant)
     month_start = as_of.replace(day=1)
     prior_month_end = month_start - datetime.timedelta(days=1)
     prior_month_start = prior_month_end.replace(day=1)
@@ -802,7 +802,7 @@ class RfqSummaryView(_ProcBase):
     def get(self, request):
         """Return sourcing KPIs for the caller's visible events, not the page."""
         entity = resolve_entity(request)
-        today = timezone.localdate()
+        today = tenant_today(entity.tenant)
         from ..settings import resolve_procurement_settings
         policy = resolve_procurement_settings(entity)
         branch_filter = _branch_q(request, entity, request.query_params)

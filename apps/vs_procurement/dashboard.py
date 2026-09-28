@@ -28,6 +28,7 @@ from vs_finance.constants import (
 )
 from vs_finance.models import FinanceAuditLog
 from vs_finance.money import format_naira
+from vs_config.clock import tenant_today
 
 from .constants import (
     PROCUREMENT_APPROVAL_TYPES,
@@ -525,7 +526,7 @@ def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = No
     orders = reader.can("procurement.purchase_order.view")
     bills = reader.can("procurement.vendor_invoice.view")
     vendors = reader.can("procurement.vendor.view")
-    as_of = as_of or timezone.localdate()
+    as_of = as_of or tenant_today(entity.tenant)
     current = _current_period(entity, None)
     chosen, windows = resolve_window(entity, as_of, current, window)
     start, end = window_days(chosen, as_of)

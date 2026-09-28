@@ -13,12 +13,12 @@ from decimal import Decimal
 
 from django.db import IntegrityError, transaction
 from django.db.models import Count, Q, Sum
-from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from core.response import success_response
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
+from vs_config.clock import tenant_today
 
 from .. import payables, purchasing
 from ..models import (
@@ -323,9 +323,11 @@ def _invoice_list_queryset(entity):
     )
 
 
-def _invoice_display_filter(qs, value):
-    """Map console tabs to persisted lifecycle fields without conflating them."""
-    today = timezone.localdate()
+def _invoice_display_filter(qs, value, *, today):
+    """Map console tabs to persisted lifecycle fields without conflating them.
+
+    ``today`` is the school's calendar day, which decides the overdue tab.
+    """
     if value == "DRAFT":
         return qs.filter(status="DRAFT", approval_state="NOT_SUBMITTED")
     if value == "PENDING_APPROVAL":
@@ -640,7 +642,7 @@ class VendorInvoiceListCreateView(_ProcBase):
         if (vendor := request.query_params.get("vendor")):
             qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
         if (display_status := request.query_params.get("display_status")):
-            qs = _invoice_display_filter(qs, display_status)
+            qs = _invoice_display_filter(qs, display_status, today=tenant_today(entity.tenant))
         if (search := request.query_params.get("search", "").strip()):
             qs = qs.filter(Q(document_number__icontains=search) | Q(vendor_reference__icontains=search)
                            | Q(vendor__code__icontains=search) | Q(vendor__name__icontains=search)
@@ -730,7 +732,7 @@ class VendorInvoiceSummaryView(_ProcBase):
             request, entity, VendorInvoice.objects.filter(entity=entity),
             request.query_params,
         )
-        today = timezone.localdate()
+        today = tenant_today(entity.tenant)
         overdue = qs.filter(status="POSTED", due_date__lt=today).exclude(payment_status="PAID")
         data = {
             "as_of": today,

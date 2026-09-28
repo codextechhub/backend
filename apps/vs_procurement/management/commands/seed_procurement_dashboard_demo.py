@@ -32,6 +32,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from vs_config.clock import tenant_today
 
 MARK = "DEMO"
 
@@ -58,7 +59,7 @@ class Command(BaseCommand):
             raise CommandError("Run seed_finance_dashboard_demo on these books first.")
         # Notices go out from on-commit hooks, so the switch wraps the transaction.
         with mock.patch("vs_workflow.services.routing.notify", return_value=None), transaction.atomic():
-            Seeder(entity, datetime.date.today(), options.get("requester"), self.stdout).run()
+            Seeder(entity, tenant_today(entity.tenant), options.get("requester"), self.stdout).run()
 
 
 class Seeder:

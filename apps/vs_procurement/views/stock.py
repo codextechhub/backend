@@ -7,7 +7,6 @@ values are integer kobo.
 """
 from __future__ import annotations
 
-import datetime
 
 from django.db import IntegrityError, transaction
 from django.db.models import (
@@ -19,6 +18,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from core.response import success_response
 from vs_finance.money import format_naira
 from vs_finance.views import resolve_entity
+from vs_config.clock import tenant_today
 
 from .. import stock
 from ..models import (
@@ -664,7 +664,7 @@ class StockIssueView(_ProcBase):
             # quantity: strictly positive, finite, bounded (over-issue is caught in the service).
             quantity=_quantity(body.get("quantity"), "quantity"),
             movement_date=_date(body.get("movement_date"), "movement_date")
-            or datetime.date.today(),
+            or tenant_today(entity.tenant),
             # Which store it left. Optional for a caller with one; required once they
             # have more, so nobody has to guess which branch the stock came from.
             location=_movement_location(request, entity, body.get("location")),
@@ -716,7 +716,7 @@ class StockRestockRequisitionView(_ProcBase):
         if item_ids is not None and (not isinstance(item_ids, list) or not all(str(i).isdigit() for i in item_ids)):
             raise ValidationError({"item_ids": "Give a list of stock item ids."})
         req = draft_restock_requisition(
-            entity, as_of=datetime.date.today(), branch=_raised_branch(request, entity, {}),
+            entity, as_of=tenant_today(entity.tenant), branch=_raised_branch(request, entity, {}),
             store_scope=_branch_scope(request, entity, include_shared=True),
             user=request.user, item_ids=item_ids,
         )
@@ -747,7 +747,7 @@ class StockAdjustView(_ProcBase):
             # a decrease against on-hand and picks the write-up/shrinkage accounts.
             quantity_delta=_signed_qty(body.get("quantity_delta"), "quantity_delta"),
             movement_date=_date(body.get("movement_date"), "movement_date")
-            or datetime.date.today(),
+            or tenant_today(entity.tenant),
             # A count corrects one shelf; say which, unless the caller has only one.
             location=_movement_location(request, entity, body.get("location")),
             # Adjustment account, if given, must be active postable EXPENSE (defaults to 5150).
