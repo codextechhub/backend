@@ -310,3 +310,26 @@ def confirm_applicant(student, *, actor, reason="", effective_date=None, number=
         reason=reason or "Application confirmed.",
         effective_date=effective_date,
     )
+
+
+def change_status(
+    student, to_status, *, actor, reason="", effective_date=None,
+    destination_school="",
+):
+    """Move *student* to *to_status* through whichever path owns that move.
+
+    Confirming an applicant is more than a status change: the branch's
+    admission-number rule applies, and so does anything else
+    :func:`confirm_applicant` checks. The generic status routes (one student
+    and in bulk) therefore hand APPLICANT to ENROLLED to it, so a school's
+    confirmation rules hold whichever route a registrar takes. Every other
+    move is a plain :func:`transition`.
+    """
+    if student.status == StudentStatus.APPLICANT and to_status == StudentStatus.ENROLLED:
+        return confirm_applicant(
+            student, actor=actor, reason=reason, effective_date=effective_date,
+        )
+    return transition(
+        student, to_status, actor=actor, reason=reason,
+        effective_date=effective_date, destination_school=destination_school,
+    )

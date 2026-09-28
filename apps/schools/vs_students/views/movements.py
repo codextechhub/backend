@@ -243,7 +243,7 @@ class ChangeStatusView(_StudentAction):
         data = self.payload(request)
         student = self.student(pk)
         assert_can_change(student)
-        transition(
+        enrolment_service.change_status(
             student, data["to_status"], actor=request.user,
             reason=data["reason"], effective_date=data.get("effective_date"),
             destination_school=data.get("destination_school", ""),
@@ -466,7 +466,7 @@ class BulkStatusView(_BulkAction):
                 continue
             try:
                 with transaction.atomic():
-                    transition(
+                    enrolment_service.change_status(
                         student, data["to_status"], actor=request.user,
                         reason=data["reason"],
                         effective_date=data.get("effective_date"),

@@ -767,6 +767,37 @@ class BranchAdmissionPolicyTests(_SettingsFixture):
         )
         self.assertEqual(allowed.status_code, 200, allowed.data)
 
+    def test_the_status_routes_confirm_under_the_same_rule(self):
+        """Ikeja requires a number; the status drawer and bulk bar cannot skip it."""
+        self.put_policy(
+            {"required": True, "pattern": r"IKJ/\d{4}", "hint": "Use IKJ/NNNN."},
+            branch=self.ikeja,
+        )
+        kemi = self.student(
+            branch=self.ikeja, status=StudentStatus.APPLICANT, first="Kemi",
+        )
+        tobi = self.student(
+            branch=self.ikeja, status=StudentStatus.APPLICANT, first="Tobi",
+        )
+        one = self.post(
+            self.admin, "student-status",
+            {"to_status": "ENROLLED", "reason": "Offer accepted."}, pk=kemi.pk,
+        )
+        self.assertEqual(one.status_code, 422, one.data)
+        self.assertEqual(one.data["error"]["code"], "ADMISSION_NUMBER_REQUIRED")
+
+        bulk = self.post(self.admin, "student-bulk-status", {
+            "student_ids": [tobi.pk], "to_status": "ENROLLED",
+            "reason": "Offer accepted.",
+        })
+        self.assertEqual(bulk.status_code, 200, bulk.data)
+        row = bulk.data["data"]["results"][0]
+        self.assertFalse(row["ok"])
+        self.assertEqual(row["code"], "ADMISSION_NUMBER_REQUIRED")
+        for child in (kemi, tobi):
+            child.refresh_from_db()
+            self.assertEqual(child.status, StudentStatus.APPLICANT)
+
     def test_an_import_row_uses_its_branchs_rule(self):
         from ..imports import resolve_row
 
