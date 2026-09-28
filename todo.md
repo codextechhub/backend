@@ -1062,6 +1062,15 @@ MUST SAY: M17 FR-002/FR-011 and the all_active gap (remove it); M19 FR-019 and
 section 9 (remove the all_active gap), dunning; M20 FR-006 (batch no longer
 bypasses), FR-008 and section 9 (remove the batch-confirmation gap).
 
+### D49. A school being set up works its own support desk (6cf38070, 2026-09-28)
+MODULES: M31 support tickets, M09 school onboarding.
+The ticket viewset's pending_tenant_surface names every action a school uses:
+list, retrieve, create, update, transition, escalate, follow, comments,
+attachments and download, audit; the dashboard counts are open too. assign and
+eligible_assignees stay closed, destroy off. Scoping and visibility unchanged.
+MUST SAY: M31 FR-010/FR-011 and the pending-school gap (remove it); M09 FR-010
+and FR-012 (the desk is open before go-live) and remove its Needs Attention item.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
