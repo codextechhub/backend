@@ -236,6 +236,35 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "JSON", [], {},
     ),
     (
+        "students.promotion.suspended", "Suspended Pupils At Promotion",
+        "What the end-of-year promotion does with a suspended pupil. HOLD "
+        "lists them as an exception and leaves them where they are; PROMOTE "
+        "moves them up with their year group, still suspended.",
+        "CHOICE", "HOLD", {"choices": ["HOLD", "PROMOTE"]},
+    ),
+    (
+        "students.promotion.not_placed", "Unplaced Pupils At Promotion",
+        "What the end-of-year promotion does with a pupil who is confirmed "
+        "but not placed and still holds a class in the year being left. HOLD "
+        "leaves them there; PROMOTE moves them up with that class.",
+        "CHOICE", "HOLD", {"choices": ["HOLD", "PROMOTE"]},
+    ),
+    (
+        "students.promotion.arms", "Arms At Promotion",
+        "Which of next year's classes a promoted pupil joins. SAME_ARM keeps "
+        "an arm together (JSS1 B to JSS2 B); SPREAD shares the pupils moving "
+        "into a level evenly across its classes, emptiest first.",
+        "CHOICE", "SAME_ARM", {"choices": ["SAME_ARM", "SPREAD"]},
+    ),
+    (
+        "students.promotion.capacity_mode", "Class Capacity At Promotion",
+        "What the end-of-year promotion does when it would fill a class past "
+        "its capacity. FOLLOW_ENROLMENT applies the Class Capacity Rule; WARN, "
+        "HARD and OFF mean what they mean there, for the promotion alone.",
+        "CHOICE", "FOLLOW_ENROLMENT",
+        {"choices": ["FOLLOW_ENROLMENT", "WARN", "HARD", "OFF"]},
+    ),
+    (
         "display.timezone", "Time Zone",
         "The IANA time zone this school keeps its calendar in, such as "
         "Africa/Lagos. It decides which day \"today\" is for due dates, "

@@ -27,6 +27,7 @@ from .movements import (
 from .promotion import (
     PromotionBatchView,
     PromotionPreviewView,
+    PromotionRulesView,
     PromotionRunView,
 )
 from .records import (
@@ -54,7 +55,8 @@ __all__ = [
     "BulkStatusView", "ChangeStatusView", "ClassHistoryView", "ClassRosterView",
     "ConfirmApplicantView", "EnrolmentRulesView", "GuardianDetailView",
     "GuardianDirectoryView", "GuardianRulesView", "GuardianStudentsView",
-    "PromotionBatchView", "PromotionPreviewView", "PromotionRunView", "ReactivateStudentView", "RejectApplicantView",
+    "PromotionBatchView", "PromotionPreviewView", "PromotionRulesView",
+    "PromotionRunView", "ReactivateStudentView", "RejectApplicantView",
     "StageMoveView", "StatusHistoryView", "StudentDetailView",
     "StudentDocumentDetailView",
     "StudentDocumentsView", "StudentGuardianDetailView", "StudentGuardiansView",

@@ -30,6 +30,7 @@ from .views import (
     GuardianStudentsView,
     PromotionBatchView,
     PromotionPreviewView,
+    PromotionRulesView,
     PromotionRunView,
     ReactivateStudentView,
     RejectApplicantView,
@@ -71,6 +72,10 @@ student_patterns = [
     path(
         "admission-rules/", AdmissionRulesView.as_view(),
         name="student-admission-rules",
+    ),
+    path(
+        "promotion-rules/", PromotionRulesView.as_view(),
+        name="student-promotion-rules",
     ),
     # Before the <int:class_id> route, so "seats" resolves as itself rather
     # than being matched as a class id.

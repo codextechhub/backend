@@ -1,4 +1,4 @@
-"""The end-of-session move: preview, run, and the summary afterwards."""
+"""The end-of-session move: its rules, preview, run, and the summary afterwards."""
 from __future__ import annotations
 
 from rest_framework.exceptions import NotFound
@@ -6,9 +6,20 @@ from rest_framework.views import APIView
 
 from core.response import success_response
 
-from ..constants import PERM_CLASS_ASSIGN, PERM_PROMOTE, PromotionOutcome
+from ..constants import (
+    PERM_CLASS_ASSIGN,
+    PERM_PROMOTE,
+    PERM_SETTINGS_UPDATE,
+    PERM_VIEW,
+    PromotionOutcome,
+    StudentStatus,
+)
 from ..models import StudentPromotionBatch
-from ..serializers import PromotionBatchSerializer, PromotionRunSerializer
+from ..serializers import (
+    PromotionBatchSerializer,
+    PromotionRulesSerializer,
+    PromotionRunSerializer,
+)
 from ..services import promotion as promotion_service
 from ..services.scoping import scope_to_visible_branches
 from .base import StudentsViewMixin
@@ -34,6 +45,9 @@ def _plan_payload(plan):
             "candidates": len(plan.candidates),
             "excluded": len(plan.student_exceptions),
         },
+        # The school's promotion rules as stored. capacity_mode below is the
+        # effective one, which is what the run applies.
+        "rules": plan.rules.stored(),
         "level_map": plan.level_map,
         # Target classes the run would fill past capacity. Under WARN the run
         # refuses them until allow_over_capacity is sent; under HARD it refuses
@@ -57,10 +71,69 @@ def _plan_payload(plan):
                 "from_class_id": c.enrolment.school_class_id,
                 "to_class": c.target_class.name if c.target_class else None,
                 "outcome": c.outcome,
+                "suspended": c.student.status == StudentStatus.SUSPENDED,
             }
             for c in plan.candidates
         ],
     }
+
+
+class PromotionRulesView(StudentsViewMixin, APIView):
+    """GET, PUT /v1/students/promotion-rules/
+
+    The school's own promotion rules: what the end-of-year promotion does with
+    suspended pupils and with pupils confirmed but not placed, whether arms
+    move up whole or are spread across next year's classes, and which capacity
+    rule the run follows. Reading needs ``school.students.view``, because the
+    promotion screen renders from it; changing needs
+    ``school.settings.update``, because these are the school's settings
+    rather than a student record, and a caller whose reach is the whole
+    school, because the rules bind every branch. A branch-bound caller holding
+    the key is refused with a 403 (SHARED_RECORD_READ_ONLY) and nothing is
+    written.
+
+    ``capacity_mode`` is the school's choice, which may be FOLLOW_ENROLMENT;
+    ``effective_capacity_mode`` is what a run applies, and
+    ``enrolment_capacity_mode`` the enrolment rule it follows.
+
+    PUT takes all four rules every time, plus an optional ``reason`` for the
+    audit trail, and answers with the GET body. Refusals are 400s keyed on the
+    field, in sentences.
+
+    docstring-name: Promotion rules
+    """
+
+    def get_permissions(self):
+        self.rbac_permission = (
+            PERM_VIEW if self.request.method in ("GET", "HEAD", "OPTIONS")
+            else PERM_SETTINGS_UPDATE
+        )
+        return super().get_permissions()
+
+    def get(self, request):
+        from ..services.promotion_rules import read_promotion_rules
+
+        return success_response(data=read_promotion_rules(self.tenant).as_dict())
+
+    def put(self, request):
+        from vs_rbac.scoping import assert_caller_may_configure
+
+        from ..services.promotion_rules import write_promotion_rules
+
+        assert_caller_may_configure(
+            request.user, self.tenant,
+            message=(
+                "Only a school-wide administrator can change the school's "
+                "promotion rules."
+            ),
+        )
+        writer = PromotionRulesSerializer(data=request.data)
+        writer.is_valid(raise_exception=True)
+        data = dict(writer.validated_data)
+        rules = write_promotion_rules(
+            self.tenant, request.user, reason=data.pop("reason", ""), **data,
+        )
+        return success_response("Promotion rules saved.", data=rules.as_dict())
 
 
 class _PromotionBase(StudentsViewMixin, APIView):

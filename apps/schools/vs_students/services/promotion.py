@@ -10,8 +10,25 @@ which is a real write and not a no-op; GRADUATE ends the placement and leaves
 the roll; HOLD leaves the student exactly where they are and writes nothing.
 
 Nothing is ever silently skipped. A student the run will not touch appears on
-the exception list with the reason, and the four reasons are a fixed vocabulary
+the exception list with the reason, and the reasons are a fixed vocabulary
 because the screen prints the sentence.
+
+**The school's promotion rules** (``promotion_rules.py``) decide four things,
+and each default is how every school promoted before it could choose:
+
+* a suspended pupil is an exception under HOLD, and a candidate under
+  PROMOTE, moved up with their year group and still suspended (the run never
+  changes a status except to graduate);
+* a pupil who is confirmed but not placed (ENROLLED, holding a class in the
+  year being left) defaults to HOLD, or to PROMOTE where the school says so;
+* SAME_ARM moves each arm up whole (JSS1 B to JSS2 B, or the first class at
+  the level); SPREAD shares the pupils promoting into a level evenly across
+  its classes (:func:`_spread`). A repeat keeps its arm either way;
+* the capacity rule the run follows is the enrolment rule under
+  FOLLOW_ENROLMENT, or the school's own WARN, HARD or OFF for the promotion.
+
+Every target is a class the pupil may join: school-wide, or at their own
+branch. The review screen's per-student overrides apply on top of all of it.
 
 FRD M11 v2.4 FR-010.
 """
@@ -36,7 +53,10 @@ from ..constants import (
     EXC_STUDENT_SUSPENDED,
     EXC_TERMINAL_LEVEL,
     EnrolmentOutcome,
+    PromotionArms,
+    PromotionNotPlaced,
     PromotionOutcome,
+    PromotionSuspended,
     StudentStatus,
 )
 from ..models import ClassEnrolment, Student, StudentPromotionBatch
@@ -98,8 +118,13 @@ class Plan:
     level_map: list = field(default_factory=list)
     #: Target classes the run would fill past their capacity, one entry each.
     over_capacity: list = field(default_factory=list)
-    #: The school's capacity rule, which decides what the run does with them.
+    #: The EFFECTIVE capacity rule, WARN, HARD or OFF, which decides what the
+    #: run does with them: the enrolment rule where the school's promotion
+    #: rule follows it, the promotion rule otherwise.
     capacity_mode: str = CapacityMode.WARN.value
+    #: The school's promotion rules the plan was made under
+    #: (``promotion_rules.PromotionRules``).
+    rules: object | None = None
 
     def counts(self):
         out = {v: 0 for v in PromotionOutcome.values}
@@ -203,9 +228,17 @@ def classify(tenant, user, *, from_session, to_session, overrides=None,
     the school-wide ones as targets. It is read by the preview AND the run
     through this one function, which is the point - a preview computed by
     different code from the run is not a preview, it is a second opinion.
+
+    The school's promotion rules (``promotion_rules.py``) are read here once:
+    whether a suspended pupil is an exception or a candidate, whether a
+    confirmed but unplaced pupil is held or promoted by default, whether the
+    promoted pupils keep their arm or are spread (:func:`_spread`), and which
+    capacity rule the run follows.
     """
     from django.db.models import Q as _Q
     from schools.vs_academics.models import SchoolClass
+
+    from .promotion_rules import read_promotion_rules
 
     # Here rather than in run(), so the preview refuses exactly what the run
     # would - and before run()'s per-student except, which would otherwise
@@ -215,7 +248,8 @@ def classify(tenant, user, *, from_session, to_session, overrides=None,
     assert_year_is_open(to_session, what="promote")
 
     overrides = overrides or {}
-    plan = Plan()
+    rules = read_promotion_rules(tenant)
+    plan = Plan(rules=rules, capacity_mode=rules.effective_capacity_mode)
 
     # Only the TARGET year's classes are promotion targets. Keyed by their
     # level's code, which is the identifier that survives the roll-forward.
@@ -280,7 +314,10 @@ def classify(tenant, user, *, from_session, to_session, overrides=None,
                 ),
             })
             continue
-        if student.status == StudentStatus.SUSPENDED:
+        if (
+            student.status == StudentStatus.SUSPENDED
+            and rules.suspended == PromotionSuspended.HOLD
+        ):
             plan.student_exceptions.append({
                 "student": student.pk, "name": student.full_name,
                 "class": enrolment.school_class.name,
@@ -321,9 +358,13 @@ def classify(tenant, user, *, from_session, to_session, overrides=None,
             # setup, and the safe reading of a gap is "do nothing", not "these
             # children have finished school".
             default = PromotionOutcome.HOLD
-        elif student.status == StudentStatus.ENROLLED:
+        elif (
+            student.status == StudentStatus.ENROLLED
+            and rules.not_placed == PromotionNotPlaced.HOLD
+        ):
             # Confirmed but never placed into attendance. Moving them up a
-            # level they have not sat is a decision a person takes.
+            # level they have not sat is a decision a person takes, unless
+            # the school has said to move them with their class.
             default = PromotionOutcome.HOLD
         else:
             default = PromotionOutcome.PROMOTE
@@ -356,35 +397,152 @@ def classify(tenant, user, *, from_session, to_session, overrides=None,
     for entry in plan.class_exceptions:
         entry["students"] = per_cause_counts.get((entry["class"], entry["cause"]), 0)
 
-    seen_map = set()
-    for cand in plan.candidates:
-        source = cand.enrolment.school_class
-        if source.pk in seen_map:
-            continue
-        seen_map.add(source.pk)
-        # Only a level that SAYS pupils leave is terminal here. An unwired one
-        # renders as "not set" rather than "Graduates", so the map cannot tell
-        # a registrar a cohort is leaving when nobody has said that.
-        terminal = source.level is not None and getattr(
-            source.level, "is_terminal", False,
-        )
-        plan.level_map.append({
-            "from": source.name, "from_id": source.pk,
-            "to": cand.target_class.name if cand.target_class else None,
-            "to_id": cand.target_class.pk if cand.target_class else None,
-            "terminal": bool(terminal),
-            "students": per_class_counts.get(source.pk, 0),
-        })
-    plan.level_map.sort(key=lambda r: r["from"])
-    from .rules import capacity_mode
+    if rules.arms == PromotionArms.SPREAD:
+        _spread(plan.candidates, by_level_code, to_session)
 
-    plan.capacity_mode = capacity_mode(tenant)
+    plan.level_map = _level_map(plan.candidates, per_class_counts)
     # A school that does not check capacity has no class to name.
     plan.over_capacity = (
         [] if plan.capacity_mode == CapacityMode.OFF
         else _over_capacity(plan.candidates, to_session)
     )
     return plan
+
+
+def _spread(candidates, target_classes_by_level_code, to_session):
+    """Share the pupils promoting into each level evenly across its classes.
+
+    Rewrites ``target_class`` on every PROMOTE candidate that has one. Each
+    pupil, taken in order of last name, first name and id, joins the class
+    at their next level with the fewest pupils, ties broken by class name:
+    the load of a class is the seats already taken in the target year, plus
+    the pupils repeating into it, plus the pupils this allocation has already
+    given it. A pupil only ever joins a class they may join
+    (:func:`_reachable`), so a branch run spreads over that branch's classes
+    and the school-wide ones, and a whole-school run keeps each pupil at
+    their own branch.
+
+    A pupil already placed in the target year is skipped by the run, so they
+    are not allocated again: their seat is counted where it is, and their
+    target is that class. The order is fixed by the pupils and classes alone,
+    never by the database, so the preview and the run allocate identically.
+    Two queries whatever the size of the cohort.
+    """
+    from django.db.models import Count
+
+    pool = {
+        c.pk: c for rows in target_classes_by_level_code.values() for c in rows
+    }
+    moving = [
+        c for c in candidates
+        if c.outcome in (PromotionOutcome.PROMOTE, PromotionOutcome.REPEAT)
+    ]
+    if not moving or not pool:
+        return
+    placed = dict(
+        ClassEnrolment.objects.filter(
+            session=to_session, is_active=True,
+            student_id__in=[c.student.pk for c in moving],
+        ).values_list("student_id", "school_class_id"),
+    )
+    load = dict(
+        ClassEnrolment.objects.filter(
+            session=to_session, is_active=True, school_class_id__in=list(pool),
+        ).values("school_class_id").annotate(n=Count("id")).values_list(
+            "school_class_id", "n",
+        ),
+    )
+    for cand in moving:
+        if (
+            cand.outcome == PromotionOutcome.REPEAT
+            and cand.repeat_class is not None
+            and cand.student.pk not in placed
+        ):
+            load[cand.repeat_class.pk] = load.get(cand.repeat_class.pk, 0) + 1
+
+    promoting = sorted(
+        (
+            c for c in moving
+            if c.outcome == PromotionOutcome.PROMOTE and c.target_class is not None
+        ),
+        key=lambda c: (
+            (c.student.last_name or "").casefold(),
+            (c.student.first_name or "").casefold(),
+            c.student.pk,
+        ),
+    )
+    for cand in promoting:
+        already = placed.get(cand.student.pk)
+        if already is not None:
+            if already in pool:
+                cand.target_class = pool[already]
+            continue
+        code = (cand.target_class.level.code or "").lower()
+        classes = _reachable(
+            target_classes_by_level_code.get(code, []), cand.student.branch_id,
+        )
+        if not classes:
+            continue
+        chosen = min(
+            classes, key=lambda c: (load.get(c.pk, 0), c.name.casefold(), c.pk),
+        )
+        cand.target_class = chosen
+        load[chosen.pk] = load.get(chosen.pk, 0) + 1
+
+
+def _level_map(candidates, per_class_counts):
+    """One row per source class: where its pupils go, and how many to each class.
+
+    ``to_classes`` lists the target classes receiving the class's PROMOTE
+    pupils, by name, each with its count. Keeping arms gives one entry, or
+    one per branch where a school-wide class holds pupils of several;
+    spreading gives several. ``to`` names them all, joined with ", ", and
+    ``to_id`` is set only when there is exactly one. A class none of whose
+    pupils is promoting has an empty list, and ``to`` and ``to_id`` name
+    where the class would go, so the map still shows the route.
+    """
+    rows: dict = {}
+    for cand in candidates:
+        source = cand.enrolment.school_class
+        row = rows.get(source.pk)
+        if row is None:
+            # Only a level that SAYS pupils leave is terminal here. An unwired
+            # one renders as "not set" rather than "Graduates", so the map
+            # cannot tell a registrar a cohort is leaving when nobody has
+            # said that.
+            terminal = source.level is not None and getattr(
+                source.level, "is_terminal", False,
+            )
+            row = rows[source.pk] = {
+                "from": source.name, "from_id": source.pk,
+                "to": cand.target_class.name if cand.target_class else None,
+                "to_id": cand.target_class.pk if cand.target_class else None,
+                "terminal": bool(terminal),
+                "students": per_class_counts.get(source.pk, 0),
+                "to_classes": {},
+            }
+        if cand.outcome == PromotionOutcome.PROMOTE and cand.target_class is not None:
+            target = cand.target_class
+            entry = row["to_classes"].setdefault(
+                target.pk, {"id": target.pk, "name": target.name, "students": 0},
+            )
+            entry["students"] += 1
+
+    out = []
+    for row in rows.values():
+        to_classes = sorted(
+            row["to_classes"].values(),
+            key=lambda e: (e["name"].casefold(), e["id"]),
+        )
+        row["to_classes"] = to_classes
+        if len(to_classes) == 1:
+            row["to"], row["to_id"] = to_classes[0]["name"], to_classes[0]["id"]
+        elif len(to_classes) > 1:
+            row["to"] = ", ".join(e["name"] for e in to_classes)
+            row["to_id"] = None
+        out.append(row)
+    out.sort(key=lambda r: r["from"])
+    return out
 
 
 def _over_capacity(candidates, to_session):
@@ -505,7 +663,8 @@ def run(tenant, user, *, from_session, to_session, overrides=None, branch=None,
     students already moved - which is what makes the batch restartable.
 
     A run that would fill classes past their capacity follows the school's
-    capacity rule exactly as enrolling one child does. Under WARN it is refused
+    promotion capacity rule, which is the enrolment rule unless the school
+    has set one of its own (``Plan.capacity_mode``). Under WARN it is refused
     with ``PROMOTION_OVER_CAPACITY`` until the caller acknowledges it
     (``allow_over_capacity``); under HARD it is refused with ``CLASS_FULL``
     whatever the caller sends, before anybody is moved; under OFF nothing is

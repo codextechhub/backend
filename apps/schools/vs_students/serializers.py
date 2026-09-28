@@ -43,6 +43,10 @@ from .constants import (
     DocumentType,
     Gender,
     GuardianMatching,
+    PromotionArms,
+    PromotionCapacityMode,
+    PromotionNotPlaced,
+    PromotionSuspended,
     StudentStatus,
     TransferReason,
 )
@@ -1306,6 +1310,54 @@ class AdmissionRulesSerializer(serializers.Serializer):
                 f"'{unknown[0]}' is not a document this school can ask for.",
             )
         return value
+
+
+def _choice_errors(choices, what: str) -> dict:
+    """A choice field's refusals, as sentences naming the values it takes."""
+    values = [value for value, _ in choices.choices]
+    listed = f"{', '.join(values[:-1])} or {values[-1]}"
+    return {
+        "invalid_choice": f"Choose {listed} for {what}.",
+        "required": f"Say {what}.",
+        "null": f"Say {what}.",
+    }
+
+
+class PromotionRulesSerializer(serializers.Serializer):
+    """The full set of a school's promotion rules, as the settings screen saves it.
+
+    Every rule is sent every time, for the reason ``EnrolmentRulesSerializer``
+    gives. Each refusal is keyed on its own field, as a sentence.
+    """
+
+    suspended = serializers.ChoiceField(
+        choices=PromotionSuspended.choices,
+        error_messages=_choice_errors(
+            PromotionSuspended, "what happens to suspended pupils at promotion",
+        ),
+    )
+    not_placed = serializers.ChoiceField(
+        choices=PromotionNotPlaced.choices,
+        error_messages=_choice_errors(
+            PromotionNotPlaced,
+            "what happens to pupils who are confirmed but not placed",
+        ),
+    )
+    arms = serializers.ChoiceField(
+        choices=PromotionArms.choices,
+        error_messages=_choice_errors(
+            PromotionArms, "how promoted pupils are placed in next year's classes",
+        ),
+    )
+    capacity_mode = serializers.ChoiceField(
+        choices=PromotionCapacityMode.choices,
+        error_messages=_choice_errors(
+            PromotionCapacityMode, "what the promotion does when a class is full",
+        ),
+    )
+    reason = serializers.CharField(
+        required=False, allow_blank=True, max_length=200,
+    )
 
 
 class StageMoveSerializer(serializers.Serializer):

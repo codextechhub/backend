@@ -107,6 +107,66 @@ ADMISSION_STAGE_NAME_MAX_LENGTH = 40
 OFFER_DAYS_MIN = 1
 OFFER_DAYS_MAX = 365
 
+# The school's promotion rules (services/promotion_rules.py). Each default is
+# the behaviour every school had before it could choose: suspended and
+# unplaced pupils are held, each arm moves up whole, and the run follows the
+# enrolment capacity rule.
+CFG_PROMOTION_SUSPENDED = "students.promotion.suspended"
+CFG_PROMOTION_NOT_PLACED = "students.promotion.not_placed"
+CFG_PROMOTION_ARMS = "students.promotion.arms"
+CFG_PROMOTION_CAPACITY_MODE = "students.promotion.capacity_mode"
+
+
+class PromotionSuspended(models.TextChoices):
+    """What the end-of-year promotion does with a suspended pupil.
+
+    HOLD lists them as an exception and leaves them where they are. PROMOTE
+    moves them up with their year group, still suspended: the status is
+    theirs, not the promotion's, and the review screen can still hold or
+    repeat any one of them.
+    """
+
+    HOLD = "HOLD", "Hold them where they are"
+    PROMOTE = "PROMOTE", "Move them up, still suspended"
+
+
+class PromotionNotPlaced(models.TextChoices):
+    """What the promotion does with a pupil who is confirmed but not placed.
+
+    Such a pupil is ENROLLED yet holds a class in the year being left. HOLD
+    leaves them there for a person to decide; PROMOTE moves them up with the
+    class they hold, and their status stays as it is.
+    """
+
+    HOLD = "HOLD", "Hold them where they are"
+    PROMOTE = "PROMOTE", "Move them up with their class"
+
+
+class PromotionArms(models.TextChoices):
+    """Which of next year's classes a promoted pupil joins.
+
+    SAME_ARM keeps an arm together (JSS1 B to JSS2 B, or the first class at
+    the level when there is no B). SPREAD shares the pupils moving into a
+    level evenly across that level's classes, emptiest first.
+    """
+
+    SAME_ARM = "SAME_ARM", "Keep each arm together"
+    SPREAD = "SPREAD", "Share pupils evenly across the classes"
+
+
+class PromotionCapacityMode(models.TextChoices):
+    """What the promotion does when it would fill a class past its capacity.
+
+    FOLLOW_ENROLMENT applies the school's enrolment rule
+    (``students.capacity.mode``); the other three mean what ``CapacityMode``'s
+    do, for the promotion alone.
+    """
+
+    FOLLOW_ENROLMENT = "FOLLOW_ENROLMENT", "Same as the enrolment rule"
+    WARN = "WARN", "Warn, and let staff go ahead"
+    HARD = "HARD", "Refuse, with no override"
+    OFF = "OFF", "Do not check"
+
 
 class GuardianMatching(models.TextChoices):
     """How a guardian typed in is recognised as one the school already holds.
