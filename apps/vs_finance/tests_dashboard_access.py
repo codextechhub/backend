@@ -131,3 +131,46 @@ class FinanceDashboardAccessTests(_FinanceBranchFixture):
         self.assertIsNotNone(data["revenue_vs_budget"])
         # Every branch's invoices count toward a school-wide aging.
         self.assertEqual(data["ar_aging"]["total"]["kobo"], 5 * 100_000)
+
+
+class FinanceDashboardPlanTests(_FinanceBranchFixture):
+    """A block needs the school's plan as well as the reader's key.
+
+    Corona's proprietor holds the report and journal keys school-wide, and the
+    journal key sits in a deeper band than reports. Below that band the journals
+    screen refuses him, so the dashboard leaves out the recent journals as well;
+    at that band he gets them, as the key alone gave him before.
+    """
+
+    KEYS = ("finance.report.view", "finance.journal.view")
+
+    def proprietor(self):
+        user = self.grant(
+            self.user_for(self.tenant, "plan-proprietor@corona.test"), *self.KEYS,
+            tenant=self.tenant, role_key="role-plan-proprietor",
+        )
+        return TenantAPIClient(user=user)
+
+    def blocks(self, depth):
+        from vs_config.models import Capability
+        from vs_rbac.tests.helpers import put_on_plan
+
+        client = self.proprietor()
+        put_on_plan(self.tenant, depth, banded_keys=["finance.journal.view"],
+                    band_depth=Capability.Depth.ADVANCED)
+        response = client.get(f"/v1/finance/reports/dashboard/?entity={self.books.code}")
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["data"]
+
+    def test_recent_journals_are_absent_below_their_band(self):
+        from vs_config.models import Capability
+
+        data = self.blocks(Capability.Depth.PLUS)
+        self.assertIsNone(data["recent_journals"])
+        self.assertIsNotNone(data["kpis"]["cash_position"])
+
+    def test_recent_journals_are_present_at_their_band(self):
+        from vs_config.models import Capability
+
+        data = self.blocks(Capability.Depth.ADVANCED)
+        self.assertIsNotNone(data["recent_journals"])

@@ -28,7 +28,7 @@ from vs_config.services.resolution import set_value
 from ..exceptions import PlanUpgradeRequired
 from ..models import Permission
 from ..permissions import HasRBACPermission
-from ..plan_gate import capability_for_permission, plan_refusal
+from ..plan_gate import capability_for_permission, keys_within_plan, plan_refusal
 from .helpers import (
     make_assignment,
     make_branch,
@@ -309,3 +309,37 @@ class TheCatalogueShipsEnforcementOnTests(TestCase):
             key="platform.entitlements.enforce",
         )
         self.assertEqual(definition.allowed_scopes, ["platform"])
+
+
+class KeysWithinPlanTests(_GateFixture):
+    """The bulk verdict agrees with the door, key by key."""
+
+    def keys(self):
+        return {self.core_key, self.plus_key, self.unmapped_key}
+
+    def test_every_key_survives_while_the_switch_is_off(self):
+        self.grant(Capability.Depth.CORE)
+        self.assertEqual(keys_within_plan(self.keys(), self.tenant), self.keys())
+
+    def test_an_unprovisioned_school_keeps_every_key(self):
+        self.switch_on()
+        self.assertEqual(keys_within_plan(self.keys(), self.tenant), self.keys())
+
+    def test_a_core_school_loses_only_the_plus_key(self):
+        self.switch_on()
+        self.grant(Capability.Depth.CORE)
+        self.assertEqual(
+            keys_within_plan(self.keys(), self.tenant),
+            {self.core_key, self.unmapped_key},
+        )
+        for key in self.keys():
+            with self.subTest(key=key):
+                self.assertEqual(
+                    key in keys_within_plan(self.keys(), self.tenant),
+                    plan_refusal([key], self.tenant) == "",
+                )
+
+    def test_a_plus_school_keeps_every_key(self):
+        self.switch_on()
+        self.grant(Capability.Depth.PLUS)
+        self.assertEqual(keys_within_plan(self.keys(), self.tenant), self.keys())

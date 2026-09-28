@@ -231,6 +231,35 @@ def plan_refusal(permission_keys, tenant):
     return first_refusal
 
 
+def keys_within_plan(permission_keys, tenant):
+    """The subset of ``permission_keys`` the door would let this tenant use.
+
+    The bulk form of :func:`plan_refusal`, for a screen that decides many blocks
+    at once from the keys its reader holds, such as a dashboard. Each key gets
+    the verdict the door gives it alone: every key survives while enforcement is
+    off or the school is unprovisioned, a key with no active permission row or
+    no capability behind it survives, and a banded key survives only when the
+    school's plan reaches its band. Verdicts come from :func:`plan_reader`, so
+    the whole set costs a fixed handful of queries rather than several per key.
+    """
+    from .models import Permission
+
+    keys = frozenset(permission_keys)
+    if not keys or tenant is None or not enforcement_enabled():
+        return keys
+    if not tenant_is_provisioned(tenant):
+        return keys
+
+    read = plan_reader(tenant)
+    refused = {
+        row.key
+        for row in Permission.objects.filter(key__in=keys, is_active=True)
+        .select_related("capability", "capability__parent", "resource")
+        if not read(row)[1]
+    }
+    return keys - refused
+
+
 def _describe(capability, held):
     """The sentence a school reads, for one closed capability.
 
