@@ -24,6 +24,7 @@ from dataclasses import dataclass, field as dc_field
 
 from .constants import EmploymentType
 from .services.numbers import staff_number_taken
+from .services.roles import ONBOARDING_ROLE_KEYS, ONBOARDING_ROLE_REFUSAL
 
 #: The template's columns, in the order a school reads them.
 #:
@@ -136,13 +137,23 @@ def _date(value: str):
     return None
 
 
-def resolve_row(payload: dict, *, tenant, batch_branch=None, multi_branch=False):
+def resolve_row(payload: dict, *, tenant, batch_branch=None, multi_branch=False,
+                actor=None):
     """Read one row into the values a create would use, with its own reasons.
 
     Every refusal is a row issue rather than an exception, so a bad row is
     skipped with a reason and the other two hundred still import. The engine's
     own behaviour is that critical issues block the batch and warnings allow it
     after confirmation, and nothing here changes that.
+
+    The role column obeys the rules a single add obeys. While the school is
+    onboarding only School Admin and Branch Admin may be given, as on the Add
+    form. And a role carrying restricted permissions *actor* does not hold is
+    refused here, where the file is checked, with the sentence the grant itself
+    would refuse it with: the account service refuses that grant anyway, and a
+    batch that validates clean and then fails row by row is the worse way to
+    find out. *actor* is the uploader when the file is checked and whoever runs
+    it when it is written.
     """
     from vs_rbac.models import TenantRoleTemplate
     from vs_tenants.models import Branch
@@ -258,6 +269,18 @@ def resolve_row(payload: dict, *, tenant, batch_branch=None, multi_branch=False)
                     f"access control first, then import this row."
                 ),
             ))
+        elif _onboarding(tenant) and role.key not in ONBOARDING_ROLE_KEYS:
+            row.issues.append(RowIssue(
+                code="role_not_before_go_live", field="role", value=raw_role,
+                message=ONBOARDING_ROLE_REFUSAL,
+            ))
+        elif actor is not None and _needs_approval(actor, role):
+            from vs_rbac.serializers import restricted_grant_refusal
+
+            row.issues.append(RowIssue(
+                code="restricted_role", field="role", value=raw_role,
+                message=restricted_grant_refusal(role, adding=True),
+            ))
         else:
             row.role = role
 
@@ -288,6 +311,18 @@ def resolve_row(payload: dict, *, tenant, batch_branch=None, multi_branch=False)
     # a real posting, and a registrar genuinely has it.
 
     return row
+
+
+def _onboarding(tenant) -> bool:
+    from vs_tenants.models import Tenant
+
+    return getattr(tenant, "status", None) == Tenant.Status.PENDING
+
+
+def _needs_approval(actor, role) -> bool:
+    from vs_rbac.services import grant_needs_approval
+
+    return grant_needs_approval(actor, role)
 
 
 def create_staff_from_row(row: ResolvedRow, *, tenant, created_by, request=None):
@@ -387,6 +422,7 @@ def validate_rows(import_batch) -> list[dict]:
         row = resolve_row(
             _payload_of(raw_row, columns), tenant=tenant,
             batch_branch=import_batch.branch, multi_branch=multi,
+            actor=import_batch.uploaded_by,
         )
         for issue in row.issues:
             issues.append({

@@ -31,6 +31,22 @@ from ..constants import PERM_ROLES_ASSIGN  # noqa: F401  (the view's key, named 
 #: the KEY, because the name is the school's to rename and the key is not.
 STARTING_ROLE_KEY = "teacher"
 
+#: The only roles a school may hand out before it goes live.
+#:
+#: Onboarding has one administrator in it, so there is nobody to review what
+#: they grant. A bursar invited as Payout Approver during onboarding holds that
+#: grant the moment the school goes live, and no second pair of eyes ever saw
+#: it. Matched on the role KEY rather than the name, because the name is the
+#: school's to rename and the key is not. The Add form and the staff import
+#: both hold to it.
+ONBOARDING_ROLE_KEYS = ("school_admin", "branch_admin")
+
+#: The refusal for any other role while a school is onboarding.
+ONBOARDING_ROLE_REFUSAL = (
+    "Until this school goes live, only School Admin and Branch Admin can be "
+    "given out."
+)
+
 
 def active_grants(staff):
     """This person's live grants, newest first, with their roles loaded."""
@@ -152,9 +168,7 @@ def resolve_role(tenant, key_or_id, *, onboarding_keys=None):
         role = queryset.filter(key=key_or_id).first()
     if role is None:
         message = (
-            "Until this school goes live, only School Admin and Branch Admin "
-            "can be given out."
-            if onboarding_keys is not None
+            ONBOARDING_ROLE_REFUSAL if onboarding_keys is not None
             else "That is not a role this school can give out."
         )
         raise ValidationError({"role": message})

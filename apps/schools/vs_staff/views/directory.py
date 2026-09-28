@@ -43,14 +43,8 @@ SEARCH_FIELDS = (
     "staff_number",
 )
 
-#: The only roles a school may hand out before it goes live.
-#:
-#: Onboarding has one administrator in it, so there is nobody to review what
-#: they grant. A bursar invited as Payout Approver during onboarding holds that
-#: grant the moment the school goes live, and no second pair of eyes ever saw
-#: it. Matched on the role KEY rather than the name, because the name is the
-#: school's to rename and the key is not.
-ONBOARDING_ROLE_KEYS = ("school_admin", "branch_admin")
+#: The only roles a school may hand out before it goes live; see ``services.roles``.
+ONBOARDING_ROLE_KEYS = roles.ONBOARDING_ROLE_KEYS
 
 
 class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):

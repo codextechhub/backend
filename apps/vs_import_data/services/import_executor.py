@@ -154,6 +154,7 @@ def import_staff_row(import_batch, payload: dict, queued_by) -> ImportExecutionR
         tenant=tenant,
         batch_branch=import_batch.branch,
         multi_branch=branch_dimension_applies(tenant),
+        actor=queued_by,
     )
     if not row.ok:
         # Validation should have caught these and refused the batch. Reaching
