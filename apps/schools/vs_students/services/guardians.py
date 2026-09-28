@@ -333,11 +333,11 @@ def guardian_directory(tenant, user, *, search="", include_unlinked=False,
             visible_students = visible_students.filter(branch=branch)
         if session is not None:
             # Same narrowing as the branch, on the other axis: the guardians of
-            # the children who were on THAT year's roll. A guardian carries no
-            # year any more than they carry a branch.
-            visible_students = visible_students.filter(
-                enrolments__session=session,
-            )
+            # the children in that year's list (see in_year). A guardian
+            # carries no year any more than they carry a branch.
+            from .years import in_year
+
+            visible_students = visible_students.filter(in_year(session))
         qs = qs.filter(student_links__student__in=visible_students).distinct()
     # Ordered, because this is paginated. Postgres gives no stable order to an
     # unordered query, so page 2 could repeat a guardian from page 1 and drop

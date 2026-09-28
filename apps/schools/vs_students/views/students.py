@@ -36,6 +36,7 @@ from ..services import documents as document_service
 from ..services import enrolment as enrolment_service
 from ..services.placement import fullest_classes, resolve_class
 from ..services.scoping import branch_for_write, scope_students, UNSET
+from ..services.years import in_year
 from .base import StudentsViewMixin
 
 
@@ -72,9 +73,7 @@ def _list_queryset(tenant, session=None):
     )
     qs = Student.objects.filter(tenant=tenant)
     if session is not None:
-        # The roll AS IT WAS: everyone with a placement that year, and nobody
-        # who only exists in another one.
-        qs = qs.filter(enrolments__session=session)
+        qs = qs.filter(in_year(session))
     return (
         qs.select_related("branch", "applied_for", "admission_stage")
         .prefetch_related(active, guardians, document_service.photo_prefetch())
@@ -426,7 +425,7 @@ class StudentSummaryView(StudentsViewMixin, APIView):
         # is the defect this endpoint has already been fixed for once.
         base = Student.objects.filter(tenant=self.tenant)
         if self.session_filter is not None:
-            base = base.filter(enrolments__session=self.session_filter)
+            base = base.filter(in_year(self.session_filter))
         scoped = self.narrow_to_branch(
             scope_students(base, request.user, self.tenant),
         )

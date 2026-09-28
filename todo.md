@@ -1245,6 +1245,15 @@ VendorAssessment.assessment_date keeps a server-date model default; its only
 creating route passes the school's day.
 MUST SAY: that procurement's day is the school's (reference D53's rule).
 
+### D61. A year's student list includes the children not yet placed (e37efc0d, 2026-09-28)
+MODULES: M11 student records.
+Under `?session=`, the student list, the directory summary and the guardians
+list include, besides everyone placed that year, every child with no placement
+whose applied-for level belongs to that year (or who named none, under the
+running year). The applicants board, which always sends the year, had been
+empty at every school with a year set up.
+MUST SAY: the rule for which year an unplaced child belongs to.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
