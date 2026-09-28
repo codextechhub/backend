@@ -385,6 +385,12 @@ def _policy_for(tenant, branch, cache):
     return cache[key]
 
 
+def _can_issue(tenant, branch, policy) -> bool:
+    from .services.policy import suggest_number
+
+    return bool(suggest_number(tenant, policy=policy, branch=branch))
+
+
 def _resolve_number(row, payload, *, tenant, policy):
     from .exceptions import StudentsError
     from .models import Student
@@ -393,6 +399,11 @@ def _resolve_number(row, payload, *, tenant, policy):
     raw = _text(payload, "student_number")
     row.student_number = raw
     if not raw:
+        # A blank number is issued at write time where the branch's rule
+        # numbers automatically; it is refused only if no next number can be
+        # worked out (no series yet, or the successor breaks the pattern).
+        if policy.auto_issue and _can_issue(tenant, row.branch, policy):
+            return
         if policy.required:
             row.issues.append(RowIssue(
                 "required",
@@ -576,6 +587,33 @@ def import_session(tenant):
     ).first()
 
 
+def _issue_imported_number(student, *, tenant):
+    """Give an imported child the next number, where the branch's rule issues them.
+
+    The same issue_number an enrolment uses, one row at a time, so each row
+    in a file takes the number after the one before it.
+    """
+    from django.db import IntegrityError
+
+    from .services.enrolment import issue_number
+    from .services.policy import read_policy
+
+    policy = read_policy(tenant, student.branch)
+    if not policy.auto_issue:
+        return
+
+    def write(candidate):
+        student.student_number = candidate
+        try:
+            student.save(update_fields=["student_number", "updated_at"])
+        except IntegrityError:
+            student.student_number = ""
+            raise
+        return candidate
+
+    issue_number(tenant, branch=student.branch, policy=policy, write=write)
+
+
 def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
     """Write the student this row describes, through the module's own services.
 
@@ -601,6 +639,8 @@ def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
         enrolment_date=row.admission_date or timezone.localdate(),
         created_by=created_by,
     )
+    if not row.student_number:
+        _issue_imported_number(student, tenant=tenant)
     guardian, _ = guardian_service.upsert_guardian(
         tenant, first_name=row.guardian_first_name,
         middle_name=row.guardian_middle_name, last_name=row.guardian_last_name,
