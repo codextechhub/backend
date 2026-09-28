@@ -975,3 +975,140 @@ A school requiring nothing imports exactly as before. `vs_import_data`
 migration 0023 adds one sentence to the template's opening paragraph saying
 so, only where the paragraph still reads as it was written, and takes it out
 again on the way back.
+
+## 14. Promotion settings
+
+A school sets its own promotion rules in the Settings console, beside the
+student, guardian and applicant settings and in the same way: four
+school-scoped `vs_config` definitions, declared by `vs_students` migration 0010
+and by `seed_config_catalogue`, read through `services/promotion_rules.py`,
+every write audited as `config.value.updated`. Every default is how every
+school promoted before it could choose.
+
+| Key | Type | Default | Scopes |
+|---|---|---|---|
+| `students.promotion.suspended` | CHOICE HOLD, PROMOTE | HOLD | platform, school |
+| `students.promotion.not_placed` | CHOICE HOLD, PROMOTE | HOLD | platform, school |
+| `students.promotion.arms` | CHOICE SAME_ARM, SPREAD | SAME_ARM | platform, school |
+| `students.promotion.capacity_mode` | CHOICE FOLLOW_ENROLMENT, WARN, HARD, OFF | FOLLOW_ENROLMENT | platform, school |
+
+A value stored by hand at the platform layer that is not one of its choices
+reads as the default.
+
+### 14.1 Promotion rules: `GET, PUT /v1/students/promotion-rules/`
+
+GET needs `school.students.view` (the promotion screen renders from it). PUT
+needs `school.settings.update` and a caller whose reach is the whole school,
+because the rules bind every branch: a branch-bound caller holding the key is
+refused with 403 `SHARED_RECORD_READ_ONLY`, "Only a school-wide administrator
+can change the school's promotion rules.", and nothing is written. The school
+is `request.tenant`; nothing in the request names another.
+
+```json
+{
+  "suspended": "HOLD",
+  "not_placed": "HOLD",
+  "arms": "SAME_ARM",
+  "capacity_mode": "FOLLOW_ENROLMENT",
+  "effective_capacity_mode": "WARN",
+  "enrolment_capacity_mode": "WARN",
+  "options": {
+    "suspended": [
+      {"value": "HOLD", "label": "Hold them where they are"},
+      {"value": "PROMOTE", "label": "Move them up, still suspended"}
+    ],
+    "not_placed": [
+      {"value": "HOLD", "label": "Hold them where they are"},
+      {"value": "PROMOTE", "label": "Move them up with their class"}
+    ],
+    "arms": [
+      {"value": "SAME_ARM", "label": "Keep each arm together"},
+      {"value": "SPREAD", "label": "Share pupils evenly across the classes"}
+    ],
+    "capacity_mode": [
+      {"value": "FOLLOW_ENROLMENT", "label": "Same as the enrolment rule"},
+      {"value": "WARN", "label": "Warn, and let staff go ahead"},
+      {"value": "HARD", "label": "Refuse, with no override"},
+      {"value": "OFF", "label": "Do not check"}
+    ]
+  }
+}
+```
+
+`capacity_mode` is the school's choice; `effective_capacity_mode` is what a
+run applies, which is `enrolment_capacity_mode` (the enrolment rule, 11.1)
+under FOLLOW_ENROLMENT.
+
+PUT takes `suspended`, `not_placed`, `arms` and `capacity_mode` every time,
+plus an optional `reason`, and answers with the GET body and the message
+"Promotion rules saved.". Refusals are 400 `REQUEST_ERROR` keyed on the field,
+in sentences:
+
+- `suspended`: "Choose HOLD or PROMOTE for what happens to suspended pupils at
+  promotion." (missing or null: "Say what happens to suspended pupils at
+  promotion.")
+- `not_placed`: "Choose HOLD or PROMOTE for what happens to pupils who are
+  confirmed but not placed." ("Say what happens to pupils who are confirmed
+  but not placed.")
+- `arms`: "Choose SAME_ARM or SPREAD for how promoted pupils are placed in next
+  year's classes." ("Say how promoted pupils are placed in next year's
+  classes.")
+- `capacity_mode`: "Choose FOLLOW_ENROLMENT, WARN, HARD or OFF for what the
+  promotion does when a class is full." ("Say what the promotion does when a
+  class is full.")
+
+Saving an unchanged value writes nothing and audits nothing.
+
+### 14.2 What each rule changes
+
+The rules are read once by `promotion.classify`, which the preview and the run
+share, so the preview shows exactly what the run will do.
+
+- **Suspended pupils.** Under HOLD a suspended pupil is a per-student exception
+  (`STUDENT_SUSPENDED`, "Kelechi is suspended, so they are not promoted with
+  the cohort. Lift the suspension first, or move them by hand afterwards.")
+  and is not moved. Under PROMOTE they are an ordinary candidate: moved up with
+  their year group and still SUSPENDED afterwards, because the run changes no
+  status except to graduate. The review screen can hold or repeat any one of
+  them.
+- **Pupils confirmed but not placed** (ENROLLED, holding a class in the year
+  being left). Under HOLD they default to HOLD; under PROMOTE to PROMOTE, and
+  their status stays ENROLLED.
+- **Arms.** SAME_ARM moves JSS1 B to next year's JSS2 B, or to the first class
+  at the level by name when there is no B. SPREAD shares the pupils promoting
+  into a level evenly across that level's classes in the target year. Pupils
+  are taken in order of last name, first name and id; each joins the class
+  with the fewest pupils, counting seats already taken in the target year,
+  pupils repeating into it and pupils assigned so far, ties broken by class
+  name. A pupil already placed in the target year is not allocated again. A
+  repeat keeps its arm under both.
+- **Branches.** Every target is a class the pupil may join: school-wide, or at
+  their own branch, the rule an ordinary placement keeps. A branch run spreads
+  over that branch's classes and the school-wide ones; a whole-school run
+  keeps each pupil at their own branch. A pupil with no such class at the next
+  level is held under `NO_CLASS_AT_NEXT_LEVEL`, and the class-wide entry counts
+  the pupils its cause covers.
+- **Capacity.** The run follows `effective_capacity_mode` exactly as it followed
+  the enrolment rule before: WARN refuses with `PROMOTION_OVER_CAPACITY` until
+  `allow_over_capacity` is sent, HARD refuses with `CLASS_FULL` whatever is
+  sent, OFF counts nothing. Under SPREAD the classes over capacity are counted
+  after the pupils are shared out.
+- **Graduating.** Only an ACTIVE pupil can graduate. A suspended or unplaced
+  pupil in a class whose level pupils leave after is held, and a GRADUATE
+  override for one is read as HOLD, in the preview and the run alike.
+
+### 14.3 The promotion preview
+
+`POST /v1/students/promotions/preview/` keeps every field it had and adds:
+
+- `rules`: `{"suspended", "not_placed", "arms", "capacity_mode"}`, the stored
+  choices. The top-level `capacity_mode` stays the effective one.
+- `level_map[].to_classes`: `[{"id", "name", "students"}]`, the target classes
+  receiving the source class's PROMOTE pupils, by name, with counts. Keeping
+  arms gives one entry (or one per branch where a school-wide class holds
+  pupils of several); spreading gives several, and then `to` names them all
+  joined with ", " and `to_id` is null. A class none of whose pupils is
+  promoting has an empty list, and `to` and `to_id` still name where it would
+  go.
+- `students[].suspended`: whether the pupil is suspended, so the review screen
+  can mark the ones promoted under PROMOTE.

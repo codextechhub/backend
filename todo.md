@@ -1374,6 +1374,40 @@ reach (404) and branch (400) before any money moves.
 MUST SAY: the edit and post rules and their answers, and the create status
 change from 403 to 400.
 
+### D69. A school's promotion rules, and a promotion that keeps each pupil at their own branch (7860ea86, 1a22d386, 2026-09-28)
+MODULES: M11 student management, M13 academic structure, MRD.
+GET, PUT /v1/students/promotion-rules/ (read school.students.view; write
+school.settings.update and a school-wide caller, else 403
+SHARED_RECORD_READ_ONLY "Only a school-wide administrator can change the
+school's promotion rules.", nothing written). Four school settings, each
+defaulting to the old behaviour: suspended HOLD or PROMOTE (moved up, still
+suspended, review screen can override); not_placed (ENROLLED with a class in
+the year being left) HOLD or PROMOTE, status unchanged; arms SAME_ARM or SPREAD
+(pupils moving into a level shared evenly across its classes: emptiest first
+counting seats taken, repeaters arriving and pupils assigned so far, ties by
+class name, pupils by last name, first name, id; repeats keep their arm);
+capacity_mode FOLLOW_ENROLMENT or the promotion's own WARN, HARD, OFF (the run
+applies the effective one; under SPREAD over-capacity is counted after the
+spread). The body also carries effective_capacity_mode, enrolment_capacity_mode
+and options with labels; PUT takes all four plus reason, 400s keyed on the
+field ("Choose HOLD or PROMOTE for what happens to suspended pupils at
+promotion."). The preview adds rules, level_map[].to_classes (to joined, to_id
+null when several) and students[].suspended. vs_students 0010 declares the
+four definitions. Two defects fixed with it: a whole-school run could place a
+pupil in another branch's class (every target is now school-wide or the
+pupil's own branch; a pupil with none is held under NO_CLASS_AT_NEXT_LEVEL, and
+class-wide entries count only the pupils their cause covers), and a pupil who
+cannot graduate (suspended, or confirmed but not placed) in a terminal class
+defaulted to GRADUATE and failed in the run; they are now held, and a GRADUATE
+override for one reads as HOLD.
+MUST SAY: M11 FR-010 the four rules and their defaults, the route, its
+permission and reach rule, the refusal sentences, the SPREAD allocation order,
+the effective capacity rule, the preview's added fields, the branch rule for
+targets and the hold for pupils who cannot graduate; M13 that a promotion
+target is only a class the pupil's branch may join. MRD: a school chooses how
+its end-of-year promotion treats suspended and unplaced pupils, arms and full
+classes.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
