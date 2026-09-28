@@ -1925,6 +1925,8 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
         # through the FAL too. That it currently sits in a view module rather than
         # a service is a layering problem in vs_procurement, not a reason for the
         # FAL to keep its own copy.
+        from types import SimpleNamespace
+
         from vs_procurement.views.receiving import _write_grn_lines
 
         entity, order = self._resolve(po)
@@ -1939,7 +1941,9 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
                     purchase_order=order, received_by=user, created_by=user,
                     received_date=received_date or tenant_today(entity.tenant),
                 )
-                _write_grn_lines(entity, grn, order, [
+                # The lines name no ledger account, but the helper reads accounts
+                # under a caller's reach, so it is given the acting user as caller.
+                _write_grn_lines(SimpleNamespace(user=user), entity, grn, order, [
                     {"po_line": line.po_line_ref,
                      "accepted_qty": line.quantity_received}
                     for line in lines
