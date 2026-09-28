@@ -587,6 +587,74 @@ class BankStatementImportWizardTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(response.status_code, 400, response.content)
         self.assertIn("rolled back and re-imported", str(response.json()))
 
+    def _listed_statements(self):
+        response = self.client.get(
+            f"/v1/finance/bank-accounts/{self.bank.pk}/?entity={self.entity.code}",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        return {row["id"]: row for row in response.json()["data"]["statements"]}
+
+    def test_a_bulk_statement_names_the_import_that_rolls_it_back(self):
+        upload = self._upload(self._balanced_rows())
+        batch_id = upload.json()["data"]["id"]
+        publish = self.client.post(
+            f"/v1/import/batches/{batch_id}/start-import/",
+            {"run_async": False},
+            format="json",
+        )
+        job_id = int(publish.json()["data"]["job_id"])
+        statement_id = BankStatementImportContext.objects.get(
+            import_batch_id=batch_id,
+        ).published_statement_id
+
+        listed = self._listed_statements()[statement_id]
+        self.assertEqual(
+            listed["import_rollback"], {"batch_id": batch_id, "job_id": job_id},
+        )
+
+        # The detail read takes the unannotated path to the same answer.
+        detail = self.client.get(
+            f"/v1/finance/bank-accounts/{self.bank.pk}/statements/{statement_id}/"
+            f"?entity={self.entity.code}"
+        )
+        self.assertEqual(
+            detail.json()["data"]["import_rollback"],
+            {"batch_id": batch_id, "job_id": job_id},
+        )
+
+        rolled_back = self.client.post(
+            f"/v1/import/batches/{batch_id}/jobs/{job_id}/rollback/",
+            {"reason": "Wrong account"},
+            format="json",
+        )
+        self.assertEqual(rolled_back.status_code, 200, rolled_back.content)
+        self.assertNotIn(statement_id, self._listed_statements())
+
+    def test_a_statement_keyed_in_by_hand_names_no_import(self):
+        manual = self._manual_statement()
+        self.assertIsNone(self._listed_statements()[manual.pk]["import_rollback"])
+
+    def test_a_bulk_statement_with_an_acted_on_line_names_no_import(self):
+        upload = self._upload(self._balanced_rows())
+        batch_id = upload.json()["data"]["id"]
+        self.client.post(
+            f"/v1/import/batches/{batch_id}/start-import/",
+            {"run_async": False},
+            format="json",
+        )
+        statement_id = BankStatementImportContext.objects.get(
+            import_batch_id=batch_id,
+        ).published_statement_id
+        line = BankStatementLine.objects.filter(statement_id=statement_id).first()
+        ignored = self.client.post(
+            f"/v1/finance/statement-lines/{line.pk}/ignore/?entity={self.entity.code}",
+            {"ignored": True, "reason": "Known bank-only line"},
+            format="json",
+        )
+        self.assertEqual(ignored.status_code, 200, ignored.content)
+
+        self.assertIsNone(self._listed_statements()[statement_id]["import_rollback"])
+
     def test_user_without_import_permission_cannot_correct_manual_statement(self):
         statement = self._manual_statement()
         user = make_vision_user(email="no-statement-correction@test.com")

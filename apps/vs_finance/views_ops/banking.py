@@ -16,6 +16,7 @@ from core.response import success_response
 
 from ..audit import record
 from ..constants import BankLineStatus, DocumentStatus, FinanceAuditAction
+from ..statement_imports import annotate_statement_rollback
 from ..views import resolve_entity
 from ..models import (
     BankAccount,
@@ -242,10 +243,10 @@ class BankAccountDetailView(_FinanceBase):
             published_statement=OuterRef("pk"),
         )
         data["statements"] = BankStatementSerializer(
-            bank.statements.annotate(
+            annotate_statement_rollback(bank.statements.annotate(
                 has_acted_lines=Exists(acted_lines),
                 is_bulk_import=Exists(bulk_context),
-            )[:50],
+            ))[:50],
             many=True,
         ).data
         data["reconciliations"] = BankReconciliationSerializer(
