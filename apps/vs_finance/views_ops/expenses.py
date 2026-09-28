@@ -164,22 +164,25 @@ class ExpenseClaimDetailView(_ExpenseClaimActionBase):
 
 # Group endpoint behavior for Expense Claim Post View.
 class ExpenseClaimPostView(_ExpenseClaimActionBase):
-    """docstring-name: Post an expense claim"""
+    """Post a draft expense claim straight to the ledger.
+
+    A claim whose approval route has stages must be submitted instead. A school
+    starts with an expense-claim route that has no stages, and posting against
+    it needs ``confirm_without_approval`` and is recorded as posted without
+    approval, as refunds and write-offs are
+    (:func:`vs_finance.approvals.guard_direct_post`).
+
+    docstring-name: Post an expense claim
+    """
     rbac_permission = "finance.expenseclaim.post"
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
-        from rest_framework.exceptions import ValidationError
-
-        from ..approvals import approval_required
+        from ..approvals import guard_direct_post
         from ..expenses import post_expense_claim
 
         _, claim = self._claim(request, pk)
-        if approval_required(claim):
-            raise ValidationError({
-                "detail": "This expense claim is approval-gated; submit it for "
-                          "approval instead of posting it directly."
-            })
+        guard_direct_post(claim, request, noun="expense claim")
         post_expense_claim(claim, actor_user=request.user)
         claim.refresh_from_db()
         return success_response(

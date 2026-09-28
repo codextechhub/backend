@@ -1483,10 +1483,12 @@ class JournalSubmitView(APIView):
 class JournalPostView(APIView):
     """POST /finance/journals/<id>/post/?entity= - post a draft journal.
 
-    When a workflow template is published for this journal's ``finance.journal``
-    document type (opt-in gate), direct posting is refused: the journal must go
-    through ``/submit/`` and posts only on approval. With no template, this behaves
-    exactly as it always has - a direct draft → POSTED post.
+    When a workflow template with stages is published for this journal's
+    ``finance.journal`` document type, direct posting is refused: the journal must
+    go through ``/submit/`` and posts only on approval. When the school's template
+    has no stages yet, the post needs ``confirm_without_approval`` and is recorded
+    as posted without approval (:func:`vs_finance.approvals.guard_direct_post`).
+    With no template at all, the draft posts directly.
 
     docstring-name: Post a journal entry
     """
@@ -1496,7 +1498,7 @@ class JournalPostView(APIView):
 
     # Handle POST requests for this endpoint.
     def post(self, request, id):
-        from .approvals import approval_required
+        from .approvals import guard_direct_post
         from .posting import post_journal
 
         entity = resolve_entity(request)
@@ -1505,11 +1507,7 @@ class JournalPostView(APIView):
         ).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
-        if approval_required(entry):
-            raise ValidationError({
-                "detail": "This journal is approval-gated; submit it for approval "
-                          "instead of posting directly.",
-            })
+        guard_direct_post(entry, request, noun="journal")
         post_journal(entry, actor_user=request.user)
         entry.refresh_from_db()
         return success_response(
