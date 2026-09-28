@@ -1082,6 +1082,23 @@ MUST SAY: M10 the extra-keys rule and its one entry (remove the "no
 self-service way back for a wrong bank statement" gap); M19 that a bursar can
 roll back a statement she imported.
 
+### D51. A school sets its own student rules; a branch its own admission numbers (ba33b90d, dd11d9c9, 2026-09-28)
+MODULES: M11 student management, M13 academic structure, M10 bulk data import.
+New GET/PUT /v1/students/enrolment-rules/ (read school.students.view, write
+school.settings.update): age range (default 2 to 25), required documents
+(default birth certificate, still a prompt), required enrolment fields (default
+none; enrolment and import refuse a blank one, an edit only a field it blanks),
+capacity mode WARN/HARD/OFF (HARD is 422 CLASS_FULL with no override, on
+placement, bulk assign and promotion; the import refuses rows past the last
+seat; OFF checks nothing), and a default class size applied to a new class and
+to generated arms. Admission-number policy: ?branch= on GET/PUT/DELETE, a
+branch's rule replaces the school's whole, source and auto_issue in the body,
+automatic numbers at enrolment and confirmation. Numbers stay unique school-wide.
+MUST SAY: M11 the settings contract, each rule's effect and the new error code,
+the branch rule and automatic numbers; M13 the default class size; M10 that the
+import follows the age, required-field and capacity rules (required fields only
+where the template has a column) and does not issue numbers.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

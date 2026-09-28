@@ -435,3 +435,124 @@ One defect was fixed in an engine app rather than worked around:
 `school.students.import` could never reach the wizard however it was granted.
 It now reads a `{dataset_type: permission_key}` registry that domain apps write
 into from `AppConfig.ready`.
+
+---
+
+## 11. Student settings
+
+A school sets its own rules for students in the Settings console. Every rule
+lives in `vs_config` as a school-scoped definition, so it inherits
+platform, school and (for admission numbers) branch values the way every other
+setting does, and every write is audited as `config.value.updated` or
+`config.value.cleared`. Every default is the behaviour every school had before
+it could choose, so a school that has saved nothing is treated exactly as
+before.
+
+The definitions are declared by `vs_students` migration 0006 and by
+`seed_config_catalogue`:
+
+| Key | Type | Default | Scopes |
+|---|---|---|---|
+| `students.age.min_years` | INTEGER 0-99 | 2 | platform, school |
+| `students.age.max_years` | INTEGER 0-99 | 25 | platform, school |
+| `students.documents.required` | JSON list | `["BIRTH_CERTIFICATE"]` | platform, school |
+| `students.enrolment.required_fields` | JSON list | `[]` | platform, school |
+| `students.capacity.mode` | CHOICE WARN, HARD, OFF | WARN | platform, school |
+| `students.capacity.default` | INTEGER 1-500 | none (no limit) | platform, school |
+| `students.admission_number.auto_issue` | BOOLEAN | false | platform, school, branch |
+| `students.admission_number.required`, `.pattern`, `.hint` | as before | as before | now also branch |
+
+### 11.1 Enrolment rules: `GET, PUT /v1/students/enrolment-rules/`
+
+GET needs `school.students.view` (the enrolment form renders from it); PUT
+needs `school.settings.update`. The school is `request.tenant`; nothing in the
+request names another.
+
+```json
+{
+  "min_age_years": 2, "max_age_years": 25,
+  "required_documents": ["BIRTH_CERTIFICATE"],
+  "document_types": [{"value": "BIRTH_CERTIFICATE", "label": "Birth certificate"}, "... every DocumentType"],
+  "required_fields": [],
+  "optional_fields": [{"value": "nationality", "label": "Nationality"}, "... the ten below"],
+  "capacity_mode": "WARN",
+  "default_capacity": null
+}
+```
+
+`optional_fields` is the ten enrolment fields a school may make required:
+nationality, state of origin, home address, student phone, student email,
+previous school, emergency contact, emergency phone, blood group and middle
+name, each labelled as the enrol form labels it. Allergies and
+conditions are left out on purpose: for most children the answer is "none".
+
+PUT takes every rule every time, plus an optional `reason`, and answers with
+the GET body. Refusals are 400 `REQUEST_ERROR`, keyed on the field:
+`0 <= min < max <= 99`, the documents a subset of the document types, the
+fields a subset of `optional_fields`, the default class size null or 1 to 500.
+Saving an unchanged value writes nothing and audits nothing.
+
+### 11.2 What each rule changes
+
+- **Age.** `ages.date_of_birth_problem` reads the school's range, on the
+  enrolment form, the edit route and the import alike. The refusal names the
+  school's bounds ("this school enrols students from 4").
+- **Required documents.** The checklist's `required` flags and
+  `missing_required` read the school's list. Still a prompt, never a gate.
+- **Required fields.** Enrolment (and saving an applicant) refuses a blank
+  required field, keyed on it: "Nationality is required at this school." An
+  edit refuses only a field it sends blank, so a record older than the rule is
+  never blocked. The import refuses a row per required field **it has a column
+  for** (middle name, address, previous school); a required field with no
+  import column cannot be supplied by any file and is filled in afterwards.
+- **Capacity.** WARN is today's rule (422 `CLASS_AT_CAPACITY` until
+  `allow_over_capacity`). HARD refuses with 422 `CLASS_FULL` whatever the
+  caller sends, on one placement, enrolment, reactivation, a bulk assignment
+  (the whole selection, before anyone is placed) and a promotion run (with the
+  preview's `classes` list). An import under HARD refuses each row past the
+  last seat at validation, before anything is written. OFF checks nothing and
+  the promotion preview's `over_capacity` is empty. The promotion preview
+  carries `capacity_mode`.
+
+  ```json
+  {"success": false,
+   "message": "JSS1 B holds 2 of 2 seats, and this school does not put classes over capacity.",
+   "error": {"code": "CLASS_FULL",
+             "detail": {"school_class": 12, "capacity": 2, "used": 2, "adding": 1}}}
+  ```
+- **Default class size.** A class created without a capacity (the class form,
+  or a null capacity there, and "generate arms") gets it. Editing a class never
+  applies it, and the academic-structure import keeps "blank means no limit".
+
+### 11.3 Admission numbers per branch: `/v1/students/admission-number-policy/`
+
+GET, PUT and DELETE take an optional `?branch=<id>`, which must be this
+school's branch and one the caller can see, or the answer is 404. GET needs
+`school.students.view`; PUT and DELETE need `school.students.update`.
+
+```json
+{"required": true, "pattern": "IKJ/\\d{4}", "hint": "Use IKJ/NNNN.",
+ "auto_issue": true, "source": "branch", "suggestion": "IKJ/0008"}
+```
+
+`source` is `branch` when the branch holds its own rule, `school` when the
+school has set one, and `default` otherwise. **A branch's rule replaces the
+school's whole**: PUT with a branch writes all four values at branch scope, and
+an empty pattern or hint there means "none", not "the school's". `auto_issue`
+may be left out of a PUT, which keeps the value in force. DELETE with a branch
+removes its rule so it follows the school's again; DELETE with no branch is a
+400 keyed on `branch`. PUT and DELETE answer with the GET body.
+
+Enrolment, confirmation, an edit to the number and the import all use the rule
+of the student's branch. The suggestion continues the branch's own series when
+it has a rule, the school's otherwise. Numbers stay unique across the whole
+school, without case.
+
+**Automatic numbers.** With `auto_issue` on, a number left blank at enrolment
+or at applicant confirmation (not when saving an applicant) is the suggestion.
+A collision with another enrolment, whether seen before the insert or at the
+unique constraint, moves to the next suggestion, up to five times; five in a
+row is a 409 `DUPLICATE_STUDENT_NUMBER` asking to save again. When there is no
+suggestion (no series yet, or the next number would break the pattern) the
+rule applies as if automatic numbers were off: required refuses, optional
+leaves the number blank. The import does not issue numbers.
