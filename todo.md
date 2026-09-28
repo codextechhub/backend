@@ -1180,6 +1180,71 @@ filter, DOCUMENTS_MISSING and the routes it covers, and that a school with no
 stages admits exactly as before. Contract detail: docs/student-management-api-plan.md
 section 13.
 
+### D56. A dashboard block needs the school's plan as well as the reader's key (4af5d331, merged 32194627, 2026-09-28)
+MODULES: M25 dashboards and analytics, M06 configuration and capability.
+DashboardReader.can now also asks whether each block's key is within the
+school's plan (keys_within_plan in vs_rbac/plan_gate.py, one bulk check with
+plan_refusal's verdicts). Covers the finance overview, receivables and spend
+dashboards, the procurement overview, suppliers and stock dashboards, and the
+restock draft's stock check. Unchanged with the plan gate off, for a school
+with no plan, and for a platform super admin.
+MUST SAY: M25 that a block below the school's band is absent, not refused;
+M06 keys_within_plan beside plan_refusal.
+
+### D57. Bank accounts and bank ledgers stay within the caller's branches, and a branch's document is paid from its own branch (61836114, 966e5770, 1fb5bec5, 07baab0a, merged 32194627, 2026-09-28)
+MODULES: M19 finance and accounting, M18 payments and collections, M20 adjustments, M23 purchase orders delivery and AP, M04 roles and permissions.
+Every money-out route resolves its bank account within the caller's reach
+(own branches plus school-wide); another branch's account answers 404, as an
+unknown one does (was 400). A ledger account that backs a bank account the
+caller cannot reach is refused as unknown (400 field error, or 404 on the
+account's own edit route) wherever a ledger account is named: all
+_resolve_account callers, payments deposit and payout-source lookups,
+direct-entry lines, the bank-adjustment counter_code, default-account
+settings, a new account's parent. Read filters are not narrowed. A branch's
+document (refunds and refund batches per line, expense-claim reimbursement,
+payroll runs, petty cash float and top-up, asset purchase and disposal,
+vendor payments) is paid only from a bank account of its own branch or a
+school-wide one: 400 "This refund belongs to Ikeja Branch. Pay it from an
+Ikeja Branch account or a school-wide one." Tax filings carry no branch and
+are treated as school-wide. Bank accounts, expense claims, petty-cash funds,
+fixed assets and refund-availability rows now return branch_id.
+MUST SAY: the reach rule for bank accounts and bank ledgers, the 404/400
+answers, the same-branch payment rule and its message, the routes covered,
+the new branch_id fields; M04 the reach rule under branch scoping.
+
+### D58. Journals, expense claims and direct entries confirm an empty approval route (d7a700a8, 88873c1c, merged 32194627, 2026-09-28)
+MODULES: M19 finance and accounting, M07 workflow and approval engine.
+JournalPostView and ExpenseClaimPostView call guard_direct_post: an empty
+route answers 409 APPROVAL_NOT_CONFIGURED until confirm_without_approval, then
+posts and records it as made without approval; a route with steps answers 400
+and sends the caller to submit. A direct entry at a school whose journal route
+has steps is created and submitted into the route (201, "Direct entry <no> is
+waiting for approval. It reaches the books once it is approved."); an empty
+route answers 409 as above; no route posts directly as before. Both apps ask
+"Post without approval?" and resend with the reason.
+MUST SAY: M19 the three cases for journal post, expense-claim post and direct
+entry; M07 that these document types now honour the empty-route rule.
+
+### D59. Pending counts and approvals-waiting counts agree with their dashboards (63b3ce27, d6260eec, merged 32194627, 2026-09-28)
+MODULES: M20 adjustments and concessions, M25 dashboards and analytics.
+PENDING_STATUSES (vs_finance/constants.py) is the one definition of pending
+for the refunds and write-offs list and the receivables dashboard; a voided or
+cancelled refund is not pending. APPROVAL_TYPES counts finance.credit_note
+(credit and debit notes, one label) in "approvals waiting on you", and a test
+holds it to every registered finance and payments workflow type.
+MUST SAY: the shared definition of pending; credit and debit notes in the
+approvals block.
+
+### D60. Procurement dates by the school's own day (e987ba7f, 5071e156, merged 32194627, 2026-09-28)
+MODULES: M21 vendor management, M22 procurement and requisitions, M23 purchase orders delivery and AP, M24 inventory and stock ledger.
+About fifty procurement sites that meant "today" now read tenant_today (D53):
+overdue bills, lapsed contracts, quotation validity, milestone completion
+dates, report and dashboard as-at defaults, seeders and the vendor-advance
+backfill. A goods receipt through the FAL names its acting user as caller.
+VendorAssessment.assessment_date keeps a server-date model default; its only
+creating route passes the school's day.
+MUST SAY: that procurement's day is the school's (reference D53's rule).
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
