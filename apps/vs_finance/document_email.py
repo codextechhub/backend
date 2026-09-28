@@ -28,6 +28,8 @@ from django.core.files.base import ContentFile
 from django.db import transaction
 from django.utils import timezone
 
+from vs_config.clock import tenant_today
+
 from .audit import record
 from .constants import (
     FinanceAuditAction,
@@ -411,7 +413,7 @@ def send_statement(customer, *, actor_user, start_date=None, end_date=None, note
     delivery = _create(
         entity=customer.entity, customer=customer,
         document_type=FinanceDeliveryDocument.STATEMENT,
-        period_start=start_date, period_end=end_date or timezone.now().date(),
+        period_start=start_date, period_end=end_date or tenant_today(customer.entity.tenant),
         source=source, actor_user=actor_user, note=note, parent=parent,
     )
     return _queue(delivery.pk, actor_user=actor_user)

@@ -30,6 +30,8 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from vs_config.clock import tenant_today
+
 MARK = "DEMO"
 
 
@@ -51,7 +53,7 @@ class Command(BaseCommand):
         if BankAccount.objects.filter(entity=entity, name__startswith=MARK).exists():
             raise CommandError(f"{entity.code} already holds the demo data.")
         as_of = (datetime.date.fromisoformat(options["as_of"]) if options.get("as_of")
-                 else datetime.date.today())
+                 else tenant_today(entity.tenant))
         rng = random.Random(entity.code)
         # The copies are sent from on-commit hooks, so the switches must stay on
         # until the transaction has committed: they wrap it, not sit inside it.

@@ -13,6 +13,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
+from vs_config.clock import tenant_today
 from vs_user.models import TimeStampedModel
 
 from .constants import Priority, TaskStatus
@@ -89,10 +90,14 @@ class Task(TimeStampedModel):
     @property
     def status(self) -> str:
         """Completed if done; otherwise Overdue once the deadline has passed,
-        else In Progress. Matches the design's taskStatus()."""
+        else In Progress. Matches the design's taskStatus().
+
+        "Passed" is judged by the assignee's tenant's calendar day, so a task
+        due today in Lagos is not overdue at 00:30 there.
+        """
         if self.is_done:
             return TaskStatus.COMPLETED
-        if self.deadline < timezone.localdate():
+        if self.deadline < tenant_today(self.assignee.tenant):
             return TaskStatus.OVERDUE
         return TaskStatus.IN_PROGRESS
 

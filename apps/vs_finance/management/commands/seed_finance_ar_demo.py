@@ -19,6 +19,7 @@ import datetime
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from vs_config.clock import tenant_today
 from vs_finance.constants import PeriodStatus
 from vs_finance.models import (
     Account,
@@ -125,7 +126,7 @@ class Command(BaseCommand):
 
     def _ensure_periods(self, entity):
         """Open 12 monthly fiscal periods for the current year so invoices can post."""
-        year_no = datetime.date.today().year
+        year_no = tenant_today(entity.tenant).year
         fy, _ = FiscalYear.objects.get_or_create(
             entity=entity, year=year_no,
             defaults={

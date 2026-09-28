@@ -4,7 +4,6 @@ from __future__ import annotations
 from datetime import date
 
 from django.db import transaction
-from django.utils import timezone
 
 
 @transaction.atomic
@@ -17,6 +16,8 @@ def next_tenant_document_number(
     ``(tenant, document_code, local date)`` scope. The sequence row is protected
     by both a database uniqueness constraint and a row lock.
     """
+    from vs_config.clock import tenant_today
+
     from .models import TenantDocumentSequence
 
     if tenant is None or tenant.pk is None:
@@ -24,7 +25,7 @@ def next_tenant_document_number(
     code = (document_code or "").strip().upper()
     if not code:
         raise ValueError("A document code is required.")
-    day = allocation_date or timezone.localdate()
+    day = allocation_date or tenant_today(tenant)
 
     TenantDocumentSequence.objects.get_or_create(
         tenant=tenant, document_code=code, date=day,

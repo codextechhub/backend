@@ -21,7 +21,7 @@ FRD M12 v2.1, FR-008 and section 5.2.
 from __future__ import annotations
 
 from django.db import transaction
-from django.utils import timezone
+from vs_config.clock import tenant_today
 
 from ..constants import (
     ACCOUNT_EFFECT,
@@ -190,7 +190,7 @@ def change_status(staff, *, to_status, actor, effective_date=None, reason="",
             field="last_working_day",
         )
 
-    effective_date = effective_date or timezone.localdate()
+    effective_date = effective_date or tenant_today(staff.tenant)
 
     staff.employment_status = to_status
     fields = ["employment_status", "updated_at"]
@@ -242,7 +242,7 @@ def record_creation(staff, *, actor, effective_date=None):
     return StaffEmploymentEvent.objects.create(
         tenant=staff.tenant, staff=staff, from_status="",
         to_status=staff.employment_status,
-        effective_date=effective_date or timezone.localdate(),
+        effective_date=effective_date or tenant_today(staff.tenant),
         reason="Added to the staff list", changed_by=actor,
     )
 
@@ -274,7 +274,7 @@ def promote_on_activation(user):
     event = StaffEmploymentEvent.objects.create(
         tenant=staff.tenant, staff=staff,
         from_status=EmploymentStatus.INVITED, to_status=EmploymentStatus.ACTIVE,
-        effective_date=timezone.localdate(), reason="Accepted invitation",
+        effective_date=tenant_today(staff.tenant), reason="Accepted invitation",
         changed_by=None,
     )
     audit.emit_employment_status_changed(staff, event, actor=None)

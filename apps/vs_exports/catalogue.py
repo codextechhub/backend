@@ -42,6 +42,8 @@ from decimal import Decimal
 
 from django.db.models import Q
 
+from vs_config.clock import tenant_today
+
 from .constants import DatasetScope, ExportFormat, ValuesMode
 
 
@@ -584,7 +586,7 @@ def resolve_screen(binding: ScreenBinding, params: dict, *, today=None) -> dict:
             continue
         spec = dataset.filter_def(filter_id)
         if spec is not None and spec.kind == FILTER_DATE_RANGE:
-            end = today or datetime.date.today()
+            end = today or tenant_today(None)
             start = end - datetime.timedelta(days=binding.default_window_days)
             filters.append({
                 "id": filter_id, "start": start.isoformat(), "end": end.isoformat(),

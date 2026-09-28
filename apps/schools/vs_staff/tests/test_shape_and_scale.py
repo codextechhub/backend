@@ -94,9 +94,10 @@ class QueryCountTests(StaffFixture):
     have to chase.
     """
 
-    #: Roughly: the page, the count, the prefetches, the aggregates, and the
-    #: request's own tenant and permission lookups.
-    CEILING = 30
+    #: Roughly: the page, the count, the prefetches, the aggregates, the
+    #: request's own tenant and permission lookups, and the school's time zone
+    #: (two, once), which decides who reads as on leave today.
+    CEILING = 32
 
     def setUp(self):
         super().setUp()

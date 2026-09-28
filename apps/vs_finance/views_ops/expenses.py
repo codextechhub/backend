@@ -8,6 +8,7 @@ from rest_framework.exceptions import NotFound
 from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 
 from core.response import success_response
+from vs_config.clock import tenant_today
 
 from ..views import resolve_entity
 from ..models import (
@@ -351,12 +352,11 @@ class ExpenseClaimSummaryView(_FinanceBase):
     def get(self, request):
         from django.db.models import Count, Q, Sum
         from django.db.models.functions import Coalesce
-        from django.utils import timezone
 
         from ..constants import DocumentStatus, InvoicePaymentStatus
 
         entity = resolve_entity(request)
-        today = timezone.now().date()
+        today = tenant_today(entity.tenant)
         live = ~Q(status=DocumentStatus.CANCELLED)
         awaiting_q = Q(status=DocumentStatus.POSTED) & ~Q(
             payment_status=InvoicePaymentStatus.PAID)

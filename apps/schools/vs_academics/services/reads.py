@@ -12,9 +12,9 @@ full depth, not six per programme.
 """
 from __future__ import annotations
 
-import datetime as dt
-
 from django.db.models import Count, Q
+
+from vs_config.clock import tenant_today
 
 from ..models import (
     AcademicSession,
@@ -185,7 +185,7 @@ def build_overview(user, tenant, *, today=None, multi_branch=True, branch=None,
     branch whose year names other branches, which is a different fact and one
     ``branches_without_a_session`` already reports.
     """
-    today = today or dt.date.today()
+    today = today or tenant_today(tenant)
 
     def _session_block(year):
         """One year's shape: how far through it the school is, and its terms."""

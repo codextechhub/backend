@@ -14,6 +14,8 @@ import datetime
 
 from django.db import transaction
 
+from vs_config.clock import tenant_today
+
 from .exceptions import FinanceError, PostingError
 from .receivables import post_invoice
 
@@ -46,7 +48,7 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
     if not structure.is_active:  # Inactive structures must not be billed.
         raise PostingError(f"Fee structure {structure.code} is inactive.")
 
-    invoice_date = invoice_date or datetime.date.today()
+    invoice_date = invoice_date or tenant_today(structure.entity.tenant)
     if due_date is None:  # Never leave it null: null is not a deadline, it is never overdue.
         from .document_settings import resolve_finance_document_settings
         policy = resolve_finance_document_settings(structure.entity)

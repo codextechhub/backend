@@ -16,6 +16,8 @@ from typing import Iterable, Protocol
 from django.db import transaction
 from django.utils import timezone
 
+from vs_config.clock import tenant_today
+
 from .constants import (
     DocumentStatus,
     FinanceAuditAction,
@@ -133,7 +135,7 @@ def posting_window(entity, *, today=None) -> dict:
     """
     from .models import FiscalPeriod
 
-    today = today or timezone.localdate()
+    today = today or tenant_today(entity.tenant)
     periods = list(
         FiscalPeriod.objects
         .filter(entity=entity)
@@ -226,7 +228,7 @@ def fiscal_calendar_runway(entity, *, today=None) -> dict:
     """
     from .models import FiscalPeriod
 
-    today = today or timezone.localdate()
+    today = today or tenant_today(entity.tenant)
     last = (  # The period that bounds the calendar, ignoring status entirely.
         FiscalPeriod.objects
         .filter(entity=entity)
@@ -620,7 +622,7 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
     )
     period = resolve_period(entry.entity, reversal_date)  # Resolve period for selected reversal date.
     if date is None and not _period_accepts_posting(period, allow_restricted=allow_restricted):  # Original period may now be closed.
-        reversal_date = timezone.now().date()
+        reversal_date = tenant_today(entry.entity.tenant)
         # Falling forward to today must not turn a future-dated source into a
         # backdated reversal.  Re-run chronology after changing the date; the
         # surrounding transaction leaves the source untouched if today is earlier.
@@ -696,8 +698,6 @@ def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
     today. The normal :func:`post_journal` guards apply (period open, balanced, accounts
     active/postable), and it is reversible like any journal. Returns the posted entry.
     """
-    from django.utils import timezone
-
     from .accounts import resolve_account
     from .models import FiscalPeriod, JournalEntry, JournalLine
 
@@ -709,7 +709,7 @@ def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
         date = (  # Prefer earliest fiscal period start, otherwise today.
             FiscalPeriod.objects.filter(entity=entity)
             .order_by("start_date").values_list("start_date", flat=True).first()
-            or timezone.now().date()
+            or tenant_today(entity.tenant)
         )
 
     entry = JournalEntry.objects.create(

@@ -6,12 +6,11 @@ the failure mode that only shows up on a real school.
 """
 from __future__ import annotations
 
-import datetime as dt
-
 from rest_framework.exceptions import NotFound
 from rest_framework.views import APIView
 
 from core.response import success_response
+from vs_config.clock import tenant_today
 from vs_tenants.references import resolve_branch_reference
 
 from ..constants import PERM_STRUCTURE_VIEW
@@ -93,7 +92,7 @@ class OverviewView(AcademicsViewMixin, APIView):
             )
         data = build_overview(
             request.user, self.tenant,
-            today=dt.date.today(), multi_branch=self.multi_branch, branch=branch,
+            today=tenant_today(self.tenant), multi_branch=self.multi_branch, branch=branch,
             session=self.session,
         )
         return success_response("Overview retrieved.", data=data)

@@ -296,12 +296,11 @@ class FeeDuePolicyView(APIView):
             else "school.fees.view"
 
     def _payload(self, request, row):
-        import datetime
-
         from schools.vs_academics.models import AcademicSession, AcademicTerm
+        from vs_config.clock import tenant_today
 
-        today = datetime.date.today()
         tenant = request.tenant
+        today = tenant_today(tenant)
         session = (
             AcademicSession.objects.filter(tenant=tenant, status="ACTIVE")
             .order_by("-start_date").first()

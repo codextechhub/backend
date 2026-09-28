@@ -56,6 +56,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from schools.vs_staff.services import employment
+from vs_config.clock import tenant_today
 
 #: The password every seeded person accepts their invitation with.
 #:
@@ -598,7 +599,7 @@ class Command(BaseCommand):
         if on_leave is None or on_leave.leave_requests.exists():
             return
 
-        today = timezone.localdate()
+        today = tenant_today(tenant)
         LeaveRequest.objects.create(
             tenant=tenant, staff=on_leave, leave_type="STUDY",
             start_date=today - dt.timedelta(days=20),

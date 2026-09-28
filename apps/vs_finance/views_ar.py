@@ -11,8 +11,6 @@ which own every posting. Money is integer kobo.
 """
 from __future__ import annotations
 
-import datetime
-
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
 from django.db import transaction
@@ -22,6 +20,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 
 from core.pagination import XVSPagination
 from core.response import error_response, success_response
+from vs_config.clock import tenant_today
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 # ``include_shared=True`` is spelled out at every call site rather than left to the
 # default: a null branch means "shared across the school", so a school-wide fee
@@ -241,7 +240,6 @@ def _customer_ledger(entity, customer_ids=None):
     arithmetic, which is how the console ended up with two definitions of "available
     credit" that could disagree - one of them refund-blind.
     """
-    import datetime
     from django.db.models import F, Q, Sum
     from django.db.models.functions import Coalesce
 
@@ -249,7 +247,7 @@ def _customer_ledger(entity, customer_ids=None):
     from .models import CreditNote, Invoice, Payment
     from .receivables import customer_credit_balances
 
-    today = datetime.date.today()
+    today = tenant_today(entity.tenant)
     bal = F("total") - F("amount_paid") - F("amount_credited")
     inv = Invoice.objects.filter(entity=entity, status=DocumentStatus.POSTED)
     pay = Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED)
@@ -470,7 +468,7 @@ class CustomerDetailView(_FinanceBase):
         customer = _resolve_customer(request, entity, pk)
         led = _customer_ledger(entity, [customer.id]).get(customer.id, {})
         net = led.get("outstanding", 0) - led.get("credit", 0)
-        today = datetime.date.today()
+        today = tenant_today(entity.tenant)
 
         # A voided document is still part of the account's history: it moved the
         # balance on its own date and was undone on the reversal's date, and
@@ -841,7 +839,7 @@ class PaymentSummaryView(_FinanceBase):
                 Q(document_number__icontains=search) | Q(customer__name__icontains=search)
                 | Q(customer__code__icontains=search) | Q(reference__icontains=search))
 
-        today = datetime.date.today()
+        today = tenant_today(entity.tenant)
         week_start = today - datetime.timedelta(days=6)
         # "Sitting unapplied" must mean money that is still there. Summing
         # ``amount - allocated_amount`` counts cash already refunded back out and
@@ -1367,7 +1365,7 @@ class FeeStructureGenerateView(_FinanceBase):
             raise ValidationError({"applies_to":
                 "Only customer fee structures can generate AR invoices."})
         body = request.data or {}
-        invoice_date = _date(body.get("invoice_date"), "invoice_date") or datetime.date.today()
+        invoice_date = _date(body.get("invoice_date"), "invoice_date") or tenant_today(entity.tenant)
         due_date = _date(body.get("due_date"), "due_date")
         if body.get("all_active"):
             qs = _branch_visible(request, Customer.objects.filter(entity=entity, is_active=True))
@@ -3493,12 +3491,11 @@ class DunningSummaryView(_FinanceBase):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
-        import datetime
 
         from django.db.models import F
 
         entity = resolve_entity(request)
-        today = datetime.date.today()
+        today = tenant_today(entity.tenant)
         buckets = {k: {"amount": 0, "count": 0} for k in
                    ("due_soon", "overdue_1_30", "overdue_31_60", "overdue_60_plus")}
         # Drop fully-settled invoices in SQL (balance_due is a property); only the

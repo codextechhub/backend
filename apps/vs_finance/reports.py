@@ -13,7 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from django.db.models import Q, Sum
-from django.utils import timezone
+
+from vs_config.clock import tenant_today
 
 from .constants import DocumentStatus
 from .money import format_naira
@@ -550,7 +551,7 @@ def ar_aging(entity, *, as_of=None, scope=None) -> AgingReport:
     a branch-bound reader; the default reads the whole entity.
     """
     cutoff = as_of  # None means "current state"; a date means "rebuild at that date".
-    as_of = as_of or timezone.now().date()
+    as_of = as_of or tenant_today(entity.tenant)
     report = AgingReport(entity_id=entity.id, as_of=as_of)
     rows: dict[int, AgingRow] = {}
 
@@ -934,7 +935,7 @@ def customer_statement(customer, *, start_date=None, end_date=None) -> CustomerS
     from .models import Invoice
 
     entity = customer.entity
-    end_date = end_date or timezone.now().date()
+    end_date = end_date or tenant_today(entity.tenant)
     movements = customer_account_movements(customer)
 
     statement = CustomerStatement(
@@ -1630,7 +1631,7 @@ def balance_sheet(entity, *, as_of=None, scope=None) -> BalanceSheet:
     from .branch_ledger import ledger_balances
     from .constants import AccountType
 
-    as_of = as_of or timezone.now().date()
+    as_of = as_of or tenant_today(entity.tenant)
 
     qs = (
         ledger_balances(entity, scope)
@@ -1985,7 +1986,7 @@ def statement_of_changes_in_equity(entity, *, period=None, scope=None) -> Statem
         window_qs = base.filter(period=period)
         as_of = period.end_date
     else:
-        as_of = timezone.now().date()
+        as_of = tenant_today(entity.tenant)
         prior_qs = base.none()
         # Keep the movement window on the same point-in-time basis as the
         # reconciliation target below.  Entities may have open future periods
@@ -2234,7 +2235,7 @@ def statutory_pack(entity, *, as_of=None, period=None) -> StatutoryPack:
     """
     from .constants import IFRSLine
 
-    as_of = as_of or timezone.now().date()
+    as_of = as_of or tenant_today(entity.tenant)
     line_map = _ifrs_line_map(entity)
 
     # --- Statement of Financial Position (regroup the balance sheet) ---------- #
@@ -2331,7 +2332,7 @@ def balance_sheet_sections(entity, *, as_of=None, scope=None) -> BalanceSheetSec
     unclosed net income as a distinct *Current year earnings* equity line.
     ``scope`` narrows it as :func:`balance_sheet` does.
     """
-    as_of = as_of or timezone.now().date()
+    as_of = as_of or tenant_today(entity.tenant)
     bs = balance_sheet(entity, as_of=as_of, scope=scope)
     line_map = _ifrs_line_map(entity)
 

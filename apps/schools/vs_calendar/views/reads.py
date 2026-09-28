@@ -35,6 +35,7 @@ from django.db.models import Count, Q
 from rest_framework.views import APIView
 
 from core.response import success_response
+from vs_config.clock import tenant_today
 
 from ..constants import (
     ALERT_CLASS_HAS_NO_TIMETABLE,
@@ -60,14 +61,15 @@ from ..services.scoping import (
 from .base import CalendarViewMixin
 
 
-def _on_date(request):
+def _on_date(request, tenant):
+    """``?on=`` when it is a date, else the school's own today."""
     raw = (request.query_params.get("on") or "").strip()
     if raw:
         try:
             return date.fromisoformat(raw)
         except ValueError:
             pass
-    return date.today()
+    return tenant_today(tenant)
 
 
 def _term_payload(term):
@@ -92,7 +94,7 @@ class CurrentView(CalendarViewMixin, APIView):
             # 200 with nothing, not 404: a school that has not started its year
             # is not a school with a broken calendar.
             return success_response(data={})
-        today = _on_date(request)
+        today = _on_date(request, self.tenant)
         terms = list(session.terms.all())
         term = term_of(session, today, terms=terms)
         return success_response(data={
@@ -121,7 +123,7 @@ class YearView(CalendarViewMixin, APIView):
         session = self.session
         if session is None:
             return success_response(data={})
-        today = _on_date(request)
+        today = _on_date(request, self.tenant)
         terms = list(session.terms.all())
 
         rows = []
@@ -164,7 +166,7 @@ class OverviewView(CalendarViewMixin, APIView):
         session = self.session
         if session is None:
             return success_response(data={})
-        today = _on_date(request)
+        today = _on_date(request, self.tenant)
         terms = list(session.terms.all())
         term = term_of(session, today, terms=terms)
 

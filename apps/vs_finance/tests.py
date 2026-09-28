@@ -4347,7 +4347,7 @@ class ChangesInEquityTests(_Phase4FixtureMixin, TestCase):
         ))
         today = django_timezone.make_aware(datetime.datetime(2026, 2, 15, 12))
 
-        with mock.patch("vs_finance.reports.timezone.now", return_value=today):
+        with mock.patch("vs_config.clock.timezone.now", return_value=today):
             soce = statement_of_changes_in_equity(entity)
             bs = balance_sheet(entity)
 

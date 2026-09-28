@@ -8,6 +8,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 
 from core.response import success_response
+from vs_config.clock import tenant_today
 
 from ..constants import DocumentStatus
 from ..money import format_naira
@@ -170,7 +171,7 @@ class PettyCashFundDetailView(_PettyCashFundActionBase):
         import datetime
 
         _, fund = self._fund(request, pk)
-        week_ago = datetime.date.today() - datetime.timedelta(days=7)
+        week_ago = tenant_today(fund.entity.tenant) - datetime.timedelta(days=7)
         spent_week = sum(
             v.total for v in PettyCashVoucher.objects.filter(
                 fund=fund, status=DocumentStatus.POSTED, voucher_date__gte=week_ago))

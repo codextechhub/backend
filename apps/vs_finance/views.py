@@ -20,6 +20,7 @@ from rest_framework.views import APIView
 
 from core.mixins import RetrieveModelMixin
 from core.response import success_response
+from vs_config.clock import tenant_today
 from vs_rbac.permissions import (
     HasAnyModuleAccess,
     HasRBACPermission,
@@ -431,7 +432,6 @@ class AccountDetailView(APIView):
         return acc
 
     def get(self, request, pk):
-        import datetime
         from django.db.models import Sum
         from .constants import DocumentStatus, NormalBalance, AccountType
         from .models import FiscalYear, JournalLine
@@ -451,7 +451,7 @@ class AccountDetailView(APIView):
             entry__status__in=[DocumentStatus.POSTED, DocumentStatus.REVERSED],
         ), "entry__")
         # Fiscal-year opening = net of everything posted before the current FY starts.
-        today = datetime.date.today()
+        today = tenant_today(entity.tenant)
         fy = (
             FiscalYear.objects.filter(
                 entity=entity, start_date__lte=today, end_date__gte=today,
@@ -748,7 +748,6 @@ class FiscalYearListView(EntityScopedListMixin, generics.ListAPIView):
     def post(self, request):
         """Start a fiscal year and provision all of its posting periods."""
         from django.db import transaction
-        from django.utils import timezone
 
         from .models import FiscalYear
         from .seed import seed_fiscal_year
@@ -767,7 +766,7 @@ class FiscalYearListView(EntityScopedListMixin, generics.ListAPIView):
                 raise ValidationError({name: f"Enter a value from {minimum} to {maximum}."})
             return value
 
-        year = integer("year", (latest.year + 1) if latest else timezone.localdate().year, 1900, 2200)
+        year = integer("year", (latest.year + 1) if latest else tenant_today(entity.tenant).year, 1900, 2200)
         start_month = integer(
             "start_month", latest.start_date.month if latest else 1, 1, 12,
         )
@@ -1056,7 +1055,7 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
         if (pay := params.get("payment_status")):
             qs = qs.filter(payment_status=pay)
         if (bucket := params.get("bucket")):
-            qs = _invoice_bucket(qs, bucket)
+            qs = _invoice_bucket(qs, bucket, tenant_today(entity.tenant))
         if (search := params.get("search")):
             qs = qs.filter(
                 Q(document_number__icontains=search)
@@ -1071,13 +1070,14 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
 
 
 # Support the invoice bucket workflow.
-def _invoice_bucket(qs, bucket):
-    """Filter invoices to a derived status bucket (the design's status tabs)."""
-    import datetime
+def _invoice_bucket(qs, bucket, today):
+    """Filter invoices to a derived status bucket (the design's status tabs).
+
+    ``today`` is the entity's own day, which decides what counts as overdue.
+    """
     from django.db.models import Q
     from .constants import DocumentStatus, InvoicePaymentStatus
 
-    today = datetime.date.today()
     not_overdue = Q(due_date__gte=today) | Q(due_date__isnull=True)
     posted = qs.filter(status=DocumentStatus.POSTED)
     if bucket == "draft":
@@ -1116,7 +1116,7 @@ class InvoiceSummaryView(APIView):
         from .models import Invoice, Payment
 
         entity = resolve_entity(request)
-        today = datetime.date.today()
+        today = tenant_today(entity.tenant)
         base = Invoice.objects.filter(
             branch_q(request, include_shared=True), entity=entity,
         )
@@ -1141,7 +1141,7 @@ class InvoiceSummaryView(APIView):
         rate = round(collected * 100 / invoiced, 1) if invoiced else 0.0
 
         by_status = {
-            b: _invoice_bucket(base, b).count()
+            b: _invoice_bucket(base, b, today).count()
             for b in ("draft", "issued", "partial", "paid", "overdue")
         }
         total_count = base.count()

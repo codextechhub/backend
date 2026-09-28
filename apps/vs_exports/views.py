@@ -26,6 +26,7 @@ from rest_framework.views import APIView
 from core.client_ip import get_client_ip
 from core.pagination import XVSPagination
 from core.response import success_response
+from vs_config.clock import tenant_today
 from vs_finance.views import resolve_entity
 from vs_notifications.services.acknowledge import acknowledge_record
 from vs_notifications.services.routing import RecordFamily
@@ -579,7 +580,9 @@ class FromScreenView(_ExportBase):
             request.user, self.tenant,
         )["can_export_sensitive"]
         screen_readable = readable_fields(request.user, self.tenant)
-        resolved = resolve_screen(binding, request.query_params.dict())
+        resolved = resolve_screen(
+            binding, request.query_params.dict(), today=tenant_today(self.tenant),
+        )
         config = {
             "dataset_key": dataset.key,
             "columns": list(dataset.default_columns or dataset.locked_field_ids),

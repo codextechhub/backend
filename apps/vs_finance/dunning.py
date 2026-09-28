@@ -19,6 +19,8 @@ import logging
 from django.db import transaction
 from django.utils import timezone
 
+from vs_config.clock import tenant_today
+
 from .audit import record
 from .constants import (
     DocumentStatus,
@@ -120,7 +122,7 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
     from collections import defaultdict
     from .models import DunningNotice
 
-    as_of = as_of or timezone.now().date()
+    as_of = as_of or tenant_today(entity.tenant)
     policy = _resolve_policy(entity, policy)  # Choose the policy for this run.
     stages = list(policy.stages.order_by("min_days_overdue", "level"))
     if not stages:  # A policy with no ladder cannot generate notices.
@@ -134,7 +136,7 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
     # exactly the live figures.
     from .reports import _ar_snapshot
 
-    today = timezone.now().date()
+    today = tenant_today(entity.tenant)
     cutoff = None if as_of >= today else as_of  # Only rebuild when looking backwards.
     snapshot_invoices, _dns, settled_by_invoice, _sn, _credit = _ar_snapshot(
         entity, as_of=cutoff, customer=customer, scope=scope,
@@ -228,7 +230,7 @@ def remind_invoice(invoice, *, actor_user=None, send=True, message=""):
     if not stages:  # A policy with no ladder cannot generate a reminder.
         raise PostingError(f"Dunning policy '{policy.name}' has no stages defined.")
 
-    as_of = timezone.now().date()
+    as_of = tenant_today(invoice.entity.tenant)
     due = invoice.due_date or invoice.invoice_date  # Fall back to invoice date when no due date exists.
     days_overdue = max((as_of - due).days, 0)  # Do not report negative overdue days.
     stage = _stage_for(stages, days_overdue) or stages[0]  # Use qualifying stage or gentlest stage.
@@ -269,7 +271,7 @@ def _resolve_settled(entity, *, actor_user=None, as_of=None):
     from .models import DunningNotice
     from .reports import _ar_snapshot
 
-    today = timezone.now().date()
+    today = tenant_today(entity.tenant)
     as_of = as_of or today
     open_notices = list(DunningNotice.objects.filter(
         entity=entity,  # Scope by entity.
