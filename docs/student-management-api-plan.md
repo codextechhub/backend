@@ -678,3 +678,189 @@ nothing and audits nothing.
   school has chosen that", a required guardian email is named among what is
   refused, the school's own relationships are recognised, and the students
   template names the per-row minimum warning.
+
+## 13. Applicant settings
+
+A school sets its own applicant rules in the Settings console, beside the
+student and guardian settings: the **admission stages** its applications pass
+through, in its own order, and the **documents** an applicant must hold before
+being confirmed. A school that names no stages and requires no documents
+admits exactly as every school always has.
+
+A stage is where an APPLICANT stands and nothing more. The statuses APPLICANT,
+ENROLLED and REJECTED and every transition between them are unchanged, and the
+stage does not gate confirmation. One or more stages may be **offer** stages,
+each with a number of days the family has to accept. When that window passes
+the applicant is flagged `offer_expired` for a person to decide (extend the
+offer, move them on, or reject them): nothing is rejected automatically, there
+is no scheduled job, and "expired" is worked out on every read against the
+school's own today (`vs_config.clock.tenant_today`).
+
+### 13.1 Storage
+
+- `AdmissionStage` (tenant-owned like the module's other rows): `name` (up to
+  40 characters, unique per school ignoring case), `position` (from 1, the
+  school's order), `is_offer`, `offer_valid_days` (1 to 365, only on an offer
+  stage; an offer stage may leave it empty, and its offers then have no last
+  day unless a move names one).
+- `Student` gains `admission_stage` (nullable, SET_NULL), `stage_entered_on`
+  and `offer_expires_on`. Entering an offer stage sets `offer_expires_on` to
+  today plus the stage's days, unless the move names its own date; entering
+  any other stage, or none, clears it. Confirming or rejecting leaves all three
+  as the record of where the application ended.
+- The documents are the school-scoped `vs_config` key
+  `applicants.documents.required_to_confirm` (JSON list, default `[]`,
+  platform and school scopes), declared by `vs_students` migration 0008 and by
+  `seed_config_catalogue`. A value stored by hand is cleaned on read: an
+  unknown document is dropped.
+
+Migration 0008 is reversible: going back removes the definition and its
+values, the three columns and every stage.
+
+### 13.2 Applicant rules: `GET, PUT /v1/students/admission-rules/`
+
+GET needs `school.students.view` (the Applicants board renders its columns
+from it); PUT needs `school.settings.update`. The school is `request.tenant`.
+
+```json
+{
+  "stages": [
+    {"id": 3, "name": "Entrance exam", "position": 1, "is_offer": false, "offer_valid_days": null, "applicants": 4},
+    {"id": 4, "name": "Offer", "position": 2, "is_offer": true, "offer_valid_days": 14, "applicants": 2}
+  ],
+  "required_documents_to_confirm": ["BIRTH_CERTIFICATE"],
+  "document_types": [
+    {"value": "BIRTH_CERTIFICATE", "label": "Birth certificate"},
+    {"value": "REPORT_CARD", "label": "Previous report card"},
+    {"value": "PASSPORT_PHOTO", "label": "Passport photograph"},
+    {"value": "TRANSFER_CERTIFICATE", "label": "Transfer certificate"},
+    {"value": "IMMUNISATION", "label": "Immunisation record"}
+  ]
+}
+```
+
+`applicants` counts the current APPLICANTs at each stage that the caller can
+see: narrowed to their branches, and to `?branch=` at a school with more than
+one. `document_types` is the same list the enrolment rules carry.
+
+PUT takes the whole set every time and answers with the GET body:
+
+```json
+{
+  "stages": [
+    {"id": 3, "name": "Entrance exam", "is_offer": false, "offer_valid_days": null},
+    {"name": "Interview", "is_offer": false},
+    {"id": 4, "name": "Offer", "is_offer": true, "offer_valid_days": 14}
+  ],
+  "required_documents_to_confirm": ["BIRTH_CERTIFICATE"],
+  "reason": "optional, for the audit trail"
+}
+```
+
+The list order is the position. An item with an `id` updates that stage, one
+without creates a stage, and a stage left out is removed (confirmed and
+rejected records that passed through it are left with no stage). Names are
+trimmed. Two stages may swap names in one save. Every stage change is audited
+against `AdmissionStage` (CREATE, UPDATE with a diff, DELETE), the documents as
+`config.value.updated`; saving the screen unchanged writes and audits nothing.
+
+Refusals are 400 `REQUEST_ERROR`, keyed on the field, one sentence each, and
+write nothing:
+
+```json
+{"success": false,
+ "message": "3 applicants are at Interview. Move them to another stage before removing it.",
+ "error": {"code": "REQUEST_ERROR",
+           "detail": {"stages": ["3 applicants are at Interview. Move them to another stage before removing it."]}}}
+```
+
+| Refusal | Field | Sentence |
+|---|---|---|
+| a name listed twice, ignoring case | `stages` | `'interview' is listed twice.` |
+| an empty name | `stages` | `Stage 2 needs a name.` |
+| a name over 40 characters | `stages` | `'...' is longer than 40 characters.` |
+| more than 12 stages | `stages` | `A school can name up to 12 admission stages.` |
+| offer days outside 1 to 365 | `stages` | `An offer at 'Offer' can stay open for 1 to 365 days.` |
+| offer days on a stage that is not an offer | `stages` | `'Interview' is not an offer stage, so it has no number of days to accept.` |
+| removing a stage that holds applicants | `stages` | `3 applicants are at Interview. Move them to another stage before removing it.` (`1 applicant is at ...` for one) |
+| an id that is not one of this school's stages | `stages` | `Stage 17 is not one of this school's admission stages.` |
+| an id listed twice | `stages` | `Stage 3 is listed twice.` |
+| an unknown document type | `required_documents_to_confirm` | `'PASSPORT' is not a document this school can ask for.` |
+
+The applicants counted for a removal are the whole school's, whatever the
+caller's branches, because a removal is school-wide.
+
+### 13.3 Moving an applicant: `POST /v1/students/<id>/stage/`
+
+Needs `school.students.update`, the key `/confirm/` and `/reject/` use.
+
+```json
+{"stage": 4, "offer_expires_on": "2026-04-30", "reason": "Passed the interview."}
+```
+
+`stage` is required and may be `null` (no stage); `offer_expires_on` and
+`reason` are optional. Entering a different stage dates `stage_entered_on`
+today. Moving an applicant to the stage they are already at keeps
+`stage_entered_on` and resets the offer, which is how an expired offer is
+extended. A move that changes nothing writes nothing. The answer is the
+student's directory row (section 13.4). The move is audited on the student as
+UPDATE, with `metadata` `{"from": {"id", "name"} | null, "to": {"id", "name"} |
+null, "offer_expires_on", "reason"}`.
+
+Refusals:
+
+- A stage that is not this school's: 404 `{"success": false, "message": "No
+  such admission stage at this school.", "error": {"code": "REQUEST_ERROR",
+  "detail": {"detail": "No such admission stage at this school."}}}`. A student
+  the caller cannot see is the module's usual 404.
+- A student who is not an applicant: 422
+  `{"success": false, "message": "Chiamaka Nwosu is active, so there is no
+  admission stage to move. Stages apply to applicants only.", "error":
+  {"code": "NOT_AN_APPLICANT", "detail": {"status": "ACTIVE"}}}`.
+- 400 on `offer_expires_on`: "The last day to accept cannot be in the past."
+  and "Only an offer stage has a last day to accept." (a date named with a
+  non-offer stage or with no stage).
+- 400 on `stage` when it is missing: "Say which stage to move the applicant
+  to, or null for none."
+
+### 13.4 Applicant rows
+
+Every student list row and profile (the directory, `/unplaced/`, a class
+roster, a guardian's students, the stage move's answer, and the profile, live
+and `?as_at`) carries:
+
+```json
+{"admission_stage": 4, "admission_stage_name": "Offer",
+ "stage_entered_on": "2026-03-10", "offer_expires_on": "2026-03-24",
+ "offer_expired": false}
+```
+
+`admission_stage_name` is `""` with no stage. `offer_expired` is true when
+`offer_expires_on` is before the school's today and the student is still an
+APPLICANT; a profile read `?as_at` judges it on that day instead. The list
+reads the stage with `select_related`, so a page costs the same number of
+queries however many applicants have stages.
+
+The directory takes `?stage=<id>` (applicants at that stage) and
+`?stage=none` (applicants at no stage). Either narrows to APPLICANTs, so a
+confirmed child still carrying the stage they were confirmed from is not
+listed. An id that is not one of this school's stages, or is not a number, is
+a 400: `{"stage": ["No such admission stage at this school."]}`.
+
+### 13.5 Confirming
+
+Every route that confirms an applicant (`/confirm/`, and APPLICANT to ENROLLED
+on `/status/` and `/bulk/status/`, which hand the move to `confirm_applicant`)
+refuses while any of `required_documents_to_confirm` is not on the student's
+record, before anything else is written (no admission number is issued):
+
+```json
+{"success": false,
+ "message": "Tunde Bello cannot be confirmed until the birth certificate and transfer certificate are on their record.",
+ "error": {"code": "DOCUMENTS_MISSING",
+           "detail": {"missing": [{"value": "BIRTH_CERTIFICATE", "label": "Birth certificate"},
+                                  {"value": "TRANSFER_CERTIFICATE", "label": "Transfer certificate"}]}}}
+```
+
+HTTP 422. Enrolling a child directly, without saving them as an applicant
+first, is not held to this list, and neither is the student import.

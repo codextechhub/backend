@@ -1156,6 +1156,30 @@ reads; M10 that both imports follow the guardian rules (a per-row warning for
 the minimum, the email refusal, matching mode, the school's relationships) and
 that vs_import_data 0022 rewords both templates' guidance.
 
+### D55. A school names its own admission stages (7ac744dc, 1ebd196e, 2026-09-28)
+MODULES: M11 student management.
+New GET/PUT /v1/students/admission-rules/ (read school.students.view, write
+school.settings.update): up to 12 admission stages a school names in its own
+order (new AdmissionStage model), any of them an offer stage with 1 to 365
+days to accept, plus the documents an applicant must hold before confirmation
+(applicants.documents.required_to_confirm, default none). Stages are a
+sub-state of APPLICANT; the statuses and transitions are unchanged. Student
+gains admission_stage, stage_entered_on and offer_expires_on; POST
+/v1/students/<id>/stage/ (school.students.update) moves an applicant, dating
+an offer from the school's today. An offer past its last day is flagged
+offer_expired on read for a person to decide; nothing rejects it. Every
+student row and profile carries the stage fields; the directory filters
+?stage=<id> and ?stage=none. Confirming refuses 422 DOCUMENTS_MISSING on
+/confirm/, /status/ and /bulk/status/, which now all confirm through
+confirm_applicant (7ac744dc: the status routes had skipped the admission
+number rule). Direct enrolment and the import are not held to the documents.
+MUST SAY: the settings contract and its refusals, the stage move and its
+refusals (NOT_AN_APPLICANT, 404, past date), the offer rule and that expiry
+is a flag and never an automatic rejection, the new Student fields and
+filter, DOCUMENTS_MISSING and the routes it covers, and that a school with no
+stages admits exactly as before. Contract detail: docs/student-management-api-plan.md
+section 13.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
