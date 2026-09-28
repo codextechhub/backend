@@ -8,9 +8,10 @@ Africa/Lagos, the platform default.
 
 The view shares :class:`~.settings.SchoolSettingsView` with the security and
 payroll screens, so the same rules hold: ``school.settings.view`` reads,
-``school.settings.update`` writes, the tenant is always ``request.tenant``, a
-caller that is not a school gets a 404, and a school that has not gone live is
-refused with TENANT_NOT_LIVE. The module docstring of ``settings`` explains
+``school.settings.update`` writes, a write needs a caller whose reach is the
+whole school, the tenant is always ``request.tenant``, a caller that is not a
+school gets a 404, and a school that has not gone live is refused with
+TENANT_NOT_LIVE. The module docstring of ``settings`` explains
 each.
 """
 from __future__ import annotations
@@ -28,6 +29,7 @@ from vs_config.clock import (
 from vs_config.exceptions import ConfigurationError
 from vs_config.models import ConfigurationDefinition
 from vs_config.services.resolution import resolve_value, set_value
+from vs_rbac.scoping import assert_caller_may_configure
 
 from .settings import SchoolSettingsView
 
@@ -77,7 +79,8 @@ class SchoolDisplaySettingsView(SchoolSettingsView):
     """GET/PATCH /v1/i/me/settings/display/ - the school's time zone.
 
     A school-level setting only: ``display.timezone`` allows no branch value,
-    so ``?branch=`` is not read. The body::
+    so ``?branch=`` is not read, and a PATCH needs a caller whose reach is the
+    whole school. The body::
 
         {"timezone": "Africa/Lagos",
          "source": "school" | "platform" | "default",
@@ -129,6 +132,10 @@ class SchoolDisplaySettingsView(SchoolSettingsView):
 
     def patch(self, request):
         tenant = self.school_tenant(request)
+        assert_caller_may_configure(
+            request.user, tenant,
+            message="Only a school-wide administrator can change the school's time zone.",
+        )
         definition = self._definition()
         serializer = DisplaySettingsUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

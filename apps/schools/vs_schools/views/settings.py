@@ -22,6 +22,14 @@ mean writing the platform baseline every school inherits. The check that the
 tenant has a school profile is what stops that; the ``allow_platform=False``
 passed to the scope resolver is the second line.
 
+**School-wide values need a school-wide caller.** Every value here except a
+branch's security layer binds every branch, so writing it needs a caller whose
+reach is the whole school as well as the key: a branch administrator whose role
+carries ``school.settings.update`` reads these screens and is refused a save
+with a 403 (SHARED_RECORD_READ_ONLY), through
+:func:`vs_rbac.scoping.assert_caller_may_configure`. A branch's own security
+layer needs only that branch in the caller's reach.
+
 **Live schools only.** No view here declares ``pending_tenant_surface``, so a
 school that has not gone live is refused with TENANT_NOT_LIVE, the same as its
 notification settings. None of these settings is part of onboarding.
@@ -55,6 +63,7 @@ from vs_finance.payroll import (
     PAYROLL_SCOPE_PER_BRANCH,
 )
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_rbac.scoping import assert_caller_may_configure
 
 from ..models import School
 from ..serializers import (
@@ -89,6 +98,7 @@ class SchoolSettingsView(APIView):
 
     ``school.settings.view`` reads and ``school.settings.update`` writes, so a
     branch admin (who holds only the first) may look without changing anything.
+    A write also needs the reach the value covers; see the module docstring.
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
@@ -124,6 +134,10 @@ class SchoolSecuritySettingsView(SchoolSettingsView):
     ``null`` for a field removes this layer's value, so the field falls back to
     its parent: the school to the platform, a branch to the school.
 
+    The school layer is written only by a caller whose reach is the whole
+    school; a branch-bound caller is refused with a 403 and may write the layer
+    of a branch they cover instead.
+
     docstring-name: My school security settings
     """
 
@@ -140,6 +154,13 @@ class SchoolSecuritySettingsView(SchoolSettingsView):
 
     def patch(self, request):
         tenant, branch = self._scope(request)
+        assert_caller_may_configure(
+            request.user, tenant, branch,
+            message=(
+                "Only a school-wide administrator can change the school's "
+                "security settings. Choose one of your branches to set its own."
+            ),
+        )
         serializer = SecuritySettingsUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         reason = (
@@ -162,7 +183,8 @@ class SchoolPayrollScopeView(SchoolSettingsView):
     """GET/PATCH /v1/i/me/settings/payroll-scope/ - central or per-branch payroll.
 
     A school-level setting only: ``payroll.scope`` allows no branch value, so
-    ``?branch=`` is not read.
+    ``?branch=`` is not read, and a PATCH needs a caller whose reach is the
+    whole school.
 
     ``source`` says which layer the answer came from: ``school`` when this
     school has chosen, ``platform`` for a platform value, ``default`` when
@@ -215,6 +237,10 @@ class SchoolPayrollScopeView(SchoolSettingsView):
 
     def patch(self, request):
         tenant = self.school_tenant(request)
+        assert_caller_may_configure(
+            request.user, tenant,
+            message="Only a school-wide administrator can change how the school runs payroll.",
+        )
         definition = self._definition()
         serializer = PayrollScopeUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -248,7 +274,8 @@ class SchoolStaffProfileVisibilityView(SchoolSettingsView):
     Read under ``school.settings.view``. Written under
     ``school.field_access.update`` rather than ``school.settings.update``,
     because saving it decides who reads staff members' details, which is the
-    decision that key already guards for single fields.
+    decision that key already guards for single fields. The policy binds
+    every branch, so a PUT also needs a caller whose reach is the whole school.
 
     The response carries the vocabulary the screen draws from, so a section
     added on the server appears on the screen without a release there::
@@ -297,6 +324,10 @@ class SchoolStaffProfileVisibilityView(SchoolSettingsView):
         from schools.vs_staff.services.visibility import write_policy
 
         tenant = self.school_tenant(request)
+        assert_caller_may_configure(
+            request.user, tenant,
+            message="Only a school-wide administrator can change who reads staff profiles.",
+        )
         serializer = StaffProfileVisibilityUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:

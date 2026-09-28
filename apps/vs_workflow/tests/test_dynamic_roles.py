@@ -928,3 +928,33 @@ class WorkflowNotificationSettingTests(_Fixture):
         from vs_workflow.services.notification_settings import notifications_enabled
         self.assertFalse(notifications_enabled(self.tenant))
         self.assertTrue(notifications_enabled(self.other_tenant))
+
+    def _branch_manager(self):
+        """Somebody who manages templates for one branch of a two-branch school."""
+        lekki = make_branch(self.school, name="Lekki Branch", is_main=False)
+        manager = make_school_admin(lekki, email=f"dr-lekki-{next(_counter)}@test.com")
+        role = make_role(self.tenant, name=f"dr-lekki-{next(_counter)}")
+        for key in (PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_VIEW):
+            make_role_permission(role, make_permission(key))
+        make_assignment(self.tenant, manager, role, branch=lekki)
+        return manager
+
+    def test_a_branch_bound_manager_cannot_switch_them_off_for_every_branch(self):
+        """The switch covers the whole school, so holding the key for Lekki is not enough."""
+        manager = self._branch_manager()
+        resp = _call(NOTIF_SETTING, "patch", manager, self.tenant,
+                     {"enabled": False}, path=self.SETTING)
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.data)
+        self.assertEqual(resp.data["error"]["code"], "SHARED_RECORD_READ_ONLY")
+        self.assertEqual(
+            resp.data["message"],
+            "Only a school-wide administrator can change whether approvals send "
+            "notifications.",
+        )
+        from vs_workflow.services.notification_settings import notifications_enabled
+        self.assertTrue(notifications_enabled(self.tenant))
+
+    def test_a_branch_bound_manager_still_reads_them(self):
+        resp = _call(NOTIF_SETTING, "get", self._branch_manager(), self.tenant,
+                     path=self.SETTING)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)

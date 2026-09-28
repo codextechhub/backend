@@ -20,6 +20,7 @@ from vs_audit.services import AuditDiffService, emit_audit_event
 from ..models import School, SchoolStatus
 from vs_tenants.models import Branch
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+from vs_rbac.scoping import assert_caller_may_configure
 from ..serializers import (
     SchoolCreateSerializer,
     SchoolDetailSerializer,
@@ -362,6 +363,11 @@ class SchoolProfileView(ActorContextMixin, generics.GenericAPIView):
     particular is the host every one of the school's users signs in at, and
     moving it stays a platform decision made through the platform endpoint.
 
+    **A write needs the whole school in reach.** The profile is the school's
+    identity for every branch, so a PATCH needs ``school.profile.update`` and a
+    caller whose reach is the whole school; a branch-bound caller holding the
+    key is refused with a 403 (SHARED_RECORD_READ_ONLY) and nothing is written.
+
     docstring-name: My school profile
     """
 
@@ -434,6 +440,10 @@ class SchoolProfileView(ActorContextMixin, generics.GenericAPIView):
         body, and those are the three fields this endpoint refuses to accept.
         """
         school = self.get_object()
+        assert_caller_may_configure(
+            request.user, school.tenant,
+            message="Only a school-wide administrator can change the school's profile.",
+        )
         serializer = SchoolProfileUpdateSerializer(
             school,
             data=request.data,
@@ -461,8 +471,9 @@ class SchoolLogoView(SchoolProfileView):
     Inherits ``SchoolProfileView`` for the parts that must not differ - the
     pending-tenant surface, the per-method permission keys, and the resolution
     of "which school" from ``request.tenant`` alone. Both verbs are writes, so
-    both take ``school.profile.update``: a branch admin who may read the profile
-    cannot replace the school's logo.
+    both take ``school.profile.update``, and both need a caller whose reach is
+    the whole school: a branch admin who may read the profile cannot replace or
+    remove the school's logo, whatever their role carries.
 
     docstring-name: Set or clear my school's logo
     """
@@ -475,6 +486,12 @@ class SchoolLogoView(SchoolProfileView):
         # Without this, DELETE would be checked against the view key and a
         # branch admin could clear the logo.
         return "school.profile.update"
+
+    def _assert_school_wide(self, school):
+        assert_caller_may_configure(
+            self.request.user, school.tenant,
+            message="Only a school-wide administrator can change the school's logo.",
+        )
 
     def _branding(self, school):
         from ..models import SchoolBranding
@@ -511,6 +528,7 @@ class SchoolLogoView(SchoolProfileView):
         depth, but raises where the caller would receive a 500.
         """
         school = self.get_object()
+        self._assert_school_wide(school)
         upload = request.FILES.get("logo")
         validate_upload(
             upload,
@@ -546,6 +564,7 @@ class SchoolLogoView(SchoolProfileView):
         404. There is nothing for the caller to do differently either way.
         """
         school = self.get_object()
+        self._assert_school_wide(school)
         branding = self._branding(school)
         before = branding.logo.name if branding.logo else ""
 

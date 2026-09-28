@@ -160,3 +160,53 @@ class FeeDuePolicyEndpointTests(FALFixture):
             f"{self.url}?tenant={self.corona.tenant.slug}",
         )
         self.assertIn(response.status_code, (403, 404))
+
+
+class FeeDuePolicyReachTests(FALFixture):
+    """The rule dates every branch's bills, so only a school-wide caller sets it.
+
+    Corona runs Ikeja and Lekki. The Lekki bursar holds ``school.fees.update``
+    pinned to Lekki, which lets her work Lekki's fees; moving every branch's due
+    date is not hers to do.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.url = f"{reverse('fal-fee-due-policy')}?tenant={self.corona.tenant.slug}"
+
+    def _client(self, user, *, branch=None):
+        for key in ("school.fees.view", "school.fees.update"):
+            self.grant(user, key, branch=branch)
+        client = APIClient()
+        client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {CodeXRefreshToken.for_user(user).access_token}",
+        )
+        return client
+
+    def test_a_branch_bound_bursar_holding_the_key_is_refused_and_nothing_moves(self):
+        from ..models import SchoolFeeDuePolicy
+
+        response = self._client(self.lekki_bursar, branch=self.lekki).patch(
+            self.url, {"basis": "MONTH_END"}, format="json",
+        )
+        self.assertEqual(response.status_code, 403, response.content)
+        self.assertEqual(response.data["error"]["code"], "SHARED_RECORD_READ_ONLY")
+        self.assertEqual(
+            response.data["message"],
+            "Only a school-wide administrator can change when the school's fee "
+            "bills fall due.",
+        )
+        self.assertFalse(
+            SchoolFeeDuePolicy.objects.filter(tenant=self.corona.tenant).exists()
+        )
+
+    def test_a_branch_bound_bursar_still_reads_it(self):
+        response = self._client(self.lekki_bursar, branch=self.lekki).get(self.url)
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_a_school_wide_bursar_changes_it(self):
+        response = self._client(self.bursar).patch(
+            self.url, {"basis": "MONTH_END"}, format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.data["data"]["basis"], "MONTH_END")

@@ -730,7 +730,9 @@ class WorkflowNotificationSettingView(APIView):
     One switch for the whole school: whether its approvals notify anybody.
     Reading needs only template view, because the Workflow area shows the
     current answer; changing it needs template update, the same key that
-    decides who approves what.
+    decides who approves what, and a caller whose reach is the whole tenant,
+    because the switch covers every branch. A branch-bound caller holding the
+    key is refused with a 403 (SHARED_RECORD_READ_ONLY) and nothing is written.
 
     docstring-name: Workflow notifications
     """
@@ -749,8 +751,16 @@ class WorkflowNotificationSettingView(APIView):
         return Response({"enabled": notifications_enabled(request.tenant)})
 
     def patch(self, request):
+        from vs_rbac.scoping import assert_caller_may_configure
         from vs_workflow.services.notification_settings import set_notifications_enabled
 
+        assert_caller_may_configure(
+            request.user, request.tenant,
+            message=(
+                "Only a school-wide administrator can change whether approvals "
+                "send notifications."
+            ),
+        )
         enabled = request.data.get("enabled")
         if not isinstance(enabled, bool):
             return Response(

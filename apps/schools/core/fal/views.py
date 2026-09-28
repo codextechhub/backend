@@ -32,7 +32,7 @@ from rest_framework.views import APIView
 from core.response import error_response, success_response
 from vs_finance.models import FeeStructure
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
-from vs_rbac.scoping import branch_q
+from vs_rbac.scoping import assert_caller_may_configure, branch_q
 
 from .exceptions import (
     CrossTenantError,
@@ -286,6 +286,11 @@ class FeeDuePolicyView(APIView):
     billed" is an abstraction until it says 15 November, and a bursar choosing
     between four rules should not have to raise an invoice to find out what each
     one means.
+
+    Reading needs ``school.fees.view``. Changing needs ``school.fees.update``
+    and a caller whose reach is the whole school, because the rule dates every
+    branch's bills: a branch-bound bursar holding the key is refused with a 403
+    (SHARED_RECORD_READ_ONLY) and nothing is written.
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
@@ -349,6 +354,13 @@ class FeeDuePolicyView(APIView):
 
     @transaction.atomic
     def patch(self, request):
+        assert_caller_may_configure(
+            request.user, request.tenant,
+            message=(
+                "Only a school-wide administrator can change when the school's "
+                "fee bills fall due."
+            ),
+        )
         row = self._row(request)
         body = request.data or {}
 

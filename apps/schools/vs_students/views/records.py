@@ -414,6 +414,13 @@ class AdmissionPolicyView(StudentsViewMixin, APIView):
     is 404, whatever the reason: a distinct answer for another school's branch
     would confirm it exists.
 
+    Who may write follows the rule's reach. The school's rule binds every
+    branch, so a PUT with no branch needs a caller whose reach is the whole
+    school, and a branch-bound caller is refused with a 403
+    (SHARED_RECORD_READ_ONLY) even though their role carries ``update``. A
+    branch's own rule, set or removed, needs only that branch in the caller's
+    reach, which the 404 above already guarantees.
+
     docstring-name: Admission number policy
     """
 
@@ -462,7 +469,17 @@ class AdmissionPolicyView(StudentsViewMixin, APIView):
     def put(self, request):
         from ..services.policy import write_policy
 
+        from vs_rbac.scoping import assert_caller_may_configure
+
         branch = self._branch()
+        assert_caller_may_configure(
+            request.user, self.tenant, branch,
+            message=(
+                "Only a school-wide administrator can change the school's "
+                "admission number rule. Choose one of your branches to set "
+                "its own."
+            ),
+        )
         writer = AdmissionPolicySerializer(data=request.data)
         writer.is_valid(raise_exception=True)
         data = writer.validated_data
@@ -501,7 +518,9 @@ class EnrolmentRulesView(StudentsViewMixin, APIView):
     size a new class is given. Reading needs ``school.students.view``, because
     the enrolment form renders from it; changing needs
     ``school.settings.update``, because these are the school's settings rather
-    than a student record.
+    than a student record, and a caller whose reach is the whole school,
+    because the rules bind every branch. A branch-bound caller holding the key
+    is refused with a 403 (SHARED_RECORD_READ_ONLY) and nothing is written.
 
     The school is ``request.tenant`` and there is nothing in the request that
     names another. PUT takes every rule every time, plus an optional
@@ -524,8 +543,14 @@ class EnrolmentRulesView(StudentsViewMixin, APIView):
         return success_response(data=read_rules(self.tenant).as_dict())
 
     def put(self, request):
+        from vs_rbac.scoping import assert_caller_may_configure
+
         from ..services.rules import write_rules
 
+        assert_caller_may_configure(
+            request.user, self.tenant,
+            message="Only a school-wide administrator can change the school's enrolment rules.",
+        )
         writer = EnrolmentRulesSerializer(data=request.data)
         writer.is_valid(raise_exception=True)
         data = dict(writer.validated_data)
@@ -542,7 +567,10 @@ class AdmissionRulesView(StudentsViewMixin, APIView):
     order, and the documents an applicant must hold before being confirmed.
     Reading needs ``school.students.view``, because the Applicants board
     renders its columns from it; changing needs ``school.settings.update``,
-    because these are the school's settings rather than a student record.
+    because these are the school's settings rather than a student record, and
+    a caller whose reach is the whole school, because the stages and documents
+    bind every branch. A branch-bound caller holding the key is refused with a
+    403 (SHARED_RECORD_READ_ONLY) and nothing is written.
 
     Each stage carries ``applicants``, the applicants at it that the caller
     can see: narrowed to their branches, and to ``?branch=`` where the school
@@ -580,8 +608,14 @@ class AdmissionRulesView(StudentsViewMixin, APIView):
 
     def put(self, request):
         from ..serializers import AdmissionRulesSerializer
+        from vs_rbac.scoping import assert_caller_may_configure
+
         from ..services.admission import write_admission_rules
 
+        assert_caller_may_configure(
+            request.user, self.tenant,
+            message="Only a school-wide administrator can change the school's admission rules.",
+        )
         writer = AdmissionRulesSerializer(data=request.data)
         writer.is_valid(raise_exception=True)
         data = writer.validated_data

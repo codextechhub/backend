@@ -565,11 +565,38 @@ def caller_may_change(user, tenant, branch_ids, *, visible=_UNRESOLVED) -> bool:
 
 
 def assert_caller_may_change(user, tenant, branch_ids, *, message: str = "") -> None:
-    """Refuse a write to a row the caller may read but not change (403)."""
+    """Refuse a write to a row the caller may read but not change (403).
+
+    An empty *branch_ids* is a row shared across the tenant, which only a
+    whole-tenant caller may change.
+    """
     from .exceptions import SharedRecordReadOnly
 
     if not caller_may_change(user, tenant, branch_ids):
         raise SharedRecordReadOnly(message)
+
+
+def assert_caller_may_configure(user, tenant, branch=None, *, message: str = "") -> None:
+    """Refuse a settings write the caller's branch reach does not cover (403).
+
+    A setting is a row like any other, and :func:`caller_may_change` already
+    says who may change it; this is that rule spelled for settings, so every
+    settings screen asks it the same way. With no ``branch`` the setting is the
+    tenant's own, it binds every branch, and only a caller whose reach is the
+    whole tenant may change it: a branch administrator whose role carries the
+    settings key still only reads it, because raising a minimum for Ikeja
+    raises it for Lekki too. With a ``branch`` the setting is that branch's own
+    override, and a caller who covers that branch may set or remove it.
+
+    The permission key is a separate question, answered before this by
+    :class:`~vs_rbac.permissions.HasRBACPermission`. A view that accepts a
+    named branch still resolves it inside the tenant and refuses one the caller
+    cannot see with its usual 404 first, so this 403 is only ever the answer
+    for a scope the caller can read.
+    """
+    assert_caller_may_change(
+        user, tenant, () if branch is None else (branch,), message=message,
+    )
 
 
 # --------------------------------------------------------------------------- #

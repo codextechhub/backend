@@ -521,7 +521,10 @@ class GuardianRulesView(StudentsViewMixin, APIView):
     fixed eight. Reading needs ``school.students.view``, because the enrolment
     form and the guardian drawer render from it; changing needs
     ``school.settings.update``, because these are the school's settings
-    rather than a student record.
+    rather than a student record, and a caller whose reach is the whole
+    school, because the rules bind every branch. A branch-bound caller holding
+    the key is refused with a 403 (SHARED_RECORD_READ_ONLY) and nothing is
+    written.
 
     The school is ``request.tenant`` and nothing in the request names another.
     PUT takes every rule every time, plus an optional ``reason`` for the audit
@@ -544,8 +547,14 @@ class GuardianRulesView(StudentsViewMixin, APIView):
         return success_response(data=read_guardian_rules(self.tenant).as_dict())
 
     def put(self, request):
+        from vs_rbac.scoping import assert_caller_may_configure
+
         from ..services.guardian_rules import write_guardian_rules
 
+        assert_caller_may_configure(
+            request.user, self.tenant,
+            message="Only a school-wide administrator can change the school's guardian rules.",
+        )
         writer = GuardianRulesSerializer(data=request.data)
         writer.is_valid(raise_exception=True)
         data = dict(writer.validated_data)
