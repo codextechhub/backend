@@ -52,8 +52,9 @@ class ConfigurationResolutionTests(TestCase):
         self.tenant = self.school.tenant
         self.branch = make_branch(self.school)
         self.actor = make_vision_user(email="config-actor@example.com")
+        # A key of the tests' own: the real display.timezone is seeded and guarded.
         self.definition = ConfigurationDefinition.objects.create(
-            key="display.timezone",
+            key="example.display.zone",
             label="Timezone",
             description="Display timezone.",
             value_type=ConfigurationDefinition.ValueType.STRING,
@@ -129,11 +130,11 @@ class ConfigurationResolutionTests(TestCase):
     def test_get_config_public_api(self):
         from .conf import get_config
 
-        self.assertEqual(get_config("display.timezone"), "UTC")
+        self.assertEqual(get_config("example.display.zone"), "UTC")
         set_value(
             definition=self.definition, value="Africa/Lagos", actor=self.actor
         )
-        self.assertEqual(get_config("display.timezone"), "Africa/Lagos")
+        self.assertEqual(get_config("example.display.zone"), "Africa/Lagos")
         self.assertEqual(get_config("missing.key", default=7), 7)
 
     def test_secret_references_are_redacted_in_audit(self):

@@ -194,6 +194,14 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "Empty means no limit.",
         "INTEGER", None, {"min": 1, "max": 500},
     ),
+    (
+        "display.timezone", "Time Zone",
+        "The IANA time zone this school keeps its calendar in, such as "
+        "Africa/Lagos. It decides which day \"today\" is for due dates, "
+        "overdue checks, attendance and the calendar, and the local time shown "
+        "on documents. The platform value is the default for every school.",
+        "STRING", "Africa/Lagos", {},
+    ),
 ]
 
 #: School-scoped settings a BRANCH may also hold its own value of. Named here
