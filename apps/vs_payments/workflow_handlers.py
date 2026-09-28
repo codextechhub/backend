@@ -104,6 +104,33 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
             batch.save(update_fields=["metadata", "updated_at"])
 
     # --- engine entry points ------------------------------------------------ #
+    def hidden_document_ids(self, user, tenant):
+        """The batches with a line paying a vendor another branch keeps from ``user``.
+
+        A batch carries no branch, so the engine files its approval school-wide
+        and would show it to every approver on the ladder. Its reach is the one
+        the payout screens read it by (:class:`vs_payments.reach.PaymentsReach`):
+        a batch Lekki's vendor is paid from is absent from an Ikeja-only
+        approver's inbox, and approving or rejecting it answers 404.
+        """
+        from vs_finance.models import LedgerEntity
+        from vs_rbac.scoping import branch_scope_for_user
+
+        from .reach import PaymentsReach
+
+        if tenant is None:
+            return None
+        scope = branch_scope_for_user(user, include_shared=True, tenant=tenant)
+        if not scope.is_narrowed:
+            return None
+        hidden = set()
+        for entity in LedgerEntity.objects.filter(tenant=tenant):
+            hidden.update(
+                str(pk) for pk in
+                PaymentsReach(entity, scope).hidden_batches().values_list("pk", flat=True)
+            )
+        return hidden
+
     def resolve_default_template_code(self, document) -> str:
         return "standard"  # One template code per document type for now.
 
