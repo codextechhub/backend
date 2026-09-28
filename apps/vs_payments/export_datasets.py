@@ -1,7 +1,9 @@
 """Payments datasets published to the Export Centre.
 
 Registered from :meth:`vs_payments.apps.VsPaymentsConfig.ready`. Both are
-entity-scoped: a collection or a payout belongs to the set of books it settles into.
+entity-scoped, because a collection or a payout belongs to the set of books it
+settles into, and narrowed to the exporting caller's branches by the same rule as
+the screens they mirror (:mod:`vs_payments.reach`).
 
 Payer name and email are marked sensitive - they are supplied by a member of the
 public at checkout, and they are the fields most likely to leave the building by
@@ -26,18 +28,18 @@ from vs_exports.catalogue import (
 )
 
 
-# Build the entity-scoped base queryset for gateway collections.
+# Gateway collections in the entity and within the exporting caller's branches.
 def _collections(scope):
-    from .models import CollectionIntent
+    from .reach import PaymentsReach
 
-    return CollectionIntent.objects.filter(entity=scope.entity)
+    return PaymentsReach.for_user(scope.user, scope.entity).collections()
 
 
-# Build the entity-scoped base queryset for payout instructions.
+# Payout instructions in the entity and within the exporting caller's branches.
 def _payouts(scope):
-    from .models import PayoutInstruction
+    from .reach import PaymentsReach
 
-    return PayoutInstruction.objects.filter(entity=scope.entity)
+    return PaymentsReach.for_user(scope.user, scope.entity).payouts()
 
 
 _COLLECTION_STATUS = choice_labels("vs_payments.constants.CollectionStatus")

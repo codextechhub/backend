@@ -336,6 +336,7 @@ def create_virtual_account(*, entity, customer, provider=None, deposit_account=N
         action=PaymentAuditAction.VIRTUAL_ACCOUNT_CREATED, entity=entity,
         provider=provider_name, reference=reference, actor_user=actor_user,
         message=f"Virtual account {result.account_number} for {customer.code}.",
+        metadata={"virtual_account_id": va.pk},
     )
 
     return va  # Return the stored model instance.
@@ -363,6 +364,7 @@ def set_virtual_account_status(va, *, status, actor_user=None):
         action=PaymentAuditAction.VIRTUAL_ACCOUNT_STATUS_CHANGED, entity=va.entity,
         provider=va.provider, reference=va.provider_reference, actor_user=actor_user,
         message=f"Virtual account {va.account_number} set to {status}.",
+        metadata={"virtual_account_id": va.pk},
     )
 
     return va  # Return the updated virtual account.
