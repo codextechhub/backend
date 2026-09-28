@@ -76,7 +76,7 @@ def _list_queryset(tenant, session=None):
         # who only exists in another one.
         qs = qs.filter(enrolments__session=session)
     return (
-        qs.select_related("branch", "applied_for")
+        qs.select_related("branch", "applied_for", "admission_stage")
         .prefetch_related(active, guardians, document_service.photo_prefetch())
         .distinct()
     )
@@ -156,7 +156,33 @@ class StudentListCreateView(StudentsViewMixin, generics.ListCreateAPIView):
                 enrolments__school_class__level_id=level,
             )
 
+        stage = (params.get("stage") or "").strip()
+        if stage:
+            qs = self._at_stage(qs, stage)
+
         return self.narrow_to_branch(qs).distinct()
+
+    def _at_stage(self, qs, raw):
+        """Applicants at one of the school's admission stages, or at none.
+
+        Narrows to APPLICANTs whatever else was asked, because a stage is
+        where an application stands: a confirmed child still carries the
+        stage they were confirmed from, and the Applicants board must not
+        list them. An id that is not one of this school's stages is refused
+        rather than answered with an empty page.
+        """
+        from rest_framework.exceptions import ValidationError
+
+        from ..models import AdmissionStage
+
+        qs = qs.filter(status=StudentStatus.APPLICANT)
+        if raw.lower() == "none":
+            return qs.filter(admission_stage__isnull=True)
+        if not raw.isdigit() or not AdmissionStage.objects.filter(
+            tenant=self.tenant, pk=int(raw),
+        ).exists():
+            raise ValidationError({"stage": ["No such admission stage at this school."]})
+        return qs.filter(admission_stage_id=int(raw))
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):

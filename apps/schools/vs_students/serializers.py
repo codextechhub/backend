@@ -364,7 +364,64 @@ def _guardian_rules(serializer):
 
 # ── students ───────────────────────────────────────────────────────────────
 
-class StudentListSerializer(FieldAccessMixin, _BranchAware):
+class _AdmissionStageFields(serializers.Serializer):
+    """Where an application stands, on every row and profile of a student.
+
+    ``admission_stage`` is the stage's id, ``admission_stage_name`` its name
+    (blank with no stage). ``offer_expired`` is worked out on every read: an
+    applicant whose offer's last day is before the school's today, or before
+    the day a past view is read at. Nothing is stored when an offer runs out,
+    and a confirmed or rejected record is never expired.
+
+    The school's today is read once per response and kept in the context, so a
+    page of fifty rows asks for it once.
+    """
+
+    admission_stage = serializers.IntegerField(
+        source="admission_stage_id", read_only=True, allow_null=True,
+    )
+    admission_stage_name = serializers.SerializerMethodField()
+    offer_expired = serializers.SerializerMethodField()
+
+    def get_admission_stage_name(self, obj):
+        from django.core.exceptions import ObjectDoesNotExist
+
+        if obj.admission_stage_id is None:
+            return ""
+        try:
+            return obj.admission_stage.name
+        except ObjectDoesNotExist:
+            # A past view naming a stage the school has since removed.
+            return ""
+
+    def get_offer_expired(self, obj):
+        from .services.admission import offer_expired
+
+        if obj.offer_expires_on is None or obj.status != StudentStatus.APPLICANT:
+            return False
+        return offer_expired(obj, self._today(obj))
+
+    def _today(self, obj):
+        from vs_config.clock import tenant_today
+
+        as_at = self.context.get("as_at")
+        if as_at:
+            return as_at.date
+        context = self.context
+        if "_tenant_today" not in context:
+            tenant = getattr(context.get("request"), "tenant", None) or obj.tenant
+            context["_tenant_today"] = tenant_today(tenant)
+        return context["_tenant_today"]
+
+
+#: The stage fields every student payload carries, in the order they are listed.
+ADMISSION_STAGE_FIELDS = [
+    "admission_stage", "admission_stage_name", "stage_entered_on",
+    "offer_expires_on", "offer_expired",
+]
+
+
+class StudentListSerializer(FieldAccessMixin, _AdmissionStageFields, _BranchAware):
     """The directory row. No medical field, no guardian contact details.
 
     Every field is read-only: a row is only ever read, and a writable
@@ -399,6 +456,7 @@ class StudentListSerializer(FieldAccessMixin, _BranchAware):
             # on, and it was detail-only - so both had a date they could not
             # reach without a request per row.
             "applied_on",
+            *ADMISSION_STAGE_FIELDS,
         ]
         read_only_fields = fields
 
@@ -430,7 +488,7 @@ class StudentListSerializer(FieldAccessMixin, _BranchAware):
         return document_service.face_url(obj, request=self.context.get("request"))
 
 
-class StudentDetailSerializer(FieldAccessMixin, _BranchAware):
+class StudentDetailSerializer(FieldAccessMixin, _AdmissionStageFields, _BranchAware):
     """The profile. Medical is here and behind its switches; never in a list.
 
     A detail response, so it names in ``_read_only_fields`` whatever the
@@ -471,9 +529,12 @@ class StudentDetailSerializer(FieldAccessMixin, _BranchAware):
             "status", "status_label", "enrolment_date",
             "branch", "branch_name", "class_name", "level_name", "session_name",
             "applied_for", "applied_for_name", "applied_on",
+            *ADMISSION_STAGE_FIELDS,
             "photo_url", "allowed_transitions", "created_at", "updated_at",
         ]
-        read_only_fields = ["status", "branch", "applied_on"]
+        read_only_fields = [
+            "status", "branch", "applied_on", "stage_entered_on", "offer_expires_on",
+        ]
 
     def get_age(self, obj):
         as_at = self.context.get("as_at")
@@ -1073,6 +1134,116 @@ class GuardianRulesSerializer(serializers.Serializer):
                 raise serializers.ValidationError(f"'{label}' is listed twice.")
             seen.add(folded)
         return value
+
+
+class AdmissionStageItemSerializer(serializers.Serializer):
+    """One stage as the Applicants settings screen saves it.
+
+    Checked as a set by ``AdmissionRulesSerializer``, which is where the
+    sentences are, so a refusal names the stage it is about.
+    """
+
+    id = serializers.IntegerField(required=False, allow_null=True)
+    name = serializers.CharField(allow_blank=True, trim_whitespace=True)
+    is_offer = serializers.BooleanField(default=False)
+    offer_valid_days = serializers.IntegerField(required=False, allow_null=True)
+
+
+class AdmissionRulesSerializer(serializers.Serializer):
+    """The school's admission stages and its documents, as one save.
+
+    ``stages`` is the whole ordered list: its order is the position, an item
+    with an ``id`` updates that stage, one without creates one, and a stage
+    left out is removed (``services/admission.py``, which also refuses an id
+    that is not the school's and a removal that would strand applicants).
+    Every refusal is keyed on its field, as one sentence naming the stage.
+    """
+
+    stages = AdmissionStageItemSerializer(
+        many=True, allow_empty=True,
+        error_messages={
+            "not_a_list": "Give the admission stages as a list.",
+            "required": "Give the admission stages, or an empty list.",
+            "null": "Give the admission stages, or an empty list.",
+        },
+    )
+    required_documents_to_confirm = serializers.ListField(
+        child=serializers.CharField(), allow_empty=True,
+        error_messages={
+            "not_a_list": "Give the documents as a list.",
+            "required": "Give the documents needed to confirm, or an empty list.",
+            "null": "Give the documents needed to confirm, or an empty list.",
+        },
+    )
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=200)
+
+    def validate_stages(self, value):
+        from .constants import (
+            ADMISSION_STAGE_NAME_MAX_LENGTH,
+            ADMISSION_STAGES_MAX,
+            OFFER_DAYS_MAX,
+            OFFER_DAYS_MIN,
+        )
+
+        if len(value) > ADMISSION_STAGES_MAX:
+            raise serializers.ValidationError(
+                f"A school can name up to {ADMISSION_STAGES_MAX} admission stages.",
+            )
+        seen: set[str] = set()
+        for position, item in enumerate(value, start=1):
+            name = item["name"]
+            if not name:
+                raise serializers.ValidationError(f"Stage {position} needs a name.")
+            if len(name) > ADMISSION_STAGE_NAME_MAX_LENGTH:
+                raise serializers.ValidationError(
+                    f"'{name}' is longer than {ADMISSION_STAGE_NAME_MAX_LENGTH} "
+                    f"characters.",
+                )
+            folded = name.casefold()
+            if folded in seen:
+                raise serializers.ValidationError(f"'{name}' is listed twice.")
+            seen.add(folded)
+            days = item.get("offer_valid_days")
+            if days is None:
+                continue
+            if not item["is_offer"]:
+                raise serializers.ValidationError(
+                    f"'{name}' is not an offer stage, so it has no number of "
+                    f"days to accept.",
+                )
+            if not OFFER_DAYS_MIN <= days <= OFFER_DAYS_MAX:
+                raise serializers.ValidationError(
+                    f"An offer at '{name}' can stay open for {OFFER_DAYS_MIN} "
+                    f"to {OFFER_DAYS_MAX} days.",
+                )
+        return value
+
+    def validate_required_documents_to_confirm(self, value):
+        known = dict(DocumentType.choices)
+        unknown = [v for v in value if v not in known]
+        if unknown:
+            raise serializers.ValidationError(
+                f"'{unknown[0]}' is not a document this school can ask for.",
+            )
+        return value
+
+
+class StageMoveSerializer(serializers.Serializer):
+    """Where to put an applicant: a stage's id, or null for no stage.
+
+    ``stage`` must be sent, null included, so an empty body is refused rather
+    than read as "no stage".
+    """
+
+    stage = serializers.IntegerField(
+        allow_null=True,
+        error_messages={
+            "required": "Say which stage to move the applicant to, or null for none.",
+            "invalid": "Give the stage as its id, or null for none.",
+        },
+    )
+    offer_expires_on = serializers.DateField(required=False, allow_null=True)
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=200)
 
 
 class SearchHitSerializer(FieldAccessMixin, serializers.ModelSerializer):

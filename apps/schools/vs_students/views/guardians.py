@@ -506,7 +506,7 @@ class GuardianStudentsView(StudentsViewMixin, generics.ListAPIView):
         guardian = self.guardian(self.kwargs["pk"])
         return guardian_service.wards_queryset(
             guardian, self.request.user, self.tenant,
-        ).select_related("branch").prefetch_related(
+        ).select_related("branch", "admission_stage").prefetch_related(
             "enrolments__school_class", "guardian_links__guardian",
             document_service.photo_prefetch(),
         )

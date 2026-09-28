@@ -1,6 +1,6 @@
 """The student record and everything that hangs off it.
 
-Seven models. Every one carries its own ``tenant`` foreign key, even where its
+Eight models. Every one carries its own ``tenant`` foreign key, even where its
 parent already has one, because :class:`vs_rbac.managers.TenantAwareManager`
 filters on a model's own ``tenant`` or ``branch`` field and returns everything
 otherwise. Reaching the tenant through a parent is not scoping.
@@ -65,7 +65,7 @@ class _Owned(models.Model):
     one so related traversal does not silently drop rows.
 
     The ``tenant`` column is not declared here on purpose: one declaration
-    would mean one ``related_name`` shared by seven models, so it would have to
+    would mean one ``related_name`` shared by eight models, so it would have to
     be ``"+"``, and that disables the reverse accessor entirely. Each concrete
     model declares its own with the name its FRD section gives it.
     """
@@ -148,6 +148,21 @@ class Student(_Owned):
     )
     applied_on = models.DateField(null=True, blank=True)
 
+    #: Where an application stands among the school's own admission stages
+    #: (``AdmissionStage``), meaningful while the student is an APPLICANT.
+    #: Null means no stage, which is every applicant at a school that has
+    #: named none. Confirming or rejecting leaves all three as the record of
+    #: where the application ended.
+    admission_stage = models.ForeignKey(
+        "AdmissionStage", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="students",
+    )
+    stage_entered_on = models.DateField(null=True, blank=True)
+    #: The last day of an open offer, set on entering an offer stage and
+    #: cleared on leaving it. Nothing acts on it when it passes: a person
+    #: decides, and ``offer_expired`` is worked out on every read.
+    offer_expires_on = models.DateField(null=True, blank=True)
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True, blank=True, related_name="+",
@@ -165,6 +180,7 @@ class Student(_Owned):
             models.Index(fields=["tenant", "branch", "status"]),
             models.Index(fields=["tenant", "status"]),
             models.Index(fields=["tenant", "last_name", "first_name"]),
+            models.Index(fields=["tenant", "status", "admission_stage"]),
         ]
         ordering = ["last_name", "first_name"]
 
@@ -175,6 +191,45 @@ class Student(_Owned):
     def full_name(self) -> str:
         parts = [self.first_name, self.middle_name, self.last_name]
         return " ".join(p for p in parts if p)
+
+
+class AdmissionStage(_Owned):
+    """One of the steps a school's applications pass through, in its own order.
+
+    A school names its own (Entrance exam, Interview, Offer, Accepted) or none
+    at all, in which case applicants are confirmed on the spot. A stage is a
+    sub-state of APPLICANT and never a status: the statuses and their
+    transitions are the same at every school.
+
+    An offer stage gives the family ``offer_valid_days`` to accept, counted
+    from the day an applicant enters it. Only an offer stage carries a number
+    of days.
+
+    ``position`` is the order the school gave, from 1. It carries no unique
+    constraint, because a reorder rewrites every position in one save and a
+    unique one would refuse the intermediate states.
+    """
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="admission_stages",
+    )
+    name = models.CharField(max_length=40)
+    position = models.PositiveSmallIntegerField(default=1)
+    is_offer = models.BooleanField(default=False)
+    offer_valid_days = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    class Meta(_Owned.Meta):
+        constraints = [
+            models.UniqueConstraint(
+                Lower("name"), "tenant", name="uq_admission_stage_tenant_name_ci",
+            ),
+        ]
+        indexes = [models.Index(fields=["tenant", "position"])]
+        ordering = ["position", "id"]
+
+    def __str__(self):
+        return self.name
 
 
 class Guardian(_Owned):

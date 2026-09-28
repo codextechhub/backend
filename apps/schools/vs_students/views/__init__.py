@@ -18,6 +18,7 @@ from .movements import (
     ConfirmApplicantView,
     ReactivateStudentView,
     RejectApplicantView,
+    StageMoveView,
     StatusHistoryView,
     SuspendStudentView,
     TransferOutView,
@@ -30,6 +31,7 @@ from .promotion import (
 )
 from .records import (
     AdmissionPolicyView,
+    AdmissionRulesView,
     ClassRosterView,
     ClassSeatsView,
     EnrolmentRulesView,
@@ -47,12 +49,14 @@ from .students import (
 )
 
 __all__ = [
-    "AdmissionPolicyView", "AssignClassView", "BulkAssignClassView",
+    "AdmissionPolicyView", "AdmissionRulesView", "AssignClassView",
+    "BulkAssignClassView",
     "BulkStatusView", "ChangeStatusView", "ClassHistoryView", "ClassRosterView",
     "ConfirmApplicantView", "EnrolmentRulesView", "GuardianDetailView",
     "GuardianDirectoryView", "GuardianRulesView", "GuardianStudentsView",
     "PromotionBatchView", "PromotionPreviewView", "PromotionRunView", "ReactivateStudentView", "RejectApplicantView",
-    "StatusHistoryView", "StudentDetailView", "StudentDocumentDetailView",
+    "StageMoveView", "StatusHistoryView", "StudentDetailView",
+    "StudentDocumentDetailView",
     "StudentDocumentsView", "StudentGuardianDetailView", "StudentGuardiansView",
     "StudentHistoryView", "StudentListCreateView", "StudentSearchView",
     "StudentSubjectsView", "StudentSummaryView", "StudentsViewMixin",

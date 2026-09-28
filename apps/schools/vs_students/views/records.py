@@ -334,7 +334,7 @@ class ClassRosterView(StudentsViewMixin, generics.ListAPIView):
                 self.tenant, self.request.user, school_class,
                 self.class_session,
             ),
-        ).select_related("branch").prefetch_related(
+        ).select_related("branch", "admission_stage").prefetch_related(
             "enrolments__school_class", "guardian_links__guardian",
             document_service.photo_prefetch(),
         )
@@ -533,3 +533,61 @@ class EnrolmentRulesView(StudentsViewMixin, APIView):
             self.tenant, request.user, reason=data.pop("reason", ""), **data,
         )
         return success_response("Enrolment rules saved.", data=rules.as_dict())
+
+
+class AdmissionRulesView(StudentsViewMixin, APIView):
+    """GET, PUT /v1/students/admission-rules/
+
+    The school's own applicant rules: the admission stages it names, in its
+    order, and the documents an applicant must hold before being confirmed.
+    Reading needs ``school.students.view``, because the Applicants board
+    renders its columns from it; changing needs ``school.settings.update``,
+    because these are the school's settings rather than a student record.
+
+    Each stage carries ``applicants``, the applicants at it that the caller
+    can see: narrowed to their branches, and to ``?branch=`` where the school
+    has more than one, like every other count in the module.
+
+    PUT takes the whole set every time, plus an optional ``reason`` for the
+    audit trail, and answers with the GET body. Refusals are 400s keyed on the
+    field, in sentences (``services/admission.py``).
+
+    docstring-name: Admission rules
+    """
+
+    def get_permissions(self):
+        self.rbac_permission = (
+            PERM_VIEW if self.request.method in ("GET", "HEAD", "OPTIONS")
+            else PERM_SETTINGS_UPDATE
+        )
+        return super().get_permissions()
+
+    def _body(self):
+        from ..models import Student
+        from ..services.admission import read_admission_rules
+        from ..services.scoping import scope_students
+
+        visible = self.narrow_to_branch(
+            scope_students(
+                Student.objects.filter(tenant=self.tenant), self.request.user,
+                self.tenant,
+            ),
+        )
+        return read_admission_rules(self.tenant, students=visible).as_dict()
+
+    def get(self, request):
+        return success_response(data=self._body())
+
+    def put(self, request):
+        from ..serializers import AdmissionRulesSerializer
+        from ..services.admission import write_admission_rules
+
+        writer = AdmissionRulesSerializer(data=request.data)
+        writer.is_valid(raise_exception=True)
+        data = writer.validated_data
+        write_admission_rules(
+            self.tenant, request.user, stages=data["stages"],
+            required_documents_to_confirm=data["required_documents_to_confirm"],
+            reason=data.get("reason", ""),
+        )
+        return success_response("Admission rules saved.", data=self._body())

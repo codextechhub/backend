@@ -92,6 +92,21 @@ GUARDIAN_MINIMUM_CEILING = 4
 EXTRA_RELATIONSHIPS_MAX = 10
 EXTRA_RELATIONSHIP_MAX_LENGTH = 30
 
+# The school's applicant rules (services/admission.py). The admission stages
+# are rows (``AdmissionStage``); the documents an applicant must hold before
+# being confirmed are a setting, whose default of none is the behaviour every
+# school had before it could choose.
+CFG_CONFIRM_DOCUMENTS = "applicants.documents.required_to_confirm"
+
+#: How many admission stages a school may name, and how long each name may be.
+#: The length is ``AdmissionStage.name``'s.
+ADMISSION_STAGES_MAX = 12
+ADMISSION_STAGE_NAME_MAX_LENGTH = 40
+
+#: How long an offer may be left open, in days.
+OFFER_DAYS_MIN = 1
+OFFER_DAYS_MAX = 365
+
 
 class GuardianMatching(models.TextChoices):
     """How a guardian typed in is recognised as one the school already holds.

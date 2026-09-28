@@ -33,6 +33,7 @@ from ..serializers import (
     ConfirmSerializer,
     ReactivateSerializer,
     ReasonOnlySerializer,
+    StageMoveSerializer,
     StatusChangeSerializer,
     StatusLogSerializer,
     StudentDetailSerializer,
@@ -88,6 +89,58 @@ class ConfirmApplicantView(_StudentAction):
             number=data.get("student_number") or None,
         )
         return self.done(student, f"{student.full_name} is now enrolled.")
+
+
+class StageMoveView(_StudentAction):
+    """POST /v1/students/<id>/stage/
+
+    Moves an applicant between the school's admission stages, or to none.
+    Held to ``school.students.update``, the key that confirms and rejects an
+    applicant, because a stage is a step in that same decision.
+
+    The body is ``{"stage": <id> | null, "offer_expires_on"?, "reason"?}``.
+    A stage that is not this school's answers 404, whatever the reason, so an
+    id cannot be used to learn another school's stages. A student who is no
+    longer an applicant is refused as 422 ``NOT_AN_APPLICANT``. The answer is
+    the student's directory row, which is what the Applicants board redraws.
+
+    docstring-name: Move an applicant between stages
+    """
+
+    key = PERM_UPDATE
+    serializer_class = StageMoveSerializer
+
+    @transaction.atomic
+    def post(self, request, pk):
+        from rest_framework.exceptions import NotFound
+
+        from ..models import AdmissionStage
+        from ..serializers import StudentListSerializer
+        from ..services.admission import move_to_stage
+        from .students import _list_queryset
+
+        data = self.payload(request)
+        student = self.student(pk)
+        stage = None
+        if data["stage"] is not None:
+            stage = AdmissionStage.objects.filter(
+                tenant=self.tenant, pk=data["stage"],
+            ).first()
+            if stage is None:
+                raise NotFound("No such admission stage at this school.")
+        moved = move_to_stage(
+            student, stage, actor=request.user,
+            offer_expires_on=data.get("offer_expires_on"),
+            reason=data.get("reason", ""),
+        )
+        row = _list_queryset(self.tenant).get(pk=moved.pk)
+        where = stage.name if stage is not None else "no stage"
+        return success_response(
+            f"{moved.full_name} is at {where}.",
+            data=StudentListSerializer(
+                row, context=self.get_serializer_context(),
+            ).data,
+        )
 
 
 class RejectApplicantView(_StudentAction):

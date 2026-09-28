@@ -267,3 +267,32 @@ class StudentSettingNotRegistered(StudentsError):
         "the migrations and seed_config_catalogue."
     )
     http_status = 500
+
+
+class NotAnApplicant(StudentsError):
+    """An admission stage move for a student who is no longer an applicant.
+
+    A stage is where an application stands, so it has no meaning once the
+    child is enrolled or the application is closed, and the stage a record
+    ended at is kept as it was.
+    """
+
+    error_code = "NOT_AN_APPLICANT"
+    default_message = "Only an applicant can be moved between admission stages."
+    http_status = 422
+
+
+class DocumentsMissing(StudentsError):
+    """An applicant confirmed without a document the school requires first.
+
+    The school's own list (``applicants.documents.required_to_confirm``). The
+    message names the missing documents in words and ``missing`` lists them,
+    so a screen can offer to attach each one.
+    """
+
+    error_code = "DOCUMENTS_MISSING"
+    default_message = (
+        "This school needs documents on an applicant's record before they "
+        "can be confirmed."
+    )
+    http_status = 422

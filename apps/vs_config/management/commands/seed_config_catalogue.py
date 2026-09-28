@@ -226,6 +226,15 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "JSON", [], {},
     ),
     (
+        "applicants.documents.required_to_confirm",
+        "Documents Required To Confirm An Applicant",
+        "The documents an applicant must have on their record before they can "
+        "be confirmed as enrolled, on every route that confirms one. Empty "
+        "means confirming never waits for a document. Enrolling a child "
+        "directly, without saving them as an applicant first, is not checked.",
+        "JSON", [], {},
+    ),
+    (
         "display.timezone", "Time Zone",
         "The IANA time zone this school keeps its calendar in, such as "
         "Africa/Lagos. It decides which day \"today\" is for due dates, "

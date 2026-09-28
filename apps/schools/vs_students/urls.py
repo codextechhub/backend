@@ -12,6 +12,7 @@ from django.urls import path
 
 from .views import (
     AdmissionPolicyView,
+    AdmissionRulesView,
     AssignClassView,
     BulkAssignClassView,
     BulkStatusView,
@@ -32,6 +33,7 @@ from .views import (
     PromotionRunView,
     ReactivateStudentView,
     RejectApplicantView,
+    StageMoveView,
     StatusHistoryView,
     StudentDetailView,
     StudentDocumentDetailView,
@@ -66,6 +68,10 @@ student_patterns = [
         "guardian-rules/", GuardianRulesView.as_view(),
         name="student-guardian-rules",
     ),
+    path(
+        "admission-rules/", AdmissionRulesView.as_view(),
+        name="student-admission-rules",
+    ),
     # Before the <int:class_id> route, so "seats" resolves as itself rather
     # than being matched as a class id.
     path("classes/seats/", ClassSeatsView.as_view(), name="student-class-seats"),
@@ -93,6 +99,7 @@ student_patterns = [
     path("<int:pk>/", StudentDetailView.as_view(), name="student-detail"),
     path("<int:pk>/confirm/", ConfirmApplicantView.as_view(), name="student-confirm"),
     path("<int:pk>/reject/", RejectApplicantView.as_view(), name="student-reject"),
+    path("<int:pk>/stage/", StageMoveView.as_view(), name="student-stage"),
     path("<int:pk>/withdraw/", WithdrawStudentView.as_view(), name="student-withdraw"),
     path("<int:pk>/suspend/", SuspendStudentView.as_view(), name="student-suspend"),
     path(

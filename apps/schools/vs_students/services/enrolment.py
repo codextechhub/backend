@@ -281,7 +281,16 @@ def confirm_applicant(student, *, actor, reason="", effective_date=None, number=
     child without one because the number was left out of the confirmation, and
     a school that issues numbers automatically issues one now. An applicant
     given a number when they applied keeps it and needs none now.
+
+    The documents the school requires before confirming
+    (``applicants.documents.required_to_confirm``) are checked first, so a
+    refusal issues no number. The admission stage does not otherwise gate
+    confirmation, and it is left on the record as where the application ended.
     """
+    from .admission import assert_confirm_documents
+
+    if student.status == StudentStatus.APPLICANT:
+        assert_confirm_documents(student)
     tenant = student.tenant
     policy = read_policy(tenant, student.branch)
     if number is not None:
