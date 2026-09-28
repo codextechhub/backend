@@ -73,6 +73,19 @@ def _classes_for(tenant):
     )
 
 
+def _default_capacity(tenant):
+    """Seats a class created without a capacity gets: the school's default.
+
+    The school sets it in its student settings (``students.capacity.default``),
+    because capacity is what placement checks. None, the default, means no
+    limit, which is what a class without a capacity always meant. Read through
+    the students module lazily: that module imports this one's scoping at load.
+    """
+    from schools.vs_students.services.rules import default_capacity
+
+    return default_capacity(tenant)
+
+
 def _level_or_404(tenant, pk, user):
     """The level a class write names, and the year that level puts it in.
 
@@ -104,6 +117,10 @@ class _ClassBase(_StructureBase):
 class ClassListCreateView(_ClassBase, generics.ListCreateAPIView):
     """GET, POST /v1/academics/classes/
 
+    A class posted with no capacity, or a null one, gets the school's default
+    class size (``students.capacity.default``); with no default set it has no
+    limit. Changing a class later never applies the default.
+
     docstring-name: Classes
     """
 
@@ -129,6 +146,9 @@ class ClassListCreateView(_ClassBase, generics.ListCreateAPIView):
             SchoolClass, data.get("name") or level.name, data.get("code"),
             session=level.session,
         )
+        # No capacity sent, or an empty one: the school's default class size.
+        if data.get("capacity") is None:
+            data["capacity"] = _default_capacity(self.tenant)
         # Two scopes, so two calls: a class NAME is unique inside its level at
         # its branch, while the CODE is unique across the school and year.
         self._unique(
@@ -302,6 +322,8 @@ class GenerateArmsView(_ClassBase, APIView):
     Idempotent for the same input: labels already taken in that level and
     branch are skipped rather than refused, so a school that adds a fourth arm
     types A, B, C, D and gets one new class instead of an error about three.
+    Each new class gets the school's default class size, or no limit when the
+    school has not set one.
 
     docstring-name: Generate class arms
     """
@@ -333,6 +355,7 @@ class GenerateArmsView(_ClassBase, APIView):
             ).values_list("code", flat=True)
         }
 
+        capacity = _default_capacity(self.tenant)
         made = []
         for arm in writer.validated_data["arms"]:
             arm = arm.strip()
@@ -347,7 +370,7 @@ class GenerateArmsView(_ClassBase, APIView):
             made.append(SchoolClass(
                 tenant=self.tenant, level=level, branch=branch, name=name,
                 arm=arm, code=code, session_id=level.session_id,
-                created_by=request.user,
+                capacity=capacity, created_by=request.user,
             ))
         created = SchoolClass.objects.bulk_create(made)
 
