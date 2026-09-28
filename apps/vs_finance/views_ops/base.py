@@ -5,10 +5,11 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal, InvalidOperation
 
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.views import APIView
 
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 from vs_rbac.scoping import inherited_branch_id as _rbac_inherited_branch_id
 from vs_rbac.scoping import raised_branch as _rbac_raised_branch
 
@@ -251,20 +252,29 @@ def _resolve_currency(ref, field="currency"):
 
 
 # Resolve bank account by id or name.
-def _resolve_bank_account(entity, ref, field="bank_account", *, required=True):
-    """Resolve a bank account by id or name within ``entity``."""
+def _resolve_bank_account(request, entity, ref, field="bank_account", *, required=True):
+    """Resolve a bank account by id or name within ``entity`` and the caller's branches.
+
+    Every route that moves money out of a named account resolves it here, so the
+    account a caller may pay from is the account they can see in their bank list:
+    their own branches' accounts and the school-wide ones. Ikeja's bursar naming
+    Lekki's collection account by id gets the same 404 as a mistyped id, which
+    neither pays out of Lekki's money nor confirms the account exists.
+    """
     if ref in (None, ""):  # Blank input means missing bank account.
         if required:  # Most payment endpoints require a bank account.
             raise ValidationError({field: "A bank account (id or name) is required."})
         return None
-    qs = BankAccount.objects.filter(entity=entity)
+    qs = BankAccount.objects.filter(
+        branch_q(request, include_shared=True), entity=entity,
+    ).select_related("gl_account")
     ba = (  # Resolve by id for numeric refs, otherwise by name.
         qs.filter(pk=int(ref)).first() if str(ref).isdigit()
         else qs.filter(name=str(ref)).first()
     )
-    if ba is None:  # Reject missing/cross-entity bank refs.
-        raise ValidationError({field: f"No bank account '{ref}' in this entity."})
-    return ba  # Return resolved bank account.
+    if ba is None:  # Unknown, another entity's, or outside the caller's branches.
+        raise NotFound(f"No bank account '{ref}' in this entity.")
+    return ba
 
 
 # Resolve fiscal year by label or id.

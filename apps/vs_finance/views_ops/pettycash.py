@@ -214,7 +214,7 @@ class PettyCashFundEstablishView(_PettyCashFundActionBase):
 
         entity, fund = self._fund(request, pk)
         body = request.data or {}
-        bank = _resolve_bank_account(entity, body.get("bank_account"))
+        bank = _resolve_bank_account(request, entity, body.get("bank_account"))
         establish_fund(
             fund, bank_account=bank,
             amount=_money(body.get("amount"), "amount"),
@@ -243,7 +243,7 @@ class PettyCashFundReplenishView(_PettyCashFundActionBase):
 
         entity, fund = self._fund(request, pk)
         body = request.data or {}
-        bank = _resolve_bank_account(entity, body.get("bank_account"))
+        bank = _resolve_bank_account(request, entity, body.get("bank_account"))
         amount = _money(body["amount"], "amount") if body.get("amount") not in (None, "") else None
         replenish_fund(
             fund, bank_account=bank,

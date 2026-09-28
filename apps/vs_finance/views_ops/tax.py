@@ -346,7 +346,7 @@ class TaxFilingPayView(_TaxFilingActionBase):
 
         entity, filing = self._filing(request, pk)
         body = request.data or {}
-        bank = _resolve_bank_account(entity, body.get("bank_account"))
+        bank = _resolve_bank_account(request, entity, body.get("bank_account"))
         amount = _money(body["amount"], "amount") if body.get("amount") not in (None, "") else None
         pay_filing(
             filing, bank_account=bank,

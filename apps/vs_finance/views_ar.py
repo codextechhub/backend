@@ -1748,6 +1748,8 @@ def _build_refund(request, entity, body):
     actor_user = request.user
     customer = _resolve_customer(request, entity, body.get("customer"))
     customer = Customer.objects.select_for_update().get(pk=customer.pk)
+    bank_account = _resolve_bank_account(
+        request, entity, body.get("bank_account"), required=False)
     refund_date = _date(body.get("refund_date"), "refund_date", required=True)
     # Measure the credit on the refund's own date, so a doomed backdated draft is
     # refused at creation rather than surviving all the way to the posting guard.
@@ -1764,8 +1766,7 @@ def _build_refund(request, entity, body):
         currency=_resolve_currency(body.get("currency")),
         method=body.get("method", "BANK_TRANSFER"),
         amount=amount,
-        bank_account=_resolve_bank_account(
-            entity, body.get("bank_account"), required=False),
+        bank_account=_resolve_bank_account(request, entity, body.get("bank_account"), required=False),
         reference=body.get("reference", ""),
         narration=body.get("narration", ""),
         created_by=actor_user,
@@ -2336,8 +2337,7 @@ class ARAdjustmentBatchView(_FinanceBase):
         if kind == "REFUND":
             from .receivables import customer_refund_available_balances
 
-            bank_account = _resolve_bank_account(
-                entity, body.get("bank_account"), required=True)
+            bank_account = _resolve_bank_account(request, entity, body.get("bank_account"), required=True)
             customers = _batch_customers(request, entity, items)
             # The whole batch shares one accounting date, so availability is measured
             # on that date - not today. A batch dated before the credit arrived is

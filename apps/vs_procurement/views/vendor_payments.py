@@ -53,17 +53,22 @@ def _payment_list_queryset(entity):
     ).prefetch_related("allocations__vendor_invoice")
 
 
-def _resolve_bank_account(entity, ref):
-    """Resolve an active entity bank account backed by a postable GL account."""
+def _resolve_bank_account(request, entity, ref):
+    """Resolve an active bank account, backed by a postable GL account, the caller can see.
+
+    Which accounts a caller may name is finance's rule, read through finance's
+    resolver: their own branches' accounts and the school-wide ones. Lekki's
+    account named by an Ikeja-pinned officer is a 404 like any unknown id. What
+    is added here is the payment's own condition, that the account and its
+    ledger account are open for posting.
+    """
     if ref in (None, ""):
         raise ValidationError({"bank_account": "An active bank or cash account is required."})
-    from vs_finance.models import BankAccount
+    from vs_finance.views_ops.base import _resolve_bank_account as _reachable_bank_account
 
-    account = BankAccount.objects.select_related("gl_account").filter(
-        entity=entity, pk=ref, is_active=True,
-        gl_account__is_active=True, gl_account__is_postable=True,
-    ).first()
-    if account is None:
+    account = _reachable_bank_account(request, entity, ref)
+    gl = account.gl_account
+    if not (account.is_active and gl.is_active and gl.is_postable):
         raise ValidationError({"bank_account": "No active bank account with a postable GL account exists in this entity."})
     return account
 
@@ -202,7 +207,7 @@ class VendorPaymentListCreateView(_ProcBase):
         body = request.data
         vendor = _resolve_vendor(request, entity, body.get("vendor"))
         _validate_vendor_for_payment(vendor)
-        bank = _resolve_bank_account(entity, body.get("bank_account"))
+        bank = _resolve_bank_account(request, entity, body.get("bank_account"))
         plan = _allocation_plan(entity, vendor, body.get("allocations"))
         gross = sum(amount for _, amount in plan)  # Gross is the exact approved liability split.
         wht = _money(body.get("wht_amount", 0), "wht_amount")
@@ -292,7 +297,7 @@ class VendorPaymentDetailView(_ProcBase):
         body = request.data
         vendor = _resolve_vendor(request, entity, body.get("vendor", payment.vendor_id))
         _validate_vendor_for_payment(vendor)
-        bank = _resolve_bank_account(entity, body.get("bank_account", getattr(getattr(payment.payment_account, "bank_account", None), "id", None)))
+        bank = _resolve_bank_account(request, entity, body.get("bank_account", getattr(getattr(payment.payment_account, "bank_account", None), "id", None)))
         plan = _allocation_plan(entity, vendor, body.get("allocations"))
         gross = sum(amount for _, amount in plan)  # Editing recomputes, never trusts a client total.
         wht = _money(body.get("wht_amount", payment.wht_amount), "wht_amount")
