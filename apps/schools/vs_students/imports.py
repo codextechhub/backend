@@ -96,11 +96,18 @@ class ResolvedRow:
     #: An existing student this row looks like. A warning, never an error: two
     #: real siblings can share a surname and a birthday is not a fingerprint.
     duplicate: object | None = None
+    #: The documents the school requires before a child joins the roll. While
+    #: there are any, the row is imported as an applicant.
+    documents_owed: tuple = ()
     issues: list = dc_field(default_factory=list)
 
     @property
     def ok(self) -> bool:
         return not any(i.severity == "error" for i in self.issues)
+
+    @property
+    def as_applicant(self) -> bool:
+        return bool(self.documents_owed)
 
     @property
     def guardian_name(self) -> str:
@@ -218,7 +225,7 @@ IMPORTABLE_REQUIRED_FIELDS = ("middle_name", "address", "previous_school")
 
 def resolve_row(
     payload: dict, *, tenant, session, batch_branch, multi_branch,
-    policies=None, rules=None, guardian_rules=None,
+    policies=None, rules=None, guardian_rules=None, documents_owed=None,
 ):
     """Read one uploaded row into the thing the handler will write.
 
@@ -230,10 +237,17 @@ def resolve_row(
     range, its required fields (those the template has a column for), the
     admission-number rule of the row's branch, and its guardian rules.
     *rules* is the school's ``EnrolmentRules``, *guardian_rules* its
-    ``GuardianRules`` and *policies* a ``{branch id: AdmissionPolicy}``
+    ``GuardianRules``, *documents_owed* the documents it requires before a
+    child joins the roll and *policies* a ``{branch id: AdmissionPolicy}``
     cache, which the validator passes so a file of a thousand rows reads each
     once; the executor, writing one row, passes none of them.
+
+    At a school that requires documents before a child joins the roll, the
+    row is an applicant (see :func:`create_student_from_row`), and says so in
+    one warning. A blank admission number is then never refused, because an
+    applicant's number is issued or required when they are confirmed.
     """
+    from .services.admission import confirm_documents
     from .services.guardian_rules import read_guardian_rules
     from .services.rules import read_rules
 
@@ -241,6 +255,9 @@ def resolve_row(
     rules = rules or read_rules(tenant)
     guardian_rules = guardian_rules or read_guardian_rules(tenant)
     policies = {} if policies is None else policies
+    row.documents_owed = (
+        confirm_documents(tenant) if documents_owed is None else tuple(documents_owed)
+    )
 
     row.first_name = _text(payload, "first_name")
     row.middle_name = _text(payload, "middle_name")
@@ -339,7 +356,32 @@ def resolve_row(
     _resolve_duplicate(row, tenant=tenant)
     _check_lengths(row)
     _check_looks_like_a_name(row)
+    if row.as_applicant:
+        row.issues.append(RowIssue(
+            "business_rule", applicant_warning(row.documents_owed),
+            severity="warning",
+        ))
     return row
+
+
+def _with_article(label: str) -> str:
+    """"a birth certificate", "an immunisation record"."""
+    label = label.lower()
+    return f"{'an' if label[:1] in 'aeiou' else 'a'} {label}"
+
+
+def applicant_warning(documents) -> str:
+    """The warning on every row of a school that requires documents before enrolling."""
+    from .constants import DocumentType
+
+    labels = dict(DocumentType.choices)
+    named = [_with_article(labels[value]) for value in documents]
+    words = named[0] if len(named) == 1 else f"{', '.join(named[:-1])} and {named[-1]}"
+    pronoun = "it is" if len(named) == 1 else "they are"
+    return (
+        f"This school needs {words} before enrolling, so this child is "
+        f"imported as an applicant and joins the roll once {pronoun} uploaded."
+    )
 
 
 def _check_lengths(row):
@@ -401,6 +443,9 @@ def _resolve_number(row, payload, *, tenant, policy):
     raw = _text(payload, "student_number")
     row.student_number = raw
     if not raw:
+        # An applicant's number waits for their confirmation.
+        if row.as_applicant:
+            return
         # A blank number is issued at write time where the branch's rule
         # numbers automatically; it is refused only if no next number can be
         # worked out (no series yet, or the successor breaks the pattern).
@@ -474,7 +519,8 @@ def _resolve_class(row, payload, *, tenant, session):
 
     A row with no class at all is fine: the student is created ENROLLED and
     unplaced, because a school importing its history often does not know the
-    class yet.
+    class yet. For a row imported as an applicant the class names the level
+    they applied for.
     """
     from schools.vs_academics.models import SchoolClass
 
@@ -653,12 +699,23 @@ def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
     Not a bespoke create: the same guardian matching, the same state machine
     and the same placement rules an enrolment uses, so no validation exists in
     two places and an imported student is indistinguishable from a typed one.
+
+    **At a school that requires documents before a child joins the roll**, the
+    row is written as an APPLICANT and left there, because a spreadsheet
+    carries no documents and enrolling the child would put them on the roll
+    without the documents the school asks for. The level of the row's class
+    becomes the level they applied for, so they are listed under that year;
+    no place is taken in the class, and no admission number is issued, since
+    an applicant's number is issued when they are confirmed. A number typed
+    on the row is kept. The child joins the roll once their documents are
+    uploaded and they are confirmed, like any applicant.
     """
     from .models import Student
     from .services import guardians as guardian_service
     from .services.placement import place
     from .services.status import transition
 
+    applicant = row.as_applicant
     student = Student.objects.create(
         tenant=tenant, branch=row.branch,
         student_number=row.student_number,
@@ -668,9 +725,14 @@ def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
         previous_school=row.previous_school,
         status=StudentStatus.APPLICANT,
         enrolment_date=row.admission_date or tenant_today(tenant),
+        applied_for=(
+            row.school_class.level
+            if applicant and row.school_class is not None else None
+        ),
+        applied_on=tenant_today(tenant) if applicant else None,
         created_by=created_by,
     )
-    if not row.student_number:
+    if not row.student_number and not applicant:
         _issue_imported_number(student, tenant=tenant)
     guardian, _ = guardian_service.upsert_guardian(
         tenant, first_name=row.guardian_first_name,
@@ -683,6 +745,8 @@ def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
         relationship_detail=row.guardian_relationship_detail,
         is_primary=True, actor=created_by,
     )
+    if applicant:
+        return student
     transition(
         student, StudentStatus.ENROLLED, actor=created_by, system=True,
         reason="Imported from a spreadsheet.",
@@ -724,7 +788,14 @@ def validate_students_import_batch(import_batch) -> list[dict]:
     occasionally a typo attaching a child to a stranger, which nothing
     downstream would ever question. A school matching on email only never
     joins on a phone, so the check says nothing of one there.
+
+    At a school that requires documents before a child joins the roll, every
+    row is imported as an applicant and takes no seat, so the rows are not
+    counted against a class's capacity and a row with no class is not warned
+    about: the one warning that the child comes in as an applicant says what
+    will happen.
     """
+    from .services.admission import confirm_documents
     from .services.guardian_rules import read_guardian_rules
     from .services.rules import read_rules
     from .services.scoping import branch_dimension_applies
@@ -740,6 +811,7 @@ def validate_students_import_batch(import_batch) -> list[dict]:
     multi_branch = branch_dimension_applies(tenant)
     rules = read_rules(tenant)
     guardian_rules = read_guardian_rules(tenant)
+    documents_owed = confirm_documents(tenant)
     policies: dict = {}
     rows = import_batch.preview_rows or []
 
@@ -773,6 +845,7 @@ def validate_students_import_batch(import_batch) -> list[dict]:
             tenant=tenant, session=session,
             batch_branch=import_batch.branch, multi_branch=multi_branch,
             policies=policies, rules=rules, guardian_rules=guardian_rules,
+            documents_owed=documents_owed,
         )
         for issue in resolved.issues:
             record(row_number, issue)
@@ -843,6 +916,8 @@ def validate_students_import_batch(import_batch) -> list[dict]:
                         field, getattr(resolved, field), severity="warning",
                     ))
 
+        if resolved.as_applicant:
+            continue
         if resolved.school_class is None:
             record(row_number, RowIssue(
                 "business_rule",

@@ -140,10 +140,29 @@ def enrol(
     """Create a student and everything that must exist with them.
 
     Returns the Student. Raises before writing anything if any rule refuses.
+
+    *documents* (``[{"document_type", "file"}]``) are attached to the new
+    record, whether the child is enrolled or saved as an applicant. A direct
+    enrolment at a school that requires documents before a child joins the
+    roll (``applicants.documents.required_to_confirm``) is refused with
+    ``DOCUMENTS_MISSING`` unless every one of them is among *documents*; that
+    is checked first. An applicant needs none.
     """
+    from .admission import assert_enrolment_documents
     from .documents import attach
     from .placement import place
 
+    if not as_applicant:
+        assert_enrolment_documents(
+            tenant,
+            name=" ".join(
+                part for part in (
+                    data.get("first_name"), data.get("middle_name"),
+                    data.get("last_name"),
+                ) if part
+            ),
+            document_types=[doc["document_type"] for doc in documents or []],
+        )
     guardian_service.assert_guardian_set(guardian_rows, tenant=tenant)
     assert_not_duplicate(
         tenant,

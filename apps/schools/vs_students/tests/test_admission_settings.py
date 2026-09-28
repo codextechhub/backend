@@ -741,10 +741,16 @@ class ConfirmDocumentsTests(_AdmissionFixture):
         self.move(tunde, stages["Entrance exam"])
         self.assertEqual(self.post(self.admin, "student-confirm", {}, pk=tunde.pk).status_code, 200)
 
-    def test_enrolling_directly_is_not_held_to_the_confirmation_documents(self):
+    def test_enrolling_directly_is_held_to_the_same_documents(self):
+        """Skipping the applicant stage does not skip its documents.
+
+        The enrolment's own refusals and its multipart form are covered in
+        ``test_enrolment_documents``.
+        """
         self.set_rules([], ["BIRTH_CERTIFICATE"])
         response = self.post(self.admin, "student-list", self.enrolment_body())
-        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.status_code, 422, response.data)
+        self.assertEqual(response.data["error"]["code"], "DOCUMENTS_MISSING")
 
 
 # ── a school with no stages ─────────────────────────────────────────────────

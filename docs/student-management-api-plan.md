@@ -683,9 +683,11 @@ nothing and audits nothing.
 
 A school sets its own applicant rules in the Settings console, beside the
 student and guardian settings: the **admission stages** its applications pass
-through, in its own order, and the **documents** an applicant must hold before
-being confirmed. A school that names no stages and requires no documents
-admits exactly as every school always has.
+through, in its own order, and the **documents** a child must have on their
+record before joining the roll: an applicant before being confirmed, a child
+enrolled directly in the same save (13.6), and every row of the student import,
+which comes in as an applicant instead (13.7). A school that names no stages
+and requires no documents admits exactly as every school always has.
 
 A stage is where an APPLICANT stands and nothing more. The statuses APPLICANT,
 ENROLLED and REJECTED and every transition between them are unchanged, and the
@@ -712,10 +714,13 @@ school's own today (`vs_config.clock.tenant_today`).
   `applicants.documents.required_to_confirm` (JSON list, default `[]`,
   platform and school scopes), declared by `vs_students` migration 0008 and by
   `seed_config_catalogue`. A value stored by hand is cleaned on read: an
-  unknown document is dropped.
+  unknown document is dropped. Its description, which a school reads beside
+  the setting, names the direct enrolment and the import as well as the
+  confirmation (migration 0009).
 
 Migration 0008 is reversible: going back removes the definition and its
-values, the three columns and every stage.
+values, the three columns and every stage. Migration 0009 swaps the
+description only where it still reads as 0008 wrote it, and swaps it back.
 
 ### 13.2 Applicant rules: `GET, PUT /v1/students/admission-rules/`
 
@@ -862,5 +867,111 @@ record, before anything else is written (no admission number is issued):
                                   {"value": "TRANSFER_CERTIFICATE", "label": "Transfer certificate"}]}}}
 ```
 
-HTTP 422. Enrolling a child directly, without saving them as an applicant
-first, is not held to this list, and neither is the student import.
+HTTP 422. Enrolling a child directly is held to the same list (13.6), and the
+student import brings each row in as an applicant instead (13.7).
+
+### 13.6 Enrolling directly: `POST /v1/students/`
+
+The enrol form sends a child's documents in the same save as the child. JSON
+cannot carry a file, so the route takes `multipart/form-data` as well as
+today's JSON body:
+
+| Field | Holds |
+| --- | --- |
+| `payload` | The JSON string of exactly the JSON body, guardians nested as in JSON. |
+| `document_<TYPE>` | One file per document, `<TYPE>` being a `DocumentType` value exactly: `document_BIRTH_CERTIFICATE`, `document_REPORT_CARD`, `document_PASSPORT_PHOTO`, `document_TRANSFER_CERTIFICATE`, `document_IMMUNISATION`. |
+
+A JSON request is unchanged. In a multipart one, each file passes the checks
+of the document upload route (`check_upload`: at most 5MB, and an image for
+the passport photograph), and the passport photograph needs the caller's
+`school.students.photo` write switch, as on that route. Everything else is a
+400 keyed on the field at fault, with nothing written:
+
+```json
+{"success": false, "message": "...",
+ "error": {"code": "REQUEST_ERROR",
+           "detail": {"document_SCHOOL_REPORT": ["This is not a document the school records. Send each one as document_ followed by one of BIRTH_CERTIFICATE, REPORT_CARD, PASSPORT_PHOTO, TRANSFER_CERTIFICATE, IMMUNISATION."]}}}
+```
+
+| Field at fault | Message |
+| --- | --- |
+| `payload` absent or empty | `Send the enrolment as JSON in the payload field.` |
+| `payload` not a JSON object | `The payload field must hold a JSON object.` |
+| an unknown `document_<X>`, or any other file field | as above |
+| two files under one `document_<TYPE>` | `Attach one file for each document.` |
+| `document_<TYPE>` sent as text with no file | `Attach a file here, or leave the field out.` |
+| any other text field beside `payload` | `Only payload and document files are read from this form. Put this value in the payload.` |
+| a file too large | `That file is 6MB. The limit is 5MB.` |
+| a passport photograph that is not an image | `A passport photograph must be an image - JPEG, PNG, WebP or HEIC. This one is a application/pdf.` |
+
+A text field beside the payload is refused rather than ignored because
+`as_applicant` sent flat would otherwise be dropped and the child enrolled
+when the form meant to save an applicant. The `payload` is then validated
+exactly as the JSON body is, with the same field-keyed errors.
+
+**A direct enrolment** (`as_applicant` false) at a school whose
+`required_documents_to_confirm` is not empty is refused unless every required
+type is among the files sent, before anything is written (no student, no
+guardian, no document, no number), with the body a confirmation uses:
+
+```json
+{"success": false,
+ "message": "Tunde Bello cannot be enrolled until the birth certificate is attached.",
+ "error": {"code": "DOCUMENTS_MISSING",
+           "detail": {"missing": [{"value": "BIRTH_CERTIFICATE", "label": "Birth certificate"}]}}}
+```
+
+HTTP 422. `missing` lists only the documents not sent, in the checklist's
+order; with more than one the message reads "until the birth certificate and
+immunisation record are attached". The check is in `enrolment.enrol`, so any
+caller of the service is held to it.
+
+**Saving as an applicant** (`as_applicant` true) never needs a document.
+Documents sent with an applicant, and documents the school does not require
+sent with an enrolment, are attached all the same, each audited as
+`student.document_attached`. The route's keys are unchanged
+(`school.students.create` and `academics.classes.assign`).
+
+### 13.7 The student import
+
+At a school whose `required_documents_to_confirm` is not empty, the students
+import (`students_v1`) validates every row as before, and executes each one as
+an **APPLICANT** rather than enrolling and placing it, because a spreadsheet
+carries no documents:
+
+- `applied_for` is the level of the row's class, when the row names one, so
+  the child is listed under that year; with no class they have no level and
+  are listed under the running year.
+- No place is taken: no `ClassEnrolment` is written. So the rows are not
+  counted against a class's capacity (neither the warning nor, under the
+  school's never-over-capacity rule, the error), and a row with no class is
+  not warned about.
+- No admission number is issued automatically, and a blank one is never
+  refused, even where the branch requires one: an applicant's number is
+  issued or required when they are confirmed. A number typed on the row is
+  kept, and still checked against the branch's format and the numbers already
+  held.
+- `applied_on` is the school's today; the row's admission date, or today, is
+  kept as the enrolment date.
+- The row's result reads "Chiamaka Nwosu saved as an applicant." rather than
+  "Chiamaka Nwosu enrolled.".
+
+Every row carries one warning, whatever else it carries:
+
+> This school needs a birth certificate before enrolling, so this child is
+> imported as an applicant and joins the roll once it is uploaded.
+
+With more than one document: "This school needs a birth certificate and an
+immunisation record before enrolling, so this child is imported as an
+applicant and joins the roll once they are uploaded." The child joins the roll
+once the documents are on their record and they are confirmed (13.5), like
+any applicant.
+
+The list is read once per file at validation and once per row at execution,
+so a school that changes it between the two gets the rows its list says at
+the time each one is written.
+
+A school requiring nothing imports exactly as before. `vs_import_data`
+migration 0023 adds one sentence to the template's opening paragraph saying
+so, only where the paragraph still reads as it was written, and takes it out
+again on the way back.

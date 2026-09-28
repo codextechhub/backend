@@ -197,6 +197,10 @@ def import_students_row(import_batch, payload: dict, queued_by) -> ImportExecuti
     wrong quietly is the two of them reading a row differently, so both call the
     same resolver and this handler writes only what that resolver read.
 
+    At a school that requires documents before a child joins the roll, the
+    row is written as an applicant rather than enrolled and placed
+    (``create_student_from_row``), and the row's message says so.
+
     Template columns (target_field) this handler reads:
         first_name             required
         middle_name            optional
@@ -251,7 +255,10 @@ def import_students_row(import_batch, payload: dict, queued_by) -> ImportExecuti
         action=ImportRowActionChoices.CREATE,
         instance=student,
         target_model="Student",
-        message=f"{student.full_name} enrolled.",
+        message=(
+            f"{student.full_name} saved as an applicant." if row.as_applicant
+            else f"{student.full_name} enrolled."
+        ),
     )
 
 

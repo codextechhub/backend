@@ -1280,6 +1280,29 @@ returns each bill's branch_id.
 MUST SAY: M18 the reach rule on those routes and its answers; M23 the new
 branch_id on eligible bills.
 
+### D64. A school's required documents hold a direct enrolment, and its import brings in applicants (aac3d646, 2026-09-28)
+MODULES: M11 student management, M10 bulk data import.
+applicants.documents.required_to_confirm now holds every way onto the roll.
+POST /v1/students/ takes multipart/form-data besides JSON: payload (the JSON
+body as a string) and one file per document in document_<TYPE>, each checked
+as on the upload route (5MB, an image for the passport photograph, the photo
+write switch). Field-keyed 400s for a missing payload, an unknown document
+field, two files for one document and any other field. A direct enrolment
+without every required document is 422 DOCUMENTS_MISSING ("Tunde Bello cannot
+be enrolled until the birth certificate is attached.", detail.missing), with
+nothing written; an applicant needs none, and documents sent either way are
+attached. At a school with required documents the students import writes each
+row as an APPLICANT (applied_for the class's level, no placement, no automatic
+number, typed number kept, blank number never refused), warns once per row
+("This school needs a birth certificate before enrolling, so this child is
+imported as an applicant and joins the roll once it is uploaded."), and does
+not count those rows against class capacity. vs_import_data 0023 adds one
+sentence to the students_v1 guidance; vs_students 0009 corrects the setting's
+description.
+MUST SAY: M11 the multipart contract, its refusals and the DOCUMENTS_MISSING
+body at enrolment; M10 the applicant rows, the warning, what is skipped
+(placement, capacity, auto-issue) and the template sentence.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

@@ -108,3 +108,63 @@ class PublicSchoolLogoTests(TestCase):
 
         self.assertEqual(anonymous.status_code, with_token.status_code)
         self.assertEqual(anonymous.content, with_token.content)
+
+
+class PublicSchoolNameTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.client = APIClient()
+
+    def url(self, slug):
+        return reverse("public-school-name", args=[slug])
+
+    def test_a_known_school_name_is_available_before_sign_in(self):
+        School.objects.create(name="Bright Star School", slug="bright-star")
+
+        response = self.client.get(self.url("Bright-Star"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"name": "Bright Star School"})
+        self.assertIn("public", response["Cache-Control"])
+
+    def test_a_school_without_a_crest_still_has_a_name(self):
+        School.objects.create(name="Bright Star School", slug="bright-star")
+
+        self.assertEqual(
+            self.client.get(self.url("bright-star")).json(),
+            {"name": "Bright Star School"},
+        )
+
+    def test_a_suspended_school_and_an_unknown_slug_look_alike(self):
+        school = School.objects.create(name="Bright Star School", slug="bright-star")
+        Tenant.objects.filter(pk=school.tenant_id).update(status=Tenant.Status.SUSPENDED)
+
+        suspended = self.client.get(self.url("bright-star"))
+        unknown = self.client.get(self.url("no-such-school"))
+
+        self.assertEqual(suspended.status_code, 404)
+        self.assertEqual(suspended.content, unknown.content)
+
+    def test_a_slug_never_returns_another_school_name(self):
+        School.objects.create(name="Bright Star School", slug="bright-star")
+        School.objects.create(name="Greenfield Academy", slug="greenfield")
+
+        self.assertEqual(
+            self.client.get(self.url("bright-star")).json(),
+            {"name": "Bright Star School"},
+        )
+        self.assertEqual(
+            self.client.get(self.url("greenfield")).json(),
+            {"name": "Greenfield Academy"},
+        )
+
+    def test_a_stale_token_cannot_change_the_public_name(self):
+        School.objects.create(name="Bright Star School", slug="bright-star")
+        anonymous = self.client.get(self.url("bright-star"))
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer not-a-real-token")
+
+        self.assertEqual(
+            self.client.get(self.url("bright-star")).content,
+            anonymous.content,
+        )
