@@ -1111,6 +1111,27 @@ the next number in turn when written. The students_v1 template's guidance
 details, capacity cap and automatic numbering instead of fixed figures.
 MUST SAY: the import applies the Students settings exactly as enrolment does.
 
+### D53. A school's "today" follows its own time zone (480a4c87, bed82560, 39c256a6, 2026-09-28)
+MODULES: MRD, M01 school and branch management (settings), M14 calendar and
+timetables, M13 academic structure, M12 staff, M17 billing and invoicing, M18
+payments and collections, M19 finance and accounting, M20 adjustments and
+concessions, M26 reporting and exports.
+The server keeps UTC, so every "today" was the UTC day: between midnight and
+1am in Lagos a document was dated yesterday and yesterday's due date was not
+yet overdue. A new setting, display.timezone (platform and school scope,
+default Africa/Lagos, only real IANA zones accepted), decides the day; every
+"today" in the modules above now reads the school's own day through
+vs_config.clock. A school sets it at GET/PATCH /v1/i/me/settings/display/
+(school.settings.view / school.settings.update, live schools only, audited as
+config.value.updated), which answers the zone, where it came from and a short
+list of common zones. vs_procurement and vs_students are still on the UTC day.
+MUST SAY: M01 the display setting, its contract, keys, refusals and audit; the
+rule "a school's day is its own time zone's, Africa/Lagos by default" in each
+listed FRD wherever a date defaults to today, a due date is judged overdue or
+the calendar decides the current term; M26 that an export's default date
+window ends on the school's day; the MRD capability and, as a remaining gap
+until they are swept, procurement and student dates.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
