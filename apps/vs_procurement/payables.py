@@ -416,7 +416,7 @@ def post_vendor_payment(payment, *, actor_user=None, auto_allocate=True, allocat
 
     ``allocations`` (a list of ``(vendor_invoice, gross_amount_kobo)``) applies an
     explicit split; otherwise ``auto_allocate`` settles the vendor's oldest open bills
-    first.
+    of the payment's own branch first (:func:`_auto_settlement_candidates`).
 
     ``system_originated`` marks a post that records an already-completed disbursement
     (e.g. booking a gateway payout that has paid). Such posts skip the pre-disbursement
@@ -481,11 +481,7 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
         allocations = [(locked.get(invoice.pk, invoice), amount) for invoice, amount in allocations]
     elif auto_allocate:
         # Auto-allocation also locks every candidate before the journal is written.
-        list(
-            VendorInvoice.objects.select_for_update().filter(
-                entity=payment.entity, vendor=payment.vendor, status=DocumentStatus.POSTED,
-            ).exclude(payment_status=InvoicePaymentStatus.PAID).order_by("due_date", "invoice_date", "id")
-        )
+        list(_auto_settlement_candidates(payment).select_for_update())
 
     if payment.status != DocumentStatus.DRAFT:  # Only draft vendor payments can be posted.
         raise PostingError(
@@ -626,8 +622,33 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
     return payment  # Return the posted vendor payment.
 
 
+def _auto_settlement_candidates(payment, bill_scope=None):
+    """The open bills automatic allocation may settle for ``payment``, oldest due first.
+
+    Only bills of the payment's own branch, or school-wide bills for a school-wide
+    payment. A settlement is booked to the payment's branch (its journal carries
+    ``payment.branch``) while the bill's liability sits on the bill's branch, so
+    Ikeja's money settling Lekki's bill would leave Ikeja's books short and Lekki's
+    still owing. Nothing chooses a bill here but the order of due dates, so the
+    branch is the whole of what keeps the choice honest.
+
+    ``bill_scope`` is a ``Q`` over :class:`VendorInvoice` naming the bills a caller
+    can reach, for a settlement a person asks for; a settlement with no caller (a
+    gateway payout being booked) passes none.
+    """
+    from .models import VendorInvoice
+
+    qs = VendorInvoice.objects.filter(
+        entity_id=payment.entity_id, vendor_id=payment.vendor_id,
+        branch_id=payment.branch_id, status=DocumentStatus.POSTED,
+    ).exclude(payment_status=InvoicePaymentStatus.PAID)
+    if bill_scope is not None:
+        qs = qs.filter(bill_scope)
+    return qs.order_by("due_date", "invoice_date", "id")
+
+
 # Build the list of bills a vendor payment should settle, in settlement order.
-def _build_vendor_bill_plan(payment, allocations, *, as_of=None):
+def _build_vendor_bill_plan(payment, allocations, *, as_of=None, bill_scope=None):
     """An explicit ``[(bill, amount)]`` plan, or the vendor's open bills oldest-first.
 
     ``as_of`` is the settling journal's own accounting date, and it is the choke point
@@ -647,10 +668,12 @@ def _build_vendor_bill_plan(payment, allocations, *, as_of=None):
     Pass no ``as_of`` when the settlement raises its own journal dated at the later of
     the two documents (see :func:`allocate_vendor_payment`); applying an existing advance
     to a newer bill is ordinary business and must not be refused.
+
+    The automatic plan is drawn from :func:`_auto_settlement_candidates`, so it holds
+    only bills of the payment's own branch; ``bill_scope`` narrows it further to the
+    bills a caller can reach.
     """
     from vs_finance.chronology import accounting_date, describe, ensure_on_or_after
-
-    from .models import VendorInvoice
 
     if allocations is not None:  # Explicit allocations always win over auto-allocation.
         plan = list(allocations)  # Normalize the iterable to a list.
@@ -669,12 +692,7 @@ def _build_vendor_bill_plan(payment, allocations, *, as_of=None):
                 )
         return plan  # Explicit plan passed its date checks.
 
-    open_invoices = (  # Posted vendor bills that still have a balance.
-        VendorInvoice.objects
-        .filter(vendor=payment.vendor, status=DocumentStatus.POSTED)
-        .exclude(payment_status=InvoicePaymentStatus.PAID)
-        .order_by("due_date", "invoice_date", "id")
-    )
+    open_invoices = _auto_settlement_candidates(payment, bill_scope)
     if as_of is not None:  # Auto-allocation only settles what already exists.
         open_invoices = open_invoices.filter(invoice_date__lte=as_of)
     return [(inv, inv.balance_due) for inv in open_invoices]  # Up to each bill's balance.
@@ -773,15 +791,18 @@ def _apply_vendor_payment_subledger(payment, plan, *, remaining, strict=False):
 
 @transaction.atomic
 # Handle the allocate vendor payment workflow.
-def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, strict=False):
+def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, strict=False,
+                            bill_scope=None):
     """Apply a posted payment's **vendor advance** to bills, reclassifying it into AP.
 
     After posting, anything the payment did not settle sits in the vendor-advance asset
     (1240). Applying it to a bill moves it back where the settlement belongs
     (``Dr AP, Cr vendor advances``) and settles the bill - no cash moves.
     ``allocations`` is an optional explicit ``[(bill, amount)]`` plan; without it the
-    vendor's open posted bills are settled oldest-first (by due date, then invoice date).
-    Never allocates past a bill's balance due or the advance still remaining.
+    vendor's open posted bills of the payment's own branch are settled oldest-first (by
+    due date, then invoice date), within ``bill_scope`` where a caller passes one (see
+    :func:`_auto_settlement_candidates`). Never allocates past a bill's balance due or
+    the advance still remaining.
 
     Applying an older payment to a newer bill is ordinary and allowed - that is a
     prepayment finding its bill, and the whole reason the advance account exists. What
@@ -814,7 +835,8 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, stric
     if remaining <= 0:  # Nothing sitting in the advance to apply.
         return []
 
-    plan = _build_vendor_bill_plan(payment, allocations)  # No cutoff: a newer bill is fine.
+    plan = _build_vendor_bill_plan(  # No cutoff: a newer bill is fine.
+        payment, allocations, bill_scope=bill_scope)
     applied, created, latest = _apply_vendor_payment_subledger(
         payment, plan, remaining=remaining, strict=strict,
     )

@@ -24,6 +24,7 @@ from ..models import VendorInvoice, VendorPayment, VendorPaymentAllocation
 from ..serializers import VendorPaymentListSerializer, VendorPaymentSerializer
 from .base import (
     _ProcBase,
+    _branch_q,
     _branch_scoped,
     _branch_visible,
     _date,
@@ -503,8 +504,10 @@ class VendorPaymentAllocateAdvanceView(_ProcBase):
     disbursement already happened.
 
     Body ``{allocations:[{vendor_invoice, amount}]}`` for an explicit split, or
-    ``{auto_allocate:true}`` to settle the vendor's open bills oldest-first. Each
-    amount is capped at the bill's balance and the advance still remaining.
+    ``{auto_allocate:true}`` to settle the vendor's open bills oldest-first: only bills
+    of the payment's own branch (school-wide bills for a school-wide payment) that the
+    caller can reach. Each amount is capped at the bill's balance and the advance still
+    remaining.
 
     The AP mirror of ``/finance/payments/<id>/allocate/``. Note the deliberate
     difference from *posting*: posting refuses to settle a bill dated after the
@@ -542,7 +545,9 @@ class VendorPaymentAllocateAdvanceView(_ProcBase):
             payables.allocate_vendor_payment(
                 payment, allocations=plan, actor_user=request.user, strict=True)
         elif body.get("auto_allocate"):
-            payables.allocate_vendor_payment(payment, actor_user=request.user)
+            # Oldest-first among the payment's own branch's bills this caller reaches.
+            payables.allocate_vendor_payment(
+                payment, actor_user=request.user, bill_scope=_branch_q(request))
         else:
             raise ValidationError(
                 {"allocations": "Provide allocations or auto_allocate=true."})

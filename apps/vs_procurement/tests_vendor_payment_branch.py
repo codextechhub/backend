@@ -28,7 +28,9 @@ UNKNOWN_BILL = "Every invoice must be posted and belong to the selected vendor."
 _officers = itertools.count(1)
 
 
-class VendorPaymentBranchTests(_FinanceBranchFixture):
+class _VendorPaymentFixture(_FinanceBranchFixture):
+    """One stationer with an open bill at Ikeja and at Lekki, and a bank at each."""
+
     def setUp(self):
         super().setUp()
         e = self.books
@@ -81,6 +83,8 @@ class VendorPaymentBranchTests(_FinanceBranchFixture):
     def settles(self, payment):
         return list(payment.allocations.values_list("vendor_invoice_id", flat=True))
 
+
+class VendorPaymentBranchTests(_VendorPaymentFixture):
     # -- edit ----------------------------------------------------------------- #
 
     def test_a_lekki_bill_is_unknown_to_ikeja_on_create_and_on_edit(self):
@@ -170,3 +174,88 @@ class VendorPaymentBranchTests(_FinanceBranchFixture):
         self.assertEqual(refused.status_code, 400, refused.data)
         self.assertIn("now belong to another branch", str(refused.data))
         self.assertNotPosted(payment)
+
+
+class VendorAdvanceBranchTests(_VendorPaymentFixture):
+    """Money a vendor was paid ahead of a bill settles bills of the payment's own branch.
+
+    Ojo Stationers holds open bills at Ikeja, at Lekki and for the whole school, all
+    due the same day. Ikeja paid Ojo ahead of any bill. Settling that advance
+    automatically, oldest-first, must pick Ikeja's bills only: Ikeja's money settling
+    Lekki's bill leaves Ikeja's books short and Lekki's still owing. A school-wide
+    advance settles the school-wide bills.
+    """
+
+    def officer(self, *branches):
+        """A procurement officer bound to ``branches``, who may apply advances."""
+        n = next(_officers)
+        user = self.user_for(self.tenant, f"advance-officer-{n}@corona.test")
+        for branch in branches:
+            self.grant(user, *KEYS, "procurement.vendor_payment.allocate", tenant=self.tenant,
+                       role_key=f"advance-officer-{n}-{branch.pk}", branch=branch)
+        return TenantAPIClient(user=user)
+
+    def bursar(self):
+        """A caller who covers the whole school, the only one who reaches a school-wide payment."""
+        user = self.user_for(self.tenant, f"advance-bursar-{next(_officers)}@corona.test")
+        self.grant(user, *KEYS, "procurement.vendor_payment.allocate", tenant=self.tenant,
+                   role_key=f"advance-bursar-{user.pk}")
+        return TenantAPIClient(user=user)
+
+    def approved_draft(self, branch, bank, gross=30_000):
+        return VendorPayment.objects.create(
+            entity=self.books, vendor=self.vendor, branch=branch, payment_date=JAN,
+            gross_amount=gross, wht_amount=0, net_amount=gross,
+            payment_account=bank.gl_account, approval_state=ProcApprovalState.APPROVED,
+        )
+
+    def advance(self, branch, bank):
+        """A posted payment of ``branch`` whose whole amount is still an advance."""
+        from . import payables
+
+        payment = self.approved_draft(branch, bank)
+        payables.post_vendor_payment(payment, auto_allocate=False)
+        payment.refresh_from_db()
+        self.assertEqual(payment.advance_remaining, 30_000)
+        return payment
+
+    def paid(self):
+        for bill in (self.ikeja_bill, self.lekki_bill, self.shared_bill):
+            bill.refresh_from_db()
+        return {"ikeja": self.ikeja_bill.amount_paid, "lekki": self.lekki_bill.amount_paid,
+                "shared": self.shared_bill.amount_paid}
+
+    def auto_allocate(self, client, payment):
+        response = client.post(self.url(f"{payment.pk}/allocate/"),
+                               {"auto_allocate": True}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        payment.refresh_from_db()
+        return payment
+
+    def test_an_ikeja_advance_settles_only_ikejas_bills(self):
+        self.shared_bill = self.bill(None)
+        payment = self.advance(self.ikeja, self.ikeja_bank)
+
+        payment = self.auto_allocate(self.officer(self.ikeja, self.lekki), payment)
+        self.assertEqual(self.paid(), {"ikeja": 10_000, "lekki": 0, "shared": 0})
+        self.assertEqual(payment.advance_remaining, 20_000)
+
+    def test_a_school_wide_advance_settles_only_school_wide_bills(self):
+        self.shared_bill = self.bill(None)
+        whole_school = self.bank("Head Office", None, "42")
+        payment = self.advance(None, whole_school)
+
+        payment = self.auto_allocate(self.bursar(), payment)
+        self.assertEqual(self.paid(), {"ikeja": 0, "lekki": 0, "shared": 10_000})
+        self.assertEqual(payment.advance_remaining, 20_000)
+
+    def test_posting_with_automatic_settlement_settles_only_the_payments_branch(self):
+        """The automatic plan a posting draws (a gateway payout's booking) holds the same rule."""
+        from . import payables
+
+        self.shared_bill = self.bill(None)
+        payment = self.approved_draft(self.lekki, self.lekki_bank)
+        payables.post_vendor_payment(payment)
+        payment.refresh_from_db()
+        self.assertEqual(self.paid(), {"ikeja": 0, "lekki": 10_000, "shared": 0})
+        self.assertEqual(payment.advance_remaining, 20_000)
