@@ -1254,6 +1254,32 @@ running year). The applicants board, which always sends the year, had been
 empty at every school with a year set up.
 MUST SAY: the rule for which year an unplaced child belongs to.
 
+### D62. A branch's document names only its own branch's bank ledger (0c59e23d, merged 864468ba, 2026-09-28)
+MODULES: M19 finance and accounting, M18 payments and collections, M17 billing and invoicing.
+The same-branch rule of D57 now also covers a ledger account that backs a bank
+account: _resolve_account takes the document's branch. Asset purchase
+credit_account ("Pay it from"), customer receipt and invoice payment
+deposit_account ("Deposit it into"), bank adjustment counter_account and
+counter_code ("Book it against"), payments collection and virtual account
+deposit_account. Receipts use the customer's or invoice's branch; bank
+adjustments the statement's bank's branch; collections and virtual accounts
+the customer's branch. Payouts and payout batches are school-wide (their
+vendor payment has no branch) and are not restricted. A ledger account behind
+no bank account is unaffected.
+MUST SAY: the rule and its three wordings, the routes, and how each route's
+branch is found.
+
+### D63. The payments app names customers, invoices and payout vendors within the caller's branches (112fd7ef, cee3af8d, merged 864468ba, 2026-09-28)
+MODULES: M18 payments and collections, M23 purchase orders delivery and AP.
+Collection create (customer and invoice), virtual-account create (customer),
+single payout and payout-batch lines (vendor) resolve their party within the
+caller's branches plus school-wide, answering as for an unknown one: 400 "No
+customer '<ref>' in this entity.", "No invoice '<ref>' in this entity.", "No
+such vendor in this entity." The eligible-bills list for a vendor payment
+returns each bill's branch_id.
+MUST SAY: M18 the reach rule on those routes and its answers; M23 the new
+branch_id on eligible bills.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
