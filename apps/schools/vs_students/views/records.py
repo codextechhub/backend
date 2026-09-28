@@ -13,6 +13,7 @@ from vs_rbac.field_enforcement import assert_writable, can_read
 
 from ..constants import (
     PERM_CLASS_VIEW,
+    PERM_SETTINGS_UPDATE,
     PERM_UPDATE,
     PERM_VIEW,
     DocumentType,
@@ -20,6 +21,7 @@ from ..constants import (
 from ..models import StudentDocument
 from ..serializers import (
     AdmissionPolicySerializer,
+    EnrolmentRulesSerializer,
     DocumentSerializer,
     DocumentUploadSerializer,
     StudentListSerializer,
@@ -86,7 +88,9 @@ class StudentDocumentsView(StudentsViewMixin, APIView):
             rows = document_service.checklist(student, request=request)
         else:
             past.student_at(student, as_at)
-            rows = past.checklist_at(student.pk, as_at, request=request)
+            rows = past.checklist_at(
+                student.pk, as_at, request=request, tenant=self.tenant,
+            )
         rows = hide_unreadable_photo(request, rows)
         return success_response(data=DocumentSerializer(rows, many=True).data)
 
@@ -392,44 +396,140 @@ class ClassSeatsView(StudentsViewMixin, APIView):
 
 
 class AdmissionPolicyView(StudentsViewMixin, APIView):
-    """GET, PUT /v1/students/admission-number-policy/
+    """GET, PUT, DELETE /v1/students/admission-number-policy/
 
-    The school's own rule about admission numbers. Reading it needs only
-    ``view`` because the enrolment form has to render the hint; setting it
-    needs ``update``.
+    The admission-number rule: the school's, or with ``?branch=<id>`` the rule
+    that branch's students follow. Reading it needs only ``view`` because the
+    enrolment form has to render the hint; setting or removing it needs
+    ``update``.
+
+    The body is ``{required, pattern, hint, auto_issue, source, suggestion}``.
+    ``source`` is ``branch`` when the branch has a rule of its own, ``school``
+    when the school has set one, and ``default`` when nobody has. PUT with a
+    branch writes that branch's own rule, all four values; DELETE with a
+    branch removes it, so the branch follows the school's again. DELETE with
+    no branch is a 400: the school's rule is changed with PUT, never removed.
+
+    The branch must be this school's and one the caller can see, or the answer
+    is 404, whatever the reason: a distinct answer for another school's branch
+    would confirm it exists.
 
     docstring-name: Admission number policy
     """
 
     def get_permissions(self):
         self.rbac_permission = (
-            PERM_UPDATE if self.request.method == "PUT" else PERM_VIEW
+            PERM_VIEW if self.request.method in ("GET", "HEAD", "OPTIONS")
+            else PERM_UPDATE
         )
         return super().get_permissions()
 
-    def get(self, request):
-        from ..services.policy import read_policy, suggest_number
+    def _branch(self):
+        from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
+        from vs_tenants.references import find_branch_in_tenant
 
-        policy = read_policy(self.tenant)
+        raw = (self.request.query_params.get("branch") or "").strip()
+        if not raw:
+            return None
+        branch = find_branch_in_tenant(self.tenant, raw)
+        if branch is None:
+            raise NotFound("No such branch at this school.")
+        visible = visible_branch_ids(self.request.user, self.tenant)
+        if visible is not WHOLE_TENANT and branch.pk not in (visible or ()):
+            raise NotFound("No such branch at this school.")
+        return branch
+
+    def _body(self, policy, branch):
+        from ..services.policy import suggest_number
+
         # A suggestion, not a reservation: two registrars enrolling at once can
         # be handed the same number, and the unique constraint is what actually
-        # stops the collision. "" means the school's series cannot be continued
-        # honestly - see suggest_number for when that happens.
-        return success_response(data={
+        # stops the collision. "" means the series cannot be continued honestly;
+        # see suggest_number for when that happens.
+        return {
             **policy.as_dict(),
-            "suggestion": suggest_number(self.tenant, policy=policy),
-        })
+            "suggestion": suggest_number(self.tenant, policy=policy, branch=branch),
+        }
+
+    def get(self, request):
+        from ..services.policy import read_policy
+
+        branch = self._branch()
+        return success_response(
+            data=self._body(read_policy(self.tenant, branch), branch),
+        )
 
     def put(self, request):
         from ..services.policy import write_policy
 
+        branch = self._branch()
         writer = AdmissionPolicySerializer(data=request.data)
         writer.is_valid(raise_exception=True)
         data = writer.validated_data
         policy = write_policy(
-            self.tenant, request.user,
+            self.tenant, request.user, branch=branch,
             required=data["required"], pattern=data["pattern"], hint=data["hint"],
+            auto_issue=data.get("auto_issue"),
         )
         return success_response(
-            "Admission number rule saved.", data=policy.as_dict(),
+            "Admission number rule saved.", data=self._body(policy, branch),
         )
+
+    def delete(self, request):
+        from rest_framework.exceptions import ValidationError
+
+        from ..services.policy import reset_branch_policy
+
+        branch = self._branch()
+        if branch is None:
+            raise ValidationError({
+                "branch": "Name the branch whose own rule to remove. The "
+                          "school's rule is changed, never removed.",
+            })
+        policy = reset_branch_policy(self.tenant, branch, request.user)
+        return success_response(
+            f"{branch.name} follows the school's admission number rule again.",
+            data=self._body(policy, branch),
+        )
+
+
+class EnrolmentRulesView(StudentsViewMixin, APIView):
+    """GET, PUT /v1/students/enrolment-rules/
+
+    The school's own enrolment rules: the age range, the documents prompted
+    for, the optional fields made required, what a full class does and the
+    size a new class is given. Reading needs ``school.students.view``, because
+    the enrolment form renders from it; changing needs
+    ``school.settings.update``, because these are the school's settings rather
+    than a student record.
+
+    The school is ``request.tenant`` and there is nothing in the request that
+    names another. PUT takes every rule every time, plus an optional
+    ``reason`` for the audit trail, and answers with the same body as GET.
+    Refusals are 400s keyed on the field, in sentences.
+
+    docstring-name: Enrolment rules
+    """
+
+    def get_permissions(self):
+        self.rbac_permission = (
+            PERM_VIEW if self.request.method in ("GET", "HEAD", "OPTIONS")
+            else PERM_SETTINGS_UPDATE
+        )
+        return super().get_permissions()
+
+    def get(self, request):
+        from ..services.rules import read_rules
+
+        return success_response(data=read_rules(self.tenant).as_dict())
+
+    def put(self, request):
+        from ..services.rules import write_rules
+
+        writer = EnrolmentRulesSerializer(data=request.data)
+        writer.is_valid(raise_exception=True)
+        data = dict(writer.validated_data)
+        rules = write_rules(
+            self.tenant, request.user, reason=data.pop("reason", ""), **data,
+        )
+        return success_response("Enrolment rules saved.", data=rules.as_dict())

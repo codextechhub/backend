@@ -101,6 +101,26 @@ class ClassAtCapacity(StudentsError):
     http_status = 422
 
 
+class ClassFull(StudentsError):
+    """A full class at a school that does not put classes over capacity.
+
+    The school's capacity rule is HARD, so unlike ``CLASS_AT_CAPACITY`` there
+    is nothing the caller can send to go ahead: the refusal is the rule. A
+    separate code rather than a flag on the other one, because a screen that
+    offers "go ahead anyway" on ``CLASS_AT_CAPACITY`` must not offer it here.
+    Raised by one child's placement, a bulk assignment and a promotion run;
+    the last carries ``classes`` in the shape of the preview's
+    ``over_capacity``.
+    """
+
+    error_code = "CLASS_FULL"
+    default_message = (
+        "That class is full, and this school does not put classes over "
+        "capacity."
+    )
+    http_status = 422
+
+
 class PromotionOverCapacity(StudentsError):
     """A promotion that would fill classes past their capacity, unacknowledged.
 
@@ -228,5 +248,22 @@ class AdmissionPolicyNotRegistered(StudentsError):
     default_message = (
         "The admission number settings are not registered on this platform "
         "yet. Run seed_config_catalogue."
+    )
+    http_status = 500
+
+
+class StudentSettingNotRegistered(StudentsError):
+    """An enrolment rule's configuration definition is missing.
+
+    The same failure as ``AdmissionPolicyNotRegistered`` for the enrolment
+    rules, and refused for the same reason: storing nothing and answering
+    success would leave a school believing a rule was set that every enrolment
+    then ignores.
+    """
+
+    error_code = "STUDENT_SETTING_NOT_REGISTERED"
+    default_message = (
+        "The student settings are not registered on this platform yet. Run "
+        "the migrations and seed_config_catalogue."
     )
     http_status = 500

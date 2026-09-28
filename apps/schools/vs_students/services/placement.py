@@ -17,10 +17,11 @@ from rest_framework.exceptions import NotFound
 from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
 
-from ..constants import EnrolmentOutcome, StudentStatus
+from ..constants import CapacityMode, EnrolmentOutcome, StudentStatus
 from ..exceptions import (
     ClassAtCapacity,
     ClassBelongsToAnotherYear,
+    ClassFull,
     NoActiveSession,
     ReasonRequired,
 )
@@ -124,16 +125,53 @@ def capacity_state(school_class, session, *, adding=1):
     return used, cap, (used + adding) > cap
 
 
-def assert_capacity(school_class, session, *, adding=1, acknowledged=False):
-    """Refuse a full class unless the caller has said they mean it.
+def class_full_message(name, used, cap, adding=1) -> str:
+    """The sentence a HARD school's refusal carries, for one child or several."""
+    if adding == 1 or used >= cap:
+        return (
+            f"{name} holds {used} of {cap} seats, and this school does not put "
+            f"classes over capacity."
+        )
+    return (
+        f"{name} holds {used} of {cap} seats, so it has room for {cap - used} "
+        f"more, not {adding}. This school does not put classes over capacity."
+    )
 
-    The acknowledgement needs no extra permission key. The design shows the
-    seat count and the warning to whoever is doing the enrolling and then lets
-    them proceed; reserving the override to school.students.transition would stop
-    the screen working for the registrar it was drawn for. It is audited either
-    way, which is the control that actually matters.
+
+def assert_capacity(
+    school_class, session, *, adding=1, acknowledged=False, mode=None,
+):
+    """Apply the school's capacity rule to placing *adding* children in a class.
+
+    Returns ``(used, capacity, over)``. What a full class does is the school's
+    choice (``students.capacity.mode``, see ``CapacityMode``):
+
+    * WARN refuses with ``CLASS_AT_CAPACITY`` unless the caller has said they
+      mean it. The acknowledgement needs no extra permission key: the design
+      shows the seat count and the warning to whoever is doing the enrolling
+      and then lets them proceed, and reserving the override to
+      school.students.transition would stop the screen working for the
+      registrar it was drawn for. It is audited either way, which is the
+      control that actually matters.
+    * HARD refuses with ``CLASS_FULL`` whatever the caller sends.
+    * OFF checks nothing and counts nothing: ``used`` is None and ``over`` is
+      False.
+
+    *mode* is the rule already read by a caller that checks more than once.
     """
+    if mode is None:
+        from .rules import capacity_mode
+
+        mode = capacity_mode(school_class.tenant)
+    if mode == CapacityMode.OFF:
+        return None, school_class.capacity, False
     used, cap, over = capacity_state(school_class, session, adding=adding)
+    if over and mode == CapacityMode.HARD:
+        raise ClassFull(
+            class_full_message(school_class.name, used, cap, adding),
+            school_class=school_class.pk, capacity=cap, used=used,
+            adding=adding,
+        )
     if over and not acknowledged:
         raise ClassAtCapacity(
             f"{school_class.name} holds {used} of {cap} seats. Adding "
@@ -146,11 +184,13 @@ def assert_capacity(school_class, session, *, adding=1, acknowledged=False):
 @transaction.atomic
 def place(
     student, school_class, *, actor, reason="", effective_date=None,
-    allow_over_capacity=False,
+    allow_over_capacity=False, capacity_mode=None,
 ):
     """Place or move *student*, closing any previous placement in one go.
 
-    Returns ``(enrolment, was_transfer, over_capacity)``.
+    Returns ``(enrolment, was_transfer, over_capacity)``. The school's capacity
+    rule applies as ``assert_capacity`` describes; *capacity_mode* is that rule
+    already read, for a caller placing many children at once.
     """
     # The year a placement lands in is the one the school is running. It is
     # not a parameter: a caller that could name a year could name one the
@@ -178,6 +218,7 @@ def place(
 
     _, _, over = assert_capacity(
         school_class, session, adding=1, acknowledged=allow_over_capacity,
+        mode=capacity_mode,
     )
 
     if previous is not None:

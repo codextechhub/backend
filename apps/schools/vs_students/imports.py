@@ -211,17 +211,34 @@ def _as_date(raw: str):
     return None
 
 
-def resolve_row(payload: dict, *, tenant, session, batch_branch, multi_branch, policy=None):
+#: The school's requirable fields that the template carries a column for. A
+#: required field with no column cannot be refused per row, because no file
+#: could ever supply it; the school fills those in on the record afterwards.
+IMPORTABLE_REQUIRED_FIELDS = ("middle_name", "address", "previous_school")
+
+
+def resolve_row(
+    payload: dict, *, tenant, session, batch_branch, multi_branch,
+    policies=None, rules=None,
+):
     """Read one uploaded row into the thing the handler will write.
 
     Called by both passes. Everything it can refuse, it refuses here, so a
     school is told before the first row is written rather than after some of
     them are.
+
+    The school's own rules apply as they do to a typed enrolment: its age
+    range, its required fields (those the template has a column for) and the
+    admission-number rule of the row's branch. *rules* is the school's
+    ``EnrolmentRules`` and *policies* a ``{branch id: AdmissionPolicy}``
+    cache, which the validator passes so a file of a thousand rows reads each
+    once; the executor, writing one row, passes neither.
     """
-    from .services.policy import assert_number_allowed, read_policy
+    from .services.rules import read_rules
 
     row = ResolvedRow()
-    policy = policy or read_policy(tenant)
+    rules = rules or read_rules(tenant)
+    policies = {} if policies is None else policies
 
     row.first_name = _text(payload, "first_name")
     row.middle_name = _text(payload, "middle_name")
@@ -253,7 +270,10 @@ def resolve_row(payload: dict, *, tenant, session, batch_branch, multi_branch, p
         ))
     else:
         # The year is the digit a spreadsheet gets wrong. See ages.py.
-        problem = date_of_birth_problem(row.date_of_birth)
+        problem = date_of_birth_problem(
+            row.date_of_birth, tenant=tenant,
+            bounds=(rules.min_age_years, rules.max_age_years),
+        )
         if problem:
             row.issues.append(RowIssue(
                 "business_rule", problem, "date_of_birth", raw_dob,
@@ -296,9 +316,22 @@ def resolve_row(payload: dict, *, tenant, session, batch_branch, multi_branch, p
                 "admission_date", raw_admitted,
             ))
 
-    _resolve_number(row, payload, tenant=tenant, policy=policy)
+    for field in IMPORTABLE_REQUIRED_FIELDS:
+        if field in rules.required_fields and not getattr(row, field):
+            from .constants import REQUIRABLE_FIELDS
+
+            row.issues.append(RowIssue(
+                "required",
+                f"{REQUIRABLE_FIELDS[field]} is required at this school.", field,
+            ))
+
+    # The branch first: the admission-number rule is the row's branch's.
     _resolve_branch(row, payload, tenant=tenant, batch_branch=batch_branch,
                     multi_branch=multi_branch)
+    _resolve_number(
+        row, payload, tenant=tenant,
+        policy=_policy_for(tenant, row.branch, policies),
+    )
     _resolve_class(row, payload, tenant=tenant, session=session)
     _resolve_guardian(row, payload)
     _resolve_duplicate(row, tenant=tenant)
@@ -340,6 +373,16 @@ def _check_looks_like_a_name(row):
                 f"with the headings.",
                 field, value, severity="warning",
             ))
+
+
+def _policy_for(tenant, branch, cache):
+    """The admission-number rule for *branch*, read once per branch per file."""
+    from .services.policy import read_policy
+
+    key = branch.pk if branch is not None else None
+    if key not in cache:
+        cache[key] = read_policy(tenant, branch)
+    return cache[key]
 
 
 def _resolve_number(row, payload, *, tenant, policy):
@@ -601,7 +644,7 @@ def validate_students_import_batch(import_batch) -> list[dict]:
     is refused is what cannot be written at all, and everything a person might
     legitimately have meant is a warning that names what will happen.
     """
-    from .services.policy import read_policy
+    from .services.rules import read_rules
     from .services.scoping import branch_dimension_applies
 
     template = import_batch.template
@@ -613,7 +656,8 @@ def validate_students_import_batch(import_batch) -> list[dict]:
     columns = list(template.columns.all())
     header = {c.target_field: c.column_name for c in columns}
     multi_branch = branch_dimension_applies(tenant)
-    policy = read_policy(tenant)
+    rules = read_rules(tenant)
+    policies: dict = {}
     rows = import_batch.preview_rows or []
 
     issues: list[dict] = []
@@ -645,7 +689,7 @@ def validate_students_import_batch(import_batch) -> list[dict]:
             _payload_of(raw_row, columns),
             tenant=tenant, session=session,
             batch_branch=import_batch.branch, multi_branch=multi_branch,
-            policy=policy,
+            policies=policies, rules=rules,
         )
         for issue in resolved.issues:
             record(row_number, issue)
@@ -733,7 +777,7 @@ def validate_students_import_batch(import_batch) -> list[dict]:
             wanted.append(row_number)
             _check_capacity(
                 record, resolved.school_class, session, wanted,
-                row_number, capacity_reported,
+                row_number, capacity_reported, mode=rules.capacity_mode,
             )
 
     return issues
@@ -750,7 +794,9 @@ def _guardian_holding(tenant, field: str, value: str):
     return Guardian.objects.filter(tenant=tenant, phone=value).first()
 
 
-def _check_capacity(record, school_class, session, wanted, row_number, reported):
+def _check_capacity(
+    record, school_class, session, wanted, row_number, reported, *, mode,
+):
     """Warn once when a file asks a class for more seats than it has.
 
     **This is the fault a form cannot have.** Enrolling by hand, the thirty-
@@ -763,10 +809,28 @@ def _check_capacity(record, school_class, session, wanted, row_number, reported)
     tips it over: the import writes over capacity deliberately, because a school
     loading a roll it already has is describing what is true rather than asking
     permission. What it must not do is stay quiet about it.
-    """
-    from .services.placement import capacity_state
 
-    if school_class.pk in reported or session is None:
+    That holds under the school's WARN capacity rule. Under HARD every row past
+    the last seat is an ERROR, because placing it would be refused at execution
+    with the rows before it already written; the school is told which rows
+    before anything is. Under OFF nothing is counted.
+    """
+    from .constants import CapacityMode
+    from .services.placement import capacity_state, class_full_message
+
+    if session is None or mode == CapacityMode.OFF:
+        return
+    if mode == CapacityMode.HARD:
+        used, cap, _ = capacity_state(school_class, session, adding=0)
+        if cap is not None and used + len(wanted) > cap:
+            record(row_number, RowIssue(
+                "business_rule",
+                class_full_message(school_class.name, used, cap)
+                + f" This row would be student {used + len(wanted)}.",
+                "class", school_class.name,
+            ))
+        return
+    if school_class.pk in reported:
         return
     used, cap, _ = capacity_state(school_class, session, adding=0)
     if cap is None or used + len(wanted) <= cap:

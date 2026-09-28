@@ -93,11 +93,17 @@ def documents_at(student_pk, as_at: AsAt) -> tuple[list, list]:
     return held, retired
 
 
-def checklist_at(student_pk, as_at: AsAt, *, request) -> list:
-    """The document checklist as it stood, in the live checklist's shape."""
-    from .constants import REQUIRED_DOCUMENTS
-    from .services.documents import _media_url
+def checklist_at(student_pk, as_at: AsAt, *, request, tenant) -> list:
+    """The document checklist as it stood, in the live checklist's shape.
 
+    ``required`` is the school's list as it is now. A school's settings keep
+    no history, so a past day shows which of the files held then the school
+    asks for today.
+    """
+    from .services.documents import _media_url
+    from .services.rules import required_documents
+
+    required = set(required_documents(tenant))
     held, retired = documents_at(student_pk, as_at)
     by_type = {row.document_type: (row, True) for row in held}
     by_type.update({row.document_type: (row, False) for row in retired})
@@ -107,7 +113,7 @@ def checklist_at(student_pk, as_at: AsAt, *, request) -> list:
         rows.append({
             "document_type": value,
             "label": label,
-            "required": value in REQUIRED_DOCUMENTS,
+            "required": value in required,
             "attached": doc is not None,
             "uploaded_at": doc.uploaded_at if doc else None,
             "id": doc.pk if doc else None,

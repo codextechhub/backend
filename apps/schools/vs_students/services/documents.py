@@ -7,7 +7,10 @@ certificate.
 
 A missing required document never blocks anything. A school registering a child
 on the day they arrive rarely has the birth certificate in hand, and a rule that
-refused the enrolment would simply be worked around with a blank file.
+refused the enrolment would simply be worked around with a blank file. Which
+documents count as required is the school's own list
+(``students.documents.required``, read through ``services/rules.py``); the list
+changes what the checklist asks for, never what an enrolment is allowed to do.
 
 FRD M11 v2.4 section 7.6 and FR-015.
 """
@@ -18,23 +21,26 @@ from django.db import transaction
 from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
 
-from ..constants import REQUIRED_DOCUMENTS, DocumentType
+from ..constants import DocumentType
 from ..models import StudentDocument
+from .rules import required_documents
 
 
 def checklist(student, *, request=None):
     """Every type, attached or not. The screen shows all five either way.
 
+    ``required`` marks the types the student's school prompts for.
     ``request`` makes the file URLs absolute - see ``_media_url``.
     """
     held = {d.document_type: d for d in student.documents.all()}
+    required = set(required_documents(student.tenant))
     rows = []
     for value, label in DocumentType.choices:
         doc = held.get(value)
         rows.append({
             "document_type": value,
             "label": label,
-            "required": value in REQUIRED_DOCUMENTS,
+            "required": value in required,
             "attached": doc is not None,
             "uploaded_at": doc.uploaded_at if doc else None,
             "id": doc.pk if doc else None,
@@ -73,8 +79,9 @@ def face_url(student, *, request=None):
 
     The photograph was never missing. It was in ``StudentDocument`` under
     ``PASSPORT_PHOTO``, being read by nothing but the checklist. One source,
-    read here. It is an optional document, not a required one: see
-    ``REQUIRED_DOCUMENTS`` for why a school is not prompted for it.
+    read here. It is not among the default required documents: see
+    ``REQUIRED_DOCUMENTS`` for why a school is not prompted for it unless it
+    chooses to be.
 
     ``Student.photo`` still wins if a row ever carries one, so nothing that
     might populate it later is silently ignored.
@@ -96,8 +103,9 @@ def face_url(student, *, request=None):
 
 
 def missing_required(student):
+    """The required types this student has no file for, in checklist order."""
     held = set(student.documents.values_list("document_type", flat=True))
-    return sorted(REQUIRED_DOCUMENTS - held)
+    return [t for t in required_documents(student.tenant) if t not in held]
 
 
 def _media_url(doc, request=None):

@@ -27,6 +27,11 @@ PERM_EXPORT = "school.students.export"
 #: never be sold at different depths.
 PERM_PROMOTE = "school.students.promote"
 
+#: A school's own settings. The enrolment rules are written under it rather
+#: than a student key, because they are the school's settings screen and not a
+#: student record. Seeded by ``vs_schools``, which owns the settings screens.
+PERM_SETTINGS_UPDATE = "school.settings.update"
+
 PERM_CLASS_ASSIGN = "academics.classes.assign"
 PERM_CLASS_VIEW = "academics.classes.view"
 
@@ -39,9 +44,68 @@ PERM_CLASS_VIEW = "academics.classes.view"
 # ── Configuration keys (vs_config) ─────────────────────────────────────────
 # The admission-number policy is a school's own rule, so it lives in the
 # platform's settings machinery and not in a column here. FRD v2.4 section 7.7.
+# A branch may hold its own rule, which replaces the school's for its students.
 CFG_ADM_REQUIRED = "students.admission_number.required"
 CFG_ADM_PATTERN = "students.admission_number.pattern"
 CFG_ADM_HINT = "students.admission_number.hint"
+CFG_ADM_AUTO_ISSUE = "students.admission_number.auto_issue"
+
+#: The four keys that make up one admission-number rule. A branch that has its
+#: own rule holds all four, so the rule is read as a unit (services/policy.py).
+ADMISSION_POLICY_KEYS = (
+    CFG_ADM_REQUIRED, CFG_ADM_PATTERN, CFG_ADM_HINT, CFG_ADM_AUTO_ISSUE,
+)
+
+# The school's enrolment rules (services/rules.py). Each default reproduces the
+# behaviour a school had before it could choose, so a school that has set
+# nothing is refused and allowed exactly what every school always was.
+CFG_AGE_MIN = "students.age.min_years"
+CFG_AGE_MAX = "students.age.max_years"
+CFG_REQUIRED_DOCUMENTS = "students.documents.required"
+CFG_REQUIRED_FIELDS = "students.enrolment.required_fields"
+CFG_CAPACITY_MODE = "students.capacity.mode"
+CFG_CAPACITY_DEFAULT = "students.capacity.default"
+
+#: The bounds a school's age rule may be set within.
+AGE_RULE_FLOOR = 0
+AGE_RULE_CEILING = 99
+
+#: The most seats a school may give as its default class size.
+DEFAULT_CAPACITY_MIN = 1
+DEFAULT_CAPACITY_MAX = 500
+
+
+class CapacityMode(models.TextChoices):
+    """What a full class does when one more child is placed in it.
+
+    WARN is the behaviour every school had before it could choose: refused
+    until the person placing the child says they mean it. HARD refuses with no
+    way past, for a school whose rooms genuinely hold no more. OFF checks
+    nothing, for a school that sets capacities as a planning figure only.
+    """
+
+    WARN = "WARN", "Warn, and let staff go ahead"
+    HARD = "HARD", "Refuse, with no override"
+    OFF = "OFF", "Do not check"
+
+
+#: The enrolment fields a school may make required, each with the label the
+#: enrolment form gives it, so Settings and the form name a detail the same way. Every one is optional
+#: on ``EnrolmentWriteSerializer``; a test holds the two together. Allergies and
+#: conditions are absent on purpose: for most children the true answer is
+#: "none", and a required box teaches staff to type "none" into it.
+REQUIRABLE_FIELDS = {
+    "nationality": "Nationality",
+    "state_of_origin": "State of origin",
+    "address": "Home address",
+    "phone": "Student phone",
+    "email": "Student email",
+    "previous_school": "Previous school",
+    "emergency_contact_name": "Emergency contact",
+    "emergency_contact_phone": "Emergency phone",
+    "blood_group": "Blood group",
+    "middle_name": "Middle name",
+}
 
 
 class StudentStatus(models.TextChoices):
@@ -152,12 +216,14 @@ class DocumentType(models.TextChoices):
     IMMUNISATION = "IMMUNISATION", "Immunisation record"
 
 
-#: Which document types a school is prompted for. A prompt, never a gate: a
-#: school registering a child on the day they arrive rarely has the birth
-#: certificate in hand, and a rule that refused the enrolment would be worked
-#: around with a blank file. FRD v2.4 FR-015 rule 4.
+#: Which document types a school is prompted for until it chooses its own list
+#: (``students.documents.required``, read through ``services/rules.py``). A
+#: prompt, never a gate, whatever the list holds: a school registering a child
+#: on the day they arrive rarely has the birth certificate in hand, and a rule
+#: that refused the enrolment would be worked around with a blank file. FRD
+#: v2.4 FR-015 rule 4.
 #:
-#: A photograph is not among them, here or on a guardian. A school photographs
+#: A photograph is not among the defaults, here or on a guardian. A school photographs
 #: its intake on a day it chooses, not at the desk while a parent waits, so a
 #: record marked incomplete for a missing picture is marked incomplete for
 #: every child on their first day - which teaches everybody to ignore the mark
