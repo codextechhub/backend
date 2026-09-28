@@ -28,18 +28,26 @@ from vs_exports.catalogue import (
 )
 
 
-# Gateway collections in the entity and within the exporting caller's branches.
-def _collections(scope):
+def _reach(scope):
+    """The exporting caller's payments reach.
+
+    A scope with no user narrows nothing, as ``narrow_to_caller_branches`` does
+    for every other dataset: a system-triggered estimate has no caller, which
+    is not a caller with no branches.
+    """
     from .reach import PaymentsReach
 
-    return PaymentsReach.for_user(scope.user, scope.entity).collections()
+    return PaymentsReach.for_user(getattr(scope, "user", None), scope.entity)
+
+
+# Gateway collections in the entity and within the exporting caller's branches.
+def _collections(scope):
+    return _reach(scope).collections()
 
 
 # Payout instructions in the entity and within the exporting caller's branches.
 def _payouts(scope):
-    from .reach import PaymentsReach
-
-    return PaymentsReach.for_user(scope.user, scope.entity).payouts()
+    return _reach(scope).payouts()
 
 
 _COLLECTION_STATUS = choice_labels("vs_payments.constants.CollectionStatus")
