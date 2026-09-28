@@ -94,7 +94,12 @@ def _inherited_branch_id(request, *sources, field="branch"):
 # --------------------------------------------------------------------------- #
 
 # Resolve account reference from request data.
-def _resolve_account(request, entity, ref, field, *, required=False):
+#: Passed as ``document_branch`` by a caller naming an account for no document.
+NO_DOCUMENT = object()
+
+
+def _resolve_account(request, entity, ref, field, *, required=False,
+                     document_branch=NO_DOCUMENT, noun=None, verb="Pay it from"):
     """Resolve a GL account by **code** (e.g. "1100") or id within ``entity`` and the caller's reach.
 
     Codes are numeric strings, so match on code first, then fall back to a pk lookup.
@@ -102,6 +107,14 @@ def _resolve_account(request, entity, ref, field, *, required=False):
     because a ledger account behind another branch's bank account is that bank's
     money: it is refused exactly as an unknown account is (see
     :func:`vs_finance.accounts.accounts_a_caller_may_name`).
+
+    A route naming the account a branch's document pays from or deposits into
+    passes ``document_branch`` (a Branch, its id, or None for a school-wide
+    document) with its ``noun``. A ledger account behind a bank account then obeys
+    the bank rule of :func:`_resolve_bank_account`: that branch's or a school-wide
+    one, so naming Lekki's bank ledger code on an Ikeja asset is the same 400 as
+    choosing Lekki's bank account. ``verb`` words the fix for the receiving side
+    ("Deposit it into"). A ledger account behind no bank account is unaffected.
     """
     from ..accounts import accounts_a_caller_may_name
 
@@ -110,11 +123,18 @@ def _resolve_account(request, entity, ref, field, *, required=False):
             raise ValidationError({field: "An account (code or id) is required."})
         return None
     qs = accounts_a_caller_may_name(request, Account.objects.filter(entity=entity))
+    if document_branch is not NO_DOCUMENT:
+        qs = qs.select_related("bank_account", "bank_account__branch")
     acc = qs.filter(code=str(ref)).first()
     if acc is None and str(ref).isdigit():  # Numeric refs may be primary keys.
         acc = qs.filter(pk=int(ref)).first()
     if acc is None:  # Unknown, another entity's, or another branch's bank ledger.
         raise ValidationError({field: f"No account '{ref}' in this entity."})
+    if document_branch is not NO_DOCUMENT:
+        require_own_branch_bank(
+            getattr(acc, "bank_account", None), document_branch,
+            noun=noun, field=field, verb=verb,
+        )
     return acc  # Return resolved account.
 
 
@@ -293,7 +313,7 @@ def _resolve_bank_account(request, entity, ref, field="bank_account", *, require
     return ba
 
 
-def require_own_branch_bank(bank, document_branch, *, noun, field="bank_account"):
+def require_own_branch_bank(bank, document_branch, *, noun, field="bank_account", verb="Pay it from"):
     """Refuse ``bank`` for a document of ``document_branch`` unless it is that branch's or school-wide.
 
     Split out for the routes that learn the document's branch only after the
@@ -312,7 +332,7 @@ def require_own_branch_bank(bank, document_branch, *, noun, field="bank_account"
     article = "an" if branch.name[:1].upper() in "AEIOU" else "a"
     raise ValidationError({field: (
         f"This {noun} belongs to {branch.name}. "
-        f"Pay it from {article} {branch.name} account or a school-wide one."
+        f"{verb} {article} {branch.name} account or a school-wide one."
     )})
 
 

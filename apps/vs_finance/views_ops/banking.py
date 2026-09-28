@@ -1153,9 +1153,13 @@ class BankStatementLineAdjustView(_StatementLineActionBase):
         entity, line = self._line(request, pk)
         body = request.data or {}
         # Both spellings resolve here, under the caller's reach, never in the service.
+        # Another bank's ledger as the counter moves that bank's money, so it obeys
+        # the statement's own bank's branch.
+        rule = {"document_branch": line.bank_account.branch_id, "noun": "bank adjustment",
+                "verb": "Book it against"}
         counter = (
-            _resolve_account(request, entity, body.get("counter_account"), "counter_account")
-            or _resolve_account(request, entity, body.get("counter_code"), "counter_code")
+            _resolve_account(request, entity, body.get("counter_account"), "counter_account", **rule)
+            or _resolve_account(request, entity, body.get("counter_code"), "counter_code", **rule)
         )
         post_bank_adjustment(
             line, counter_account=counter,

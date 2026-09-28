@@ -673,16 +673,19 @@ class CustomerReceiptView(_FinanceBase):
         amount = _money(body.get("amount"), "amount")
         if amount <= 0:
             raise ValidationError({"amount": "A positive amount is required."})
+        # A receipt continues the customer's chain: the money settles their
+        # invoices, so it belongs where they do, and lands in that branch's bank.
+        # A school-wide customer keeps a school-wide receipt, which is what keeps
+        # their ledger consistent.
+        branch_id = _inherited_branch_id(request, customer)
         payment = Payment.objects.create(
             entity=entity, customer=customer,
-            # A receipt continues the customer's chain: the money settles their
-            # invoices, so it belongs where they do. A school-wide customer keeps
-            # a school-wide receipt, which is what keeps their ledger consistent.
-            branch_id=_inherited_branch_id(request, customer),
+            branch_id=branch_id,
             payment_date=_date(body.get("payment_date"), "payment_date", required=True),
             method=body.get("method") or "BANK_TRANSFER", amount=amount,
             deposit_account=_resolve_account(
-                request, entity, body.get("deposit_account"), "deposit_account", required=True),
+                request, entity, body.get("deposit_account"), "deposit_account", required=True,
+                document_branch=branch_id, noun="receipt", verb="Deposit it into"),
             reference=body.get("reference", ""), narration=body.get("narration", ""),
             created_by=request.user,
         )
@@ -2751,16 +2754,18 @@ class InvoicePayView(_FinanceBase):
         if amount <= 0:
             raise ValidationError({"amount": "A positive amount is required."})
 
+        # A receipt against one invoice continues that invoice's chain, so the
+        # money lands in the branch that raised the debt, and in its bank.
+        branch_id = _inherited_branch_id(request, invoice)
         payment = Payment.objects.create(
             entity=entity, customer=invoice.customer,
-            # A receipt against one invoice continues that invoice's chain, so the
-            # money lands in the branch that raised the debt.
-            branch_id=_inherited_branch_id(request, invoice),
+            branch_id=branch_id,
             payment_date=_date(body.get("payment_date"), "payment_date", required=True),
             method=body.get("method") or "BANK_TRANSFER",
             amount=amount,
             deposit_account=_resolve_account(
-                request, entity, body.get("deposit_account"), "deposit_account", required=True),
+                request, entity, body.get("deposit_account"), "deposit_account", required=True,
+                document_branch=branch_id, noun="receipt", verb="Deposit it into"),
             currency=invoice.currency,
             reference=body.get("reference", ""),
             narration=body.get("narration", ""),

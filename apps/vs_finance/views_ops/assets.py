@@ -187,7 +187,9 @@ class FixedAssetAcquireView(_FixedAssetActionBase):
         bank = _resolve_bank_account(
             request, entity, body.get("bank_account"), required=False,
             document_branch=asset.branch_id, noun="asset")
-        credit = _resolve_account(request, entity, body.get("credit_account"), "credit_account")
+        credit = _resolve_account(
+            request, entity, body.get("credit_account"), "credit_account",
+            document_branch=asset.branch_id, noun="asset")
         acquire_asset(
             asset, bank_account=bank, credit_account=credit, actor_user=request.user,
         )

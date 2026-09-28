@@ -201,7 +201,12 @@ class CollectionListCreateView(APIView):
         
         customer = _entity_obj(entity, Customer, body.get("customer"), "customer")
         invoice = _entity_obj(entity, Invoice, body.get("invoice"), "invoice")
-        deposit = _resolve_account(request, entity, body.get("deposit_account"), "deposit_account")
+        # The receipt this collects carries the customer's branch, so it lands in
+        # that branch's bank or a school-wide one.
+        deposit = _resolve_account(
+            request, entity, body.get("deposit_account"), "deposit_account",
+            document_branch=getattr(customer, "branch_id", None), noun="payment request",
+            verb="Deposit it into")
 
         intent = services.initiate_collection(  # Hand off to the business service for PSP initiation.
             entity=entity, amount=amount, customer=customer, invoice=invoice,
@@ -346,7 +351,9 @@ class VirtualAccountListCreateView(APIView):
         customer = _entity_obj(entity, Customer, request.data.get("customer"), "customer")
         if customer is None:  # Virtual accounts are always customer-specific in this flow.
             raise ValidationError({"customer": "A customer is required."})
-        deposit = _resolve_account(request, entity, request.data.get("deposit_account"), "deposit_account")
+        deposit = _resolve_account(
+            request, entity, request.data.get("deposit_account"), "deposit_account",
+            document_branch=customer.branch_id, noun="virtual account", verb="Deposit it into")
         va = services.create_virtual_account(  # Delegate provisioning to the service layer.
             entity=entity, customer=customer, provider=request.data.get("provider"),
             deposit_account=deposit, bank_code=request.data.get("bank_code", ""),
