@@ -1342,6 +1342,38 @@ zone, M06 the school security layer, M12 staff profile visibility, M17 the fee
 due policy, M07 the workflow notification switch). MRD: a branch-bound
 administrator reads school settings and cannot change them.
 
+### D67. Every payments read and status change stays within the caller's branches (6c4853b0, a992a8e6, merged 0ea6a97c, 2026-09-28)
+MODULES: M18 payments and collections, M26 reporting and exports.
+PaymentsReach (vs_payments/reach.py) is the one way a payments view reaches
+collections, virtual accounts, payouts, batches, the transactions log and
+webhooks; a guard test fails if views.py reads those tables directly (the
+staff-only unattributed-webhooks view excepted). Narrowed by the finance
+reading (own branches plus school-wide): a collection by its customer and its
+invoice, a virtual account by its customer, a payout by its vendor (none means
+school-wide), a batch by every line (one hidden line hides the batch), log
+entries and webhooks by the record they name, settlement bank lines by their
+bank account. Lists and summaries count only rows in reach, so branch readers
+see smaller totals; a row outside reach answers 404 on collection detail
+(including ?verify=1), virtual-account detail and status change, batch detail
+and submit, and webhook replay, and nothing changes. The Export Centre's
+collections and payouts datasets narrow the same way (no caller narrows
+nothing). Virtual-account log entries carry metadata.virtual_account_id; older
+ones and rejected initiations stay visible to every branch.
+MUST SAY: the reach rule per table, the 404 routes, that summaries shrink for
+branch readers, the exports, and the untraceable older log entries as a gap.
+
+### D68. A vendor payment keeps its branch rules on edit and on post (71c8f89e, merged 0ea6a97c, 2026-09-28)
+MODULES: M23 purchase orders delivery and AP.
+_allocation_plan reads bills within the caller's reach, fixing create, edit and
+apply-advance together: an out-of-reach bill is 400 "Every invoice must be
+posted and belong to the selected vendor." (create answered 403 before). Edit
+re-derives the payment's branch from its new bills as create does and checks
+the bank against it with the same-branch 400. Post re-checks bill reach, that
+the bills still give the stored branch (400 asking for an edit), and the bank's
+reach (404) and branch (400) before any money moves.
+MUST SAY: the edit and post rules and their answers, and the create status
+change from 403 to 400.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
