@@ -1,7 +1,6 @@
 # finance_branch_balanced_books_design
 
-**Status:** design, not built. Every decision below is agreed except the one open
-question in section 17.
+**Status:** design, not built. Every decision below is agreed.
 
 A tenant with more than one branch chooses how its books treat those branches.
 There are two modes, and the tenant picks one for all of its branches:
@@ -37,51 +36,53 @@ and the per-branch close controls are absent, not disabled.
    books record who owes whom until it is repaid.
 6. A bursar sees the transfers their own branches are party to. A caller who
    reaches every branch sees all of them.
+7. **There is no central collecting account and no sweep.** Money leaves a branch
+   only when that branch spends it or sends it by transfer.
 
 **Money in**
 
-7. Every branch has its own collection bank account and its own payment-provider
+8. Every branch has its own collection bank account and its own payment-provider
    sub-account, so fees paid online or by transfer land in the pupil's own branch.
-8. Money that still lands in the wrong branch is recorded as **held for** the
+9. Money that still lands in the wrong branch is recorded as **held for** the
    right branch and forwarded by transfer. The pupil's invoice is paid when the
    money reaches their branch.
 
 **Closing**
 
-9. Each branch closes its own month. A transfer needs both branches open on its
+10. Each branch closes its own month. A transfer needs both branches open on its
    date.
-10. All branches closes the tenant's period, and only after every branch has closed.
+11. All branches closes the tenant's period, and only after every branch has closed.
 
 **Moving balances between branches**
 
-11. When a pupil moves branch, their unpaid balance moves with them: the new branch
+12. When a pupil moves branch, their unpaid balance moves with them: the new branch
     takes over the receivable and owes the old branch that amount. Their unpaid
     invoices move to the new branch's lists; the revenue stays with the old branch.
-12. Tax balances move each month to the tenant's **filing branch** (the main branch
+13. Tax balances move each month to the tenant's **filing branch** (the main branch
     unless the tenant names another), which files and pays every return. Each
     branch then sends the cash for its share by transfer.
-13. A cost one branch pays on behalf of all (the audit fee) is either absorbed by
+14. A cost one branch pays on behalf of all (the audit fee) is either absorbed by
     that branch or **recharged** to the others by pupil numbers or fixed
     percentages, whichever the tenant chooses for that cost.
 
 **Buying and pay**
 
-14. Buying together means one negotiated price and one order per branch at that
+15. Buying together means one negotiated price and one order per branch at that
     price. Each branch receives and pays for its own goods.
-15. Goods sent from one branch's store to another's are a goods transfer: the
+16. Goods sent from one branch's store to another's are a goods transfer: the
     receiving branch owes their cost.
-16. Payroll runs per branch. Each staff member is paid in full by one branch; there
+17. Payroll runs per branch. Each staff member is paid in full by one branch; there
     is no salary split.
 
 **Working in it**
 
-17. The entity selector also chooses **All branches** or one branch. It is hidden
+18. The entity selector also chooses **All branches** or one branch. It is hidden
     whenever the caller has only one option.
-18. A new money record under All branches must name its branch. There is no
+19. A new money record under All branches must name its branch. There is no
     school-wide option, because there is no school-wide book.
-19. Shared-books schools get a per-screen branch filter on finance lists and
+20. Shared-books schools get a per-screen branch filter on finance lists and
     reports instead of the selector.
-20. The mode switches on only at the start of a period, through a setup step, and
+21. The mode switches on only at the start of a period, through a setup step, and
     switches off only at the start of a fiscal year, once every transfer balance is
     settled to zero.
 
@@ -195,23 +196,7 @@ branch in reach".
 
 ---
 
-## 6. Sweeps
-
-A sweep moves a branch's money to another branch on a schedule. The tenant chooses
-one of four options:
-
-| Option | When a sweep is recorded |
-| --- | --- |
-| **Manual** | When a bursar makes one. |
-| **Daily** | Once a day, for the day's movement. |
-| **Month end** | Once, at the branch's close. |
-| **As it happens** | With each transaction, as it is made. |
-
-What a sweep moves, and to where, is the open question in section 17.
-
----
-
-## 7. Per-branch close
+## 6. Per-branch close
 
 - A per-branch period status sits beside `FiscalPeriod`: one row per period per
   branch. `FiscalPeriod.status` stays the tenant-level state.
@@ -226,7 +211,7 @@ What a sweep moves, and to where, is the open question in section 17.
 
 ---
 
-## 8. Tax
+## 7. Tax
 
 - VAT and withholding tax stay tenant-wide: one tax number, one return.
 - At month end each branch's tax balances move to the filing branch as tax
@@ -238,7 +223,7 @@ What a sweep moves, and to where, is the open question in section 17.
 
 ---
 
-## 9. Shared costs and recharges
+## 8. Shared costs and recharges
 
 - A cost paid on behalf of every branch is paid by one branch, from its own bank.
 - For each such cost the tenant chooses: the paying branch **absorbs** it, or
@@ -255,7 +240,7 @@ What a sweep moves, and to where, is the open question in section 17.
 
 ---
 
-## 10. A pupil changing branch
+## 9. A pupil changing branch
 
 - There is no branch-move flow for pupils today (the student's branch is read-only
   after admission), so this arrives with one. The students app owns the move and
@@ -272,7 +257,7 @@ What a sweep moves, and to where, is the open question in section 17.
 
 ---
 
-## 11. Buying
+## 10. Buying
 
 1. Branches raise requisitions against their own budgets. The branch head approves
    up to a limit; above it, approval goes to a caller who reaches every branch.
@@ -287,7 +272,7 @@ What a sweep moves, and to where, is the open question in section 17.
 
 ---
 
-## 12. Payroll
+## 11. Payroll
 
 - Branch-balanced mode requires per-branch payroll, the existing `PER_BRANCH`
   payroll scope: each branch runs and pays its own staff from its own bank.
@@ -296,7 +281,7 @@ What a sweep moves, and to where, is the open question in section 17.
 
 ---
 
-## 13. Working branch by branch
+## 12. Working branch by branch
 
 A finance admin who reaches every branch still needs to work on one branch at a
 time.
@@ -345,7 +330,7 @@ branches:
 
 ---
 
-## 14. Switching modes
+## 13. Switching modes
 
 - **On:** at the start of a period only. The setup step requires:
   - every bank account, petty cash fund and store assigned to a branch;
@@ -359,7 +344,7 @@ branches:
 
 ---
 
-## 15. Reports and access
+## 14. Reports and access
 
 **Reports**
 
@@ -388,7 +373,7 @@ head office counts as multi-branch there. This is accepted as it stands.
 
 ---
 
-## 16. Build order
+## 15. Build order
 
 1. The branch resolver beside `resolve_entity` and the `?branch=` filter on every
    finance list and report (both modes; useful to shared-books schools at once).
@@ -405,17 +390,3 @@ head office counts as multi-branch there. This is accepted as it stands.
 10. Pupil branch move (students app, FAL operation, customer branch sync) and
     receivable transfers.
 11. Goods transfers and one-order-per-branch buying.
-12. Sweeps, once section 17 is settled.
-
----
-
-## 17. Open question
-
-**What does a sweep move, and to where?** All branches holds no money, so a sweep
-cannot move money "to the main account". The two readings are:
-
-1. **Money to a collecting branch.** The tenant names a branch (usually Head
-   Office) that gathers the others' money, and a sweep is a cash transfer to it on
-   the chosen schedule. Head Office then owes Lekki what it swept.
-2. **Records to the All branches view.** Nothing moves between banks. The option
-   decides when branch activity shows up in the All branches view.
