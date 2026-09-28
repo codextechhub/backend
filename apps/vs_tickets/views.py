@@ -54,19 +54,28 @@ from .services import visibility
 class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     """Ticket CRUD plus assignment, transitions, comments, attachments and audit.
 
-    Filing is the one escalation route a school that has not gone live still
-    has, so ``create`` is part of the pending-tenant surface (FR-010, FR-012).
-    ``attachments`` is on it for the same reason: a school reporting that a
-    screen is wrong needs to show the screen, and without it the only route is
-    replying to the confirmation email with a screenshot, which moves the
-    evidence off the platform and out of the ticket it belongs to. The rest of
-    the desk (lists, threads, assignment) opens at go-live.
+    **A school that has not gone live has its whole support desk** (FR-010,
+    FR-012). Filing is the one escalation route a school still being set up
+    has, and a ticket it cannot read the answer to is only half a route: the
+    school files, support replies, and the school has to see that reply, send
+    a screenshot, answer a question and close the thing. So a pending school
+    lists and opens its tickets, reads and posts replies, attaches and
+    downloads files, follows a thread, edits what it reported, and its desk
+    staff triage, escalate to CodeX and read the audit trail, exactly as after
+    go-live.
 
-    That surface is narrower than it looks. ``attachments`` is a detail action
-    and ``get_queryset`` still scopes tickets to the caller, so a pending
-    school can only attach to a ticket it filed itself, and every file goes
-    through ``validate_upload`` first: 10 MB, an extension allowlist, and a
-    magic-byte check that the content matches the extension.
+    The surface is an explicit list of actions rather than ``True`` for two
+    reasons. ``assign`` and ``eligible_assignees`` are the platform desk's own
+    rota decision (``tickets.ticket.assign`` is platform-scoped and grants
+    nothing inside a school), so they stay off it; and an action added to this
+    viewset later is closed to a pending school until somebody decides it
+    belongs here. ``destroy`` is off it because it refuses everyone.
+
+    Opening the surface widens nothing else. Every action still reads through
+    ``visible_tickets_qs`` and ``can_view_ticket``, so a pending school sees
+    only the tickets it would see after go-live, and never another school's.
+    Uploads go through ``validate_upload``: 10 MB, an extension allowlist, and
+    a magic-byte check that the content matches the extension.
 
     Only the actions in :attr:`RBAC_ACTION_KEYS` are gated on a key, with
     support staff bypassing in the permission class. The rest rely on queryset
@@ -76,7 +85,20 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     permission_classes = TICKET_PERMISSIONS
 
-    pending_tenant_surface = ("create", "attachments")
+    pending_tenant_surface = (
+        "list",
+        "retrieve",
+        "create",
+        "update",
+        "partial_update",
+        "transition",
+        "escalate",
+        "follow",
+        "comments",
+        "attachments",
+        "attachment_download",
+        "audit",
+    )
 
     RBAC_ACTION_KEYS = {
         "assign": TicketPermission.ASSIGN,
@@ -397,9 +419,13 @@ class TicketDashboardView(APIView):
     the by-status, by-priority and by-category breakdowns stay
     whole-population, since a per-status count that filtered by status would be
     nonsense.
+
+    Open to a school that has not gone live, for the same reason the ticket
+    list is: it counts nothing the caller's own list does not show.
     """
 
     permission_classes = TICKET_PERMISSIONS
+    pending_tenant_surface = True
 
     def get(self, request):
         qs = visibility.visible_tickets_qs(request.user)
@@ -458,6 +484,10 @@ class GuideAnalyticsSummaryView(APIView):
     ``platform.health.view`` is platform-scoped and cannot be granted inside a
     tenant. Raw events carry no tenant, actor, or record dimension, so the
     summary cannot reveal one tenant's reading activity.
+
+    It declares no ``pending_tenant_surface``: it is not a school's surface
+    at any stage, so a school that has not gone live is refused before the
+    key is even read.
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
