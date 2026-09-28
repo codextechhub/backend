@@ -678,7 +678,24 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
 @transaction.atomic
 def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
                       actor_user=None):  # Create and post a raw direct journal entry.
-    """Post a direct journal entry - money/balances seated into the books with no source doc.
+    """Create a direct entry with :func:`create_direct_entry` and post it straight away.
+
+    For callers that have already settled that the entry needs no approval. The
+    direct-entry route decides that from the school's journal route first.
+    """
+    entry = create_direct_entry(
+        entity, lines=lines, date=date, narration=narration, reference=reference,
+        actor_user=actor_user,
+    )
+    post_journal(entry, actor_user=actor_user)  # Run normal posting guards and balance updates.
+    entry.refresh_from_db()
+    return entry  # Return posted direct entry.
+
+
+@transaction.atomic
+def create_direct_entry(entity, *, lines, date=None, narration="", reference="",
+                        actor_user=None):  # Create a raw direct journal entry as a draft.
+    """Build a direct journal entry - money/balances seated into the books with no source doc.
 
     This is the *sanctioned* way to record anything that has no sub-ledger document behind
     it: capital injections and equity contributions, loan drawdowns, grants, opening cash,
@@ -693,8 +710,9 @@ def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
     and ``dimensions`` is a ``{axis_code: value}`` map, both carried onto the GL line. The
     entry must balance (Σdebits == Σcredits); it posts into
     ``date``'s open period - ``date`` defaults to the entity's earliest period start, else
-    today. The normal :func:`post_journal` guards apply (period open, balanced, accounts
-    active/postable), and it is reversible like any journal. Returns the posted entry.
+    today. The entry is returned as a DRAFT: the normal :func:`post_journal` guards
+    (period open, balanced, accounts active/postable) apply when it is posted, directly
+    or on approval, and it is reversible like any journal.
     """
     from django.utils import timezone
 
@@ -729,7 +747,4 @@ def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
             debit=int(debit or 0), credit=int(credit or 0),  # Store integer kobo side amounts.
             cost_center=cost_center, dimensions=dimensions or {}, line_no=i,  # Store analytics and line number.
         )
-
-    post_journal(entry, actor_user=actor_user)  # Run normal posting guards and balance updates.
-    entry.refresh_from_db()
-    return entry  # Return posted direct entry.
+    return entry  # Return the draft; posting or submitting it is the caller's decision.

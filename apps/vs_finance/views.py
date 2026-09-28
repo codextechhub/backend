@@ -1570,10 +1570,22 @@ class JournalReverseView(APIView):
 class DirectEntryCreateView(APIView):
     """POST /finance/direct-entries/?entity= - post a direct journal entry.
 
-    Body: ``{"date"?, "narration"?, "reference"?, "lines": [{"account", "debit"|"credit"}]}``
-    with amounts in kobo. The one sanctioned way to book money/balances that have no sub-ledger
-    document behind them - capital injections, equity contributions, loan drawdowns, grants,
-    opening balances and manual adjustments. Every other journal is a side-effect of an action.
+    Body: ``{"date"?, "narration"?, "reference"?, "lines": [{"account", "debit"|"credit"}],
+    "confirm_without_approval"?, "reason"?}`` with amounts in kobo. The one sanctioned way to
+    book money/balances that have no sub-ledger document behind them - capital injections,
+    equity contributions, loan drawdowns, grants, opening balances and manual adjustments.
+    Every other journal is a side-effect of an action.
+
+    A direct entry is a journal, so the school's journal approval route governs it
+    exactly as it governs ``/journals/<id>/post/``:
+
+    * a route with steps: the entry is created and submitted into the route, and the
+      response (still 201) says it is waiting for approval, with the same ``approval``
+      block the journal submit route returns;
+    * a route with no steps: 409 ``APPROVAL_NOT_CONFIGURED`` and nothing written, until
+      ``confirm_without_approval`` is sent; the post is then recorded as made without
+      approval;
+    * no route at all: the entry posts directly.
 
     docstring-name: Post a direct entry
     """
@@ -1583,7 +1595,10 @@ class DirectEntryCreateView(APIView):
 
     # Handle POST requests for this endpoint.
     def post(self, request):
-        from .posting import post_direct_entry
+        from django.db import transaction
+
+        from .approvals import approval_required, confirm_unconfigured_post
+        from .posting import create_direct_entry, post_journal
         from .views_ops import _resolve_account, _resolve_cost_center, _resolve_dimensions
 
         entity = resolve_entity(request)
@@ -1601,11 +1616,31 @@ class DirectEntryCreateView(APIView):
             )
             for i, ln in enumerate(data["lines"])
         ]
-        entry = post_direct_entry(
-            entity, lines=lines,
-            date=data.get("date"), narration=data.get("narration", ""),
-            reference=data.get("reference", ""), actor_user=request.user,
-        )
+        with transaction.atomic():
+            entry = create_direct_entry(
+                entity, lines=lines,
+                date=data.get("date"), narration=data.get("narration", ""),
+                reference=data.get("reference", ""), actor_user=request.user,
+            )
+            if approval_required(entry):
+                from vs_workflow.services import release as release_svc
+                from vs_workflow.services.submission import submit_for_approval
+
+                instance = submit_for_approval(entry, requested_by=request.user)
+                entry.refresh_from_db()
+                return success_response(
+                    message=(
+                        f"Direct entry {entry.document_number} is waiting for approval. "
+                        f"It reaches the books once it is approved."
+                    ),
+                    data=JournalEntryDetailSerializer(entry).data
+                    | {"approval": release_svc.approval_block(instance)},
+                    status=201,
+                )
+            # Raises 409 on an empty route; the atomic block discards the draft.
+            confirm_unconfigured_post(entry, request, noun="direct entry")
+            post_journal(entry, actor_user=request.user)
+            entry.refresh_from_db()
         return success_response(
             message=f"Direct entry posted as {entry.document_number}.",
             data=JournalEntryDetailSerializer(entry).data, status=201,

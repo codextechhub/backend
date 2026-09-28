@@ -205,3 +205,63 @@ class ExpenseClaimDirectPostTests(_DirectPostFixture):
         self.assertIn("approval-gated", str(refused.content))
         claim.refresh_from_db()
         self.assertEqual(claim.status, DocumentStatus.DRAFT)
+
+
+class DirectEntryApprovalRouteTests(_DirectPostFixture):
+    """``/direct-entries/`` is a journal, so the journal route governs it too.
+
+    Bright Star's bursar books a ₦50,000 grant. With a journal route that has a
+    step, it waits for the checker instead of reaching the books. With an empty
+    route she must confirm it goes out unreviewed. With no route, it posts.
+    """
+
+    def book(self, **extra):
+        return self.post("direct-entries/", **{
+            "date": "2026-01-15", "narration": "Grant received",
+            "lines": [
+                {"account": "1100", "debit": 50_000, "credit": 0},
+                {"account": "4100", "debit": 0, "credit": 50_000},
+            ],
+            **extra,
+        })
+
+    def entries(self):
+        return JournalEntry.objects.filter(entity=self.entity, narration="Grant received")
+
+    def test_a_route_with_steps_holds_it_for_approval(self):
+        self.publish_route("finance.journal", staged=True)
+
+        response = self.book()
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertIn("waiting for approval", response.json()["message"])
+        self.assertIn("approval", response.json()["data"])
+        entry = self.entries().get()
+        self.assertEqual(entry.status, DocumentStatus.PENDING_APPROVAL)
+
+    def test_an_empty_route_refuses_until_confirmed_and_writes_nothing(self):
+        self.publish_route("finance.journal", staged=False)
+
+        refused = self.book()
+
+        self.assertEqual(refused.status_code, 409, refused.content)
+        self.assertEqual(refused.json()["error"]["code"], "APPROVAL_NOT_CONFIGURED")
+        self.assertFalse(self.entries().exists())
+        self.assertEqual(self.recorded("JournalEntry"), set())
+
+    def test_a_confirmed_entry_posts_and_is_recorded_against_her(self):
+        self.publish_route("finance.journal", staged=False)
+
+        confirmed = self.book(confirm_without_approval=True, reason="Proprietor agreed")
+
+        self.assertEqual(confirmed.status_code, 201, confirmed.content)
+        entry = self.entries().get()
+        self.assertEqual(entry.status, DocumentStatus.POSTED)
+        self.assertEqual(self.recorded("JournalEntry"), {(str(entry.pk), self.bursar.pk)})
+
+    def test_no_route_at_all_posts_directly(self):
+        response = self.book()
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertIn("posted", response.json()["message"])
+        self.assertEqual(self.entries().get().status, DocumentStatus.POSTED)
