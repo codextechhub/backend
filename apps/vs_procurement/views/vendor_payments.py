@@ -25,6 +25,7 @@ from ..serializers import VendorPaymentListSerializer, VendorPaymentSerializer
 from .base import (
     _ProcBase,
     _branch_scoped,
+    _branch_visible,
     _date,
     _document_or_404,
     _inherited_branch_id,
@@ -62,9 +63,11 @@ def _resolve_bank_account(request, entity, ref, *, document_branch):
     branches' accounts and the school-wide ones, and for a payment that belongs
     to a branch, that branch's or a school-wide one. What is added here is the
     payment's own condition, that the account and its ledger account are open
-    for posting. A new payment learns its branch from the bills it settles, so
-    it passes ``document_branch=None`` here and checks the branch once the bills
-    are resolved.
+    for posting. A payment's branch is the one its bills give
+    (:func:`_settled_branch_id`): an edit and a post derive it first and pass it
+    here, while a new payment names its account before its bills are resolved,
+    so it passes ``document_branch=None`` and checks the branch afterwards with
+    :func:`require_own_branch_bank`.
     """
     if ref in (None, ""):
         raise ValidationError({"bank_account": "An active bank or cash account is required."})
@@ -100,11 +103,21 @@ def _validate_method(value):
     return method
 
 
-def _allocation_plan(entity, vendor, payload):
+#: The answer for a bill that is not this vendor's, not posted, or outside reach.
+UNKNOWN_BILL = "Every invoice must be posted and belong to the selected vendor."
+
+
+def _allocation_plan(request, entity, vendor, payload):
     """Validate a unique posted-invoice allocation plan for one entity/vendor.
 
     Client totals are ignored.  The server resolves posted invoices, checks each
     live balance, and returns the exact rows used to derive gross payment value.
+
+    Bills resolve within the caller's branches, read the way every procurement
+    document is (:func:`_branch_visible`), which is also what the eligible-bill
+    picker offers. Ikeja's officer naming a Lekki bill by id gets the same 400
+    as for a bill that does not exist, on create, on edit and when applying an
+    advance alike.
     """
     if not isinstance(payload, list) or not payload:
         raise ValidationError({"allocations": "Select at least one posted vendor invoice."})
@@ -114,20 +127,30 @@ def _allocation_plan(entity, vendor, payload):
     # Resolve the entity/vendor/status join server-side so changing an invoice id
     # cannot allocate another tenant's liability or another vendor's balance.
     invoices = {
-        invoice.pk: invoice for invoice in VendorInvoice.objects.filter(
+        invoice.pk: invoice for invoice in _branch_visible(request, VendorInvoice.objects.filter(
             entity=entity, vendor=vendor, pk__in=invoice_ids, status=DocumentStatus.POSTED,
-        )
+        ))
     }
     plan = []
     for item in payload:
         invoice = invoices.get(int(item["vendor_invoice"]))
         if invoice is None:
-            raise ValidationError({"allocations": "Every invoice must be posted and belong to the selected vendor."})
+            raise ValidationError({"allocations": UNKNOWN_BILL})
         amount = _money(item.get("amount", 0), "amount")
         if amount <= 0 or amount > invoice.balance_due:
             raise ValidationError({"allocations": f"Allocation for {invoice.document_number} must be positive and within its balance."})
         plan.append((invoice, amount))
     return plan
+
+
+def _settled_branch_id(request, plan):
+    """The branch a payment takes from the bills it settles, checked against the caller.
+
+    Bills of one branch give that branch; bills of several (only a caller who is not
+    branch-bound can select those) settle at entity level. Create, edit and post all
+    derive it here, so an edit that swaps the bills moves the payment with them.
+    """
+    return _inherited_branch_id(request, *(invoice for invoice, _ in plan))
 
 
 def _replace_plan(payment, plan):
@@ -213,15 +236,12 @@ class VendorPaymentListCreateView(_ProcBase):
         vendor = _resolve_vendor(request, entity, body.get("vendor"))
         _validate_vendor_for_payment(vendor)
         bank = _resolve_bank_account(request, entity, body.get("bank_account"), document_branch=None)
-        plan = _allocation_plan(entity, vendor, body.get("allocations"))
+        plan = _allocation_plan(request, entity, vendor, body.get("allocations"))
         gross = sum(amount for _, amount in plan)  # Gross is the exact approved liability split.
         wht = _money(body.get("wht_amount", 0), "wht_amount")
         if wht > gross:
             raise ValidationError({"wht_amount": "WHT cannot exceed the invoice amount being settled."})
-        # A settlement belongs to the branch of the bills it settles. Invoices from
-        # different branches (only a caller who is not branch-bound can select
-        # those) settle at entity level. It is paid from that branch's money.
-        branch_id = _inherited_branch_id(request, *(invoice for invoice, _ in plan))
+        branch_id = _settled_branch_id(request, plan)
         require_own_branch_bank(bank, branch_id, noun="vendor payment")
         payment = VendorPayment.objects.create(
             entity=entity, vendor=vendor,
@@ -306,17 +326,19 @@ class VendorPaymentDetailView(_ProcBase):
         body = request.data
         vendor = _resolve_vendor(request, entity, body.get("vendor", payment.vendor_id))
         _validate_vendor_for_payment(vendor)
+        plan = _allocation_plan(request, entity, vendor, body.get("allocations"))
+        branch_id = _settled_branch_id(request, plan)
         bank = _resolve_bank_account(
             request, entity,
             body.get("bank_account", getattr(getattr(payment.payment_account, "bank_account", None), "id", None)),
-            document_branch=payment.branch_id,
+            document_branch=branch_id,
         )
-        plan = _allocation_plan(entity, vendor, body.get("allocations"))
         gross = sum(amount for _, amount in plan)  # Editing recomputes, never trusts a client total.
         wht = _money(body.get("wht_amount", payment.wht_amount), "wht_amount")
         if wht > gross:
             raise ValidationError({"wht_amount": "WHT cannot exceed the invoice amount being settled."})
         payment.vendor = vendor
+        payment.branch_id = branch_id
         payment.payment_date = _date(body.get("payment_date", payment.payment_date), "payment_date", required=True)
         payment.method = _validate_method(body.get("method", payment.method))
         payment.gross_amount = gross
@@ -364,6 +386,42 @@ class VendorPaymentSubmitView(_ProcBase):
         })
 
 
+def _recheck_branch_before_posting(request, entity, payment):
+    """Refuse to post a draft whose branch no longer holds, before any money moves.
+
+    A draft is checked when it is written, but it is posted later, possibly by
+    someone else, after a bill or a bank account has changed, or after it was
+    written by code that did not apply these rules. So posting asks the same three
+    questions again:
+
+    * every bill in the plan is one this caller can reach (the 400 of an unknown
+      bill otherwise);
+    * the bills still give the branch the payment carries, which is the branch
+      its journal is booked to (a 400 asking for the draft to be edited, which
+      re-derives it);
+    * the bank account is one this caller can reach, and is that branch's or a
+      school-wide one (finance's 404 and 400, see
+      :func:`vs_finance.views_ops.base._resolve_bank_account`).
+
+    A payment whose ledger account backs no bank account was not written by this
+    screen, which always names one, and has no bank account to re-check.
+    """
+    invoice_ids = [row.vendor_invoice_id for row in payment.allocations.all()]
+    bills = list(_branch_visible(request, VendorInvoice.objects.filter(
+        entity=entity, pk__in=invoice_ids)))
+    if len(bills) != len(set(invoice_ids)):
+        raise ValidationError({"allocations": UNKNOWN_BILL})
+    branch_id = _inherited_branch_id(request, *bills)
+    if branch_id != payment.branch_id:
+        raise ValidationError({"allocations": (
+            "The bills this payment settles now belong to another branch. "
+            "Edit the draft to bring it up to date before posting."
+        )})
+    bank = getattr(payment.payment_account, "bank_account", None)
+    if bank is not None:
+        _resolve_bank_account(request, entity, bank.pk, document_branch=branch_id)
+
+
 class VendorPaymentPostView(_ProcBase):
     """Post an approved payment through the payables accounting boundary."""
     rbac_permission = "procurement.vendor_payment.post"
@@ -377,6 +435,7 @@ class VendorPaymentPostView(_ProcBase):
         )
         if not payment.allocations.exists():
             raise ValidationError({"allocations": "An approved invoice-allocation plan is required before posting."})
+        _recheck_branch_before_posting(request, entity, payment)
         # Explicit allocations are approval evidence; never let posting silently
         # invent a different oldest-first plan.
         payables.post_vendor_payment(payment, actor_user=request.user, auto_allocate=False)
@@ -428,10 +487,9 @@ class VendorPaymentAllocateAdvanceView(_ProcBase):
         raw = body.get("allocations")
         before = payment.advance_remaining  # Report what this call did, not the total.
         if raw:
-            # Reuse the draft-plan validator: it resolves each bill against this
-            # entity AND this vendor server-side, so a swapped id cannot reach
-            # another tenant's liability.
-            plan = _allocation_plan(entity, payment.vendor, raw)
+            # The draft-plan validator: each bill within this entity, vendor and
+            # the caller's branches.
+            plan = _allocation_plan(request, entity, payment.vendor, raw)
             payables.allocate_vendor_payment(
                 payment, allocations=plan, actor_user=request.user, strict=True)
         elif body.get("auto_allocate"):
