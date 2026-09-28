@@ -1102,6 +1102,15 @@ the branch rule and automatic numbers; M13 the default class size; M10 that the
 import follows the age, required-field and capacity rules (required fields only
 where the template has a column) and does not issue numbers.
 
+### D52. The student import issues numbers and names each school's rules (aab85a8d, 2026-09-28)
+MODULES: M11 student records, M10 bulk data import.
+A blank admission number passes validation where the child's branch issues
+numbers automatically (and a next number can be worked out); each row is given
+the next number in turn when written. The students_v1 template's guidance
+(migration vs_import_data 0021) points at the school's own age range, required
+details, capacity cap and automatic numbering instead of fixed figures.
+MUST SAY: the import applies the Students settings exactly as enrolment does.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
