@@ -38,6 +38,7 @@ from vs_rbac.permissions import (
     IsAuthenticatedAndActive,
     IsVisionStaff,
 )
+from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 
 from . import reconciliation, services, webhooks
 from .constants import (
@@ -79,10 +80,13 @@ def _paginate(request, qs, serializer_cls, view, **ser_kwargs):
 
 
 # Support the entity obj workflow.
-def _entity_obj(entity, model, ref, field):
-    """Fetch ``model`` within ``entity`` by numeric pk, or by ``code`` for models
-    that have one (so the UI pickers, which emit codes, resolve too). Raises a
-    400 ValidationError when nothing matches."""
+def _entity_obj(request, entity, model, ref, field):
+    """Fetch ``model`` within ``entity`` and the caller's branches by pk or ``code``.
+
+    Codes resolve too, because the UI pickers emit them. A row with a branch is
+    found only when it is the caller's own branch's or school-wide, the reach the
+    finance customer resolver uses, so Ikeja's clerk naming a Lekki customer or
+    invoice gets the same 400 as for one that does not exist."""
     if model is Account:
         # A ledger account is named through finance's resolver, which also applies
         # the caller's bank reach; this lookup does not know the caller.
@@ -90,6 +94,8 @@ def _entity_obj(entity, model, ref, field):
     if ref in (None, ""):  # Blank inputs are allowed to resolve to nothing.
         return None
     qs = model.objects.filter(entity=entity)
+    if any(getattr(f, "name", None) == "branch" for f in model._meta.get_fields()):
+        qs = qs.filter(branch_q(request, include_shared=True))
     has_code = any(getattr(f, "name", None) == "code" for f in model._meta.get_fields())  # Check whether the model exposes a code field.
     obj = None  # Hold the resolved object if any lookup succeeds.
     if str(ref).isdigit():  # Numeric refs might be pks or codes.
@@ -123,8 +129,12 @@ def _required_idempotency_key(request) -> str:
     return key
 
 
-def _payout_vendor(entity, reference):
-    """Resolve a vendor by id or code inside the selected entity."""
+def _payout_vendor(request, entity, reference):
+    """Resolve a vendor by id or code inside the selected entity and the caller's branches.
+
+    A vendor another branch keeps to itself answers like one that does not exist,
+    the reach procurement's own vendor resolver applies.
+    """
     from django.db.models import Q
     from vs_procurement.models import Vendor
 
@@ -132,7 +142,10 @@ def _payout_vendor(entity, reference):
     if not raw:
         raise ValidationError({"vendor": "A payout must be linked to a vendor."})
     lookup = Q(code=raw) | Q(pk=raw) if raw.isdigit() else Q(code=raw)
-    vendor = Vendor.objects.filter(entity=entity).filter(lookup).first()
+    vendor = (
+        Vendor.objects.filter(entity=entity)
+        .filter(branch_q(request, include_shared=True)).filter(lookup).first()
+    )
     if vendor is None:
         raise ValidationError({"vendor": "No such vendor in this entity."})
     return vendor
@@ -199,8 +212,8 @@ class CollectionListCreateView(APIView):
         if amount <= 0:  # Reject empty or negative collections.
             raise ValidationError({"amount": "A positive amount (in kobo) is required."})
         
-        customer = _entity_obj(entity, Customer, body.get("customer"), "customer")
-        invoice = _entity_obj(entity, Invoice, body.get("invoice"), "invoice")
+        customer = _entity_obj(request, entity, Customer, body.get("customer"), "customer")
+        invoice = _entity_obj(request, entity, Invoice, body.get("invoice"), "invoice")
         # The receipt this collects carries the customer's branch, so it lands in
         # that branch's bank or a school-wide one.
         deposit = _resolve_account(
@@ -348,7 +361,7 @@ class VirtualAccountListCreateView(APIView):
     # Handle POST requests for this endpoint.
     def post(self, request):
         entity = resolve_entity(request)  # Resolve the tenant entity.
-        customer = _entity_obj(entity, Customer, request.data.get("customer"), "customer")
+        customer = _entity_obj(request, entity, Customer, request.data.get("customer"), "customer")
         if customer is None:  # Virtual accounts are always customer-specific in this flow.
             raise ValidationError({"customer": "A customer is required."})
         deposit = _resolve_account(
@@ -456,7 +469,7 @@ class PayoutListCreateView(APIView):
         amount = int(body.get("amount") or 0)
         if amount <= 0:  # Reject invalid payout amounts.
             raise ValidationError({"amount": "A positive amount (in kobo) is required."})
-        vendor = _payout_vendor(entity, body.get("vendor"))
+        vendor = _payout_vendor(request, entity, body.get("vendor"))
         source = _resolve_account(request, entity, body.get("source_account"), "source_account")
         item = {
             "amount": amount, "vendor": vendor,
@@ -576,7 +589,7 @@ class PayoutBatchListCreateView(APIView):
             if amount <= 0:  # Reject empty or negative line amounts.
                 raise ValidationError({f"items[{idx}].amount": "A positive amount (kobo) is required."})
             try:
-                vendor = _payout_vendor(entity, raw.get("vendor"))
+                vendor = _payout_vendor(request, entity, raw.get("vendor"))
             except ValidationError as exc:
                 raise ValidationError({f"items[{idx}].vendor": "No such vendor in this entity."}) from exc
             items.append({

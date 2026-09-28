@@ -93,7 +93,7 @@ class ResolverTests(_LedgerReachFixture):
         from vs_payments.views import _entity_obj
 
         with self.assertRaises(TypeError):
-            _entity_obj(self.books, Account, self.lekki_ledger.code, "source_account")
+            _entity_obj(None, self.books, Account, self.lekki_ledger.code, "source_account")
 
 
 class LedgerNamedOnAWriteTests(_LedgerReachFixture):
