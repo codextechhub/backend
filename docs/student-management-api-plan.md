@@ -556,3 +556,123 @@ row is a 409 `DUPLICATE_STUDENT_NUMBER` asking to save again. When there is no
 suggestion (no series yet, or the next number would break the pattern) the
 rule applies as if automatic numbers were off: required refuses, optional
 leaves the number blank. The import does not issue numbers.
+
+## 12. Guardian settings
+
+A school sets its own guardian rules in the Settings console, beside the
+student settings of section 11 and in the same way: four school-scoped
+`vs_config` definitions, declared by `vs_students` migration 0007 and by
+`seed_config_catalogue`, read through `services/guardian_rules.py`, every write
+audited as `config.value.updated`. Every default is the behaviour every school
+had before it could choose.
+
+| Key | Type | Default | Scopes |
+|---|---|---|---|
+| `guardians.min_per_student` | INTEGER 1-4 | 1 | platform, school |
+| `guardians.email_required` | BOOLEAN | false | platform, school |
+| `guardians.matching` | CHOICE EMAIL_THEN_PHONE, EMAIL_ONLY | EMAIL_THEN_PHONE | platform, school |
+| `guardians.relationships.extra` | JSON list of labels | `[]` | platform, school |
+
+A value stored by hand at the platform layer is cleaned on read: a minimum out
+of range reads as 1, an unknown mode as EMAIL_THEN_PHONE, and the added
+relationships lose blanks, repeats, overlong labels and fixed ones.
+
+### 12.1 Guardian rules: `GET, PUT /v1/students/guardian-rules/`
+
+GET needs `school.students.view` (the enrolment form and the guardian drawer
+render from it); PUT needs `school.settings.update`. The school is
+`request.tenant`; nothing in the request names another.
+
+```json
+{
+  "min_per_student": 1,
+  "email_required": false,
+  "matching": "EMAIL_THEN_PHONE",
+  "matching_options": [
+    {"value": "EMAIL_THEN_PHONE", "label": "Email, then phone"},
+    {"value": "EMAIL_ONLY", "label": "Email only"}
+  ],
+  "extra_relationships": ["Sponsor", "Driver"],
+  "relationships": [
+    {"value": "MOTHER", "label": "Mother"}, "... the fixed ones except OTHER",
+    {"value": "Sponsor", "label": "Sponsor"}, {"value": "Driver", "label": "Driver"},
+    {"value": "OTHER", "label": "Other"}
+  ]
+}
+```
+
+`relationships` is the whole list a relationship picker offers: the fixed
+choices except OTHER in their own order, then the school's own (whose value is
+the label, because that is what every write path accepts), then OTHER last.
+
+PUT takes `min_per_student`, `email_required`, `matching` and
+`extra_relationships` every time, plus an optional `reason`, and answers with
+the GET body. The added relationships are each trimmed, 1 to 30 characters,
+distinct ignoring case, and not a fixed code or label ignoring case; at most
+10. Refusals are 400 `REQUEST_ERROR` keyed on the field, in sentences:
+
+```json
+{"success": false,
+ "message": "min_per_student: A school can ask for at most 4 guardians for every child.; ...",
+ "error": {"code": "REQUEST_ERROR",
+           "detail": {"min_per_student": ["A school can ask for at most 4 guardians for every child."],
+                      "matching": ["Choose EMAIL_THEN_PHONE or EMAIL_ONLY for how guardians are matched."],
+                      "extra_relationships": ["'Mother' is already a relationship every school has."]}}}
+```
+
+The other `extra_relationships` sentences: "A school can add up to 10
+relationships of its own.", "A relationship needs a name.", "'...' is longer
+than 30 characters.", "'...' is listed twice." Saving an unchanged value writes
+nothing and audits nothing.
+
+### 12.2 What each rule changes
+
+- **Minimum guardians.** `assert_guardian_set` reads the school's minimum at
+  enrolment and when saving an applicant. None at all stays 422
+  `GUARDIAN_REQUIRED` (its message names the minimum where it is above one);
+  some but too few is a 400 keyed on `guardians`: "This school asks for 2
+  guardians for every child." Unlinking refuses to take a child on the roll
+  below the minimum, as 422 `GUARDIAN_REQUIRED`: "This school asks for 2
+  guardians for every child, and Chiamaka has 2. Link another before removing
+  this one." (the last guardian keeps its "only guardian" sentence). A child
+  not on the roll can be left with none. The student import carries one
+  guardian per child, so with a minimum above one every row imports with a
+  warning naming it, and the others are added afterwards. Applicant
+  confirmation does not re-check the minimum.
+- **Email required.** A new guardian needs an email on enrolment (keyed
+  `guardians[i].email`), the link endpoint (keyed `email`) and the guardians
+  import (an error on the row): "A guardian email is required at this
+  school." `upsert_guardian` refuses the same at the point it would create the
+  row, so no caller can skip it. Linking a guardian the school already holds
+  with no email is allowed, whether named by id or by a phone the school
+  matches on. An edit may not blank an email a guardian has (keyed `email`);
+  a guardian who never had one can still be edited. The student import
+  refuses any row whose guardian email is blank.
+- **Matching.** `match_existing` takes the school's mode, and every caller
+  follows it: enrolment, the link endpoint, both imports (including the
+  student import's "already uses that contact" warning, which says nothing of
+  a phone under EMAIL_ONLY). Under EMAIL_ONLY two families sharing a landline
+  stay two guardians; under EMAIL_THEN_PHONE they are one, as before.
+- **The school's own relationships.** Every write path that takes a
+  relationship (enrolment rows, the link endpoint, the relink PATCH, the
+  student import, the guardians import) accepts a fixed code or label, or one
+  of the school's labels, ignoring case. A school label is stored as
+  `relationship = "OTHER"` with `relationship_detail` holding the label as the
+  school spelled it (a new `StudentGuardian` column, 30 characters, blank for
+  every existing link). Anything else is refused on `relationship` ("'Neighbour'
+  is not a relationship this school records. Pick one from the list, or add it
+  in Settings, Guardians."), except in the two imports, which import it as
+  Other with a warning as before. The relink PATCH validates its value
+  like every other path. Removing a label from the school's list leaves
+  stored links reading as they were written.
+- **`relationship_label`** is the detail where one is stored, else the fixed
+  label. It is carried by every read payload that carries a relationship: the
+  student's guardians list (`GET /v1/students/<id>/guardians/`, live and
+  `?as_at`), the guardian's wards (`GET /v1/guardians/<id>/`, live and
+  `?as_at`), and the guardians import's row results (`normalized_payload`).
+- **Template guidance.** `vs_import_data` migration 0022 rewords both
+  templates, swapping only sentences that still read as written, reversibly:
+  matching is "email first and phone second, or on email alone where your
+  school has chosen that", a required guardian email is named among what is
+  refused, the school's own relationships are recognised, and the students
+  template names the per-row minimum warning.

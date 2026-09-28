@@ -1135,6 +1135,27 @@ the calendar decides the current term; M26 that an export's default date
 window ends on the school's day; the MRD capability and, as a remaining gap
 until they are swept, procurement and student dates.
 
+### D54. A school sets its own guardian rules (db22e105, 2026-09-28)
+MODULES: M11 student management, M10 bulk data import.
+New GET/PUT /v1/students/guardian-rules/ (read school.students.view, write
+school.settings.update, audited as config.value.updated): guardians per child
+(1 to 4, default 1), guardian email required (default no), matching
+EMAIL_THEN_PHONE or EMAIL_ONLY (default EMAIL_THEN_PHONE), and up to 10
+relationships of the school's own. Enrolment and applicant save refuse fewer
+than the minimum; unlinking cannot take a child on the roll below it. A new
+guardian needs an email where required (enrolment, link, guardians import;
+the student import refuses a blank one), an existing one without is still
+linked, and an edit may not blank one. Matching on email only never joins two
+families on a phone, on every path. A school's own relationship is stored as
+Other plus StudentGuardian.relationship_detail, accepted on every write path,
+and read as relationship_label; removing it leaves stored links alone. The
+relink PATCH now validates the relationship it is sent.
+MUST SAY: M11 the settings contract, keys, refusals and each rule's effect,
+the new relationship_detail column and relationship_label on the guardian
+reads; M10 that both imports follow the guardian rules (a per-row warning for
+the minimum, the email refusal, matching mode, the school's relationships) and
+that vs_import_data 0022 rewords both templates' guidance.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
