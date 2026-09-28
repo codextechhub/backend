@@ -259,3 +259,49 @@ class VendorAdvanceBranchTests(_VendorPaymentFixture):
         payment.refresh_from_db()
         self.assertEqual(self.paid(), {"ikeja": 0, "lekki": 10_000, "shared": 0})
         self.assertEqual(payment.advance_remaining, 20_000)
+
+    # -- an advance applied to bills a person names ---------------------------- #
+
+    def allocate(self, client, payment, bill):
+        return client.post(self.url(f"{payment.pk}/allocate/"), {
+            "allocations": [{"vendor_invoice": bill.pk, "amount": 10_000}],
+        }, format="json")
+
+    def test_an_ikeja_advance_cannot_be_applied_to_a_lekki_bill(self):
+        self.shared_bill = self.bill(None)
+        payment = self.advance(self.ikeja, self.ikeja_bank)
+        okafor = self.officer(self.ikeja, self.lekki)
+
+        refused = self.allocate(okafor, payment, self.lekki_bill)
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertEqual(refused.data["message"], (
+            f"This vendor payment belongs to Ikeja Branch and bill "
+            f"{self.lekki_bill.document_number} belongs to Lekki Branch. "
+            f"Apply its advance to an Ikeja Branch bill."))
+
+        refused = self.allocate(self.bursar(), payment, self.shared_bill)
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertIn(f"bill {self.shared_bill.document_number} is school-wide.",
+                      refused.data["message"])
+        self.assertEqual(self.paid(), {"ikeja": 0, "lekki": 0, "shared": 0})
+
+        accepted = self.allocate(okafor, payment, self.ikeja_bill)
+        self.assertEqual(accepted.status_code, 200, accepted.data)
+        self.assertEqual(self.paid(), {"ikeja": 10_000, "lekki": 0, "shared": 0})
+
+    def test_a_school_wide_advance_cannot_be_applied_to_a_branch_bill(self):
+        self.shared_bill = self.bill(None)
+        payment = self.advance(None, self.bank("Head Office", None, "43"))
+        bursar = self.bursar()
+
+        refused = self.allocate(bursar, payment, self.lekki_bill)
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertEqual(refused.data["message"], (
+            f"This vendor payment is school-wide and bill "
+            f"{self.lekki_bill.document_number} belongs to Lekki Branch. "
+            f"Apply its advance to a school-wide bill."))
+        self.assertEqual(self.paid(), {"ikeja": 0, "lekki": 0, "shared": 0})
+
+        accepted = self.allocate(bursar, payment, self.shared_bill)
+        self.assertEqual(accepted.status_code, 200, accepted.data)
+        self.assertEqual(self.paid(), {"ikeja": 0, "lekki": 0, "shared": 10_000})

@@ -51,7 +51,7 @@ from .constants import (
     MATCH_BLOCKING, PURCHASE_PRICE_VARIANCE_CODE, MatchStatus, ProcApprovalState,
     VENDOR_ADVANCE_CODE, VendorKycStatus, WHT_PAYABLE_CODE, WhtSource,
 )
-from .exceptions import ThreeWayMatchError
+from .exceptions import SettlementBranchError, ThreeWayMatchError
 from .purchasing import resolve_account
 from .settings import resolve_procurement_settings
 
@@ -810,6 +810,11 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, stric
     is newer, which would debit AP before the liability existed; the journal is dated at
     the later of the two instead. The AP mirror of
     :func:`vs_finance.receivables.allocate_payment`.
+
+    A named bill must belong to the payment's own branch, or be school-wide for a
+    school-wide payment, the same bills the automatic plan draws from; any other is
+    refused with :class:`SettlementBranchError` before anything is settled (see
+    :func:`_require_own_branch_bills`).
     """
     from vs_finance.chronology import effective_allocation_date
     from vs_finance.models import JournalEntry, JournalLine
@@ -834,6 +839,8 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, stric
     remaining = payment.advance_remaining  # Money of this payment still in 1240.
     if remaining <= 0:  # Nothing sitting in the advance to apply.
         return []
+    if allocations is not None:  # A named bill must be of the payment's own branch.
+        _require_own_branch_bills(payment, [invoice for invoice, _ in allocations])
 
     plan = _build_vendor_bill_plan(  # No cutoff: a newer bill is fine.
         payment, allocations, bill_scope=bill_scope)
@@ -882,6 +889,33 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, stric
         unallocated=payment.advance_remaining, effective_date=str(effective),
     )
     return created  # Return allocation rows created by this call.
+
+
+def _require_own_branch_bills(payment, bills):
+    """Refuse a bill named for ``payment``'s advance unless it is of the payment's branch.
+
+    The rule :func:`_auto_settlement_candidates` applies to an automatic plan, applied
+    to one a person names. The reclassification that settles the bill is booked to the
+    payment's branch, so Ikeja's advance applied to a Lekki bill would clear Lekki's
+    liability out of Ikeja's books. A caller who covers both branches can name either
+    bill, which is why this is checked against the payment and not only the caller.
+    """
+    for bill in bills:
+        if bill.branch_id == payment.branch_id:
+            continue
+        number = bill.document_number or "the selected bill"
+        if payment.branch_id is None:
+            raise SettlementBranchError(
+                f"This vendor payment is school-wide and bill {number} belongs to "
+                f"{bill.branch.name}. Apply its advance to a school-wide bill."
+            )
+        name = payment.branch.name
+        article = "an" if name[:1].upper() in "AEIOU" else "a"
+        held = f"belongs to {bill.branch.name}" if bill.branch_id else "is school-wide"
+        raise SettlementBranchError(
+            f"This vendor payment belongs to {name} and bill {number} {held}. "
+            f"Apply its advance to {article} {name} bill."
+        )
 
 
 # Refuse a reversal whose later advance draw-downs are not fully linked to journals.
