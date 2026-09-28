@@ -37,6 +37,7 @@ from django.db.models import Q
 from django.db.models.functions import Lower
 from django.utils import timezone
 
+from vs_config.clock import tenant_today
 from vs_history.queryset import VersionedManager
 from vs_rbac.managers import TenantAwareManager
 
@@ -431,7 +432,7 @@ class LeaveRequest(_Owned):
         derived here rather than stored, because a value that follows from a
         date it sits beside is a second thing that can be wrong.
         """
-        today = today or timezone.localdate()
+        today = today or tenant_today(self.tenant)
         if self.status == LeaveStatus.APPROVED and self.end_date < today:
             return "COMPLETED"
         return self.status

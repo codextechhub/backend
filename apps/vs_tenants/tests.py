@@ -1,4 +1,5 @@
 import datetime
+from unittest import mock
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
@@ -110,6 +111,13 @@ class TenantDocumentNumberTests(TestCase):
             tenant=self.a, document_code="IV",
             allocation_date=datetime.date(2026, 7, 23),
         )
+        self.assertEqual(result, f"IV-{self.a.pk}2607231")
+
+    def test_an_undated_number_carries_the_tenants_own_day(self):
+        """At 23:30 UTC on 22 July it is already the 23rd in Lagos, the default zone."""
+        late_evening = datetime.datetime(2026, 7, 22, 23, 30, tzinfo=datetime.timezone.utc)
+        with mock.patch("django.utils.timezone.now", return_value=late_evening):
+            result = next_tenant_document_number(tenant=self.a, document_code="IV")
         self.assertEqual(result, f"IV-{self.a.pk}2607231")
 
 

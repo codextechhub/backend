@@ -1,20 +1,20 @@
 # school_settings
 
 A school's own settings: its sign-in security values, whether it runs payroll
-centrally or per branch, and which of its profile fields stop being its own once
-it has gone live.
+centrally or per branch, the time zone its calendar runs in, and which of its
+profile fields stop being its own once it has gone live.
 
 The values themselves live in the configuration engine (`vs_config`), and the
 console has screens for them. None of those screens is reachable by a school:
 every `config.*` permission is platform-only (vs_rbac migration
 `0008_config_is_platform_only`), so `/v1/config/security-settings/` and
 `/v1/config/values/` answer 403 to every school admin, and that is intended. This
-slice is the school's own door to the two values that are genuinely the school's
+slice is the school's own door to the values that are genuinely the school's
 to set, gated on the school's own keys.
 
 Routes covered by this slice, mounted at `/v1/i/` (`apps/urls.py`):
-`me/settings/security/`, `me/settings/payroll-scope/`, and the go-live lock on
-`me/profile/`.
+`me/settings/security/`, `me/settings/payroll-scope/`, `me/settings/display/`,
+and the go-live lock on `me/profile/`.
 
 ---
 
@@ -29,10 +29,10 @@ Routes covered by this slice, mounted at `/v1/i/` (`apps/urls.py`):
   itself resolves to the platform tenant, which has no school profile. Without
   that check the security form would write the platform baseline every school
   inherits.
-- **Live schools only.** Neither settings view declares
+- **Live schools only.** No settings view here declares
   `pending_tenant_surface`, so a PENDING school is refused with
-  `403 TENANT_NOT_LIVE`, the same as its notification settings. Neither setting
-  is part of onboarding.
+  `403 TENANT_NOT_LIVE`, the same as its notification settings. None of these
+  settings is part of onboarding.
 - **The rules are the engine's, not a copy.** Security saves through
   `vs_config.services.curated_settings.save_security_settings`, the function the
   console uses. Payroll scope writes through `vs_config.services.resolution.set_value`,
@@ -49,12 +49,14 @@ Routes covered by this slice, mounted at `/v1/i/` (`apps/urls.py`):
 | `/v1/i/me/settings/security/` | PATCH | `school.settings.update` | `?branch=<id>` (optional), body below |
 | `/v1/i/me/settings/payroll-scope/` | GET | `school.settings.view` | none |
 | `/v1/i/me/settings/payroll-scope/` | PATCH | `school.settings.update` | `scope`, `reason` |
+| `/v1/i/me/settings/display/` | GET | `school.settings.view` | none |
+| `/v1/i/me/settings/display/` | PATCH | `school.settings.update` | `timezone`, `reason` |
 | `/v1/i/me/profile/` | PATCH | `school.profile.update` | refuses `currency` / `term_structure` changes once live |
 
 Both keys are TENANT-scoped and seeded in
 `core/management/commands/seed_school_permissions.py`: `view` for `school_admin`
 and `branch_admin`, `update` (SENSITIVE) for `school_admin` only. So a branch
-admin can see both screens and change neither.
+admin can see every screen here and change none of them.
 
 ## 3. Security settings
 
@@ -201,7 +203,73 @@ this endpoint answers 400 so a form can show it on the field.
 
 Switching back to CENTRAL is never refused.
 
-## 5. The profile lock at go-live
+## 5. Display: the school's time zone
+
+`display.timezone`, read everywhere through `vs_config.clock`
+(`docs/config/config_tenant_clock.md`). It decides which calendar day "today"
+is for the school: when a fee falls overdue, which day the calendar hub
+highlights, the date an invoice raised just after midnight carries. Every
+school starts on Africa/Lagos. A school-level setting only, so `?branch=` is
+not read. Live schools only, like the rest of this slice.
+
+### GET
+
+```json
+{
+  "success": true,
+  "message": "Display settings retrieved.",
+  "data": {
+    "timezone": "Africa/Lagos",
+    "source": "default",
+    "options": [
+      {"value": "Africa/Abidjan", "label": "Abidjan (Greenwich Mean Time, UTC+0)"},
+      {"value": "Africa/Accra", "label": "Accra (Greenwich Mean Time, UTC+0)"},
+      {"value": "Europe/London", "label": "London (UK time, UTC+0, UTC+1 in summer)"},
+      {"value": "Africa/Lagos", "label": "Lagos (West Africa Time, UTC+1)"},
+      {"value": "Africa/Johannesburg", "label": "Johannesburg (South Africa Standard Time, UTC+2)"},
+      {"value": "Africa/Nairobi", "label": "Nairobi (East Africa Time, UTC+3)"},
+      "... twenty in all, west to east"
+    ]
+  }
+}
+```
+
+- `source` is `school` when this school has chosen, `platform` when a
+  platform value applies, and `default` when neither is set and the
+  definition's Africa/Lagos applies.
+- `options` is a short suggested list: the common West, Central, East and
+  Southern African zones, Ghana and the UK. A school on a zone outside it
+  finds its own zone first in the list, labelled with its IANA name
+  (`{"value": "America/New_York", "label": "America/New York"}`), so a select
+  can show the current value.
+
+### PATCH
+
+```json
+{"timezone": "Africa/Nairobi", "reason": "Our school is in Kenya"}
+```
+
+- Any zone in the tz database is accepted, not only the suggested ones.
+- A name that is not a zone is a 400 on the field, and nothing is written or
+  audited:
+
+```json
+{
+  "success": false,
+  "message": "'Lagos' is not a recognised time zone. Use an IANA name such as Africa/Lagos.",
+  "error": {"code": "REQUEST_ERROR",
+            "detail": {"timezone": ["'Lagos' is not a recognised time zone. Use an IANA name such as Africa/Lagos."]}}
+}
+```
+
+- Success answers `"Display settings saved."` with the refreshed GET body and
+  writes one `config.value.updated` audit event with the tenant, the actor,
+  the reason and the zone before and after. `reason` defaults to "Updated from
+  the school's display settings".
+- The new zone applies from the next read in any request, including later
+  in the same one.
+
+## 6. The profile lock at go-live
 
 `PATCH /v1/i/me/profile/` refuses changes to `currency` and `term_structure`
 once the school has been live. "Has been live" is `School.has_ever_been_live()`,
@@ -235,19 +303,21 @@ ACTIVE. It is written once at go-live, so a suspended school stays locked.
   because moving a school's currency or calendar is a data change CodeX runs, not
   a form field.
 
-## 6. Code map
+## 7. Code map
 
 | File | What lives there |
 |---|---|
 | `schools/vs_schools/views/settings.py` | `SchoolSettingsView` (keys, school-tenant check), `SchoolSecuritySettingsView`, `SchoolPayrollScopeView`, `PAYROLL_SCOPE_OPTIONS` |
 | `schools/vs_schools/serializers.py` | `PayrollScopeUpdateSerializer`; `SchoolProfileUpdateSerializer.LOCKED_ONCE_LIVE` and its `validate`; `SchoolProfileSerializer.get_editable_fields` |
-| `schools/vs_schools/urls.py` | The two `me/settings/` routes |
+| `schools/vs_schools/views/display.py` | `SchoolDisplaySettingsView`, `DisplaySettingsUpdateSerializer`, `TIME_ZONE_OPTIONS` |
+| `schools/vs_schools/urls.py` | The `me/settings/` routes |
+| `vs_config/clock.py` | `tenant_zone`, `tenant_now`, `tenant_today`, the time zone write guard |
 | `vs_config/services/curated_settings.py` | `save_curated_values`, `save_security_settings`, shared with the console |
 | `vs_config/runtime_settings.py` | `resolve_security_settings`, `validate_security_compliance`, `SECURITY_COMPLIANCE` |
 | `vs_config/services/scopes.py` | `resolve_request_scope`, the two `?branch=` rules |
 | `vs_finance/payroll.py` | `PAYROLL_SCOPE_*`, `guard_payroll_scope`, `assert_roster_fully_assigned` |
 
-## 7. Test coverage & gaps
+## 8. Test coverage & gaps
 
 - `schools/vs_schools/tests_settings_endpoints.py`, on two live schools (Bright
   Star with Ikeja and Lekki, Green Field with one branch) and one pending:
@@ -266,6 +336,16 @@ ACTIVE. It is written once at go-live, so a suspended school stays locked.
     a switch with before/after audit; a single-branch school switching and
     back; the guard refusal's exact 400 shape; an unknown scope; a platform
     value reads as `platform`; a console write reads back here.
+- `schools/vs_schools/tests_display_settings.py`, on the same three schools:
+  a teacher refused both verbs; a branch admin reads but cannot write; one
+  school's save never moves another's zone; another school's `?tenant=` is a
+  404 on both verbs; a pending school gets `TENANT_NOT_LIVE` on both verbs; a
+  platform caller acting as itself cannot move the platform zone; a new school
+  reads Lagos from the default with the suggested options; a save answers with
+  the refreshed body and is audited; names that are not zones are refused on
+  the field with nothing written; any real zone is accepted and offered back
+  first; a platform value reads as `platform`; the single-branch school sets
+  its own zone.
 - `schools/vs_schools/tests_profile_endpoint.py` `LiveSchoolProfileEndpointTests`:
   a live school reads its profile; `editable_fields` drops the two; the address
   still saves; the two are refused by field; sending the stored value back

@@ -550,3 +550,73 @@ def rollback_bank_statement_import_job(job, *, initiated_by=None, reason=""):
         metadata={"reason": reason, "statement_lines_deleted": line_count},
     )
     return record
+
+
+def _publishing_jobs():
+    """The import jobs that published a statement and are not being rolled back.
+
+    A rollback that has started and not finished leaves the job SUCCEEDED; the
+    rollback endpoint refuses a second one, so it is not offered either.
+    """
+    from vs_import_data.models import ImportJob, ImportJobStatusChoices
+
+    return ImportJob.objects.filter(
+        Q(rollback_started_at__isnull=True) | Q(rollback_completed_at__isnull=False),
+        status=ImportJobStatusChoices.SUCCEEDED,
+    ).order_by("-created_at")
+
+
+def annotate_statement_rollback(queryset):
+    """Carry the import batch and job that published each statement.
+
+    Two subqueries rather than a lookup per row, so a bank account's list of
+    statements reads ``statement_import_rollback`` without further queries.
+    """
+    from django.db.models import OuterRef, Subquery
+
+    jobs = _publishing_jobs().filter(
+        import_batch__bank_statement_context__published_statement=OuterRef("pk"),
+    )
+    return queryset.annotate(
+        rollback_batch_id=Subquery(jobs.values("import_batch_id")[:1]),
+        rollback_job_id=Subquery(jobs.values("id")[:1]),
+    )
+
+
+def statement_import_rollback(statement) -> dict | None:
+    """The import to roll back to correct *statement*, or ``None``.
+
+    A bulk-imported statement is never edited in place (see
+    ``statement_edit_block_reason``); it is corrected by rolling back the job
+    that published it and importing the file again. This names that job, as
+    ``{"batch_id", "job_id"}``, so the statement's own row can offer the
+    rollback. It is ``None`` for a statement keyed in by hand, and for one the
+    rollback would refuse: reconciled, or with a line already acted on. The
+    rollback endpoint still checks both, and the caller's permission, itself.
+
+    Reads the ``annotate_statement_rollback`` and ``has_acted_lines``
+    annotations where the queryset carries them, and queries otherwise.
+    """
+    from .constants import BankStatementStatus
+
+    if statement.status != BankStatementStatus.UPLOADED:
+        return None
+    has_acted_lines = getattr(statement, "has_acted_lines", None)
+    if has_acted_lines is None:
+        has_acted_lines = statement.lines.exclude(
+            status=BankLineStatus.UNMATCHED,
+        ).exists()
+    if has_acted_lines:
+        return None
+    if hasattr(statement, "rollback_job_id"):
+        batch_id, job_id = statement.rollback_batch_id, statement.rollback_job_id
+    else:
+        batch_id, job_id = (
+            _publishing_jobs()
+            .filter(import_batch__bank_statement_context__published_statement=statement)
+            .values_list("import_batch_id", "id")
+            .first()
+        ) or (None, None)
+    if job_id is None:
+        return None
+    return {"batch_id": batch_id, "job_id": job_id}

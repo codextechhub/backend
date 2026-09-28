@@ -72,7 +72,7 @@ class TaskViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             qs = Task.objects.filter(assignee_id=assignee_id)
         else:
             qs = own_tasks_qs(viewer)
-        qs = qs.select_related("assignee", "assigned_by")
+        qs = qs.select_related("assignee__tenant", "assigned_by")
 
         status_filter = self.request.query_params.get("status")
         if status_filter:

@@ -13,7 +13,6 @@ Amounts stay integer **kobo** throughout.
 """
 from __future__ import annotations
 
-import datetime
 import hashlib
 import json
 import logging
@@ -23,6 +22,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
+from vs_config.clock import tenant_today
 from vs_finance.accounts import resolve_account
 from vs_finance.constants import CASH_BANK_CODE, PaymentMethod
 from vs_finance.exceptions import FinanceError
@@ -523,7 +523,7 @@ def _book_receipt(intent, *, actor_user=None):
         intent.entity, CASH_BANK_CODE, label="Cash & bank",
     )
 
-    received = datetime.date.today()
+    received = tenant_today(intent.entity.tenant)
     payment = Payment.objects.create(
         entity=intent.entity, customer=intent.customer,
         # The customer's branch, so the receipt and its invoice share a scope.
@@ -1325,7 +1325,7 @@ def _book_vendor_payment(payout, *, actor_user=None):
     vendor = Vendor.objects.get(pk=int(payout.vendor_source_id))
     wht = int((payout.metadata or {}).get("wht_amount", 0))
     vp = VendorPayment.objects.create(
-        entity=payout.entity, vendor=vendor, payment_date=datetime.date.today(),
+        entity=payout.entity, vendor=vendor, payment_date=tenant_today(payout.entity.tenant),
         currency=payout.currency, method=PaymentMethod.BANK_TRANSFER,
         gross_amount=payout.amount, wht_amount=wht,
         net_amount=payout.amount - wht,

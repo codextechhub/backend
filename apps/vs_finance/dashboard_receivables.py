@@ -30,6 +30,7 @@ from collections import defaultdict
 
 from django.db.models import Count, DateField, Exists, ExpressionWrapper, F, Max, OuterRef, Q, Sum
 
+from vs_config.clock import tenant_today
 from vs_rbac.scoping import UNNARROWED
 
 from .billing_periods import current_billing_period
@@ -435,7 +436,7 @@ def receivables_view(entity, *, reader, window=None, period=None, user=None) -> 
     from .dashboard_blocks import books_kind, collections
 
     current = base._current_period(entity, period)
-    as_of = current.end_date if period is not None and current is not None else datetime.date.today()
+    as_of = current.end_date if period is not None and current is not None else tenant_today(entity.tenant)
     chosen, windows = resolve_window(entity, as_of, current, window)
     scope = reader.scope
     invoices = reader.can("finance.invoice.view")

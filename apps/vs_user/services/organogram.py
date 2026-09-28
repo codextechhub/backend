@@ -15,7 +15,8 @@ from __future__ import annotations
 from typing import List, Optional
 
 from django.db import transaction
-from django.utils import timezone
+
+from vs_config.clock import tenant_today
 
 from ..models import (
     User,
@@ -58,7 +59,7 @@ class OrganogramService:
                 'message': 'Only platform staff can be assigned to a position.',
             })
 
-        start = start_date or timezone.localdate()
+        start = start_date or tenant_today(user.tenant)
 
         if is_primary:
             # Close the user's current primary tenure, if any.
@@ -87,7 +88,7 @@ class OrganogramService:
         """Closes an open assignment. No-op if already ended."""
         if assignment.end_date is not None:
             return assignment
-        assignment.end_date = end_date or timezone.localdate()
+        assignment.end_date = end_date or tenant_today(assignment.user.tenant)
         assignment.save(update_fields=['end_date', 'updated_at'])
 
         if assignment.is_primary:

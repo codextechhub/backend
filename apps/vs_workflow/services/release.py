@@ -170,8 +170,13 @@ def stage_requirement(stage) -> str:
         if target == OrganogramTarget.DEPARTMENT_HEAD:
             return "appoint a head for the department of the person who raised this"
         if target == OrganogramTarget.SPECIFIC_POSITION:
-            position = stage.organogram_position
-            seat = getattr(position, "title", "") or getattr(position, "name", "")
+            from vs_workflow.services.positions import describe_position
+
+            label = describe_position(
+                stage.organogram_position, stage.organogram_tenant_position_id,
+                stage.template.tenant if stage.organogram_tenant_position_id else None,
+            )
+            seat = label[1] if label else ""
             return f"put somebody in the {seat} position" if seat else (
                 "put somebody in the position this step approves from")
         return "complete the organogram around the person who raised this"

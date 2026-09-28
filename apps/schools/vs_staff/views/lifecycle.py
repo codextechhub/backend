@@ -31,6 +31,7 @@ from ..serializers import (
     StatusChangeSerializer,
 )
 from ..services import accounts, employment, invitations
+from ..services.visibility import GROUP_HISTORY
 from .base import StaffViewMixin
 
 
@@ -118,13 +119,19 @@ class StaffHistoryView(StaffViewMixin, APIView):
     one as the other believes its teacher was disciplined for mistyping a
     password.
 
-    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
+    Read under ``school.teachers.view`` with the person in the reader's
+    branches, or where the school's profile policy shows history to the
+    reader's standing to them (``services/visibility.py``).
+
+    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``), for
+    the person themselves and a reader whose key reaches them.
 
     docstring-name: A staff member's history
     """
 
     rbac_permission = PERM_VIEW
     pagination_class = XVSPagination
+    profile_group = GROUP_HISTORY
 
     #: Account events worth a line on somebody's profile.
     #:
@@ -146,8 +153,9 @@ class StaffHistoryView(StaffViewMixin, APIView):
 
         from .. import as_at as past
 
-        staff = self.get_staff(pk)
+        staff, _access, admission = self.admit_profile_read(pk)
         as_at = parse_as_at(request)
+        self.refuse_as_at_unless_full(as_at, admission)
         rows = staff.employment_events.select_related("changed_by")
         if as_at is not None:
             past.staff_at(staff, as_at)

@@ -26,6 +26,7 @@ from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
 
 from ..constants import (
+    CapacityMode,
     EXC_LEVEL_NOT_WIRED,
     EXC_NO_CLASS_AT_NEXT_LEVEL,
     EXC_NO_CLASS_ASSIGNED,
@@ -95,6 +96,8 @@ class Plan:
     level_map: list = field(default_factory=list)
     #: Target classes the run would fill past their capacity, one entry each.
     over_capacity: list = field(default_factory=list)
+    #: The school's capacity rule, which decides what the run does with them.
+    capacity_mode: str = CapacityMode.WARN.value
 
     def counts(self):
         out = {v: 0 for v in PromotionOutcome.values}
@@ -338,7 +341,14 @@ def classify(tenant, user, *, from_session, to_session, overrides=None,
             "students": per_class_counts.get(source.pk, 0),
         })
     plan.level_map.sort(key=lambda r: r["from"])
-    plan.over_capacity = _over_capacity(plan.candidates, to_session)
+    from .rules import capacity_mode
+
+    plan.capacity_mode = capacity_mode(tenant)
+    # A school that does not check capacity has no class to name.
+    plan.over_capacity = (
+        [] if plan.capacity_mode == CapacityMode.OFF
+        else _over_capacity(plan.candidates, to_session)
+    )
     return plan
 
 
@@ -459,9 +469,12 @@ def run(tenant, user, *, from_session, to_session, overrides=None, branch=None,
     Each student is its own transaction, so one failure does not undo the
     students already moved - which is what makes the batch restartable.
 
-    A run that would fill classes past their capacity is refused until the
-    caller acknowledges it (``allow_over_capacity``), exactly as enrolling one
-    child into a full class is. The preview lists those classes first.
+    A run that would fill classes past their capacity follows the school's
+    capacity rule exactly as enrolling one child does. Under WARN it is refused
+    with ``PROMOTION_OVER_CAPACITY`` until the caller acknowledges it
+    (``allow_over_capacity``); under HARD it is refused with ``CLASS_FULL``
+    whatever the caller sends, before anybody is moved; under OFF nothing is
+    counted. The preview lists those classes first.
     """
     # The branch travels INTO the classification, not just onto the batch row.
     # Stamped on the record alone, a run labelled "Main Branch" promotes every
@@ -470,6 +483,19 @@ def run(tenant, user, *, from_session, to_session, overrides=None, branch=None,
         tenant, user, from_session=from_session, to_session=to_session,
         overrides=overrides, branch=branch,
     )
+    if plan.over_capacity and plan.capacity_mode == CapacityMode.HARD:
+        from ..exceptions import ClassFull
+
+        names = ", ".join(
+            f"{row['class_name']} ({row['used'] + row['adding']} of {row['capacity']})"
+            for row in plan.over_capacity
+        )
+        raise ClassFull(
+            f"This promotion would put {names} over capacity, and this school "
+            f"does not put classes over capacity. Add a class or move students "
+            f"first.",
+            classes=plan.over_capacity,
+        )
     if plan.over_capacity and not allow_over_capacity:
         from ..exceptions import PromotionOverCapacity
 

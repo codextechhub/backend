@@ -6,6 +6,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from vs_config.clock import tenant_today
 from vs_config.models import Capability
 
 #: The three depths, taken from the capability catalogue rather than restated
@@ -618,7 +619,8 @@ class SchoolPackageSetup(TimeStampedModel):
     def clean(self):
         errors = {}
 
-        if self.subscription_expires_at < timezone.localdate():
+        tenant = self.school.tenant if self.school_id else None
+        if self.subscription_expires_at < tenant_today(tenant):
             errors["subscription_expires_at"] = "Subscription expiry cannot be in the past."
 
         if errors:

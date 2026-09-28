@@ -1,7 +1,8 @@
-"""A school's own settings screens: security, and how it runs payroll.
+"""A school's own settings screens: security, payroll, and staff profile visibility.
 
-Both settings live in the configuration engine (``vs_config``) and both already
-have a console screen there, but none of that is reachable by a school. Every
+All three settings live in the configuration engine (``vs_config``), and the
+first two already have a console screen there, but none of that is reachable by
+a school. Every
 ``config.*`` permission is platform-only, so a school admin can never hold
 ``config.security.update`` and must never be able to: the same module decides
 what a school has bought. These views are the school's door to the two values
@@ -21,9 +22,9 @@ mean writing the platform baseline every school inherits. The check that the
 tenant has a school profile is what stops that; the ``allow_platform=False``
 passed to the scope resolver is the second line.
 
-**Live schools only.** Neither view declares ``pending_tenant_surface``, so a
+**Live schools only.** No view here declares ``pending_tenant_surface``, so a
 school that has not gone live is refused with TENANT_NOT_LIVE, the same as its
-notification settings. Neither setting is part of onboarding.
+notification settings. None of these settings is part of onboarding.
 
 **The rules are the engine's, not restated here.** The security form is saved
 through :func:`vs_config.services.curated_settings.save_security_settings`, the
@@ -56,7 +57,10 @@ from vs_finance.payroll import (
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 
 from ..models import School
-from ..serializers import PayrollScopeUpdateSerializer
+from ..serializers import (
+    PayrollScopeUpdateSerializer,
+    StaffProfileVisibilityUpdateSerializer,
+)
 
 
 #: The two ways a school can run payroll, worded for the school admin choosing.
@@ -236,3 +240,75 @@ class SchoolPayrollScopeView(SchoolSettingsView):
             "Payroll scope saved.",
             self._payload(definition, tenant),
         )
+
+
+class SchoolStaffProfileVisibilityView(SchoolSettingsView):
+    """GET/PUT /v1/i/me/settings/staff-profiles/ - who reads how much of a staff profile.
+
+    Read under ``school.settings.view``. Written under
+    ``school.field_access.update`` rather than ``school.settings.update``,
+    because saving it decides who reads staff members' details, which is the
+    decision that key already guards for single fields.
+
+    The response carries the vocabulary the screen draws from, so a section
+    added on the server appears on the screen without a release there::
+
+        {"policy": {"SELF": [...], "LINE": [...], "COLLEAGUE": [...]},
+         "source": "school" | "default",
+         "default_policy": {...same shape...},
+         "groups": [{"key", "label", "description", "locked"}],
+         "audiences": [{"key", "label", "description", "configurable",
+                        "summary"?}]}
+
+    ``ADMIN`` is among the audiences for the screen to draw as "As their role
+    allows", and is never part of a policy. A PUT sends
+    ``{"policy": {...}, "reason"?: "..."}`` with all three configurable
+    audiences; ``contact`` is added where it is missing, since it is always on.
+    A refusal is a 400 keyed on the offending audience::
+
+        {"success": false, "message": "<first problem>",
+         "error": {"code": "INVALID_CONFIGURATION_VALUE",
+                   "detail": {"LINE": ["'salary' is not a section of a staff profile."]}}}
+
+    Saved through ``set_value``, so every change leaves a
+    ``config.value.updated`` audit event with the policy before and after.
+
+    docstring-name: My school staff profile visibility
+    """
+
+    @property
+    def rbac_permission(self) -> str:
+        method = (getattr(self.request, "method", "") or "").upper()
+        return (
+            "school.settings.view"
+            if method in ("GET", "HEAD", "OPTIONS")
+            else "school.field_access.update"
+        )
+
+    def get(self, request):
+        from schools.vs_staff.services.visibility import policy_payload
+
+        tenant = self.school_tenant(request)
+        return success_response(
+            "Staff profile visibility retrieved.", policy_payload(tenant),
+        )
+
+    def put(self, request):
+        from schools.vs_staff.services.visibility import write_policy
+
+        tenant = self.school_tenant(request)
+        serializer = StaffProfileVisibilityUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            payload = write_policy(
+                tenant, request.user, serializer.validated_data["policy"],
+                reason=serializer.validated_data.get("reason") or "",
+            )
+        except ConfigurationError as exc:
+            detail = exc.extra.get("detail") or {"policy": [exc.message]}
+            return error_response(
+                exc.message,
+                error={"code": exc.error_code, "detail": detail},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return success_response("Staff profile visibility saved.", payload)

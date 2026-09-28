@@ -35,9 +35,11 @@ def _plan_payload(plan):
             "excluded": len(plan.student_exceptions),
         },
         "level_map": plan.level_map,
-        # Target classes the run would fill past capacity; the run refuses them
-        # until allow_over_capacity is sent.
+        # Target classes the run would fill past capacity. Under WARN the run
+        # refuses them until allow_over_capacity is sent; under HARD it refuses
+        # them outright; under OFF the list is always empty.
         "over_capacity": plan.over_capacity,
+        "capacity_mode": plan.capacity_mode,
         # Class-wide causes collapse to one entry however many students they
         # cover; per-student causes get one each. A list that repeated a
         # class-wide cause per student would bury the rows that need a decision

@@ -435,3 +435,246 @@ One defect was fixed in an engine app rather than worked around:
 `school.students.import` could never reach the wizard however it was granted.
 It now reads a `{dataset_type: permission_key}` registry that domain apps write
 into from `AppConfig.ready`.
+
+---
+
+## 11. Student settings
+
+A school sets its own rules for students in the Settings console. Every rule
+lives in `vs_config` as a school-scoped definition, so it inherits
+platform, school and (for admission numbers) branch values the way every other
+setting does, and every write is audited as `config.value.updated` or
+`config.value.cleared`. Every default is the behaviour every school had before
+it could choose, so a school that has saved nothing is treated exactly as
+before.
+
+The definitions are declared by `vs_students` migration 0006 and by
+`seed_config_catalogue`:
+
+| Key | Type | Default | Scopes |
+|---|---|---|---|
+| `students.age.min_years` | INTEGER 0-99 | 2 | platform, school |
+| `students.age.max_years` | INTEGER 0-99 | 25 | platform, school |
+| `students.documents.required` | JSON list | `["BIRTH_CERTIFICATE"]` | platform, school |
+| `students.enrolment.required_fields` | JSON list | `[]` | platform, school |
+| `students.capacity.mode` | CHOICE WARN, HARD, OFF | WARN | platform, school |
+| `students.capacity.default` | INTEGER 1-500 | none (no limit) | platform, school |
+| `students.admission_number.auto_issue` | BOOLEAN | false | platform, school, branch |
+| `students.admission_number.required`, `.pattern`, `.hint` | as before | as before | now also branch |
+
+### 11.1 Enrolment rules: `GET, PUT /v1/students/enrolment-rules/`
+
+GET needs `school.students.view` (the enrolment form renders from it); PUT
+needs `school.settings.update`. The school is `request.tenant`; nothing in the
+request names another.
+
+```json
+{
+  "min_age_years": 2, "max_age_years": 25,
+  "required_documents": ["BIRTH_CERTIFICATE"],
+  "document_types": [{"value": "BIRTH_CERTIFICATE", "label": "Birth certificate"}, "... every DocumentType"],
+  "required_fields": [],
+  "optional_fields": [{"value": "nationality", "label": "Nationality"}, "... the ten below"],
+  "capacity_mode": "WARN",
+  "default_capacity": null
+}
+```
+
+`optional_fields` is the ten enrolment fields a school may make required:
+nationality, state of origin, home address, student phone, student email,
+previous school, emergency contact, emergency phone, blood group and middle
+name, each labelled as the enrol form labels it. Allergies and
+conditions are left out on purpose: for most children the answer is "none".
+
+PUT takes every rule every time, plus an optional `reason`, and answers with
+the GET body. Refusals are 400 `REQUEST_ERROR`, keyed on the field:
+`0 <= min < max <= 99`, the documents a subset of the document types, the
+fields a subset of `optional_fields`, the default class size null or 1 to 500.
+Saving an unchanged value writes nothing and audits nothing.
+
+### 11.2 What each rule changes
+
+- **Age.** `ages.date_of_birth_problem` reads the school's range, on the
+  enrolment form, the edit route and the import alike. The refusal names the
+  school's bounds ("this school enrols students from 4").
+- **Required documents.** The checklist's `required` flags and
+  `missing_required` read the school's list. Still a prompt, never a gate.
+- **Required fields.** Enrolment (and saving an applicant) refuses a blank
+  required field, keyed on it: "Nationality is required at this school." An
+  edit refuses only a field it sends blank, so a record older than the rule is
+  never blocked. The import refuses a row per required field **it has a column
+  for** (middle name, address, previous school); a required field with no
+  import column cannot be supplied by any file and is filled in afterwards.
+- **Capacity.** WARN is today's rule (422 `CLASS_AT_CAPACITY` until
+  `allow_over_capacity`). HARD refuses with 422 `CLASS_FULL` whatever the
+  caller sends, on one placement, enrolment, reactivation, a bulk assignment
+  (the whole selection, before anyone is placed) and a promotion run (with the
+  preview's `classes` list). An import under HARD refuses each row past the
+  last seat at validation, before anything is written. OFF checks nothing and
+  the promotion preview's `over_capacity` is empty. The promotion preview
+  carries `capacity_mode`.
+
+  ```json
+  {"success": false,
+   "message": "JSS1 B holds 2 of 2 seats, and this school does not put classes over capacity.",
+   "error": {"code": "CLASS_FULL",
+             "detail": {"school_class": 12, "capacity": 2, "used": 2, "adding": 1}}}
+  ```
+- **Default class size.** A class created without a capacity (the class form,
+  or a null capacity there, and "generate arms") gets it. Editing a class never
+  applies it, and the academic-structure import keeps "blank means no limit".
+
+### 11.3 Admission numbers per branch: `/v1/students/admission-number-policy/`
+
+GET, PUT and DELETE take an optional `?branch=<id>`, which must be this
+school's branch and one the caller can see, or the answer is 404. GET needs
+`school.students.view`; PUT and DELETE need `school.students.update`.
+
+```json
+{"required": true, "pattern": "IKJ/\\d{4}", "hint": "Use IKJ/NNNN.",
+ "auto_issue": true, "source": "branch", "suggestion": "IKJ/0008"}
+```
+
+`source` is `branch` when the branch holds its own rule, `school` when the
+school has set one, and `default` otherwise. **A branch's rule replaces the
+school's whole**: PUT with a branch writes all four values at branch scope, and
+an empty pattern or hint there means "none", not "the school's". `auto_issue`
+may be left out of a PUT, which keeps the value in force. DELETE with a branch
+removes its rule so it follows the school's again; DELETE with no branch is a
+400 keyed on `branch`. PUT and DELETE answer with the GET body.
+
+Enrolment, confirmation, an edit to the number and the import all use the rule
+of the student's branch. The suggestion continues the branch's own series when
+it has a rule, the school's otherwise. Numbers stay unique across the whole
+school, without case.
+
+**Automatic numbers.** With `auto_issue` on, a number left blank at enrolment
+or at applicant confirmation (not when saving an applicant) is the suggestion.
+A collision with another enrolment, whether seen before the insert or at the
+unique constraint, moves to the next suggestion, up to five times; five in a
+row is a 409 `DUPLICATE_STUDENT_NUMBER` asking to save again. When there is no
+suggestion (no series yet, or the next number would break the pattern) the
+rule applies as if automatic numbers were off: required refuses, optional
+leaves the number blank. The student import follows the same rule: a blank
+number passes validation where the child's branch issues numbers and a next one
+can be worked out, and each row is given the next number in turn when written.
+
+## 12. Guardian settings
+
+A school sets its own guardian rules in the Settings console, beside the
+student settings of section 11 and in the same way: four school-scoped
+`vs_config` definitions, declared by `vs_students` migration 0007 and by
+`seed_config_catalogue`, read through `services/guardian_rules.py`, every write
+audited as `config.value.updated`. Every default is the behaviour every school
+had before it could choose.
+
+| Key | Type | Default | Scopes |
+|---|---|---|---|
+| `guardians.min_per_student` | INTEGER 1-4 | 1 | platform, school |
+| `guardians.email_required` | BOOLEAN | false | platform, school |
+| `guardians.matching` | CHOICE EMAIL_THEN_PHONE, EMAIL_ONLY | EMAIL_THEN_PHONE | platform, school |
+| `guardians.relationships.extra` | JSON list of labels | `[]` | platform, school |
+
+A value stored by hand at the platform layer is cleaned on read: a minimum out
+of range reads as 1, an unknown mode as EMAIL_THEN_PHONE, and the added
+relationships lose blanks, repeats, overlong labels and fixed ones.
+
+### 12.1 Guardian rules: `GET, PUT /v1/students/guardian-rules/`
+
+GET needs `school.students.view` (the enrolment form and the guardian drawer
+render from it); PUT needs `school.settings.update`. The school is
+`request.tenant`; nothing in the request names another.
+
+```json
+{
+  "min_per_student": 1,
+  "email_required": false,
+  "matching": "EMAIL_THEN_PHONE",
+  "matching_options": [
+    {"value": "EMAIL_THEN_PHONE", "label": "Email, then phone"},
+    {"value": "EMAIL_ONLY", "label": "Email only"}
+  ],
+  "extra_relationships": ["Sponsor", "Driver"],
+  "relationships": [
+    {"value": "MOTHER", "label": "Mother"}, "... the fixed ones except OTHER",
+    {"value": "Sponsor", "label": "Sponsor"}, {"value": "Driver", "label": "Driver"},
+    {"value": "OTHER", "label": "Other"}
+  ]
+}
+```
+
+`relationships` is the whole list a relationship picker offers: the fixed
+choices except OTHER in their own order, then the school's own (whose value is
+the label, because that is what every write path accepts), then OTHER last.
+
+PUT takes `min_per_student`, `email_required`, `matching` and
+`extra_relationships` every time, plus an optional `reason`, and answers with
+the GET body. The added relationships are each trimmed, 1 to 30 characters,
+distinct ignoring case, and not a fixed code or label ignoring case; at most
+10. Refusals are 400 `REQUEST_ERROR` keyed on the field, in sentences:
+
+```json
+{"success": false,
+ "message": "min_per_student: A school can ask for at most 4 guardians for every child.; ...",
+ "error": {"code": "REQUEST_ERROR",
+           "detail": {"min_per_student": ["A school can ask for at most 4 guardians for every child."],
+                      "matching": ["Choose EMAIL_THEN_PHONE or EMAIL_ONLY for how guardians are matched."],
+                      "extra_relationships": ["'Mother' is already a relationship every school has."]}}}
+```
+
+The other `extra_relationships` sentences: "A school can add up to 10
+relationships of its own.", "A relationship needs a name.", "'...' is longer
+than 30 characters.", "'...' is listed twice." Saving an unchanged value writes
+nothing and audits nothing.
+
+### 12.2 What each rule changes
+
+- **Minimum guardians.** `assert_guardian_set` reads the school's minimum at
+  enrolment and when saving an applicant. None at all stays 422
+  `GUARDIAN_REQUIRED` (its message names the minimum where it is above one);
+  some but too few is a 400 keyed on `guardians`: "This school asks for 2
+  guardians for every child." Unlinking refuses to take a child on the roll
+  below the minimum, as 422 `GUARDIAN_REQUIRED`: "This school asks for 2
+  guardians for every child, and Chiamaka has 2. Link another before removing
+  this one." (the last guardian keeps its "only guardian" sentence). A child
+  not on the roll can be left with none. The student import carries one
+  guardian per child, so with a minimum above one every row imports with a
+  warning naming it, and the others are added afterwards. Applicant
+  confirmation does not re-check the minimum.
+- **Email required.** A new guardian needs an email on enrolment (keyed
+  `guardians[i].email`), the link endpoint (keyed `email`) and the guardians
+  import (an error on the row): "A guardian email is required at this
+  school." `upsert_guardian` refuses the same at the point it would create the
+  row, so no caller can skip it. Linking a guardian the school already holds
+  with no email is allowed, whether named by id or by a phone the school
+  matches on. An edit may not blank an email a guardian has (keyed `email`);
+  a guardian who never had one can still be edited. The student import
+  refuses any row whose guardian email is blank.
+- **Matching.** `match_existing` takes the school's mode, and every caller
+  follows it: enrolment, the link endpoint, both imports (including the
+  student import's "already uses that contact" warning, which says nothing of
+  a phone under EMAIL_ONLY). Under EMAIL_ONLY two families sharing a landline
+  stay two guardians; under EMAIL_THEN_PHONE they are one, as before.
+- **The school's own relationships.** Every write path that takes a
+  relationship (enrolment rows, the link endpoint, the relink PATCH, the
+  student import, the guardians import) accepts a fixed code or label, or one
+  of the school's labels, ignoring case. A school label is stored as
+  `relationship = "OTHER"` with `relationship_detail` holding the label as the
+  school spelled it (a new `StudentGuardian` column, 30 characters, blank for
+  every existing link). Anything else is refused on `relationship` ("'Neighbour'
+  is not a relationship this school records. Pick one from the list, or add it
+  in Settings, Guardians."), except in the two imports, which import it as
+  Other with a warning as before. The relink PATCH validates its value
+  like every other path. Removing a label from the school's list leaves
+  stored links reading as they were written.
+- **`relationship_label`** is the detail where one is stored, else the fixed
+  label. It is carried by every read payload that carries a relationship: the
+  student's guardians list (`GET /v1/students/<id>/guardians/`, live and
+  `?as_at`), the guardian's wards (`GET /v1/guardians/<id>/`, live and
+  `?as_at`), and the guardians import's row results (`normalized_payload`).
+- **Template guidance.** `vs_import_data` migration 0022 rewords both
+  templates, swapping only sentences that still read as written, reversibly:
+  matching is "email first and phone second, or on email alone where your
+  school has chosen that", a required guardian email is named among what is
+  refused, the school's own relationships are recognised, and the students
+  template names the per-row minimum warning.

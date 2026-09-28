@@ -25,7 +25,7 @@ from vs_tenants.models import Tenant
 from vs_rbac.permissions import user_has_rbac_permission
 
 from vs_workflow.conditions.fields import document_type_label
-from vs_workflow.exceptions import TemplateInvalidError
+from vs_workflow.exceptions import TemplateInvalidError, UnknownPositionError
 from vs_workflow.constants import (
     PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_UPDATE,
     PERM_TEMPLATE_VIEW,
@@ -58,6 +58,7 @@ from vs_workflow.services import templates as templates_svc
 from vs_workflow.services.approvers import (
     EligibleApprover, describe_group_members, resolve_approvers, resolve_group_users,
 )
+from vs_workflow.services.positions import bind_position
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -274,11 +275,14 @@ class WorkflowTemplateViewSet(
         )
         if d["approver_source"] == ApproverSource.ORGANOGRAM and \
                 d.get("organogram_target") == OrganogramTarget.SPECIFIC_POSITION:
+            # Looked up on the chart the caller's tenant uses, as publish does.
             try:
-                from vs_user.models import Position
-                stage.organogram_position = Position.objects.filter(code=d["organogram_position_code"]).first()
-            except ImportError:
-                stage.organogram_position = None
+                bound = bind_position(d["organogram_position_code"], request.tenant,
+                                      active_only=False)
+            except UnknownPositionError as exc:
+                return Response({"detail": exc.message}, status=status.HTTP_404_NOT_FOUND)
+            stage.organogram_position = bound.position
+            stage.organogram_tenant_position_id = bound.tenant_position_id
         if d["approver_source"] == ApproverSource.ROLE:
             from vs_rbac.models import TenantRoleTemplate
             exists = TenantRoleTemplate.objects.filter(
@@ -965,14 +969,20 @@ class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
         s.is_valid(raise_exception=True)
         d = s.validated_data
         target = d["resolved_target"]
-        field = {GroupMemberKind.USER: "user", GroupMemberKind.ROLE: "role",
-                 GroupMemberKind.POSITION: "position"}[d["kind"]]
+        if d["kind"] == GroupMemberKind.POSITION:
+            # A post on the CX chart, or one on this tenant's own; never both.
+            reference = ({"position": target.position} if target.position is not None
+                         else {"tenant_position_id": target.tenant_position_id})
+        else:
+            field = {GroupMemberKind.USER: "user", GroupMemberKind.ROLE: "role"}[d["kind"]]
+            reference = {field: target}
 
         member, created = WorkflowApproverGroupMember.objects.get_or_create(
-            group=group, kind=d["kind"], **{field: target},
+            group=group, kind=d["kind"], **reference,
             defaults={"added_by": request.user},
         )
-        serializer = self.get_serializer(group)
+        # Read again: the group above carries its members as prefetched before the add.
+        serializer = self.get_serializer(self.get_object())
         return Response(serializer.data,
                         status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
@@ -986,7 +996,8 @@ class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
         if member is None:
             raise NotFound("Member not found.")
         member.delete()
-        return Response(self.get_serializer(group).data)
+        # Read again: the group above carries its members as prefetched before the delete.
+        return Response(self.get_serializer(self.get_object()).data)
 
 
 # ── Dynamic Roles ─────────────────────────────────────────────────────────────

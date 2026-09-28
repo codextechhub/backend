@@ -28,6 +28,8 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.db.models import F
 
+from vs_config.clock import tenant_today
+
 MARK = "DEMO"
 
 
@@ -52,7 +54,7 @@ class Command(BaseCommand):
         with mock.patch("vs_finance.document_email.issue_invoice_copy", return_value=None), \
                 mock.patch("vs_finance.document_email.issue_receipt_copy", return_value=None), \
                 transaction.atomic():
-            Seeder(entity, datetime.date.today(), random.Random(f"{entity.code}-ar"), self.stdout).run()
+            Seeder(entity, tenant_today(entity.tenant), random.Random(f"{entity.code}-ar"), self.stdout).run()
 
 
 class Seeder:

@@ -406,13 +406,16 @@ class BulkAssignClassView(_BulkAction):
         # Capacity is checked once against the whole selection rather than per
         # student, so assigning twenty-five children into a class with ten
         # seats warns once about the total instead of fifteen times about the
-        # overflow.
+        # overflow. At a HARD school the same check refuses the whole
+        # selection, and nobody is placed.
         from ..services.placement import assert_capacity
+        from ..services.rules import capacity_mode
 
+        mode = capacity_mode(self.tenant)
         wanted = sum(1 for _, s in pairs if s is not None)
         assert_capacity(
             school_class, self.active_session, adding=wanted,
-            acknowledged=data.get("allow_over_capacity", False),
+            acknowledged=data.get("allow_over_capacity", False), mode=mode,
         )
 
         results = []
@@ -427,7 +430,7 @@ class BulkAssignClassView(_BulkAction):
                         student, school_class, actor=request.user,
                         reason=data.get("reason", ""),
                         effective_date=data.get("effective_date"),
-                        allow_over_capacity=True,
+                        allow_over_capacity=True, capacity_mode=mode,
                     )
             except StudentsError as exc:
                 results.append(self._row(sid, student, False, exc.error_code, exc.message))

@@ -857,6 +857,7 @@ class BankStatementSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     can_edit = serializers.SerializerMethodField()
     edit_block_reason = serializers.SerializerMethodField()
+    import_rollback = serializers.SerializerMethodField()
 
     class Meta:
         model = BankStatement
@@ -864,6 +865,7 @@ class BankStatementSerializer(serializers.ModelSerializer):
             "id", "statement_date", "period_label", "opening_balance",
             "opening_balance_naira", "closing_balance", "closing_balance_naira",
             "line_count", "status", "status_display", "can_edit", "edit_block_reason",
+            "import_rollback",
         ]
 
     def get_opening_balance_naira(self, obj) -> str:
@@ -881,6 +883,11 @@ class BankStatementSerializer(serializers.ModelSerializer):
         from .banking import statement_edit_block_reason
 
         return statement_edit_block_reason(obj)
+
+    def get_import_rollback(self, obj) -> dict | None:
+        from .statement_imports import statement_import_rollback
+
+        return statement_import_rollback(obj)
 
 
 class BankStatementDetailSerializer(BankStatementSerializer):

@@ -44,6 +44,7 @@ from collections import defaultdict
 
 from django.db.models import Count, F, Q, Sum
 
+from vs_config.clock import tenant_today
 from vs_rbac.scoping import UNNARROWED
 
 from .constants import AccountType, DocumentStatus, InvoicePaymentStatus
@@ -537,7 +538,7 @@ def spend_view(entity, *, reader, window=None, period=None, user=None) -> dict:
     from . import dashboard as base
 
     current = base._current_period(entity, period)
-    as_of = current.end_date if period is not None and current is not None else datetime.date.today()
+    as_of = current.end_date if period is not None and current is not None else tenant_today(entity.tenant)
     chosen, windows = resolve_window(entity, as_of, current, window)
     scope = reader.scope
     whole = reader.whole_tenant

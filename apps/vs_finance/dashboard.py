@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from django.db.models import F, Sum
 from django.db.models.functions import TruncMonth
 
+from vs_config.clock import tenant_today
 from vs_rbac.scoping import UNNARROWED, BranchScope
 
 from .constants import (
@@ -146,7 +147,7 @@ def _current_period(entity, period=None):
     qs = FiscalPeriod.objects.filter(entity=entity).select_related("fiscal_year")
     if period is not None:  # Caller explicitly pinned a period.
         return period
-    today = datetime.date.today()
+    today = tenant_today(entity.tenant)
     containing = (  # Prefer the period containing today.
         qs.filter(start_date__lte=today, end_date__gte=today)
         .order_by("-fiscal_year__year", "-period_no")
@@ -414,7 +415,7 @@ def _trend(entity, anchor, *, scope=UNNARROWED, issued_ok=True, collected_ok=Tru
 
 # Return top overdue customer invoices.
 def _top_overdue(entity, as_of, scope=UNNARROWED) -> list[dict]:
-    today = as_of or datetime.date.today()
+    today = as_of or tenant_today(entity.tenant)
     qs = (  # Query open overdue invoices.
         scope.filter(Invoice.objects.filter(
             entity=entity, status=DocumentStatus.POSTED, due_date__lt=today  # Entity, posted, overdue.
@@ -442,7 +443,7 @@ def _vendor_due(entity, scope=UNNARROWED) -> list[dict]:
     try:  # Procurement app is optional for dashboard resilience.
         from vs_procurement.models import VendorInvoice
 
-        today = datetime.date.today()
+        today = tenant_today(entity.tenant)
         end = today + datetime.timedelta(days=VENDOR_DUE_DAYS)
         qs = (  # Query upcoming open vendor bills.
             scope.filter(VendorInvoice.objects.filter(
@@ -615,7 +616,7 @@ def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK, window=None, u
     if period is not None and current is not None:  # Caller pinned a specific period.
         as_of = current.end_date  # Use period end as dashboard date.
     else:  # Live dashboard uses today.
-        as_of = datetime.date.today()
+        as_of = tenant_today(entity.tenant)
     periods = _period_window(entity, current)  # KPI sparkline period window.
 
     # Ledger blocks read the reader's own journals when they are narrowed (see

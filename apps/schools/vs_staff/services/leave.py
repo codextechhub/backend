@@ -21,6 +21,8 @@ from __future__ import annotations
 from django.db import transaction
 from django.utils import timezone
 
+from vs_config.clock import tenant_today
+
 from ..constants import LEAVE_LIVE_STATUSES, LeaveStatus
 from ..exceptions import InvalidDateRange, LeaveAlreadyDecided
 from . import audit
@@ -221,7 +223,18 @@ def days_taken(staff, *, since=None, until=None):
     return [{"leave_type": row["leave_type"], "days": row["days"] or 0} for row in rows]
 
 
-def on_leave_expression(*, today=None):
+def _school_today(tenant):
+    """The school's own day: *tenant*'s, else the request's tenant.
+
+    The fallback is the tenant ``LeaveRequest.objects`` already scopes these
+    queries to, so the day and the rows always belong to the same school.
+    """
+    from vs_tenants.context import get_current_tenant
+
+    return tenant_today(tenant if tenant is not None else get_current_tenant())
+
+
+def on_leave_expression(*, today=None, tenant=None):
     """Is this person's leave running, as a queryset expression.
 
     The same question :func:`on_leave_today` answers, in the one form that
@@ -237,7 +250,7 @@ def on_leave_expression(*, today=None):
 
     from ..models import LeaveRequest
 
-    today = today or timezone.localdate()
+    today = today or _school_today(tenant)
     return Exists(
         LeaveRequest.objects.filter(
             staff=OuterRef("pk"), status=LeaveStatus.APPROVED,
@@ -246,7 +259,7 @@ def on_leave_expression(*, today=None):
     )
 
 
-def on_leave_until_expression(*, today=None):
+def on_leave_until_expression(*, today=None, tenant=None):
     """When the leave that is running today ends, as a queryset expression.
 
     The companion to :func:`on_leave_expression`, and the answer to the question
@@ -264,7 +277,7 @@ def on_leave_until_expression(*, today=None):
 
     from ..models import LeaveRequest
 
-    today = today or timezone.localdate()
+    today = today or _school_today(tenant)
     return Subquery(
         LeaveRequest.objects.filter(
             staff=OuterRef("pk"), status=LeaveStatus.APPROVED,
@@ -286,7 +299,7 @@ def on_leave_today(tenant, *, today=None):
     """
     from ..models import LeaveRequest
 
-    today = today or timezone.localdate()
+    today = today or tenant_today(tenant)
     return set(
         LeaveRequest.objects.filter(
             tenant=tenant, status=LeaveStatus.APPROVED,

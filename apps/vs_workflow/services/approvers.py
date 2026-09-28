@@ -19,6 +19,11 @@ from vs_workflow.constants import (
 )
 from vs_workflow.exceptions import UnknownApproverSourceError
 from vs_workflow.models import ApprovalDelegation, WorkflowInstance, WorkflowStage
+# register_tenant_organogram is re-exported: apps registering a chart import it here.
+from vs_workflow.services.positions import (  # noqa: F401
+    as_tenant, describe_tenant_positions, register_tenant_organogram,
+    resolve_tenant_position_holders, tenant_organogram,
+)
 
 if TYPE_CHECKING:
     from django.contrib.auth.base_user import AbstractBaseUser
@@ -155,7 +160,9 @@ def resolve_group_users(group, tenant, branch=None) -> list:
       * USER     - the named person, taken as-is.
       * ROLE     - every active assignee of that role (same rules as the ROLE
                    stage source).
-      * POSITION - the current holder(s) of that organogram seat.
+      * POSITION - the current holder(s) of that organogram seat: a CX chart
+                   seat's holders, or the holders able to act of a post on the
+                   resolving tenant's own chart, looked up inside that tenant.
 
     A deactivated group resolves to nobody, leaving the stage's
     skip_if_no_approvers policy to decide what happens next. Shared by stage
@@ -172,10 +179,20 @@ def resolve_group_users(group, tenant, branch=None) -> list:
         [m.role_id for m in members if m.kind == GroupMemberKind.ROLE], tenant, branch,
     )
     for m in members:
-        if m.kind == GroupMemberKind.POSITION and m.position is not None:
-            users += m.position.current_holders
+        if m.kind != GroupMemberKind.POSITION:
+            continue
+        users += _position_member_holders(m, tenant)
 
     return _tenant_members(users, getattr(tenant, "pk", tenant))
+
+
+def _position_member_holders(member, tenant) -> list:
+    """Holders of the post one POSITION member names. See resolve_group_users."""
+    if member.position is not None:
+        return member.position.current_holders
+    if member.tenant_position_id is not None:
+        return resolve_tenant_position_holders(member.tenant_position_id, as_tenant(tenant))
+    return []
 
 
 # Per-member breakdown of a group's live resolution.
@@ -191,8 +208,14 @@ def describe_group_members(group, tenant, branch=None) -> list:
         return []
 
     tenant_id = getattr(tenant, "pk", tenant)
+    members = list(group.members.select_related("user", "role", "position").all())
+    # One lookup for every post on the group tenant's own chart.
+    labels = describe_tenant_positions(
+        (group.tenant_id, m.tenant_position_id) for m in members
+        if m.kind == GroupMemberKind.POSITION
+    )
     rows = []
-    for m in group.members.select_related("user", "role", "position").all():
+    for m in members:
         if m.kind == GroupMemberKind.USER:
             label = _display_name(m.user)
             target_code, resolved = None, _tenant_members([m.user], tenant_id)
@@ -202,10 +225,12 @@ def describe_group_members(group, tenant, branch=None) -> list:
             resolved = _tenant_members(
                 _users_for_roles([m.role_id], tenant, branch), tenant_id)
         else:
-            label = m.position.title if m.position else ""
-            target_code = m.position.code if m.position else None
-            resolved = _tenant_members(
-                m.position.current_holders if m.position else [], tenant_id)
+            if m.position is not None:
+                code, title = m.position.code, m.position.title
+            else:
+                code, title = labels.get((group.tenant_id, m.tenant_position_id), (None, ""))
+            label, target_code = title, code
+            resolved = _tenant_members(_position_member_holders(m, tenant), tenant_id)
         rows.append({
             "id": str(m.pk),
             "kind": m.kind,
@@ -318,26 +343,6 @@ def role_holder_ids(*, role_key: str, tenant, branch) -> frozenset:
     )
 
 
-#: The organogram each tenant kind climbs, registered by the app that owns it.
-#:
-#: The engine never imports a domain app, so a tenant's own org chart reaches it
-#: the way a document handler does: the app that keeps the chart registers it
-#: here as it loads. See :func:`register_tenant_organogram`.
-_TENANT_ORGANOGRAMS: dict = {}
-
-
-def register_tenant_organogram(tenant_kind: str, organogram) -> None:
-    """Name the organogram a requester of *tenant_kind* is climbed through.
-
-    *organogram* answers ``resolve_direct_manager(user, tenant)``,
-    ``resolve_n_levels_up(user, levels, tenant)`` and
-    ``resolve_department_head(user, tenant)``, each returning users of that
-    tenant and never the requester. Registering again replaces the earlier
-    entry, so an app whose ``ready`` runs twice at startup does not fail.
-    """
-    _TENANT_ORGANOGRAMS[tenant_kind] = organogram
-
-
 # Resolve organogram-based approvers relative to the requester.
 def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
     """Resolve base approvers by climbing an organogram relative to the requester.
@@ -349,10 +354,12 @@ def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> 
     tenant, so a school's leave request reaches the school's own head of
     department and never a seat on somebody else's chart.
 
-    SPECIFIC_POSITION resolves to nobody for a tenant requester. The stage's
-    seat is a platform position, which no tenant's chart contains, and a named
-    seat on another chart is exactly the reach across tenants this engine
-    refuses everywhere else.
+    SPECIFIC_POSITION does not climb, so it follows the post the stage names
+    rather than the requester. A post on the template tenant's own chart
+    resolves to its holders able to act, looked up inside the instance's tenant,
+    whoever raised the document. A CX chart seat resolves only for a platform
+    requester: no tenant's chart contains it, and a named seat on another chart
+    is exactly the reach across tenants this engine refuses everywhere else.
 
     Degrades gracefully to an empty list when the chart a requester needs is
     unavailable - ``vs_user`` not installed, or no chart registered for the
@@ -366,6 +373,12 @@ def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> 
     """
     requester = instance.requested_by
     target = stage.organogram_target
+
+    if target == OrganogramTarget.SPECIFIC_POSITION and \
+            stage.organogram_tenant_position_id is not None:
+        return resolve_tenant_position_holders(
+            stage.organogram_tenant_position_id, instance.tenant, exclude_user=requester,
+        )
 
     if requester is not None and not requester.is_platform_user:
         return _tenant_organogram_users(stage, instance, requester, target)
@@ -394,7 +407,7 @@ def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> 
 def _tenant_organogram_users(stage, instance, requester, target) -> list:
     """The climb through the requesting tenant's own chart. See the function above."""
     tenant = instance.tenant
-    organogram = _TENANT_ORGANOGRAMS.get(getattr(tenant, "kind", None))
+    organogram = tenant_organogram(tenant)
     if organogram is None:
         import logging
         logging.getLogger(__name__).warning(

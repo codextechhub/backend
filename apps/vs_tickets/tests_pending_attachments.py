@@ -1,18 +1,17 @@
 """A school still onboarding can attach evidence to its own ticket.
 
-Filing a ticket was already open to a pending tenant; attaching to it was not,
-so the only way to send a screenshot was to reply to the confirmation email.
-That moves the evidence off the platform and out of the ticket it belongs to.
+A school reporting that a screen is wrong needs to show the screen, and without
+attachments the only route is replying to the confirmation email, which moves
+the evidence off the platform and out of the ticket it belongs to.
 
-These pin both halves: the surface is open, and it is open no wider than the
-caller's own ticket.
+These pin the declaration and the upload limits that make it safe. The desk as
+a whole, driven through the API for a pending school, is in
+``tests_pending_desk``.
 """
 from __future__ import annotations
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
-from django.urls import reverse
-from rest_framework.test import APIClient
 
 from core.uploads import MAX_TICKET_ATTACHMENT_BYTES, TICKET_EXTENSIONS
 
@@ -25,36 +24,37 @@ PNG = bytes.fromhex(
 )
 
 
-class PendingSchoolAttachmentTests(TestCase):
-    def test_the_attachments_action_is_on_the_pending_surface(self):
-        """The one-line change this file exists for."""
+class PendingSchoolSurfaceTests(TestCase):
+    def test_the_school_desk_is_on_the_pending_surface(self):
         from vs_tickets.views import TicketViewSet
 
-        self.assertIn("attachments", TicketViewSet.pending_tenant_surface)
-        self.assertIn("create", TicketViewSet.pending_tenant_surface)
+        for action in (
+            "list", "retrieve", "create", "update", "partial_update",
+            "transition", "escalate", "follow", "comments", "attachments",
+            "attachment_download", "audit",
+        ):
+            self.assertIn(action, TicketViewSet.pending_tenant_surface)
 
-    def test_the_rest_of_the_desk_stays_shut(self):
-        """Opening one action must not open the desk.
+    def test_the_platform_desks_actions_stay_off_it(self):
+        """Assignment is CodeX's rota decision, before go-live and after.
 
-        A pending school files and attaches. Lists, threads and assignment are
-        still go-live work, and this is what says so.
+        ``destroy`` refuses everyone, so it has no reason to be listed.
         """
         from vs_tickets.views import TicketViewSet
 
-        for action in ("list", "retrieve", "assign", "transition", "audit"):
+        for action in ("assign", "eligible_assignees", "destroy"):
             self.assertNotIn(
                 action,
                 TicketViewSet.pending_tenant_surface,
-                f"{action} must not be reachable before go-live",
+                f"{action} is not a school's action",
             )
 
 
 class AttachmentLimitTests(TestCase):
-    """The limits that make opening the surface safe.
+    """The limits that make the surface safe to open to a pending school.
 
-    They already existed and are stronger than a browser ``accept=`` attribute,
-    which is a hint the client can ignore. These assert they are still in force
-    now that a wider set of callers can reach them.
+    They are stronger than a browser ``accept=`` attribute, which is a hint the
+    client can ignore, and they hold for every caller that reaches the action.
     """
 
     def _validate(self, upload):

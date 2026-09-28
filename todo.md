@@ -1062,6 +1062,100 @@ MUST SAY: M17 FR-002/FR-011 and the all_active gap (remove it); M19 FR-019 and
 section 9 (remove the all_active gap), dunning; M20 FR-006 (batch no longer
 bypasses), FR-008 and section 9 (remove the batch-confirmation gap).
 
+### D49. A school being set up works its own support desk (6cf38070, 2026-09-28)
+MODULES: M31 support tickets, M09 school onboarding.
+The ticket viewset's pending_tenant_surface names every action a school uses:
+list, retrieve, create, update, transition, escalate, follow, comments,
+attachments and download, audit; the dashboard counts are open too. assign and
+eligible_assignees stay closed, destroy off. Scoping and visibility unchanged.
+MUST SAY: M31 FR-010/FR-011 and the pending-school gap (remove it); M09 FR-010
+and FR-012 (the desk is open before go-live) and remove its Needs Attention item.
+
+### D50. The bank-statement import key rolls back its own statement imports (a8e0e4d0, 2026-09-28)
+MODULES: M10 bulk data import, M19 finance (bank statements).
+A dataset registration may declare extra engine keys its own key covers;
+bank_statements declares import.rollbacks.run only, counted only against a
+bank-statement batch. School datasets unchanged. The school app's import wizard
+offers Roll back on a statement to the bank-key holder. A bank account's
+statements list now carries `import_rollback` ({batch_id, job_id}, or null for
+a manual statement, a reconciled one or one with a line acted on), and FinPro's
+banking screen offers Roll back on the statement row from it. A statement
+rollback always runs inside the request, whatever its line count
+(rolls_back_in_one_step), and a statement whose rollback is already running
+names no import.
+MUST SAY: M10 the extra-keys rule and its one entry (remove the "no
+self-service way back for a wrong bank statement" gap); M19 that a bursar can
+roll back a statement she imported, from the statement's own row, and the new
+`import_rollback` field on the statement list.
+
+### D51. A school sets its own student rules; a branch its own admission numbers (ba33b90d, dd11d9c9, 2026-09-28)
+MODULES: M11 student management, M13 academic structure, M10 bulk data import.
+New GET/PUT /v1/students/enrolment-rules/ (read school.students.view, write
+school.settings.update): age range (default 2 to 25), required documents
+(default birth certificate, still a prompt), required enrolment fields (default
+none; enrolment and import refuse a blank one, an edit only a field it blanks),
+capacity mode WARN/HARD/OFF (HARD is 422 CLASS_FULL with no override, on
+placement, bulk assign and promotion; the import refuses rows past the last
+seat; OFF checks nothing), and a default class size applied to a new class and
+to generated arms. Admission-number policy: ?branch= on GET/PUT/DELETE, a
+branch's rule replaces the school's whole, source and auto_issue in the body,
+automatic numbers at enrolment and confirmation. Numbers stay unique school-wide.
+MUST SAY: M11 the settings contract, each rule's effect and the new error code,
+the branch rule and automatic numbers; M13 the default class size; M10 that the
+import follows the age, required-field and capacity rules (required fields only
+where the template has a column) and does not issue numbers.
+
+### D52. The student import issues numbers and names each school's rules (aab85a8d, 2026-09-28)
+MODULES: M11 student records, M10 bulk data import.
+A blank admission number passes validation where the child's branch issues
+numbers automatically (and a next number can be worked out); each row is given
+the next number in turn when written. The students_v1 template's guidance
+(migration vs_import_data 0021) points at the school's own age range, required
+details, capacity cap and automatic numbering instead of fixed figures.
+MUST SAY: the import applies the Students settings exactly as enrolment does.
+
+### D53. A school's "today" follows its own time zone (480a4c87, bed82560, 39c256a6, 2026-09-28)
+MODULES: MRD, M01 school and branch management (settings), M14 calendar and
+timetables, M13 academic structure, M12 staff, M17 billing and invoicing, M18
+payments and collections, M19 finance and accounting, M20 adjustments and
+concessions, M26 reporting and exports.
+The server keeps UTC, so every "today" was the UTC day: between midnight and
+1am in Lagos a document was dated yesterday and yesterday's due date was not
+yet overdue. A new setting, display.timezone (platform and school scope,
+default Africa/Lagos, only real IANA zones accepted), decides the day; every
+"today" in the modules above now reads the school's own day through
+vs_config.clock. A school sets it at GET/PATCH /v1/i/me/settings/display/
+(school.settings.view / school.settings.update, live schools only, audited as
+config.value.updated), which answers the zone, where it came from and a short
+list of common zones. vs_procurement and vs_students are still on the UTC day.
+MUST SAY: M01 the display setting, its contract, keys, refusals and audit; the
+rule "a school's day is its own time zone's, Africa/Lagos by default" in each
+listed FRD wherever a date defaults to today, a due date is judged overdue or
+the calendar decides the current term; M26 that an export's default date
+window ends on the school's day; the MRD capability and, as a remaining gap
+until they are swept, procurement and student dates.
+
+### D54. A school sets its own guardian rules (db22e105, 2026-09-28)
+MODULES: M11 student management, M10 bulk data import.
+New GET/PUT /v1/students/guardian-rules/ (read school.students.view, write
+school.settings.update, audited as config.value.updated): guardians per child
+(1 to 4, default 1), guardian email required (default no), matching
+EMAIL_THEN_PHONE or EMAIL_ONLY (default EMAIL_THEN_PHONE), and up to 10
+relationships of the school's own. Enrolment and applicant save refuse fewer
+than the minimum; unlinking cannot take a child on the roll below it. A new
+guardian needs an email where required (enrolment, link, guardians import;
+the student import refuses a blank one), an existing one without is still
+linked, and an edit may not blank one. Matching on email only never joins two
+families on a phone, on every path. A school's own relationship is stored as
+Other plus StudentGuardian.relationship_detail, accepted on every write path,
+and read as relationship_label; removing it leaves stored links alone. The
+relink PATCH now validates the relationship it is sent.
+MUST SAY: M11 the settings contract, keys, refusals and each rule's effect,
+the new relationship_detail column and relationship_label on the guardian
+reads; M10 that both imports follow the guardian rules (a per-row warning for
+the minimum, the email refusal, matching mode, the school's relationships) and
+that vs_import_data 0022 rewords both templates' guidance.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

@@ -676,10 +676,13 @@ class PaymentPlanInstallment(TimeStampedModel):
         return self.amount - self.amount_settled
 
     def is_overdue(self, *, as_of=None) -> bool:
-        """True if not fully settled and its due date has passed ``as_of`` (default today)."""
-        import datetime as _dt
+        """True if not fully settled and its due date has passed ``as_of``.
 
-        ref = as_of or _dt.date.today()
+        ``as_of`` defaults to today at the plan's tenant, not the server's UTC day.
+        """
+        from vs_config.clock import tenant_today
+
+        ref = as_of or tenant_today(self.plan.entity.tenant)
         return self.balance > 0 and self.due_date < ref
 
     def __str__(self) -> str:

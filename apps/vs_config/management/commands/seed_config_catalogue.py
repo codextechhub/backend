@@ -148,7 +148,103 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "a person reads, which is why a refusal never quotes the pattern.",
         "STRING", "", {},
     ),
+    (
+        "students.admission_number.auto_issue", "Issue Admission Numbers Automatically",
+        "Whether a student enrolled or confirmed with no admission number is "
+        "given the next number in the school's series, or the branch's where "
+        "the branch has its own rule.",
+        "BOOLEAN", False, {},
+    ),
+    (
+        "students.age.min_years", "Youngest Enrolment Age",
+        "The youngest a student at this school can be, in whole years. A "
+        "birth date that makes a child younger is refused as a mistyped "
+        "year, on the enrolment form, the edit form and the import.",
+        "INTEGER", 2, {"min": 0, "max": 99},
+    ),
+    (
+        "students.age.max_years", "Oldest Enrolment Age",
+        "The oldest a student at this school can be, in whole years. A "
+        "birth date that makes a child older is refused as a mistyped year.",
+        "INTEGER", 25, {"min": 0, "max": 99},
+    ),
+    (
+        "students.documents.required", "Required Student Documents",
+        "The documents a student's checklist marks as required. A prompt, "
+        "never a gate: a child is enrolled whether or not they are attached.",
+        "JSON", ["BIRTH_CERTIFICATE"], {},
+    ),
+    (
+        "students.enrolment.required_fields", "Required Enrolment Fields",
+        "Optional enrolment fields this school requires, such as nationality "
+        "or home address. Enforced when a student is enrolled or imported, "
+        "and when an edit would blank one; an older record missing one is "
+        "never blocked.",
+        "JSON", [], {},
+    ),
+    (
+        "students.capacity.mode", "Class Capacity Rule",
+        "What a full class does. WARN refuses until staff choose to go "
+        "ahead; HARD refuses with no override; OFF does not check.",
+        "CHOICE", "WARN", {"choices": ["WARN", "HARD", "OFF"]},
+    ),
+    (
+        "students.capacity.default", "Default Class Size",
+        "The capacity a new class is given when it is created without one. "
+        "Empty means no limit.",
+        "INTEGER", None, {"min": 1, "max": 500},
+    ),
+    (
+        "guardians.min_per_student", "Guardians Per Student",
+        "How many guardians every child at this school needs. Enrolment and "
+        "saving an applicant refuse fewer, and a guardian cannot be removed "
+        "from a child on the roll if that would leave fewer. The student "
+        "import still imports its one guardian per child, with a warning.",
+        "INTEGER", 1, {"min": 1, "max": 4},
+    ),
+    (
+        "guardians.email_required", "Guardian Email Required",
+        "Whether a new guardian must be given an email address, on the "
+        "enrolment form, when linking, and in both imports, and whether an "
+        "edit may blank one. A guardian already held with no email can still "
+        "be linked to another child.",
+        "BOOLEAN", False, {},
+    ),
+    (
+        "guardians.matching", "Guardian Matching",
+        "How a guardian typed in is recognised as one this school already "
+        "holds. EMAIL_THEN_PHONE matches on email, then on phone; EMAIL_ONLY "
+        "never matches on phone, for a school whose families share landlines.",
+        "CHOICE", "EMAIL_THEN_PHONE", {"choices": ["EMAIL_THEN_PHONE", "EMAIL_ONLY"]},
+    ),
+    (
+        "guardians.relationships.extra", "Additional Guardian Relationships",
+        "Relationships this school records beyond the fixed eight, such as "
+        "Sponsor or Driver: up to 10, each up to 30 characters. A link stores "
+        "one as Other with the school's label, and removing it from this list "
+        "leaves those links as they are.",
+        "JSON", [], {},
+    ),
+    (
+        "display.timezone", "Time Zone",
+        "The IANA time zone this school keeps its calendar in, such as "
+        "Africa/Lagos. It decides which day \"today\" is for due dates, "
+        "overdue checks, attendance and the calendar, and the local time shown "
+        "on documents. The platform value is the default for every school.",
+        "STRING", "Africa/Lagos", {},
+    ),
 ]
+
+#: School-scoped settings a BRANCH may also hold its own value of. Named here
+#: rather than widened for every school setting, because most of them are
+#: facts about the school that a branch answering differently would contradict.
+#: A branch's admission-number rule replaces the school's for its students.
+BRANCH_OVERRIDABLE = frozenset({
+    "students.admission_number.required",
+    "students.admission_number.pattern",
+    "students.admission_number.hint",
+    "students.admission_number.auto_issue",
+})
 
 #: The modules a school is sold. Every school is granted every one of them;
 #: the plan it pays for decides how far into each it reaches. Nothing here is
@@ -252,19 +348,23 @@ class Command(BaseCommand):
                 },
             )
         for key, label, description, value_type, default, rules in SCHOOL_SCOPED_DEFINITIONS:
+            scopes = {"platform", "school"}
+            if key in BRANCH_OVERRIDABLE:
+                scopes.add("branch")
             row, created = ConfigurationDefinition.objects.get_or_create(
                 key=key,
                 defaults={
                     "label": label, "description": description,
                     "value_type": value_type, "default_value": default,
                     "validation_rules": rules,
-                    "allowed_scopes": ["platform", "school"],
+                    "allowed_scopes": sorted(scopes),
                 },
             )
             # get_or_create leaves an existing row alone, so widen it here:
-            # a platform-only row refuses every school write.
-            if not created and "school" not in (row.allowed_scopes or []):
-                row.allowed_scopes = sorted({*(row.allowed_scopes or []), "platform", "school"})
+            # a platform-only row refuses every school write, and a school-only
+            # row every branch write.
+            if not created and not scopes <= set(row.allowed_scopes or []):
+                row.allowed_scopes = sorted({*(row.allowed_scopes or []), *scopes})
                 row.save(update_fields=["allowed_scopes"])
         modules = {}
         for key, label, requires_entitlement in MODULES:

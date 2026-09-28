@@ -59,11 +59,6 @@ for _code, _label in Gender.choices:
     _GENDERS[_code.lower()] = _code
     _GENDERS[_label.lower()] = _code
 
-_RELATIONSHIPS: dict[str, str] = {}
-for _code, _label in Relationship.choices:
-    _RELATIONSHIPS[_code.lower()] = _code
-    _RELATIONSHIPS[_label.lower()] = _code
-
 
 @dataclass
 class RowIssue:
@@ -94,6 +89,8 @@ class ResolvedRow:
     guardian_phone: str = ""
     guardian_email: str = ""
     guardian_relationship: str = Relationship.OTHER
+    #: The school's own relationship, where ``guardian_relationship`` is OTHER.
+    guardian_relationship_detail: str = ""
     #: An existing student this row looks like. A warning, never an error: two
     #: real siblings can share a surname and a birthday is not a fingerprint.
     duplicate: object | None = None
@@ -211,17 +208,37 @@ def _as_date(raw: str):
     return None
 
 
-def resolve_row(payload: dict, *, tenant, session, batch_branch, multi_branch, policy=None):
+#: The school's requirable fields that the template carries a column for. A
+#: required field with no column cannot be refused per row, because no file
+#: could ever supply it; the school fills those in on the record afterwards.
+IMPORTABLE_REQUIRED_FIELDS = ("middle_name", "address", "previous_school")
+
+
+def resolve_row(
+    payload: dict, *, tenant, session, batch_branch, multi_branch,
+    policies=None, rules=None, guardian_rules=None,
+):
     """Read one uploaded row into the thing the handler will write.
 
     Called by both passes. Everything it can refuse, it refuses here, so a
     school is told before the first row is written rather than after some of
     them are.
+
+    The school's own rules apply as they do to a typed enrolment: its age
+    range, its required fields (those the template has a column for), the
+    admission-number rule of the row's branch, and its guardian rules.
+    *rules* is the school's ``EnrolmentRules``, *guardian_rules* its
+    ``GuardianRules`` and *policies* a ``{branch id: AdmissionPolicy}``
+    cache, which the validator passes so a file of a thousand rows reads each
+    once; the executor, writing one row, passes none of them.
     """
-    from .services.policy import assert_number_allowed, read_policy
+    from .services.guardian_rules import read_guardian_rules
+    from .services.rules import read_rules
 
     row = ResolvedRow()
-    policy = policy or read_policy(tenant)
+    rules = rules or read_rules(tenant)
+    guardian_rules = guardian_rules or read_guardian_rules(tenant)
+    policies = {} if policies is None else policies
 
     row.first_name = _text(payload, "first_name")
     row.middle_name = _text(payload, "middle_name")
@@ -253,7 +270,10 @@ def resolve_row(payload: dict, *, tenant, session, batch_branch, multi_branch, p
         ))
     else:
         # The year is the digit a spreadsheet gets wrong. See ages.py.
-        problem = date_of_birth_problem(row.date_of_birth)
+        problem = date_of_birth_problem(
+            row.date_of_birth, tenant=tenant,
+            bounds=(rules.min_age_years, rules.max_age_years),
+        )
         if problem:
             row.issues.append(RowIssue(
                 "business_rule", problem, "date_of_birth", raw_dob,
@@ -296,11 +316,24 @@ def resolve_row(payload: dict, *, tenant, session, batch_branch, multi_branch, p
                 "admission_date", raw_admitted,
             ))
 
-    _resolve_number(row, payload, tenant=tenant, policy=policy)
+    for field in IMPORTABLE_REQUIRED_FIELDS:
+        if field in rules.required_fields and not getattr(row, field):
+            from .constants import REQUIRABLE_FIELDS
+
+            row.issues.append(RowIssue(
+                "required",
+                f"{REQUIRABLE_FIELDS[field]} is required at this school.", field,
+            ))
+
+    # The branch first: the admission-number rule is the row's branch's.
     _resolve_branch(row, payload, tenant=tenant, batch_branch=batch_branch,
                     multi_branch=multi_branch)
+    _resolve_number(
+        row, payload, tenant=tenant,
+        policy=_policy_for(tenant, row.branch, policies),
+    )
     _resolve_class(row, payload, tenant=tenant, session=session)
-    _resolve_guardian(row, payload)
+    _resolve_guardian(row, payload, guardian_rules=guardian_rules)
     _resolve_duplicate(row, tenant=tenant)
     _check_lengths(row)
     _check_looks_like_a_name(row)
@@ -342,6 +375,22 @@ def _check_looks_like_a_name(row):
             ))
 
 
+def _policy_for(tenant, branch, cache):
+    """The admission-number rule for *branch*, read once per branch per file."""
+    from .services.policy import read_policy
+
+    key = branch.pk if branch is not None else None
+    if key not in cache:
+        cache[key] = read_policy(tenant, branch)
+    return cache[key]
+
+
+def _can_issue(tenant, branch, policy) -> bool:
+    from .services.policy import suggest_number
+
+    return bool(suggest_number(tenant, policy=policy, branch=branch))
+
+
 def _resolve_number(row, payload, *, tenant, policy):
     from .exceptions import StudentsError
     from .models import Student
@@ -350,6 +399,11 @@ def _resolve_number(row, payload, *, tenant, policy):
     raw = _text(payload, "student_number")
     row.student_number = raw
     if not raw:
+        # A blank number is issued at write time where the branch's rule
+        # numbers automatically; it is refused only if no next number can be
+        # worked out (no series yet, or the successor breaks the pattern).
+        if policy.auto_issue and _can_issue(tenant, row.branch, policy):
+            return
         if policy.required:
             row.issues.append(RowIssue(
                 "required",
@@ -459,13 +513,36 @@ def _resolve_class(row, payload, *, tenant, session):
     row.school_class = found
 
 
-def _resolve_guardian(row, payload):
+def _resolve_guardian(row, payload, *, guardian_rules):
+    """The row's one guardian, held to the school's guardian rules.
+
+    A phone with fewer than seven digits is refused, not as a format rule but
+    because it cannot be a number anybody can ring: the usual cause is a
+    column that has shifted so a class name or a date has landed there.
+
+    **A malformed email is not a cosmetic fault.** Guardians are matched on
+    email, so the column decides which household a child joins, and it is
+    also the address a parent's login would be issued to. A value that is not
+    an address matches nothing, creates a second record for a parent the
+    school already holds, and splits the family.
+
+    The relationship is a fixed one or one of the school's own; anything else
+    is imported as Other with a warning, because a file with "Family friend"
+    in it is still a roll worth loading. A school that requires a guardian
+    email refuses a row without one. A school that asks for more than one
+    guardian per child is warned on every row, and the row still imports:
+    the file carries one guardian per child, and the others are added on the
+    record or with the guardians import.
+    """
+    from .services.guardians import EMAIL_REQUIRED_MESSAGE
+
     read_guardian_name(row, payload, missing="Every student needs a guardian's name.")
     row.guardian_phone = _text(payload, "guardian_phone")
     row.guardian_email = _text(payload, "guardian_email")
     raw_rel = _text(payload, "guardian_relationship")
-    row.guardian_relationship = _RELATIONSHIPS.get(
-        raw_rel.lower(), Relationship.OTHER,
+    resolved = guardian_rules.resolve_relationship(raw_rel)
+    row.guardian_relationship, row.guardian_relationship_detail = (
+        resolved or (Relationship.OTHER, "")
     )
     if not row.guardian_phone:
         row.issues.append(RowIssue(
@@ -473,20 +550,13 @@ def _resolve_guardian(row, payload):
             "guardian_phone",
         ))
     elif len(_digits(row.guardian_phone)) < 7:
-        # Not a format rule. A value with fewer than seven digits cannot be a
-        # number anybody can ring, and the usual cause is a column that has
-        # shifted so a class name or a date has landed here.
         row.issues.append(RowIssue(
             "invalid_format",
             f"'{row.guardian_phone}' is not a number the school could ring.",
             "guardian_phone", row.guardian_phone,
         ))
 
-    # **A malformed address is not a cosmetic fault.** Guardians are matched on
-    # email, so this column decides which household a child joins, and it is
-    # also the address a parent's login would be issued to. A value that is not
-    # an address matches nothing, creates a second record for a parent the
-    # school already holds, and splits the family.
+    # An email that is not an address.
     if row.guardian_email:
         from django.core.exceptions import ValidationError
         from django.core.validators import validate_email
@@ -500,12 +570,27 @@ def _resolve_guardian(row, payload):
                 "guardian_email", row.guardian_email,
             ))
 
-    if raw_rel and raw_rel.lower() not in _RELATIONSHIPS:
+    if guardian_rules.email_required and not row.guardian_email:
+        row.issues.append(RowIssue(
+            "required", EMAIL_REQUIRED_MESSAGE, "guardian_email",
+        ))
+
+    if raw_rel and resolved is None:
         row.issues.append(RowIssue(
             "invalid_choice",
             f"'{raw_rel}' is not a relationship this school records. It will "
             f"be imported as Other.",
             "guardian_relationship", raw_rel, severity="warning",
+        ))
+
+    minimum = guardian_rules.min_per_student
+    if minimum > 1:
+        row.issues.append(RowIssue(
+            "business_rule",
+            f"This school asks for {minimum} guardians for every child, and "
+            f"this file gives one. The student will still be imported; add "
+            f"the others on their record or with the guardians import.",
+            severity="warning",
         ))
 
 
@@ -533,6 +618,33 @@ def import_session(tenant):
     ).first()
 
 
+def _issue_imported_number(student, *, tenant):
+    """Give an imported child the next number, where the branch's rule issues them.
+
+    The same issue_number an enrolment uses, one row at a time, so each row
+    in a file takes the number after the one before it.
+    """
+    from django.db import IntegrityError
+
+    from .services.enrolment import issue_number
+    from .services.policy import read_policy
+
+    policy = read_policy(tenant, student.branch)
+    if not policy.auto_issue:
+        return
+
+    def write(candidate):
+        student.student_number = candidate
+        try:
+            student.save(update_fields=["student_number", "updated_at"])
+        except IntegrityError:
+            student.student_number = ""
+            raise
+        return candidate
+
+    issue_number(tenant, branch=student.branch, policy=policy, write=write)
+
+
 def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
     """Write the student this row describes, through the module's own services.
 
@@ -558,6 +670,8 @@ def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
         enrolment_date=row.admission_date or timezone.localdate(),
         created_by=created_by,
     )
+    if not row.student_number:
+        _issue_imported_number(student, tenant=tenant)
     guardian, _ = guardian_service.upsert_guardian(
         tenant, first_name=row.guardian_first_name,
         middle_name=row.guardian_middle_name, last_name=row.guardian_last_name,
@@ -566,6 +680,7 @@ def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
     )
     guardian_service.link(
         student, guardian, relationship=row.guardian_relationship,
+        relationship_detail=row.guardian_relationship_detail,
         is_primary=True, actor=created_by,
     )
     transition(
@@ -600,8 +715,18 @@ def validate_students_import_batch(import_batch) -> list[dict]:
     Errors block the import; warnings do not. The split follows one rule: what
     is refused is what cannot be written at all, and everything a person might
     legitimately have meant is a warning that names what will happen.
+
+    One warning no single row can raise is a guardian this file has already
+    named, or the school already holds, under a DIFFERENT name.
+    ``upsert_guardian`` matches on the school's rule and keeps the name it
+    already has, so the child joins that household and the name in the row is
+    discarded. Usually right, since it is how siblings find each other, and
+    occasionally a typo attaching a child to a stranger, which nothing
+    downstream would ever question. A school matching on email only never
+    joins on a phone, so the check says nothing of one there.
     """
-    from .services.policy import read_policy
+    from .services.guardian_rules import read_guardian_rules
+    from .services.rules import read_rules
     from .services.scoping import branch_dimension_applies
 
     template = import_batch.template
@@ -613,7 +738,9 @@ def validate_students_import_batch(import_batch) -> list[dict]:
     columns = list(template.columns.all())
     header = {c.target_field: c.column_name for c in columns}
     multi_branch = branch_dimension_applies(tenant)
-    policy = read_policy(tenant)
+    rules = read_rules(tenant)
+    guardian_rules = read_guardian_rules(tenant)
+    policies: dict = {}
     rows = import_batch.preview_rows or []
 
     issues: list[dict] = []
@@ -645,7 +772,7 @@ def validate_students_import_batch(import_batch) -> list[dict]:
             _payload_of(raw_row, columns),
             tenant=tenant, session=session,
             batch_branch=import_batch.branch, multi_branch=multi_branch,
-            policy=policy,
+            policies=policies, rules=rules, guardian_rules=guardian_rules,
         )
         for issue in resolved.issues:
             record(row_number, issue)
@@ -687,16 +814,11 @@ def validate_students_import_batch(import_batch) -> list[dict]:
                 "first_name", resolved.first_name, severity="warning",
             ))
 
-        # A guardian this file has already named, or the school already holds,
-        # under a DIFFERENT name. upsert_guardian matches on email then phone
-        # and keeps the name it already has, so the child joins that household
-        # and the name in this row is discarded. Usually right - it is how
-        # siblings find each other - and occasionally a typo attaching a child
-        # to a stranger, which nothing downstream would ever question.
-        for field, value in (
-            ("guardian_email", resolved.guardian_email.casefold()),
-            ("guardian_phone", _digits(resolved.guardian_phone)),
-        ):
+        # A guardian contact already named under a different name.
+        contacts = [("guardian_email", resolved.guardian_email.casefold())]
+        if not guardian_rules.email_only:
+            contacts.append(("guardian_phone", _digits(resolved.guardian_phone)))
+        for field, value in contacts:
             if not value:
                 continue
             earlier = contacts_seen.get(value)
@@ -733,7 +855,7 @@ def validate_students_import_batch(import_batch) -> list[dict]:
             wanted.append(row_number)
             _check_capacity(
                 record, resolved.school_class, session, wanted,
-                row_number, capacity_reported,
+                row_number, capacity_reported, mode=rules.capacity_mode,
             )
 
     return issues
@@ -750,7 +872,9 @@ def _guardian_holding(tenant, field: str, value: str):
     return Guardian.objects.filter(tenant=tenant, phone=value).first()
 
 
-def _check_capacity(record, school_class, session, wanted, row_number, reported):
+def _check_capacity(
+    record, school_class, session, wanted, row_number, reported, *, mode,
+):
     """Warn once when a file asks a class for more seats than it has.
 
     **This is the fault a form cannot have.** Enrolling by hand, the thirty-
@@ -763,10 +887,28 @@ def _check_capacity(record, school_class, session, wanted, row_number, reported)
     tips it over: the import writes over capacity deliberately, because a school
     loading a roll it already has is describing what is true rather than asking
     permission. What it must not do is stay quiet about it.
-    """
-    from .services.placement import capacity_state
 
-    if school_class.pk in reported or session is None:
+    That holds under the school's WARN capacity rule. Under HARD every row past
+    the last seat is an ERROR, because placing it would be refused at execution
+    with the rows before it already written; the school is told which rows
+    before anything is. Under OFF nothing is counted.
+    """
+    from .constants import CapacityMode
+    from .services.placement import capacity_state, class_full_message
+
+    if session is None or mode == CapacityMode.OFF:
+        return
+    if mode == CapacityMode.HARD:
+        used, cap, _ = capacity_state(school_class, session, adding=0)
+        if cap is not None and used + len(wanted) > cap:
+            record(row_number, RowIssue(
+                "business_rule",
+                class_full_message(school_class.name, used, cap)
+                + f" This row would be student {used + len(wanted)}.",
+                "class", school_class.name,
+            ))
+        return
+    if school_class.pk in reported:
         return
     used, cap, _ = capacity_state(school_class, session, adding=0)
     if cap is None or used + len(wanted) <= cap:

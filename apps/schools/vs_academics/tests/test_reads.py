@@ -440,11 +440,12 @@ class OverviewTests(_BudgetMixin, _Base):
             self.client_for(self.admin),
             reverse("academics-overview"),
             {"tenant": self.tenant.slug},
-            expected=21,
+            expected=23,
         )
         # Six counts, the live year with its terms, the stranded-branch check
         # and the year lookup - each once, none of them per row. No branch
-        # sweep, because a school-wide year covers every branch already.
+        # sweep, because a school-wide year covers every branch already. The
+        # two outside the module read the school's time zone, once a request.
         self.assertEqual(n, 10)
 
     def test_a_caller_without_the_key_is_refused(self):

@@ -280,7 +280,10 @@ class StudentDetailView(StudentsViewMixin, generics.RetrieveUpdateAPIView):
         if number is not None:
             from ..services.policy import assert_number_allowed
 
-            value = assert_number_allowed(self.tenant, number)
+            # The rule of the student's own branch.
+            value = assert_number_allowed(
+                self.tenant, number, branch=student.branch,
+            )
             enrolment_service.assert_number_free(
                 self.tenant, value, exclude_pk=student.pk,
             )

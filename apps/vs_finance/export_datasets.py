@@ -420,10 +420,11 @@ def _translate_invoices(params):
     """
     import datetime
 
+    from vs_config.clock import tenant_today
     from vs_exports.catalogue import Unmapped
 
     filters, unmapped = [], []
-    today = datetime.date.today()
+    today = tenant_today(None)
 
     if value := params.get("status"):
         filters.append({"id": "status", "values": [value]})

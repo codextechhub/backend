@@ -208,7 +208,14 @@ class PendingTenantRealEndpointTests(PendingTenantTestBase):
         response = client.get("/v1/user/auth/me/")
         self.assertEqual(response.status_code, 200, response.data)
 
-    def test_pending_tenant_may_file_a_support_ticket_only(self):
+    def test_pending_tenant_works_its_support_desk(self):
+        """A school still onboarding files a ticket and reads it back.
+
+        The desk is a school's escalation route before go-live, and a ticket it
+        cannot read the answer to is only half a route. The platform desk's own
+        actions and the rest of the surface stay closed; ``vs_tickets`` covers
+        the desk in depth.
+        """
         client = self._as(self.pending_admin)
         created = client.post(
             f"/v1/support/tickets/?tenant={self.pending_tenant.slug}",
@@ -221,12 +228,23 @@ class PendingTenantRealEndpointTests(PendingTenantTestBase):
             format="json",
         )
         self.assertIn(created.status_code, (200, 201), created.data)
+        ticket_id = created.data["data"]["id"]
 
-        # The rest of the ticket desk stays closed until go-live.
         listed = client.get(
             f"/v1/support/tickets/?tenant={self.pending_tenant.slug}",
         )
-        self.assertTenantNotLive(listed)
+        self.assertEqual(listed.status_code, 200, listed.data)
+        opened = client.get(
+            f"/v1/support/tickets/{ticket_id}/?tenant={self.pending_tenant.slug}",
+        )
+        self.assertEqual(opened.status_code, 200, opened.data)
+
+        # Assignment is the platform desk's rota decision.
+        self.assertTenantNotLive(client.post(
+            f"/v1/support/tickets/{ticket_id}/assign/?tenant={self.pending_tenant.slug}",
+            {},
+            format="json",
+        ))
 
     def test_active_tenant_access_is_unchanged_on_a_real_endpoint(self):
         school = make_school(slug="live-real", name="Live Real School")

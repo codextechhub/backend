@@ -14,8 +14,9 @@ history of appointments, the vacancies and the summary say how large the
 establishment is, who covered which post when, and how many people are on leave
 or suspended. They need ``school.teachers.update``, which the two administrator
 roles hold and a teacher does not. ``school.teachers.view`` would have been the
-natural key, and it cannot be the gate here, because every teacher holds it:
-reading the staff directory is something a teacher does.
+natural key, and it is not the gate here because it is a branch administrator's
+directory key: a branch administrator holds it for their own branch, and these
+reads describe the whole school.
 
 **Writing follows the branch.** A unit carries an optional branch, a post is in
 its unit's, and an appointment and a dotted line are in their post's. A branch
@@ -511,9 +512,13 @@ class PositionDetailView(_OrganogramView):
     """GET, PATCH, DELETE /v1/i/me/staff/organogram/positions/<id>/
 
     DELETE answers 409 while anybody has ever been appointed to the post, or
-    other posts still report to it. A post somebody held is history, and is
-    deactivated instead; a post with reports under it would leave them
-    reporting to nobody without anybody having decided that.
+    other posts still report to it, or an approval step or an approver group
+    names it. A post somebody held is history, and is deactivated instead; a
+    post with reports under it would leave them reporting to nobody without
+    anybody having decided that; and a post an approval names would leave that
+    approval routed to a post that no longer exists. The workflow engine keeps
+    the post as a plain id, so this refusal is the only thing standing in the
+    way, and it asks the engine to count the uses.
 
     docstring-name: One organogram post
     """
@@ -562,9 +567,13 @@ class PositionDetailView(_OrganogramView):
     def delete(self, request, pk):
         position = self.get_position(pk)
         self.may_change(position, "post")
+        from vs_workflow.services.positions import position_references
+
         appointments = StaffPositionAssignment.all_objects.filter(position=position).count()
         reports = StaffPosition.all_objects.filter(reports_to=position).count()
-        if appointments or reports:
+        uses = position_references(self.tenant, position.pk)
+        stages, members = uses["workflow_stages"], uses["approver_group_members"]
+        if appointments or reports or stages or members:
             reasons = []
             if appointments:
                 reasons.append(
@@ -575,10 +584,22 @@ class PositionDetailView(_OrganogramView):
                 reasons.append(
                     f"{reports} post{'s' if reports != 1 else ''} reporting to it"
                 )
+            if stages:
+                reasons.append(
+                    f"{stages} approval step{'s' if stages != 1 else ''} naming it"
+                )
+            if members:
+                reasons.append(
+                    f"{members} approver group{'s' if members != 1 else ''} naming it"
+                )
+            listed = reasons[-1] if len(reasons) == 1 else (
+                f"{', '.join(reasons[:-1])} and {reasons[-1]}"
+            )
             raise OrganogramInUse(
-                f"{position.title} has {' and '.join(reasons)}. Deactivate it "
-                f"instead, or move its reports first.",
+                f"{position.title} has {listed}. Deactivate it instead, or move "
+                f"what depends on it first.",
                 appointments=appointments, direct_reports=reports,
+                workflow_stages=stages, approver_group_members=members,
             )
         title = position.title
         position.delete()
@@ -794,7 +815,9 @@ class OrganogramSummaryView(_OrganogramView):
     """GET /v1/i/me/staff/organogram/summary/
 
     Nine numbers for the header above the chart. Behind the register's key,
-    because two of them are how many colleagues are on leave or suspended.
+    because two of them are how many colleagues are on leave or suspended, and
+    counted over the caller's branches and the school-wide rows, as the staff
+    directory is; the chart itself is not narrowed.
 
     docstring-name: Organogram summary
     """
@@ -802,4 +825,6 @@ class OrganogramSummaryView(_OrganogramView):
     method_permissions = {"GET": PERM_UPDATE}
 
     def get(self, request):
-        return success_response(data=StaffOrganogramService.summary(self.tenant))
+        return success_response(
+            data=StaffOrganogramService.summary(self.tenant, request.user),
+        )

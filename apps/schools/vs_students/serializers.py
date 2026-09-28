@@ -31,9 +31,19 @@ from rest_framework import serializers
 from vs_rbac.field_enforcement import FieldAccessMixin
 
 from .constants import (
+    AGE_RULE_CEILING,
+    AGE_RULE_FLOOR,
+    DEFAULT_CAPACITY_MAX,
+    DEFAULT_CAPACITY_MIN,
+    EXTRA_RELATIONSHIP_MAX_LENGTH,
+    EXTRA_RELATIONSHIPS_MAX,
+    GUARDIAN_MINIMUM_CEILING,
+    GUARDIAN_MINIMUM_FLOOR,
+    REQUIRABLE_FIELDS,
+    CapacityMode,
     DocumentType,
     Gender,
-    Relationship,
+    GuardianMatching,
     StudentStatus,
     TransferReason,
 )
@@ -171,10 +181,15 @@ class GuardianUpdateSerializer(FieldAccessMixin, serializers.Serializer):
 
 
 class GuardianLinkSerializer(serializers.ModelSerializer):
+    """One of a student's guardians, as the profile lists them.
+
+    ``relationship`` is the fixed code, OTHER for a relationship the school
+    added for itself; ``relationship_label`` is what to show, which is the
+    school's own label where one is stored.
+    """
+
     guardian = GuardianSerializer(read_only=True)
-    relationship_label = serializers.CharField(
-        source="get_relationship_display", read_only=True,
-    )
+    relationship_label = serializers.CharField(read_only=True)
     siblings = serializers.SerializerMethodField()
 
     class Meta:
@@ -255,6 +270,13 @@ class GuardianWriteSerializer(FieldAccessMixin, serializers.Serializer):
     one; any value is accepted here and only the correction form asks its
     Write switch. A row naming an existing guardian writes none of these
     details: the existing record is linked as it stands.
+
+    The school's guardian rules apply (``services/guardian_rules.py``). The
+    relationship is a fixed code or label, or one of the school's own, and
+    validates to ``relationship`` plus ``relationship_detail``. At a school
+    that requires a guardian email, a new guardian needs one; a row that names
+    an existing guardian, by id or by a phone the school matches on, does not,
+    so a record held from before the rule can still be linked.
     """
 
     field_resource = "school.guardians"
@@ -270,10 +292,29 @@ class GuardianWriteSerializer(FieldAccessMixin, serializers.Serializer):
         max_length=100, required=False, allow_blank=True,
     )
     address = serializers.CharField(required=False, allow_blank=True)
-    relationship = serializers.ChoiceField(choices=Relationship.choices)
+    relationship = serializers.CharField(
+        max_length=64,
+        error_messages={
+            "blank": "Say how this guardian is related to the child.",
+            "required": "Say how this guardian is related to the child.",
+            "max_length": "That is not a relationship this school records.",
+        },
+    )
     is_primary = serializers.BooleanField(default=False)
 
     def validate(self, attrs):
+        from .services.guardians import EMAIL_REQUIRED_MESSAGE, match_existing
+
+        rules = _guardian_rules(self)
+        resolved = rules.resolve_relationship(attrs.get("relationship"))
+        if resolved is None:
+            from .services.guardian_rules import unknown_relationship_message
+
+            raise serializers.ValidationError({
+                "relationship": unknown_relationship_message(attrs.get("relationship")),
+            })
+        attrs["relationship"], attrs["relationship_detail"] = resolved
+
         if not attrs.get("guardian_id"):
             has_parts = any(
                 (attrs.get(part) or "").strip()
@@ -293,7 +334,30 @@ class GuardianWriteSerializer(FieldAccessMixin, serializers.Serializer):
                 raise serializers.ValidationError({
                     "phone": "A guardian needs a phone number the school can reach.",
                 })
+            if rules.email_required and not (attrs.get("email") or "").strip():
+                held = match_existing(
+                    _context_tenant(self), phone=attrs.get("phone", ""),
+                    matching=rules.matching,
+                )
+                if held is None:
+                    raise serializers.ValidationError({"email": EMAIL_REQUIRED_MESSAGE})
         return attrs
+
+
+def _guardian_rules(serializer):
+    """The school's guardian rules, read once per request however many rows ask.
+
+    Cached in the root serializer's context, which is one dict per request, so
+    an enrolment naming three guardians reads the settings once.
+    """
+    from .services.guardian_rules import read_guardian_rules
+
+    context = serializer.context
+    rules = context.get("_guardian_rules")
+    if rules is None:
+        rules = read_guardian_rules(_context_tenant(serializer))
+        context["_guardian_rules"] = rules
+    return rules
 
 
 # ── students ───────────────────────────────────────────────────────────────
@@ -455,14 +519,43 @@ class StudentDetailSerializer(FieldAccessMixin, _BranchAware):
         ]
 
 
-def _plausible_birth_date(value):
-    """Refuse a birth date no pupil has, with the import's own sentence."""
+def _context_tenant(serializer):
+    """The school a write serializer is judging for: explicit, else the request's."""
+    tenant = serializer.context.get("tenant")
+    if tenant is None:
+        tenant = getattr(serializer.context.get("request"), "tenant", None)
+    return tenant
+
+
+def _plausible_birth_date(value, tenant):
+    """Refuse a birth date outside the school's age range, in the import's words."""
     from .ages import date_of_birth_problem
 
-    problem = date_of_birth_problem(value) if value else ""
+    problem = date_of_birth_problem(value, tenant=tenant) if value else ""
     if problem:
         raise serializers.ValidationError(problem)
     return value
+
+
+def _required_field_errors(tenant, attrs, *, only_sent):
+    """``{field: sentence}`` for each field the school requires that is blank.
+
+    With *only_sent*, a field missing from *attrs* is not checked, which is how
+    an edit refuses blanking a required field without refusing a record that
+    predates the rule and was never asked for it.
+    """
+    from .constants import REQUIRABLE_FIELDS
+    from .services.rules import required_fields
+
+    if tenant is None:
+        return {}
+    errors = {}
+    for field in required_fields(tenant):
+        if only_sent and field not in attrs:
+            continue
+        if not str(attrs.get(field) or "").strip():
+            errors[field] = f"{REQUIRABLE_FIELDS[field]} is required at this school."
+    return errors
 
 
 class StudentWriteSerializer(FieldAccessMixin, serializers.ModelSerializer):
@@ -491,7 +584,7 @@ class StudentWriteSerializer(FieldAccessMixin, serializers.ModelSerializer):
         ]
 
     def validate_date_of_birth(self, value):
-        return _plausible_birth_date(value)
+        return _plausible_birth_date(value, _context_tenant(self))
 
     def validate(self, attrs):
         # Refused explicitly rather than silently dropped: a school that types
@@ -503,6 +596,9 @@ class StudentWriteSerializer(FieldAccessMixin, serializers.ModelSerializer):
                 "A student cannot be moved to another branch by editing their "
                 "record.",
             )
+        errors = _required_field_errors(_context_tenant(self), attrs, only_sent=True)
+        if errors:
+            raise serializers.ValidationError(errors)
         return attrs
 
 
@@ -576,17 +672,21 @@ class EnrolmentWriteSerializer(FieldAccessMixin, serializers.Serializer):
     guardians = GuardianWriteSerializer(many=True)
 
     def validate_date_of_birth(self, value):
-        return _plausible_birth_date(value)
+        return _plausible_birth_date(value, _context_tenant(self))
 
     def validate(self, attrs):
+        errors = {}
         if not attrs.get("as_applicant") and not attrs.get("school_class"):
-            raise serializers.ValidationError({
-                "school_class": "Pick the class this student is joining.",
-            })
+            errors["school_class"] = "Pick the class this student is joining."
         if attrs.get("as_applicant") and not attrs.get("applied_for"):
-            raise serializers.ValidationError({
-                "applied_for": "Say which level this applicant applied for.",
-            })
+            errors["applied_for"] = "Say which level this applicant applied for."
+        # The school's own required fields, for an applicant as for an
+        # enrolment: an application is where the record's details are taken.
+        errors.update(
+            _required_field_errors(_context_tenant(self), attrs, only_sent=False),
+        )
+        if errors:
+            raise serializers.ValidationError(errors)
         return attrs
 
 
@@ -797,9 +897,176 @@ class PromotionRunSerializer(serializers.Serializer):
 
 
 class AdmissionPolicySerializer(serializers.Serializer):
+    """The school's admission-number rule, or one branch's.
+
+    ``auto_issue`` may be left out, which keeps the value the school or branch
+    reads today, so a client that predates it cannot switch it off by saving.
+    """
+
     required = serializers.BooleanField()
     pattern = serializers.CharField(allow_blank=True, max_length=200)
     hint = serializers.CharField(allow_blank=True, max_length=200)
+    auto_issue = serializers.BooleanField(required=False)
+
+
+class EnrolmentRulesSerializer(serializers.Serializer):
+    """The full set of a school's enrolment rules, as the settings screen saves it.
+
+    Every rule is sent every time, because the screen shows every rule; a
+    partial save would leave a rule the admin could see set to something they
+    did not choose. Each refusal is keyed on its own field and written as a
+    sentence the screen can put under that field.
+    """
+
+    min_age_years = serializers.IntegerField(
+        min_value=AGE_RULE_FLOOR, max_value=AGE_RULE_CEILING,
+        error_messages={
+            "min_value": f"The youngest age cannot be below {AGE_RULE_FLOOR}.",
+            "max_value": f"The youngest age cannot be above {AGE_RULE_CEILING}.",
+            "invalid": "Give the youngest age as a whole number of years.",
+        },
+    )
+    max_age_years = serializers.IntegerField(
+        min_value=AGE_RULE_FLOOR, max_value=AGE_RULE_CEILING,
+        error_messages={
+            "min_value": f"The oldest age cannot be below {AGE_RULE_FLOOR}.",
+            "max_value": f"The oldest age cannot be above {AGE_RULE_CEILING}.",
+            "invalid": "Give the oldest age as a whole number of years.",
+        },
+    )
+    required_documents = serializers.ListField(
+        child=serializers.CharField(), allow_empty=True,
+    )
+    required_fields = serializers.ListField(
+        child=serializers.CharField(), allow_empty=True,
+    )
+    capacity_mode = serializers.ChoiceField(
+        choices=CapacityMode.choices,
+        error_messages={
+            "invalid_choice": "Choose WARN, HARD or OFF for what a full class does.",
+        },
+    )
+    default_capacity = serializers.IntegerField(
+        allow_null=True,
+        min_value=DEFAULT_CAPACITY_MIN, max_value=DEFAULT_CAPACITY_MAX,
+        error_messages={
+            "min_value": f"A class needs at least {DEFAULT_CAPACITY_MIN} seat.",
+            "max_value": (
+                f"A class of more than {DEFAULT_CAPACITY_MAX} is not a class. "
+                f"Leave the default empty for no limit."
+            ),
+            "invalid": "Give the default class size as a whole number of seats.",
+        },
+    )
+    reason = serializers.CharField(
+        required=False, allow_blank=True, max_length=200,
+    )
+
+    def validate_required_documents(self, value):
+        known = dict(DocumentType.choices)
+        unknown = [v for v in value if v not in known]
+        if unknown:
+            raise serializers.ValidationError(
+                f"'{unknown[0]}' is not a document this school can ask for.",
+            )
+        return value
+
+    def validate_required_fields(self, value):
+        unknown = [v for v in value if v not in REQUIRABLE_FIELDS]
+        if unknown:
+            raise serializers.ValidationError(
+                f"'{unknown[0]}' is not a field this school can make required.",
+            )
+        return value
+
+    def validate(self, attrs):
+        if attrs["min_age_years"] >= attrs["max_age_years"]:
+            raise serializers.ValidationError({
+                "max_age_years": "The oldest age must be above the youngest.",
+            })
+        return attrs
+
+
+class GuardianRulesSerializer(serializers.Serializer):
+    """The full set of a school's guardian rules, as the settings screen saves it.
+
+    Every rule is sent every time, for the reason ``EnrolmentRulesSerializer``
+    gives. The added relationships are each trimmed and must be 1 to 30
+    characters, distinct ignoring case, and not a relationship every school
+    already has, because a second "Mother" would be two answers to one
+    question. Each refusal is keyed on its own field, as a sentence.
+    """
+
+    min_per_student = serializers.IntegerField(
+        min_value=GUARDIAN_MINIMUM_FLOOR, max_value=GUARDIAN_MINIMUM_CEILING,
+        error_messages={
+            "min_value": "Every child needs at least 1 guardian.",
+            "max_value": (
+                f"A school can ask for at most {GUARDIAN_MINIMUM_CEILING} "
+                f"guardians for every child."
+            ),
+            "invalid": "Give the number of guardians as a whole number.",
+            "required": "Say how many guardians every child needs.",
+            "null": "Say how many guardians every child needs.",
+        },
+    )
+    email_required = serializers.BooleanField(
+        error_messages={
+            "invalid": "Say whether a guardian email is required, true or false.",
+            "required": "Say whether a guardian email is required.",
+            "null": "Say whether a guardian email is required.",
+        },
+    )
+    matching = serializers.ChoiceField(
+        choices=GuardianMatching.choices,
+        error_messages={
+            "invalid_choice": (
+                "Choose EMAIL_THEN_PHONE or EMAIL_ONLY for how guardians are "
+                "matched."
+            ),
+            "required": "Say how guardians are matched.",
+            "null": "Say how guardians are matched.",
+        },
+    )
+    extra_relationships = serializers.ListField(
+        child=serializers.CharField(allow_blank=True, trim_whitespace=True),
+        allow_empty=True,
+        error_messages={
+            "not_a_list": "Give the school's own relationships as a list.",
+            "required": "Give the school's own relationships, or an empty list.",
+            "null": "Give the school's own relationships, or an empty list.",
+        },
+    )
+    reason = serializers.CharField(
+        required=False, allow_blank=True, max_length=200,
+    )
+
+    def validate_extra_relationships(self, value):
+        from .services.guardian_rules import FIXED_SPELLINGS
+
+        if len(value) > EXTRA_RELATIONSHIPS_MAX:
+            raise serializers.ValidationError(
+                f"A school can add up to {EXTRA_RELATIONSHIPS_MAX} relationships "
+                f"of its own.",
+            )
+        seen: set[str] = set()
+        for label in value:
+            if not label:
+                raise serializers.ValidationError("A relationship needs a name.")
+            if len(label) > EXTRA_RELATIONSHIP_MAX_LENGTH:
+                raise serializers.ValidationError(
+                    f"'{label}' is longer than {EXTRA_RELATIONSHIP_MAX_LENGTH} "
+                    f"characters.",
+                )
+            folded = label.casefold()
+            if folded in FIXED_SPELLINGS:
+                raise serializers.ValidationError(
+                    f"'{label}' is already a relationship every school has.",
+                )
+            if folded in seen:
+                raise serializers.ValidationError(f"'{label}' is listed twice.")
+            seen.add(folded)
+        return value
 
 
 class SearchHitSerializer(FieldAccessMixin, serializers.ModelSerializer):

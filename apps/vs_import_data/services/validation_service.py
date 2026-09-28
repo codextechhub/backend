@@ -3,6 +3,8 @@ from __future__ import annotations
 from django.db import transaction
 from django.utils import timezone
 
+from vs_config.clock import tenant_today
+
 from ..models import (
     ImportBatchStatusChoices,
     ImportValidationIssue,
@@ -281,7 +283,8 @@ def _validate_schools_rules(import_batch) -> list[dict]:
         PackagePlan.objects.filter(is_active=True).values_list("code", flat=True)
     )
     existing_slugs = set(School.objects.values_list("slug", flat=True))
-    today = timezone.now().date()
+    # The rows are schools that do not exist yet, so they start on the platform's day.
+    today = tenant_today(None)
 
     # Track within-file duplicates
     seen_admin_emails: dict[str, int] = {}

@@ -24,16 +24,35 @@ class KeyEnforcementTests(StaffFixture):
         response = self.get(self.nobody, "staff-list")
         self.assertEqual(response.status_code, 403, response.data)
 
-    def test_a_teacher_can_read_the_directory(self):
-        """The defect this module's first change fixed.
+    def test_the_directory_opens_to_its_own_key(self):
+        """The directory is gated on ``school.teachers.view`` and nothing else.
 
-        The live endpoint was gated on ``school.administrators.view``, which a
-        teacher does not hold, while ``school.teachers.view`` was granted to
-        teachers and reached nothing. So the key a school's role builder showed
-        as "can see staff records" opened no screen at all.
+        A role holding that key alone reads it. The key a school's role builder
+        shows as "can see staff records" has to open the screen it names,
+        rather than one gated on an administrator key it does not mention.
+        """
+        from vs_rbac.tests.helpers import (
+            make_assignment,
+            make_role,
+            make_role_permission,
+            make_school_admin,
+        )
+
+        role = make_role(self.school, name="Staff Reader", key="staff_reader")
+        make_role_permission(role, self.permissions["school.teachers.view"])
+        reader = make_school_admin(None, email="reader@brightfield.test", tenant=self.tenant)
+        make_assignment(self.school, reader, role, branch=None)
+        response = self.get(reader, "staff-list")
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_a_teacher_does_not_read_the_directory(self):
+        """A teacher holds no directory key, and meets colleagues on the chart.
+
+        Opening one from there shows what the school's staff profile policy
+        shows colleagues, which the directory cannot narrow to.
         """
         response = self.get(self.eze.user, "staff-list")
-        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.status_code, 403, response.data)
 
     def test_a_teacher_cannot_create_staff(self):
         response = self.post(self.eze.user, "staff-list", self.invite_body())
@@ -211,12 +230,22 @@ class SelfServiceTests(StaffFixture):
         response = self.get(staff.user, "staff-detail", pk=staff.pk)
         self.assertEqual(response.status_code, 200, response.data)
 
-    def test_somebody_holding_nothing_cannot_read_a_colleague(self):
+    def test_somebody_holding_nothing_reads_only_a_colleagues_contact_card(self):
+        """Working at the school is enough to open a colleague's contact card.
+
+        Nothing past it: the school's profile policy shows colleagues the
+        contact card by default, and a key is what reaches the rest.
+        """
         staff = self.make_staff(
             "quiet2@brightfield.test", "Quiet", "Two", branch=self.lekki,
         )
         response = self.get(staff.user, "staff-detail", pk=self.eze.pk)
-        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["profile_view"], "restricted")
+        self.assertEqual(response.data["data"]["visible_sections"], ["contact"])
+        self.assertNotIn("staff_number", response.data["data"])
+        refused = self.get(staff.user, "staff-history", pk=self.eze.pk)
+        self.assertEqual(refused.status_code, 403, refused.data)
 
     def test_a_person_may_change_their_own_phone(self):
         response = self.patch(

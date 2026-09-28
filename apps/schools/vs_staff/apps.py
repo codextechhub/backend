@@ -43,10 +43,19 @@ class VsStaffConfig(AppConfig):
 
         register_dataset_import_key("staff", PERM_IMPORT)
 
-        # The org chart a school requester's ORGANOGRAM approval stage climbs.
-        # Same direction again: the engine is told, and imports nothing.
+        # The shape of a school's staff profile policy, checked on every write
+        # path vs_config has, since vs_config knows nothing of a staff profile.
+        from vs_config.services.resolution import register_value_guard
+
+        from .services.visibility import POLICY_KEY, guard_policy
+
+        register_value_guard(POLICY_KEY, guard_policy)
+
+        # The org chart a school requester's ORGANOGRAM approval stage climbs,
+        # and the posts a school's stages and approver groups can name. Same
+        # direction again: the engine is told, and imports nothing.
         from vs_tenants.models import Tenant
-        from vs_workflow.services.approvers import register_tenant_organogram
+        from vs_workflow.services.positions import register_tenant_organogram
 
         from .services.organogram import StaffOrganogramService
 

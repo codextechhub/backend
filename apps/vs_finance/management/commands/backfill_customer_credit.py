@@ -13,11 +13,10 @@ reference guards against double-posting on re-run.
 """
 from __future__ import annotations
 
-import datetime
-
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
+from vs_config.clock import tenant_today
 from vs_finance.constants import CUSTOMER_CREDIT_CODE, JournalSource
 from vs_finance.accounts import resolve_account
 from vs_finance.posting import post_journal, resolve_period
@@ -40,10 +39,10 @@ class Command(BaseCommand):
         if opts.get("entity"):
             entities = entities.filter(code=opts["entity"])
         commit = opts.get("commit")
-        today = datetime.date.today()
         total_posted = 0
 
         for entity in entities:
+            today = tenant_today(entity.tenant)
             seed_chart_of_accounts(entity)  # ensures 2140 exists on older entities
             for customer in Customer.objects.filter(entity=entity):
                 credit = customer_credit_balance(customer)

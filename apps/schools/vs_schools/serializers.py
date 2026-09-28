@@ -2192,3 +2192,16 @@ class PayrollScopeUpdateSerializer(serializers.Serializer):
 
     scope = serializers.ChoiceField(choices=PAYROLL_SCOPE_CHOICES)
     reason = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class StaffProfileVisibilityUpdateSerializer(serializers.Serializer):
+    """The body of ``PUT /v1/i/me/settings/staff-profiles/``.
+
+    ``policy`` is taken as sent and checked by the staff app, which owns the
+    vocabulary of audiences and profile sections.
+    """
+
+    policy = serializers.JSONField()
+    reason = serializers.CharField(
+        required=False, allow_blank=True, default="", max_length=200,
+    )

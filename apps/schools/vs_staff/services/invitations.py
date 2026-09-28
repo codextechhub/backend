@@ -22,7 +22,8 @@ FRD M12 v2.1, FR-020.
 from __future__ import annotations
 
 from django.db import transaction
-from django.utils import timezone
+
+from vs_config.clock import tenant_today
 
 from ..constants import EmploymentStatus
 from ..exceptions import InvitationAlreadyAccepted, ReasonRequired
@@ -64,19 +65,20 @@ def revoke(staff, *, reason, actor, request=None):
         invitation.consume()
 
     from_status = staff.employment_status
+    today = tenant_today(staff.tenant)
     staff.employment_status = EmploymentStatus.TERMINATED
-    staff.exit_date = timezone.localdate()
+    staff.exit_date = today
     staff.save(update_fields=["employment_status", "exit_date", "updated_at"])
 
     StaffEmploymentEvent.objects.create(
         tenant=staff.tenant, staff=staff, from_status=from_status,
         to_status=EmploymentStatus.TERMINATED, reason=reason,
-        effective_date=timezone.localdate(),
-        last_working_day=timezone.localdate(),
+        effective_date=today,
+        last_working_day=today,
         note="Invitation withdrawn before it was accepted.", changed_by=actor,
     )
     # A post reserved for them ahead of their first day is released too.
-    StaffOrganogramService.close_for_exit(staff, timezone.localdate())
+    StaffOrganogramService.close_for_exit(staff, today)
     UserStatusService.deactivate(staff.user, actor, request=request)
     audit.emit_invitation_revoked(staff, reason, actor=actor)
     return staff

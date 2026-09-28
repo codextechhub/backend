@@ -213,6 +213,56 @@ class ImportExecutionTests(_ImportFixture):
         self.assertEqual(student.enrolments.filter(is_active=True).count(), 1)
         self.assertEqual(student.guardian_links.filter(is_primary=True).count(), 1)
 
+    def _auto_issue(self):
+        from ..services.policy import write_policy
+
+        write_policy(
+            self.tenant, self.admin, required=True, pattern=r"BFS/\d{4}",
+            hint="BFS/NNNN", auto_issue=True,
+        )
+
+    def test_blank_numbers_are_issued_in_turn_where_the_rule_issues_them(self):
+        """Bright Star numbers automatically; its file leaves the column blank."""
+        self._auto_issue()
+        self.student(branch=self.lekki, first="Old", last="Pupil", number="BFS/0007")
+        first = self._execute(self.row()).instance
+        second = self._execute(self.row(**{
+            "First Name": "Tunde", "Guardian Email": "bello@example.ng",
+            "Guardian Phone": "08035550199", "Guardian Name": "Mrs. Ada Bello",
+        })).instance
+        self.assertEqual(
+            (first.student_number, second.student_number), ("BFS/0008", "BFS/0009"),
+        )
+
+    def test_a_blank_number_passes_validation_where_it_will_be_issued(self):
+        self._auto_issue()
+        self.student(branch=self.lekki, first="Old", last="Pupil", number="BFS/0007")
+        issues = validate_students_import_batch(self.batch([self.row()]))
+        self.assertFalse(
+            [i for i in issues if i["severity"] == "error"], issues,
+        )
+
+    def test_a_required_number_with_no_series_to_continue_is_still_refused(self):
+        """Nothing to count on from, so nothing can be issued."""
+        self._auto_issue()
+        issues = validate_students_import_batch(self.batch([self.row()]))
+        self.assertIn(
+            "Admission No.",
+            [i["column_name"] for i in issues if i["severity"] == "error"],
+            issues,
+        )
+
+    def test_the_template_names_no_fixed_age_range(self):
+        from vs_import_data.models import ImportTemplate, ImportTemplateColumn
+
+        template = ImportTemplate.objects.get(code="students_v1")
+        self.assertNotIn("under 2 or over 25", template.instructions)
+        self.assertIn("your school's age range", template.instructions)
+        dob = ImportTemplateColumn.objects.get(
+            template=template, target_field="date_of_birth",
+        )
+        self.assertNotIn("under 2 or over 25", dob.help_text)
+
     def test_a_guardian_named_in_parts_arrives_with_no_name_to_check(self):
         """Bright Star fills the three columns; Mr Nwosu needs no check."""
         result = self._execute(self.row(**{

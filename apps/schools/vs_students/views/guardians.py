@@ -10,11 +10,12 @@ from rest_framework.views import APIView
 from core.response import success_response
 from vs_rbac.field_enforcement import assert_writable
 
-from ..constants import PERM_UPDATE, PERM_VIEW
+from ..constants import PERM_SETTINGS_UPDATE, PERM_UPDATE, PERM_VIEW
 from ..models import Guardian, Student, StudentGuardian
 from ..serializers import (
     GuardianDirectorySerializer,
     GuardianLinkSerializer,
+    GuardianRulesSerializer,
     GuardianSerializer,
     GuardianUpdateSerializer,
     GuardianWriteSerializer,
@@ -153,9 +154,11 @@ class StudentGuardiansView(StudentsViewMixin, APIView):
                 email=data.get("email", ""),
                 occupation=data.get("occupation", ""),
                 address=data.get("address", ""),
+                rules=writer.context.get("_guardian_rules"),
             )
         guardian_service.link(
             student, guardian, relationship=data["relationship"],
+            relationship_detail=data.get("relationship_detail", ""),
             is_primary=data.get("is_primary", False), actor=request.user,
         )
         return success_response(
@@ -170,6 +173,11 @@ class StudentGuardianDetailView(StudentsViewMixin, APIView):
     The unlink lives under the student on purpose: a guardian is linked to
     several children, and "delete this guardian" would be ambiguous about which
     of them the school meant.
+
+    PATCH takes ``relationship`` as every write path does: a fixed code or
+    label, or one of the school's own relationships, refused on
+    ``relationship`` when it is neither. DELETE keeps a child on the roll at
+    the school's minimum number of guardians.
 
     docstring-name: One of a student's guardians
     """
@@ -189,8 +197,27 @@ class StudentGuardianDetailView(StudentsViewMixin, APIView):
             raise NotFound("That guardian is not linked to this student.")
 
         if "relationship" in request.data:
-            link.relationship = request.data["relationship"]
-            link.save(update_fields=["relationship", "updated_at"])
+            from rest_framework.exceptions import ValidationError
+
+            from ..services.guardian_rules import (
+                read_guardian_rules,
+                unknown_relationship_message,
+            )
+
+            raw = request.data["relationship"]
+            resolved = read_guardian_rules(self.tenant).resolve_relationship(
+                raw if isinstance(raw, str) else "",
+            )
+            if resolved is None:
+                raise ValidationError({
+                    "relationship": [unknown_relationship_message(
+                        raw if isinstance(raw, str) else "",
+                    )],
+                })
+            link.relationship, link.relationship_detail = resolved
+            link.save(update_fields=[
+                "relationship", "relationship_detail", "updated_at",
+            ])
         if request.data.get("is_primary"):
             guardian_service.set_primary(student, guardian, actor=request.user)
         return success_response(f"{guardian.full_name} updated.")
@@ -405,6 +432,9 @@ class GuardianDetailView(StudentsViewMixin, APIView):
                     "status": s.status, "status_label": s.get_status_display(),
                     "class_name": classes.get(s.pk, ""),
                     "relationship": links[s.pk].relationship if s.pk in links else "",
+                    "relationship_label": (
+                        links[s.pk].relationship_label if s.pk in links else ""
+                    ),
                     "is_primary": links[s.pk].is_primary if s.pk in links else False,
                 }
                 for s in wards
@@ -480,3 +510,46 @@ class GuardianStudentsView(StudentsViewMixin, generics.ListAPIView):
             "enrolments__school_class", "guardian_links__guardian",
             document_service.photo_prefetch(),
         )
+
+
+class GuardianRulesView(StudentsViewMixin, APIView):
+    """GET, PUT /v1/students/guardian-rules/
+
+    The school's own guardian rules: how many guardians every child needs,
+    whether a new guardian needs an email, how a guardian typed in is matched
+    to one the school holds, and the relationships it records beyond the
+    fixed eight. Reading needs ``school.students.view``, because the enrolment
+    form and the guardian drawer render from it; changing needs
+    ``school.settings.update``, because these are the school's settings
+    rather than a student record.
+
+    The school is ``request.tenant`` and nothing in the request names another.
+    PUT takes every rule every time, plus an optional ``reason`` for the audit
+    trail, and answers with the same body as GET. Refusals are 400s keyed on
+    the field, in sentences.
+
+    docstring-name: Guardian rules
+    """
+
+    def get_permissions(self):
+        self.rbac_permission = (
+            PERM_VIEW if self.request.method in ("GET", "HEAD", "OPTIONS")
+            else PERM_SETTINGS_UPDATE
+        )
+        return super().get_permissions()
+
+    def get(self, request):
+        from ..services.guardian_rules import read_guardian_rules
+
+        return success_response(data=read_guardian_rules(self.tenant).as_dict())
+
+    def put(self, request):
+        from ..services.guardian_rules import write_guardian_rules
+
+        writer = GuardianRulesSerializer(data=request.data)
+        writer.is_valid(raise_exception=True)
+        data = dict(writer.validated_data)
+        rules = write_guardian_rules(
+            self.tenant, request.user, reason=data.pop("reason", ""), **data,
+        )
+        return success_response("Guardian rules saved.", data=rules.as_dict())

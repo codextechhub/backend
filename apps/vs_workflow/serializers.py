@@ -66,9 +66,16 @@ class WorkflowDynamicRoleSummarySerializer(serializers.ModelSerializer):
 
 
 class WorkflowStageReadSerializer(serializers.ModelSerializer):
-    organogram_position_code = serializers.CharField(
-        source="organogram_position.code", read_only=True, default=None,
-    )
+    """One stage as the template builder reads it.
+
+    ``organogram_position_code`` is the current code of whichever post the stage
+    names, on the CX chart or on its tenant's own. Posts on a tenant's chart are
+    described in one lookup for the whole template: the caller passes that map
+    as ``position_labels`` (see ``WorkflowTemplateReadSerializer.get_stages``),
+    and a stage serialized without it looks its own post up.
+    """
+
+    organogram_position_code = serializers.SerializerMethodField()
     approver_role_name = serializers.CharField(
         source="approver_role.name", read_only=True, default=None,
     )
@@ -96,6 +103,21 @@ class WorkflowStageReadSerializer(serializers.ModelSerializer):
             "advance_rule", "quorum_count", "on_rejection",
             "skip_if_no_approvers", "inclusion_condition",
         ]
+
+    def get_organogram_position_code(self, obj):
+        if obj.organogram_position_id:
+            return obj.organogram_position.code
+        if obj.organogram_tenant_position_id is None:
+            return None
+        labels = self.context.get("position_labels")
+        if labels is None:
+            from vs_workflow.services.positions import describe_position
+
+            label = describe_position(None, obj.organogram_tenant_position_id,
+                                      obj.template.tenant)
+        else:
+            label = labels.get(obj.organogram_tenant_position_id)
+        return label[0] if label else None
 
 
 class WorkflowRoutePathReadSerializer(serializers.ModelSerializer):
@@ -130,14 +152,22 @@ class WorkflowTemplateReadSerializer(serializers.ModelSerializer):
         return document_type_label(obj.document_type)
 
     def get_stages(self, obj):
-        active = (
+        from vs_workflow.services.positions import describe_tenant_positions
+
+        active = list(
             obj.stages.filter(retired_at__isnull=True).order_by("order")
             .select_related("approver_role", "approver_group", "organogram_position",
                             "dynamic_role")
             .prefetch_related("dynamic_rules__role", "dynamic_role__rules__role",
                               "dynamic_role__rules__user", "dynamic_role__rules__group")
         )
-        return WorkflowStageReadSerializer(active, many=True).data
+        # Every post on the tenant's own chart the template names, in one lookup.
+        labels = describe_tenant_positions(
+            (obj.tenant_id, stage.organogram_tenant_position_id) for stage in active
+        )
+        return WorkflowStageReadSerializer(active, many=True, context={
+            "position_labels": {pid: label for (_, pid), label in labels.items()},
+        }).data
 
     def _counterpart(self, obj, which):
         pair = self.context.get("counterparts", {}).get((obj.document_type, obj.code))
@@ -519,7 +549,7 @@ class ApproverPreviewRequestSerializer(serializers.Serializer):
         choices=OrganogramTarget.choices, required=False, allow_blank=True, default="",
     )
     organogram_levels = serializers.IntegerField(required=False, min_value=1, default=1)
-    # A Position *code* (matches the publish payload's organogram_position_code).
+    # A post's code, looked up on the chart the caller's tenant uses (as publish does).
     organogram_position_code = serializers.CharField(required=False, allow_blank=True, default="")
     approver_scope = serializers.ChoiceField(
         choices=ApproverScope.choices, required=False, default=ApproverScope.PLATFORM,
@@ -574,12 +604,18 @@ class WorkflowApproverGroupMemberReadSerializer(serializers.ModelSerializer):
     Live resolution ("resolves to N people") is not computed here - it is
     served per group by the group detail/resolve endpoints, so listing many
     groups does not run one resolution query per member row.
+
+    ``position_code`` and ``position_title`` describe whichever post a POSITION
+    row names. Posts on a tenant's own chart are described in one lookup for
+    everything the outermost serializer is rendering (a page of groups, or one
+    group), cached on that serializer, so a page of groups costs the same one
+    lookup however many members it holds.
     """
 
     role_key      = serializers.CharField(source="role.key",       read_only=True, default=None)
     role_name     = serializers.CharField(source="role.name",      read_only=True, default=None)
-    position_code = serializers.CharField(source="position.code",  read_only=True, default=None)
-    position_title = serializers.CharField(source="position.title", read_only=True, default=None)
+    position_code = serializers.SerializerMethodField()
+    position_title = serializers.SerializerMethodField()
     user_name     = serializers.SerializerMethodField()
     user_email    = serializers.CharField(source="user.email",     read_only=True, default=None)
 
@@ -596,6 +632,44 @@ class WorkflowApproverGroupMemberReadSerializer(serializers.ModelSerializer):
         if obj.user is None:
             return None
         return getattr(obj.user, "full_name", "") or obj.user.get_username()
+
+    def get_position_code(self, obj):
+        label = self._position_label(obj)
+        return label[0] if label else None
+
+    def get_position_title(self, obj):
+        label = self._position_label(obj)
+        return label[1] if label else None
+
+    def _position_label(self, obj):
+        if obj.position_id:
+            return obj.position.code, obj.position.title
+        if obj.tenant_position_id is None:
+            return None
+        return self._tenant_position_labels().get((obj.group.tenant_id, obj.tenant_position_id))
+
+    def _tenant_position_labels(self):
+        """Every tenant-chart post the outermost serializer renders, described once."""
+        root = self.root
+        labels = getattr(root, "_tenant_position_labels", None)
+        if labels is not None:
+            return labels
+        from vs_workflow.services.positions import describe_tenant_positions
+
+        rendered = root.instance
+        if isinstance(rendered, WorkflowApproverGroup):
+            groups = [rendered]
+        elif isinstance(rendered, WorkflowApproverGroupMember):
+            groups = [rendered.group]
+        else:
+            groups = list(rendered or [])
+        labels = describe_tenant_positions(
+            (group.tenant_id, member.tenant_position_id)
+            for group in groups for member in group.members.all()
+            if member.tenant_position_id is not None
+        )
+        root._tenant_position_labels = labels
+        return labels
 
 
 class WorkflowApproverGroupSerializer(serializers.ModelSerializer):
@@ -681,17 +755,15 @@ class WorkflowApproverGroupMemberWriteSerializer(serializers.Serializer):
                     {"role_key": "No active role with that key exists in your tenant."})
             attrs["resolved_target"] = role
         else:
+            # The group's tenant decides the chart, so a seat on the other
+            # chart is refused like a code nobody has used.
+            from vs_workflow.exceptions import UnknownPositionError
+            from vs_workflow.services.positions import bind_position
+
             try:
-                from vs_user.models import Position
-            except ImportError:
-                raise serializers.ValidationError(
-                    {"position_code": "The organogram is not available in this install."})
-            position = Position.objects.filter(
-                code=attrs["position_code"], is_active=True).first()
-            if position is None:
-                raise serializers.ValidationError(
-                    {"position_code": "No active position with that code exists."})
-            attrs["resolved_target"] = position
+                attrs["resolved_target"] = bind_position(attrs["position_code"], tenant)
+            except UnknownPositionError as exc:
+                raise serializers.ValidationError({"position_code": exc.message})
         return attrs
 
 

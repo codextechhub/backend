@@ -11,7 +11,9 @@ Three keys, because three different people do three different things.
 ``school.leave.update`` and ``school.leave.cancel`` are for somebody else's.
 ``school.leave.view`` is for
 reading a colleague's, and a teacher does not hold it: who is off sick is not
-something every colleague may read.
+something every colleague may read. The school's profile policy may still show
+a person's leave to their line managers, and by default shows a person their
+own (``services/visibility.py``).
 
 Closed before go-live: there is nothing to record or approve before anybody has
 started.
@@ -36,6 +38,7 @@ from ..models import LeaveRequest
 from ..serializers import LeaveSerializer, LeaveUpdateSerializer, LeaveWriteSerializer
 from ..services import leave as leave_service
 from ..services.scoping import is_self
+from ..services.visibility import GROUP_LEAVE
 from .base import StaffViewMixin
 
 
@@ -47,16 +50,18 @@ class StaffLeaveView(StaffViewMixin, APIView):
     docstring-name: A staff member's leave
     """
 
-    def get_permissions(self):
-        """Your own leave needs no key beyond being signed in.
+    profile_group = GROUP_LEAVE
 
-        Applying for it needs ``school.leave.apply``, which every member of
-        staff holds. Reading or filing somebody else's needs the other two.
+    def get_permissions(self):
+        """A read is admitted in the handler; filing needs a key.
+
+        Applying for your own needs ``school.leave.apply``, which every member
+        of staff holds. Filing somebody else's needs ``school.leave.update``.
         """
         from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 
-        if self.request.method in ("GET", "HEAD", "OPTIONS") and self._is_own():
-            return [IsAuthenticatedAndActive()]
+        if self._is_read():
+            return super().get_permissions()
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def _is_own(self) -> bool:
@@ -82,8 +87,9 @@ class StaffLeaveView(StaffViewMixin, APIView):
 
         from .. import as_at as past
 
-        staff = self.get_staff(pk)
+        staff, _access, admission = self.admit_profile_read(pk)
         as_at = parse_as_at(request)
+        self.refuse_as_at_unless_full(as_at, admission)
         if as_at is None:
             rows = staff.leave_requests.select_related("requested_by", "staff__user")
             days_taken = leave_service.days_taken(staff)

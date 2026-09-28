@@ -79,10 +79,12 @@ OTHER_KEYS = (
 )
 ALL_KEYS = STAFF_KEYS + RECORD_KEYS + LEAVE_KEYS + ACCOUNT_KEYS + OTHER_KEYS
 
-#: What a teacher actually holds, per the seeder's own defaults. Kept in step
-#: with ``seed_school_permissions`` on purpose: a test that granted a teacher
-#: more than a teacher has would prove nothing about the real refusals.
-TEACHER_KEYS = ("school.teachers.view", "school.leave.apply")
+#: What a teacher actually holds of these keys, per the seeder's own defaults.
+#: Kept in step with ``seed_school_permissions`` on purpose: a test that granted
+#: a teacher more than a teacher has would prove nothing about the real
+#: refusals. No directory key: a teacher reads colleagues through the school's
+#: staff profile policy.
+TEACHER_KEYS = ("school.leave.apply",)
 
 
 class StaffFixture(TestCase):

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from django.db.models import Count, Q
 
+from vs_config.clock import tenant_today
 from vs_rbac.evaluator import has_permission
 
 PERM_SCHOOLS_VIEW = "platform.schools.view"
@@ -403,7 +404,7 @@ def _signals(user, tenant) -> dict:
         overdue = (
             Invoice.objects.filter(
                 status=DocumentStatus.POSTED,
-                due_date__lt=timezone.localdate(),
+                due_date__lt=tenant_today(tenant),
                 entity__tenant=tenant,
             )
             .exclude(payment_status=InvoicePaymentStatus.PAID)
@@ -458,7 +459,7 @@ def _signals(user, tenant) -> dict:
         from vs_procurement.constants import ContractStatus
         from vs_procurement.models import VendorContract
 
-        horizon = timezone.localdate() + timezone.timedelta(days=CONTRACT_EXPIRY_DAYS)
+        horizon = tenant_today(tenant) + timezone.timedelta(days=CONTRACT_EXPIRY_DAYS)
         expiring = VendorContract.objects.filter(
             status=ContractStatus.ACTIVE, end_date__lte=horizon,
             entity__tenant=tenant,
@@ -495,7 +496,7 @@ def _signals(user, tenant) -> dict:
         if reports:
             team_overdue = Task.objects.filter(
                 assignee__in=reports, is_done=False,
-                deadline__lt=timezone.localdate(),
+                deadline__lt=tenant_today(tenant or user.tenant),
             ).count()
             if team_overdue:
                 signals["team_overdue_tasks"] = {"count": team_overdue}
