@@ -158,11 +158,10 @@ def _classify(net: int, counter: set, sets: dict) -> str:
 
 def _cash_flows(entity, start, end, sets) -> dict[str, int]:
     """Net cash moved in ``[start, end]``, by kind of movement."""
-    from .branch_ledger import LEDGER_STATUSES
+    from .branch_ledger import ledger_lines
     from .models import JournalLine
 
-    touching = JournalLine.objects.filter(
-        entry__entity=entity, entry__status__in=LEDGER_STATUSES,
+    touching = ledger_lines(entity).filter(
         entry__date__gte=start, entry__date__lte=end, account_id__in=sets["cash"],
     ).values("entry_id")
     net, counter = defaultdict(int), defaultdict(set)
@@ -182,11 +181,9 @@ def _cash_flows(entity, start, end, sets) -> dict[str, int]:
 
 def _cash_on(entity, day, cash_ids) -> int:
     """The balance of the cash accounts at the start of ``day``."""
-    from .branch_ledger import LEDGER_STATUSES
-    from .models import JournalLine
+    from .branch_ledger import ledger_lines
 
-    agg = JournalLine.objects.filter(
-        entry__entity=entity, entry__status__in=LEDGER_STATUSES,
+    agg = ledger_lines(entity).filter(
         entry__date__lt=day, account_id__in=cash_ids,
     ).aggregate(dr=Sum("debit"), cr=Sum("credit"))
     return int(agg["dr"] or 0) - int(agg["cr"] or 0)
@@ -208,13 +205,10 @@ def cash_movement(entity, window: Window, as_of, sets) -> dict:
 
 def runway(entity, as_of, sets, cash_now: int) -> dict:
     """Months of cash at the recent average monthly outflow."""
-    from .branch_ledger import LEDGER_STATUSES
-    from .models import JournalLine
+    from .branch_ledger import ledger_lines
 
     first = (
-        JournalLine.objects.filter(
-            entry__entity=entity, entry__status__in=LEDGER_STATUSES, account_id__in=sets["cash"],
-        ).order_by("entry__date").values_list("entry__date", flat=True).first()
+        ledger_lines(entity).filter(account_id__in=sets["cash"]).order_by("entry__date").values_list("entry__date", flat=True).first()
     )
     start = max(as_of - datetime.timedelta(days=RUNWAY_DAYS - 1), first or as_of)
     days = (as_of - start).days + 1
@@ -257,12 +251,10 @@ def reconciliation(banks: list[dict]) -> list[dict]:
 # --------------------------------------------------------------------------- #
 
 def _expense_lines(entity, start, end, scope, sets):
-    from .branch_ledger import LEDGER_STATUSES
-    from .models import JournalLine
+    from .branch_ledger import ledger_lines
 
     return scope.filter(
-        JournalLine.objects.filter(
-            entry__entity=entity, entry__status__in=LEDGER_STATUSES,
+        ledger_lines(entity).filter(
             entry__date__gte=start, entry__date__lte=end, account_id__in=sets["expense"],
         ),
         "entry__",
@@ -379,10 +371,20 @@ def payroll(entity, as_of) -> dict | None:
 
 
 def expense_claims(entity, window, as_of, sets, scope=UNNARROWED) -> dict:
-    """Claims waiting for approval, approved and waiting to be paid, and paid in the window."""
-    from .branch_ledger import LEDGER_STATUSES
+    """Claims waiting for approval, approved and waiting to be paid, and paid in the window.
+
+    "Paid" nets the claims-payable account's payment movements over the ledger
+    (:func:`vs_finance.branch_ledger.ledger_lines`) in the window. A payment is a
+    debit in an entry that reverses nothing; the reversal of a payment is the
+    mirror credit in the entry that reverses it, and it takes the payment back out,
+    in both amount and count. The accrual side is left out either way: a claim's
+    own credit is not a payment, and a voided claim's mirror debit is not one
+    either. A payment made in an earlier window and reversed in this one makes this
+    window's figure negative, which is what happened to the money in it.
+    """
+    from .branch_ledger import ledger_lines
     from .dashboard import _user_label
-    from .models import ExpenseClaim, JournalLine
+    from .models import ExpenseClaim
 
     claims = scope.filter(ExpenseClaim.objects.filter(entity=entity))
     waiting = claims.filter(status=DocumentStatus.PENDING_APPROVAL)
@@ -390,14 +392,23 @@ def expense_claims(entity, window, as_of, sets, scope=UNNARROWED) -> dict:
     submitted = waiting.aggregate(n=Count("id"), amount=Sum("total"))
     owed = approved.aggregate(n=Count("id"), amount=Sum(F("total") - F("amount_paid")))
     start, end = window_days(window, as_of)
-    paid = scope.filter(
-        JournalLine.objects.filter(
-            entry__entity=entity, entry__status__in=LEDGER_STATUSES,
-            entry__date__gte=start, entry__date__lte=end,
-            account_id__in=sets["claims"], debit__gt=0,
+    payment = Q(entry__reverses__isnull=True, debit__gt=0)
+    payment_reversal = Q(entry__reverses__isnull=False, credit__gt=0)
+    moved = scope.filter(
+        ledger_lines(entity).filter(
+            entry__date__gte=start, entry__date__lte=end, account_id__in=sets["claims"],
         ),
         "entry__",
-    ).aggregate(n=Count("entry_id", distinct=True), amount=Sum("debit"))
+    ).aggregate(
+        paid_n=Count("entry_id", distinct=True, filter=payment),
+        paid=Sum("debit", filter=payment),
+        undone_n=Count("entry_id", distinct=True, filter=payment_reversal),
+        undone=Sum("credit", filter=payment_reversal),
+    )
+    paid = {
+        "n": moved["paid_n"] - moved["undone_n"],
+        "amount": int(moved["paid"] or 0) - int(moved["undone"] or 0),
+    }
     oldest = [
         {
             "id": c.id, "claimant": c.claimant_name or _user_label(c.claimant),

@@ -10,10 +10,11 @@ cannot be rolled back, so it must not be made inside the approval transaction. A
 commits, ``transaction.on_commit`` enqueues :func:`dispatch_payout_batch`, and
 :func:`dispatch_undispatched_payout_batches` sweeps up anything the enqueue lost.
 
-Webhook processing itself is purely event-driven off the ``transaction.on_commit``
-enqueue. The alarm and sweep tasks below are the exception and do carry beat entries: a
-booking that fails is recorded and shown, but nothing tells anyone, so they are what
-turns a findable problem into a noticed one.  # Keep the request path fast.
+Webhook processing is event-driven off the ``transaction.on_commit`` enqueue. The alarm
+and sweep tasks below carry beat entries: a booking that fails is recorded and shown, but
+nothing tells anyone, so the alarms turn a findable problem into a noticed one, and
+:func:`recover_unconfirmed_payments` books the money whose webhook or task never
+arrived at all.
 """
 from __future__ import annotations
 
@@ -24,10 +25,21 @@ from celery import shared_task
 logger = logging.getLogger("vs_payments.tasks")  # Namespaced logger for payment task diagnostics.
 
 
-@shared_task(bind=True, name="vs_payments.process_webhook_event")
+@shared_task(
+    bind=True, name="vs_payments.process_webhook_event",
+    acks_late=True, reject_on_worker_lost=True,
+)
 # Handle the process webhook event workflow.
 def process_webhook_event(self, event_id: int):
-    """Re-verify against the PSP and book the receipt/payout for a stored webhook event."""
+    """Re-verify against the PSP and book the receipt/payout for a stored webhook event.
+
+    Acknowledged only after it finishes (``acks_late``), and handed back to the
+    broker if the worker process dies mid-run (``reject_on_worker_lost``). The
+    provider already has its 200 and will not resend, so a message acknowledged
+    on receipt and then lost with its worker is money nobody books. Re-running is
+    safe: the processor no-ops on a PROCESSED event and the confirm services
+    never book twice.
+    """
     from .webhooks import process_stored_event  # Local import keeps task discovery cheap and cycle-free.
     process_stored_event(event_id)  # Idempotent: a missing/already-processed event is a no-op.
 
@@ -82,4 +94,25 @@ def dispatch_undispatched_payout_batches():
     summary = sweep_undispatched_payout_batches()  # Idempotent; a quiet run finds nothing.
     if summary["dispatched"] or summary["failures"] or summary["skipped"]:
         logger.warning("dispatch_undispatched_payout_batches: %s", summary)
+    return summary
+
+
+@shared_task(
+    name="vs_payments.recover_unconfirmed_payments",
+    acks_late=True, reject_on_worker_lost=True,
+)
+# Book settled money whose webhook or processing task never arrived.
+def recover_unconfirmed_payments():
+    """Re-run lost webhook events and re-verify unconfirmed collections and payouts.
+
+    See :mod:`vs_payments.recovery`. Late acknowledgement for the same reason as
+    :func:`process_webhook_event`: this task books money, and every step of it is
+    idempotent, so a re-run after a lost worker costs provider calls and nothing
+    else.
+    """
+    from .recovery import recover_unconfirmed_payments as sweep
+
+    summary = sweep()
+    if summary["collections_booked"] or summary["payouts_booked"] or summary["failures"]:
+        logger.warning("recover_unconfirmed_payments: %s", summary)
     return summary

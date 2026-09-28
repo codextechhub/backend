@@ -138,11 +138,16 @@ class PettyCashFundDetailView(_PettyCashFundActionBase):
 
         ``in``/``out`` are the petty-cash debit/credit. ``category`` is derived from
         the journal's counter line: 'Top-up' for cash coming in, else the expense
-        account's name for a spend.
+        account's name for a spend. The running balance walks back from the fund's
+        ``current_balance``, the ledger figure, so the lines walked are the same
+        ledger (:func:`vs_finance.branch_ledger.ledger_lines`): a reversed voucher and
+        its reversal both appear and cancel.
         """
+        from ..branch_ledger import ledger_lines
+
         lines = list(
-            JournalLine.objects
-            .filter(account=fund.gl_account, entry__status=DocumentStatus.POSTED)
+            ledger_lines(fund.entity)
+            .filter(account=fund.gl_account)
             .select_related("entry")
             .prefetch_related("entry__lines__account")
             .order_by("-entry__date", "-id")[:limit]

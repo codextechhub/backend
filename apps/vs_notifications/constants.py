@@ -450,6 +450,22 @@ EVENT_TYPE_REGISTRY = [
         "default_enabled": True,
         "branch_scoped": True,
     },
+    # Finance operations (vs_finance). Every posting needs a fiscal period covering
+    # its date, so a calendar about to run out is an outage on a known date.
+    {
+        "key": "finance.fiscal_calendar_expiring",
+        "label": "Fiscal calendar running out",
+        "description": (
+            "Tells the staff who may open a fiscal year that postings will stop on "
+            "a date no fiscal period covers, because the calendar is ending or has "
+            "a gap, and the next year was not opened automatically."
+        ),
+        "source_module": "vs_finance",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        # Muting this would leave the entity to find out when every posting fails.
+        "is_transactional": True,
+    },
     # Payment gateway operations (vs_payments). Money has already moved at the
     # provider by the time either of these fires, so they are operational alarms
     # rather than customer messages: the audience is whoever can replay the event.

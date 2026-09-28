@@ -45,7 +45,12 @@ class CollectionStatus(models.TextChoices):
 
     ``PENDING`` → created locally, payer not yet acted; ``PROCESSING`` → provider
     acknowledged/awaiting settlement; ``SUCCEEDED`` → confirmed paid (terminal, books a
-    receipt); ``FAILED``/``ABANDONED`` → terminal, no money; ``REFUNDED`` → reversed.
+    receipt); ``FAILED``/``ABANDONED`` → no money so far; ``REFUNDED`` → reversed.
+
+    ``FAILED`` and ``ABANDONED`` are what the provider said at the moment somebody
+    asked, not a promise about the checkout. A parent can close the tab (abandoned),
+    come back and finish paying on the same reference, so a later provider-confirmed
+    success still books. See :data:`COLLECTION_SETTLED`.
     """
 
     PENDING = "PENDING", "Pending"  # Created locally, not yet settled.
@@ -60,6 +65,17 @@ class CollectionStatus(models.TextChoices):
 COLLECTION_TERMINAL = frozenset(
     {CollectionStatus.SUCCEEDED, CollectionStatus.FAILED,
      CollectionStatus.ABANDONED, CollectionStatus.REFUNDED}
+)
+
+#: Collection states that never book again: money was booked, or booked and reversed.
+#: The only guard against a second receipt, so nothing outside it may book.
+COLLECTION_SETTLED = frozenset({CollectionStatus.SUCCEEDED, CollectionStatus.REFUNDED})
+
+#: No-money outcomes a provider can still overturn with a confirmed success on the
+#: same reference. The recovery sweep re-checks them only briefly, but neither ever
+#: stops a success from booking.
+COLLECTION_PROVISIONAL_FAILURES = frozenset(
+    {CollectionStatus.FAILED, CollectionStatus.ABANDONED}
 )
 
 

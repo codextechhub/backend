@@ -63,21 +63,18 @@ def _default_due_date(period_end, filing_day):
     return datetime.date(year, month, min(int(filing_day), last_day))
 
 
-# Sum posted GL movement for one account.
+# Sum ledger movement for one account.
 def _account_movement(entity, account, *, period_start=None, period_end=None):
-    """Return ``(debit_sum, credit_sum)`` of POSTED journal lines for ``account``.
+    """Return ``(debit_sum, credit_sum)`` of ``account``'s lines in the ledger.
 
-    Bounded to ``[period_start, period_end]`` when given; otherwise the all-time running
-    movement (i.e. the account's current balance components).
+    Lines come from :func:`vs_finance.branch_ledger.ledger_lines`, so a reversed
+    entry and its reversal both count and cancel when both are dated inside the
+    window. Bounded by entry date to ``[period_start, period_end]`` when given;
+    otherwise the all-time movement (the account's current balance components).
     """
-    from .constants import DocumentStatus
-    from .models import JournalLine
+    from .branch_ledger import ledger_lines
 
-    qs = JournalLine.objects.filter(
-        account=account,  # Account being measured.
-        entry__entity=entity,  # Scope to entity.
-        entry__status=DocumentStatus.POSTED,  # Only posted journals affect balances.
-    )
+    qs = ledger_lines(entity).filter(account=account)
     if period_start is not None:  # Optional lower date bound.
         qs = qs.filter(entry__date__gte=period_start)
     if period_end is not None:  # Optional upper date bound.

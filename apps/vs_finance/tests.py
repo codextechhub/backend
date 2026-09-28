@@ -672,8 +672,21 @@ class FiscalCalendarRunwayTests(TestCase):
     def test_the_runway_is_read_per_entity(self):
         # Entities keep their own calendars, so one tenant's healthy runway must
         # never mask another's expiry.
+        # The far entity runs 2026 and 2027 back to back, so today is covered and
+        # its coverage breaks a year later than the near entity's.
         near = self.build_calendar(2026, code="RWNEAR")
-        far = self.build_calendar(2027, code="RWFAR")
+        far = self.build_calendar(2026, code="RWFAR")
+        next_year = FiscalYear.objects.create(
+            entity=far, year=2027,
+            start_date=datetime.date(2027, 1, 1), end_date=datetime.date(2027, 12, 31),
+        )
+        for month in range(1, 13):
+            FiscalPeriod.objects.create(
+                entity=far, fiscal_year=next_year, period_no=month, name=f"P{month} 2027",
+                start_date=datetime.date(2027, month, 1),
+                end_date=(datetime.date(2027, month + 1, 1) - datetime.timedelta(days=1)
+                          if month < 12 else datetime.date(2027, 12, 31)),
+            )
         today = datetime.date(2026, 12, 1)
 
         self.assertEqual(fiscal_calendar_runway(near, today=today)["status"], "EXPIRING")

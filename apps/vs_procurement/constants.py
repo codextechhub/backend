@@ -275,3 +275,19 @@ VENDOR_ADVANCE_CODE = "1240"  # Money paid to a vendor before their bill exists 
 INVENTORY_ASSET_CODE = "1400"        # Inventory / stock on hand (asset)
 INVENTORY_ADJUSTMENT_CODE = "5150"   # Inventory adjustments / shrinkage (expense)
 PURCHASE_PRICE_VARIANCE_CODE = "5160"  # Invoice-vs-receipt price variance (expense)
+
+
+class WhtSource(models.TextChoices):
+    """How a vendor payment's withholding-tax figure was arrived at.
+
+    COMPUTED -> the system derived it from the payment's WHT tax code (see
+                :func:`vs_procurement.payables.resolve_wht`); zero when the vendor
+                carries no WHT code.
+    ENTERED  -> a person typed the figure. This is how a partial rate, an exemption
+                certificate or a VAT-bearing gateway payout is expressed, and it is
+                kept exactly as entered.
+
+    Blank on a payment recorded before the source was captured.
+    """
+    COMPUTED = "COMPUTED", "Computed from the tax code"
+    ENTERED = "ENTERED", "Entered by hand"

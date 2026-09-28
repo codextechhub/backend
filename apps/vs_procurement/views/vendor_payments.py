@@ -19,7 +19,7 @@ from vs_finance.views_ops.base import require_own_branch_bank
 from vs_config.clock import tenant_today
 
 from .. import approvals, payables
-from ..constants import ProcApprovalState, VendorKycStatus
+from ..constants import ProcApprovalState, VendorKycStatus, WhtSource
 from ..models import VendorInvoice, VendorPayment, VendorPaymentAllocation
 from ..serializers import VendorPaymentListSerializer, VendorPaymentSerializer
 from .base import (
@@ -153,6 +153,29 @@ def _settled_branch_id(request, plan):
     return _inherited_branch_id(request, *(invoice for invoice, _ in plan))
 
 
+def _resolve_payment_wht(body, *, gross, tax_code, plan, existing=None):
+    """The WHT a draft carries: typed by the caller, or computed from its tax code.
+
+    A ``wht_amount`` in the body is kept as entered. Without one, a new draft
+    computes it through :func:`vs_procurement.payables.resolve_wht`. An edit that
+    omits it recomputes when the draft's figure was computed (the bills or the
+    code may have changed) and keeps any other figure: one somebody typed is a
+    deliberate choice that an unrelated edit must not erase, and a draft saved
+    before the source was recorded is treated the same way.
+    """
+    supplied = body.get("wht_amount")
+    if supplied in (None, "") and existing is not None and existing.wht_source != WhtSource.COMPUTED:
+        supplied = existing.wht_amount
+    if supplied not in (None, ""):
+        supplied = _money(supplied, "wht_amount")
+    else:
+        supplied = None
+    wht = payables.resolve_wht(gross=gross, supplied=supplied, tax_code=tax_code, bills=plan)
+    if wht.amount > gross:
+        raise ValidationError({"wht_amount": "WHT cannot exceed the invoice amount being settled."})
+    return wht
+
+
 def _replace_plan(payment, plan):
     """Replace draft instructions without touching invoice settlement balances."""
     # Draft allocation rows are instructions only; invoice balances remain unchanged.
@@ -238,9 +261,8 @@ class VendorPaymentListCreateView(_ProcBase):
         bank = _resolve_bank_account(request, entity, body.get("bank_account"), document_branch=None)
         plan = _allocation_plan(request, entity, vendor, body.get("allocations"))
         gross = sum(amount for _, amount in plan)  # Gross is the exact approved liability split.
-        wht = _money(body.get("wht_amount", 0), "wht_amount")
-        if wht > gross:
-            raise ValidationError({"wht_amount": "WHT cannot exceed the invoice amount being settled."})
+        wht_code = _resolve_tax(entity, body.get("wht_tax_code")) or vendor.default_wht_tax_code
+        wht = _resolve_payment_wht(body, gross=gross, tax_code=wht_code, plan=plan)
         branch_id = _settled_branch_id(request, plan)
         require_own_branch_bank(bank, branch_id, noun="vendor payment")
         payment = VendorPayment.objects.create(
@@ -248,9 +270,10 @@ class VendorPaymentListCreateView(_ProcBase):
             branch_id=branch_id,
             payment_date=_date(body.get("payment_date"), "payment_date", required=True),
             method=_validate_method(body.get("method")), gross_amount=gross,
-            wht_amount=wht, net_amount=gross - wht, allocated_amount=0,
+            wht_amount=wht.amount, net_amount=gross - wht.amount, allocated_amount=0,
+            wht_source=wht.source,
             payment_account=bank.gl_account,
-            wht_tax_code=_resolve_tax(entity, body.get("wht_tax_code")) or vendor.default_wht_tax_code,
+            wht_tax_code=wht_code,
             reference=str(body.get("reference") or "").strip(),
             narration=str(body.get("narration") or "").strip(),
             created_by=request.user if request.user.is_authenticated else None,
@@ -334,19 +357,24 @@ class VendorPaymentDetailView(_ProcBase):
             document_branch=branch_id,
         )
         gross = sum(amount for _, amount in plan)  # Editing recomputes, never trusts a client total.
-        wht = _money(body.get("wht_amount", payment.wht_amount), "wht_amount")
-        if wht > gross:
-            raise ValidationError({"wht_amount": "WHT cannot exceed the invoice amount being settled."})
+        wht_code = (
+            _resolve_tax(entity, body.get("wht_tax_code")) if "wht_tax_code" in body
+            else payment.wht_tax_code
+        )
+        wht = _resolve_payment_wht(
+            body, gross=gross, tax_code=wht_code, plan=plan, existing=payment,
+        )
         payment.vendor = vendor
         payment.branch_id = branch_id
         payment.payment_date = _date(body.get("payment_date", payment.payment_date), "payment_date", required=True)
         payment.method = _validate_method(body.get("method", payment.method))
         payment.gross_amount = gross
-        payment.wht_amount = wht
-        payment.net_amount = gross - wht
+        payment.wht_amount = wht.amount
+        payment.wht_source = wht.source
+        payment.net_amount = gross - wht.amount
         payment.allocated_amount = 0
         payment.payment_account = bank.gl_account
-        payment.wht_tax_code = _resolve_tax(entity, body.get("wht_tax_code")) if "wht_tax_code" in body else payment.wht_tax_code
+        payment.wht_tax_code = wht_code
         payment.reference = str(body.get("reference", payment.reference) or "").strip()
         payment.narration = str(body.get("narration", payment.narration) or "").strip()
         payment.approval_state = ProcApprovalState.NOT_SUBMITTED

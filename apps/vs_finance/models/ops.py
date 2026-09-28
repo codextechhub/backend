@@ -154,6 +154,40 @@ class FinanceBankingSettings(TimeStampedModel):
         return f"Finance banking settings for {self.entity_id}"
 
 
+class FinanceCalendarSettings(TimeStampedModel):
+    """Entity policy for keeping the fiscal calendar ahead of today.
+
+    Every posting needs a fiscal period covering its date, and periods exist only
+    as far as the last fiscal year somebody opened. ``next_year_mode`` decides what
+    the daily rollover task does once the calendar is within ``next_year_lead_days``
+    of its end: open the next year itself, contiguous with the last one and on the
+    same start month and period length, or only tell the finance staff so they open
+    it by hand. The same lead is the notice window the finance dashboard warns in.
+    """
+
+    class NextYearMode(models.TextChoices):
+        AUTO_OPEN = "AUTO_OPEN", "Open the next fiscal year automatically"
+        WARN_ONLY = "WARN_ONLY", "Warn finance staff only"
+
+    entity = models.OneToOneField(
+        LedgerEntity, on_delete=models.CASCADE, related_name="finance_calendar_settings",
+    )
+    next_year_mode = models.CharField(
+        max_length=16, choices=NextYearMode.choices, default=NextYearMode.AUTO_OPEN,
+    )
+    next_year_lead_days = models.PositiveSmallIntegerField(
+        default=60, validators=[MinValueValidator(7), MaxValueValidator(180)],
+        help_text="Days before the calendar ends that the next year is opened or warned about.",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_calendar_settings_updates", null=True, blank=True,
+    )
+
+    def __str__(self) -> str:
+        return f"Finance calendar settings for {self.entity_id}"
+
+
 class BankStatementLine(TimeStampedModel):
     """One line of an imported bank statement, awaiting reconciliation.
 

@@ -509,6 +509,9 @@ class FinanceAuditAction(models.TextChoices):
     FINANCE_BANKING_SETTINGS_UPDATED = (
         "FIN_BANK_SETTINGS_UPDATED", "Finance banking settings updated"
     )
+    FINANCE_CALENDAR_SETTINGS_UPDATED = (
+        "FIN_CALENDAR_SETTINGS_UPDATED", "Finance calendar settings updated"
+    )
     PROCUREMENT_SETTINGS_UPDATED = "PROCUREMENT_SETTINGS_UPDATED", "Procurement settings updated"
     # Procure-to-Pay. The vendor/PO/GRN documents live in vs_procurement,
     # but their audit vocabulary belongs to finance's authoritative log (finance does
@@ -577,7 +580,11 @@ class FinanceAuditAction(models.TextChoices):
     DEPRECIATION_POSTED = "DEPRECIATION_POSTED", "Depreciation posted"
     ASSET_DISPOSED = "ASSET_DISPOSED", "Fixed asset disposed"
     PERIOD_LOCKED = "PERIOD_LOCKED", "Period locked"
+    FISCAL_YEAR_OPENED = "FISCAL_YEAR_OPENED", "Fiscal year opened"
     FISCAL_YEAR_CLOSED = "FISCAL_YEAR_CLOSED", "Fiscal year closed"
+    FISCAL_CALENDAR_WARNED = (
+        "FISCAL_CALENDAR_WARNED", "Finance staff warned the fiscal calendar is running out"
+    )
     TAX_FILING_PREPARED = "TAX_FILING_PREPARED", "Tax filing prepared"
     TAX_FILING_FILED = "TAX_FILING_FILED", "Tax filing submitted to authority"
     TAX_FILING_UNFILED = "TAX_FILING_UNFILED", "Tax filing un-filed (reverted to draft)"

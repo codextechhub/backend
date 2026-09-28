@@ -470,7 +470,7 @@ class PayoutListCreateView(APIView):
         item = {
             "amount": amount, "vendor": vendor,
             "narration": body.get("narration", ""),
-            "wht_amount": int(body.get("wht_amount") or 0),
+            "wht_amount": body.get("wht_amount"),  # Omitted means computed from the vendor's code.
             "metadata": body.get("metadata") or {},
             **_legacy_beneficiary_fields(body),
         }
@@ -592,7 +592,7 @@ class PayoutBatchListCreateView(APIView):
                 "amount": amount,  # Normalized line amount.
                 "vendor": vendor,  # Resolved vendor object.
                 "narration": raw.get("narration", ""),
-                "wht_amount": int(raw.get("wht_amount") or 0),
+                "wht_amount": raw.get("wht_amount"),  # Omitted means computed from the vendor's code.
                 "metadata": raw.get("metadata") or {},
                 **_legacy_beneficiary_fields(raw),
             })  # Keep the normalized payout item.

@@ -444,9 +444,10 @@ class AccountDetailView(APIView):
 
     def get(self, request, pk):
         from django.db.models import Sum
-        from .constants import DocumentStatus, NormalBalance, AccountType
-        from .models import FiscalYear, JournalLine
+        from .constants import NormalBalance, AccountType
+        from .models import FiscalYear
         from .accounts import account_subtree_ids
+        from .branch_ledger import ledger_lines
         from .reports import _accounts_gl_net
 
         entity = resolve_entity(request)
@@ -457,10 +458,8 @@ class AccountDetailView(APIView):
 
         # Header summaries roll up the full descendant subtree. Activity remains a
         # leaf-only view because journals cannot post directly to header accounts.
-        summary_lines = scope.filter(JournalLine.objects.filter(
-            account_id__in=account_ids,
-            entry__status__in=[DocumentStatus.POSTED, DocumentStatus.REVERSED],
-        ), "entry__")
+        summary_lines = scope.filter(
+            ledger_lines().filter(account_id__in=account_ids), "entry__")
         # Fiscal-year opening = net of everything posted before the current FY starts.
         today = tenant_today(entity.tenant)
         fy = (
@@ -568,8 +567,9 @@ class AccountActivityView(APIView):
         from django.db.models import Sum
         from core.pagination import XVSPagination
         from .accounts import account_subtree_ids
-        from .constants import DocumentStatus, NormalBalance
-        from .models import Account, JournalLine
+        from .branch_ledger import ledger_lines
+        from .constants import NormalBalance
+        from .models import Account
 
         entity = resolve_entity(request)
         account = Account.objects.filter(entity=entity, pk=pk).first()
@@ -578,11 +578,7 @@ class AccountActivityView(APIView):
 
         account_ids = {account.id} if account.is_postable else account_subtree_ids(account)
         lines = _reader_scope(request).filter(
-            JournalLine.objects.filter(
-                account_id__in=account_ids,
-                entry__status__in=[DocumentStatus.POSTED, DocumentStatus.REVERSED],
-            ),
-            "entry__",
+            ledger_lines().filter(account_id__in=account_ids), "entry__",
         ).select_related("account", "entry", "cost_center")
 
         date_from = _resolve_date_param(request, "date_from")
@@ -757,15 +753,24 @@ class FiscalYearListView(EntityScopedListMixin, generics.ListAPIView):
         return qs.order_by("-year")
 
     def post(self, request):
-        """Start a fiscal year and provision all of its posting periods."""
-        from django.db import transaction
+        """Start a fiscal year and provision all of its posting periods.
 
-        from .models import FiscalYear
-        from .seed import seed_fiscal_year
+        Each value left out continues the calendar: the defaults are the year that
+        starts the day after the latest one ends, on its period length. The checks
+        (duplicate, overlap, a gap beside a neighbouring year) and the audit row
+        live in :func:`vs_finance.fiscal_calendar.open_fiscal_year`, which the daily
+        rollover shares.
+        """
+        from .fiscal_calendar import next_fiscal_year_spec, open_fiscal_year
 
         entity = resolve_entity(request)  # Tenant-scoped; unknown/forbidden both return 404.
         body = request.data or {}
-        latest = FiscalYear.objects.filter(entity=entity).order_by("-year").first()
+        spec = next_fiscal_year_spec(entity) or {
+            "year": tenant_today(entity.tenant).year,
+            "start_month": 1,
+            "start_day": 1,
+            "frequency": "MONTHLY",
+        }
 
         def integer(name, default, minimum, maximum):
             raw = body.get(name, default)
@@ -777,55 +782,20 @@ class FiscalYearListView(EntityScopedListMixin, generics.ListAPIView):
                 raise ValidationError({name: f"Enter a value from {minimum} to {maximum}."})
             return value
 
-        year = integer("year", (latest.year + 1) if latest else tenant_today(entity.tenant).year, 1900, 2200)
-        start_month = integer(
-            "start_month", latest.start_date.month if latest else 1, 1, 12,
-        )
-        start_day = integer(
-            "fiscal_start_day", latest.start_date.day if latest else 1, 1, 31,
-        )
-        inferred_frequency = (
-            "QUARTERLY" if latest and latest.periods.filter(period_no__lte=12).count() == 4
-            else "MONTHLY"
-        )
-        frequency = str(body.get("frequency", inferred_frequency)).strip().upper()
+        year = integer("year", spec["year"], 1900, 2200)
+        start_month = integer("start_month", spec["start_month"], 1, 12)
+        start_day = integer("fiscal_start_day", spec["start_day"], 1, 31)
+        frequency = str(body.get("frequency", spec["frequency"])).strip().upper()
         if frequency not in {"MONTHLY", "QUARTERLY"}:
             raise ValidationError({"frequency": "Choose MONTHLY or QUARTERLY."})
-        try:
-            with transaction.atomic():
-                # Serialize calendar creation per entity so two clicks cannot both
-                # pass the duplicate check and report that they opened the same year.
-                LedgerEntity.objects.select_for_update().get(pk=entity.pk)
-                if FiscalYear.objects.filter(entity=entity, year=year).exists():
-                    raise ValidationError({
-                        "year": f"Fiscal year {year} already exists for this entity.",
-                    })
-                fiscal_year, periods = seed_fiscal_year(
-                    entity,
-                    year=year,
-                    start_month=start_month,
-                    fiscal_period_frequency=frequency,
-                    fiscal_start_day=start_day,
-                )
-                overlap = (
-                    FiscalYear.objects.filter(
-                        entity=entity,
-                        start_date__lte=fiscal_year.end_date,
-                        end_date__gte=fiscal_year.start_date,
-                    )
-                    .exclude(pk=fiscal_year.pk)
-                    .order_by("start_date")
-                    .first()
-                )
-                if overlap is not None:
-                    raise ValidationError({
-                        "fiscal_calendar": (
-                            f"FY{year} overlaps FY{overlap.year} "
-                            f"({overlap.start_date} to {overlap.end_date})."
-                        ),
-                    })
-        except ValueError as exc:
-            raise ValidationError({"fiscal_calendar": str(exc)}) from exc
+        fiscal_year, periods = open_fiscal_year(
+            entity,
+            year=year,
+            start_month=start_month,
+            start_day=start_day,
+            frequency=frequency,
+            actor_user=request.user,
+        )
 
         return success_response(
             f"Fiscal year {year} opened with {len(periods)} {frequency.lower()} periods.",

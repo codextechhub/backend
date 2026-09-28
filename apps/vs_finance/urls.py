@@ -116,6 +116,7 @@ from .views_ar import (
 from .views_settings import (
     FinanceAccountSettingsView,
     FinanceBankingSettingsView,
+    FinanceCalendarSettingsView,
     FinanceDocumentSettingsView,
 )
 from .views_ops import (
@@ -215,6 +216,8 @@ urlpatterns = [
          name="finance-document-settings"),
     path("settings/banking/", FinanceBankingSettingsView.as_view(),
          name="finance-banking-settings"),
+    path("settings/calendar/", FinanceCalendarSettingsView.as_view(),
+         name="finance-calendar-settings"),
     path("accounts/", AccountListCreateView.as_view(), name="finance-account-list"),
     path("accounts/<int:pk>/activity/", AccountActivityView.as_view(), name="finance-account-activity"),
     path("accounts/<int:pk>/", AccountDetailView.as_view(), name="finance-account-detail"),

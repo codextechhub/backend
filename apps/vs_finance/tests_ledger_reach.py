@@ -5,10 +5,11 @@ GTBank operations account, and each is backed by its own ledger account. Ikeja's
 bursar cannot name Lekki's bank account on a payment, so she must not be able to
 name Lekki's bank ledger by its code either: as a receipt's deposit account, an
 asset's credit account, a bank adjustment's counter account, a direct entry's
-line, a payout's source, a vendor's account, a school default, or by editing the
-ledger account itself. Each is refused exactly as an unknown account is. A
-ledger account behind no bank account is untouched, and a caller bound to no
-branch names any of them.
+line, a payout's source, a vendor's account, or by editing the ledger account
+itself. Each is refused exactly as an unknown account is. A school default she
+cannot point anywhere, because a setting that binds every branch is changed only
+by a caller whose reach is the whole school. A ledger account behind no bank
+account is untouched, and a caller bound to no branch names any of them.
 """
 from __future__ import annotations
 
@@ -164,14 +165,20 @@ class LedgerNamedOnAWriteTests(_LedgerReachFixture):
         self.assertRefusedAsUnknown(response)
 
     def test_a_school_default_pointed_at_it(self):
+        from vs_finance.account_mappings import resolve_mapped_account
+        from vs_finance.constants import AccountMappingKey
+
         client = self.bursar("finance.settings.update")
         response = client.patch(
             f"/v1/finance/settings/account-mappings/?entity={self.books.code}",
             # The mappings screen sends ids, which is how this route reads a number.
             {"mappings": {"CASH_BANK": self.lekki_ledger.pk}}, format="json",
         )
-        self.assertEqual(response.status_code, 400, response.data)
-        self.assertIn("No such account", str(response.data))
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(response.data["error"]["code"], "SHARED_RECORD_READ_ONLY")
+        self.assertNotEqual(
+            resolve_mapped_account(self.books, AccountMappingKey.CASH_BANK), self.lekki_ledger,
+        )
 
     def test_editing_the_ledger_account_itself(self):
         client = self.bursar("finance.account.update", "finance.account.view")

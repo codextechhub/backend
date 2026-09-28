@@ -308,7 +308,11 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     anticipates. After it posts, the P&L accounts read zero and the year's result is
     permanently in equity.
 
-    * ``closing_date`` defaults to the year's ``end_date``. The formal close journal
+    * ``closing_date`` defaults to the year's ``end_date`` and must fall inside the
+      year being closed. The closing entry zeroes the whole year's income and
+      expense, so dated in the next year it would land in that year's first month:
+      the closed year's accounts would never reach zero inside it, and the next year
+      would open carrying minus this year's result. The formal close journal
       may post into OPEN, SOFT_CLOSED or CLOSED because closing the final month before
       closing the year is the normal operator sequence. A LOCKED period remains
       immutable, so the year must be closed before the final period is locked.
@@ -330,6 +334,18 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     if fiscal_year.status in (PeriodStatus.CLOSED, PeriodStatus.LOCKED):  # Never close a year twice.
         raise PeriodCloseError(
             f"Fiscal year {fiscal_year.year} is already '{fiscal_year.status}'.")
+
+    closing_date = closing_date or fiscal_year.end_date  # Default to the last day of the year.
+    if not fiscal_year.start_date <= closing_date <= fiscal_year.end_date:  # Inside the year only.
+        from rest_framework.exceptions import ValidationError
+
+        raise ValidationError({
+            "closing_date": (
+                f"The closing date must fall inside FY{fiscal_year.year} "
+                f"({fiscal_year.start_date} to {fiscal_year.end_date}); "
+                f"{closing_date} does not. Leave it out to close on {fiscal_year.end_date}."
+            ),
+        })
 
     if require_periods_closed:  # Months must be settled before the year is sealed.
         open_count = FiscalPeriod.objects.filter(  # Count periods still fully open.
@@ -385,7 +401,6 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     else:  # Loss (or break-even handled above) → debit Retained Earnings.
         closing_lines.append((retained, -net_income, 0))
 
-    closing_date = closing_date or fiscal_year.end_date  # Default to the last day of the year.
     period = resolve_period(entity, closing_date)  # The period the closing entry posts into.
     if not _period_accepts_posting(  # Formal close may use CLOSED, but never LOCKED.
         period, allow_restricted=True, allow_closed=True,

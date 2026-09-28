@@ -180,17 +180,35 @@ def posting_window(entity, *, today=None) -> dict:
     }
 
 
-# How close to the end of the fiscal calendar counts as "running out".
-# One constant, because the number is a policy (how much notice an operator needs to
-# get a new fiscal year approved and created), not an implementation detail of any
-# one caller. Two months is enough notice for a finance team to raise, review and
-# create the next year without the request becoming an emergency.
+# How close to the end of the fiscal calendar counts as "running out", by default.
+# An entity may choose its own lead (FinanceCalendarSettings.next_year_lead_days);
+# this is the value it starts with. Two months is enough notice for a finance team
+# to raise, review and create the next year without the request becoming an
+# emergency.
 FISCAL_RUNWAY_WARNING_DAYS = 60
 
 # The three states an entity's fiscal calendar can be in, from the runway read.
 FISCAL_RUNWAY_HEALTHY = "HEALTHY"    # Plenty of calendar left; nothing to say.
-FISCAL_RUNWAY_EXPIRING = "EXPIRING"  # Calendar ends within the warning threshold.
-FISCAL_RUNWAY_EXPIRED = "EXPIRED"    # Calendar has run out (or was never created).
+FISCAL_RUNWAY_EXPIRING = "EXPIRING"  # Coverage breaks within the warning threshold.
+FISCAL_RUNWAY_EXPIRED = "EXPIRED"    # Today is not covered (lapsed, a gap, or no calendar).
+
+
+def _coverage_runs(periods):
+    """Merge period date ranges into unbroken ``[start, end]`` runs, oldest first.
+
+    ``periods`` is an iterable of ``(start_date, end_date)``. Two ranges belong to
+    one run when the second starts on or before the day after the first ends, so
+    back-to-back months join and only a real uncovered day splits a run.
+    """
+    import datetime
+
+    runs: list[list] = []
+    for start, end in sorted(periods):
+        if runs and start <= runs[-1][1] + datetime.timedelta(days=1):
+            runs[-1][1] = max(runs[-1][1], end)
+        else:
+            runs.append([start, end])
+    return runs
 
 
 # Describe how much fiscal calendar an entity has left.
@@ -199,49 +217,77 @@ def fiscal_calendar_runway(entity, *, today=None) -> dict:
 
     The other read-side mirror of the period guard, alongside :func:`posting_window`.
     That one answers "which dates may post *today*?"; this one answers "how long
-    until *no* date can post?" - a question nothing else in the engine asks, and the
-    reason it needs asking is that the answer arrives as a hard outage:
+    until the next date that *cannot* post?" - a question nothing else in the engine
+    asks, and the reason it needs asking is that the answer arrives as a hard outage:
 
     :class:`~vs_finance.models.FiscalPeriod` rows are created a year at a time. Once
-    the last one's ``end_date`` passes with no new year created, :func:`resolve_period`
-    returns ``None`` for every new document date, :func:`ensure_period_open` raises
+    the covered stretch ends with no period after it, :func:`resolve_period` returns
+    ``None`` for every document dated there, :func:`ensure_period_open` raises
     :class:`~vs_finance.exceptions.PeriodClosedError` on the ``None``, and *every*
-    posting in the entity fails at once - invoices, receipts, payroll, gateway
+    posting on those dates fails at once - invoices, receipts, payroll, gateway
     webhooks, close journals. Nothing degrades first, so nothing warns unless we read
     ahead of the date deliberately.
 
-    ``calendar_end`` is the last day any period covers, whatever that period's status:
-    a CLOSED December still bounds the calendar, and creating the next year is the
-    only fix either way. ``days_remaining`` counts from ``today`` and goes negative
-    once the calendar has run out, so a caller can say how long ago it lapsed.
+    The stretch can end in two ways, and both are read: the last period's end, and a
+    **gap** between two fiscal years. A January year followed by a September year
+    leaves January to August uncovered; reading only the last end date would call
+    that healthy while every posting in those months fails.
+
+    * ``calendar_end`` is the last day any period covers, whatever its status: a
+      CLOSED December still bounds the calendar.
+    * ``first_uncovered_date`` is the first date on or after ``today`` that no period
+      covers: the day postings start failing. It is ``today`` itself when today is
+      already uncovered.
+    * ``days_remaining`` counts from ``today`` to the last covered day before that
+      break, and goes negative once today is past it, so a caller can say how long
+      ago the calendar lapsed. It is ``None`` when nothing before today is covered.
+    * ``gaps`` lists every uncovered stretch between two covered ones, oldest first.
+    * ``threshold_days`` is the entity's own lead
+      (:class:`~vs_finance.models.FinanceCalendarSettings`), defaulting to
+      :data:`FISCAL_RUNWAY_WARNING_DAYS`.
 
     Three states, each real and each needing different words on screen:
 
-    * ``HEALTHY`` - the calendar ends beyond the threshold; say nothing.
-    * ``EXPIRING`` - it ends within :data:`FISCAL_RUNWAY_WARNING_DAYS`; still posting,
-      but somebody must create the next year before that date.
-    * ``EXPIRED`` - it has already ended, so the entity cannot post at all. An entity
-      with **no periods whatsoever** lands here too (with a ``None`` calendar end): a
-      brand-new entity that was never given a calendar is in exactly the same
+    * ``HEALTHY`` - coverage runs beyond the threshold; say nothing.
+    * ``EXPIRING`` - coverage breaks within the threshold; still posting, but
+      somebody must create the missing year before that date.
+    * ``EXPIRED`` - today itself is not covered, so nothing dated today can post. An
+      entity with **no periods whatsoever** lands here too (with a ``None`` calendar
+      end): a brand-new entity that was never given a calendar is in exactly the same
       can't-post position as one that ran off the end of its own, and treating it as
       an error would hide the very state the caller asked about.
     """
+    import datetime
+
+    from .calendar_settings import resolve_finance_calendar_settings
     from .models import FiscalPeriod
 
     today = today or tenant_today(entity.tenant)
+    threshold = resolve_finance_calendar_settings(entity).next_year_lead_days
     last = (  # The period that bounds the calendar, ignoring status entirely.
         FiscalPeriod.objects
         .filter(entity=entity)
         .order_by("-end_date", "-period_no")
         .first()
     )
+    runs = _coverage_runs(
+        FiscalPeriod.objects.filter(entity=entity).values_list("start_date", "end_date"),
+    )
+    one_day = datetime.timedelta(days=1)
 
     calendar_end = last.end_date if last is not None else None
-    days_remaining = (calendar_end - today).days if calendar_end is not None else None
+    covering = next((run for run in runs if run[0] <= today <= run[1]), None)
+    if covering is not None:
+        covered_until = covering[1]
+        first_uncovered = covered_until + one_day
+    else:
+        first_uncovered = today
+        covered_until = max((run[1] for run in runs if run[1] < today), default=None)
+    days_remaining = (covered_until - today).days if covered_until is not None else None
 
-    if days_remaining is None or days_remaining < 0:  # No calendar, or it has lapsed.
+    if covering is None:  # No calendar, a lapsed one, or today falls in a gap.
         status = FISCAL_RUNWAY_EXPIRED
-    elif days_remaining <= FISCAL_RUNWAY_WARNING_DAYS:  # Ends today or within notice.
+    elif days_remaining <= threshold:  # Coverage breaks today or within notice.
         status = FISCAL_RUNWAY_EXPIRING
     else:
         status = FISCAL_RUNWAY_HEALTHY
@@ -249,11 +295,16 @@ def fiscal_calendar_runway(entity, *, today=None) -> dict:
     return {
         "today": today,
         "calendar_end": calendar_end,
+        "first_uncovered_date": first_uncovered,
         "days_remaining": days_remaining,
-        "threshold_days": FISCAL_RUNWAY_WARNING_DAYS,
+        "threshold_days": threshold,
         "status": status,
         "should_warn": status != FISCAL_RUNWAY_HEALTHY,
         "last_period": _period_brief(last),
+        "gaps": [
+            {"start": earlier[1] + one_day, "end": later[0] - one_day}
+            for earlier, later in zip(runs, runs[1:])
+        ],
     }
 
 
@@ -461,13 +512,24 @@ def _post_journal_atomic(
 
 
 def _journal_document_owner(entry):
-    """Return the first sub-ledger object whose journal field points at ``entry``.
+    """Return the sub-ledger document ``entry`` belongs to, or ``None``.
 
-    This deliberately uses model metadata rather than a short hard-coded list: new
+    A journal belongs to the first document whose journal field points at it. This
+    deliberately uses model metadata rather than a short hard-coded list: new
     finance/procurement documents that add a ``journal``/``*_journal`` FK are guarded
     automatically instead of quietly reopening the same bypass.
+
+    A reversal belongs to the document of the journal it reverses, followed down
+    the ``reverses`` chain. Voiding a document posts a mirror journal linked to the
+    original only through ``reverses``; were that mirror ownerless, a raw reverse of
+    it would put the voided document's whole effect back into the ledger while the
+    document still read voided. A manual journal has no owner, so neither does its
+    reversal, and both stay reversible on their own.
     """
     from django.core.exceptions import ObjectDoesNotExist
+
+    if entry.reverses_id is not None:
+        return _journal_document_owner(entry.reverses)
 
     for relation in entry._meta.related_objects:
         if "journal" not in relation.field.name:
@@ -527,6 +589,10 @@ def journal_reversal_action(entry):
     The frontend must never infer document ownership from narration/source text.
     This contract is derived from the same relationship lookup that enforces the
     raw-reversal guard, so the button and the service cannot disagree.
+
+    The reversal a void posted names its document as ``SOURCE_DOCUMENT_ACTION``
+    rather than offering the void again: the document is already void, and the
+    screen offers no button for that kind.
     """
     owner = _journal_document_owner(entry)
     if owner is None:
@@ -534,7 +600,8 @@ def journal_reversal_action(entry):
 
     model_name = type(owner).__name__
     config = _DOCUMENT_VOID_ROUTES.get(model_name)
-    if config is None:
+    # A void's own reversal is undone on no screen: the document is already void.
+    if config is None or entry.reverses_id is not None:
         return {
             "kind": "SOURCE_DOCUMENT_ACTION",
             "document_type": model_name,

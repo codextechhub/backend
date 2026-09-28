@@ -196,10 +196,18 @@ class BankAccountDetailView(_FinanceBase):
 
     # Support the transactions workflow.
     def _transactions(self, bank, *, book_balance, limit=50):
-        """Recent posted GL cash lines, newest first, with a running balance."""
+        """Recent GL cash lines, newest first, with a running balance.
+
+        The running balance walks back from ``book_balance``, which is read from
+        ``AccountBalance``, so the lines walked must be the same ledger
+        (:func:`vs_finance.branch_ledger.ledger_lines`): a reversed entry and its
+        reversal both appear, and a void leaves the earlier balances as they were.
+        """
+        from ..branch_ledger import ledger_lines
+
         lines = list(
-            JournalLine.objects
-            .filter(account=bank.gl_account, entry__status=DocumentStatus.POSTED)
+            ledger_lines(bank.entity)
+            .filter(account=bank.gl_account)
             .select_related("entry")
             .prefetch_related("bank_statement_lines")
             .order_by("-entry__date", "-id")[:limit]

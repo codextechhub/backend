@@ -163,12 +163,24 @@ def flush() -> int:
 
 # Background flusher loop; errors are swallowed by the caller.
 def _flush_loop(interval: float):
+    """Flush metrics, then check the worker heartbeat, forever.
+
+    The heartbeat check rides here because this thread lives in the web process,
+    which keeps running when the Celery worker does not; see
+    :mod:`vs_health.watchdog`.
+    """
     while True:
         time.sleep(interval)
         try:
             flush()
         except Exception:
             logger.debug("vs_health flush loop error", exc_info=True)
+        try:
+            from .watchdog import check_worker_heartbeat_throttled
+
+            check_worker_heartbeat_throttled()
+        except Exception:
+            logger.warning("vs_health worker heartbeat check failed", exc_info=True)
 
 
 def _running_tests() -> bool:

@@ -165,7 +165,7 @@ class AnalyticsSliceRow:
 class AnalyticsSlice:
     """Posted activity for an entity sliced by one axis (a cost centre or a dimension).
 
-    Unlike the trial balance this reads posted :class:`~vs_finance.models.JournalLine`
+    Unlike the trial balance this reads the ledger's :class:`~vs_finance.models.JournalLine`
     rows directly - the denormalised ``AccountBalance`` carries neither the cost centre
     nor the dimensions map, so it cannot answer "per bucket" questions.
     """
@@ -180,7 +180,7 @@ class AnalyticsSlice:
 
 # Handle the analytics slice workflow.
 def analytics_slice(entity, *, axis, period=None, account_type=None, scope=None) -> AnalyticsSlice:
-    """Net movement per account, bucketed by ``axis``, over posted journals.
+    """Net movement per account, bucketed by ``axis``, over the journals in the ledger.
 
     ``axis`` is either the literal ``"cost_center"`` or a :class:`~vs_finance.models.Dimension`
     code (e.g. ``"FUND"``). **Only lines actually tagged on the axis are included** - a
@@ -189,16 +189,14 @@ def analytics_slice(entity, *, axis, period=None, account_type=None, scope=None)
     than a catch-all bucket. Optionally scope to one ``period`` and/or one
     ``account_type``. Net is ``debit - credit`` (kobo) so it reads naturally for both
     sides of the books. ``scope`` narrows it to the journals in a reader's branches.
+    Lines come from :func:`vs_finance.branch_ledger.ledger_lines`, so a reversal
+    and the entry it reverses cancel inside the bucket they share.
     """
-    from .constants import DocumentStatus
-    from .models import JournalLine
+    from .branch_ledger import ledger_lines
     from vs_rbac.scoping import UNNARROWED
 
     qs = (
-        (scope or UNNARROWED).filter(
-            JournalLine.objects.filter(entry__entity=entity, entry__status=DocumentStatus.POSTED),
-            "entry__",
-        )
+        (scope or UNNARROWED).filter(ledger_lines(entity), "entry__")
         .select_related("account", "cost_center")
     )
     if axis == "cost_center":
@@ -661,15 +659,13 @@ def _account_gl_net_as_of(account, as_of) -> int:
     aggregates cannot be split. The twin of
     :func:`vs_procurement.reports._account_gl_net_as_of`; REVERSED entries are
     included because their own reversal is a separate dated entry that nets them off
-    only from the reversal date onwards.
+    only from the reversal date onwards; see :func:`vs_finance.branch_ledger.ledger_lines`.
     """
+    from .branch_ledger import ledger_lines
     from .constants import NormalBalance
-    from .models import JournalLine
 
-    totals = JournalLine.objects.filter(
-        account=account,
-        entry__status__in=(DocumentStatus.POSTED, DocumentStatus.REVERSED),
-        entry__date__lte=as_of,
+    totals = ledger_lines().filter(
+        account=account, entry__date__lte=as_of,
     ).aggregate(debit=Sum("debit"), credit=Sum("credit"))
     net = int(totals["debit"] or 0) - int(totals["credit"] or 0)
     return net if account.normal_balance == NormalBalance.DEBIT else -net
@@ -680,16 +676,12 @@ def _account_gl_net_scoped(account, as_of, scope) -> int:
     """:func:`_account_gl_net_as_of` over only the journals in ``scope``.
 
     ``as_of`` ``None`` reads every date. Reversed entries count, as they do in the
-    unnarrowed figure; see :data:`vs_finance.branch_ledger.LEDGER_STATUSES`.
+    unnarrowed figure; see :func:`vs_finance.branch_ledger.ledger_lines`.
     """
-    from .branch_ledger import LEDGER_STATUSES
+    from .branch_ledger import ledger_lines
     from .constants import NormalBalance
-    from .models import JournalLine
 
-    lines = scope.filter(
-        JournalLine.objects.filter(account=account, entry__status__in=LEDGER_STATUSES),
-        "entry__",
-    )
+    lines = scope.filter(ledger_lines().filter(account=account), "entry__")
     if as_of is not None:
         lines = lines.filter(entry__date__lte=as_of)
     totals = lines.aggregate(debit=Sum("debit"), credit=Sum("credit"))
@@ -1759,15 +1751,17 @@ def cash_flow_statement(entity, *, period=None, scope=None) -> CashFlowStatement
 
     Cash accounts are the entity's ``1100 Cash & Bank`` plus any GL account a
     :class:`~vs_finance.models.BankAccount` maps to. The statement classifies the
-    non-cash leg of every POSTED journal that touches cash into operating / investing /
-    financing (see :func:`_classify_cash_flow`), and reconciles opening + net change to
-    closing cash. Scoped to ``period`` when given, else the whole ledger to date.
+    non-cash leg of every journal in the ledger that touches cash into operating /
+    investing / financing (see :func:`_classify_cash_flow`), and reconciles opening +
+    net change to closing cash. The legs and the opening and closing balances read
+    the same ledger (:func:`vs_finance.branch_ledger.ledger_lines`), so a reversal and
+    the entry it reverses cancel in both. Scoped to ``period`` when given, else the whole ledger to date.
     ``scope`` narrows both the cash balances and the classified journals to a
     reader's branches, so the statement still reconciles.
     """
     from .account_mappings import resolve_mapped_account
-    from .branch_ledger import ledger_balances
-    from .constants import AccountMappingKey, DocumentStatus, NormalBalance
+    from .branch_ledger import ledger_balances, ledger_lines
+    from .constants import AccountMappingKey, NormalBalance
     from .models import BankAccount, JournalLine
     from vs_rbac.scoping import UNNARROWED
 
@@ -1798,14 +1792,9 @@ def cash_flow_statement(entity, *, period=None, scope=None) -> CashFlowStatement
     stmt.opening_cash = opening
     stmt.closing_cash = closing
 
-    # 3. Classify the non-cash legs of every posted journal that touches cash.
+    # 3. Classify the non-cash legs of every ledger journal that touches cash.
     cash_entry_ids = set(
-        scope.filter(
-            JournalLine.objects.filter(
-                account_id__in=cash_ids, entry__entity=entity,
-                entry__status=DocumentStatus.POSTED),
-            "entry__",
-        )
+        scope.filter(ledger_lines(entity).filter(account_id__in=cash_ids), "entry__")
         .values_list("entry_id", flat=True)
     )
     if period is not None:

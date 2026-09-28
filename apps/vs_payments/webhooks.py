@@ -34,8 +34,10 @@ from django.utils import timezone
 
 from . import audit, services
 from .constants import (
+    CollectionStatus,
     PaymentAuditAction,
     PaymentDirection,
+    PayoutStatus,
     WebhookStatus,
 )
 from .exceptions import (
@@ -180,7 +182,10 @@ def process_stored_event(event_id: int) -> WebhookEvent | None:
 
 # Support the dispatch workflow.
 def _dispatch(event: WebhookEvent, parsed, record=None) -> None:
-    """Route a verified event to the matching confirm service and mark it processed.
+    """Route a verified event to the matching confirm service and record the outcome.
+
+    The outcome is PROCESSED unless the event reported a success the books do
+    not show; see :func:`_settle_status`.
 
     SECURITY: a valid signature proves the event *came from* the provider, but we do
     **not** trust the status/amount it carries to move money. The event tells us only
@@ -203,8 +208,12 @@ def _dispatch(event: WebhookEvent, parsed, record=None) -> None:
         if intent is not None:  # Only confirm if the webhook maps to a known intent.
             event.collection = intent  # Link the webhook event to the matching collection.
             event.save(update_fields=["collection", "updated_at"])  # Survive a failed confirm.
-            services.confirm_collection(intent)  # Re-verify the provider state before booking the receipt.
-            event.status = WebhookStatus.PROCESSED  # Mark the webhook as fully handled.
+            intent = services.confirm_collection(intent)  # Re-verify the provider state before booking the receipt.
+            _settle_status(
+                event, claimed_success=parsed.status == CollectionStatus.SUCCEEDED,
+                booked=services._collection_is_settled(intent),
+                kind="collection", current=intent.status,
+            )
         else:  # If we cannot resolve the intent, we leave the event stored but unprocessed.
             event.status = WebhookStatus.IGNORED  # Record that the payload was valid but unmatched.
             event.error = _unmatched_collection_reason(parsed)  # Save a clear operator-facing explanation.
@@ -213,8 +222,12 @@ def _dispatch(event: WebhookEvent, parsed, record=None) -> None:
         if payout is not None:  # Only confirm if the webhook maps to a known payout.
             event.payout = payout  # Link the webhook event to the matching payout.
             event.save(update_fields=["payout", "updated_at"])  # Survive a failed confirm.
-            services.confirm_payout(payout)  # Re-verify the provider state before posting the vendor payment.
-            event.status = WebhookStatus.PROCESSED  # Mark the webhook as fully handled.
+            payout = services.confirm_payout(payout)  # Re-verify the provider state before posting the vendor payment.
+            _settle_status(
+                event, claimed_success=parsed.status == PayoutStatus.PAID,
+                booked=payout.status == PayoutStatus.PAID,
+                kind="payout", current=payout.status,
+            )
         else:  # If we cannot resolve the payout, keep the webhook as an ignored audit record.
             event.status = WebhookStatus.IGNORED  # Record that the payload was valid but unmatched.
             event.error = "No matching payout instruction."  # Save a clear operator-facing explanation.
@@ -226,6 +239,54 @@ def _dispatch(event: WebhookEvent, parsed, record=None) -> None:
     event.save(update_fields=[
         "collection", "payout", "status", "error", "processed_at", "updated_at",
     ])
+
+
+def _settle_status(event, *, claimed_success, booked, kind, current) -> None:
+    """Mark ``event`` PROCESSED only when nothing it reported is left unbooked.
+
+    A success event whose record did not end up booked means the provider told
+    us money moved and the books do not show it: the re-verify disagreed, or the
+    record is in a state that cannot book. Marking that PROCESSED would file it
+    as handled and hide it from Needs Attention and from the unbooked-money
+    alarms, which count FAILED and IGNORED only. It is marked FAILED instead,
+    with the record's state as the reason, so it is counted, shown and
+    replayable. A record that was already booked (by an earlier delivery, a
+    verify or the recovery sweep) is booked, so its event is PROCESSED. Events
+    that report no success book nothing by design and are PROCESSED as before.
+    """
+    if claimed_success and not booked:
+        event.status = WebhookStatus.FAILED
+        event.error = (
+            f"The provider reported a success, but the {kind} is {current} after "
+            "re-verifying, so nothing was booked. Replay once the provider confirms it."
+        )[:255]
+        return
+    event.status = WebhookStatus.PROCESSED  # Mark the webhook as fully handled.
+    event.error = ""
+
+
+def settle_events_for(*, collection=None, payout=None) -> int:
+    """Close the stored events of a record that has now been booked another way.
+
+    When the recovery sweep books a collection or payout whose webhook failed
+    or never ran, those events describe money that is now in the books. Left
+    FAILED or RECEIVED they would keep the record on Needs Attention and in the
+    daily unbooked digest, reporting money missing that is not. Only a booked
+    record's events are touched. Returns the number of events closed.
+    """
+    qs = WebhookEvent.objects.filter(
+        status__in=(WebhookStatus.FAILED, WebhookStatus.RECEIVED),
+    )
+    if collection is not None:
+        qs = qs.filter(collection=collection)
+    elif payout is not None:
+        qs = qs.filter(payout=payout)
+    else:
+        return 0
+    return qs.update(
+        status=WebhookStatus.PROCESSED, error="", processed_at=timezone.now(),
+        updated_at=timezone.now(),
+    )
 
 
 def _find_record(parsed, provider: str):

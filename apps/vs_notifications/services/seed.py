@@ -915,6 +915,29 @@ def _build_default_templates() -> dict:
             ),
         },
 
+        # ── finance.fiscal_calendar_expiring ────────────────────────────────
+        # The date postings stop is the headline; the body says why and what to do.
+        ("finance.fiscal_calendar_expiring", C.IN_APP): {
+            "subject": (
+                "Postings stop at {{ entity_name }} on {{ first_uncovered_date }}"
+            ),
+            "body": "{{ situation }} {{ action }}",
+        },
+        ("finance.fiscal_calendar_expiring", C.EMAIL): {
+            "subject": "Fiscal calendar running out - {{ entity_name }}",
+            "body": (
+                "Postings will stop on a date no fiscal period covers.\n\n"
+                "Entity: {{ entity_name }} ({{ entity_code }})\n"
+                "First date that cannot be posted: {{ first_uncovered_date }}\n"
+                "Calendar ends: {{ calendar_end }}\n\n"
+                "{{ situation }}\n\n"
+                "{{ action }}\n\n"
+                "Until it is fixed, every invoice, receipt, payroll run and gateway "
+                "payment dated from then on is refused. This message repeats while "
+                "the calendar is short.\n"
+            ),
+        },
+
         # ── payments.unbooked_receipts_digest ───────────────────────────────
         # Operational, not customer-facing: the reader is whoever can replay the
         # event, so the message leads with the money and names the likely cause.

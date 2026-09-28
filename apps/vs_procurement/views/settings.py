@@ -1,11 +1,14 @@
 """Entity-scoped Procurement settings API."""
 from __future__ import annotations
 
+from rest_framework.permissions import SAFE_METHODS
+
 from core.response import success_response
 from vs_finance.constants import FinanceAuditAction
 from vs_finance.models import FinanceAuditLog
 from vs_finance.serializers import FinanceAuditLogSerializer
 from vs_finance.views import resolve_entity
+from vs_finance.views_settings import WholeTenantSettingsMixin
 
 from ..settings import (
     resolve_procurement_settings,
@@ -26,15 +29,22 @@ def _history(entity):
     return FinanceAuditLogSerializer(rows, many=True).data
 
 
-class ProcurementSettingsView(_ProcBase):
-    """Read or update purchasing defaults and invoice-matching tolerances."""
+class ProcurementSettingsView(WholeTenantSettingsMixin, _ProcBase):
+    """Read or update purchasing defaults and invoice-matching tolerances.
+
+    The settings bind every branch buying against the entity's books, so a
+    write needs whole-tenant reach as well as the update key; see
+    :class:`~vs_finance.views_settings.WholeTenantSettingsMixin`.
+    """
+
+    settings_subject = "the procurement settings"
 
     @property
     def rbac_permission(self):
         return (
-            "procurement.settings.update"
-            if self.request.method == "PATCH"
-            else "procurement.settings.view"
+            "procurement.settings.view"
+            if self.request.method in SAFE_METHODS
+            else "procurement.settings.update"
         )
 
     def get(self, request):

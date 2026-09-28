@@ -65,6 +65,12 @@ app.conf.beat_schedule = {
         "task": "vs_finance.run_daily_dunning",
         "schedule": crontab(hour=6, minute=0),
     },
+    # Daily: open each entity's next fiscal year within its lead window, or warn
+    # its finance staff. Idempotent, so a repeated run opens and sends nothing new.
+    "finance-daily-fiscal-calendar": {
+        "task": "vs_finance.roll_fiscal_calendars",
+        "schedule": crontab(hour=5, minute=15),
+    },
 
     # --- vs_payments (unbooked gateway money) -----------------------------
     # Needs Attention already records a failed booking, but a screen is somewhere
@@ -85,6 +91,13 @@ app.conf.beat_schedule = {
     "payments-dispatch-undispatched-payouts": {
         "task": "vs_payments.dispatch_undispatched_payout_batches",
         "schedule": crontab(minute="*/10"),
+    },
+    # A webhook that never arrives, or whose task is lost, leaves settled money
+    # unbooked with no alarm. This asks the provider and books what it confirms;
+    # each row backs off from half-hourly to daily as it ages.
+    "payments-recover-unconfirmed": {
+        "task": "vs_payments.recover_unconfirmed_payments",
+        "schedule": crontab(minute="*/15"),
     },
 
     # --- vs_exports (Export Centre) --------------------------------------

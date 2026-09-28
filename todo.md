@@ -1408,6 +1408,70 @@ target is only a class the pupil's branch may join. MRD: a school chooses how
 its end-of-year promotion treats suspended and unplaced pupils, arms and full
 classes.
 
+### D70. The books open their next year, count reversals once, and pay suppliers net of withholding tax (hash pending, 2026-09-28)
+MODULES: M19 finance and accounting, M18 payments and collections, M23 purchase
+orders delivery and AP, M22 procurement and requisitions, M30 system health and
+monitoring, M08 notifications and delivery, MRD.
+From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF).
+MUST SAY:
+- Fiscal calendar (M19). A set of books carries a calendar setting,
+  GET/PATCH /v1/finance/settings/calendar/: next_year_mode AUTO_OPEN (default) or
+  WARN_ONLY, and next_year_lead_days (default 60, 7 to 180). A daily task,
+  vs_finance.roll_fiscal_calendars (beat finance-daily-fiscal-calendar), opens
+  the next year contiguous with the last one, same start month and period length,
+  when coverage breaks inside the lead window, or warns holders of
+  finance.period.create through the event finance.fiscal_calendar_expiring (in-app
+  and email, not mutable): weekly, then daily in the last 7 days and once postings
+  fail. Opening a year, by hand or by the task, refuses a duplicate, an overlap or
+  a gap on either side. The runway reads gaps between years as well as the last
+  end date, reports first_uncovered_date and gaps, and a day inside a gap is
+  EXPIRED. New books take their default year from the school's own day, not UTC.
+  Changing year-end to a new start month is refused until a short transition
+  year exists (Needs Attention).
+- Close (M19). A year-close date outside the year is refused (400 on
+  closing_date). A void's reversal belongs to the voided document, so reversing it
+  by hand is refused and the journal screen offers no button. The closing journal
+  itself is still reversible by hand (LEDGER-2, Needs Attention).
+- One ledger rule (M19). Every reader that totals money counts posted and
+  reversed journals alike, through vs_finance.branch_ledger.ledger_lines: the tax
+  worksheet, analytics slices, the cash-flow statement, bank reconciliation's
+  unmatched book lines, and the bank and petty-cash registers. A void no longer
+  shows as a movement with no partner. An entry and its unmatched reversal on one
+  bank account drop out of reconciliation together; matching now refuses lines
+  of unposted drafts. The spend dashboard's claims-paid figure nets reversed
+  payments. The tax return's date-window formula is unchanged and still
+  under-declares after the first month (MISSED-1, Needs Attention).
+- Settings reach (M19, M22). Every write to finance settings (account mappings,
+  documents, banking, calendar) and procurement settings needs a caller who
+  covers every branch (vs_rbac.scoping.assert_caller_may_configure); a
+  branch-bound holder of the update key gets 403 SHARED_RECORD_READ_ONLY and
+  nothing is written. Reads are unchanged. Same rule as D66.
+- Payouts and withholding tax (M18, M23). A payout line's amount is the bill
+  value before WHT; the provider is sent amount minus WHT and confirmation is
+  checked against that net. When WHT is omitted it is computed from the vendor's
+  WHT code, half-up to the kobo; on a manual vendor payment it is computed on
+  each bill's value net of its VAT share. A typed WHT is kept and recorded as
+  ENTERED (VendorPayment.wht_source; payout metadata). WHT must leave something
+  to send. Payouts confirmed with WHT before this change still need correcting
+  entries (Needs Attention); settlement reconciliation still compares the gross.
+- Late and lost online payments (M18). FAILED and ABANDONED collections are
+  provisional: a provider-confirmed success still books, once. A success webhook
+  that booked nothing is marked FAILED, not PROCESSED. A 15-minute sweep,
+  recover_unconfirmed_payments, re-runs stuck webhook events and re-checks
+  pending collections and in-flight payouts (capped per run, backing off to
+  daily). A receipt is dated the day the provider says the payer paid, in the
+  school's time zone, or the first open day after it when that month is closed,
+  with the true day kept on the record. Booking tasks use acks_late and
+  reject_on_worker_lost.
+- Worker watchdog (M30). The web process's metrics flush checks the Celery queue
+  snapshot heartbeat; older than 5 minutes marks Celery CRITICAL, opens one SEV1
+  incident and tells platform operators once, and clears when it returns.
+  Skipped where Celery runs eagerly.
+- Deployment (MRD). The calendar roll and the payment sweep run on beat. The
+  owner reports a background worker running on Render, so recheck the MRD's P0
+  "worker not deployed" gap against the deployment and retire it if it no longer
+  holds.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

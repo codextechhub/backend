@@ -190,14 +190,17 @@ def _snapshot_payment_status(total: int, paid: int) -> str:
 
 
 def _account_gl_net_as_of(account, as_of) -> int:
-    """Posted journal-line movement through ``as_of``, signed to normal balance."""
-    from django.db.models import Sum
-    from vs_finance.constants import NormalBalance
-    from vs_finance.models import JournalLine
+    """Ledger movement through ``as_of``, signed to normal balance.
 
-    totals = JournalLine.objects.filter(
-        account=account, entry__status__in=("POSTED", "REVERSED"),
-        entry__date__lte=as_of,
+    Reads :func:`vs_finance.branch_ledger.ledger_lines`, so a reversed entry counts
+    until its reversal's date nets it off.
+    """
+    from django.db.models import Sum
+    from vs_finance.branch_ledger import ledger_lines
+    from vs_finance.constants import NormalBalance
+
+    totals = ledger_lines().filter(
+        account=account, entry__date__lte=as_of,
     ).aggregate(debit=Sum("debit"), credit=Sum("credit"))
     net = int(totals["debit"] or 0) - int(totals["credit"] or 0)
     return net if account.normal_balance == NormalBalance.DEBIT else -net

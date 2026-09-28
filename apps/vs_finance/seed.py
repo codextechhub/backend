@@ -199,11 +199,18 @@ def seed_fiscal_year(
 ):
     """Open a fiscal year with monthly or quarterly OPEN periods (idempotent).
 
-    ``year`` is the label used in document numbers (defaults to the current calendar
-    year). ``start_month`` (1–12) is the opening month: ``1`` gives a calendar-year
-    Jan–Dec book, while e.g. ``9`` gives a school year that runs Sept of ``year``
-    through Aug of ``year + 1``. ``fiscal_start_day`` is preserved as the boundary
-    anchor and clamped to the last valid day in shorter months.
+    ``year`` is the label used in document numbers. ``start_month`` (1-12) is the
+    opening month: ``1`` gives a calendar-year Jan-Dec book, while e.g. ``9`` gives
+    a year that runs Sept of ``year`` through Aug of ``year + 1``.
+    ``fiscal_start_day`` is preserved as the boundary anchor and clamped to the last
+    valid day in shorter months.
+
+    Left out, ``year`` is the one whose span covers the entity's own today
+    (:func:`vs_config.clock.tenant_today`), so new books can post from the day they
+    are created. A September-start entity provisioned in March 2027 gets the year
+    that began in September 2026, not one that starts six months from now; and an
+    entity provisioned in Lagos just after midnight on 1 January gets the new year,
+    not the one UTC still reads.
 
     Returns ``(fiscal_year, [periods])``. Safe to re-run: the year is keyed by
     ``(entity, year)`` and each period by ``(fiscal_year, period_no)``, so an existing
@@ -213,16 +220,21 @@ def seed_fiscal_year(
     import calendar
     import datetime
 
-    from django.utils import timezone
+    from vs_config.clock import tenant_today
 
     from .models import FiscalPeriod, FiscalYear
 
-    if year is None:  # Default to current calendar year.
-        year = timezone.now().year
     if not 1 <= start_month <= 12:  # Month must be valid.
         raise ValueError("start_month must be between 1 and 12.")
     if not 1 <= fiscal_start_day <= 31:  # Anchor day must be valid.
         raise ValueError("fiscal_start_day must be between 1 and 31.")
+    if year is None:  # The year whose span covers the entity's own today.
+        today = tenant_today(entity.tenant)
+        this_years_start = datetime.date(
+            today.year, start_month,
+            min(fiscal_start_day, calendar.monthrange(today.year, start_month)[1]),
+        )
+        year = today.year if today >= this_years_start else today.year - 1
     if fiscal_period_frequency not in {"MONTHLY", "QUARTERLY"}:
         raise ValueError("fiscal_period_frequency must be MONTHLY or QUARTERLY.")
 

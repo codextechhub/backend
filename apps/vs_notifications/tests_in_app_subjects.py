@@ -40,8 +40,12 @@ migration_0018 = importlib.import_module(
 _VARIABLE_RE = re.compile(r"\{\{\s*([a-z_0-9]+)")
 _IF_RE = re.compile(r"\{%\s*if\s+([a-z_0-9]+)")
 
-#: Event types with no subject of their own to fill: both shipped one already.
-_ALREADY_TITLED = {"health.alert_fired", "workflow.final_approved"}
+#: Event types with no subject of their own to fill: each shipped one already.
+_ALREADY_TITLED = {
+    "health.alert_fired",
+    "workflow.final_approved",
+    "finance.fiscal_calendar_expiring",
+}
 
 
 def _in_app_defaults():

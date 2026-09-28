@@ -200,8 +200,13 @@ Paystack collection webhook (from `test_webhook_confirms_collection`,
    `RECEIVED` 200 ack immediately; the outbound `verify_collection`/`verify_transfer`
    + booking run in `process_stored_event` on a Celery worker (`webhooks.py:90-129`,
    `tasks.py`). `process_stored_event` is idempotent (no-op if the event is gone or
-   already `PROCESSED`) and swallows a dispatch failure after marking it `FAILED`
-   (the PSP re-delivers; `confirm_*` are idempotent). Under
+   already `PROCESSED`) and swallows a dispatch failure after marking it `FAILED`.
+   The PSP already has its 200 and does not re-deliver, so the event stays on Needs
+   Attention for a replay, and `recover_unconfirmed_payments` (beat, every 15
+   minutes) re-runs events still `RECEIVED` and re-verifies unbooked collections and
+   payouts with the provider (`recovery.py`). The task is `acks_late` with
+   `reject_on_worker_lost`, and a success event whose record is not booked after
+   re-verifying is marked `FAILED`, never `PROCESSED`. Under
    `CELERY_TASK_ALWAYS_EAGER` (local/CI/pre-worker staging) it still runs inline.
 
 2. ✅ **`WEBHOOK_RECEIVED` is now audited once.** The audit row is written only on

@@ -26,7 +26,8 @@ All amounts are integer kobo; tax/WHT are computed from basis points with the sa
 from __future__ import annotations
 
 from collections import defaultdict
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
+from typing import NamedTuple
 
 from django.db import transaction
 from django.db.models import F
@@ -48,7 +49,7 @@ from vs_finance.receivables import (
 
 from .constants import (
     MATCH_BLOCKING, PURCHASE_PRICE_VARIANCE_CODE, MatchStatus, ProcApprovalState,
-    VENDOR_ADVANCE_CODE, VendorKycStatus, WHT_PAYABLE_CODE,
+    VENDOR_ADVANCE_CODE, VendorKycStatus, WHT_PAYABLE_CODE, WhtSource,
 )
 from .exceptions import ThreeWayMatchError
 from .purchasing import resolve_account
@@ -345,6 +346,66 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
 
 
 # --------------------------------------------------------------------------- #
+# Withholding tax on a vendor payment                                         #
+# --------------------------------------------------------------------------- #
+
+class WhtResolution(NamedTuple):
+    """The withholding tax a payment carries, and how it was arrived at."""
+
+    amount: int  # Kobo withheld from the supplier.
+    source: str  # A WhtSource value.
+    tax_code: object  # The TaxCode whose rate applied, or None.
+    base: int  # Kobo the rate was applied to.
+
+
+def resolve_wht(*, gross, supplied=None, tax_code=None, bills=None) -> WhtResolution:
+    """Decide the withholding tax on a vendor payment of ``gross`` kobo.
+
+    Every path that pays a supplier (the manual vendor payment and the gateway
+    payout line) calls this, so the rule lives once.
+
+    ``supplied`` is the figure a person typed. When it is given, it is kept
+    exactly, because it is how a partial rate, an exemption certificate or a
+    special arrangement is expressed; the result is marked ``ENTERED``. When it
+    is ``None`` (the caller omitted it), the figure is computed from
+    ``tax_code`` and marked ``COMPUTED``: zero when there is no code.
+
+    The computation applies the code's ``rate_bps`` to the VAT-exclusive part
+    of what is being settled, because withholding tax is due on the value of the
+    supply and not on the VAT charged on it. ``bills`` is the settlement plan,
+    ``[(vendor_invoice, amount_kobo), ...]``; each bill contributes its share of
+    VAT pro rata to the amount allocated from it (``tax_total * amount / total``,
+    half-up to a whole kobo), and the base is ``gross`` less those shares. With
+    no bills (a gateway payout line names a vendor, not a bill) nothing
+    identifies any VAT, so the base is the whole ``gross``; a VAT-bearing payout
+    is expressed by entering the figure.
+
+    Rounding: ``base * rate_bps / 10000``, rounded half-up to a whole kobo, the
+    same rule :func:`vs_finance.receivables.compute_tax` applies to every other
+    tax line. Range checks against ``gross`` stay with the caller, which knows
+    the field name to report.
+    """
+    gross = int(gross or 0)
+    if supplied is not None:
+        return WhtResolution(
+            amount=int(supplied), source=WhtSource.ENTERED,
+            tax_code=tax_code, base=gross,
+        )
+    vat = 0
+    for invoice, amount in bills or ():
+        total = int(invoice.total or 0)
+        if total > 0 and invoice.tax_total:
+            share = Decimal(int(invoice.tax_total)) * Decimal(int(amount)) / Decimal(total)
+            vat += int(share.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    base = max(0, gross - vat)
+    rate = int(tax_code.rate_bps) if tax_code is not None else 0
+    return WhtResolution(
+        amount=min(compute_tax(base, rate), gross), source=WhtSource.COMPUTED,
+        tax_code=tax_code, base=base,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Vendor payment posting + allocation (Dr AP, Cr Bank net, Cr WHT)            #
 # --------------------------------------------------------------------------- #
 
@@ -550,6 +611,8 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
         ),
         journal_id=entry.pk, gross=payment.gross_amount,
         net=payment.net_amount, wht=payment.wht_amount,
+        wht_source=payment.wht_source,
+        wht_tax_code=payment.wht_tax_code.code if payment.wht_tax_code_id else "",
         allocated=settled, advance=advance,
     )
     if created_rows:  # Keep the payment's activity feed reading as it always has.

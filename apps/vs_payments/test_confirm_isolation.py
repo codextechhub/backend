@@ -178,18 +178,20 @@ class ConfirmCollectionIsolationTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)
         self.assertEqual(result.payment_id, settled["intent"].payment_id)
 
-    def test_an_already_terminal_intent_never_reaches_the_provider(self):
+    def test_an_already_settled_intent_never_reaches_the_provider(self):
         """The unlocked pre-check earns its keep under webhook re-delivery.
 
         A settled row is the common case when Paystack re-delivers, and asking the
         provider about it again is a round-trip that can only return what we
-        already know.
+        already know. A FAILED or ABANDONED row is not settled: the provider can
+        still report a success on it, so it is asked (see
+        ``tests_settlement_recovery.LateSuccessTests``).
         """
         entity, customer, _ = self.build()
         intent = services.initiate_collection(
             entity=entity, amount=50000, customer=customer,
         )
-        services.confirm_collection(intent, status=CollectionStatus.FAILED)
+        services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
 
         spy = self._spy()
         services.confirm_collection(CollectionIntent.objects.get(pk=intent.pk))

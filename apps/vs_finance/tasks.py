@@ -1,13 +1,14 @@
 """Celery tasks for vs_finance.
 
-Currently home to the daily dunning run: the scheduled job that makes automated
-reminders actually *active*. It generates the day's dunning notices and dispatches
-every PENDING notice through **vs_notifications** (delivery never leaves vs_finance
-directly - see :func:`vs_finance.dunning.mark_notice_sent`).
+Two daily jobs live here. The dunning run makes automated reminders actually
+*active*: it generates the day's dunning notices and dispatches every PENDING notice
+through **vs_notifications** (delivery never leaves vs_finance directly - see
+:func:`vs_finance.dunning.mark_notice_sent`). The fiscal-calendar rollover keeps
+every entity's calendar ahead of today (:func:`roll_fiscal_calendars`).
 
 Autodiscovered by Celery via ``app.autodiscover_tasks()`` in ``apps/apps/celery.py``
 (which scans ``tasks`` in every installed app); wired to beat as
-``finance-daily-dunning``.
+``finance-daily-dunning`` and ``finance-daily-fiscal-calendar``.
 """
 from __future__ import annotations
 
@@ -114,3 +115,39 @@ def run_daily_dunning():
         generated, sent, skipped,  # Summary counts.
     )
     return {"generated": generated, "sent": sent, "skipped": skipped}  # Return task result for Celery history.
+
+
+@shared_task(name="vs_finance.roll_fiscal_calendars")
+def roll_fiscal_calendars():
+    """Keep every active entity's fiscal calendar ahead of today.
+
+    Runs :func:`vs_finance.fiscal_calendar.roll_fiscal_calendar` for each active
+    :class:`~vs_finance.models.LedgerEntity`, platform books included: a lapsed
+    calendar stops every posting whoever keeps the books. Each entity is wrapped so
+    one failure never aborts the rest, and the run is safe to repeat the same day,
+    because a year is only opened while the calendar is short and a warning about
+    the same break is only repeated on its interval.
+
+    Returns a ``{"entities": N, "opened": N, "warned": N, "failed": N}`` summary.
+    """
+    from .fiscal_calendar import roll_fiscal_calendar
+    from .models import LedgerEntity
+
+    summary = {"entities": 0, "opened": 0, "warned": 0, "failed": 0}
+    for entity in LedgerEntity.objects.filter(is_active=True).select_related("tenant"):
+        summary["entities"] += 1
+        try:
+            outcome = roll_fiscal_calendar(entity)
+        except Exception:  # noqa: BLE001 - one entity must not abort the rest
+            summary["failed"] += 1
+            logger.exception("roll_fiscal_calendars: entity %s failed.", entity.code)
+            continue
+        summary["opened"] += len(outcome["opened"])
+        summary["warned"] += int(outcome["warned"])
+        if outcome["failure"]:
+            summary["failed"] += 1
+    logger.info(
+        "roll_fiscal_calendars complete - entities=%d, opened=%d, warned=%d, failed=%d",
+        summary["entities"], summary["opened"], summary["warned"], summary["failed"],
+    )
+    return summary

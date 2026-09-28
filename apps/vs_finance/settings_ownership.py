@@ -137,3 +137,17 @@ BANKING_SETTING_CONSUMERS = {
         "Determines when a live petty-cash balance is flagged for replenishment.",
     ),
 }
+
+
+CALENDAR_SETTING_CONSUMERS = {
+    "next_year_mode": _consumer(
+        "Fiscal calendar rollover",
+        "vs_finance.tasks.roll_fiscal_calendars",
+        "Decides whether the next fiscal year is opened automatically or finance staff are only warned.",
+    ),
+    "next_year_lead_days": _consumer(
+        "Fiscal calendar rollover and runway warning",
+        "vs_finance.fiscal_calendar; vs_finance.posting.fiscal_calendar_runway",
+        "Sets how many days before the calendar ends the next year is opened or the warning starts.",
+    ),
+}

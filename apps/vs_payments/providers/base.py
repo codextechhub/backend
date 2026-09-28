@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass, field
+from datetime import datetime
 
 
 # --------------------------------------------------------------------------- #  # Group provider-neutral result types here.
@@ -55,6 +56,7 @@ class CollectionStatusResult:
     status: str = "PENDING"          # CollectionStatus value  # Neutral status string.
     amount: int = 0                  # kobo, as reported by the provider  # Settled amount in kobo.
     currency: str = "NGN"  # Settlement currency code.
+    paid_at: datetime | None = None  # Aware instant the payer paid, when the provider says.
     raw: dict = field(default_factory=dict)  # Full provider payload preserved verbatim.
 
     @property
@@ -74,6 +76,7 @@ class TransferResult:
     amount: int = 0                  # kobo, as reported by the provider (0 = not reported)  # Settled transfer amount.
     recipient_code: str = ""  # PSP recipient code when the transfer is created.
     failure_reason: str = ""  # Human-readable failure explanation, if any.
+    paid_at: datetime | None = None  # Aware instant the money left, when the provider says.
     raw: dict = field(default_factory=dict)  # Raw PSP response payload.
 
     @property

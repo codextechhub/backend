@@ -58,6 +58,7 @@ from .constants import (
     WF_DOCTYPE_REQUISITION,
     WF_DOCTYPE_VENDOR_INVOICE,
     WF_DOCTYPE_VENDOR_PAYMENT,
+    WhtSource,
 )
 
 
@@ -1918,6 +1919,10 @@ class VendorPayment(FinanceDocument):
     wht_tax_code = models.ForeignKey(
         "vs_finance.TaxCode", on_delete=models.PROTECT, related_name="vendor_payments_wht",
         null=True, blank=True,
+    )
+    wht_source = models.CharField(
+        max_length=8, choices=WhtSource.choices, blank=True, default="",
+        help_text="Whether wht_amount was computed from the tax code or entered by hand.",
     )
     reference = models.CharField(max_length=64, blank=True, default="")
     narration = models.CharField(max_length=255, blank=True, default="")

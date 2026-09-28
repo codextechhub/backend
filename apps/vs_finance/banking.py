@@ -21,13 +21,13 @@ from vs_config.clock import tenant_today
 from .accounts import resolve_account
 from .account_mappings import resolve_mapped_account
 from .audit import record
+from .branch_ledger import LEDGER_STATUSES
 from .constants import (
     BankLineStatus,
     AccountMappingKey,
     BankMatchSource,
     BankReconStatus,
     BankStatementStatus,
-    DocumentStatus,
     FinanceAuditAction,
     JournalSource,
     NormalBalance,
@@ -265,19 +265,53 @@ def _unique_summing_subset(lines, target, *, max_size):
     return found  # Return the unique subset or None when no answer exists.
 
 
+#: Lookups for a journal line not paired to any statement line, 1:1 or in a group.
+_UNPAIRED = {"bank_statement_lines__isnull": True, "bank_line_matches__isnull": True}
+
+
 # Support the unmatched gl lines workflow.
 def _unmatched_gl_lines(bank_account):
-    """Posted cash-account journal lines not yet paired to a statement line."""
+    """Cash-account journal lines in the ledger that still need a statement line.
+
+    Lines come from :func:`vs_finance.branch_ledger.ledger_lines`, so a reversed
+    entry's line stays a candidate: the money may really have moved and come back.
+
+    An entry and its own reversal that are both still unpaired are left out
+    together. They net to zero on this account, so no statement line exists for
+    either and a human has nothing to match them to. Lines pair on the reversal's
+    copy of the line (same account, same ``line_no``, sides swapped). Once one side
+    is matched to a statement line the other is a real movement again and appears.
+
+    Only a first reversal pairs: when a reversal is itself reversed, the original
+    and its reversal pair off and the third entry stands on its own, which is the
+    movement the account still holds.
+    """
+    from django.db.models import Exists, OuterRef
+
+    from .branch_ledger import ledger_lines
     from .models import JournalLine
 
-    return (  # Find posted cash-account journal lines that are still unpaired.
-        JournalLine.objects
-        .filter(
-            account=bank_account.gl_account,
-            entry__status=DocumentStatus.POSTED,
-        )
-        # Not paired either 1:1 (matched_line) or as part of a group match.  # Exclude already matched lines.
-        .filter(bank_statement_lines__isnull=True, bank_line_matches__isnull=True)
+    # This line's unpaired copy in the reversal of its own (non-reversal) entry.
+    open_reversal = JournalLine.objects.filter(
+        entry__reverses_id=OuterRef("entry_id"),
+        entry__reverses__reverses__isnull=True,
+        account_id=OuterRef("account_id"), line_no=OuterRef("line_no"),
+        debit=OuterRef("credit"), credit=OuterRef("debit"),
+        **_UNPAIRED,
+    )
+    # This reversal line's unpaired original in a (non-reversal) entry.
+    open_original = JournalLine.objects.filter(
+        entry__reversed_by__id=OuterRef("entry_id"),
+        entry__reverses__isnull=True,
+        account_id=OuterRef("account_id"), line_no=OuterRef("line_no"),
+        debit=OuterRef("credit"), credit=OuterRef("debit"),
+        **_UNPAIRED,
+    )
+    return (
+        ledger_lines(bank_account.entity)
+        .filter(account=bank_account.gl_account, **_UNPAIRED)
+        .exclude(Exists(open_reversal))
+        .exclude(Exists(open_original))
         .select_related("entry")
         .order_by("entry__date", "id")
     )
@@ -429,6 +463,8 @@ def match_line(statement_line, journal_line, *, actor_user=None):
         raise BankReconciliationError(
             "The journal line is not on this bank account's GL cash account.",
         )
+    if journal_line.entry.status not in LEDGER_STATUSES:  # Only lines in the ledger can be matched.
+        raise BankReconciliationError("Only a posted journal line can be matched.")
     if _signed_gl(journal_line) != statement_line.amount:  # Amounts must match exactly in signed form.
         raise BankReconciliationError(
             f"Amount mismatch: statement {statement_line.amount} kobo vs journal line "
@@ -479,7 +515,7 @@ def group_match(statement_line, journal_lines, *, actor_user=None):
             raise BankReconciliationError(
                 "A journal line is not on this bank account's GL cash account.",
             )
-        if jl.entry.status != DocumentStatus.POSTED:  # Only posted journal lines can be matched.
+        if jl.entry.status not in LEDGER_STATUSES:  # Only lines in the ledger can be matched.
             raise BankReconciliationError("Only posted journal lines can be matched.")
         if jl.bank_statement_lines.exists() or jl.bank_line_matches.exists():
             raise BankReconciliationError(f"Journal line {jl.id} is already matched.")
@@ -534,7 +570,7 @@ def split_match(journal_line, statement_lines, *, actor_user=None):
         raise BankReconciliationError(
             "The journal line is not on this bank account's GL cash account.",
         )
-    if journal_line.entry.status != DocumentStatus.POSTED:  # Only posted journal lines can be matched.
+    if journal_line.entry.status not in LEDGER_STATUSES:  # Only lines in the ledger can be matched.
         raise BankReconciliationError("Only a posted journal line can be matched.")
     if journal_line.bank_statement_lines.exists() or journal_line.bank_line_matches.exists():
         raise BankReconciliationError(f"Journal line {journal_line.id} is already matched.")

@@ -42,6 +42,8 @@ class FakeProvider(Provider):
         self.forced_status: dict[str, str] = {}
         # Lets a test force the provider-reported settled amount (kobo) per reference.  # Override the verified amount.
         self.forced_amount: dict[str, int] = {}
+        # Lets a test say when the provider records the payment as made, per reference.
+        self.forced_paid_at: dict = {}
 
     def healthcheck(self) -> bool:
         return True
@@ -77,6 +79,7 @@ class FakeProvider(Provider):
             provider_reference=provider_reference or f"FAKE-{reference}",  # Provide a predictable provider reference.
             status=status,  # Return the forced or default status.
             amount=self.forced_amount.get(reference, 0),  # Report the forced settled amount (0 = not reported).
+            paid_at=self.forced_paid_at.get(reference),  # None unless a test names the paid instant.
             raw={"forced": status},  # Show where the verification status came from.
         )
 
@@ -99,6 +102,7 @@ class FakeProvider(Provider):
             provider_reference=provider_reference or f"FAKE-TR-{reference}",  # Predictable fake transfer id.
             status=status,  # Forced or default transfer status.
             amount=self.forced_amount.get(reference, 0),  # Report the forced settled amount (0 = not reported).
+            paid_at=self.forced_paid_at.get(reference),  # None unless a test names the paid instant.
             raw={"forced": status},  # Show the origin of the returned state.
         )
 

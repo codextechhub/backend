@@ -62,8 +62,14 @@ One request to send money out. Money is integer **kobo** (`amount`).
 - **Loose ledger link (no hard FK into procurement):** `vendor_source_type` /
   `vendor_source_id` (the `Vendor` pk as a string) + `vendor_payment_id` (the
   booked `VendorPayment` pk), `models.py:303-306`.
-- `failure_reason`, `metadata` (carries `wht_amount`), `raw_response`,
-  `confirmed_at`, `created_by`.
+- `failure_reason`, `metadata`, `raw_response`, `confirmed_at`, `created_by`.
+  `metadata` carries the line's withholding tax: `wht_amount`, `wht_source`
+  (`COMPUTED` from the vendor's WHT code, or `ENTERED` by hand), `wht_tax_code_id`
+  and `wht_tax_code`; from dispatch, `transfer_amount` (what the provider was asked
+  to send); and on confirmation any `instructed_amount` / `provider_sent_amount`
+  and paid-date keys (`paid_on`, `booked_on`, `booked_late_reason`).
+- **`amount` is the bill value the line settles, before withholding tax (the
+  gross).** The supplier receives `amount - wht_amount`.
 - Indexes `(entity, status)`, `(provider, provider_reference)`.
 
 ### `PayoutBatch` - `models.py:176-257`
@@ -155,15 +161,31 @@ consistency, and the live verified vendor destination before the first PSP call.
 
 ## 5. Calculations
 
-**Payout net & journal split** (`_book_vendor_payment`, `services.py:658-688` →
-`vs_procurement/payables.py:381-563`), all kobo:
-- `gross = payout.amount` - where `confirm_payout` first adopts the PSP's settled
-  amount when it reports one that differs (`settled = amount or payout.amount`,
-  keeping the original in `metadata["instructed_amount"]`, `services.py:626-630`);
-  `wht = metadata["wht_amount"]` (default 0);
-  `net = gross − wht` (`payables.py:469`). Guard: `0 ≤ wht ≤ gross` else
-  `PostingError` (`payables.py:467`). Example: instructed `70 000`, `wht = 7 000`
-  → net `63 000`.
+**Withholding tax on a payout line** (`_item_wht` → `vs_procurement.payables.resolve_wht`,
+the one rule the manual vendor payment uses too):
+- A `wht_amount` the caller sends is kept exactly and marked `ENTERED`. It is how a
+  partial rate, an exemption or a VAT-bearing bill is expressed.
+- An omitted `wht_amount` is computed from the vendor's `default_wht_tax_code`:
+  `amount × rate_bps / 10 000`, half-up to a whole kobo, marked `COMPUTED` (zero when
+  the vendor has no WHT code). A payout line names a vendor and no bill, so the base
+  is the whole line; the manual vendor payment excludes each settled bill's VAT share
+  from the base.
+- Guard at creation: `0 ≤ wht < amount` (something must be left to send).
+
+**Payout net & journal split** (`_dispatch_transfer`, `confirm_payout`,
+`_book_vendor_payment` → `vs_procurement/payables.py`), all kobo:
+- `gross = payout.amount`, `wht = metadata["wht_amount"]`, `net = gross − wht`.
+- **The transfer sends the net.** `_dispatch_transfer` asks the provider for
+  `payout_transfer_amount(payout)` (= net) and records it as
+  `metadata["transfer_amount"]` before the send.
+- `confirm_payout` compares the provider-reported amount with that net, never with
+  the gross. When they differ, the books follow the money: bank credit = what the
+  provider sent, WHT unchanged, `gross = sent + wht`, and the instructed gross is
+  kept in `metadata["instructed_amount"]`. A row dispatched before
+  `transfer_amount` was recorded sent its gross and is judged against the gross.
+- Example: line `70 000`, `wht = 7 000` → Paystack sends `63 000`; the journal is
+  Dr AP `70 000`, Cr bank `63 000`, Cr WHT payable `7 000`. The bank credit equals
+  the money that left.
 
 **Batch totals** - `total_amount = Σ child amounts`, `item_count = len(items)`,
 computed once at assembly (`services.py:519-522`); not recomputed on child failure
@@ -189,8 +211,8 @@ and confirmed_at ≥ now−7d`; money-out likewise for `status=PAID`
 
 Only a **PAID** payout posts. `_book_vendor_payment` builds a draft
 `vs_procurement.VendorPayment` and calls `post_vendor_payment`
-(`payables.py:352-563`). Journal (source `BANK`), for gross `G`, WHT `W`,
-net `N = G − W`:
+(`payables.py`). Journal (source `BANK`), for gross `G`, WHT `W`,
+net `N = G − W` (and `N` is exactly what the transfer sent):
 
 | Dr / Cr | account | amount |
 |---|---|---|
@@ -199,9 +221,16 @@ net `N = G − W`:
 | **Cr** | WHT payable (tax-code `collected_account`, else `WHT_PAYABLE_CODE`) | `W` (only if > 0) |
 
 Carried vs dropped:
-- `amount → gross_amount`, `metadata.wht_amount → wht_amount`, `currency`,
-  `reference`, `narration`, `source_account → payment_account` all carry onto the
-  `VendorPayment` (`services.py:671-679`).
+- `amount → gross_amount`, `metadata.wht_amount → wht_amount`,
+  `metadata.wht_tax_code_id → wht_tax_code`, `metadata.wht_source → wht_source`,
+  `currency`, `reference`, `narration`, `source_account → payment_account` all carry
+  onto the `VendorPayment`. The posting's `VENDOR_PAYMENT_POSTED` audit row names
+  `wht_source` and the WHT code.
+- **Dated the day the money left.** When the provider's verify reports the transfer
+  instant, the vendor payment is dated that day in the tenant's time zone if its
+  period is open, else the first open day after it, with the true day kept in
+  `metadata["paid_on"]` (`_booking_date`). Gateway receipts follow the same rule
+  from the provider's `paid_at`.
 - **Vendor is required to post.** `_book_vendor_payment` raises `PaymentStateError`
   if `vendor_source_id` is empty (`services.py:660-663`); it re-resolves the
   `Vendor` from the stored pk. A vendor `on_hold` blocks posting at the procurement
@@ -267,9 +296,9 @@ PENDING instruction, then returns the active approval. Paystack has not been cal
 
 3. ✅ **Payouts now adopt the provider-reported settled amount.** `TransferResult`
    carries `amount` (`providers/base.py:74`, populated by Paystack/OPay/Fake);
-   `confirm_payout` computes `settled = amount or payout.amount` and, when the PSP
-   reports a positive figure that differs, stashes `metadata["instructed_amount"]`
-   and books the settled gross (`services.py:611,626-630`). A `0` report never
+   `confirm_payout` compares the reported amount with what it asked the provider to
+   send (the net, §5) and, when a positive figure differs, stashes
+   `metadata["instructed_amount"]` and books `gross = sent + wht`. A `0` report never
    overrides. Tests: `test_payout_adopts_provider_settled_amount`,
    `test_confirm_payout_status_without_amount_keeps_instructed`.
 
@@ -299,6 +328,27 @@ PENDING instruction, then returns the active approval. Paystack has not been cal
    `payment_id` / `vendor_payment_id`) was dropped from the projection
    (`views.py:907-937`); `party` + `beneficiary_account` stay FLS-masked and
    `narration` is intentionally kept. Test: `test_movements_feed_hides_internal_linked_id`.
+
+8. ✅ **A payout with withholding tax sends the net.** The line's `amount` is the
+   gross; the transfer is `amount - wht_amount`, and the booking credits the bank
+   with that same net and WHT payable with the rest (§5, §6). Before this the gross
+   was sent while only the net was booked, so the supplier received the tax too and
+   the school would have paid it a second time on remittance. Tests:
+   `tests_settlement_recovery.PayoutWithholdingTests`.
+
+9. ✅ **WHT defaults from the vendor's code.** An omitted `wht_amount` is computed
+   by `vs_procurement.payables.resolve_wht`, the rule the manual vendor payment uses;
+   a typed figure is kept and flagged `ENTERED` on the instruction and the booked
+   vendor payment. There is still no WHT schedule by supplier and tax ID.
+
+10. ✅ **Unconfirmed payouts are re-verified.** `recover_unconfirmed_payments`
+    (beat, every 15 minutes) asks the provider about every payout still
+    PROCESSING, including one whose send timed out, and books what it confirms
+    (`vs_payments/recovery.py`). Each row backs off from half-hourly to daily.
+
+11. **Open: settlement reconciliation compares the gross.** `settlement_reconciliation`
+    still signs a payout row as `-amount` (the gross), while the bank line for a WHT
+    payout is the net, so such a payout reads as a PSP fee equal to its WHT.
 
 ## 9. Permissions & tenant isolation
 

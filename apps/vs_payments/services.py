@@ -22,13 +22,15 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from vs_config.clock import tenant_today
+from vs_config.clock import tenant_today, tenant_zone
 from vs_finance.accounts import resolve_account
 from vs_finance.constants import CASH_BANK_CODE, PaymentMethod
 from vs_finance.exceptions import FinanceError
 
 from . import audit
 from .constants import (
+    COLLECTION_PROVISIONAL_FAILURES,
+    COLLECTION_SETTLED,
     CollectionChannel,
     CollectionStatus,
     PAYOUT_BATCH_DISPATCHABLE,
@@ -398,7 +400,16 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
     ``status`` (a :class:`CollectionStatus` value) is taken from a webhook/verify result;
     if omitted, the provider is polled. A SUCCEEDED collection books a customer receipt
     (Dr bank, Cr AR) and links it; FAILED/ABANDONED is recorded with no ledger effect.
-    Re-confirming an already-terminal intent is a no-op (returns it unchanged).
+    Re-confirming a settled intent (SUCCEEDED or REFUNDED) is a no-op that returns
+    it unchanged, and that is the whole double-booking guarantee.
+
+    FAILED and ABANDONED are not settled. They record what the provider said when
+    somebody last asked, and a payer can still finish paying on the same checkout
+    afterwards. So a provider-confirmed success books even from those states, and
+    the confirmation audit names the state it overturned. Two cases stay no-ops
+    on them: a caller-supplied non-success status, which adds nothing new, and a
+    collection with no provider reference, which the provider never accepted and
+    so has nothing to confirm.
 
     Deliberately **not** ``@transaction.atomic``: see the note above. This half
     does the provider round-trip with nothing locked; ``_confirm_collection_atomic``
@@ -417,10 +428,17 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
     # already settled, which is the common case under webhook re-delivery. It is
     # not the idempotency guarantee - that is the re-check under the lock below.
     intent = CollectionIntent.objects.get(pk=intent.pk)
-    if intent.is_terminal:  # Terminal rows are already settled or failed.
-        return intent  # Exit without duplicating ledger work.
+    if _collection_is_settled(intent):  # Booked already: nothing a provider says changes that.
+        return intent
+    if intent.status in COLLECTION_PROVISIONAL_FAILURES and (
+            not intent.provider_reference
+            or (status is not None and status != CollectionStatus.SUCCEEDED)):
+        # Either the provider never accepted the collection (nothing for it to
+        # confirm), or a caller is repeating a no-money outcome.
+        return intent
 
     verify_raw = None
+    paid_at = None
     if status is None:  # When no explicit status is supplied, verify with the PSP.
         client = get_provider(intent.provider)  # Resolve the provider using the stored intent value.
         result = client.verify_collection(  # Ask the PSP for the final collection state.
@@ -436,16 +454,29 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
                 "deposit; booking held for manual review.")
         amount = result.amount or intent.amount  # Fall back to the original amount if the PSP omits it.
         verify_raw = result.raw  # Carried into the locked half; applied to the row it re-reads.
+        paid_at = getattr(result, "paid_at", None)  # The day the payer paid dates the receipt.
 
     return _confirm_collection_atomic(
         intent.pk, status=status, amount=amount, verify_raw=verify_raw,
-        actor_user=actor_user,
+        actor_user=actor_user, paid_at=paid_at,
     )
 
 
+def _collection_is_settled(intent) -> bool:
+    """True once a collection has booked a receipt, whatever happened to it since."""
+    return intent.status in COLLECTION_SETTLED or intent.payment_id is not None
+
+
 @transaction.atomic
-def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_user):
+def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_user,
+                               paid_at=None):
     """Take the lock, re-check, and book. Every write in the flow happens here.
+
+    A non-success answer changes the row only when it is news: FAILED or
+    ABANDONED is recorded and audited once, and an answer that the payment is
+    still pending only stores the provider's payload. The save still moves
+    ``updated_at``, which is the recovery sweep's record of when it last asked.
+    Neither answer downgrades a FAILED or ABANDONED row to pending.
 
     A gateway receipt continues the customer's chain exactly as a counter
     receipt does, so it carries the customer's branch. Without that the online
@@ -465,15 +496,17 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
     intent = CollectionIntent.objects.select_for_update().get(pk=intent_id)
     # The real idempotency guarantee. Another worker may have booked this while we
     # were talking to the provider, and this is where that is caught.
-    if intent.is_terminal:
+    if _collection_is_settled(intent):
         return intent
     if verify_raw is not None:  # Append the verification payload to the row we locked.
         intent.raw_response = {**(intent.raw_response or {}), "verify": verify_raw}
 
     if status != CollectionStatus.SUCCEEDED:  # Only success books a receipt.
-        intent.status = (CollectionStatus.FAILED if status == CollectionStatus.FAILED
-                         else CollectionStatus.ABANDONED if status == CollectionStatus.ABANDONED
-                         else intent.status)
+        reported = status if status in COLLECTION_PROVISIONAL_FAILURES else None
+        if reported is None or intent.status in COLLECTION_PROVISIONAL_FAILURES:
+            intent.save(update_fields=["raw_response", "updated_at"])  # Nothing new to record.
+            return intent
+        intent.status = reported
         intent.save(update_fields=["status", "raw_response", "updated_at"])
         audit.record(  # Capture the failure path for audit visibility.
             action=PaymentAuditAction.COLLECTION_FAILED, entity=intent.entity,
@@ -482,32 +515,101 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
         )
         return intent  # Stop here because failed collections have no ledger effect.
 
+    overturned = intent.status if intent.status in COLLECTION_PROVISIONAL_FAILURES else ""
     settled = amount or intent.amount  # Use the confirmed amount when the PSP returns one.
     if settled > 0 and settled != intent.amount:  # Preserve the originally requested amount in metadata.
         # Book the amount that actually cleared, but retain the requested value for audit.
         intent.metadata = {**(intent.metadata or {}), "requested_amount": intent.amount}  # Store the pre-settlement amount.
         intent.amount = settled  # Replace the receipt amount with the actual settled amount.
 
-    _book_receipt(intent, actor_user=actor_user)  # Create and post the corresponding receipt.
+    _book_receipt(intent, actor_user=actor_user, paid_at=paid_at)  # Create and post the corresponding receipt.
     intent.status = CollectionStatus.SUCCEEDED  # Mark the gateway event as settled.
     intent.confirmed_at = timezone.now()
     intent.save(update_fields=[
         "status", "payment", "amount", "metadata", "confirmed_at", "raw_response", "updated_at",
     ])
 
+    audit_metadata = {"payment_id": intent.payment_id}
+    audit_metadata.update(_dating_metadata(intent.metadata))
+    if overturned:  # A success the provider confirmed after an earlier no-money answer.
+        audit_metadata["overturned_status"] = overturned
     audit.record(  # Emit a success audit event with the linked payment id.
         action=PaymentAuditAction.COLLECTION_CONFIRMED, entity=intent.entity,
         provider=intent.provider, reference=intent.reference, actor_user=actor_user,
-        message=f"Booked receipt for {intent.amount} kobo.",
-        metadata={"payment_id": intent.payment_id},
+        message=(
+            f"Booked receipt for {intent.amount} kobo"
+            + (f" after the collection was marked {overturned}." if overturned else ".")
+        ),
+        metadata=audit_metadata,
     )
 
     return intent  # Return the confirmed collection intent.
 
 
+def _dating_metadata(metadata) -> dict:
+    """The paid-date keys :func:`_booking_date` left on a record, for its audit row."""
+    keys = ("paid_on", "booked_on", "booked_late_reason")
+    return {key: metadata[key] for key in keys if key in (metadata or {})}
+
+
+def _booking_date(entity, paid_at):
+    """Return ``(booking_date, dating_metadata)`` for money the provider says moved at ``paid_at``.
+
+    A payment belongs to the day it was made, not the day we got round to booking
+    it. Booking is normally seconds behind payment, but a lost webhook, a worker
+    backlog or a replay after a fix can put days between them, and dating the
+    receipt on the booking day moves it across month-end or year-end: the books
+    then show the parent owing money they had already paid.
+
+    * ``paid_at`` absent (the provider gave no instant, or the caller supplied the
+      status itself): the tenant's today, and no dating metadata.
+    * The paid day, in the tenant's own time zone and never later than today, when
+      its fiscal period still accepts an ordinary posting.
+    * When that period is closed, the first open day after it, because a closed
+      month cannot be rewritten. The metadata then records the true paid day
+      (``paid_on``), the day booked (``booked_on``) and why they differ, so the
+      late booking is visible on the record rather than silently re-dated.
+    * When no open period follows either, the paid day itself, so the posting
+      guard refuses it naming the period that is closed. Nothing can post in
+      that state, and booking into an earlier open period would date a receipt
+      before the payer paid.
+
+    This is the same "earliest open day on or after" rule a bank adjustment uses
+    (:func:`vs_finance.banking.resolve_adjustment_date`), without its fall-back to
+    an earlier day.
+    """
+    from vs_finance.posting import _period_accepts_posting, posting_window, resolve_period
+
+    today = tenant_today(entity.tenant)
+    if paid_at is None:
+        return today, {}
+    paid_on = min(paid_at.astimezone(tenant_zone(entity.tenant)).date(), today)
+    metadata = {"paid_on": paid_on.isoformat()}
+    if _period_accepts_posting(resolve_period(entity, paid_on)):
+        return paid_on, metadata
+    later = [
+        window["start_date"] for window in posting_window(entity, today=today)["open"]
+        if window["start_date"] > paid_on
+    ]
+    if not later:
+        return paid_on, metadata
+    booked_on = min(later)
+    metadata.update({
+        "booked_on": booked_on.isoformat(),
+        "booked_late_reason": "The period covering the paid date is closed.",
+    })
+    return booked_on, metadata
+
+
 # Support the book receipt workflow.
-def _book_receipt(intent, *, actor_user=None):
-    """Create + post the ``vs_finance.Payment`` for a succeeded collection."""
+def _book_receipt(intent, *, actor_user=None, paid_at=None):
+    """Create + post the ``vs_finance.Payment`` for a succeeded collection.
+
+    The receipt is dated by :func:`_booking_date` from the provider's paid
+    instant, so a receipt booked late still lands on the day the payer paid
+    whenever that day's period is open. The dating keys are merged into
+    ``intent.metadata`` for the caller to save.
+    """
     from vs_finance.models import Payment
     from vs_finance.receivables import post_payment
 
@@ -525,7 +627,9 @@ def _book_receipt(intent, *, actor_user=None):
         intent.entity, CASH_BANK_CODE, label="Cash & bank",
     )
 
-    received = tenant_today(intent.entity.tenant)
+    received, dating = _booking_date(intent.entity, paid_at)
+    if dating:  # Keep the true paid day beside the receipt, however it was booked.
+        intent.metadata = {**(intent.metadata or {}), **dating}
     payment = Payment.objects.create(
         entity=intent.entity, customer=intent.customer,
         # The customer's branch, so the receipt and its invoice share a scope.
@@ -646,7 +750,7 @@ def _canonical_batch_payload(
             "vendor_id": getattr(vendor, "pk", None),
             "source_account_id": getattr(item.get("source_account") or source_account, "pk", None),
             "narration": str(item.get("narration", "") or narration).strip(),
-            "wht_amount": int(item.get("wht_amount") or 0),
+            "wht_amount": _optional_kobo(item.get("wht_amount"), "wht_amount"),
             "metadata": item.get("metadata") or {},
             "beneficiary_name": (
                 _normalize_account_name(item.get("beneficiary_name"))
@@ -670,6 +774,43 @@ def _canonical_batch_payload(
         "narration": str(narration or "").strip(),
         "items": normalized_items,
     }
+
+
+def _optional_kobo(value, field):
+    """``None`` for an omitted value, else the integer kobo it names.
+
+    Omitted and zero are different requests for a WHT figure: omitted asks for it
+    to be computed from the vendor's code, zero says none is withheld.
+    """
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError({field: "Expected an integer amount in kobo."}) from exc
+
+
+def _item_wht(item, *, amount):
+    """Resolve one payout line's withholding tax through the shared vendor-payment rule.
+
+    See :func:`vs_procurement.payables.resolve_wht`: a figure the caller gave is
+    kept and marked entered, and an omitted one is computed from the vendor's
+    WHT code on the whole line, since a payout line names a vendor and no bill.
+    The WHT must leave something to send, because a transfer of nothing is not a
+    payment.
+    """
+    from vs_procurement.payables import resolve_wht
+
+    vendor = item.get("vendor")
+    wht = resolve_wht(
+        gross=amount, supplied=_optional_kobo(item.get("wht_amount"), "wht_amount"),
+        tax_code=getattr(vendor, "default_wht_tax_code", None),
+    )
+    if wht.amount < 0 or wht.amount >= amount:
+        raise ValidationError({
+            "wht_amount": "Withholding tax must be at least zero and less than the payout amount.",
+        })
+    return wht
 
 
 def payout_request_fingerprint(**kwargs) -> str:
@@ -762,6 +903,9 @@ def _dispatch_transfer(
     record. Only a clean provider rejection turns the row FAILED; an indeterminate
     failure (timeout, 5xx, unreachable host) leaves it PROCESSING, because the money
     may well have moved.
+
+    The amount sent is :func:`payout_transfer_amount`, the line less its WHT, and it
+    is recorded on the row as ``transfer_amount`` in the claiming transaction.
     """
     from vs_procurement.models import Vendor
 
@@ -795,13 +939,17 @@ def _dispatch_transfer(
             payout, Vendor.objects.select_for_update().get(pk=vendor.pk),
         )
         payout.status = PayoutStatus.PROCESSING  # In flight from here on, whatever happens.
-        payout.save(update_fields=["status", "updated_at"])
+        transfer_amount = payout_transfer_amount(payout)  # The supplier receives the line less WHT.
+        # Recorded before the send, so confirmation knows what was asked for even
+        # when the provider's answer is lost.
+        payout.metadata = {**(payout.metadata or {}), "transfer_amount": transfer_amount}
+        payout.save(update_fields=["status", "metadata", "updated_at"])
 
     currency = payout.currency  # Store the payout currency once for the request.
 
     try:  # Transfer creation can fail independently from local persistence.
         result = client.create_transfer(
-            reference=payout.reference, amount=payout.amount,
+            reference=payout.reference, amount=transfer_amount,
             currency=getattr(currency, "code", currency) or "NGN",
             account_number=payout.beneficiary_account_number,
             bank_code=payout.beneficiary_bank_code,
@@ -816,9 +964,9 @@ def _dispatch_transfer(
             payout.status = PayoutStatus.FAILED
             fields.append("status")
         else:
-            # The provider may have accepted this transfer and failed to tell us. Leaving
-            # it PROCESSING keeps it out of every retry path and on the reconciliation
-            # report until the provider's own record settles it either way.
+            # The provider may have accepted this transfer and failed to tell us.
+            # PROCESSING keeps it out of every retry path; the recovery sweep
+            # re-verifies it until the provider's own record settles it.
             payout.metadata = {
                 **(payout.metadata or {}), "dispatch_outcome_unknown": True,
             }
@@ -841,10 +989,46 @@ def _dispatch_transfer(
     audit.record(  # Capture the successful provider submission.
         action=PaymentAuditAction.PAYOUT_INITIATED, entity=payout.entity,
         provider=payout.provider, reference=payout.reference, actor_user=actor_user,
-        message=f"Initiated {payout.amount} kobo payout via {payout.provider}.",
+        message=f"Initiated {transfer_amount} kobo payout via {payout.provider}.",
+        metadata={
+            "gross_amount": payout.amount, "wht_amount": _payout_wht(payout),
+            "transfer_amount": transfer_amount,
+        },
     )
 
     return payout  # Return the now-processing payout instruction.
+
+
+def _payout_wht(payout) -> int:
+    """Kobo of withholding tax a payout line carries (0 when it carries none)."""
+    return int((payout.metadata or {}).get("wht_amount", 0) or 0)
+
+
+def payout_transfer_amount(payout) -> int:
+    """What the provider is asked to send for ``payout``: its amount less WHT.
+
+    A payout line's ``amount`` is the bill value it settles, before withholding
+    tax (the gross). The supplier receives the gross less the WHT, and the WHT
+    stays with the school as a liability to the tax authority. The ledger books
+    exactly that (Dr AP gross, Cr bank net, Cr WHT payable), so sending the gross
+    would pay the supplier the tax as well and leave the books claiming a bank
+    balance the account does not have. :func:`_dispatch_transfer`, the only place
+    a transfer is created, sends this figure.
+    """
+    return int(payout.amount) - _payout_wht(payout)
+
+
+def _expected_transfer(payout) -> tuple[int, bool]:
+    """``(kobo the provider was asked to send, whether that was the net)`` for ``payout``.
+
+    A payout dispatched here records ``transfer_amount`` (the net) before the
+    send. A row without it was dispatched when the gross was sent, and its
+    confirmation is judged against the gross it actually sent.
+    """
+    metadata = payout.metadata or {}
+    if "transfer_amount" in metadata:
+        return int(metadata["transfer_amount"]), True
+    return int(payout.amount), False
 
 
 # --------------------------------------------------------------------------- #
@@ -863,6 +1047,11 @@ def create_payout_batch(
     (``beneficiary_name``, ``beneficiary_account_number``, ``beneficiary_bank_code``) and
     optional ``vendor`` / ``narration`` / ``wht_amount`` / ``metadata`` / ``source_account``.
     Nothing is sent to the provider yet - call :func:`submit_payout_batch` for that.
+
+    ``amount`` is the bill value the line settles, before withholding tax. An
+    omitted ``wht_amount`` is computed from the vendor's WHT code (see
+    :func:`_item_wht`); the figure, its source and its code are kept on the
+    instruction's metadata, where dispatch and booking read them.
     """
     items = list(items)  # Materialize the iterable so it can be counted and iterated safely.
     if not items:  # A batch with no items is not meaningful.
@@ -889,16 +1078,13 @@ def create_payout_batch(
                 return existing
 
         snapshots = []
+        withholdings = []
         for item in items:
             amount = int(item.get("amount") or 0)
             if amount <= 0:
                 raise ValidationError({"amount": "Each payout item needs a positive amount (kobo)."})
-            wht_amount = int(item.get("wht_amount") or 0)
-            if wht_amount < 0 or wht_amount > amount:
-                raise ValidationError({
-                    "wht_amount": "Withholding tax must be between zero and the payout amount.",
-                })
             snapshots.append(_eligible_vendor_snapshot(entity, item.get("vendor"), item))
+            withholdings.append(_item_wht(item, amount=amount))
 
         get_provider(provider_name)  # Validate configuration without sending money.
         batch_reference = _new_reference(entity)  # Use one reference for the whole batch.
@@ -925,10 +1111,11 @@ def create_payout_batch(
             return existing
 
         total = 0  # Accumulate the batch total as each instruction is added.
-        for item, snapshot in zip(items, snapshots):  # Each dict becomes one payout instruction.
+        wht_lines = []  # Per-line WHT and how it was arrived at, for the audit row.
+        for item, snapshot, wht in zip(items, snapshots, withholdings):  # Each dict becomes one payout instruction.
             amount = int(item.get("amount") or 0)
             vendor = item.get("vendor")
-            PayoutInstruction.objects.create(
+            instruction = PayoutInstruction.objects.create(
                 entity=entity, batch=batch, provider=provider_name,
                 reference=_new_reference(entity), amount=amount, currency=currency,
                 beneficiary_name=snapshot["beneficiary_name"],
@@ -939,10 +1126,19 @@ def create_payout_batch(
                 status=PayoutStatus.PENDING,
                 vendor_source_type="vs_procurement.Vendor" if vendor else "",
                 vendor_source_id=str(vendor.pk) if vendor else "",
-                metadata={**(item.get("metadata") or {}),
-                          "wht_amount": int(item.get("wht_amount") or 0)},
+                metadata={
+                    **(item.get("metadata") or {}),
+                    "wht_amount": wht.amount,
+                    "wht_source": wht.source,
+                    "wht_tax_code_id": getattr(wht.tax_code, "pk", None),
+                    "wht_tax_code": getattr(wht.tax_code, "code", ""),
+                },
                 created_by=actor_user,
             )
+            wht_lines.append({
+                "reference": instruction.reference, "wht_amount": wht.amount,
+                "wht_source": wht.source,
+            })
             total += amount  # Keep the running batch total in sync.
         batch.total_amount = total  # Store the aggregate amount on the batch.
         batch.item_count = len(items)  # Store the number of instructions on the batch.
@@ -953,6 +1149,7 @@ def create_payout_batch(
         action=PaymentAuditAction.PAYOUT_BATCH_CREATED, entity=entity,
         provider=provider_name, reference=batch_reference, actor_user=actor_user,
         message=f"Created payout batch of {len(items)} items, {total} kobo.",
+        metadata={"wht": wht_lines},
     )
     return batch  # Return the draft batch for later submission.
 
@@ -1232,8 +1429,15 @@ def _recompute_batch_status(batch):
 def confirm_payout(payout, *, status=None, amount=None, actor_user=None):
     """Confirm a payout and book the vendor payment - idempotently.
 
-    ``amount`` (kobo) optionally overrides the booked amount; if omitted on the verify
-    path, the provider-reported settled amount is adopted (mirrors ``confirm_collection``).
+    ``amount`` (kobo) is what the provider says left the account. On the verify
+    path it is the provider-reported transfer amount; a caller may pass it with
+    ``status``. It is compared with what the payout asked the provider to send,
+    which is the net of WHT (see :func:`payout_transfer_amount`), never with the
+    gross. When the two differ, the books follow the money: the bank is credited
+    with what left, WHT stays as recorded, and the gross settled becomes their
+    sum, with the instructed gross kept in ``metadata["instructed_amount"]``. A
+    row dispatched before the net was recorded sent its gross, and is judged
+    against that (:func:`_expected_transfer`).
 
     Split the same way as ``confirm_collection`` and for the same reasons - see the
     note above it. The provider round-trip happens here with nothing locked;
@@ -1245,24 +1449,33 @@ def confirm_payout(payout, *, status=None, amount=None, actor_user=None):
         return payout  # Exit early for idempotency.
 
     verify_raw = None
+    paid_at = None
     if status is None:  # Ask the PSP when the caller did not provide a terminal status.
         client = get_provider(payout.provider)  # Resolve the correct provider adapter.
         result = client.verify_transfer(  # Fetch the current transfer state from the PSP.
             reference=payout.reference, provider_reference=payout.provider_reference,
         )
         status = result.status  # Use the provider's transfer status for confirmation.
-        amount = result.amount or payout.amount  # Adopt the PSP's settled amount, falling back to the instructed value.
+        amount = result.amount or None  # What the provider says it sent; None when unreported.
         verify_raw = result.raw  # Applied to the row the locked half re-reads.
+        paid_at = getattr(result, "paid_at", None)  # The day the money left dates the payment.
 
     return _confirm_payout_atomic(
         payout.pk, status=status, amount=amount, verify_raw=verify_raw,
-        actor_user=actor_user,
+        actor_user=actor_user, paid_at=paid_at,
     )
 
 
 @transaction.atomic
-def _confirm_payout_atomic(payout_id, *, status, amount, verify_raw, actor_user):
-    """Take the lock, re-check, and book. Every write in the flow happens here."""
+def _confirm_payout_atomic(payout_id, *, status, amount, verify_raw, actor_user,
+                           paid_at=None):
+    """Take the lock, re-check, and book. Every write in the flow happens here.
+
+    An answer that the transfer is still in flight stores the provider's payload
+    and nothing else: it is not an outcome, so it is not audited as one. The save
+    moves ``updated_at``, which is the recovery sweep's record of when it last
+    asked.
+    """
     payout = PayoutInstruction.objects.select_for_update().get(pk=payout_id)
     # Another worker may have booked this while we were talking to the provider.
     if payout.is_terminal:
@@ -1271,8 +1484,10 @@ def _confirm_payout_atomic(payout_id, *, status, amount, verify_raw, actor_user)
         payout.raw_response = {**(payout.raw_response or {}), "verify": verify_raw}
 
     if status != PayoutStatus.PAID:  # Only a paid transfer can book a vendor payment.
-        if status in (PayoutStatus.FAILED, PayoutStatus.REVERSED):  # Preserve only terminal negative outcomes locally.
-            payout.status = status  # Mirror the final failure state.
+        if status not in (PayoutStatus.FAILED, PayoutStatus.REVERSED):  # Still in flight.
+            payout.save(update_fields=["raw_response", "updated_at"])
+            return payout
+        payout.status = status  # Mirror the final failure state.
         payout.save(update_fields=["status", "raw_response", "updated_at"])
         audit.record(  # Record the failed payout confirmation for auditability.
             action=PaymentAuditAction.PAYOUT_FAILED, entity=payout.entity,
@@ -1282,23 +1497,32 @@ def _confirm_payout_atomic(payout_id, *, status, amount, verify_raw, actor_user)
         _refresh_batch(payout)  # Keep the parent batch aggregate in sync.
         return payout  # Stop because no vendor payment should be posted.
 
-    settled = amount or payout.amount  # Use the confirmed amount when one is available.
-    if settled > 0 and settled != payout.amount:  # Preserve the originally instructed amount in metadata.
-        # Book the amount that actually left the account, but retain the instructed value for audit.
-        payout.metadata = {**(payout.metadata or {}), "instructed_amount": payout.amount}  # Store the pre-settlement amount.
-        payout.amount = settled  # Replace the payout amount with the actual settled amount.
+    expected, net_basis = _expected_transfer(payout)
+    sent = amount or expected  # What left the account, as far as anyone has said.
+    if sent > 0 and sent != expected:  # The provider sent something other than we asked.
+        payout.metadata = {
+            **(payout.metadata or {}),
+            "instructed_amount": payout.amount, "provider_sent_amount": sent,
+        }
+        payout.amount = sent + (_payout_wht(payout) if net_basis else 0)
 
-    _book_vendor_payment(payout, actor_user=actor_user)  # Post the vendor payment into the ledger.
+    _book_vendor_payment(payout, actor_user=actor_user, paid_at=paid_at)  # Post the vendor payment into the ledger.
     payout.status = PayoutStatus.PAID  # Mark the payout as successfully settled.
     payout.confirmed_at = timezone.now()
     payout.save(update_fields=[
         "status", "vendor_payment_id", "amount", "metadata", "confirmed_at", "raw_response", "updated_at",
     ])
+    audit_metadata = {
+        "vendor_payment_id": payout.vendor_payment_id,
+        "gross_amount": payout.amount, "wht_amount": _payout_wht(payout),
+        "wht_source": (payout.metadata or {}).get("wht_source", ""),
+    }
+    audit_metadata.update(_dating_metadata(payout.metadata))
     audit.record(  # Emit the successful confirmation audit event.
         action=PaymentAuditAction.PAYOUT_CONFIRMED, entity=payout.entity,
         provider=payout.provider, reference=payout.reference, actor_user=actor_user,
         message=f"Booked vendor payment for {payout.amount} kobo.",
-        metadata={"vendor_payment_id": payout.vendor_payment_id},
+        metadata=audit_metadata,
     )
     _refresh_batch(payout)  # Refresh the parent batch after the child status changes.
     return payout  # Return the confirmed payout instruction.
@@ -1314,8 +1538,16 @@ def _refresh_batch(payout):
 
 
 # Support the book vendor payment workflow.
-def _book_vendor_payment(payout, *, actor_user=None):
-    """Create + post the ``vs_procurement.VendorPayment`` for a paid payout."""
+def _book_vendor_payment(payout, *, actor_user=None, paid_at=None):
+    """Create + post the ``vs_procurement.VendorPayment`` for a paid payout.
+
+    Gross is the payout line's amount, WHT is the figure resolved when the line
+    was created, and net (what the bank is credited with) is their difference,
+    which is exactly what :func:`_dispatch_transfer` sent. The WHT code and the
+    record of whether its figure was computed or entered carry onto the vendor
+    payment, so the posting's audit row says both. The payment is dated by
+    :func:`_booking_date`, as a gateway receipt is.
+    """
     if not payout.vendor_source_id:  # Vendor-backed payouts need a source reference to post AP correctly.
         raise PaymentStateError(
             "Cannot book a vendor payment: the payout has no vendor reference.",
@@ -1324,13 +1556,24 @@ def _book_vendor_payment(payout, *, actor_user=None):
     from vs_procurement.payables import post_vendor_payment
     from vs_procurement.constants import ProcApprovalState
 
+    from vs_finance.models import TaxCode
+
     vendor = Vendor.objects.get(pk=int(payout.vendor_source_id))
-    wht = int((payout.metadata or {}).get("wht_amount", 0))
+    wht = _payout_wht(payout)
+    metadata = payout.metadata or {}
+    wht_code = (
+        TaxCode.objects.filter(entity=payout.entity, pk=metadata["wht_tax_code_id"]).first()
+        if metadata.get("wht_tax_code_id") else None
+    )
+    payment_date, dating = _booking_date(payout.entity, paid_at)
+    if dating:  # Keep the true paid day beside the payment, however it was booked.
+        payout.metadata = {**metadata, **dating}
     vp = VendorPayment.objects.create(
-        entity=payout.entity, vendor=vendor, payment_date=tenant_today(payout.entity.tenant),
+        entity=payout.entity, vendor=vendor, payment_date=payment_date,
         currency=payout.currency, method=PaymentMethod.BANK_TRANSFER,
         gross_amount=payout.amount, wht_amount=wht,
         net_amount=payout.amount - wht,
+        wht_tax_code=wht_code, wht_source=metadata.get("wht_source", ""),
         payment_account=payout.source_account or resolve_account(
             payout.entity, CASH_BANK_CODE, label="Cash & bank",
         ),

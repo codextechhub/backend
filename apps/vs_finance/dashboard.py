@@ -533,9 +533,11 @@ def _fiscal_runway(entity) -> dict:
     """
     runway = fiscal_calendar_runway(entity)  # Same read the posting guard mirrors.
     end = runway["calendar_end"]  # Last day any period covers (None when none exist).
+    breaks = runway["first_uncovered_date"]  # First day from today nothing covers.
     return {  # Return fiscal-runway block.
         "status": runway["status"],  # HEALTHY / EXPIRING / EXPIRED.
         "calendar_end": end.isoformat() if end else None,  # ISO last postable day.
+        "first_uncovered_date": breaks.isoformat(),  # A gap can come before the end.
         "days_remaining": runway["days_remaining"],  # Negative once lapsed, None when no calendar.
         "threshold_days": runway["threshold_days"],  # Notice window the status used.
     }

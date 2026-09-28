@@ -10,6 +10,7 @@ patch - so this client is fully exercised without ever calling Paystack.  # Keep
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import hmac
 
@@ -130,6 +131,7 @@ class PaystackProvider(Provider):
             status=_COLLECTION_STATUS.get(gateway, "PROCESSING"),
             amount=int(data.get("amount", 0) or 0),
             currency=data.get("currency", "NGN"),
+            paid_at=_instant(data.get("paid_at") or data.get("paidAt")),
             raw=data,  # Keep the raw response payload.
         )
 
@@ -164,6 +166,7 @@ class PaystackProvider(Provider):
             status=_TRANSFER_STATUS.get(status, "PROCESSING"),
             amount=int(data.get("amount") or 0),  # Paystack transfer verify returns the kobo amount in data.amount.
             failure_reason=data.get("message", "") if status in ("failed", "reversed") else "",
+            paid_at=_instant(data.get("transferred_at")) if status == "success" else None,
             raw=data,  # Keep the raw provider payload.
         )
 
@@ -236,6 +239,30 @@ def _dedicated_nuban(data: dict) -> str:
         or ""
     )
     return str(number).strip()  # Normalize to a bare string for the local lookup.
+
+
+def _instant(value):
+    """An aware datetime from a Paystack timestamp, or ``None`` when absent or unreadable.
+
+    Paystack reports ISO-8601 instants in UTC (``2026-08-31T20:40:11.000Z``). A value
+    without an offset is read as UTC, which is what Paystack means by it. Unreadable
+    input yields ``None`` rather than raising: the date is a refinement of the
+    booking, and a receipt must never fail to book because a timestamp was odd.
+    """
+    if not value:
+        return None
+    from django.utils import timezone
+    from django.utils.dateparse import parse_datetime
+
+    try:
+        parsed = parse_datetime(str(value))
+    except ValueError:
+        return None
+    if parsed is None:
+        return None
+    if timezone.is_naive(parsed):
+        parsed = timezone.make_aware(parsed, datetime.timezone.utc)
+    return parsed
 
 
 # Support the header workflow.

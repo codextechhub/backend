@@ -39,6 +39,29 @@ from .constants import DocumentStatus
 LEDGER_STATUSES = (DocumentStatus.POSTED, DocumentStatus.REVERSED)
 
 
+def ledger_lines(entity=None):
+    """The journal lines that are in the ledger: the one rule every money reader uses.
+
+    Reversing a journal marks the original REVERSED and posts a mirror entry with
+    debits and credits swapped. Both stay in the ledger, exactly as
+    ``AccountBalance`` keeps them, so the pair nets to zero over any window that
+    holds both dates. A reader that took POSTED lines only would drop the original
+    and keep the mirror, and every void, payroll re-run or corrected document would
+    show as a movement with nothing to cancel it.
+
+    Anything that measures money from journal lines (a balance, a movement, a
+    statement leg, a register, a reconciliation candidate) starts from this
+    queryset rather than filtering on entry status itself. ``entity`` narrows to one
+    ledger; without it the caller narrows, typically by account.
+    """
+    from .models import JournalLine
+
+    lines = JournalLine.objects.filter(entry__status__in=LEDGER_STATUSES)
+    if entity is not None:
+        lines = lines.filter(entry__entity=entity)
+    return lines
+
+
 @dataclass(frozen=True)
 class LedgerRow:
     """One account's movement in one period, shaped like ``AccountBalance``."""
@@ -97,16 +120,11 @@ class BranchLedger:
         return BranchLedger(self.entity, self.scope, self.lookups, empty=True)
 
     def _load(self):
-        from .models import Account, FiscalPeriod, JournalLine
+        from .models import Account, FiscalPeriod
 
         if self.empty:
             return []
-        lines = self.scope.filter(
-            JournalLine.objects.filter(
-                entry__entity=self.entity, entry__status__in=LEDGER_STATUSES,
-            ),
-            "entry__",
-        ).filter(**self.lookups)
+        lines = self.scope.filter(ledger_lines(self.entity), "entry__").filter(**self.lookups)
         sums = list(
             lines.values("account_id", "entry__period_id")
             .annotate(dr=Sum("debit"), cr=Sum("credit"))
