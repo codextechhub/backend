@@ -11,9 +11,12 @@ import carries ONE guardian per child, which is the one the school called when
 it enrolled them; every father, grandmother and legal guardian after that is
 typed in by hand, one drawer at a time.
 
-Guardians are matched on email first and phone second, the same rule
-``upsert_guardian`` applies everywhere else, so a parent already at the school
-is reused rather than duplicated and their existing name is kept.
+Guardians are matched the way ``upsert_guardian`` matches them everywhere
+else, on email first and phone second unless the school matches on email only,
+so a parent already at the school is reused rather than duplicated and their
+existing name is kept. The school's other guardian rules apply as they do on a
+form: a new guardian needs an email where the school requires one, and a
+relationship may be one of the school's own.
 """
 from __future__ import annotations
 
@@ -58,11 +61,6 @@ MAX_LENGTHS = {
 
 _YES = frozenset({"yes", "y", "true", "1", "primary"})
 
-_RELATIONSHIPS: dict[str, str] = {}
-for _code, _label in Relationship.choices:
-    _RELATIONSHIPS[_code.lower()] = _code
-    _RELATIONSHIPS[_label.lower()] = _code
-
 
 @dataclass
 class ResolvedLink:
@@ -75,7 +73,12 @@ class ResolvedLink:
     occupation: str = ""
     address: str = ""
     relationship: str = Relationship.OTHER
+    #: The school's own relationship, where ``relationship`` is OTHER.
+    relationship_detail: str = ""
     is_primary: bool = False
+    #: Whether the school matches guardians on email only, so a phone number
+    #: says nothing about who a row is.
+    email_only: bool = False
     #: The student this row reaches, once identified.
     student: object | None = None
     #: The guardian this school already holds on this contact.
@@ -102,16 +105,34 @@ class ResolvedLink:
         return "guardian_first_name"
 
     @property
+    def relationship_label(self) -> str:
+        return self.relationship_detail or Relationship(self.relationship).label
+
+    @property
     def contact_key(self) -> str:
+        """What this row's guardian is recognised by, or "" when nothing is.
+
+        The email, else the phone, unless the school matches on email only:
+        there a row with no email is a new guardian whatever its phone.
+        """
+        if self.email_only:
+            return self.guardian_email.casefold()
         return self.guardian_email.casefold() or _digits(self.guardian_phone)
 
 
-def resolve_row(payload: dict, *, tenant):
-    """Read one uploaded link. Everything a row can be wrong about alone."""
+def resolve_row(payload: dict, *, tenant, guardian_rules=None):
+    """Read one uploaded link. Everything a row can be wrong about alone.
+
+    *guardian_rules* is the school's ``GuardianRules``, read when not given;
+    ``resolve_file`` reads it once for the whole file.
+    """
     from django.core.exceptions import ValidationError as DjangoValidationError
     from django.core.validators import validate_email
 
-    row = ResolvedLink()
+    from .services.guardian_rules import read_guardian_rules
+
+    guardian_rules = guardian_rules or read_guardian_rules(tenant)
+    row = ResolvedLink(email_only=guardian_rules.email_only)
     read_guardian_name(row, payload, missing="A guardian's name is required on every row.")
     row.guardian_phone = _text(payload, "guardian_phone")
     row.guardian_email = _text(payload, "guardian_email")
@@ -155,8 +176,9 @@ def resolve_row(payload: dict, *, tenant):
             ))
 
     raw_rel = _text(payload, "relationship")
-    row.relationship = _RELATIONSHIPS.get(raw_rel.lower(), Relationship.OTHER)
-    if raw_rel and raw_rel.lower() not in _RELATIONSHIPS:
+    resolved = guardian_rules.resolve_relationship(raw_rel)
+    row.relationship, row.relationship_detail = resolved or (Relationship.OTHER, "")
+    if raw_rel and resolved is None:
         row.issues.append(RowIssue(
             "invalid_choice",
             f"'{raw_rel}' is not a relationship this school records. It will "
@@ -167,7 +189,20 @@ def resolve_row(payload: dict, *, tenant):
     row.is_primary = _text(payload, "is_primary").casefold() in _YES
 
     _resolve_student(row, payload, tenant=tenant)
-    _resolve_guardian(row, tenant=tenant)
+    _resolve_guardian(row, tenant=tenant, matching=guardian_rules.matching)
+
+    # A new guardian needs an email where the school requires one; a guardian
+    # the school already holds is linked as they stand.
+    if (
+        guardian_rules.email_required
+        and not row.guardian_email
+        and row.existing_guardian is None
+    ):
+        from .services.guardians import EMAIL_REQUIRED_MESSAGE
+
+        row.issues.append(RowIssue(
+            "required", EMAIL_REQUIRED_MESSAGE, "guardian_email",
+        ))
     return row
 
 
@@ -248,7 +283,7 @@ def _resolve_student(row, payload, *, tenant):
     row.student = found[0]
 
 
-def _resolve_guardian(row, *, tenant):
+def _resolve_guardian(row, *, tenant, matching):
     """The guardian this contact already reaches, and the link if there is one."""
     from .models import StudentGuardian
     from .services.guardians import match_existing, primary_for
@@ -258,6 +293,7 @@ def _resolve_guardian(row, *, tenant):
 
     row.existing_guardian = match_existing(
         tenant, email=row.guardian_email, phone=row.guardian_phone,
+        matching=matching,
     )
     if row.student is None:
         return
@@ -279,7 +315,15 @@ class ResolvedGuardianFile:
 
 
 def resolve_file(payloads, *, tenant):
-    """Every row, then what only the whole file shows."""
+    """Every row, then what only the whole file shows.
+
+    A row whose guardian nothing identifies (no email, at a school matching
+    on email only) is a new guardian of its own, so it is never taken for
+    another row's guardian.
+    """
+    from .services.guardian_rules import read_guardian_rules
+
+    guardian_rules = read_guardian_rules(tenant)
     out = ResolvedGuardianFile()
     #: student pk -> the row that makes somebody their primary contact.
     primaries: dict[int, int] = {}
@@ -289,14 +333,14 @@ def resolve_file(payloads, *, tenant):
     pairs: dict[tuple, int] = {}
 
     for row_number, payload in enumerate(payloads, start=1):
-        row = resolve_row(payload, tenant=tenant)
+        row = resolve_row(payload, tenant=tenant, guardian_rules=guardian_rules)
         out.rows.append((row_number, row))
         for issue in row.issues:
             out.add(row_number, issue)
         if not row.ok:
             continue
 
-        key = (row.student.pk, row.contact_key)
+        key = (row.student.pk, row.contact_key or f"row:{row_number}")
         earlier = pairs.get(key)
         if earlier is not None:
             out.add(row_number, RowIssue(
@@ -329,8 +373,9 @@ def resolve_file(payloads, *, tenant):
 def _check_contact_reused(out, row, row_number, contacts):
     """The same contact under a different name, in the file or at the school.
 
-    Guardians are matched on email then phone and the stored name wins, so this
-    row's spelling is discarded and the child joins that household. Right for a
+    Guardians are matched on the school's rule (email then phone, or email
+    only) and the stored name wins, so this row's spelling is discarded and
+    the child joins that household. Right for a
     real parent with three children here, and wrong for a mistyped address, and
     only the school can tell which.
     """
@@ -443,8 +488,10 @@ def build_links(resolved, *, tenant, actor):
     from django.db import transaction
 
     from .services import guardians as guardian_service
+    from .services.guardian_rules import read_guardian_rules
 
     counts = {"guardians": 0, "links": 0}
+    guardian_rules = read_guardian_rules(tenant)
 
     with transaction.atomic():
         for _n, row in resolved.rows:
@@ -460,12 +507,14 @@ def build_links(resolved, *, tenant, actor):
                 email=row.guardian_email,
                 occupation=row.occupation,
                 address=row.address,
+                rules=guardian_rules,
             )
             if made:
                 counts["guardians"] += 1
             guardian_service.link(
                 row.student, guardian,
                 relationship=row.relationship,
+                relationship_detail=row.relationship_detail,
                 is_primary=row.is_primary,
                 actor=actor,
             )
@@ -566,6 +615,7 @@ def execute_guardians_import(import_batch, queued_by):
                         "guardian": row.guardian_name,
                         "student": row.student.full_name if row.student else "",
                         "relationship": row.relationship,
+                        "relationship_label": row.relationship_label,
                         "is_primary": row.is_primary,
                     },
                 )

@@ -212,8 +212,10 @@ def import_students_row(import_batch, payload: dict, queued_by) -> ImportExecuti
         guardian_last_name
         guardian_full_name     fallback: a one-line name, split and flagged
         guardian_phone         required
-        guardian_email         optional - matches an existing guardian
-        guardian_relationship  optional - defaults to Other
+        guardian_email         optional unless the school requires one -
+                               matches an existing guardian
+        guardian_relationship  optional - a fixed relationship or one the
+                               school added; anything else is Other
         address                optional
         previous_school        optional
     """

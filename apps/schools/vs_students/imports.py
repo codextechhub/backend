@@ -59,11 +59,6 @@ for _code, _label in Gender.choices:
     _GENDERS[_code.lower()] = _code
     _GENDERS[_label.lower()] = _code
 
-_RELATIONSHIPS: dict[str, str] = {}
-for _code, _label in Relationship.choices:
-    _RELATIONSHIPS[_code.lower()] = _code
-    _RELATIONSHIPS[_label.lower()] = _code
-
 
 @dataclass
 class RowIssue:
@@ -94,6 +89,8 @@ class ResolvedRow:
     guardian_phone: str = ""
     guardian_email: str = ""
     guardian_relationship: str = Relationship.OTHER
+    #: The school's own relationship, where ``guardian_relationship`` is OTHER.
+    guardian_relationship_detail: str = ""
     #: An existing student this row looks like. A warning, never an error: two
     #: real siblings can share a surname and a birthday is not a fingerprint.
     duplicate: object | None = None
@@ -219,7 +216,7 @@ IMPORTABLE_REQUIRED_FIELDS = ("middle_name", "address", "previous_school")
 
 def resolve_row(
     payload: dict, *, tenant, session, batch_branch, multi_branch,
-    policies=None, rules=None,
+    policies=None, rules=None, guardian_rules=None,
 ):
     """Read one uploaded row into the thing the handler will write.
 
@@ -228,16 +225,19 @@ def resolve_row(
     them are.
 
     The school's own rules apply as they do to a typed enrolment: its age
-    range, its required fields (those the template has a column for) and the
-    admission-number rule of the row's branch. *rules* is the school's
-    ``EnrolmentRules`` and *policies* a ``{branch id: AdmissionPolicy}``
+    range, its required fields (those the template has a column for), the
+    admission-number rule of the row's branch, and its guardian rules.
+    *rules* is the school's ``EnrolmentRules``, *guardian_rules* its
+    ``GuardianRules`` and *policies* a ``{branch id: AdmissionPolicy}``
     cache, which the validator passes so a file of a thousand rows reads each
-    once; the executor, writing one row, passes neither.
+    once; the executor, writing one row, passes none of them.
     """
+    from .services.guardian_rules import read_guardian_rules
     from .services.rules import read_rules
 
     row = ResolvedRow()
     rules = rules or read_rules(tenant)
+    guardian_rules = guardian_rules or read_guardian_rules(tenant)
     policies = {} if policies is None else policies
 
     row.first_name = _text(payload, "first_name")
@@ -333,7 +333,7 @@ def resolve_row(
         policy=_policy_for(tenant, row.branch, policies),
     )
     _resolve_class(row, payload, tenant=tenant, session=session)
-    _resolve_guardian(row, payload)
+    _resolve_guardian(row, payload, guardian_rules=guardian_rules)
     _resolve_duplicate(row, tenant=tenant)
     _check_lengths(row)
     _check_looks_like_a_name(row)
@@ -513,13 +513,36 @@ def _resolve_class(row, payload, *, tenant, session):
     row.school_class = found
 
 
-def _resolve_guardian(row, payload):
+def _resolve_guardian(row, payload, *, guardian_rules):
+    """The row's one guardian, held to the school's guardian rules.
+
+    A phone with fewer than seven digits is refused, not as a format rule but
+    because it cannot be a number anybody can ring: the usual cause is a
+    column that has shifted so a class name or a date has landed there.
+
+    **A malformed email is not a cosmetic fault.** Guardians are matched on
+    email, so the column decides which household a child joins, and it is
+    also the address a parent's login would be issued to. A value that is not
+    an address matches nothing, creates a second record for a parent the
+    school already holds, and splits the family.
+
+    The relationship is a fixed one or one of the school's own; anything else
+    is imported as Other with a warning, because a file with "Family friend"
+    in it is still a roll worth loading. A school that requires a guardian
+    email refuses a row without one. A school that asks for more than one
+    guardian per child is warned on every row, and the row still imports:
+    the file carries one guardian per child, and the others are added on the
+    record or with the guardians import.
+    """
+    from .services.guardians import EMAIL_REQUIRED_MESSAGE
+
     read_guardian_name(row, payload, missing="Every student needs a guardian's name.")
     row.guardian_phone = _text(payload, "guardian_phone")
     row.guardian_email = _text(payload, "guardian_email")
     raw_rel = _text(payload, "guardian_relationship")
-    row.guardian_relationship = _RELATIONSHIPS.get(
-        raw_rel.lower(), Relationship.OTHER,
+    resolved = guardian_rules.resolve_relationship(raw_rel)
+    row.guardian_relationship, row.guardian_relationship_detail = (
+        resolved or (Relationship.OTHER, "")
     )
     if not row.guardian_phone:
         row.issues.append(RowIssue(
@@ -527,20 +550,13 @@ def _resolve_guardian(row, payload):
             "guardian_phone",
         ))
     elif len(_digits(row.guardian_phone)) < 7:
-        # Not a format rule. A value with fewer than seven digits cannot be a
-        # number anybody can ring, and the usual cause is a column that has
-        # shifted so a class name or a date has landed here.
         row.issues.append(RowIssue(
             "invalid_format",
             f"'{row.guardian_phone}' is not a number the school could ring.",
             "guardian_phone", row.guardian_phone,
         ))
 
-    # **A malformed address is not a cosmetic fault.** Guardians are matched on
-    # email, so this column decides which household a child joins, and it is
-    # also the address a parent's login would be issued to. A value that is not
-    # an address matches nothing, creates a second record for a parent the
-    # school already holds, and splits the family.
+    # An email that is not an address.
     if row.guardian_email:
         from django.core.exceptions import ValidationError
         from django.core.validators import validate_email
@@ -554,12 +570,27 @@ def _resolve_guardian(row, payload):
                 "guardian_email", row.guardian_email,
             ))
 
-    if raw_rel and raw_rel.lower() not in _RELATIONSHIPS:
+    if guardian_rules.email_required and not row.guardian_email:
+        row.issues.append(RowIssue(
+            "required", EMAIL_REQUIRED_MESSAGE, "guardian_email",
+        ))
+
+    if raw_rel and resolved is None:
         row.issues.append(RowIssue(
             "invalid_choice",
             f"'{raw_rel}' is not a relationship this school records. It will "
             f"be imported as Other.",
             "guardian_relationship", raw_rel, severity="warning",
+        ))
+
+    minimum = guardian_rules.min_per_student
+    if minimum > 1:
+        row.issues.append(RowIssue(
+            "business_rule",
+            f"This school asks for {minimum} guardians for every child, and "
+            f"this file gives one. The student will still be imported; add "
+            f"the others on their record or with the guardians import.",
+            severity="warning",
         ))
 
 
@@ -649,6 +680,7 @@ def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
     )
     guardian_service.link(
         student, guardian, relationship=row.guardian_relationship,
+        relationship_detail=row.guardian_relationship_detail,
         is_primary=True, actor=created_by,
     )
     transition(
@@ -683,7 +715,17 @@ def validate_students_import_batch(import_batch) -> list[dict]:
     Errors block the import; warnings do not. The split follows one rule: what
     is refused is what cannot be written at all, and everything a person might
     legitimately have meant is a warning that names what will happen.
+
+    One warning no single row can raise is a guardian this file has already
+    named, or the school already holds, under a DIFFERENT name.
+    ``upsert_guardian`` matches on the school's rule and keeps the name it
+    already has, so the child joins that household and the name in the row is
+    discarded. Usually right, since it is how siblings find each other, and
+    occasionally a typo attaching a child to a stranger, which nothing
+    downstream would ever question. A school matching on email only never
+    joins on a phone, so the check says nothing of one there.
     """
+    from .services.guardian_rules import read_guardian_rules
     from .services.rules import read_rules
     from .services.scoping import branch_dimension_applies
 
@@ -697,6 +739,7 @@ def validate_students_import_batch(import_batch) -> list[dict]:
     header = {c.target_field: c.column_name for c in columns}
     multi_branch = branch_dimension_applies(tenant)
     rules = read_rules(tenant)
+    guardian_rules = read_guardian_rules(tenant)
     policies: dict = {}
     rows = import_batch.preview_rows or []
 
@@ -729,7 +772,7 @@ def validate_students_import_batch(import_batch) -> list[dict]:
             _payload_of(raw_row, columns),
             tenant=tenant, session=session,
             batch_branch=import_batch.branch, multi_branch=multi_branch,
-            policies=policies, rules=rules,
+            policies=policies, rules=rules, guardian_rules=guardian_rules,
         )
         for issue in resolved.issues:
             record(row_number, issue)
@@ -771,16 +814,11 @@ def validate_students_import_batch(import_batch) -> list[dict]:
                 "first_name", resolved.first_name, severity="warning",
             ))
 
-        # A guardian this file has already named, or the school already holds,
-        # under a DIFFERENT name. upsert_guardian matches on email then phone
-        # and keeps the name it already has, so the child joins that household
-        # and the name in this row is discarded. Usually right - it is how
-        # siblings find each other - and occasionally a typo attaching a child
-        # to a stranger, which nothing downstream would ever question.
-        for field, value in (
-            ("guardian_email", resolved.guardian_email.casefold()),
-            ("guardian_phone", _digits(resolved.guardian_phone)),
-        ):
+        # A guardian contact already named under a different name.
+        contacts = [("guardian_email", resolved.guardian_email.casefold())]
+        if not guardian_rules.email_only:
+            contacts.append(("guardian_phone", _digits(resolved.guardian_phone)))
+        for field, value in contacts:
             if not value:
                 continue
             earlier = contacts_seen.get(value)

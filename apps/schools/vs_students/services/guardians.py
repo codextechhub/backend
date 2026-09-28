@@ -8,7 +8,12 @@ ordinary ``vs_user.User`` of this tenant which may already hold a staff role.
 The matching rule is what makes siblings work. Adding a guardian whose email or
 phone already exists in this school links the existing row and never creates a
 second - without it, adding the second sibling silently splits the family in
-two and it stays split.
+two and it stays split. A school that matches on email only
+(``guardians.matching``) never joins two families on a shared phone.
+
+The school's other guardian rules are enforced here too, at the one place
+every write path passes through: how many guardians a child needs, and whether
+a new guardian needs an email (``services/guardian_rules.py``).
 
 FRD M11 v2.4 FR-005 and FR-021.
 """
@@ -22,26 +27,34 @@ from rest_framework.exceptions import ValidationError
 from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
 
-from ..constants import ON_ROLL
+from ..constants import ON_ROLL, GuardianMatching
 from ..exceptions import GuardianRequired, PrimaryGuardianRequired
 from ..models import Guardian, StudentGuardian
+from .guardian_rules import read_guardian_rules
+
+#: The refusal for a new guardian with no email at a school that asks for one.
+EMAIL_REQUIRED_MESSAGE = "A guardian email is required at this school."
 
 
-def match_existing(tenant, *, email="", phone=""):
+def match_existing(tenant, *, email="", phone="", matching=None):
     """The guardian row this person already has at this school, if any.
 
     Email first and case-insensitively, because that is the identifier a
     parent's account would be issued to and the one the unique constraint
-    covers. Phone second, because two parents genuinely share a landline more
-    often than they share an address.
+    covers. Phone second, unless the school matches on email only: a school
+    whose families share landlines would otherwise merge two households on a
+    number. *matching* is the school's mode, read from its settings when not
+    given; an import passes the one it read for the whole file.
     """
+    if matching is None:
+        matching = read_guardian_rules(tenant).matching
     email = (email or "").strip()
     phone = (phone or "").strip()
     if email:
         found = Guardian.objects.filter(tenant=tenant, email__iexact=email).first()
         if found is not None:
             return found
-    if phone:
+    if phone and matching != GuardianMatching.EMAIL_ONLY:
         return Guardian.objects.filter(tenant=tenant, phone=phone).first()
     return None
 
@@ -71,19 +84,32 @@ def resolve_user(tenant, email):
 
 @transaction.atomic
 def upsert_guardian(tenant, *, phone, full_name="", first_name="", middle_name="",
-                    last_name="", email="", occupation="", address=""):
+                    last_name="", email="", occupation="", address="", rules=None):
     """The guardian row for this person, created only if they are new here.
 
     The name is given in parts. A caller holding only a one-line name passes
     ``full_name``, and :meth:`Guardian.save` splits it and flags the split for
     a person to confirm.
+
+    The school's rules decide how the person is matched and whether a new row
+    needs an email; a guardian already held is returned whatever their email.
+    *rules* is the school's ``GuardianRules``, read when not given. A new row
+    with no email at a school that asks for one is refused on ``email``: the
+    write paths refuse it earlier with their own field, so reaching this is a
+    caller that did not check.
     """
-    existing = match_existing(tenant, email=email, phone=phone)
+    rules = rules or read_guardian_rules(tenant)
+    existing = match_existing(
+        tenant, email=email, phone=phone, matching=rules.matching,
+    )
     if existing is not None:
         # Deliberately does not overwrite the stored name from the new
         # spelling. A school that typed "Mrs P. Okafor" for the second child
         # has not renamed the guardian it already holds.
         return existing, False
+
+    if rules.email_required and not (email or "").strip():
+        raise ValidationError({"email": [EMAIL_REQUIRED_MESSAGE]})
 
     return Guardian.objects.create(
         tenant=tenant, full_name=(full_name or "").strip(),
@@ -96,8 +122,12 @@ def upsert_guardian(tenant, *, phone, full_name="", first_name="", middle_name="
 
 
 @transaction.atomic
-def link(student, guardian, *, relationship, is_primary, actor):
-    """Join a guardian to a student. A pair can only be linked once."""
+def link(student, guardian, *, relationship, is_primary, actor, relationship_detail=""):
+    """Join a guardian to a student. A pair can only be linked once.
+
+    *relationship_detail* is the school's own relationship, stored beside
+    OTHER (``GuardianRules.resolve_relationship`` gives both).
+    """
     if StudentGuardian.objects.filter(student=student, guardian=guardian).exists():
         raise ValidationError({
             "guardian": (
@@ -111,7 +141,8 @@ def link(student, guardian, *, relationship, is_primary, actor):
 
     row = StudentGuardian.objects.create(
         tenant=student.tenant, student=student, guardian=guardian,
-        relationship=relationship, is_primary=bool(is_primary),
+        relationship=relationship, relationship_detail=relationship_detail or "",
+        is_primary=bool(is_primary),
     )
     emit_audit_event(
         module_key=AuditModuleKey.STUDENT,
@@ -123,7 +154,10 @@ def link(student, guardian, *, relationship, is_primary, actor):
             f"Linked {guardian.full_name} to {student.full_name}"
             + (" as primary contact." if is_primary else ".")
         ),
-        metadata={"guardian": guardian.pk, "relationship": relationship},
+        metadata={
+            "guardian": guardian.pk, "relationship": relationship,
+            "relationship_label": row.relationship_label,
+        },
     )
     return row
 
@@ -152,7 +186,12 @@ def set_primary(student, guardian, *, actor):
 
 @transaction.atomic
 def unlink(student, guardian, *, actor, promote=None):
-    """Remove a link, refusing to leave a student on the roll with nobody.
+    """Remove a link, refusing to leave a student on the roll with too few.
+
+    Too few is fewer than the school's minimum (``guardians.min_per_student``),
+    which is one until a school asks for more. A child who is not on the roll
+    can be left with none, and a child already below a minimum set after they
+    were enrolled cannot be taken further below it.
 
     Unlinking the primary is allowed when another guardian is promoted in the
     same call. Where the school did not say which, and exactly one other
@@ -168,11 +207,19 @@ def unlink(student, guardian, *, actor, promote=None):
     remaining = list(
         StudentGuardian.objects.filter(student=student).exclude(pk=row.pk),
     )
-    if not remaining and student.status in ON_ROLL:
-        raise GuardianRequired(
-            f"{guardian.full_name} is {student.first_name}'s only guardian. "
-            f"Link another before removing this one.",
-        )
+    if student.status in ON_ROLL:
+        minimum = read_guardian_rules(student.tenant).min_per_student
+        if not remaining:
+            raise GuardianRequired(
+                f"{guardian.full_name} is {student.first_name}'s only guardian. "
+                f"Link another before removing this one.",
+            )
+        if len(remaining) < minimum:
+            raise GuardianRequired(
+                f"This school asks for {minimum} guardians for every child, "
+                f"and {student.first_name} has {len(remaining) + 1}. Link "
+                f"another before removing this one.",
+            )
 
     was_primary = row.is_primary
     row.delete()
@@ -205,13 +252,25 @@ def unlink(student, guardian, *, actor, promote=None):
     )
 
 
-def assert_guardian_set(rows):
-    """Exactly one primary, at least one guardian. Checked before any write.
+def assert_guardian_set(rows, *, tenant):
+    """Exactly one primary, and at least the school's minimum. Checked before any write.
 
-    ``rows`` is the validated guardian payload from an enrolment or a link.
+    ``rows`` is the validated guardian payload from an enrolment, which is an
+    applicant saved as much as a child enrolled. No guardian at all is
+    ``GUARDIAN_REQUIRED``, as it is at every school; some, but fewer than a
+    minimum above one, is refused on ``guardians`` so the form shows it where
+    the rows are.
     """
+    minimum = read_guardian_rules(tenant).min_per_student
     if not rows:
-        raise GuardianRequired()
+        raise GuardianRequired(
+            f"This school asks for {minimum} guardians for every child."
+            if minimum > 1 else "",
+        )
+    if len(rows) < minimum:
+        raise ValidationError({
+            "guardians": [f"This school asks for {minimum} guardians for every child."],
+        })
     primaries = [r for r in rows if r.get("is_primary")]
     if len(primaries) != 1:
         raise PrimaryGuardianRequired(
@@ -333,6 +392,9 @@ def update_guardian(guardian, *, actor, **fields):
     * **The portal account is resolved FROM the email**, so changing the email
       re-resolves it. Leaving it would point a corrected guardian at the account
       belonging to the address they no longer use.
+
+    At a school that requires a guardian email, blanking one is refused. A
+    guardian who never had one is not, because nothing is being blanked.
     """
     changed = {}
     for key in GUARDIAN_FIELDS:
@@ -347,6 +409,10 @@ def update_guardian(guardian, *, actor, **fields):
 
     if not changed:
         return guardian, []
+
+    if "email" in changed and not changed["email"]:
+        if read_guardian_rules(guardian.tenant).email_required:
+            raise ValidationError({"email": [EMAIL_REQUIRED_MESSAGE]})
 
     email = changed.get("email")
     if email:

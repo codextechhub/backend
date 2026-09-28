@@ -74,6 +74,37 @@ AGE_RULE_CEILING = 99
 DEFAULT_CAPACITY_MIN = 1
 DEFAULT_CAPACITY_MAX = 500
 
+# The school's guardian rules (services/guardian_rules.py). As with the
+# enrolment rules, each default is the behaviour every school had before it
+# could choose: one guardian, no email demanded, email then phone, and the
+# eight fixed relationships.
+CFG_GUARDIAN_MINIMUM = "guardians.min_per_student"
+CFG_GUARDIAN_EMAIL_REQUIRED = "guardians.email_required"
+CFG_GUARDIAN_MATCHING = "guardians.matching"
+CFG_GUARDIAN_EXTRA_RELATIONSHIPS = "guardians.relationships.extra"
+
+#: How many guardians a school may ask for on every child.
+GUARDIAN_MINIMUM_FLOOR = 1
+GUARDIAN_MINIMUM_CEILING = 4
+
+#: How many relationships of its own a school may add, and how long each may be.
+#: The length is ``StudentGuardian.relationship_detail``'s.
+EXTRA_RELATIONSHIPS_MAX = 10
+EXTRA_RELATIONSHIP_MAX_LENGTH = 30
+
+
+class GuardianMatching(models.TextChoices):
+    """How a guardian typed in is recognised as one the school already holds.
+
+    EMAIL_THEN_PHONE is the behaviour every school had before it could choose:
+    siblings whose parent is typed in with only a phone number still join one
+    household. EMAIL_ONLY is for a school where families share landlines, so a
+    shared number is two households and never one.
+    """
+
+    EMAIL_THEN_PHONE = "EMAIL_THEN_PHONE", "Email, then phone"
+    EMAIL_ONLY = "EMAIL_ONLY", "Email only"
+
 
 class CapacityMode(models.TextChoices):
     """What a full class does when one more child is placed in it.
@@ -172,6 +203,11 @@ class Relationship(models.TextChoices):
 
     An aunt recorded as OTHER is a contact the school cannot tell apart from a
     neighbour, and the school knew which she was when it typed her in.
+
+    A school may add relationships of its own (``guardians.relationships.extra``).
+    Those are stored as OTHER with the school's label in
+    ``StudentGuardian.relationship_detail``, so the fixed codes stay the whole
+    vocabulary every report and client can rely on.
     """
 
     MOTHER = "MOTHER", "Mother"

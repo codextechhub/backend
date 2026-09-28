@@ -35,11 +35,15 @@ from .constants import (
     AGE_RULE_FLOOR,
     DEFAULT_CAPACITY_MAX,
     DEFAULT_CAPACITY_MIN,
+    EXTRA_RELATIONSHIP_MAX_LENGTH,
+    EXTRA_RELATIONSHIPS_MAX,
+    GUARDIAN_MINIMUM_CEILING,
+    GUARDIAN_MINIMUM_FLOOR,
     REQUIRABLE_FIELDS,
     CapacityMode,
     DocumentType,
     Gender,
-    Relationship,
+    GuardianMatching,
     StudentStatus,
     TransferReason,
 )
@@ -177,10 +181,15 @@ class GuardianUpdateSerializer(FieldAccessMixin, serializers.Serializer):
 
 
 class GuardianLinkSerializer(serializers.ModelSerializer):
+    """One of a student's guardians, as the profile lists them.
+
+    ``relationship`` is the fixed code, OTHER for a relationship the school
+    added for itself; ``relationship_label`` is what to show, which is the
+    school's own label where one is stored.
+    """
+
     guardian = GuardianSerializer(read_only=True)
-    relationship_label = serializers.CharField(
-        source="get_relationship_display", read_only=True,
-    )
+    relationship_label = serializers.CharField(read_only=True)
     siblings = serializers.SerializerMethodField()
 
     class Meta:
@@ -261,6 +270,13 @@ class GuardianWriteSerializer(FieldAccessMixin, serializers.Serializer):
     one; any value is accepted here and only the correction form asks its
     Write switch. A row naming an existing guardian writes none of these
     details: the existing record is linked as it stands.
+
+    The school's guardian rules apply (``services/guardian_rules.py``). The
+    relationship is a fixed code or label, or one of the school's own, and
+    validates to ``relationship`` plus ``relationship_detail``. At a school
+    that requires a guardian email, a new guardian needs one; a row that names
+    an existing guardian, by id or by a phone the school matches on, does not,
+    so a record held from before the rule can still be linked.
     """
 
     field_resource = "school.guardians"
@@ -276,10 +292,29 @@ class GuardianWriteSerializer(FieldAccessMixin, serializers.Serializer):
         max_length=100, required=False, allow_blank=True,
     )
     address = serializers.CharField(required=False, allow_blank=True)
-    relationship = serializers.ChoiceField(choices=Relationship.choices)
+    relationship = serializers.CharField(
+        max_length=64,
+        error_messages={
+            "blank": "Say how this guardian is related to the child.",
+            "required": "Say how this guardian is related to the child.",
+            "max_length": "That is not a relationship this school records.",
+        },
+    )
     is_primary = serializers.BooleanField(default=False)
 
     def validate(self, attrs):
+        from .services.guardians import EMAIL_REQUIRED_MESSAGE, match_existing
+
+        rules = _guardian_rules(self)
+        resolved = rules.resolve_relationship(attrs.get("relationship"))
+        if resolved is None:
+            from .services.guardian_rules import unknown_relationship_message
+
+            raise serializers.ValidationError({
+                "relationship": unknown_relationship_message(attrs.get("relationship")),
+            })
+        attrs["relationship"], attrs["relationship_detail"] = resolved
+
         if not attrs.get("guardian_id"):
             has_parts = any(
                 (attrs.get(part) or "").strip()
@@ -299,7 +334,30 @@ class GuardianWriteSerializer(FieldAccessMixin, serializers.Serializer):
                 raise serializers.ValidationError({
                     "phone": "A guardian needs a phone number the school can reach.",
                 })
+            if rules.email_required and not (attrs.get("email") or "").strip():
+                held = match_existing(
+                    _context_tenant(self), phone=attrs.get("phone", ""),
+                    matching=rules.matching,
+                )
+                if held is None:
+                    raise serializers.ValidationError({"email": EMAIL_REQUIRED_MESSAGE})
         return attrs
+
+
+def _guardian_rules(serializer):
+    """The school's guardian rules, read once per request however many rows ask.
+
+    Cached in the root serializer's context, which is one dict per request, so
+    an enrolment naming three guardians reads the settings once.
+    """
+    from .services.guardian_rules import read_guardian_rules
+
+    context = serializer.context
+    rules = context.get("_guardian_rules")
+    if rules is None:
+        rules = read_guardian_rules(_context_tenant(serializer))
+        context["_guardian_rules"] = rules
+    return rules
 
 
 # ── students ───────────────────────────────────────────────────────────────
@@ -927,6 +985,88 @@ class EnrolmentRulesSerializer(serializers.Serializer):
                 "max_age_years": "The oldest age must be above the youngest.",
             })
         return attrs
+
+
+class GuardianRulesSerializer(serializers.Serializer):
+    """The full set of a school's guardian rules, as the settings screen saves it.
+
+    Every rule is sent every time, for the reason ``EnrolmentRulesSerializer``
+    gives. The added relationships are each trimmed and must be 1 to 30
+    characters, distinct ignoring case, and not a relationship every school
+    already has, because a second "Mother" would be two answers to one
+    question. Each refusal is keyed on its own field, as a sentence.
+    """
+
+    min_per_student = serializers.IntegerField(
+        min_value=GUARDIAN_MINIMUM_FLOOR, max_value=GUARDIAN_MINIMUM_CEILING,
+        error_messages={
+            "min_value": "Every child needs at least 1 guardian.",
+            "max_value": (
+                f"A school can ask for at most {GUARDIAN_MINIMUM_CEILING} "
+                f"guardians for every child."
+            ),
+            "invalid": "Give the number of guardians as a whole number.",
+            "required": "Say how many guardians every child needs.",
+            "null": "Say how many guardians every child needs.",
+        },
+    )
+    email_required = serializers.BooleanField(
+        error_messages={
+            "invalid": "Say whether a guardian email is required, true or false.",
+            "required": "Say whether a guardian email is required.",
+            "null": "Say whether a guardian email is required.",
+        },
+    )
+    matching = serializers.ChoiceField(
+        choices=GuardianMatching.choices,
+        error_messages={
+            "invalid_choice": (
+                "Choose EMAIL_THEN_PHONE or EMAIL_ONLY for how guardians are "
+                "matched."
+            ),
+            "required": "Say how guardians are matched.",
+            "null": "Say how guardians are matched.",
+        },
+    )
+    extra_relationships = serializers.ListField(
+        child=serializers.CharField(allow_blank=True, trim_whitespace=True),
+        allow_empty=True,
+        error_messages={
+            "not_a_list": "Give the school's own relationships as a list.",
+            "required": "Give the school's own relationships, or an empty list.",
+            "null": "Give the school's own relationships, or an empty list.",
+        },
+    )
+    reason = serializers.CharField(
+        required=False, allow_blank=True, max_length=200,
+    )
+
+    def validate_extra_relationships(self, value):
+        from .services.guardian_rules import FIXED_SPELLINGS
+
+        if len(value) > EXTRA_RELATIONSHIPS_MAX:
+            raise serializers.ValidationError(
+                f"A school can add up to {EXTRA_RELATIONSHIPS_MAX} relationships "
+                f"of its own.",
+            )
+        seen: set[str] = set()
+        for label in value:
+            if not label:
+                raise serializers.ValidationError("A relationship needs a name.")
+            if len(label) > EXTRA_RELATIONSHIP_MAX_LENGTH:
+                raise serializers.ValidationError(
+                    f"'{label}' is longer than {EXTRA_RELATIONSHIP_MAX_LENGTH} "
+                    f"characters.",
+                )
+            folded = label.casefold()
+            if folded in FIXED_SPELLINGS:
+                raise serializers.ValidationError(
+                    f"'{label}' is already a relationship every school has.",
+                )
+            if folded in seen:
+                raise serializers.ValidationError(f"'{label}' is listed twice.")
+            seen.add(folded)
+        return value
 
 
 class SearchHitSerializer(FieldAccessMixin, serializers.ModelSerializer):

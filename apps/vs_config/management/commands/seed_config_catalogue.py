@@ -195,6 +195,37 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "INTEGER", None, {"min": 1, "max": 500},
     ),
     (
+        "guardians.min_per_student", "Guardians Per Student",
+        "How many guardians every child at this school needs. Enrolment and "
+        "saving an applicant refuse fewer, and a guardian cannot be removed "
+        "from a child on the roll if that would leave fewer. The student "
+        "import still imports its one guardian per child, with a warning.",
+        "INTEGER", 1, {"min": 1, "max": 4},
+    ),
+    (
+        "guardians.email_required", "Guardian Email Required",
+        "Whether a new guardian must be given an email address, on the "
+        "enrolment form, when linking, and in both imports, and whether an "
+        "edit may blank one. A guardian already held with no email can still "
+        "be linked to another child.",
+        "BOOLEAN", False, {},
+    ),
+    (
+        "guardians.matching", "Guardian Matching",
+        "How a guardian typed in is recognised as one this school already "
+        "holds. EMAIL_THEN_PHONE matches on email, then on phone; EMAIL_ONLY "
+        "never matches on phone, for a school whose families share landlines.",
+        "CHOICE", "EMAIL_THEN_PHONE", {"choices": ["EMAIL_THEN_PHONE", "EMAIL_ONLY"]},
+    ),
+    (
+        "guardians.relationships.extra", "Additional Guardian Relationships",
+        "Relationships this school records beyond the fixed eight, such as "
+        "Sponsor or Driver: up to 10, each up to 30 characters. A link stores "
+        "one as Other with the school's label, and removing it from this list "
+        "leaves those links as they are.",
+        "JSON", [], {},
+    ),
+    (
         "display.timezone", "Time Zone",
         "The IANA time zone this school keeps its calendar in, such as "
         "Africa/Lagos. It decides which day \"today\" is for due dates, "

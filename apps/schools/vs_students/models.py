@@ -273,7 +273,14 @@ class Guardian(_Owned):
 
 
 class StudentGuardian(_Owned):
-    """Many-to-many, with exactly one primary contact per student."""
+    """Many-to-many, with exactly one primary contact per student.
+
+    ``relationship`` is always one of the fixed codes. A relationship the
+    school added for itself, such as Sponsor, is stored as OTHER with the
+    school's own spelling in ``relationship_detail``; a school that later
+    removes it from its list leaves the stored links reading as they were
+    written. ``relationship_label`` is what every screen shows.
+    """
 
     tenant = models.ForeignKey(
         "vs_tenants.Tenant", on_delete=models.PROTECT, related_name="+",
@@ -285,6 +292,8 @@ class StudentGuardian(_Owned):
         Guardian, on_delete=models.CASCADE, related_name="student_links",
     )
     relationship = models.CharField(max_length=16, choices=Relationship.choices)
+    #: The school's own relationship, where ``relationship`` is OTHER.
+    relationship_detail = models.CharField(max_length=30, blank=True, default="")
     is_primary = models.BooleanField(default=False)
 
     class Meta(_Owned.Meta):
@@ -302,6 +311,11 @@ class StudentGuardian(_Owned):
         ]
         indexes = [models.Index(fields=["tenant", "guardian"])]
         ordering = ["-is_primary", "id"]
+
+    @property
+    def relationship_label(self) -> str:
+        """The school's own relationship where one is stored, else the fixed label."""
+        return self.relationship_detail or self.get_relationship_display()
 
 
 class ClassEnrolment(_Owned):

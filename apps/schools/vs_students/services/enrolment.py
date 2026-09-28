@@ -26,6 +26,7 @@ from ..constants import StudentStatus
 from ..exceptions import DuplicateStudent, DuplicateStudentNumber
 from ..models import Student
 from . import guardians as guardian_service
+from .guardian_rules import read_guardian_rules
 from .policy import assert_number_allowed, read_policy, suggest_number
 from .status import transition
 
@@ -143,7 +144,7 @@ def enrol(
     from .documents import attach
     from .placement import place
 
-    guardian_service.assert_guardian_set(guardian_rows)
+    guardian_service.assert_guardian_set(guardian_rows, tenant=tenant)
     assert_not_duplicate(
         tenant,
         first_name=data["first_name"], last_name=data["last_name"],
@@ -194,6 +195,7 @@ def enrol(
     if student is None:
         student = create(number)
 
+    guardian_rules = read_guardian_rules(tenant)
     for row in guardian_rows:
         guardian = row.get("guardian")
         if guardian is None:
@@ -205,9 +207,11 @@ def enrol(
                 last_name=row.get("last_name", ""), phone=row.get("phone", ""),
                 email=row.get("email", ""), occupation=row.get("occupation", ""),
                 address=row.get("address", "") or data.get("address", ""),
+                rules=guardian_rules,
             )
         guardian_service.link(
             student, guardian, relationship=row["relationship"],
+            relationship_detail=row.get("relationship_detail", ""),
             is_primary=bool(row.get("is_primary")), actor=actor,
         )
 

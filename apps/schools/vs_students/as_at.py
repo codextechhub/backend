@@ -217,6 +217,7 @@ def wards_at(guardian_pk, visible_ids, as_at: AsAt) -> list[dict]:
             "status": student.status, "status_label": student.get_status_display(),
             "class_name": classes.get(pk, ""),
             "relationship": link.relationship,
+            "relationship_label": link.relationship_label,
             "is_primary": link.is_primary,
         })
     return rows
