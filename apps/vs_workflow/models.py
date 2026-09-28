@@ -469,9 +469,10 @@ class WorkflowStage(models.Model):
     # Number of levels to climb when organogram_target == N_LEVELS_UP.
     organogram_levels = models.PositiveSmallIntegerField(default=1)
     # The post named when organogram_target == SPECIFIC_POSITION: a CX chart
-    # seat, or a post on the template tenant's own chart. Never both.
+    # seat, or a post on the template tenant's own chart. Never both. A seat a
+    # stage names cannot be deleted, as a school's post cannot.
     organogram_position = models.ForeignKey(
-        "vs_user.Position", on_delete=models.SET_NULL,
+        "vs_user.Position", on_delete=models.PROTECT,
         null=True, blank=True, related_name="workflow_stages",
     )
     organogram_tenant_position_id = models.PositiveBigIntegerField(null=True, blank=True)
