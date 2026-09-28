@@ -11,7 +11,10 @@ rather than like a record. Two rules follow and both are asserted as tests.
 teacher with no staff key at all can open the CV she uploaded. And **nobody
 reads anybody else's without** ``school.teachers.view``, plus the branch
 narrowing the directory itself applies, so a file can never be reachable by a
-caller the profile is not.
+caller the profile is not. A document is held to the key its own tab is read
+under, ``school.staff_records.view``, not the directory's: a role that lists
+staff but may not read their records cannot open a CV or a passport scan by its
+link either.
 
 Two widenings, each following the profile a reader can already open. The
 photograph is on the contact card, which everybody working at the school reads,
@@ -25,11 +28,12 @@ from __future__ import annotations
 
 from core.media import register_policy
 
-from .constants import PERM_ORG_VIEW, PERM_VIEW
+from .constants import PERM_ORG_VIEW, PERM_RECORDS_VIEW, PERM_VIEW
 from .models import StaffDocument, StaffProfile
 
 
-def _may_read_staff_file(request, staff) -> bool:
+def _may_read_staff_file(request, staff, key=PERM_VIEW) -> bool:
+    """The person themselves, or a holder of *key* whose branches reach them."""
     from vs_rbac.permissions import has_permission
 
     from .services.scoping import is_self, scope_staff
@@ -45,7 +49,7 @@ def _may_read_staff_file(request, staff) -> bool:
     # and that is not a boundary worth keeping.
     if is_self(user, staff):
         return True
-    if not has_permission(user, PERM_VIEW, tenant=tenant):
+    if not has_permission(user, key, tenant=tenant):
         return False
     # The branch check, made against the same scoped queryset the directory
     # uses, so a photograph cannot be reachable by a caller the profile is not.
@@ -65,10 +69,12 @@ def _granted_by_relationship(request, staff, group) -> bool:
 
 
 def _may_read_document(request, document) -> bool:
-    """The directory's rule, or the records the reader's relationship is shown."""
+    """The Documents tab's rule, or the records the reader's relationship is shown."""
     from .services.visibility import GROUP_RECORDS
 
-    return _may_read_staff_file(request, document.staff) or _granted_by_relationship(
+    return _may_read_staff_file(
+        request, document.staff, PERM_RECORDS_VIEW,
+    ) or _granted_by_relationship(
         request, document.staff, GROUP_RECORDS,
     )
 
