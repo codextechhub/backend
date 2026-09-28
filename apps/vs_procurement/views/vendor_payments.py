@@ -16,6 +16,7 @@ from core.response import success_response
 from vs_finance.constants import DocumentStatus, PaymentMethod
 from vs_finance.money import format_naira
 from vs_finance.views import resolve_entity
+from vs_finance.views_ops.base import require_own_branch_bank
 
 from .. import approvals, payables
 from ..constants import ProcApprovalState, VendorKycStatus
@@ -53,20 +54,24 @@ def _payment_list_queryset(entity):
     ).prefetch_related("allocations__vendor_invoice")
 
 
-def _resolve_bank_account(request, entity, ref):
+def _resolve_bank_account(request, entity, ref, *, document_branch):
     """Resolve an active bank account, backed by a postable GL account, the caller can see.
 
-    Which accounts a caller may name is finance's rule, read through finance's
-    resolver: their own branches' accounts and the school-wide ones. Lekki's
-    account named by an Ikeja-pinned officer is a 404 like any unknown id. What
-    is added here is the payment's own condition, that the account and its
-    ledger account are open for posting.
+    Which accounts a caller may name, and which a branch's payment may be paid
+    from, are finance's rules, read through finance's resolver: the caller's
+    branches' accounts and the school-wide ones, and for a payment that belongs
+    to a branch, that branch's or a school-wide one. What is added here is the
+    payment's own condition, that the account and its ledger account are open
+    for posting. A new payment learns its branch from the bills it settles, so
+    it passes ``document_branch=None`` here and checks the branch once the bills
+    are resolved.
     """
     if ref in (None, ""):
         raise ValidationError({"bank_account": "An active bank or cash account is required."})
     from vs_finance.views_ops.base import _resolve_bank_account as _reachable_bank_account
 
-    account = _reachable_bank_account(request, entity, ref)
+    account = _reachable_bank_account(
+        request, entity, ref, document_branch=document_branch, noun="vendor payment")
     gl = account.gl_account
     if not (account.is_active and gl.is_active and gl.is_postable):
         raise ValidationError({"bank_account": "No active bank account with a postable GL account exists in this entity."})
@@ -207,18 +212,20 @@ class VendorPaymentListCreateView(_ProcBase):
         body = request.data
         vendor = _resolve_vendor(request, entity, body.get("vendor"))
         _validate_vendor_for_payment(vendor)
-        bank = _resolve_bank_account(request, entity, body.get("bank_account"))
+        bank = _resolve_bank_account(request, entity, body.get("bank_account"), document_branch=None)
         plan = _allocation_plan(entity, vendor, body.get("allocations"))
         gross = sum(amount for _, amount in plan)  # Gross is the exact approved liability split.
         wht = _money(body.get("wht_amount", 0), "wht_amount")
         if wht > gross:
             raise ValidationError({"wht_amount": "WHT cannot exceed the invoice amount being settled."})
+        # A settlement belongs to the branch of the bills it settles. Invoices from
+        # different branches (only a caller who is not branch-bound can select
+        # those) settle at entity level. It is paid from that branch's money.
+        branch_id = _inherited_branch_id(request, *(invoice for invoice, _ in plan))
+        require_own_branch_bank(bank, branch_id, noun="vendor payment")
         payment = VendorPayment.objects.create(
             entity=entity, vendor=vendor,
-            # A settlement belongs to the branch of the bills it settles. Invoices
-            # from different branches (only a caller who is not branch-bound can
-            # select those) settle at entity level.
-            branch_id=_inherited_branch_id(request, *(invoice for invoice, _ in plan)),
+            branch_id=branch_id,
             payment_date=_date(body.get("payment_date"), "payment_date", required=True),
             method=_validate_method(body.get("method")), gross_amount=gross,
             wht_amount=wht, net_amount=gross - wht, allocated_amount=0,
@@ -297,7 +304,11 @@ class VendorPaymentDetailView(_ProcBase):
         body = request.data
         vendor = _resolve_vendor(request, entity, body.get("vendor", payment.vendor_id))
         _validate_vendor_for_payment(vendor)
-        bank = _resolve_bank_account(request, entity, body.get("bank_account", getattr(getattr(payment.payment_account, "bank_account", None), "id", None)))
+        bank = _resolve_bank_account(
+            request, entity,
+            body.get("bank_account", getattr(getattr(payment.payment_account, "bank_account", None), "id", None)),
+            document_branch=payment.branch_id,
+        )
         plan = _allocation_plan(entity, vendor, body.get("allocations"))
         gross = sum(amount for _, amount in plan)  # Editing recomputes, never trusts a client total.
         wht = _money(body.get("wht_amount", payment.wht_amount), "wht_amount")

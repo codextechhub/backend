@@ -201,3 +201,118 @@ class BankAccountNamedInAPostingTests(_FinanceBranchFixture):
             {"vendor": vendor.pk, "payment_date": JAN.isoformat()},
             refused_count=VendorPayment.objects.filter(vendor=vendor).count,
         )
+
+
+class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
+    """A branch's document is paid from that branch's account or a school-wide one.
+
+    Mrs Okafor is bursar at both Ikeja and Lekki, so Lekki's account is in her
+    bank list. An Ikeja document paid from it would leave Ikeja owing and Lekki
+    short, so it is refused with a 400 naming the branch, not hidden as a 404.
+    A school-wide document may be paid from any account she can reach.
+    """
+
+    MESSAGE = "belongs to Ikeja Branch. Pay it from an Ikeja Branch account or a school-wide one."
+
+    def bursar(self, *keys):
+        """Mrs Okafor, bound to Ikeja and to Lekki."""
+        n = next(_bursars)
+        user = self.user_for(self.tenant, f"okafor-{n}@corona.test")
+        for branch in (self.ikeja, self.lekki):
+            self.grant(user, *keys, tenant=self.tenant,
+                       role_key=f"okafor-{n}-{branch.pk}", branch=branch)
+        return TenantAPIClient(user=user)
+
+    def assertEachBank(self, client, path, body, *, refused_count=None, noun=None):
+        response = self.post(client, path, {**body, "bank_account": self.lekki_bank.pk})
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn(self.MESSAGE, str(response.data))
+        if refused_count is not None:
+            self.assertEqual(refused_count(), 0, f"{path} wrote a row before refusing")
+        for bank in (self.ikeja_bank, self.shared_bank):
+            with self.subTest(path=path, bank=bank.name):
+                accepted = self.post(client, path, {**body, "bank_account": bank.pk})
+                self.assertNotIn("No bank account", str(accepted.data))
+                self.assertNotIn("Pay it from", str(accepted.data))
+
+    def test_a_refund_by_name_is_refused_the_same_way(self):
+        customer = self.customer(self.books, "CREFN", self.ikeja)
+        response = self.post(self.bursar("finance.refund.create"), "finance/refunds/", {
+            "customer": customer.code, "amount": 1000,
+            "refund_date": JAN.isoformat(), "bank_account": self.lekki_bank.name,
+        })
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("This refund " + self.MESSAGE, str(response.data))
+
+    def test_a_refund_batch_names_only_a_reachable_account(self):
+        from vs_finance.models import Refund
+
+        customer = self.customer(self.books, "CBAT", self.ikeja)
+        response = self.post(
+            self.bursar("finance.refund.create", "finance.refund.post"),
+            "finance/ar-adjustments/batch/", {
+                "kind": "REFUND", "action": "DRAFT", "date": JAN.isoformat(),
+                "bank_account": self.lekki_bank.pk,
+                "items": [{"customer": customer.code, "amount": 1000}],
+            })
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn(self.MESSAGE, str(response.data))
+        self.assertFalse(Refund.objects.filter(customer=customer).exists())
+
+    def test_a_payroll_run_and_its_payment(self):
+        from vs_finance.models import PayrollRun
+
+        run = PayrollRun.objects.create(entity=self.books, branch=self.ikeja, pay_date=JAN)
+        self.assertEachBank(
+            self.bursar("finance.payrollrun.pay"), f"finance/payroll-runs/{run.pk}/pay/", {},
+        )
+
+    def test_a_tax_payment(self):
+        """A filing is the school's, so any account she can reach pays it."""
+        from vs_finance.models import TaxFiling, TaxObligation
+
+        filing = TaxFiling.objects.create(
+            entity=self.books,
+            obligation=TaxObligation.objects.filter(entity=self.books).first(),
+            period_start=datetime.date(2026, 1, 1), period_end=datetime.date(2026, 1, 31),
+        )
+        client = self.bursar("finance.tax.pay")
+        for bank in (self.ikeja_bank, self.lekki_bank, self.shared_bank):
+            with self.subTest(bank=bank.name):
+                response = self.post(client, f"finance/tax-filings/{filing.pk}/pay/",
+                                     {"pay_date": JAN.isoformat(), "bank_account": bank.pk})
+                self.assertNotIn("Pay it from", str(response.data))
+                self.assertNotIn("No bank account", str(response.data))
+
+    def test_a_vendor_payment(self):
+        """Settling an Ikeja bill is Ikeja's money; checked once the bills resolve."""
+        from vs_finance.constants import DocumentStatus
+        from vs_procurement.constants import ProcApprovalState
+        from vs_procurement.models import Vendor, VendorInvoice, VendorPayment
+
+        vendor = Vendor.objects.create(
+            entity=self.books, code="ACME", name="Acme Supplies",
+            payable_account=Account.objects.get(entity=self.books, code="2100"),
+            kyc_status="VERIFIED",
+        )
+        bill = VendorInvoice.objects.create(
+            entity=self.books, vendor=vendor, branch=self.ikeja,
+            invoice_date=JAN, due_date=JAN, total=10_000, subtotal=10_000,
+            status=DocumentStatus.POSTED, approval_state=ProcApprovalState.APPROVED,
+        )
+        self.assertEachBank(
+            self.bursar("procurement.vendor_payment.create"), "procurement/vendor-payments/",
+            {"vendor": vendor.pk, "payment_date": JAN.isoformat(),
+             "allocations": [{"vendor_invoice": bill.pk, "amount": 10_000}]},
+            refused_count=VendorPayment.objects.filter(vendor=vendor).count,
+        )
+
+    def test_a_school_wide_refund_may_use_any_account_she_reaches(self):
+        customer = self.customer(self.books, "CALLR", None)
+        client = self.bursar("finance.refund.create")
+        response = self.post(client, "finance/refunds/", {
+            "customer": customer.code, "amount": 1000,
+            "refund_date": JAN.isoformat(), "bank_account": self.lekki_bank.pk,
+        })
+        self.assertNotIn("Pay it from", str(response.data))
+        self.assertNotIn("No bank account", str(response.data))

@@ -306,7 +306,9 @@ class ExpenseClaimSettleView(_ExpenseClaimActionBase):
 
         entity, claim = self._claim(request, pk)
         body = request.data or {}
-        bank = _resolve_bank_account(request, entity, body.get("bank_account"))
+        bank = _resolve_bank_account(
+            request, entity, body.get("bank_account"),
+            document_branch=claim.branch_id, noun="expense claim")
         amount = _money(body["amount"], "amount") if body.get("amount") not in (None, "") else None
         settle_expense_claim(
             claim, bank_account=bank,

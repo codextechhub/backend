@@ -80,6 +80,7 @@ from .serializers import (
     WriteOffRequestSerializer,
 )
 from .views import resolve_entity
+from .views_ops.base import require_own_branch_bank
 from .views_ops import (
     _FinanceBase,
     _date,
@@ -1754,8 +1755,12 @@ def _build_refund(request, entity, body):
     actor_user = request.user
     customer = _resolve_customer(request, entity, body.get("customer"))
     customer = Customer.objects.select_for_update().get(pk=customer.pk)
+    # A refund continues the customer's chain: it hands back credit that arose on
+    # their account, so it belongs where they do, and is paid from there.
+    branch_id = _inherited_branch_id(request, customer)
     bank_account = _resolve_bank_account(
-        request, entity, body.get("bank_account"), required=False)
+        request, entity, body.get("bank_account"), required=False,
+        document_branch=branch_id, noun="refund")
     refund_date = _date(body.get("refund_date"), "refund_date", required=True)
     # Measure the credit on the refund's own date, so a doomed backdated draft is
     # refused at creation rather than surviving all the way to the posting guard.
@@ -1765,14 +1770,12 @@ def _build_refund(request, entity, body):
     return Refund.objects.create(
         entity=entity,
         customer=customer,
-        # A refund continues the customer's chain: it hands back credit that
-        # arose on their account, so it belongs where they do.
-        branch_id=_inherited_branch_id(request, customer),
+        branch_id=branch_id,
         refund_date=refund_date,
         currency=_resolve_currency(body.get("currency")),
         method=body.get("method", "BANK_TRANSFER"),
         amount=amount,
-        bank_account=_resolve_bank_account(request, entity, body.get("bank_account"), required=False),
+        bank_account=bank_account,
         reference=body.get("reference", ""),
         narration=body.get("narration", ""),
         created_by=actor_user,
@@ -2343,7 +2346,10 @@ class ARAdjustmentBatchView(_FinanceBase):
         if kind == "REFUND":
             from .receivables import customer_refund_available_balances
 
-            bank_account = _resolve_bank_account(request, entity, body.get("bank_account"), required=True)
+            # The batch names one account; each refund's own branch is checked per line.
+            bank_account = _resolve_bank_account(
+                request, entity, body.get("bank_account"), required=True,
+                document_branch=None, noun="refund")
             customers = _batch_customers(request, entity, items)
             # The whole batch shares one accounting date, so availability is measured
             # on that date - not today. A batch dated before the credit arrived is
@@ -2361,6 +2367,13 @@ class ARAdjustmentBatchView(_FinanceBase):
                         },
                     })
                 seen_targets.add(customer.pk)
+                # Per line, not per batch: a batch may span branches, and each
+                # refund belongs where its own customer does and is paid from there.
+                branch_id = _inherited_branch_id(request, customer)
+                try:
+                    require_own_branch_bank(bank_account, branch_id, noun="refund")
+                except ValidationError as exc:  # Re-key onto the offending batch line.
+                    raise ValidationError({"items": {index: exc.detail}}) from exc
                 try:
                     amount = _validated_refund_amount(
                         customer,
@@ -2373,9 +2386,7 @@ class ARAdjustmentBatchView(_FinanceBase):
                 documents.append(Refund.objects.create(
                     entity=entity,
                     customer=customer,
-                    # Per line, not per batch: a batch may span branches, and each
-                    # refund belongs where its own customer does.
-                    branch_id=_inherited_branch_id(request, customer),
+                    branch_id=branch_id,
                     refund_date=common_date,
                     method="BANK_TRANSFER",
                     amount=amount,
