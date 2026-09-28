@@ -42,7 +42,13 @@ def _paginate(request, qs, serializer_cls, view, **ser_kwargs):
     page = paginator.paginate_queryset(qs, request, view=view)
     return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)
 
-from .constants import DocumentStatus, FeeAppliesTo, FinanceAuditAction, FinanceAuditStatus
+from .constants import (
+    PENDING_STATUSES,
+    DocumentStatus,
+    FeeAppliesTo,
+    FinanceAuditAction,
+    FinanceAuditStatus,
+)
 from .money import format_naira
 from .models import (
     Concession,
@@ -2583,7 +2589,10 @@ class ARAdjustmentListView(_FinanceBase):
 
     Filters: ``?type=(refund|writeoff)`` and ``?search=``. The merged list is sorted
     by date and paginated; KPI totals (written-off YTD, pending count, refundable
-    credit) ride in the response so they stay accurate across pages.
+    credit) ride in the response so they stay accurate across pages. Pending
+    counts drafts and documents awaiting approval
+    (:data:`~vs_finance.constants.PENDING_STATUSES`), as the receivables dashboard
+    does, so a voided refund is not pending on one screen and finished on the other.
 
     Opens on either ``finance.refund.view`` or ``finance.writeoff.view``, and each
     kind of row, and each KPI drawn from it, goes only to a reader holding that
@@ -2654,9 +2663,9 @@ class ARAdjustmentListView(_FinanceBase):
         ) if sees_writeoffs else None
         # "Pending" spans the adjustment kinds this reader sees.
         pending = (
-            refunds.exclude(status=DocumentStatus.POSTED).count()
+            refunds.filter(status__in=PENDING_STATUSES).count()
             + (scope.filter(WriteOffRequest.objects.filter(entity=entity))
-               .exclude(status=DocumentStatus.POSTED).count() if sees_writeoffs else 0)
+               .filter(status__in=PENDING_STATUSES).count() if sees_writeoffs else 0)
         )
         refundable_credit = None
         if sees_refunds:

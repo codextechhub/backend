@@ -132,3 +132,57 @@ class AdjustmentListAccessTests(_AccessFixture):
         ids = {row["write_off_id"] for row in body["data"]}
         self.assertIn(self.ikeja_writeoff.id, ids)
         self.assertNotIn(self.lekki_writeoff.id, ids)
+
+
+class AdjustmentPendingCountTests(_AccessFixture):
+    """The list's pending count is the dashboard's: drafts and those awaiting approval.
+
+    A refund voided after posting is finished business. Counting it as pending
+    on the list while the dashboard does not left the two screens disagreeing
+    about the same refunds.
+    """
+
+    def setUp(self):
+        from vs_finance.constants import DocumentStatus as S
+
+        super().setUp()
+        e = self.books
+        on = datetime.date(2026, 1, 20)
+        for status in (S.DRAFT, S.PENDING_APPROVAL, S.POSTED, S.REVERSED, S.CANCELLED):
+            Refund.objects.create(
+                entity=e, customer=self.ikeja_customer, branch=self.ikeja,
+                refund_date=on, amount=5_000, status=status,
+            )
+        for invoice, status in ((self.ikeja_invoice, S.PENDING_APPROVAL),
+                                (self.lekki_invoice, S.REVERSED)):
+            WriteOffRequest.objects.create(
+                entity=e, invoice=invoice, branch=invoice.branch, amount=10_000, status=status,
+            )
+
+    def test_voided_and_cancelled_documents_are_not_pending(self):
+        client = self.client_holding(
+            "pending-hq@corona.test", "finance.refund.view", "finance.writeoff.view",
+        )
+        body = client.get(f"/v1/finance/ar-adjustments/?entity={self.books.code}").json()
+
+        self.assertEqual(body["kpis"]["pending"], 3)
+
+    def test_the_list_and_the_dashboard_count_the_same_documents(self):
+        import types
+
+        from vs_finance.dashboard import EVERY_BLOCK
+        from vs_finance.dashboard_receivables import adjustments
+
+        client = self.client_holding(
+            "pending-both@corona.test", "finance.refund.view", "finance.writeoff.view",
+        )
+        listed = client.get(f"/v1/finance/ar-adjustments/?entity={self.books.code}").json()
+        blocks = adjustments(
+            self.books, types.SimpleNamespace(start=datetime.date(2026, 1, 1)),
+            datetime.date.today(), EVERY_BLOCK,
+        )
+
+        self.assertEqual(
+            listed["kpis"]["pending"],
+            sum(b["pending"] for b in blocks if b["key"] in ("refunds", "write_offs")),
+        )
