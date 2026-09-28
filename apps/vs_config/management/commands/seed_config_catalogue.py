@@ -228,10 +228,11 @@ SCHOOL_SCOPED_DEFINITIONS = [
     (
         "applicants.documents.required_to_confirm",
         "Documents Required To Confirm An Applicant",
-        "The documents an applicant must have on their record before they can "
-        "be confirmed as enrolled, on every route that confirms one. Empty "
-        "means confirming never waits for a document. Enrolling a child "
-        "directly, without saving them as an applicant first, is not checked.",
+        "The documents a child must have on their record before joining the roll: "
+        "an applicant before being confirmed as enrolled, on every route that "
+        "confirms one, and a child enrolled directly, whose documents are sent "
+        "with the enrolment. At a school with any, the student import brings each "
+        "row in as an applicant. Empty means nothing waits for a document.",
         "JSON", [], {},
     ),
     (

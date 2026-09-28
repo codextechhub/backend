@@ -5,12 +5,15 @@ database-backed storage and is already served with authentication - so a
 document is never a public URL and a leaked link is not a leaked birth
 certificate.
 
-A missing required document never blocks anything. A school registering a child
-on the day they arrive rarely has the birth certificate in hand, and a rule that
-refused the enrolment would simply be worked around with a blank file. Which
-documents count as required is the school's own list
-(``students.documents.required``, read through ``services/rules.py``); the list
-changes what the checklist asks for, never what an enrolment is allowed to do.
+The checklist's required documents never block anything. A school registering
+a child on the day they arrive rarely has the birth certificate in hand, and a
+rule that refused the enrolment would simply be worked around with a blank
+file. Which documents count as required on the checklist is the school's own
+list (``students.documents.required``, read through ``services/rules.py``); the
+list changes what the checklist asks for, never what an enrolment is allowed to
+do. A school that does want documents before a child joins the roll says so in
+a separate list, ``applicants.documents.required_to_confirm``
+(``services/admission.py``), and that one does refuse.
 
 FRD M11 v2.4 section 7.6 and FR-015.
 """

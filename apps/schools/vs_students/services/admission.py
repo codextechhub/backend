@@ -14,11 +14,14 @@ against the school's own calendar day, and a person decides whether to extend
 the offer, move the applicant on or reject them. There is no scheduled job.
 
 **Documents.** ``applicants.documents.required_to_confirm`` names the documents
-an applicant must hold before :func:`~.enrolment.confirm_applicant` confirms
-them. Its default is none, the behaviour every school had before it could
-choose. It is read and cleaned like the enrolment rules (``rules.py``): a value
-stored by hand that names an unknown document drops that document rather than
-refusing every confirmation at the school.
+a child must have on their record before joining the roll: an applicant before
+:func:`~.enrolment.confirm_applicant` confirms them, and a child enrolled
+directly in the same save that enrols them. At a school with such a list the
+student import brings every row in as an applicant (``imports.py``). Its
+default is none, the behaviour every school had before it could choose. It is
+read and cleaned like the enrolment rules (``rules.py``): a value stored by
+hand that names an unknown document drops that document rather than refusing
+every confirmation at the school.
 
 **Writes.** The PUT is the whole set: stages are created, renamed, reordered and
 removed in one transaction, each change audited against the stage, and the
@@ -70,6 +73,26 @@ def _in_words(labels) -> str:
     return f"{', '.join(labels[:-1])} and {labels[-1]}"
 
 
+def _refuse_missing(required, held, sentence):
+    """Raise ``DOCUMENTS_MISSING`` for the documents of *required* not in *held*.
+
+    *sentence* is called with the missing documents in words ("birth
+    certificate and transfer certificate") and the verb that agrees with them,
+    and returns the message. ``missing`` lists them in the checklist's order,
+    so a screen can offer to attach each one.
+    """
+    missing = [value for value in required if value not in held]
+    if not missing:
+        return
+    labels = dict(DocumentType.choices)
+    words = _in_words(labels[value].lower() for value in missing)
+    verb = "is" if len(missing) == 1 else "are"
+    raise DocumentsMissing(
+        sentence(words, verb),
+        missing=[{"value": value, "label": labels[value]} for value in missing],
+    )
+
+
 def assert_confirm_documents(student):
     """Refuse to confirm *student* while a document the school requires is missing.
 
@@ -84,16 +107,33 @@ def assert_confirm_documents(student):
             tenant=student.tenant, student=student, document_type__in=required,
         ).values_list("document_type", flat=True),
     )
-    missing = [value for value in required if value not in held]
-    if not missing:
+    _refuse_missing(
+        required, held,
+        lambda words, verb: (
+            f"{student.full_name} cannot be confirmed until the {words} {verb} "
+            f"on their record."
+        ),
+    )
+
+
+def assert_enrolment_documents(tenant, *, name, document_types):
+    """Refuse to enrol a child directly while a document the school requires is not sent.
+
+    Enrolling straight onto the roll skips the applicant stage, so it is held
+    to the same list a confirmation is: the child named *name* is refused
+    unless every required document is among *document_types*, the files sent
+    with the enrolment. Called before anything is written. Saving the child as
+    an applicant is never held to it, because the documents are what the
+    applicant stage waits for.
+    """
+    required = confirm_documents(tenant)
+    if not required:
         return
-    labels = {value: label for value, label in DocumentType.choices}
-    words = _in_words(labels[value].lower() for value in missing)
-    verb = "is" if len(missing) == 1 else "are"
-    raise DocumentsMissing(
-        f"{student.full_name} cannot be confirmed until the {words} {verb} "
-        f"on their record.",
-        missing=[{"value": value, "label": labels[value]} for value in missing],
+    _refuse_missing(
+        required, set(document_types),
+        lambda words, verb: (
+            f"{name} cannot be enrolled until the {words} {verb} attached."
+        ),
     )
 
 

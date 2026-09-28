@@ -922,6 +922,86 @@ class DocumentUploadSerializer(serializers.Serializer):
         return attrs
 
 
+#: The prefix of a file field that carries a document on the enrol form.
+ENROLMENT_DOCUMENT_PREFIX = "document_"
+
+
+def read_enrolment_form(fields, files):
+    """The enrolment body and its documents, from a ``multipart/form-data`` request.
+
+    The enrol form sends documents in the same save as the child, which JSON
+    cannot carry, so a multipart request holds the JSON body exactly as a JSON
+    request would, as the string in the ``payload`` field, and one file per
+    document in a field named ``document_<TYPE>`` (``document_BIRTH_CERTIFICATE``).
+
+    Returns ``(body, documents)``, *documents* being ``[{"document_type",
+    "file"}]``. Each file passes the same checks as the document upload route
+    (:func:`check_upload`). Everything else is refused with a 400 keyed on the
+    field at fault: a missing or malformed payload, a document type the
+    module does not record, two files for one document, a document field with
+    no file in it, and any other field, because a flat field such as
+    ``as_applicant`` sent beside the payload would otherwise be ignored and
+    the child enrolled when the form meant to save an applicant.
+    """
+    import json
+
+    errors: dict[str, list[str]] = {}
+    raw = fields.get("payload")
+    body = None
+    if raw in (None, ""):
+        errors["payload"] = ["Send the enrolment as JSON in the payload field."]
+    else:
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            errors["payload"] = ["The payload field must hold a JSON object."]
+
+    for key in fields:
+        if key == "payload":
+            continue
+        if key.startswith(ENROLMENT_DOCUMENT_PREFIX):
+            errors[key] = ["Attach a file here, or leave the field out."]
+        else:
+            errors[key] = [
+                "Only payload and document files are read from this form. "
+                "Put this value in the payload.",
+            ]
+
+    documents = []
+    for key in files:
+        document_type = key[len(ENROLMENT_DOCUMENT_PREFIX):]
+        if not key.startswith(ENROLMENT_DOCUMENT_PREFIX) or (
+            document_type not in DocumentType.values
+        ):
+            errors[key] = [
+                "This is not a document the school records. Send each one as "
+                "document_ followed by one of "
+                f"{', '.join(DocumentType.values)}.",
+            ]
+            continue
+        uploads = files.getlist(key)
+        if len(uploads) != 1:
+            errors[key] = ["Attach one file for each document."]
+            continue
+        try:
+            check_upload(
+                uploads[0], field=key,
+                must_be_image=document_type == DocumentType.PASSPORT_PHOTO,
+                subject="A passport photograph",
+            )
+        except serializers.ValidationError as exc:
+            detail = exc.detail[key]
+            errors[key] = detail if isinstance(detail, list) else [detail]
+            continue
+        documents.append({"document_type": document_type, "file": uploads[0]})
+
+    if errors:
+        raise serializers.ValidationError(errors)
+    return body, documents
+
+
 class PhotoUploadSerializer(serializers.Serializer):
     """A guardian's photograph. Always optional, never a gate on anything."""
 

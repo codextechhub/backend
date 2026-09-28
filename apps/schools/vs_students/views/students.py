@@ -31,6 +31,7 @@ from ..serializers import (
     StudentDetailSerializer,
     StudentListSerializer,
     StudentWriteSerializer,
+    read_enrolment_form,
 )
 from ..services import documents as document_service
 from ..services import enrolment as enrolment_service
@@ -38,6 +39,7 @@ from ..services.placement import fullest_classes, resolve_class
 from ..services.scoping import branch_for_write, scope_students, UNSET
 from ..services.years import in_year
 from .base import StudentsViewMixin
+from .records import assert_photo_writable
 
 
 def _list_queryset(tenant, session=None):
@@ -185,16 +187,33 @@ class StudentListCreateView(StudentsViewMixin, generics.ListCreateAPIView):
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
+        """Enrol a child, or save them as an applicant.
+
+        The body is JSON, or ``multipart/form-data`` when documents go with
+        it: the same JSON as the string in ``payload`` and one file per
+        document in ``document_<TYPE>`` (``serializers.read_enrolment_form``).
+        The documents are attached to the new record either way. A direct
+        enrolment at a school that requires documents before a child joins
+        the roll is refused with ``DOCUMENTS_MISSING`` unless they are all
+        among them (``enrolment.enrol``), and nothing is written.
+        """
         # Two keys, not one. Enrolment creates a record AND seats the child,
         # and seating is vs_academics' power. Checked before validation so
         # the refusal is a 403 and not a validation error.
         self.assert_holds(PERM_CREATE, PERM_CLASS_ASSIGN)
 
+        if (request.content_type or "").startswith("multipart/form-data"):
+            body, documents = read_enrolment_form(request.POST, request.FILES)
+        else:
+            body, documents = request.data, []
+
         # The request rides in the context, or the field guard skips itself.
         writer = EnrolmentWriteSerializer(
-            data=request.data, context=self.get_serializer_context(),
+            data=body, context=self.get_serializer_context(),
         )
         writer.is_valid(raise_exception=True)
+        for doc in documents:
+            assert_photo_writable(request, doc["document_type"])
         data = dict(writer.validated_data)
         guardian_rows = data.pop("guardians")
         as_applicant = data.pop("as_applicant")
@@ -223,6 +242,7 @@ class StudentListCreateView(StudentsViewMixin, generics.ListCreateAPIView):
             school_class=school_class,
             allow_over_capacity=data.pop("allow_over_capacity", False),
             confirm_duplicate=data.pop("confirm_duplicate", False),
+            documents=documents,
         )
         message = (
             f"{student.full_name} saved as an applicant." if as_applicant

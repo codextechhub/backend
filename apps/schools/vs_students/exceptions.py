@@ -283,9 +283,10 @@ class NotAnApplicant(StudentsError):
 
 
 class DocumentsMissing(StudentsError):
-    """An applicant confirmed without a document the school requires first.
+    """A child put on the roll without a document the school requires first.
 
-    The school's own list (``applicants.documents.required_to_confirm``). The
+    The school's own list (``applicants.documents.required_to_confirm``), held
+    when an applicant is confirmed and when a child is enrolled directly. The
     message names the missing documents in words and ``missing`` lists them,
     so a screen can offer to attach each one.
     """
