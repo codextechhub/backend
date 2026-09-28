@@ -310,7 +310,12 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         self.assertNotIn("school.profile.update", self._defaults("branch_admin"))
 
     def test_teacher_default_count(self):
-        """13 = 12, plus school.organogram.view: every member of staff reads
+        """12 = 13, less school.teachers.view: a teacher reads colleagues'
+        profiles as far as the school's staff profile policy shows colleagues
+        and line managers, and their own through the same policy. Holding the
+        directory key read every colleague at their branch in full.
+
+        13 = 12, plus school.organogram.view: every member of staff reads
         the school's org chart, and draws none of it.
 
         12 = 11, plus academics.exam.view: a teacher reads the exam
@@ -333,7 +338,8 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         this module took.
         """
         keys = self._defaults("teacher")
-        self.assertEqual(len(keys), 13)
+        self.assertEqual(len(keys), 12)
+        self.assertNotIn("school.teachers.view", keys)
         self.assertIn("school.organogram.view", keys)
         self.assertNotIn("school.organogram.create", keys)
         # M12 gives a teacher exactly one key: applying for their own leave.
@@ -442,7 +448,8 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=teacher_role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        self.assertEqual(len(keys), 13)
+        self.assertEqual(len(keys), 12)
+        self.assertNotIn("school.teachers.view", keys)
         self.assertIn("school.students.view", keys)
         self.assertNotIn("school.students.create", keys)
 

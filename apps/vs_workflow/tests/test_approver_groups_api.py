@@ -276,27 +276,60 @@ class ApproverGroupApiTests(TestCase):
                     {"kind": "USER", "user": str(member_user.pk)}, pk=self.group.pk)
         self.assertEqual(add.status_code, status.HTTP_201_CREATED)
         self.assertEqual(self.group.members.count(), 1)
+        # The group each answer carries is the group after the change.
+        self.assertEqual([m["user"] for m in _body(add)["members"]], [member_user.pk])
 
         member_id = self.group.members.first().pk
         remove = _call(DEL_MEMBER, "delete", BASE, self.manager, self.tenant,
                        pk=self.group.pk, member_id=member_id)
         self.assertEqual(remove.status_code, status.HTTP_200_OK)
         self.assertEqual(self.group.members.count(), 0)
+        self.assertEqual(_body(remove)["members"], [])
 
-    def test_add_role_and_position_members(self):
-        from vs_user.models import OrgNode, Position
+    def test_add_role_member(self):
         role = make_role(self.tenant, name="Bursar", key="bursar", is_system_role=True)
-        node = OrgNode.objects.create(code="DV-OPS", name="Ops", kind="DIVISION")
-        Position.objects.create(title="Head of Ops", code="POS-OPS", org_node=node)
-
-        r1 = _call(ADD_MEMBER, "post", BASE, self.manager, self.tenant,
-                   {"kind": "ROLE", "role_key": "bursar"}, pk=self.group.pk)
-        r2 = _call(ADD_MEMBER, "post", BASE, self.manager, self.tenant,
-                   {"kind": "POSITION", "position_code": "POS-OPS"}, pk=self.group.pk)
-        self.assertEqual(r1.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(r2.status_code, status.HTTP_201_CREATED)
-        self.assertEqual({m.kind for m in self.group.members.all()}, {"ROLE", "POSITION"})
+        resp = _call(ADD_MEMBER, "post", BASE, self.manager, self.tenant,
+                     {"kind": "ROLE", "role_key": "bursar"}, pk=self.group.pk)
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
         self.assertEqual(self.group.members.get(kind="ROLE").role_id, role.pk)
+
+    def _cx_seat(self):
+        from vs_user.models import OrgNode, Position
+
+        node = OrgNode.objects.create(code="DV-OPS", name="Ops", kind="DIVISION")
+        return Position.objects.create(title="Head of Ops", code="POS-OPS", org_node=node)
+
+    def test_a_platform_group_names_a_seat_on_the_cx_chart(self):
+        from vs_tenants.models import Tenant
+
+        seat = self._cx_seat()
+        platform = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+        operator = make_school_admin(None, email="grp-operator@test.com", tenant=platform)
+        _grant(operator, [PERM_GROUP_UPDATE, PERM_GROUP_VIEW])
+        group = WorkflowApproverGroup.objects.create(
+            tenant=platform, code="ops-approvers", name="Ops Approvers",
+        )
+        resp = _call(ADD_MEMBER, "post", BASE, operator, platform,
+                     {"kind": "POSITION", "position_code": "POS-OPS"}, pk=group.pk)
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+        member = group.members.get()
+        self.assertEqual((member.position_id, member.tenant_position_id), (seat.pk, None))
+        [row] = _body(resp)["members"]
+        self.assertEqual((row["position_code"], row["position_title"]),
+                         ("POS-OPS", "Head of Ops"))
+
+    def test_a_tenant_group_cannot_name_a_seat_on_the_cx_chart(self):
+        """A tenant group names posts on its own chart, never a platform seat.
+
+        The CX seat exists, so the refusal is about which chart, not about a
+        typo: the code is looked up on the group tenant's chart and is not there.
+        """
+        self._cx_seat()
+        resp = _call(ADD_MEMBER, "post", BASE, self.manager, self.tenant,
+                     {"kind": "POSITION", "position_code": "POS-OPS"}, pk=self.group.pk)
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("POS-OPS", str(resp.data))
+        self.assertFalse(self.group.members.exists())
 
     def test_add_member_requires_target_matching_kind(self):
         resp = _call(ADD_MEMBER, "post", BASE, self.manager, self.tenant,

@@ -158,8 +158,6 @@ SETTLED_ELSEWHERE = {
     "schools/vs_staff/views/leave.py::_is_own::StaffProfile":
         "The same self-check, deciding between applying for leave and "
         "approving somebody else's.",
-    "schools/vs_staff/views/records.py::_is_own::StaffProfile":
-        "The same self-check again, on the records screens.",
     "vs_tickets/views.py::assign::User":
         "The person a ticket is being handed to. A support desk assigns across "
         "sites by design, and assign_ticket validates the assignee.",

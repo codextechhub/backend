@@ -31,7 +31,7 @@ from typing import List, Optional
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Prefetch, Q
-from django.utils import timezone
+from vs_config.clock import tenant_today
 
 from ..constants import NON_HOLDING_STATUSES, OFF_ROLL_STATUSES, OrgUnitKind
 from ..exceptions import NotEligibleForPost
@@ -121,7 +121,7 @@ class StaffOrganogramService:
                 "They no longer work here, so they cannot be appointed to a post.",
             )
 
-        start = start_date or timezone.localdate()
+        start = start_date or tenant_today(staff.tenant)
         if is_primary:
             current = list(
                 StaffPositionAssignment.all_objects.filter(
@@ -155,7 +155,7 @@ class StaffOrganogramService:
         """End an open appointment, today by default. An ended one is left alone."""
         if assignment.end_date is not None:
             return assignment
-        end = end_date or timezone.localdate()
+        end = end_date or tenant_today(assignment.tenant)
         if end < assignment.start_date:
             raise NotEligibleForPost(
                 f"This appointment started on {assignment.start_date}, so it cannot "
@@ -179,7 +179,7 @@ class StaffOrganogramService:
         """
         from ..models import StaffPositionAssignment
 
-        end = end_date or timezone.localdate()
+        end = end_date or tenant_today(staff.tenant)
         closed = 0
         for row in StaffPositionAssignment.all_objects.filter(
             staff=staff, end_date__isnull=True,
@@ -326,7 +326,7 @@ class StaffOrganogramService:
         ]
 
     @staticmethod
-    def summary(tenant) -> dict:
+    def summary(tenant, user=None) -> dict:
         """The establishment in nine numbers, for the header above the chart.
 
         Seats are counted post by post, so a post holding more people than its
@@ -334,15 +334,33 @@ class StaffOrganogramService:
         counts people covering a post rather than holding it. ``on_leave`` reads
         leave the same way the directory does, and counts only people who are
         otherwise active.
+
+        **The numbers follow the reader's branches; the chart does not.** Every
+        member of staff reads the whole school's chart, but who is on leave or
+        suspended is a branch administrator's business for their own branch,
+        so given a *user* the people, units and posts counted are the ones the
+        staff directory would show them: their branches' and the school-wide
+        ones. A whole-school reader, or no *user*, counts everything.
         """
         from django.db.models import Count
+
+        from schools.vs_academics.services.scoping import scope_to_visible_branches
 
         from ..constants import EmploymentStatus
         from ..models import StaffOrgNode, StaffPosition, StaffProfile
         from .leave import on_leave_expression
+        from .scoping import scope_staff
 
+        def narrowed(queryset, field):
+            if user is None:
+                return queryset
+            return scope_to_visible_branches(queryset, user, tenant, field=field)
+
+        staff = StaffProfile.all_objects.filter(tenant=tenant)
+        if user is not None:
+            staff = scope_staff(staff, user, tenant, include_self=False)
         people = (
-            StaffProfile.all_objects.filter(tenant=tenant)
+            staff
             .annotate(away=on_leave_expression())
             .aggregate(
                 active=Count("pk", filter=Q(employment_status=EmploymentStatus.ACTIVE)),
@@ -354,11 +372,17 @@ class StaffOrganogramService:
                 ),
             )
         )
-        departments = StaffOrgNode.all_objects.filter(
-            tenant=tenant, is_active=True, kind=OrgUnitKind.DEPARTMENT,
+        departments = narrowed(
+            StaffOrgNode.all_objects.filter(
+                tenant=tenant, is_active=True, kind=OrgUnitKind.DEPARTMENT,
+            ),
+            "branch",
         ).count()
         positions = list(
-            StaffPosition.all_objects.filter(tenant=tenant, is_active=True)
+            narrowed(
+                StaffPosition.all_objects.filter(tenant=tenant, is_active=True),
+                "org_node__branch",
+            )
             .only("id", "headcount")
             .prefetch_related(holders_prefetch())
         )
@@ -387,8 +411,8 @@ class StaffOrganogramService:
     # ── Workflow: organogram-based approvers ──────────────────────────────
     #
     # The workflow engine never imports this module. ``VsStaffConfig.ready``
-    # registers this class as the organogram a school tenant climbs, and the
-    # engine calls the three methods below by name, in the instance's tenant.
+    # registers this class as a school tenant's organogram, and the engine calls
+    # the methods below by name, always passing the tenant to look inside.
 
     @staticmethod
     def _staff_for(user, tenant):
@@ -401,11 +425,20 @@ class StaffOrganogramService:
         ).select_related("user").first()
 
     @staticmethod
-    def _holder_users(position_id, exclude_user=None) -> list:
+    def _holder_users(position_id, tenant, exclude_user=None) -> list:
+        """The people in *tenant* who hold the post and can act on a document.
+
+        The tenant is part of the lookup, not assumed from the id: a post id
+        from another school, however it arrived, reaches nobody.
+        """
         from ..models import StaffPositionAssignment
 
+        if tenant is None:
+            return []
         rows = (
-            StaffPositionAssignment.all_objects.filter(position_id=position_id)
+            StaffPositionAssignment.all_objects.filter(
+                position_id=position_id, tenant=tenant, position__tenant=tenant,
+            )
             .filter(approving_q())
             .select_related("staff__user")
             .order_by("-is_primary", "id")
@@ -422,7 +455,7 @@ class StaffOrganogramService:
         position = StaffOrganogramService.primary_position_for(staff)
         if position is None or position.reports_to_id is None:
             return []
-        return StaffOrganogramService._holder_users(position.reports_to_id, user)
+        return StaffOrganogramService._holder_users(position.reports_to_id, tenant, user)
 
     @staticmethod
     def resolve_n_levels_up(user, levels, tenant) -> List:
@@ -433,7 +466,7 @@ class StaffOrganogramService:
         if not chain:
             return []
         target = chain[min(levels, len(chain)) - 1]
-        return StaffOrganogramService._holder_users(target.pk, user)
+        return StaffOrganogramService._holder_users(target.pk, tenant, user)
 
     @staticmethod
     def resolve_department_head(user, tenant) -> List:
@@ -453,18 +486,67 @@ class StaffOrganogramService:
         while unit is not None and unit.pk not in seen:
             seen.add(unit.pk)
             if unit.head_position_id is not None:
-                resolved = StaffOrganogramService._holder_users(unit.head_position_id, user)
+                resolved = StaffOrganogramService._holder_users(
+                    unit.head_position_id, tenant, user,
+                )
                 if resolved:
                     return resolved
             unit = unit.parent
         return []
 
     @staticmethod
-    def resolve_specific_position(position, exclude_user=None) -> List:
-        """SPECIFIC_POSITION: whoever holds one named post."""
-        if position is None:
-            return []
-        return StaffOrganogramService._holder_users(position.pk, exclude_user)
+    def find_position(code, tenant):
+        """``(id, code, title)`` of the school's active post with *code*, or None.
+
+        How a stage or an approver group names a post: the code a person types
+        is looked up here, and the id is what the engine keeps. Codes are stored
+        upper-case, so the match ignores case.
+        """
+        from ..models import StaffPosition
+
+        code = (code or "").strip()
+        if tenant is None or not code:
+            return None
+        return (
+            StaffPosition.all_objects.filter(
+                tenant=tenant, code__iexact=code, is_active=True,
+            )
+            .values_list("id", "code", "title")
+            .first()
+        )
+
+    @staticmethod
+    def describe_positions(ids, tenant) -> dict:
+        """``{id: (code, title)}`` for the school's posts among *ids*, in one query.
+
+        Inactive posts are described too: a stage or a group still naming one
+        has to be able to say which it is.
+        """
+        from ..models import StaffPosition
+
+        ids = [pk for pk in ids if pk is not None]
+        if tenant is None or not ids:
+            return {}
+        return {
+            pk: (code, title)
+            for pk, code, title in StaffPosition.all_objects.filter(
+                tenant=tenant, pk__in=ids,
+            ).values_list("id", "code", "title")
+        }
+
+    @staticmethod
+    def describe_position(position_id, tenant):
+        """``(code, title)`` of one of the school's posts, or None."""
+        return StaffOrganogramService.describe_positions([position_id], tenant).get(position_id)
+
+    @staticmethod
+    def resolve_position_holders(position_id, tenant, exclude_user=None) -> List:
+        """SPECIFIC_POSITION and POSITION members: whoever holds one named post.
+
+        Holders with an active account only (:func:`approving_q`), so a
+        suspended holder keeps the seat on the chart and is passed over here.
+        """
+        return StaffOrganogramService._holder_users(position_id, tenant, exclude_user)
 
 
 def _first_message(error: DjangoValidationError) -> str:

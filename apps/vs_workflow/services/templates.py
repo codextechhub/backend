@@ -10,20 +10,27 @@ from vs_workflow.exceptions import TemplateInvalidError
 from vs_workflow.models import WorkflowInstance, WorkflowTemplate
 
 
-# Resolve organogram position references without requiring vs_user in RBAC-only installs.
-def _resolve_position(code: Optional[str]):
-    """Resolve a CX organogram Position by its code, or None.
+# Resolve a SPECIFIC_POSITION stage's post on the chart its template's tenant uses.
+def _resolve_position(stage_payload: dict, tenant):
+    """``(vs_user Position or None, tenant post id or None)`` for one stage.
 
-    Used only by ORGANOGRAM/SPECIFIC_POSITION stages. Degrades to None if the
-    code is blank or vs_user is unavailable, so RBAC-only installs are unaffected.
+    Only an ORGANOGRAM stage targeting SPECIFIC_POSITION names a post; every
+    other stage stores neither. Which chart the code is looked up on follows the
+    template's tenant (:func:`vs_workflow.services.positions.bind_position`),
+    and a code that chart does not have fails the publish naming the code,
+    rather than storing a stage that would silently reach nobody.
     """
-    if not code:
-        return None
-    try:
-        from vs_user.models import Position
-    except ImportError:
-        return None
-    return Position.objects.filter(code=code).first()
+    if stage_payload.get("approver_source") != "ORGANOGRAM" or \
+            stage_payload.get("organogram_target") != "SPECIFIC_POSITION":
+        return None, None
+    from vs_workflow.services.positions import bind_position
+
+    label = stage_payload.get("code") or stage_payload.get("label") or "?"
+    bound = bind_position(
+        stage_payload.get("organogram_position_code") or "", tenant,
+        where=f"Stage '{label}'", active_only=False,
+    )
+    return bound.position, bound.tenant_position_id
 
 
 # Resolve a ROLE stage's role key, anchoring it when the template has a tenant.
@@ -219,9 +226,10 @@ def publish_template(*, tenant, branch=None, document_type: str, code: str, name
     # Parse and validate every stage's dynamic rules before writing anything.
     # publish_template is atomic, but failing up front keeps the error message
     # about the payload rather than about a half-built template.
-    dynamic_by_code, dynamic_role_by_code = {}, {}
+    dynamic_by_code, dynamic_role_by_code, position_by_code = {}, {}, {}
     for s in (stages_payload or []):
         dynamic_role_by_code[s["code"]] = _resolve_dynamic_role(s, tenant, document_type)
+        position_by_code[s["code"]] = _resolve_position(s, tenant)
         parsed = _parse_dynamic_rules(s, tenant)
         if parsed is not None:
             dynamic_by_code[s["code"]] = parsed
@@ -279,7 +287,8 @@ def publish_template(*, tenant, branch=None, document_type: str, code: str, name
             # Organogram config - only meaningful when approver_source==ORGANOGRAM.
             "organogram_target": s.get("organogram_target", ""),
             "organogram_levels": s.get("organogram_levels", 1),
-            "organogram_position": _resolve_position(s.get("organogram_position_code")),
+            "organogram_position": position_by_code[s["code"]][0],
+            "organogram_tenant_position_id": position_by_code[s["code"]][1],
             "advance_rule": s.get("advance_rule", "UNANIMOUS"),
             "quorum_count": s.get("quorum_count", 0),
             "on_rejection": s.get("on_rejection", "TERMINAL"),

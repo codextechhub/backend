@@ -1,6 +1,6 @@
-"""``/v1/i/me/settings/security/`` and ``/v1/i/me/settings/payroll-scope/``.
+"""``/v1/i/me/settings/security/``, ``payroll-scope/`` and ``staff-profiles/``.
 
-A school's own door to the two configuration values that are its to set. The
+A school's own door to the configuration values that are its to set. The
 configuration console's endpoints are closed to every school, because every
 ``config.*`` key is platform-only, so these endpoints are gated on the school's
 own ``school.settings.view`` / ``school.settings.update`` and bound to the
@@ -36,6 +36,7 @@ from .models import SchoolStatus
 
 SECURITY_URL = "/v1/i/me/settings/security/"
 PAYROLL_URL = "/v1/i/me/settings/payroll-scope/"
+STAFF_PROFILES_URL = "/v1/i/me/settings/staff-profiles/"
 
 
 class _SchoolSettingsFixture(TestCase):
@@ -436,3 +437,110 @@ class SchoolPayrollScopeTests(_SchoolSettingsFixture):
         response = self.client_for(self.green_admin).get(PAYROLL_URL)
         self.assertEqual(response.data["data"]["scope"], "PER_BRANCH")
         self.assertEqual(response.data["data"]["source"], "school")
+
+
+class SchoolStaffProfileVisibilityTests(_SchoolSettingsFixture):
+    """Who reads how much of a staff profile, set by the school.
+
+    Read under ``school.settings.view`` and written under
+    ``school.field_access.update``, which only the Bright Star administrator
+    made here holds: the one made by the fixture holds the two settings keys
+    and nothing else, which is exactly who must not be able to change it.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        access_update = make_permission("school.field_access.update")
+        role = make_role(cls.bright, name="Owner", key="owner")
+        make_role_permission(role, cls.view_perm)
+        make_role_permission(role, access_update)
+        cls.owner = make_school_admin(cls.ikeja, email="owner@bright.example.com")
+        make_assignment(cls.bright, cls.owner, role, branch=None)
+
+    def put(self, user, body):
+        return self.client_for(user).put(
+            f"{STAFF_PROFILES_URL}?tenant={user.tenant.slug}", body, format="json",
+        )
+
+    def policy(self, **changes):
+        policy = {
+            "SELF": ["contact", "employment", "personal", "records", "leave", "teaching",
+                     "history", "roles"],
+            "LINE": ["contact", "employment", "leave", "teaching"],
+            "COLLEAGUE": ["contact"],
+        }
+        policy.update(changes)
+        return {"policy": policy}
+
+    def test_the_default_is_read_with_the_words_the_screen_draws(self):
+        response = self.client_for(self.ikeja_admin).get(STAFF_PROFILES_URL)
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        self.assertEqual(data["source"], "default")
+        self.assertEqual(data["policy"], data["default_policy"])
+        self.assertEqual(data["policy"]["COLLEAGUE"], ["contact"])
+        self.assertEqual(
+            [group["key"] for group in data["groups"]],
+            ["contact", "employment", "personal", "records", "leave", "teaching",
+             "history", "roles"],
+        )
+        self.assertTrue(data["groups"][0]["locked"])
+        admin = next(row for row in data["audiences"] if row["key"] == "ADMIN")
+        self.assertFalse(admin["configurable"])
+        self.assertEqual(admin["summary"], "As their role allows")
+
+    def test_a_teacher_may_not_read_it(self):
+        response = self.client_for(self.teacher).get(STAFF_PROFILES_URL)
+        self.assertEqual(response.status_code, 403, response.data)
+
+    def test_the_settings_update_key_alone_may_not_change_it(self):
+        response = self.put(self.bright_admin, self.policy(COLLEAGUE=["contact", "leave"]))
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertFalse(
+            ConfigurationAuditEvent.all_objects.filter(tenant=self.bright.tenant).exists()
+        )
+
+    def test_saving_is_audited_and_scoped_to_the_school(self):
+        response = self.put(self.owner, {
+            **self.policy(COLLEAGUE=["employment"]), "reason": "Open the staff list",
+        })
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        self.assertEqual(data["source"], "school")
+        self.assertEqual(data["policy"]["COLLEAGUE"], ["contact", "employment"])
+
+        event = ConfigurationAuditEvent.all_objects.get(tenant=self.bright.tenant)
+        self.assertEqual(event.action, "config.value.updated")
+        self.assertEqual(event.actor_id, self.owner.pk)
+        self.assertEqual(event.reason, "Open the staff list")
+        self.assertIsNone(event.before_data["value"])
+        self.assertEqual(event.after_data["value"]["COLLEAGUE"], ["contact", "employment"])
+
+        green = self.client_for(self.green_admin).get(STAFF_PROFILES_URL)
+        self.assertEqual(green.data["data"]["source"], "default")
+
+    def test_a_policy_that_is_not_one_is_refused_by_audience(self):
+        cases = (
+            (self.policy(LINE=["contact", "salary"]), "LINE"),
+            (self.policy(ADMIN=["contact"]), "ADMIN"),
+            ({"policy": {"SELF": ["contact"], "LINE": ["contact"]}}, "COLLEAGUE"),
+            (self.policy(SELF="contact"), "SELF"),
+            ({"policy": ["contact"]}, "policy"),
+        )
+        for body, field in cases:
+            with self.subTest(field=field):
+                response = self.put(self.owner, body)
+                self.assertEqual(response.status_code, 400, response.data)
+                self.assertEqual(
+                    response.data["error"]["code"], "INVALID_CONFIGURATION_VALUE",
+                )
+                self.assertIn(field, response.data["error"]["detail"])
+        self.assertFalse(
+            ConfigurationAuditEvent.all_objects.filter(tenant=self.bright.tenant).exists()
+        )
+
+    def test_a_pending_school_is_refused(self):
+        response = self.client_for(self.sunrise_admin).get(STAFF_PROFILES_URL)
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(response.data["error"]["code"], "TENANT_NOT_LIVE")

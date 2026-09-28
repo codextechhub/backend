@@ -11,10 +11,11 @@ from __future__ import annotations
 from django.db import transaction
 from django.db.models import Q
 from rest_framework import generics, status
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.views import APIView
 
 from core.response import success_response
+from vs_rbac.permissions import IsAuthenticatedAndActive
 from core.search import search as core_search
 
 from ..constants import PERM_CREATE, PERM_UPDATE, PERM_VIEW, EmploymentStatus
@@ -29,6 +30,7 @@ from ..serializers import (
 from ..services import creation, posting, roles
 from ..services.directory import counts
 from ..services.scoping import guard_postings, is_self
+from ..services.visibility import GROUP_CONTACT, PROFILE_FULL
 from .base import StaffViewMixin
 
 #: What a typed query is matched against, joined into one string.
@@ -354,14 +356,27 @@ class StaffDetailView(StaffViewMixin, APIView):
     tenure, and editing your own job title is a promotion the school did not
     give you.
 
+    Reading is wider than changing. Anybody who works at the school opens
+    anybody else's record there, at any branch, and reads as much of it as the
+    school's profile policy gives their standing to that person
+    (``services/visibility.py``); a reader whose ``school.teachers.view``
+    reaches the person reads it as their role allows. ``profile_view`` says
+    which: ``full`` for that reader and for the person themselves,
+    ``restricted`` for a line manager or a colleague. ``visible_sections``
+    names the profile's groups this reader may open, and every key outside
+    them is absent rather than blanked.
+
     ``?as_at=YYYY-MM-DD`` answers with the record as it stood at the end of
     that day, plus an ``as_at`` block naming the day and when the history
-    starts (``as_at.py``). The live record carries ``history_starts``.
+    starts (``as_at.py``). The live record carries ``history_starts``. Both are
+    for a full view only: a restricted reader asking for a past day is
+    refused with 403.
 
     docstring-name: A staff record
     """
 
     pending_tenant_surface = True
+    profile_group = GROUP_CONTACT
 
     @property
     def rbac_permission(self):
@@ -369,15 +384,15 @@ class StaffDetailView(StaffViewMixin, APIView):
         return PERM_VIEW if method in ("GET", "HEAD", "OPTIONS") else PERM_UPDATE
 
     def get_permissions(self):
-        """A person reaches their own record without holding anything.
+        """A person corrects their own record without holding the update key.
 
-        The key check is skipped only for the caller's own row, and every
-        queryset below is still scoped, so this widens who may read one record
-        rather than what any of them may read.
+        The key check is skipped only for the caller's own row, and the fields
+        they may send are narrowed in :meth:`patch`. A read is admitted by
+        :meth:`admit_profile_read` for everybody.
         """
         from vs_rbac.permissions import IsAuthenticatedAndActive
 
-        if self._is_own_record():
+        if not self._is_read() and self._is_own_record():
             return [IsAuthenticatedAndActive()]
         return super().get_permissions()
 
@@ -398,15 +413,18 @@ class StaffDetailView(StaffViewMixin, APIView):
 
         from .. import as_at as past
 
-        staff = self.get_staff(pk)
+        staff, access, admission = self.admit_profile_read(pk)
         as_at = parse_as_at(request)
+        self.refuse_as_at_unless_full(as_at, admission)
+        context = {**self.serializer_context(), "profile_access": access}
         if as_at is None:
-            data = StaffDetailSerializer(staff, context=self.serializer_context()).data
-            starts = past.staff_history_starts(staff.pk)
-            data["history_starts"] = starts.isoformat() if starts else None
+            data = StaffDetailSerializer(staff, context=context).data
+            if access.profile_view == PROFILE_FULL:
+                starts = past.staff_history_starts(staff.pk)
+                data["history_starts"] = starts.isoformat() if starts else None
             return success_response(data=data)
         record, _children, meta = past.staff_at(staff, as_at)
-        context = {**self.serializer_context(), "as_at": as_at, "on_leave_ids": set()}
+        context = {**context, "as_at": as_at, "on_leave_ids": set()}
         data = StaffDetailSerializer(record, context=context).data
         data["history_starts"] = meta["history_starts"]
         data["as_at"] = meta
@@ -488,6 +506,34 @@ class StaffDetailView(StaffViewMixin, APIView):
         from vs_rbac.permissions import has_permission
 
         return has_permission(self.request.user, PERM_UPDATE, tenant=self.tenant)
+
+
+class StaffMineView(StaffViewMixin, APIView):
+    """GET /v1/i/me/staff/mine/ - the caller's own staff record, by id.
+
+    Every member of staff reaches their own record, and the way in is not the
+    directory: a teacher holds no directory key, and their own record is where
+    they apply for leave and correct their phone number. This answers only
+    "which record is mine", with no key, so the app can link to it. 404 for an
+    account at this school with no staff record.
+
+    docstring-name: My staff record
+    """
+
+    permission_classes = [IsAuthenticatedAndActive]
+    pending_tenant_surface = True
+
+    def get(self, request):
+        from ..models import StaffProfile
+
+        row = (
+            StaffProfile.all_objects.filter(tenant=self.tenant, user_id=request.user.pk)
+            .values("id")
+            .first()
+        )
+        if row is None:
+            raise NotFound("You have no staff record at this school.")
+        return success_response(data={"id": row["id"]})
 
 
 class StaffSearchView(StaffViewMixin, APIView):

@@ -27,6 +27,7 @@ from ..serializers import (
     TeachingWriteSerializer,
 )
 from ..services import teaching
+from ..services.visibility import GROUP_TEACHING
 from .base import StaffViewMixin
 
 
@@ -61,10 +62,18 @@ class StaffTeachingView(StaffViewMixin, _SessionMixin, APIView):
     An archived year still returns its assignments and refuses new ones: who
     taught what last year is the record a school will be asked for.
 
-    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
+    Read under ``school.teachers.view`` with the person in the reader's
+    branches, or where the school's profile policy shows teaching duties to the
+    reader's standing to them (``services/visibility.py``). Recording a duty
+    needs ``school.teachers.assign`` whoever the reader is.
+
+    ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``), for
+    the person themselves and a reader whose key reaches them.
 
     docstring-name: A staff member's teaching duties
     """
+
+    profile_group = GROUP_TEACHING
 
     @property
     def rbac_permission(self):
@@ -76,9 +85,10 @@ class StaffTeachingView(StaffViewMixin, _SessionMixin, APIView):
 
         from .. import as_at as past
 
-        staff = self.get_staff(pk)
+        staff, _access, admission = self.admit_profile_read(pk)
         session = self.resolve_session(request.query_params.get("session"))
         as_at = parse_as_at(request)
+        self.refuse_as_at_unless_full(as_at, admission)
         if as_at is None:
             rows = list(
                 staff.teaching_assignments.filter(session=session)

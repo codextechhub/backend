@@ -1,9 +1,12 @@
 """Qualifications and documents held against a person.
 
-Two rules run through both. **A person always reads their own**, whatever they
-hold, and **nobody writes their own qualifications**: a qualification somebody
-can type about themselves is a claim rather than a record, and the whole point
-of the table is that it holds what the school was given.
+Two rules run through both. **A read is admitted by key or by relationship**:
+``school.staff_records.view`` with the person in the reader's branches, or the
+school's profile policy granting records to the reader's standing to the person
+(``services/visibility.py``), which by default lets a person read their own.
+And **nobody writes their own qualifications**: a qualification somebody can
+type about themselves is a claim rather than a record, and the whole point of
+the table is that it holds what the school was given.
 
 Nothing here carries a verified state, and no endpoint may add one. Nothing in
 the platform checks a qualification or a document, there is no register to check
@@ -29,7 +32,7 @@ from ..serializers import (
     DocumentSerializer,
     QualificationSerializer,
 )
-from ..services.scoping import is_self
+from ..services.visibility import GROUP_RECORDS
 from .base import StaffViewMixin
 
 
@@ -41,30 +44,7 @@ class _StaffChildView(StaffViewMixin, APIView):
     """
 
     pending_tenant_surface = True
-
-    def get_permissions(self):
-        """Reading your own needs nothing; writing about yourself is refused.
-
-        The asymmetry is the point. A person may read the CV the school holds on
-        them, and may not add a degree to their own record.
-        """
-        from vs_rbac.permissions import IsAuthenticatedAndActive
-
-        if self.request.method in ("GET", "HEAD", "OPTIONS") and self._is_own():
-            return [IsAuthenticatedAndActive()]
-        return super().get_permissions()
-
-    def _is_own(self) -> bool:
-        from ..models import StaffProfile
-
-        pk = self.kwargs.get("pk")
-        user = getattr(self.request, "user", None)
-        tenant = getattr(self.request, "tenant", None)
-        if pk is None or not getattr(user, "pk", None) or tenant is None:
-            return False
-        return StaffProfile.objects.filter(
-            tenant=tenant, pk=pk, user_id=user.pk,
-        ).exists()
+    profile_group = GROUP_RECORDS
 
     @property
     def rbac_permission(self):
@@ -88,8 +68,9 @@ class QualificationListCreateView(_StaffChildView):
 
         from .. import as_at as past
 
-        staff = self.get_staff(pk)
+        staff, _access, admission = self.admit_profile_read(pk)
         as_at = parse_as_at(request)
+        self.refuse_as_at_unless_full(as_at, admission)
         rows = staff.qualifications.all()
         if as_at is not None:
             _record, children, _meta = past.staff_at(staff, as_at)
@@ -168,8 +149,9 @@ class DocumentListCreateView(_StaffChildView):
 
         from .. import as_at as past
 
-        staff = self.get_staff(pk)
+        staff, _access, admission = self.admit_profile_read(pk)
         as_at = parse_as_at(request)
+        self.refuse_as_at_unless_full(as_at, admission)
         if as_at is None:
             rows, retired = staff.documents.select_related("uploaded_by"), set()
         else:

@@ -597,6 +597,21 @@ class ChartInvariantTests(OrganogramFixture):
             "acting": 1, "on_leave": 0, "suspended": 0,
         })
 
+    def test_the_summary_follows_the_readers_branches_and_the_chart_does_not(self):
+        self.appoint(self.ikeja_teacher, self.ikeja_teacher_post, is_acting=True)
+        self.appoint(self.registrar, self.principal)
+        # Lekki's administrator counts Lekki and the school-wide rows only.
+        data = self.get(self.lekki_head, "staff-org-summary").json()["data"]
+        self.assertEqual(data, {
+            "active_staff": 2, "departments": 1, "positions": 2,
+            "total_seats": 2, "filled_seats": 1, "vacant_seats": 1,
+            "acting": 0, "on_leave": 0, "suspended": 0,
+        })
+        # ...while the chart she reads still carries Ikeja's posts.
+        tree = self.get(self.lekki_head, "staff-org-tree").json()["data"]
+        [root] = tree
+        self.assertIn(self.ikeja_hod.pk, [n["id"] for n in root["direct_reports"]])
+
     def test_the_record_names_the_post_and_the_line_manager(self):
         self.appoint(self.registrar, self.ikeja_hod)
         self.appoint(self.ikeja_teacher, self.ikeja_teacher_post, is_acting=True)
@@ -740,7 +755,20 @@ class WorkflowClimbTests(OrganogramFixture):
             [self.registrar.user.pk],
         )
 
-    def test_specific_position_reaches_nobody_for_a_school_requester(self):
+    def test_specific_position_reaches_the_named_posts_active_holder(self):
+        template, instance = self._instance(self.ikeja_teacher.user)
+        stage = self._stage(template, "SPECIFIC_POSITION")
+        stage.organogram_tenant_position_id = self.principal.pk
+        stage.save(update_fields=["organogram_tenant_position_id"])
+
+        from vs_workflow.services.approvers import resolve_approvers
+
+        self.assertEqual(
+            [approver.user.pk for approver in resolve_approvers(stage, instance)],
+            [self.registrar.user.pk],
+        )
+
+    def test_specific_position_naming_no_post_reaches_nobody(self):
         self.assertEqual(self._resolved(self.ikeja_teacher.user, "SPECIFIC_POSITION"), [])
 
     def test_a_climb_never_crosses_into_another_school(self):
@@ -753,3 +781,351 @@ class WorkflowClimbTests(OrganogramFixture):
         self.assertEqual(
             self._resolved(self.solo_staff.user, "DIRECT_MANAGER", tenant=self.tenant), [],
         )
+
+
+# ── A named post, in approval steps and approver groups ────────────────────
+
+
+class WorkflowNamedPostTests(OrganogramFixture):
+    """A school's approval step or approver group names one post on its own chart.
+
+    The code a person types is looked up on the chart the owning tenant uses:
+    Brightfield's own for Brightfield, the CX chart for a central template. A
+    code that chart does not have is refused naming it, whether it exists on the
+    other chart, on another school's, or nowhere. What is stored is the post's
+    id, and every read shows the post's current code and title.
+    """
+
+    WORKFLOW_KEYS = (
+        "workflow.template.view", "workflow.template.publish",
+        "workflow.template.update",
+        "workflow.group.view", "workflow.group.create", "workflow.group.update",
+    )
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        for key in cls.WORKFLOW_KEYS:
+            make_role_permission(cls.role, make_permission(key, scope=PermissionScope.TENANT))
+
+    def setUp(self):
+        self.appoint(self.registrar, self.principal)
+        self.hod = self.make_staff(
+            "hod@brightfield.test", "Ngozi", "Okafor", branch=self.ikeja,
+        )
+        self.appoint(self.hod, self.ikeja_hod)
+
+    # ── builders ───────────────────────────────────────────────────────────
+
+    def publish(self, code, tenant="own", **stage):
+        from vs_workflow.services.templates import publish_template
+
+        return publish_template(
+            tenant=self.tenant if tenant == "own" else tenant,
+            document_type="NAMED_POST_DOC", code="named-post", name="Named post",
+            stages_payload=[{
+                "code": "post", "label": "Named post", "kind": "APPROVAL",
+                "order": 1, "approver_source": "ORGANOGRAM",
+                "organogram_target": "SPECIFIC_POSITION",
+                "organogram_position_code": code, **stage,
+            }],
+        )
+
+    def instance_for(self, template, requester, tenant=None):
+        from django.contrib.contenttypes.models import ContentType
+        from django.utils import timezone
+
+        from vs_workflow.models import WorkflowInstance, WorkflowTemplate
+
+        return WorkflowInstance.objects.create(
+            tenant=tenant or self.tenant, template=template,
+            document_content_type=ContentType.objects.get_for_model(WorkflowTemplate),
+            document_object_id="doc", document_type=template.document_type,
+            status="IN_PROGRESS", requested_by=requester, submitted_at=timezone.now(),
+        )
+
+    def group_naming(self, position, tenant=None, code="post-holders"):
+        from vs_workflow.models import WorkflowApproverGroup, WorkflowApproverGroupMember
+
+        group = WorkflowApproverGroup.all_objects.create(
+            tenant=tenant or self.tenant, code=code, name="Post holders",
+        )
+        WorkflowApproverGroupMember.objects.create(
+            group=group, kind="POSITION", tenant_position_id=position.pk,
+        )
+        return group
+
+    @staticmethod
+    def body(response):
+        """The payload, inside the success envelope where the renderer adds one."""
+        payload = response.json()
+        return payload["data"] if isinstance(payload, dict) and "data" in payload else payload
+
+    def cx_seat(self, code="CX-AUDIT"):
+        from vs_user.models import OrgNode, Position
+
+        node = OrgNode.objects.create(code="DV-NAMED", name="Audit", kind="DIVISION")
+        return Position.objects.create(title="Group Auditor", code=code, org_node=node)
+
+    # ── binding a code ─────────────────────────────────────────────────────
+
+    def test_publishing_a_school_post_stores_its_id(self):
+        stage = self.publish("ihod").stages.get()
+        self.assertEqual(stage.organogram_tenant_position_id, self.ikeja_hod.pk)
+        self.assertIsNone(stage.organogram_position_id)
+
+    def test_publishing_over_the_api_refuses_an_unknown_code_with_400(self):
+        body = {
+            "document_type": "NAMED_POST_DOC", "code": "named-post", "name": "Named post",
+            "stages": [{
+                "code": "post", "label": "Named post", "approver_source": "ORGANOGRAM",
+                "organogram_target": "SPECIFIC_POSITION",
+                "organogram_position_code": "NOPE",
+            }],
+        }
+        response = self.post(self.admin, "workflow-template-publish", body)
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("NOPE", response.json()["message"])
+        self.assertEqual(response.json()["error"]["code"], "UNKNOWN_POSITION")
+
+        body["stages"][0]["organogram_position_code"] = "IHOD"
+        response = self.post(self.admin, "workflow-template-publish", body)
+        self.assertEqual(response.status_code, 201, response.content)
+        [stage] = self.body(response)["stages"]
+        self.assertEqual(stage["organogram_position_code"], "IHOD")
+
+    def test_an_unknown_code_is_refused_and_nothing_is_published(self):
+        from vs_workflow.exceptions import UnknownPositionError
+        from vs_workflow.models import WorkflowTemplate
+
+        with self.assertRaises(UnknownPositionError) as refused:
+            self.publish("NOPE")
+        self.assertIn("'NOPE'", refused.exception.message)
+        self.assertEqual(refused.exception.http_status, 400)
+        self.assertFalse(
+            WorkflowTemplate.all_objects.filter(document_type="NAMED_POST_DOC").exists(),
+        )
+
+    def test_a_school_cannot_name_a_platform_seat(self):
+        from vs_workflow.exceptions import UnknownPositionError
+
+        self.cx_seat()
+        with self.assertRaises(UnknownPositionError):
+            self.publish("CX-AUDIT")
+
+    def test_a_central_template_cannot_name_a_school_post(self):
+        from vs_workflow.exceptions import UnknownPositionError
+
+        with self.assertRaises(UnknownPositionError):
+            self.publish("IHOD", tenant=None)
+        seat = self.cx_seat()
+        stage = self.publish("CX-AUDIT", tenant=None).stages.get()
+        self.assertEqual(
+            (stage.organogram_position_id, stage.organogram_tenant_position_id),
+            (seat.pk, None),
+        )
+
+    def test_another_schools_post_code_names_nothing(self):
+        from vs_workflow.exceptions import UnknownPositionError
+        from vs_workflow.models import WorkflowStage
+
+        with self.assertRaises(UnknownPositionError):
+            self.publish("SHEAD")
+        self.assertFalse(
+            WorkflowStage.objects.filter(
+                organogram_tenant_position_id=self.solo_post.pk,
+            ).exists(),
+        )
+
+    def test_a_group_member_binds_a_school_post_and_not_another_schools(self):
+        from vs_workflow.models import WorkflowApproverGroup
+
+        group = WorkflowApproverGroup.all_objects.create(
+            tenant=self.tenant, code="heads", name="Heads",
+        )
+        refused = self.post(
+            self.admin, "workflow-approver-group-add-member",
+            {"kind": "POSITION", "position_code": "SHEAD"}, pk=group.pk,
+        )
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.cx_seat()
+        refused = self.post(
+            self.admin, "workflow-approver-group-add-member",
+            {"kind": "POSITION", "position_code": "CX-AUDIT"}, pk=group.pk,
+        )
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertFalse(group.members.exists())
+
+        added = self.post(
+            self.admin, "workflow-approver-group-add-member",
+            {"kind": "POSITION", "position_code": "PRIN"}, pk=group.pk,
+        )
+        self.assertEqual(added.status_code, 201, added.content)
+        member = group.members.get()
+        self.assertEqual((member.position_id, member.tenant_position_id),
+                         (None, self.principal.pk))
+        again = self.post(
+            self.admin, "workflow-approver-group-add-member",
+            {"kind": "POSITION", "position_code": "PRIN"}, pk=group.pk,
+        )
+        self.assertEqual(again.status_code, 200, again.content)
+        self.assertEqual(group.members.count(), 1)
+
+    # ── resolving it ───────────────────────────────────────────────────────
+
+    def test_the_builders_preview_names_the_posts_holder(self):
+        body = {
+            "requester": str(self.ikeja_teacher.user.pk),
+            "approver_source": "ORGANOGRAM", "organogram_target": "SPECIFIC_POSITION",
+            "organogram_position_code": "IHOD",
+        }
+        response = self.post(self.admin, "workflow-template-preview-approvers", body)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            [row["user"]["id"] for row in self.body(response)["approvers"]],
+            [str(self.hod.user.pk)],
+        )
+        body["organogram_position_code"] = "SHEAD"
+        response = self.post(self.admin, "workflow-template-preview-approvers", body)
+        self.assertEqual(response.status_code, 404, response.content)
+
+    def test_a_published_step_reaches_the_posts_holder_and_never_the_requester(self):
+        from vs_workflow.services.approvers import resolve_approvers
+
+        template = self.publish("IHOD")
+        stage = template.stages.get()
+        resolved = resolve_approvers(stage, self.instance_for(template, self.ikeja_teacher.user))
+        self.assertEqual([a.user.pk for a in resolved], [self.hod.user.pk])
+        # Raised by the holder herself, the post has nobody else to decide it.
+        self.assertEqual(resolve_approvers(stage, self.instance_for(template, self.hod.user)), [])
+
+    def test_a_group_naming_a_post_resolves_its_holders_able_to_act(self):
+        from vs_workflow.services.approvers import resolve_group_users
+
+        group = self.group_naming(self.ikeja_hod)
+        self.assertEqual(
+            [u.pk for u in resolve_group_users(group, self.tenant)], [self.hod.user.pk],
+        )
+        # Suspended, she keeps the post on the chart and is passed over here.
+        employment.change_status(
+            self.hod, to_status=EmploymentStatus.SUSPENDED, actor=self.admin,
+            reason="Under review",
+        )
+        self.assertEqual(resolve_group_users(group, self.tenant), [])
+
+    def test_a_post_id_from_another_school_reaches_nobody(self):
+        from vs_workflow.services.approvers import resolve_approvers, resolve_group_users
+
+        # Sunrise's group holding Brightfield's post id, however it got there.
+        group = self.group_naming(self.ikeja_hod, tenant=self.solo.tenant)
+        self.assertEqual(resolve_group_users(group, self.solo.tenant), [])
+        # Brightfield's step resolved inside Sunrise finds nobody either.
+        template = self.publish("IHOD")
+        instance = self.instance_for(template, self.solo_staff.user, tenant=self.solo.tenant)
+        self.assertEqual(resolve_approvers(template.stages.get(), instance), [])
+        self.assertEqual(
+            StaffOrganogramService.resolve_position_holders(self.ikeja_hod.pk, self.solo.tenant),
+            [],
+        )
+        self.assertIsNone(StaffOrganogramService.find_position("IHOD", self.solo.tenant))
+        self.assertEqual(
+            StaffOrganogramService.describe_positions([self.ikeja_hod.pk], self.solo.tenant), {},
+        )
+
+    # ── reading it back ────────────────────────────────────────────────────
+
+    def test_reads_show_the_posts_current_code_and_title(self):
+        from vs_workflow.services.approvers import describe_group_members
+
+        group = self.group_naming(self.ikeja_hod)
+        self.publish("IHOD")
+        # Codes are editable on the chart; the stored id follows the post.
+        self.ikeja_hod.code = "IKHOD"
+        self.ikeja_hod.save(update_fields=["code"])
+
+        [row] = describe_group_members(group, self.tenant)
+        self.assertEqual(
+            (row["label"], row["target_code"], row["resolved_count"]),
+            ("Head of Sciences, Ikeja", "IKHOD", 1),
+        )
+        data = self.body(self.get(self.admin, "workflow-approver-group-detail", pk=group.pk))
+        [member] = data["members"]
+        self.assertEqual(
+            (member["position_code"], member["position_title"]),
+            ("IKHOD", "Head of Sciences, Ikeja"),
+        )
+        resolved = self.body(self.get(self.admin, "workflow-approver-group-resolve", pk=group.pk))
+        self.assertEqual(resolved["members"][0]["target_code"], "IKHOD")
+
+        listed = self.body(self.get(self.admin, "workflow-template-list"))
+        rows = listed["results"] if isinstance(listed, dict) else listed
+        [template] = [t for t in rows if t["document_type"] == "NAMED_POST_DOC"]
+        self.assertEqual(template["stages"][0]["organogram_position_code"], "IKHOD")
+
+    def test_a_page_of_groups_describes_its_posts_in_one_lookup(self):
+        from vs_workflow.models import WorkflowApproverGroupMember
+
+        for i in range(4):
+            group = self.group_naming(self.ikeja_hod, code=f"g{i}")
+            WorkflowApproverGroupMember.objects.create(
+                group=group, kind="POSITION", tenant_position_id=self.principal.pk,
+            )
+        with CaptureQueriesContext(connection) as queries:
+            response = self.get(self.admin, "workflow-approver-group-list")
+        self.assertEqual(response.status_code, 200, response.content)
+        post_lookups = [
+            q for q in queries.captured_queries
+            if 'FROM "vs_staff_staffposition"' in q["sql"]
+        ]
+        self.assertEqual(len(post_lookups), 1, [q["sql"] for q in post_lookups])
+
+    def test_the_parked_sentence_names_the_post(self):
+        from vs_workflow.services.release import stage_requirement
+
+        stage = self.publish("IHOD").stages.get()
+        self.assertEqual(
+            stage_requirement(stage),
+            "put somebody in the Head of Sciences, Ikeja position",
+        )
+
+    def test_a_comparison_shows_a_changed_post(self):
+        from vs_workflow.services.comparison import compare_templates
+
+        self.cx_seat()
+        base = self.publish("CX-AUDIT", tenant=None)
+        other = self.publish("IHOD")
+        [changed] = compare_templates(base, other)["stages"]["changed"]
+        [field] = [f for f in changed["fields"] if f["field"] == "organogram_position_code"]
+        self.assertEqual((field["base"], field["other"]), ("CX-AUDIT", "IHOD"))
+
+        same = self.publish("IHOD", tenant=self.tenant)
+        self.assertEqual(compare_templates(other, same)["stages"]["changed"], [])
+
+    # ── deleting a post something names ───────────────────────────────────
+
+    def test_a_post_a_step_or_a_group_names_is_not_deleted(self):
+        spare = StaffPosition.all_objects.create(
+            tenant=self.tenant, title="Bursar", code="BURS", org_node=self.academics,
+        )
+        self.publish("BURS")
+        response = self.delete(self.admin, "staff-org-position-detail", pk=spare.pk)
+        self.assertEqual(response.status_code, 409, response.content)
+        detail = response.json()["error"]["detail"]
+        self.assertEqual((detail["workflow_stages"], detail["approver_group_members"]), (1, 0))
+        self.assertIn("1 approval step naming it", response.json()["message"])
+
+        self.group_naming(spare)
+        detail = self.delete(
+            self.admin, "staff-org-position-detail", pk=spare.pk,
+        ).json()["error"]["detail"]
+        self.assertEqual((detail["workflow_stages"], detail["approver_group_members"]), (1, 1))
+        self.assertTrue(StaffPosition.all_objects.filter(pk=spare.pk).exists())
+
+    def test_a_post_nothing_names_is_deleted_and_another_schools_use_is_not_counted(self):
+        spare = StaffPosition.all_objects.create(
+            tenant=self.tenant, title="Bursar", code="BURS", org_node=self.academics,
+        )
+        # Sunrise's group carrying the same id is Sunrise's business, not a use here.
+        self.group_naming(spare, tenant=self.solo.tenant)
+        response = self.delete(self.admin, "staff-org-position-detail", pk=spare.pk)
+        self.assertEqual(response.status_code, 200, response.content)

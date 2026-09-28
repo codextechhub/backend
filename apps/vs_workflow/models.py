@@ -21,7 +21,7 @@ from django.conf import settings
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
-from django.db.models import Q  # used in WorkflowStageAction constraint
+from django.db.models import Q
 
 from vs_rbac.managers import TenantAwareManager
 from vs_workflow.constants import (
@@ -192,16 +192,23 @@ class WorkflowApproverGroup(models.Model):
 class WorkflowApproverGroupMember(models.Model):
     """One membership row in a WorkflowApproverGroup.
 
-    Exactly one of user/role/position is set, matching ``kind``. USER rows are
-    static; ROLE and POSITION rows are computed at resolution time, so people
-    joining or leaving a role or seat flow through without a group edit.
+    Exactly one target is set, matching ``kind``. USER rows are static; ROLE and
+    POSITION rows are computed at resolution time, so people joining or leaving
+    a role or seat flow through without a group edit.
+
+    A POSITION row names its post in one of two columns, chosen by the group's
+    tenant (see :mod:`vs_workflow.services.positions`): ``position`` for a seat
+    on the CX chart, ``tenant_position_id`` for a post on the tenant's own chart.
 
     Attributes:
         kind: ``USER``, ``ROLE``, or ``POSITION`` - which target field is populated.
         user: The person, when kind is USER.
         role: The tenant role whose active assignees join the pool, when kind is ROLE.
-        position: The organogram seat whose current holders join the pool,
-            when kind is POSITION.
+        position: The CX organogram seat whose current holders join the pool.
+        tenant_position_id: The post on the group tenant's own organogram whose
+            current holders join the pool. A plain id, because the engine never
+            imports the app keeping that chart; that app refuses to delete a
+            post still named here.
     """
 
     id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
@@ -216,6 +223,7 @@ class WorkflowApproverGroupMember(models.Model):
                              null=True, blank=True, related_name="approver_group_members")
     position = models.ForeignKey("vs_user.Position", on_delete=models.PROTECT,
                                  null=True, blank=True, related_name="approver_group_members")
+    tenant_position_id = models.PositiveBigIntegerField(null=True, blank=True)
     added_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
                                  null=True, blank=True, related_name="+")
     added_at = models.DateTimeField(auto_now_add=True)
@@ -225,9 +233,14 @@ class WorkflowApproverGroupMember(models.Model):
             # Exactly one target field, and it must match the declared kind.
             models.CheckConstraint(
                 condition=(
-                    Q(kind="USER", user__isnull=False, role__isnull=True, position__isnull=True)
-                    | Q(kind="ROLE", role__isnull=False, user__isnull=True, position__isnull=True)
-                    | Q(kind="POSITION", position__isnull=False, user__isnull=True, role__isnull=True)
+                    Q(kind="USER", user__isnull=False, role__isnull=True,
+                      position__isnull=True, tenant_position_id__isnull=True)
+                    | Q(kind="ROLE", role__isnull=False, user__isnull=True,
+                        position__isnull=True, tenant_position_id__isnull=True)
+                    | Q(kind="POSITION", user__isnull=True, role__isnull=True,
+                        position__isnull=False, tenant_position_id__isnull=True)
+                    | Q(kind="POSITION", user__isnull=True, role__isnull=True,
+                        position__isnull=True, tenant_position_id__isnull=False)
                 ),
                 name="ck_group_member_target_matches_kind",
             ),
@@ -237,12 +250,22 @@ class WorkflowApproverGroupMember(models.Model):
                                     name="uniq_group_member_role"),
             models.UniqueConstraint(fields=["group", "position"], condition=Q(kind="POSITION"),
                                     name="uniq_group_member_position"),
+            models.UniqueConstraint(
+                fields=["group", "tenant_position_id"],
+                condition=Q(kind="POSITION", tenant_position_id__isnull=False),
+                name="uniq_group_member_tenant_position",
+            ),
         ]
-        indexes = [models.Index(fields=["group", "kind"])]
+        indexes = [
+            models.Index(fields=["group", "kind"]),
+            # The delete refusal on a tenant's chart asks by post.
+            models.Index(fields=["tenant_position_id"], name="wf_member_tenant_pos_idx",
+                         condition=Q(tenant_position_id__isnull=False)),
+        ]
         ordering = ["kind", "added_at"]
 
     def __str__(self):
-        target = self.user_id or self.role_id or self.position_id
+        target = self.user_id or self.role_id or self.position_id or self.tenant_position_id
         return f"{self.kind}:{target}"
 
 
@@ -407,6 +430,12 @@ class WorkflowStage(models.Model):
             passing the document on.
         inclusion_condition: JSON condition evaluated against the document at runtime.
             The stage is skipped entirely if it evaluates to False.
+        organogram_position: The CX organogram seat a SPECIFIC_POSITION stage
+            names, when the template is central or the platform's.
+        organogram_tenant_position_id: The post on the template tenant's own
+            organogram a SPECIFIC_POSITION stage names, for every other tenant.
+            A plain id because the engine never imports the app keeping that
+            chart; see :mod:`vs_workflow.services.positions`.
     """
 
     id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
@@ -455,11 +484,13 @@ class WorkflowStage(models.Model):
     )
     # Number of levels to climb when organogram_target == N_LEVELS_UP.
     organogram_levels = models.PositiveSmallIntegerField(default=1)
-    # The explicit seat used when organogram_target == SPECIFIC_POSITION.
+    # The post named when organogram_target == SPECIFIC_POSITION: a CX chart
+    # seat, or a post on the template tenant's own chart. Never both.
     organogram_position = models.ForeignKey(
         "vs_user.Position", on_delete=models.SET_NULL,
         null=True, blank=True, related_name="workflow_stages",
     )
+    organogram_tenant_position_id = models.PositiveBigIntegerField(null=True, blank=True)
     advance_rule = models.CharField(max_length=20, choices=StageAdvanceRule.choices,
                                     default=StageAdvanceRule.UNANIMOUS)
     quorum_count = models.PositiveIntegerField(default=0)
@@ -483,8 +514,20 @@ class WorkflowStage(models.Model):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["template", "code"], 
+            models.UniqueConstraint(fields=["template", "code"],
                                     name="uniq_stage_code_per_template"),
+            # One post per stage, on one chart.
+            models.CheckConstraint(
+                condition=(Q(organogram_position__isnull=True)
+                           | Q(organogram_tenant_position_id__isnull=True)),
+                name="ck_stage_one_organogram_position",
+            ),
+        ]
+        indexes = [
+            # The delete refusal on a tenant's chart asks by post.
+            models.Index(fields=["organogram_tenant_position_id"],
+                         name="wf_stage_tenant_pos_idx",
+                         condition=Q(organogram_tenant_position_id__isnull=False)),
         ]
         ordering = ["order"]
 

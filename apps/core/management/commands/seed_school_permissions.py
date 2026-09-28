@@ -105,7 +105,13 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "students", "import",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "students", "export",           _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
 
-    ("school", "teachers", "view",             _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
+    # The staff directory and every staff record, read as the role allows. A
+    # teacher does not hold it: a teacher reads a colleague's profile as far as
+    # the school's staff profile policy shows colleagues and line managers
+    # (vs_staff services/visibility.py), and their own through the same policy.
+    # Holding this key would read every colleague at the branch in full,
+    # whatever the school chose to show.
+    ("school", "teachers", "view",             _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "teachers", "create",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "teachers", "update",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "teachers", "transition",       _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),

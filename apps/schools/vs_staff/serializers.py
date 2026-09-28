@@ -69,6 +69,21 @@ def _actor(user):
     return {"id": user.pk, "name": _full_name(user)}
 
 
+def _is_own_record(staff, user) -> bool:
+    """Field Access owner rule: a person reads their own staff record whole.
+
+    A school switches a field off per role to decide who reads it about other
+    people. Switched off for the Teacher role, a teacher's own phone number
+    would vanish from her own profile, which protects nobody.
+    """
+    return staff.user_id == user.pk
+
+
+def _is_own_account(account, user) -> bool:
+    """The same owner rule, for the account block nested in a staff record."""
+    return account.pk == user.pk
+
+
 class AccountStateSerializer(FieldAccessMixin, serializers.Serializer):
     """The account half, kept as its own object on purpose.
 
@@ -98,6 +113,7 @@ class AccountStateSerializer(FieldAccessMixin, serializers.Serializer):
     label = serializers.SerializerMethodField()
     can_sign_in = serializers.SerializerMethodField()
     field_resource = "school.teachers"
+    owner_rule = staticmethod(_is_own_account)
 
     can_hold_password = serializers.BooleanField(source="may_hold_password")
     email = serializers.EmailField(read_only=True)
@@ -142,11 +158,13 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
 
     A staff member's own date of birth, gender, phone number and email are the
     registered fields of ``school.teachers``, so a school decides per role who
-    reads them. A row of a list names no read-only fields; the record behind it
-    does.
+    reads them, about everybody but themselves: a person's own row carries
+    every one of their own details. A row of a list names no read-only fields;
+    the record behind it does.
     """
 
     field_resource = "school.teachers"
+    owner_rule = staticmethod(_is_own_record)
     field_composites = {
         "full_name": {"first_name": "user.first_name", "last_name": "user.last_name"},
     }
@@ -241,8 +259,12 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
             if grant.assignment_status == "ACTIVE" and grant.role_id
         })
 
+    def _branch_dimension(self) -> bool:
+        """Whether this render names branches. On a row, per viewer: see ``multi_branch``."""
+        return bool(self.context.get("multi_branch"))
+
     def get_branch_name(self, obj):
-        if not self.context.get("multi_branch"):
+        if not self._branch_dimension():
             return None
         names = ([obj.branch.name] if obj.branch_id else []) + [
             branch.name for branch in obj.additional_postings.all()
@@ -266,7 +288,7 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
         return obj.posting_branch_ids
 
     def get_posted_school_wide(self, obj):
-        if not self.context.get("multi_branch"):
+        if not self._branch_dimension():
             return None
         return not obj.posting_branch_ids
 
@@ -395,9 +417,10 @@ class QualificationSerializer(serializers.ModelSerializer):
         """
         if value is None:
             return value
-        from django.utils import timezone
+        from vs_config.clock import tenant_today
 
-        this_year = timezone.localdate().year
+        tenant = self.context.get("tenant") or getattr(self.context.get("request"), "tenant", None)
+        this_year = tenant_today(tenant).year
         if value < 1900 or value > this_year:
             raise serializers.ValidationError(
                 f"Enter a year between 1900 and {this_year}.",
@@ -587,6 +610,22 @@ class StaffDetailSerializer(StaffListSerializer):
 
     A detail response, so it names the registered fields the caller may read
     and not change, for the edit drawer to grey.
+
+    Where the person works is part of their contact card, so at a school with
+    more than one branch the record always names it (``branch_name``,
+    ``posted_school_wide`` and ``posting_branches``), whatever the reader's own
+    reach. The directory row recedes it for a reader who works in one branch;
+    a card opened from the chart is how that reader finds somebody at another
+    branch, and there the branch is the point. At a one-branch school all three
+    are null, as on the row.
+
+    Cut down to what the reader's standing to the person allows
+    (:func:`.services.visibility.shape_record`), after Field Access has removed
+    what the reader's role may not read. The view passes the reader's
+    ``profile_access`` in the context; any other caller (a write's response, a
+    lifecycle action) has it worked out here from the request. ``counts`` asks
+    only for the groups the reader may open, so a restricted read does not pay
+    for counts it will not see.
     """
 
     field_access_detail = True
@@ -599,6 +638,8 @@ class StaffDetailSerializer(StaffListSerializer):
     phone = serializers.CharField(source="user.phone", read_only=True)
     gender = serializers.CharField(source="user.gender", read_only=True)
     photo_url = serializers.SerializerMethodField()
+    #: Every branch they are posted to, as ``{id, name}``, main posting first.
+    posting_branches = serializers.SerializerMethodField()
     tenure = serializers.SerializerMethodField()
     lifecycle = serializers.SerializerMethodField()
     counts = serializers.SerializerMethodField()
@@ -612,7 +653,7 @@ class StaffDetailSerializer(StaffListSerializer):
         fields = StaffListSerializer.Meta.fields + [
             "account", "first_name", "middle_name", "last_name",
             "date_of_birth", "phone", "gender",
-            "photo_url", "exit_date", "tenure", "lifecycle", "counts",
+            "photo_url", "posting_branches", "exit_date", "tenure", "lifecycle", "counts",
             "created_by", "organogram",
         ]
 
@@ -653,10 +694,10 @@ class StaffDetailSerializer(StaffListSerializer):
         """
         if not obj.hire_date:
             return None
-        from django.utils import timezone
+        from vs_config.clock import tenant_today
 
         as_at = self.context.get("as_at")
-        today = as_at.date if as_at else timezone.localdate()
+        today = as_at.date if as_at else tenant_today(obj.tenant)
         years = today.year - obj.hire_date.year
         months = today.month - obj.hire_date.month
         if today.day < obj.hire_date.day:
@@ -694,13 +735,67 @@ class StaffDetailSerializer(StaffListSerializer):
             ),
         }
 
+    def _branch_dimension(self) -> bool:
+        """Whether the school runs more than one branch, asked once per request."""
+        cached = self.context.get("_school_has_branches")
+        if cached is None:
+            from .services.scoping import branch_dimension_applies
+
+            tenant = self.context.get("tenant") or getattr(
+                self.context.get("request"), "tenant", None,
+            )
+            cached = tenant is not None and branch_dimension_applies(tenant)
+            self.context["_school_has_branches"] = cached
+        return cached
+
+    def get_posting_branches(self, obj):
+        if not self._branch_dimension():
+            return None
+        branches = ([obj.branch] if obj.branch_id else []) + list(
+            obj.additional_postings.all(),
+        )
+        return [branch_ref(branch) for branch in branches]
+
+    def _profile_access(self, obj):
+        """The reader's standing to *obj*, or None for a render acting for nobody."""
+        from vs_rbac.field_enforcement import SYSTEM_CONTEXT_KEY
+
+        from .services import visibility
+
+        access = self.context.get("profile_access")
+        if access is not None:
+            return access
+        request = self.context.get("request")
+        if request is None or self.context.get(SYSTEM_CONTEXT_KEY):
+            return None
+        tenant = self.context.get("tenant") or getattr(request, "tenant", None)
+        options = {}
+        if "viewer_branches" in self.context:
+            options["visible"] = self.context["viewer_branches"]
+        return visibility.profile_access(request, obj, tenant, **options)
+
     def get_counts(self, obj):
-        return {
-            "qualifications": obj.qualifications.count(),
-            "documents": obj.documents.count(),
-            "teaching_assignments": obj.teaching_assignments.count(),
-            "leave_requests": obj.leave_requests.count(),
+        from .services.visibility import ALL_GROUPS, COUNT_GROUPS
+
+        access = self._profile_access(obj)
+        groups = ALL_GROUPS if access is None else access.groups
+        counters = {
+            "qualifications": obj.qualifications,
+            "documents": obj.documents,
+            "teaching_assignments": obj.teaching_assignments,
+            "leave_requests": obj.leave_requests,
         }
+        return {
+            name: related.count()
+            for name, related in counters.items()
+            if COUNT_GROUPS[name] in groups
+        }
+
+    def to_representation(self, instance):
+        from .services.visibility import shape_record
+
+        data = super().to_representation(instance)
+        return shape_record(data, self._profile_access(instance))
 
 
 class StaffUpdateSerializer(FieldAccessMixin, serializers.ModelSerializer):
@@ -732,6 +827,29 @@ class StaffUpdateSerializer(FieldAccessMixin, serializers.ModelSerializer):
             "gender", "first_name", "last_name",
         ]
         extra_kwargs = {field: {"required": False} for field in fields}
+
+    def _entry_for(self, name, entries):
+        """A person's own self-editable details are theirs to write.
+
+        The owner rule of the read serializers, narrowed to
+        :data:`SELF_EDITABLE_FIELDS`: a teacher whose role has the phone switch
+        off may still correct her own number, and gains nothing else by being
+        the subject. Which fields a person may send about themselves at all is
+        the view's rule, not this one.
+        """
+        if name in SELF_EDITABLE_FIELDS and self._edits_own_record():
+            return None
+        return super()._entry_for(name, entries)
+
+    def _edits_own_record(self) -> bool:
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        return (
+            self.instance is not None
+            and user is not None
+            and getattr(user, "is_authenticated", False)
+            and self.instance.user_id == user.pk
+        )
 
 
 #: What a person may change about themselves, and nothing else.

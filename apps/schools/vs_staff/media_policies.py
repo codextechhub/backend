@@ -13,8 +13,13 @@ reads anybody else's without** ``school.teachers.view``, plus the branch
 narrowing the directory itself applies, so a file can never be reachable by a
 caller the profile is not.
 
-One widening, for the photograph alone: a colleague who may read the org chart
-may see the faces on it. See :func:`_may_read_photo`.
+Two widenings, each following the profile a reader can already open. The
+photograph is on the contact card, which everybody working at the school reads,
+and a colleague who may read the org chart sees the faces on it: see
+:func:`_may_read_photo`. A document is readable by a reader the school's profile
+policy shows qualifications and documents to, such as a line manager: see
+:func:`_may_read_document`. Neither widens past the person the relationship
+covers (``services/visibility.py``).
 """
 from __future__ import annotations
 
@@ -49,8 +54,23 @@ def _may_read_staff_file(request, staff) -> bool:
     ).exists()
 
 
+def _granted_by_relationship(request, staff, group) -> bool:
+    """Whether the school's profile policy shows *group* of *staff* to this reader."""
+    from .services.visibility import profile_access
+
+    tenant = getattr(request, "tenant", None)
+    if tenant is None or staff.tenant_id != getattr(tenant, "pk", None):
+        return False
+    return group in profile_access(request, staff, tenant).granted
+
+
 def _may_read_document(request, document) -> bool:
-    return _may_read_staff_file(request, document.staff)
+    """The directory's rule, or the records the reader's relationship is shown."""
+    from .services.visibility import GROUP_RECORDS
+
+    return _may_read_staff_file(request, document.staff) or _granted_by_relationship(
+        request, document.staff, GROUP_RECORDS,
+    )
 
 
 def _may_read_photo(request, staff) -> bool:
@@ -59,10 +79,15 @@ def _may_read_photo(request, staff) -> bool:
     The chart shows every member of staff in the school to every colleague
     holding ``school.organogram.view``, photograph included, whatever branch
     either of them works in. Without this a Lekki teacher would see an Ikeja
-    colleague's name on the chart beside a broken image. It widens the
-    photograph alone: a document still needs the directory's rule above.
+    colleague's name on the chart beside a broken image. It is readable too by
+    anybody the person's contact card is shown to, which is every colleague at
+    the school.
     """
+    from .services.visibility import GROUP_CONTACT
+
     if _may_read_staff_file(request, staff):
+        return True
+    if _granted_by_relationship(request, staff, GROUP_CONTACT):
         return True
     from vs_rbac.permissions import has_permission
 

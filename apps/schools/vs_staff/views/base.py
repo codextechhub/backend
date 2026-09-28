@@ -22,8 +22,14 @@ and every posting through ``guard_postings``, and each row carries
 ``can_manage`` so a screen hides the controls the server would refuse.
 
 **A person always reaches their own record**, whatever they hold. A teacher with
-no staff key at all opens her own profile, her own documents and her own leave,
-and nobody else's.
+no staff key at all opens her own profile, and her own documents and leave
+while the school's profile policy shows them to her, which by default it does.
+
+**A profile tab is read by key or by relationship.** A view naming a
+``profile_group`` admits its GET through :meth:`StaffViewMixin.admit_profile_read`:
+the key path above, or the reader's standing to the person (themselves, their
+line manager, a colleague) where the school's policy grants that tab
+(``services/visibility.py``). Writes are keys only.
 
 **``pending_tenant_surface`` is declared deliberately, one view at a time.**
 Absence means closed. The directory, the invite, the record and the posting are
@@ -46,6 +52,86 @@ from ..services.scoping import viewer_sees_branches
 class StaffViewMixin:
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     pagination_class = XVSPagination
+
+    #: The profile group a view's GET serves, for a view that is one tab of a
+    #: staff profile. Such a GET is admitted by :meth:`admit_profile_read`
+    #: rather than by the permission classes, because it may be let in by the
+    #: reader's relationship to the person as well as by a key.
+    profile_group: str | None = None
+
+    def get_permissions(self):
+        """Only sign-in for a profile tab's GET; the read is admitted in the handler."""
+        if self.profile_group is not None and self._is_read():
+            return [IsAuthenticatedAndActive()]
+        return super().get_permissions()
+
+    def _is_read(self) -> bool:
+        return (getattr(self.request, "method", "") or "").upper() in (
+            "GET", "HEAD", "OPTIONS",
+        )
+
+    def admit_profile_read(self, pk):
+        """One person's profile tab, if this reader may read it, and how they got in.
+
+        Returns ``(staff, access, admission)``. Three ways in, tried in order
+        (:meth:`~..services.visibility.ProfileAccess.admission`): the person
+        themselves, where the school's policy gives them the tab; the key the
+        view names for a read, with the person inside the reader's branch
+        scope, which is the path every tab had before relationships and still
+        asks the plan gate through :class:`HasRBACPermission`; and the policy,
+        for a line manager or a colleague, which asks the plan gate for the same
+        key so a relationship never reaches a module the school has not bought.
+
+        Another school's id is a 404 before anything else is asked. A reader
+        refused everything is told 404 when they hold the tab's key and the
+        person is simply outside their branches, which is what the key path has
+        always said, and 403 otherwise.
+        """
+        from rest_framework.exceptions import PermissionDenied
+
+        from vs_rbac.exceptions import PlanUpgradeRequired
+        from vs_rbac.plan_gate import plan_refusal
+
+        from ..services import visibility
+
+        group = self.profile_group
+        staff = self.staff_queryset().filter(pk=pk).first()
+        if staff is None:
+            raise NotFound("No such person at this school.")
+        access = visibility.profile_access(
+            self.request, staff, self.tenant, visible=self.viewer_branches,
+        )
+        admission = access.admission(group)
+        if admission == visibility.ADMITTED_KEY:
+            if not HasRBACPermission().has_permission(self.request, self):
+                raise PermissionDenied()
+        elif admission == visibility.ADMITTED_RELATIONSHIP:
+            refusal = plan_refusal([visibility.GROUP_PERMISSIONS[group]], self.tenant)
+            if refusal:
+                raise PlanUpgradeRequired(refusal)
+        elif admission is None:
+            if group in access.held and not access.relationships:
+                raise NotFound("No such person at this school.")
+            raise PermissionDenied()
+        return staff, access, admission
+
+    @staticmethod
+    def refuse_as_at_unless_full(as_at, admission) -> None:
+        """Refuse ``?as_at=`` to a reader let in by relationship alone.
+
+        Reading a record as it stood on an earlier day is reading what it no
+        longer says, which is for the person themselves and for the people
+        whose keys reach them.
+        """
+        from rest_framework.exceptions import PermissionDenied
+
+        from ..services.visibility import ADMITTED_KEY, ADMITTED_SELF
+
+        if as_at is not None and admission not in (ADMITTED_SELF, ADMITTED_KEY):
+            raise PermissionDenied(
+                "Only the person themselves and people whose role reaches their "
+                "record can read it as it stood on an earlier day.",
+            )
 
     @property
     def tenant(self):

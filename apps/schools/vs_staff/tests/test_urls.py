@@ -23,6 +23,7 @@ class LiteralSegmentTests(SimpleTestCase):
         "staff-bulk-posting": "/v1/i/me/staff/posting/",
         "staff-roster": "/v1/i/me/staff/roster/",
         "staff-search": "/v1/i/me/staff/search/",
+        "staff-mine": "/v1/i/me/staff/mine/",
         "staff-bulk-role": "/v1/i/me/staff/roles/bulk/",
         "staff-teaching-coverage": "/v1/i/me/staff/teaching/coverage/",
         "staff-class-teacher": "/v1/i/me/staff/teaching/class-teacher/",
@@ -104,7 +105,7 @@ class SurfaceTests(SimpleTestCase):
     """
 
     OPEN = {
-        "StaffListCreateView", "StaffDetailView", "StaffSearchView",
+        "StaffListCreateView", "StaffDetailView", "StaffSearchView", "StaffMineView",
         "StaffBulkPostingView", "StaffRosterView", "StaffBulkRoleView",
         "StaffRolesView", "StaffResendInvitationView",
         "QualificationListCreateView", "QualificationDetailView",

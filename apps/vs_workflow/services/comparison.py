@@ -48,6 +48,32 @@ def _stage_dynamic_role_code(stage) -> Optional[str]:
     return stage.dynamic_role.code if stage.dynamic_role_id else None
 
 
+def _stage_position(stage, labels) -> tuple:
+    """``(reference, code)`` of the post a stage names, or ``(None, None)``.
+
+    The reference is what decides whether two stages differ: a CX seat and a
+    post on a tenant's own chart are different posts even when their codes
+    match. The code is what the reader is shown.
+    """
+    if stage.organogram_position_id:
+        return ("platform", stage.organogram_position_id), stage.organogram_position.code
+    if stage.organogram_tenant_position_id is not None:
+        label = labels.get(stage.organogram_tenant_position_id)
+        return (("tenant", stage.organogram_tenant_position_id),
+                label[0] if label else None)
+    return None, None
+
+
+def _tenant_position_labels(template: WorkflowTemplate, stages) -> Dict:
+    """``{post id: (code, title)}`` for the tenant-chart posts *stages* name."""
+    from vs_workflow.services.positions import describe_tenant_positions
+
+    labels = describe_tenant_positions(
+        (template.tenant_id, s.organogram_tenant_position_id) for s in stages
+    )
+    return {pid: label for (_, pid), label in labels.items()}
+
+
 def _rules_of(stage) -> List[Dict]:
     """A stage's dynamic rules as plain data, in evaluation order."""
     return [
@@ -76,6 +102,8 @@ def compare_templates(base: WorkflowTemplate, other: WorkflowTemplate) -> Dict:
     """
     base_stages = _active_stages(base)
     other_stages = _active_stages(other)
+    base_labels = _tenant_position_labels(base, base_stages.values())
+    other_labels = _tenant_position_labels(other, other_stages.values())
 
     added, removed, changed = [], [], []
 
@@ -107,6 +135,12 @@ def compare_templates(base: WorkflowTemplate, other: WorkflowTemplate) -> Dict:
             fields.append({"field": "dynamic_role_code", "label": "Dynamic Role",
                            "base": _stage_dynamic_role_code(base_stage),
                            "other": _stage_dynamic_role_code(other_stage)})
+        # The post is compared by reference and shown by its current code.
+        base_post, base_code = _stage_position(base_stage, base_labels)
+        other_post, other_code = _stage_position(other_stage, other_labels)
+        if base_post != other_post:
+            fields.append({"field": "organogram_position_code", "label": "Position",
+                           "base": base_code, "other": other_code})
         base_rules, other_rules = _rules_of(base_stage), _rules_of(other_stage)
         if base_rules != other_rules:
             fields.append({"field": "dynamic_role_rules", "label": "Rule ladder",

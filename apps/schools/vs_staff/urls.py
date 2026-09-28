@@ -11,7 +11,12 @@ person who does not exist. The same trap inside ``teaching/`` is why
 """
 from django.urls import path
 
-from .views.directory import StaffDetailView, StaffListCreateView, StaffSearchView
+from .views.directory import (
+    StaffDetailView,
+    StaffListCreateView,
+    StaffMineView,
+    StaffSearchView,
+)
 from .views.leave import LeaveDetailView, StaffLeaveView
 from .views.organogram import (
     AppointmentCloseView,
@@ -59,6 +64,7 @@ urlpatterns = [
     path("posting/", StaffBulkPostingView.as_view(), name="staff-bulk-posting"),
     path("roster/", StaffRosterView.as_view(), name="staff-roster"),
     path("search/", StaffSearchView.as_view(), name="staff-search"),
+    path("mine/", StaffMineView.as_view(), name="staff-mine"),
     path("roles/bulk/", StaffBulkRoleView.as_view(), name="staff-bulk-role"),
 
     path(

@@ -17,7 +17,11 @@ from .views.school import (
     SchoolUpdateView,
     SchoolStatsView,
 )
-from .views.settings import SchoolPayrollScopeView, SchoolSecuritySettingsView
+from .views.settings import (
+    SchoolPayrollScopeView,
+    SchoolSecuritySettingsView,
+    SchoolStaffProfileVisibilityView,
+)
 from .views.display import SchoolDisplaySettingsView
 from .views.branch import (
     BranchListView,
@@ -66,6 +70,11 @@ urlpatterns = [
         "me/settings/display/",
         SchoolDisplaySettingsView.as_view(),
         name="school-settings-display",
+    ),
+    path(
+        "me/settings/staff-profiles/",
+        SchoolStaffProfileVisibilityView.as_view(),
+        name="school-settings-staff-profiles",
     ),
     # Readable with no session: the sign-in page needs it before anyone has one.
     path("public/schools/<str:slug>/logo/", PublicSchoolLogoView.as_view(),

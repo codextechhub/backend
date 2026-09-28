@@ -16,6 +16,7 @@ from vs_tenants.models import Branch
 
 from ..constants import PERM_OVERRIDES_VIEW, PERM_VIEW
 from ..services import posting, roles
+from ..services.visibility import GROUP_ROLES
 from .base import StaffViewMixin
 
 
@@ -37,22 +38,30 @@ class StaffRolesView(StaffViewMixin, APIView):
     written. They are listed apart from ``roles`` because they confer nothing
     yet, and answered empty on an ``as_at`` read, which asks what was held.
 
+    Read under ``school.teachers.view`` with the person in the reader's
+    branches, or where the school's profile policy shows roles to the reader's
+    standing to them (``services/visibility.py``). The exceptions block still
+    needs ``school.user_overrides.view`` either way.
+
     ``?as_at=YYYY-MM-DD`` answers with the grants, reach and exceptions as they
-    stood at the end of that day (``as_at.py``).
+    stood at the end of that day (``as_at.py``), for the person themselves and a
+    reader whose key reaches them.
 
     docstring-name: A staff member's roles and reach
     """
 
     rbac_permission = PERM_VIEW
     pending_tenant_surface = True
+    profile_group = GROUP_ROLES
 
     def get(self, request, pk):
         from vs_history.as_at import parse_as_at
 
         from .. import as_at as past
 
-        staff = self.get_staff(pk)
+        staff, _access, admission = self.admit_profile_read(pk)
         as_at = parse_as_at(request)
+        self.refuse_as_at_unless_full(as_at, admission)
         self._as_at = as_at
         if as_at is not None:
             staff, _children, _meta = past.staff_at(staff, as_at)

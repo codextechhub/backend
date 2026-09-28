@@ -26,6 +26,20 @@ class TemplateInvalidError(WorkflowError):
     default_message = "The workflow template configuration is invalid."
 
 
+class UnknownPositionError(TemplateInvalidError):
+    """A position code that names no post on the organogram the row is bound to.
+
+    Which organogram that is follows the tenant that owns the stage or the
+    approver group: see :mod:`vs_workflow.services.positions`. A 400 rather than
+    the 422 other template errors carry, because the fault is one value the
+    caller typed, and the message names it.
+    """
+
+    error_code = "UNKNOWN_POSITION"
+    default_message = "No position with that code exists on this organogram."
+    http_status = 400
+
+
 # Raised when a route condition references an unregistered callable.
 class UnknownConditionFunctionError(WorkflowError):
     error_code = "UNKNOWN_CONDITION_FUNCTION"
