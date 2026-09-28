@@ -1071,6 +1071,17 @@ eligible_assignees stay closed, destroy off. Scoping and visibility unchanged.
 MUST SAY: M31 FR-010/FR-011 and the pending-school gap (remove it); M09 FR-010
 and FR-012 (the desk is open before go-live) and remove its Needs Attention item.
 
+### D50. The bank-statement import key rolls back its own statement imports (a8e0e4d0, 2026-09-28)
+MODULES: M10 bulk data import, M19 finance (bank statements).
+A dataset registration may declare extra engine keys its own key covers;
+bank_statements declares import.rollbacks.run only, counted only against a
+bank-statement batch. School datasets unchanged. The school app's import wizard
+offers Roll back on a statement to the bank-key holder; FinPro's batch page
+follows once released.
+MUST SAY: M10 the extra-keys rule and its one entry (remove the "no
+self-service way back for a wrong bank statement" gap); M19 that a bursar can
+roll back a statement she imported.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
