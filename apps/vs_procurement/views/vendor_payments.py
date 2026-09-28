@@ -262,6 +262,8 @@ class VendorPaymentEligibleInvoiceView(_ProcBase):
         rows = [{
             "id": invoice.id, "document_number": invoice.document_number,
             "vendor_id": invoice.vendor_id, "vendor_code": invoice.vendor.code,
+            # The payment inherits the bills' branch, which decides the bank it may use.
+            "branch_id": invoice.branch_id,
             "invoice_date": invoice.invoice_date, "due_date": invoice.due_date,
             "total": invoice.total, "amount_paid": invoice.amount_paid,
             "balance_due": invoice.balance_due, "payment_status": invoice.payment_status,

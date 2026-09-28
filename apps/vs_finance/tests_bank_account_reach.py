@@ -346,3 +346,30 @@ class BranchOnThePickersTests(_FinanceBranchFixture):
         self.assertIsNone(banks[self.shared_bank.pk])
         detail = client.get(f"/v1/finance/expense-claims/{claim.pk}/?entity={self.books.code}")
         self.assertEqual(detail.data["data"]["branch_id"], self.ikeja.pk)
+
+
+class EligibleBillsNameTheirBranchTests(_FinanceBranchFixture):
+    """The vendor-payment screen narrows its bank picker from the bills' branch."""
+
+    def test_each_eligible_bill_carries_its_branch(self):
+        from vs_finance.constants import DocumentStatus
+        from vs_procurement.constants import ProcApprovalState
+        from vs_procurement.models import Vendor, VendorInvoice
+
+        vendor = Vendor.objects.create(
+            entity=self.books, code="ACME", name="Acme Supplies",
+            payable_account=Account.objects.get(entity=self.books, code="2100"),
+            kyc_status="VERIFIED",
+        )
+        bill = VendorInvoice.objects.create(
+            entity=self.books, vendor=vendor, branch=self.ikeja,
+            invoice_date=JAN, due_date=JAN, total=10_000, subtotal=10_000,
+            status=DocumentStatus.POSTED, approval_state=ProcApprovalState.APPROVED,
+        )
+        user = self.grant(self.user_for(self.tenant, "eligible-hq@corona.test"),
+                          "procurement.vendor_payment.create", "procurement.vendor_payment.view",
+                          tenant=self.tenant, role_key="eligible-hq")
+        rows = TenantAPIClient(user=user).get(
+            f"/v1/procurement/vendor-payments/eligible-invoices/?entity={self.books.code}"
+            f"&vendor={vendor.pk}").data["data"]
+        self.assertEqual({row["id"]: row["branch_id"] for row in rows}, {bill.pk: self.ikeja.pk})
