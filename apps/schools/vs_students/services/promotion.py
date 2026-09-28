@@ -23,6 +23,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from vs_audit.models import AuditActionType, AuditModuleKey
+from vs_config.clock import tenant_today
 from vs_audit.services import emit_audit_event
 
 from ..constants import (
@@ -456,7 +457,7 @@ def _apply_one(cand, *, to_session, actor):
     write_enrolment(
         student=student, school_class=target, intended_year=to_session,
         actor=actor, is_active=True,
-        effective_date=timezone.localdate(),
+        effective_date=tenant_today(student.tenant),
         outcome=EnrolmentOutcome.CURRENT, assigned_by=actor,
     )
     return cand.outcome

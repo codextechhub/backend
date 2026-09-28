@@ -17,6 +17,8 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field as dc_field
 
+from vs_config.clock import tenant_today
+
 from .ages import date_of_birth_problem
 from .constants import Gender, Relationship, StudentStatus
 
@@ -263,7 +265,7 @@ def resolve_row(
             f"'{raw_dob}' is not a date this importer can read. Use YYYY-MM-DD.",
             "date_of_birth", raw_dob,
         ))
-    elif row.date_of_birth > dt.date.today():
+    elif row.date_of_birth > tenant_today(tenant):
         row.issues.append(RowIssue(
             "business_rule", "That date of birth is in the future.",
             "date_of_birth", raw_dob,
@@ -298,7 +300,7 @@ def resolve_row(
                 f"'{raw_admitted}' is not a date this importer can read.",
                 "admission_date", raw_admitted,
             ))
-        elif row.admission_date > dt.date.today():
+        elif row.admission_date > tenant_today(tenant):
             # The enrol form defaults this to today and never offers a future
             # date, so this is a fault only a file can carry.
             row.issues.append(RowIssue(
@@ -652,8 +654,6 @@ def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
     and the same placement rules an enrolment uses, so no validation exists in
     two places and an imported student is indistinguishable from a typed one.
     """
-    from django.utils import timezone
-
     from .models import Student
     from .services import guardians as guardian_service
     from .services.placement import place
@@ -667,7 +667,7 @@ def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
         gender=row.gender, address=row.address,
         previous_school=row.previous_school,
         status=StudentStatus.APPLICANT,
-        enrolment_date=row.admission_date or timezone.localdate(),
+        enrolment_date=row.admission_date or tenant_today(tenant),
         created_by=created_by,
     )
     if not row.student_number:

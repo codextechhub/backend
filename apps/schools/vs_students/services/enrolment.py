@@ -17,9 +17,9 @@ from __future__ import annotations
 
 from django.db import IntegrityError, transaction
 from django.db.models.functions import Lower
-from django.utils import timezone
 
 from vs_audit.models import AuditActionType, AuditModuleKey
+from vs_config.clock import tenant_today
 from vs_audit.services import emit_audit_event
 
 from ..constants import StudentStatus
@@ -173,11 +173,11 @@ def enrol(
             student_number=student_number,
             status=StudentStatus.APPLICANT,
             enrolment_date=(
-                timezone.localdate() if as_applicant
-                else (data.get("enrolment_date") or timezone.localdate())
+                tenant_today(tenant) if as_applicant
+                else (data.get("enrolment_date") or tenant_today(tenant))
             ),
             applied_for=data.get("applied_for") if as_applicant else None,
-            applied_on=timezone.localdate() if as_applicant else None,
+            applied_on=tenant_today(tenant) if as_applicant else None,
             created_by=actor,
             **personal,
         )
