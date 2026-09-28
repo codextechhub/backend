@@ -72,9 +72,9 @@ class TaxObligationListCreateView(_FinanceBase):
             entity=entity, code=body["code"], name=body.get("name", body["code"]),
             obligation_type=body["obligation_type"],
             liability_account=_resolve_account(
-                entity, body.get("liability_account"), "liability_account", required=True),
+                request, entity, body.get("liability_account"), "liability_account", required=True),
             recoverable_account=_resolve_account(
-                entity, body.get("recoverable_account"), "recoverable_account"),
+                request, entity, body.get("recoverable_account"), "recoverable_account"),
             authority_name=body.get("authority_name", ""),
             frequency=body.get("frequency", "MONTHLY"),
             filing_day=_int(body.get("filing_day", 21), "filing_day", minimum=1),
@@ -118,10 +118,10 @@ class TaxObligationDetailView(_FinanceBase):
             obligation.name = body["name"]
         if "liability_account" in body:
             obligation.liability_account = _resolve_account(
-                entity, body.get("liability_account"), "liability_account", required=True)
+                request, entity, body.get("liability_account"), "liability_account", required=True)
         if "recoverable_account" in body:
             obligation.recoverable_account = _resolve_account(
-                entity, body.get("recoverable_account"), "recoverable_account")
+                request, entity, body.get("recoverable_account"), "recoverable_account")
         if "authority_name" in body:
             obligation.authority_name = body["authority_name"]
         if "frequency" in body:
@@ -299,7 +299,7 @@ class TaxFilingFileView(_TaxFilingActionBase):
             filing_reference=body.get("filing_reference", ""),
             adjustment_amount=_money(adjustment, "adjustment_amount") if adjustment not in (None, "") else 0,
             adjustment_account=_resolve_account(
-                entity, body.get("adjustment_account"), "adjustment_account"),
+                request, entity, body.get("adjustment_account"), "adjustment_account"),
             actor_user=request.user,
         )
         filing.refresh_from_db()

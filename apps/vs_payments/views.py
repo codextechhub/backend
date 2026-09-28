@@ -31,6 +31,7 @@ from core.response import success_response
 from vs_finance.money import format_naira
 from vs_finance.models import Account, Customer, Invoice
 from vs_finance.views import resolve_entity
+from vs_finance.views_ops.base import _resolve_account
 from vs_rbac.field_enforcement import can_read
 from vs_rbac.permissions import (
     HasRBACPermission,
@@ -82,6 +83,10 @@ def _entity_obj(entity, model, ref, field):
     """Fetch ``model`` within ``entity`` by numeric pk, or by ``code`` for models
     that have one (so the UI pickers, which emit codes, resolve too). Raises a
     400 ValidationError when nothing matches."""
+    if model is Account:
+        # A ledger account is named through finance's resolver, which also applies
+        # the caller's bank reach; this lookup does not know the caller.
+        raise TypeError("Resolve a ledger account with vs_finance.views_ops.base._resolve_account.")
     if ref in (None, ""):  # Blank inputs are allowed to resolve to nothing.
         return None
     qs = model.objects.filter(entity=entity)
@@ -196,7 +201,7 @@ class CollectionListCreateView(APIView):
         
         customer = _entity_obj(entity, Customer, body.get("customer"), "customer")
         invoice = _entity_obj(entity, Invoice, body.get("invoice"), "invoice")
-        deposit = _entity_obj(entity, Account, body.get("deposit_account"), "deposit_account")
+        deposit = _resolve_account(request, entity, body.get("deposit_account"), "deposit_account")
 
         intent = services.initiate_collection(  # Hand off to the business service for PSP initiation.
             entity=entity, amount=amount, customer=customer, invoice=invoice,
@@ -341,7 +346,7 @@ class VirtualAccountListCreateView(APIView):
         customer = _entity_obj(entity, Customer, request.data.get("customer"), "customer")
         if customer is None:  # Virtual accounts are always customer-specific in this flow.
             raise ValidationError({"customer": "A customer is required."})
-        deposit = _entity_obj(entity, Account, request.data.get("deposit_account"), "deposit_account")
+        deposit = _resolve_account(request, entity, request.data.get("deposit_account"), "deposit_account")
         va = services.create_virtual_account(  # Delegate provisioning to the service layer.
             entity=entity, customer=customer, provider=request.data.get("provider"),
             deposit_account=deposit, bank_code=request.data.get("bank_code", ""),
@@ -445,7 +450,7 @@ class PayoutListCreateView(APIView):
         if amount <= 0:  # Reject invalid payout amounts.
             raise ValidationError({"amount": "A positive amount (in kobo) is required."})
         vendor = _payout_vendor(entity, body.get("vendor"))
-        source = _entity_obj(entity, Account, body.get("source_account"), "source_account")
+        source = _resolve_account(request, entity, body.get("source_account"), "source_account")
         item = {
             "amount": amount, "vendor": vendor,
             "narration": body.get("narration", ""),
@@ -557,7 +562,7 @@ class PayoutBatchListCreateView(APIView):
         raw_items = body.get("items")
         if not isinstance(raw_items, list) or not raw_items:  # Require at least one item.
             raise ValidationError({"items": "A non-empty list of payout items is required."})
-        source = _entity_obj(entity, Account, body.get("source_account"), "source_account")
+        source = _resolve_account(request, entity, body.get("source_account"), "source_account")
         items = []  # Build the normalized batch items here.
         for idx, raw in enumerate(raw_items):  # Normalize each submitted line item.
             amount = int(raw.get("amount") or 0)

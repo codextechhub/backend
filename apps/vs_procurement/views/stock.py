@@ -527,7 +527,7 @@ class StockItemListCreateView(_ProcBase):
         # Inventory account must be an active, postable ASSET account (required); the
         # default expense account (debited on issue) an active, postable EXPENSE (optional).
         inventory = _resolve_asset_account(
-            entity, body.get("inventory_account"), "inventory_account")
+            request, entity, body.get("inventory_account"), "inventory_account")
         if inventory is None:
             raise ValidationError(
                 {"inventory_account": "An inventory asset account is required."})
@@ -545,7 +545,7 @@ class StockItemListCreateView(_ProcBase):
                     catalog_item=_resolve_catalog_item(entity, body.get("catalog_item")),
                     inventory_account=inventory,
                     default_expense_account=_resolve_expense_account(
-                        entity, body.get("default_expense_account"), "default_expense_account"),
+                        request, entity, body.get("default_expense_account"), "default_expense_account"),
                     reorder_level=_nonneg_qty(body.get("reorder_level", 0), "reorder_level"),
                     reorder_qty=_nonneg_qty(body.get("reorder_qty", 0), "reorder_qty"),
                     is_active=(
@@ -612,7 +612,7 @@ class StockItemDetailView(_ProcBase):
             )
         if "inventory_account" in body:
             # A changed inventory account must still be an active, postable ASSET account.
-            inv = _resolve_asset_account(entity, body.get("inventory_account"), "inventory_account")
+            inv = _resolve_asset_account(request, entity, body.get("inventory_account"), "inventory_account")
             if inv is None:
                 raise ValidationError(
                     {"inventory_account": "An inventory asset account is required."})
@@ -630,7 +630,7 @@ class StockItemDetailView(_ProcBase):
         if "default_expense_account" in body:
             # Active, postable EXPENSE (or cleared to None).
             item.default_expense_account = _resolve_expense_account(
-                entity, body.get("default_expense_account"), "default_expense_account")
+                request, entity, body.get("default_expense_account"), "default_expense_account")
         if "reorder_level" in body:
             item.reorder_level = _nonneg_qty(body.get("reorder_level", 0), "reorder_level")
         if "reorder_qty" in body:
@@ -670,7 +670,7 @@ class StockIssueView(_ProcBase):
             location=_movement_location(request, entity, body.get("location")),
             # An override expense account, if given, must be an active postable EXPENSE.
             expense_account=_resolve_expense_account(
-                entity, body.get("expense_account"), "expense_account"),
+                request, entity, body.get("expense_account"), "expense_account"),
             actor_user=request.user,
             reference=_text(body.get("reference", ""), "reference", 64),
             narration=_text(body.get("narration", ""), "narration", 255),
@@ -752,7 +752,7 @@ class StockAdjustView(_ProcBase):
             location=_movement_location(request, entity, body.get("location")),
             # Adjustment account, if given, must be active postable EXPENSE (defaults to 5150).
             adjustment_account=_resolve_expense_account(
-                entity, body.get("adjustment_account"), "adjustment_account"),
+                request, entity, body.get("adjustment_account"), "adjustment_account"),
             # unit_cost only applies to an increase; strict integer kobo when provided.
             unit_cost=_strict_kobo(unit_cost, "unit_cost") if unit_cost not in (None, "") else None,
             actor_user=request.user,

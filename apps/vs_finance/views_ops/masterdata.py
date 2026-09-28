@@ -184,9 +184,9 @@ class TaxCodeListCreateView(_FinanceBase):
                 "rate_bps": _int(body.get("rate_bps", 0), "rate_bps", minimum=0),
                 "is_recoverable": _bool(body.get("is_recoverable", True), default=True),
                 "collected_account": _resolve_account(
-                    entity, body.get("collected_account"), "collected_account"),
+                    request, entity, body.get("collected_account"), "collected_account"),
                 "paid_account": _resolve_account(
-                    entity, body.get("paid_account"), "paid_account"),
+                    request, entity, body.get("paid_account"), "paid_account"),
                 "is_active": _bool(body.get("is_active", True), default=True),
             },
         )

@@ -535,7 +535,7 @@ def _rfq_detail_queryset(entity):
     )
 
 
-def _write_rfq_lines(entity, rfq, lines, *, preserve_history=False):
+def _write_rfq_lines(request, entity, rfq, lines, *, preserve_history=False):
     """Validate and (re)create an RFQ's spec lines - a full replacement on edit.
 
     Shared by create and the draft PATCH so both apply identical validation:
@@ -569,7 +569,7 @@ def _write_rfq_lines(entity, rfq, lines, *, preserve_history=False):
             description=_text(ln.get("description"), "description", 255, required=True),
             quantity=_quantity(ln.get("quantity", 1), "quantity"),
             requisition_line=req_line,
-            expense_account=_resolve_expense_account(entity, ln.get("expense_account"), "expense_account"),
+            expense_account=_resolve_expense_account(request, entity, ln.get("expense_account"), "expense_account"),
             tax_code=_resolve_tax(entity, ln.get("tax_code")),
         )
 
@@ -660,7 +660,7 @@ class RfqListCreateView(_ProcBase):
             created_by=request.user if request.user.is_authenticated else None,
         )
         vendor_portal.ensure_exact_deadline(rfq)
-        _write_rfq_lines(entity, rfq, lines)
+        _write_rfq_lines(request, entity, rfq, lines)
         # Invited vendors may be empty at draft-create (issue is what requires ≥1); still
         # validate + persist any provided so the draft carries its addressee list.
         if "invited_vendors" in body:
@@ -724,7 +724,7 @@ class RfqDetailView(_ProcBase):
         ])
         vendor_portal.ensure_exact_deadline(rfq)
         if "lines" in body:
-            _write_rfq_lines(entity, rfq, _require_lines(body))
+            _write_rfq_lines(request, entity, rfq, _require_lines(body))
         # Replacing the invite set is subject to the responded-vendor protection in the service.
         if "invited_vendors" in body:
             sourcing.set_rfq_invitations(
@@ -843,7 +843,7 @@ def _quotation_detail_queryset(entity):
     ).prefetch_related("lines", "lines__expense_account", "attachments", "submissions")
 
 
-def _write_quotation_lines(entity, quotation, rfq, lines):
+def _write_quotation_lines(request, entity, quotation, rfq, lines):
     """Validate and (re)create a quotation's priced lines - full replacement on edit.
 
     Every ``rfq_line`` reference must belong to *this* RFQ (not merely the entity),
@@ -857,7 +857,7 @@ def _write_quotation_lines(entity, quotation, rfq, lines):
             rfq_line = RfqLine.objects.filter(rfq=rfq, pk=ln["rfq_line"]).first()
             if rfq_line is None:
                 raise ValidationError({"rfq_line": f"No such RFQ line {ln['rfq_line']} on this RFQ."})
-        expense = _resolve_expense_account(entity, ln.get("expense_account"), "expense_account") \
+        expense = _resolve_expense_account(request, entity, ln.get("expense_account"), "expense_account") \
             or (rfq_line.expense_account if rfq_line else None)
         VendorQuotationLine.objects.create(
             quotation=quotation, rfq_line=rfq_line, line_no=ln.get("line_no", i),
@@ -952,7 +952,7 @@ class QuotationListCreateView(_ProcBase):
             notes=_text(body.get("notes"), "notes", 255),
             created_by=request.user if request.user.is_authenticated else None,
         )
-        _write_quotation_lines(entity, quotation, rfq, lines)
+        _write_quotation_lines(request, entity, quotation, rfq, lines)
         sourcing.price_quotation(quotation)
         quotation = _quotation_detail_queryset(entity).get(pk=quotation.pk)
         return success_response(
@@ -1013,7 +1013,7 @@ class QuotationDetailView(_ProcBase):
             "quote_date", "valid_until", "lead_time_days", "reference", "notes", "updated_at",
         ])
         if "lines" in body:
-            _write_quotation_lines(entity, quotation, quotation.rfq, _require_lines(body))
+            _write_quotation_lines(request, entity, quotation, quotation.rfq, _require_lines(body))
         sourcing.price_quotation(quotation)  # Re-roll net/tax/totals after any edit.
         quotation = _quotation_detail_queryset(entity).get(pk=quotation.pk)
         return success_response("Quotation updated.", data=QuotationDetailSerializer(quotation).data)

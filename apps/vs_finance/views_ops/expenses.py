@@ -116,7 +116,7 @@ class ExpenseClaimListCreateView(_FinanceBase):
                 claim=claim, line_no=i,
                 description=ln.get("description", ""),
                 expense_account=_resolve_account(
-                    entity, ln.get("expense_account"),
+                    request, entity, ln.get("expense_account"),
                     f"lines[{i}].expense_account", required=True),
                 quantity=_dec(ln.get("quantity", 1), f"lines[{i}].quantity"),
                 unit_price=_money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),

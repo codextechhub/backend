@@ -56,13 +56,13 @@ from .catalog import _resolve_catalog_item
 # Purchase requisitions                                                       #
 # --------------------------------------------------------------------------- #
 
-def _write_requisition_lines(req, entity, lines):
+def _write_requisition_lines(request, req, entity, lines):
     """Replace a draft's estimate lines from validated entity-scoped references."""
     req.lines.all().delete()
     for i, ln in enumerate(lines, start=1):
         item = _resolve_catalog_item(entity, ln.get("catalog_item"))
         defaults = item.line_defaults() if item else {}
-        expense = _resolve_account(entity, ln.get("expense_account"), "expense_account") \
+        expense = _resolve_account(request, entity, ln.get("expense_account"), "expense_account") \
             or defaults.get("expense_account")
         tax = _resolve_tax(entity, ln.get("tax_code")) or defaults.get("tax_code")
         unit_price = ln.get("estimated_unit_price")
@@ -185,7 +185,7 @@ class RequisitionListCreateView(_ProcBase):
             requested_by=request.user if request.user.is_authenticated else None,
             created_by=request.user if request.user.is_authenticated else None,
         )
-        _write_requisition_lines(req, entity, lines)
+        _write_requisition_lines(request, req, entity, lines)
         return success_response(
             "Requisition created.", data=RequisitionSerializer(req).data, status=201,
         )
@@ -237,7 +237,7 @@ class RequisitionDetailView(_ProcBase):
             "title", "request_date", "needed_by", "cost_center", "justification", "updated_at",
         ])
         if "lines" in body:
-            _write_requisition_lines(req, entity, _require_lines(body))
+            _write_requisition_lines(request, req, entity, _require_lines(body))
         return success_response("Requisition updated.", data=RequisitionSerializer(req).data)
 
 

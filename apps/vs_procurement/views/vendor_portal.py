@@ -237,7 +237,7 @@ class RfqAmendmentCreateView(_ProcBase):
         rfq.save(update_fields=["version", "response_due_at", "response_due_date", "updated_at"])
         if "lines" in request.data:
             from .orders import _write_rfq_lines
-            _write_rfq_lines(entity, rfq, _require_lines(request.data), preserve_history=True)
+            _write_rfq_lines(request, entity, rfq, _require_lines(request.data), preserve_history=True)
         amendment = RfqAmendment.objects.create(
             rfq=rfq, version=rfq.version, summary=summary,
             response_required=response_required, published_at=timezone.now(),

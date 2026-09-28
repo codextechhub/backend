@@ -214,9 +214,9 @@ def _category_text(body, field, max_length, *, upper=False):
     return value
 
 
-def _category_account(entity, ref):
+def _category_account(request, entity, ref):
     """Resolve an optional active, postable expense default for a category."""
-    account = _resolve_account(entity, ref, "default_expense_account")
+    account = _resolve_account(request, entity, ref, "default_expense_account")
     return _validate_account_type(account, "default_expense_account", {AccountType.EXPENSE})
 
 
@@ -335,7 +335,7 @@ class VendorCategoryListCreateView(_ProcBase):
             cat = VendorCategory.objects.create(
                 entity=entity, code=code, name=name, parent=parent,
                 default_expense_account=_category_account(
-                    entity, body.get("default_expense_account")),
+                    request, entity, body.get("default_expense_account")),
                 is_active=is_active,
             )
         except IntegrityError as exc:
@@ -397,7 +397,7 @@ class VendorCategoryDetailView(_ProcBase):
                 raise ValidationError({"name": "Category name is required."})
         if "default_expense_account" in body:
             category.default_expense_account = _category_account(
-                entity, body.get("default_expense_account"),
+                request, entity, body.get("default_expense_account"),
             )
         desired_active = _validate_bool(body.get("is_active"), "is_active") \
             if "is_active" in body else category.is_active
@@ -524,7 +524,7 @@ class VendorListCreateView(_ProcBase):
         tax_id = _clean_text(body, "tax_id", 32, upper=True)
         if body.get("payable_account"):
             payable = _validate_account_type(
-                _resolve_account(entity, body.get("payable_account"), "payable_account"),
+                _resolve_account(request, entity, body.get("payable_account"), "payable_account"),
                 "payable_account", {AccountType.LIABILITY},
             )
         else:
@@ -534,7 +534,7 @@ class VendorListCreateView(_ProcBase):
                 entity, AccountMappingKey.ACCOUNTS_PAYABLE, label="payable account",
             )
         expense = _validate_account_type(
-            _resolve_account(entity, body.get("default_expense_account"), "default_expense_account"),
+            _resolve_account(request, entity, body.get("default_expense_account"), "default_expense_account"),
             "default_expense_account", {AccountType.EXPENSE},
         )
         from ..settings import resolve_procurement_settings
@@ -678,12 +678,12 @@ class VendorDetailView(_ProcBase):
             vendor.tax_id_normalized = _normalise_tax_id(vendor.tax_id)
         if "payable_account" in body:
             vendor.payable_account = _validate_account_type(
-                _resolve_account(entity, body.get("payable_account"), "payable_account"),
+                _resolve_account(request, entity, body.get("payable_account"), "payable_account"),
                 "payable_account", {AccountType.LIABILITY},
             )
         if "default_expense_account" in body:
             vendor.default_expense_account = _validate_account_type(
-                _resolve_account(entity, body.get("default_expense_account"), "default_expense_account"),
+                _resolve_account(request, entity, body.get("default_expense_account"), "default_expense_account"),
                 "default_expense_account", {AccountType.EXPENSE},
             )
         if "default_wht_tax_code" in body:

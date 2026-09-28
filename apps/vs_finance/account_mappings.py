@@ -133,8 +133,15 @@ def _codes_by_key(entity):
 
 
 @transaction.atomic
-def update_account_mappings(*, entity, values, actor_user):
-    """Apply a partial mapping update and audit the effective before/after codes."""
+def update_account_mappings(*, request, entity, values, actor_user):
+    """Apply a partial mapping update and audit the effective before/after codes.
+
+    Each account is named under the caller's bank reach (see
+    :func:`vs_finance.accounts.accounts_a_caller_may_name`), so a mapping cannot
+    point the school's defaults at another branch's bank ledger that the caller
+    could not name on a document.
+    """
+    from .accounts import accounts_a_caller_may_name
     from .models import Account, FinanceAccountMapping
 
     if not isinstance(values, dict) or not values:
@@ -148,7 +155,7 @@ def update_account_mappings(*, entity, values, actor_user):
         if reference in (None, ""):
             FinanceAccountMapping.objects.filter(entity=entity, key=key).delete()
             continue
-        account_qs = Account.objects.filter(entity=entity)
+        account_qs = accounts_a_caller_may_name(request, Account.objects.filter(entity=entity))
         account = account_qs.filter(pk=int(reference)).first() if str(reference).isdigit() else (
             account_qs.filter(code=str(reference).strip()).first()
         )

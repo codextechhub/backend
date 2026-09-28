@@ -398,7 +398,7 @@ class CustomerListCreateView(_FinanceBase):
         # the entity's audited Accounts Receivable mapping.
         if body.get("receivable_account"):
             receivable = _resolve_account(
-                entity, body.get("receivable_account"),
+                request, entity, body.get("receivable_account"),
                 "receivable_account", required=True,
             )
         else:
@@ -631,7 +631,7 @@ class CustomerDetailView(_FinanceBase):
                 setattr(customer, field, body[field])
         if "receivable_account" in body:
             customer.receivable_account = _resolve_account(
-                entity, body.get("receivable_account"), "receivable_account", required=True)
+                request, entity, body.get("receivable_account"), "receivable_account", required=True)
         if "opening_balance" in body:
             opening_balance = _money(body.get("opening_balance"), "opening_balance")
             from .document_settings import resolve_finance_document_settings
@@ -683,7 +683,7 @@ class CustomerReceiptView(_FinanceBase):
             payment_date=_date(body.get("payment_date"), "payment_date", required=True),
             method=body.get("method") or "BANK_TRANSFER", amount=amount,
             deposit_account=_resolve_account(
-                entity, body.get("deposit_account"), "deposit_account", required=True),
+                request, entity, body.get("deposit_account"), "deposit_account", required=True),
             reference=body.get("reference", ""), narration=body.get("narration", ""),
             created_by=request.user,
         )
@@ -1087,7 +1087,7 @@ class InvoiceVoidView(_FinanceBase):
 # --------------------------------------------------------------------------- #
 
 # Support the build fee items workflow.
-def _build_fee_items(structure, entity, raw_items):
+def _build_fee_items(request, structure, entity, raw_items):
     """(Re)create a structure's fee items from a request ``items`` list."""
     if not raw_items:
         raise ValidationError({"items": "At least one fee item is required."})
@@ -1100,7 +1100,7 @@ def _build_fee_items(structure, entity, raw_items):
             code=str(item.get("code", "")).strip()[:32],
             description=str(item.get("description", "")).strip() or f"Fee {i}",
             revenue_account=_resolve_account(
-                entity, item.get("revenue_account"), f"items[{i}].revenue_account", required=True),
+                request, entity, item.get("revenue_account"), f"items[{i}].revenue_account", required=True),
             amount=amount,
             tax_code=_resolve_tax(
                 entity, item.get("tax_code"), f"items[{i}].tax_code",
@@ -1214,7 +1214,7 @@ class FeeStructureListCreateView(_FinanceBase):
             description=body.get("description", ""),
             is_active=bool(body.get("is_active", True)), created_by=request.user,
         )
-        _build_fee_items(structure, entity, body.get("items"))
+        _build_fee_items(request, structure, entity, body.get("items"))
         structure.refresh_from_db()
         return success_response(
             f"Fee structure {structure.code} created.",
@@ -1260,7 +1260,7 @@ class FeeStructureDetailView(_FinanceBase):
         structure.save()
         if "items" in body:  # full replace
             structure.items.all().delete()
-            _build_fee_items(structure, entity, body.get("items"))
+            _build_fee_items(request, structure, entity, body.get("items"))
         structure.refresh_from_db()
         return success_response(
             f"Fee structure {structure.code} updated.",
@@ -1489,7 +1489,7 @@ class CreditNoteListCreateView(_FinanceBase):
                 note=note, line_no=i,
                 description=ln.get("description", ""),
                 revenue_account=_resolve_account(
-                    entity, ln.get("revenue_account"),
+                    request, entity, ln.get("revenue_account"),
                     f"lines[{i}].revenue_account", required=True),
                 quantity=_dec(ln.get("quantity", 1), f"lines[{i}].quantity"),
                 unit_price=_money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),
@@ -1948,7 +1948,7 @@ def _build_write_off_request(request, entity, body):
         # stops a Lekki bursar writing off an Ikeja invoice she named by id.
         branch_id=_inherited_branch_id(request, invoice),
         write_off_account=_resolve_account(
-            entity, body.get("write_off_account"), "write_off_account"),
+            request, entity, body.get("write_off_account"), "write_off_account"),
         write_off_date=_date(body.get("write_off_date"), "write_off_date"),
         narration=body.get("narration", ""),
         reason=body.get("reason", ""),
@@ -2394,7 +2394,7 @@ class ARAdjustmentBatchView(_FinanceBase):
                     submit_for_approval(refund, requested_by=request.user)
         else:
             write_off_account = _resolve_account(
-                entity, body.get("write_off_account"), "write_off_account")
+                request, entity, body.get("write_off_account"), "write_off_account")
             invoices = _batch_invoices(request, entity, items)
             for index, (item, invoice) in enumerate(zip(items, invoices)):
                 if invoice.pk in seen_targets:
@@ -2749,7 +2749,7 @@ class InvoicePayView(_FinanceBase):
             method=body.get("method") or "BANK_TRANSFER",
             amount=amount,
             deposit_account=_resolve_account(
-                entity, body.get("deposit_account"), "deposit_account", required=True),
+                request, entity, body.get("deposit_account"), "deposit_account", required=True),
             currency=invoice.currency,
             reference=body.get("reference", ""),
             narration=body.get("narration", ""),
@@ -2900,7 +2900,7 @@ class ConcessionListCreateView(_FinanceBase):
             concession_date=_date(body.get("concession_date"), "concession_date", required=True),
             amount=_money(body.get("amount", 0), "amount"),
             allowance_account=_resolve_account(
-                entity, body.get("allowance_account"), "allowance_account", required=False),
+                request, entity, body.get("allowance_account"), "allowance_account", required=False),
             reason=body.get("reason", ""),
             reference=body.get("reference", ""),
             created_by=request.user,

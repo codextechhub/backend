@@ -96,7 +96,7 @@ class PettyCashFundListCreateView(_FinanceBase):
             # it, so the strict reading applies: "the front-desk float" is a
             # different tin at Ikeja and at Lekki and the two must not merge.
             branch=_raised_branch(request, entity, body),
-            gl_account=_resolve_account(entity, body.get("gl_account"), "gl_account", required=True),
+            gl_account=_resolve_account(request, entity, body.get("gl_account"), "gl_account", required=True),
             custodian=_resolve_user(body.get("custodian"), "custodian"),
             custodian_name=body.get("custodian_name", ""),
             float_amount=_money(body.get("float_amount", 0), "float_amount"),
@@ -359,7 +359,7 @@ class PettyCashVoucherListCreateView(_FinanceBase):
                 voucher=voucher, line_no=i,
                 description=ln.get("description", ""),
                 expense_account=_resolve_account(
-                    entity, ln.get("expense_account"),
+                    request, entity, ln.get("expense_account"),
                     f"lines[{i}].expense_account", required=True),
                 quantity=_dec(ln.get("quantity", 1), f"lines[{i}].quantity"),
                 unit_price=_money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),

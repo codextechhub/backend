@@ -94,21 +94,26 @@ def _inherited_branch_id(request, *sources, field="branch"):
 # --------------------------------------------------------------------------- #
 
 # Resolve account reference from request data.
-def _resolve_account(entity, ref, field, *, required=False):
-    """Resolve a GL account by **code** (e.g. "1100") or id within ``entity``.
+def _resolve_account(request, entity, ref, field, *, required=False):
+    """Resolve a GL account by **code** (e.g. "1100") or id within ``entity`` and the caller's reach.
 
     Codes are numeric strings, so match on code first, then fall back to a pk lookup.
-    Returns ``None`` for a blank ``ref`` unless ``required``.
+    Returns ``None`` for a blank ``ref`` unless ``required``. ``request`` is required
+    because a ledger account behind another branch's bank account is that bank's
+    money: it is refused exactly as an unknown account is (see
+    :func:`vs_finance.accounts.accounts_a_caller_may_name`).
     """
+    from ..accounts import accounts_a_caller_may_name
+
     if ref in (None, ""):  # Blank input means no account unless required.
         if required:  # Required account missing.
             raise ValidationError({field: "An account (code or id) is required."})
         return None
-    qs = Account.objects.filter(entity=entity)
+    qs = accounts_a_caller_may_name(request, Account.objects.filter(entity=entity))
     acc = qs.filter(code=str(ref)).first()
     if acc is None and str(ref).isdigit():  # Numeric refs may be primary keys.
         acc = qs.filter(pk=int(ref)).first()
-    if acc is None:  # Reject cross-entity or missing account refs.
+    if acc is None:  # Unknown, another entity's, or another branch's bank ledger.
         raise ValidationError({field: f"No account '{ref}' in this entity."})
     return acc  # Return resolved account.
 

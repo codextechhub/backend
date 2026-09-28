@@ -296,7 +296,9 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
         if (parent_ref := body.get("parent")) not in (None, ""):
             # Resolve by code first, then numeric pk (mirrors _resolve_cost_center),
             # scoped to the entity.
-            pqs = Account.objects.filter(entity=entity)
+            from .accounts import accounts_a_caller_may_name
+
+            pqs = accounts_a_caller_may_name(request, Account.objects.filter(entity=entity))
             parent = pqs.filter(code=str(parent_ref)).first()
             if parent is None and str(parent_ref).isdigit():
                 parent = pqs.filter(pk=int(parent_ref)).first()
@@ -423,9 +425,18 @@ class AccountDetailView(APIView):
     def rbac_permission(self):
         return "finance.account.update" if self.request.method == "PATCH" else "finance.account.view"
 
-    def _get(self, entity, pk):
+    def _get(self, entity, pk, *, request=None):
+        """The account behind ``pk``; with ``request``, only one the caller may change.
+
+        A write passes ``request`` so another branch's bank ledger answers like an
+        unknown account (see :func:`vs_finance.accounts.accounts_a_caller_may_name`).
+        """
+        from .accounts import accounts_a_caller_may_name
         from .models import Account
-        acc = Account.objects.filter(entity=entity, pk=pk).select_related("parent").first()
+        qs = Account.objects.filter(entity=entity, pk=pk)
+        if request is not None:
+            qs = accounts_a_caller_may_name(request, qs)
+        acc = qs.select_related("parent").first()
         if acc is None:
             raise NotFound("No such account in this entity.")
         return acc
@@ -522,7 +533,7 @@ class AccountDetailView(APIView):
 
     def patch(self, request, pk):
         entity = resolve_entity(request)
-        acc = self._get(entity, pk)
+        acc = self._get(entity, pk, request=request)
         body = request.data or {}
         # Only safe, non-structural fields are editable (type/normal/parent are not,
         # since changing them would rewrite how posted history is classified).
@@ -1021,7 +1032,7 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
                     invoice=invoice, line_no=i,
                     description=ln.get("description", ""),
                     revenue_account=_resolve_account(
-                        entity, ln.get("revenue_account"),
+                        request, entity, ln.get("revenue_account"),
                         f"lines[{i}].revenue_account", required=True),
                     quantity=_dec(ln.get("quantity", 1), f"lines[{i}].quantity"),
                     unit_price=_money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),
@@ -1573,22 +1584,22 @@ class DirectEntryCreateView(APIView):
     # Handle POST requests for this endpoint.
     def post(self, request):
         from .posting import post_direct_entry
-        from .views_ops import _resolve_cost_center, _resolve_dimensions
+        from .views_ops import _resolve_account, _resolve_cost_center, _resolve_dimensions
 
         entity = resolve_entity(request)
         serializer = DirectEntryCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        # Resolve each line's optional cost centre + analytical dimensions against this
-        # entity (raises a ValidationError on an unknown code/value) and carry both
-        # through to the GL line.
+        # Resolve each line's account under the caller's reach, and its optional cost
+        # centre + analytical dimensions against this entity, before anything is written.
         lines = [
             (
-                ln["account"], ln["debit"], ln["credit"],
+                _resolve_account(request, entity, ln["account"], f"lines[{i}].account", required=True),
+                ln["debit"], ln["credit"],
                 _resolve_cost_center(entity, ln.get("cost_center"), "lines.cost_center"),
                 _resolve_dimensions(entity, ln.get("dimensions"), "lines.dimensions"),
             )
-            for ln in data["lines"]
+            for i, ln in enumerate(data["lines"])
         ]
         entry = post_direct_entry(
             entity, lines=lines,
