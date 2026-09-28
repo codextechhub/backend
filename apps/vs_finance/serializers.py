@@ -780,7 +780,7 @@ class BankAccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
     class Meta:
         model = BankAccount
         fields = [
-            "id", "name", "bank_name", "account_number",
+            "id", "name", "bank_name", "account_number", "branch_id",
             "gl_account", "gl_account_name", "gl_account_id", "currency",
             "is_active", "is_primary", "is_primary_collection",
             "book_balance", "book_balance_naira", "unreconciled_count",
@@ -965,7 +965,7 @@ class ExpenseClaimSerializer(serializers.ModelSerializer):
     class Meta:
         model = ExpenseClaim
         fields = [
-            "id", "document_number", "claimant_id", "claimant_name", "claim_date",
+            "id", "document_number", "branch_id", "claimant_id", "claimant_name", "claim_date",
             "title", "narration", "status", "payment_status",
             "subtotal", "tax_total", "total", "total_naira",
             "amount_paid", "balance_due", "journal_id", "approval_required", "lines",
@@ -997,7 +997,7 @@ class PettyCashFundSerializer(serializers.ModelSerializer):
     class Meta:
         model = PettyCashFund
         fields = [
-            "id", "name", "gl_account", "gl_account_id",
+            "id", "name", "branch_id", "gl_account", "gl_account_id",
             "custodian_id", "custodian_name", "custodian_label",
             "float_amount", "float_amount_naira",
             "current_balance", "current_balance_naira", "shortfall",
@@ -1329,7 +1329,7 @@ class FixedAssetSerializer(serializers.ModelSerializer):
     class Meta:
         model = FixedAsset
         fields = [
-            "id", "document_number", "name", "asset_code", "category", "category_display",
+            "id", "document_number", "branch_id", "name", "asset_code", "category", "category_display",
             "acquisition_date", "cost", "cost_naira", "salvage_value", "useful_life_months",
             "method", "method_display", "asset_status", "status", "accumulated_depreciation", "net_book_value",
             "depreciable_base", "acquisition_journal_id", "disposal_date",

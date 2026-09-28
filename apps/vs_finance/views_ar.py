@@ -1694,6 +1694,8 @@ class RefundAvailabilityView(_FinanceBase):
             "customer_id": customer.pk,
             "customer_code": customer.code,
             "customer_name": customer.name,
+            # The refund inherits it, so the screen offers only accounts it may use.
+            "branch_id": customer.branch_id,
             "refundable_credit": available[customer.pk],
             "refundable_credit_naira": format_naira(available[customer.pk]),
         } for customer in page]

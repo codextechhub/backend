@@ -316,3 +316,33 @@ class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
         })
         self.assertNotIn("Pay it from", str(response.data))
         self.assertNotIn("No bank account", str(response.data))
+
+
+class BranchOnThePickersTests(_FinanceBranchFixture):
+    """The screens narrow their bank picker from branch ids the API returns."""
+
+    bank = BankAccountNamedInAPostingTests.bank
+
+    def setUp(self):
+        super().setUp()
+        self.ikeja_bank = self.bank("Ikeja Pick", self.ikeja, "50")
+        self.shared_bank = self.bank("Shared Pick", None, "51")
+
+    def test_bank_accounts_and_the_documents_that_pay_from_them_carry_their_branch(self):
+        from vs_finance.models import ExpenseClaim
+
+        claim = ExpenseClaim.objects.create(entity=self.books, branch=self.ikeja, claim_date=JAN)
+        user = self.grant(
+            self.user_for(self.tenant, "picker-hq@corona.test"),
+            "finance.bankaccount.view", "finance.expenseclaim.view",
+            tenant=self.tenant, role_key="picker-hq",
+        )
+        client = TenantAPIClient(user=user)
+        banks = {
+            row["id"]: row["branch_id"] for row in client.get(
+                f"/v1/finance/bank-accounts/?entity={self.books.code}").data["data"]
+        }
+        self.assertEqual(banks[self.ikeja_bank.pk], self.ikeja.pk)
+        self.assertIsNone(banks[self.shared_bank.pk])
+        detail = client.get(f"/v1/finance/expense-claims/{claim.pk}/?entity={self.books.code}")
+        self.assertEqual(detail.data["data"]["branch_id"], self.ikeja.pk)
