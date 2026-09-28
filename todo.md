@@ -1408,7 +1408,7 @@ target is only a class the pupil's branch may join. MRD: a school chooses how
 its end-of-year promotion treats suspended and unplaced pupils, arms and full
 classes.
 
-### D70. The books open their next year, count reversals once, and pay suppliers net of withholding tax (hash pending, 2026-09-28)
+### D70. The books open their next year, count reversals once, and pay suppliers net of withholding tax (3dfa4f9e, 2026-09-28)
 MODULES: M19 finance and accounting, M18 payments and collections, M23 purchase
 orders delivery and AP, M22 procurement and requisitions, M30 system health and
 monitoring, M08 notifications and delivery, MRD.
