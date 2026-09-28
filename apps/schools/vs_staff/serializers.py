@@ -868,8 +868,9 @@ class StaffCreateSerializer(FieldAccessMixin, serializers.Serializer):
 
     Wraps ``UserCreateSerializer``'s fields rather than replacing them: the
     account half is validated by the platform's own serializer inside the view,
-    and what is declared here is the staff half plus the three child collections
-    the form carries.
+    and what is declared here is the staff half plus the qualifications and
+    teaching duties the form carries. There is no documents field: a file is
+    uploaded to the record once it exists.
 
     The address a new account signs in with is declared open on create, so a
     role that may add a member of staff can still send it; every other
@@ -910,7 +911,7 @@ class StaffCreateSerializer(FieldAccessMixin, serializers.Serializer):
     date_of_birth = serializers.DateField(required=False, allow_null=True, default=None)
     photo = serializers.ImageField(required=False, allow_null=True, default=None)
 
-    # The form's own child collections, written in the same transaction.
+    # Qualifications and teaching duties, written in the same transaction.
     qualifications = QualificationSerializer(many=True, required=False, default=list)
     subjects = serializers.ListField(
         child=serializers.IntegerField(), required=False, default=list,

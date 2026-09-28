@@ -1,10 +1,13 @@
 """Adding somebody to a school's staff.
 
 One act, one transaction: the account, the invitation, the role grant, the staff
-record, its first employment event, and whatever qualifications, documents and
-teaching duties the form carried. The design's Add screen is six steps and a
-single save, so a person whose third qualification is refused must not be left
-existing with two.
+record, its first employment event, and whatever qualifications and teaching
+duties the form carried. The Add screen is several steps and a single save, so a
+person whose third qualification is refused must not be left existing with two.
+
+Documents are not part of the add. A file is uploaded to a record that exists,
+through ``POST /v1/i/me/staff/<id>/documents/``, under the records key rather
+than the key that adds staff.
 
 **The account is not created here.** ``UserCreationService`` already resolves
 the target tenant, resolves the role inside it, scopes the email-uniqueness
@@ -79,21 +82,6 @@ def attach_qualifications(profile, rows, *, actor):
             year_obtained=row.get("year_obtained"),
             note=row.get("note", "") or "",
             created_by=actor,
-        ))
-    return created
-
-
-@transaction.atomic
-def attach_documents(profile, rows, *, actor):
-    """Files submitted with the form. Stored as uploaded, checked by nobody."""
-    from ..models import StaffDocument
-
-    created = []
-    for row in rows or ():
-        created.append(StaffDocument.objects.create(
-            tenant=profile.tenant, staff=profile,
-            document_type=row["document_type"], title=row["title"],
-            file=row["file"], uploaded_by=actor,
         ))
     return created
 

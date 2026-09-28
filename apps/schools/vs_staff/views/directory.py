@@ -210,10 +210,11 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
         The account, the invitation and the grant are made by
         ``UserCreationService``, which the live endpoint already called: a second
         creation path would be a second set of rules about who may be created
-        where. What this adds is the staff record and the three child
-        collections the design's form carries, written in the same transaction,
-        so a person whose third qualification is refused is not left existing
-        with two.
+        where. What this adds is the staff record, the qualifications and the
+        teaching duties the form carries, written in the same transaction, so a
+        person whose third qualification is refused is not left existing with
+        two. Documents are uploaded to the record afterwards, on its own
+        endpoint.
         """
         from vs_user.serializers import UserCreateSerializer
         from vs_user.services.user import UserCreationService
