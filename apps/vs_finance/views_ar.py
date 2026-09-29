@@ -2436,18 +2436,19 @@ class ARAdjustmentBatchView(_FinanceBase):
             available = refundable_credit_by_branch(
                 entity, [customer.pk for customer in customers], as_of=common_date)
             for index, (item, customer) in enumerate(zip(items, customers)):
-                if customer.pk in seen_targets:
-                    raise ValidationError({
-                        "items": {
-                            index: {
-                                "customer": "A customer may appear only once per batch.",
-                            },
-                        },
-                    })
-                seen_targets.add(customer.pk)
                 # Per line, not per batch: a batch may span branches, and each
                 # refund pays out its own branch's credit and is paid from there.
                 branch_id = _refund_branch_id(request, entity, customer, item)
+                # Once per customer and branch: each branch's credit is its own refund.
+                if (customer.pk, branch_id) in seen_targets:
+                    raise ValidationError({
+                        "items": {
+                            index: {
+                                "customer": "A customer may appear only once per branch in a batch.",
+                            },
+                        },
+                    })
+                seen_targets.add((customer.pk, branch_id))
                 try:
                     require_own_branch_bank(bank_account, branch_id, noun="refund")
                 except ValidationError as exc:  # Re-key onto the offending batch line.

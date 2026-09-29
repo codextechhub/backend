@@ -159,6 +159,31 @@ class RefundCreationTests(_RefundFixture):
         self.assertEqual(response.status_code, 403, response.data)
 
 
+class BatchRefundTests(_RefundFixture):
+    def test_one_family_is_refunded_from_each_branch_in_one_batch(self):
+        from vs_finance.models import BankAccount
+
+        bank = BankAccount.objects.create(entity=self.books, name="School account", gl_account=self.bank)
+        response = self.head.post(
+            f"/v1/finance/ar-adjustments/batch/?entity={self.books.code}",
+            {
+                "kind": "REFUND", "action": "DRAFT", "date": "2026-01-20",
+                "bank_account": bank.pk,
+                "items": [
+                    {"customer": self.family.code, "branch": self.ikeja.pk, "amount": 30_000},
+                    {"customer": self.family.code, "branch": self.lekki.pk, "amount": 20_000},
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(
+            set(Refund.objects.filter(customer=self.family).values_list("branch_id", "amount")),
+            {(self.ikeja.pk, 30_000), (self.lekki.pk, 20_000)},
+        )
+
+
 class RefundScreenTests(_RefundFixture):
     def availability(self, client):
         response = client.get(f"/v1/finance/refunds/availability/?entity={self.books.code}")
