@@ -194,7 +194,7 @@ class CollectionListCreateView(APIView):
     # Handle GET requests for this endpoint.
     def get(self, request):
         _, reach = _reach(request)
-        qs = reach.collections().select_related("customer", "payment")
+        qs = reach.collections().select_related("entity", "customer", "deposit_account", "payment")
         if (group := request.query_params.get("group")) in COLLECTION_GROUPS:
             qs = qs.filter(status__in=COLLECTION_GROUPS[group])
         elif (status_ := request.query_params.get("status")):
@@ -339,7 +339,7 @@ class VirtualAccountListCreateView(APIView):
             "inactive": base.filter(status=VirtualAccountStatus.INACTIVE).count(),
             "providers": base.values("provider").distinct().count(),
         }
-        qs = base.select_related("customer", "deposit_account", "currency")
+        qs = base.select_related("entity", "customer", "deposit_account", "currency")
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_.upper())
         if (provider := request.query_params.get("provider")):
@@ -447,7 +447,7 @@ class PayoutListCreateView(APIView):
     # Handle GET requests for this endpoint.
     def get(self, request):
         _, reach = _reach(request)
-        qs = reach.payouts()
+        qs = reach.payouts().select_related("entity", "source_account")
         if (group := request.query_params.get("group")) in PAYOUT_GROUPS:
             qs = qs.filter(status__in=PAYOUT_GROUPS[group])
         elif (status_ := request.query_params.get("status")):
@@ -564,7 +564,7 @@ class PayoutBatchListCreateView(APIView):
     # Handle GET requests for this endpoint.
     def get(self, request):
         _, reach = _reach(request)
-        qs = reach.batches()
+        qs = reach.batches().select_related("entity")
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
         return _paginate(request, qs.order_by("-created_at", "-id"), PayoutBatchSummarySerializer, self)
