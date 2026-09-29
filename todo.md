@@ -697,7 +697,7 @@ rows in one query.
 MUST SAY: the collection branch rule and its visibility, the checkout family
 rule, bucket=open, the real-person approver count, and proxy attribution.
 
-### D80. A closed year keeps its real figures, and tax returns declare the transactions they cover (hash pending, 2026-09-29)
+### D80. A closed year keeps its real figures, and tax returns declare the transactions they cover (ad7a950f, 2026-09-29)
 MODULES: M19 finance and accounting, M17 billing and invoicing, M25 dashboards and
 analytics, M26 reporting and exports, MRD.
 From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF).
