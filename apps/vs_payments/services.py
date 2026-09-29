@@ -612,8 +612,10 @@ def collection_branch_id(*, customer=None, invoice=None):
     virtual account deposit) belongs to the customer's branch. ``None`` is
     school-wide.
 
-    The collection create route checks its deposit account against this branch and
-    :func:`_book_receipt` books the receipt to it, so the two cannot disagree.
+    The collection create route checks its deposit account against this branch,
+    :func:`_book_receipt` books the receipt to it, and
+    :class:`vs_payments.reach.PaymentsReach` gives the collection to the staff of
+    that branch, so the three cannot disagree.
     """
     if invoice is not None:
         return invoice.branch_id

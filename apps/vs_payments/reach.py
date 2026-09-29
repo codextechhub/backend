@@ -6,8 +6,12 @@ inclusive reading finance gives those rows (the caller's own branches plus the
 school-wide ones, :func:`vs_rbac.scoping.branch_scope` with
 ``include_shared=True``):
 
-* a **collection** on its customer and on the invoice it settles; either may be
-  absent, and an absent one restricts nothing;
+* a **collection** on the branch it belongs to
+  (:func:`vs_payments.services.collection_branch_id`): its invoice's when it
+  names one, else its customer's. The Okafor family is filed under Ikeja and
+  pays a Lekki invoice online; the money is Lekki's, so Lekki's clerk reaches
+  that collection and Ikeja's does not. A collection naming neither is
+  school-wide;
 * a **virtual account** on its customer;
 * a **payout** on the vendor it pays (a loose ``vendor_source_id``, since this app
   does not hard-FK procurement); a payout naming no vendor is school-wide;
@@ -79,7 +83,11 @@ class PaymentsReach:
     # -- the reach of each table, as a Q over its own rows ---------------------- #
 
     def _collection_q(self):
-        return self.scope.q("customer__") & self.scope.q("invoice__")
+        """The branch rule of :func:`vs_payments.services.collection_branch_id`, in SQL."""
+        return (
+            (Q(invoice__isnull=False) & self.scope.q("invoice__"))
+            | (Q(invoice__isnull=True) & self.scope.q("customer__"))
+        )
 
     def _virtual_account_q(self):
         return self.scope.q("customer__")

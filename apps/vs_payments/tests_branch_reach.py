@@ -374,6 +374,57 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         own = f"/v1/payments/collections/{self.collections['COL-IKJ'].pk}/?entity={self.books.code}"
         self.assertEqual(clerk.get(own).status_code, 200)
 
+    def _okafor_collection(self):
+        """The Okafors, filed under Ikeja, paid a Lekki invoice online: Lekki's money."""
+        from django.utils import timezone
+
+        from .constants import CollectionStatus, PaymentAuditAction
+        from .models import PaymentEvent, WebhookEvent
+
+        okafor = self.customer(self.books, "COKAF", self.ikeja)
+        row = CollectionIntent.objects.create(
+            entity=self.books, provider="PAYSTACK", reference="COL-OKAF", amount=1_000,
+            customer=okafor, invoice=self.invoice(self.books, okafor, self.lekki),
+            status=CollectionStatus.SUCCEEDED, confirmed_at=timezone.now())
+        PaymentEvent.objects.create(
+            entity=self.books, action=PaymentAuditAction.COLLECTION_INITIATED,
+            reference="COL-OKAF")
+        WebhookEvent.objects.create(
+            provider="PAYSTACK", dedupe_key="wh-COL-OKAF", provider_reference="WH-COL-OKAF",
+            collection=row, status="FAILED")
+        return row
+
+    def test_a_collection_for_an_invoice_is_reached_by_the_invoices_branch(self):
+        """Tola keeps Lekki's books, so she sees and opens the Okafors' Lekki payment."""
+        okafor = self._okafor_collection()
+        tola = self.reader(branch=self.lekki)
+        detail = f"/v1/payments/collections/{okafor.pk}/?entity={self.books.code}"
+
+        self.assertEqual(tola.get(detail).status_code, 200)
+        for path, key in (("collections/", "reference"), ("movements/", "reference"),
+                          ("transactions/", "reference"),
+                          ("webhooks/?status=ALL", "provider_reference")):
+            with self.subTest(path=path):
+                self.assertIn("OKAF", " ".join(self.refs(tola, path, key)))
+        summary = self.get(tola, "collections/summary/")["data"]
+        self.assertEqual((summary["total"], summary["collected"]["kobo"]), (5, 5_000))
+
+    def test_a_collection_for_another_branchs_invoice_is_unknown_to_the_familys_branch(self):
+        """Ikeja files the Okafors, but the Lekki payment is not Ikeja's to see."""
+        okafor = self._okafor_collection()
+        clerk = self.reader(branch=self.ikeja)
+        detail = f"/v1/payments/collections/{okafor.pk}/?entity={self.books.code}"
+
+        self.assertEqual(clerk.get(detail).status_code, 404)
+        for path, key in (("collections/", "reference"), ("movements/", "reference"),
+                          ("transactions/", "reference"),
+                          ("webhooks/?status=ALL", "provider_reference")):
+            with self.subTest(path=path):
+                self.assertNotIn("OKAF", " ".join(self.refs(clerk, path, key)))
+        summary = self.get(clerk, "collections/summary/")["data"]
+        self.assertEqual((summary["total"], summary["collected"]["kobo"]), (3, 3_000))
+        self.assertEqual(self.reader(branch=None).get(detail).status_code, 200)
+
     def test_another_branchs_virtual_account_cannot_be_suspended(self):
         clerk = self.reader(branch=self.ikeja)
         lekki, ikeja = self.vas["LEK"], self.vas["IKJ"]
