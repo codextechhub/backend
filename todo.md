@@ -1476,8 +1476,8 @@ MUST SAY:
 
 ### D71. Settings, Staff: a school's own staff rules, and hires approved before they are invited (be002879, 2026-09-29)
 MODULES: M12 staff management, M06 configuration and capability, M07 workflow
-and approval engine, M10 bulk data import, M04 roles and permissions, M14
-calendar (read only), MRD.
+and approval engine, M10 bulk data import, M09 school onboarding, M04 roles and
+permissions, M14 calendar (read only), MRD.
 Eleven school settings (vs_staff 0009, seed_config_catalogue), read under
 school.teachers.view, written under school.settings.update and a school-wide
 caller (else 403 SHARED_RECORD_READ_ONLY, nothing written), 400s keyed on the
@@ -1529,18 +1529,41 @@ docs/staff-management-api-plan.md section 9.
   released, grants revoked, account REJECTED. Adder approves only when alone on
   the stage. Resend 422 HIRE_AWAITING_APPROVAL; revoke withdraws the hire.
   Never during onboarding.
+- Staff import (owner's decision, ec907841): the template has no Role column. Everybody
+  imported starts on the school's starting role, as on the Add form, whoever
+  uploads. A file still carrying a Role column imports with it ignored and one
+  file-level warning role_column_ignored ("Roles are not imported. Everybody in
+  this file starts as {Role}; give other roles from Roles & Permissions."). A
+  starting role the uploader cannot give (retired, or restricted keys they
+  lack) is one file-level error starting_role with the Add form's sentence. A
+  school still onboarding imports on the starting role too (onboarding's data
+  step requires a full staff import); School Admin and Branch Admin stay the
+  Add form's. Reseed staff_master_v1 (seed_import --dataset-type staff) to
+  drop the column.
+- Setup imports are invited at go-live (owner's decision): new EmploymentStatus
+  AWAITING_GO_LIVE "Invited at go-live" (vs_staff 0011), account left
+  PENDING_APPROVAL, no email. approve_go_live (M09) sends every held
+  invitation after activation commits, one transaction each, failures logged
+  and audited (STAFF_EMPLOYMENT_STATUS_CHANGED, FAILED) without blocking
+  go-live or the rest, idempotent. Hire approval does not hold the setup list.
+  Resend during setup 422 INVITATION_HELD_FOR_GO_LIVE "Invitations for staff
+  imported during setup go out when the school goes live."; once live it sends
+  a held one. Revoke is open before go-live and closes a held invitation. The
+  Add form during onboarding is unchanged.
 Defects fixed beside it (aefd1843, bdcbdb41, c659d468): the Add form's docs promised documents it
 never saves (dead attach_documents removed); the staff import ignored the
-onboarding role narrowing and refused a restricted role only at execution (now
-refused at validation with the grant's sentence; no restricted role was ever
-granted without approval).
+onboarding role narrowing and refused a restricted role only at execution
+(since superseded: the import has no role column). No restricted role was ever
+granted without approval.
 MUST SAY: M12 the eleven settings, both routes, their permission and reach
 rules, every refusal, the new status and document type, the leave balance and
 allowance contract, the working-day behaviour change and that stored counts are
 kept; M06 the eleven definitions and that the number keys are branch-scoped;
 M07 the schools.staff_hire type, its ladder, group and self-approval rule, and
-the leave condition field; M10 the staff import's number, approval and role
-rules; M04 that a starting role is held to the grant ceiling. MRD: a school
+the leave condition field; M10 the staff import's number and approval
+rules, that it has no role column, the ignored-column warning and the
+starting role at an onboarding school; M09 that staff imported during setup are invited when the school goes live,
+and how a failure is handled; M04 that a starting role is held to the grant ceiling. MRD: a school
 runs its own staff rules and can approve hires before they are invited.
 
 ## Undone

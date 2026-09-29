@@ -523,3 +523,56 @@ revokes the grant and marks the account REJECTED. The adder may approve only
 when alone on the stage. Resend: 422 `HIRE_AWAITING_APPROVAL`. Revoke withdraws
 the hire ("Hire withdrawn before it was approved. Nothing was sent to them.").
 Reversal is refused once the hire is decided.
+
+### 9.7 The staff import carries no role
+
+The `staff_master_v1` template has no Role column (twelve columns: First Name,
+Middle Name, Last Name, Email, Phone, Gender, Staff ID, Job Title, Employment
+Type, Hire Date, Branch, Send Invitation). Everybody imported starts on the
+school's starting role, exactly as on the Add form, whoever uploads, through
+the same `services.roles.starting_role`. Other roles are given from Roles &
+Permissions afterwards.
+
+- A file that still has a Role column (header `Role`, `Role Key` or
+  `role_key`, any case) is not refused. The column is never read, and the
+  validation carries one file-level warning (no row number), code
+  `role_column_ignored`: "Roles are not imported. Everybody in this file starts
+  as {Role}; give other roles from Roles & Permissions." The engine's own
+  "not part of the official template" warning for the header appears beside it.
+- A starting role the uploader cannot give is one file-level error, code
+  `starting_role`, with the Add form's sentence: the retired-role sentence, or
+  "New staff start as {Role}, which carries restricted permissions you do not
+  hold, so you cannot add staff. Ask an administrator who holds them, or choose
+  another starting role in Settings, Staff." The executor checks the same rule
+  per row against whoever runs the import.
+- While the school is onboarding the Add form grants School Admin or Branch
+  Admin, chosen person by person, because those are the school's first
+  administrators and nobody is there to review a wider grant. A file has
+  nowhere to make that choice, and onboarding's data step requires a fully
+  imported staff list, so an onboarding import grants the starting role too:
+  the baseline every member of staff gets at a live school without review. The
+  two administrator roles stay the Add form's.
+- **Nobody imported during setup is emailed until go-live.** The account is
+  created with the starting role and left `PENDING_APPROVAL`; the record reads
+  `AWAITING_GO_LIVE`, "Invited at go-live" (filter
+  `?employment_status=AWAITING_GO_LIVE`, counted in
+  `counts.by_employment_status`, `can_resend` false, lifecycle strip starts
+  there). The row result says "{Name} added. Their invitation goes out when the
+  school goes live." Approving the go-live request
+  (`vs_onboarding.services.go_live.approve_go_live`) then sends every held
+  invitation after the activation commits, each person in their own
+  transaction: one that fails is logged and audited
+  (STAFF_EMPLOYMENT_STATUS_CHANGED, status FAILED) and skipped, never blocks
+  go-live or the others, and a second run sends nothing. Released records move
+  to Invited with an employment event "Invited when the school went live"; a
+  row that said Send Invitation No gets its invitation created and left unsent.
+  Hire approval does not hold the setup list: going live is the school
+  approving it. The Add form during onboarding is unchanged (School Admin or
+  Branch Admin, invited at once).
+- Resend during setup: 422 `INVITATION_HELD_FOR_GO_LIVE`, "Invitations for
+  staff imported during setup go out when the school goes live." Once live, a
+  resend of somebody still held (a release that failed) sends their invitation.
+- Revoke is open before go-live (POST only). On a held invitation it closes the
+  record as a refused hire is closed (Terminated, grants revoked, account
+  REJECTED, nothing sent): "Invitation withdrawn before it was sent. Nothing was
+  sent to them."

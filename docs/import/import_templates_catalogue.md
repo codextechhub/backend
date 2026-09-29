@@ -122,6 +122,20 @@ Reference, Money In, Money Out, Transaction ID, Balance
 migration rather than by the command, so they exist on every deployed database
 whether or not `seed_import` was ever run.
 
+### The staff template (`staff_master_v1`)
+
+Also written by `seed_import`, dataset `staff`, one member of a school's own
+staff per row: First Name, Middle Name, Last Name, Email, Phone, Gender, Staff
+ID, Job Title, Employment Type, Hire Date, Branch, Send Invitation. **There is
+no Role column.** Everybody imported starts on the school's starting role
+(Settings, Staff), as on the Add form; a file that still has a Role column
+imports with the column ignored and one file-level warning,
+`role_column_ignored`. The same holds at a school still onboarding, where
+nobody is emailed until the school goes live and every held invitation is sent
+then. Staff ID
+is checked against the school's staff number rule. The rules are in
+`schools/vs_staff/imports.py` and `docs/staff-management-api-plan.md` section 9.
+
 ## 3. Endpoint map
 
 | Method + path | Permission | Extra gate | Notes |
