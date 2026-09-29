@@ -10,6 +10,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework.throttling import ScopedRateThrottle
 
+from vs_config.clock import tenant_today
 from vs_rbac.models import (
     Permission,
     PrebuiltRolePermission,
@@ -328,7 +329,7 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
             priority="HIGH",
         )
 
-        today = timezone.localdate()
+        today = tenant_today(ticket.tenant)
         self.assertEqual(ticket.ticket_number, f"TK-{ticket.tenant_id}{today:%y%m%d}1")
         self.assertEqual(ticket.requester_id, self.requester.pk)
         self.assertEqual(ticket.school_id, self.school_a.pk)
@@ -346,8 +347,7 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
         self.assertNotEqual(first.ticket_number, second.ticket_number)
         # TK-<tenant_id><YYMMDD><n>: same tenant + day share the prefix; n is a plain,
         # un-padded integer that starts at 1 and increments.
-        from django.utils import timezone
-        prefix = f"TK-{first.tenant_id}{timezone.localdate():%y%m%d}"
+        prefix = f"TK-{first.tenant_id}{tenant_today(first.tenant):%y%m%d}"
         self.assertTrue(first.ticket_number.startswith(prefix))
         self.assertEqual(first.ticket_number[len(prefix):], "1")
         self.assertEqual(second.ticket_number[len(prefix):], "2")
@@ -355,7 +355,6 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
     def test_ticket_number_counter_is_per_tenant(self):
         # Each tenant counts independently: tenant B starts at 1 even after
         # tenant A has already raised a ticket the same day.
-        from django.utils import timezone
         a1 = ticket_svc.create_ticket(
             actor=self.requester, title="A1", description="x", category="HELP", priority="LOW",
         )
@@ -366,10 +365,11 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
             actor=self.requester, title="A2", description="x", category="HELP", priority="LOW",
         )
         self.assertNotEqual(a1.tenant_id, b1.tenant_id)
-        today = f"{timezone.localdate():%y%m%d}"
-        self.assertEqual(a1.ticket_number, f"TK-{a1.tenant_id}{today}1")
-        self.assertEqual(b1.ticket_number, f"TK-{b1.tenant_id}{today}1")
-        self.assertEqual(a2.ticket_number, f"TK-{a2.tenant_id}{today}2")
+        a_day = f"{tenant_today(a1.tenant):%y%m%d}"
+        b_day = f"{tenant_today(b1.tenant):%y%m%d}"
+        self.assertEqual(a1.ticket_number, f"TK-{a1.tenant_id}{a_day}1")
+        self.assertEqual(b1.ticket_number, f"TK-{b1.tenant_id}{b_day}1")
+        self.assertEqual(a2.ticket_number, f"TK-{a2.tenant_id}{a_day}2")
 
     def test_anyone_authenticated_can_file_a_ticket_and_follow_replies(self):
         # No role grants at all: filing and following your own thread still works.

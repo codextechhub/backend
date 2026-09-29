@@ -24,6 +24,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from core.test_utils import TenantAPIClient
+from vs_config.clock import tenant_today
 from vs_finance.models import Account, Customer, Invoice, InvoiceLine, LedgerEntity
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies
 from vs_tenants.models import Tenant
@@ -94,7 +95,7 @@ class _ExportFixture:
             billing_email="ap@northgate.example",
             receivable_account=Account.objects.get(entity=self.entity, code="1200"),
         )
-        self.today = datetime.date.today()
+        self.today = tenant_today(self.tenant)
         for offset, amount in enumerate((1_240_000_00, 318_500_00, 2_004_750_00, 96_200_00)):
             invoice = Invoice.objects.create(
                 entity=self.entity, customer=self.customer,
@@ -402,7 +403,7 @@ class ExportRunTests(_ExportFixture, TestCase):
             requested_by=self.admin,
         )
 
-        prefix = f"XR-{self.tenant.pk}{timezone.localdate():%y%m%d}"
+        prefix = f"XR-{self.tenant.pk}{tenant_today(self.tenant):%y%m%d}"
         self.assertEqual(first.reference, f"{prefix}1")
         self.assertEqual(second.reference, f"{prefix}2")
 
@@ -421,9 +422,10 @@ class ExportRunTests(_ExportFixture, TestCase):
             requested_by=self.outsider,
         )
 
-        today = f"{timezone.localdate():%y%m%d}"
-        self.assertEqual(mine.reference, f"XR-{self.tenant.pk}{today}1")
-        self.assertEqual(theirs.reference, f"XR-{self.outsider.tenant_id}{today}1")
+        mine_day = f"{tenant_today(self.tenant):%y%m%d}"
+        their_day = f"{tenant_today(self.outsider.tenant):%y%m%d}"
+        self.assertEqual(mine.reference, f"XR-{self.tenant.pk}{mine_day}1")
+        self.assertEqual(theirs.reference, f"XR-{self.outsider.tenant_id}{their_day}1")
         self.assertNotEqual(mine.reference, theirs.reference)
 
     def test_existing_run_reference_is_preserved(self):
@@ -453,7 +455,7 @@ class ExportRunTests(_ExportFixture, TestCase):
         )
         self.assertEqual(
             run.reference,
-            f"XR-{self.tenant.pk}{timezone.localdate():%y%m%d}1",
+            f"XR-{self.tenant.pk}{tenant_today(self.tenant):%y%m%d}1",
         )
 
     def test_csv_run_produces_a_file_with_every_row(self):

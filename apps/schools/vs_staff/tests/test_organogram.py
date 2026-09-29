@@ -26,6 +26,7 @@ from schools.vs_staff.models import (
 )
 from schools.vs_staff.services import employment
 from schools.vs_staff.services.organogram import StaffOrganogramService
+from vs_config.clock import tenant_today
 from vs_rbac.models import PermissionScope
 from vs_rbac.tests.helpers import (
     make_assignment,
@@ -463,7 +464,7 @@ class ChartInvariantTests(OrganogramFixture):
     def test_a_new_primary_closes_the_old_and_one_primary_stays(self):
         first = self.appoint(self.ikeja_teacher, self.ikeja_teacher_post)
         second = self.appoint(
-            self.ikeja_teacher, self.ikeja_hod, start_date=dt.date.today(),
+            self.ikeja_teacher, self.ikeja_hod, start_date=tenant_today(self.tenant),
         )
         first.refresh_from_db()
         self.assertEqual(first.end_date, second.start_date)
@@ -530,7 +531,7 @@ class ChartInvariantTests(OrganogramFixture):
 
     def test_resigning_ends_the_appointment_and_the_post_keeps_its_reports(self):
         appointment = self.appoint(self.ikeja_teacher, self.ikeja_hod)
-        last_day = dt.date.today() + dt.timedelta(days=14)
+        last_day = tenant_today(self.tenant) + dt.timedelta(days=14)
         employment.change_status(
             self.ikeja_teacher, to_status=EmploymentStatus.RESIGNED, actor=self.admin,
             reason="Relocating", last_working_day=last_day,

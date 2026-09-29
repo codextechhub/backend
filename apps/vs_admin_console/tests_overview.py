@@ -15,6 +15,7 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from vs_config.clock import tenant_today
 from vs_notifications.constants import ChannelChoices
 from vs_notifications.models import Notification, NotificationEventType
 from vs_rbac.models import (
@@ -69,6 +70,14 @@ class OverviewTestBase(TestCase):
         token = CodeXRefreshToken.for_user(user).access_token
         client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
         return client
+
+    def today(self):
+        """The day the overview counts in.
+
+        Every tenant in these tests keeps the platform's zone, so the
+        platform's day is each caller's own.
+        """
+        return tenant_today(None)
 
     def fetch(self, user=None, tenant=None):
         user = user or self.user
@@ -155,7 +164,7 @@ class OverviewSectionTests(OverviewTestBase):
         self.assertEqual(self.fetch()["team"]["total"], 2)
 
     def test_task_stats_and_the_three_listed_items(self):
-        today = timezone.localdate()
+        today = self.today()
         # 2 overdue, 1 high, 1 medium, 1 low, 1 done → in_progress 3, overdue 2.
         Task.objects.create(assignee=self.user, title="Overdue A", deadline=today - timedelta(days=3), priority="LOW")
         Task.objects.create(assignee=self.user, title="Overdue B", deadline=today - timedelta(days=1), priority="LOW")
@@ -180,7 +189,7 @@ class OverviewSectionTests(OverviewTestBase):
         other = make_vision_user(email="ov-other@codex.test")
         Task.objects.create(
             assignee=other, title="Not mine",
-            deadline=timezone.localdate() + timedelta(days=1), priority="HIGH",
+            deadline=self.today() + timedelta(days=1), priority="HIGH",
         )
         tasks = self.fetch()["tasks"]
         self.assertEqual(tasks["stats"]["total"], 0)
@@ -380,7 +389,7 @@ class OverviewSignalTenancyTests(OverviewTestBase):
     def test_fiscal_runway_never_names_another_tenants_entity(self):
         from vs_finance.models import FiscalPeriod, FiscalYear, LedgerEntity
 
-        today = timezone.localdate()
+        today = self.today()
 
         def calendar(entity, end):
             year = FiscalYear.objects.create(
@@ -409,7 +418,7 @@ class OverviewSignalTenancyTests(OverviewTestBase):
     def test_fiscal_runway_still_reports_the_callers_own_entity(self):
         from vs_finance.models import FiscalPeriod, FiscalYear, LedgerEntity
 
-        today = timezone.localdate()
+        today = self.today()
 
         def calendar(entity, end):
             year = FiscalYear.objects.create(
@@ -435,7 +444,7 @@ class OverviewSignalTenancyTests(OverviewTestBase):
 
         for entity in (self.mine, self.theirs, self.theirs):
             JournalEntry.objects.create(
-                entity=entity, date=timezone.localdate(),
+                entity=entity, date=self.today(),
                 narration="draft", status=DocumentStatus.DRAFT,
             )
 
@@ -449,7 +458,7 @@ class OverviewSignalTenancyTests(OverviewTestBase):
         from vs_finance.models import JournalEntry
 
         JournalEntry.objects.create(
-            entity=self.theirs, date=timezone.localdate(),
+            entity=self.theirs, date=self.today(),
             narration="their draft", status=DocumentStatus.DRAFT,
         )
 
@@ -472,7 +481,6 @@ class OverviewSignalTests(OverviewTestBase):
     def test_failed_jobs_are_own_recent_failures_only(self):
         from datetime import timedelta
 
-        from django.utils import timezone
         from core.models import BackgroundJob
 
         other = make_vision_user(email="ov-jobs-other@codex.test")
@@ -619,7 +627,6 @@ class OverviewSignalTests(OverviewTestBase):
     def test_fiscal_runway_needs_the_finance_key_and_reports_the_worst_entity(self):
         from datetime import timedelta
 
-        from django.utils import timezone
         from vs_finance.models import FiscalPeriod, FiscalYear, LedgerEntity
 
         healthy = LedgerEntity.objects.create(
@@ -628,7 +635,7 @@ class OverviewSignalTests(OverviewTestBase):
         expiring = LedgerEntity.objects.create(
             name="Expiring Books", code="OVEXPIRING", tenant=self.user.tenant,
         )
-        today = timezone.localdate()
+        today = self.today()
 
         def calendar(entity, end):
             year = FiscalYear.objects.create(
@@ -699,14 +706,13 @@ class OverviewExpandedSignalTests(OverviewTestBase):
     def test_overdue_invoices_counts_posted_unpaid_past_due(self):
         import datetime
 
-        from django.utils import timezone
         from vs_finance.constants import DocumentStatus, InvoicePaymentStatus
         from vs_finance.models import Customer, Invoice
 
         entity = self._entity()
         customer = Customer.objects.create(entity=entity, code="C1", name="Acme")
-        yesterday = timezone.localdate() - datetime.timedelta(days=1)
-        tomorrow = timezone.localdate() + datetime.timedelta(days=1)
+        yesterday = self.today() - datetime.timedelta(days=1)
+        tomorrow = self.today() + datetime.timedelta(days=1)
 
         def invoice(due, status=DocumentStatus.POSTED, paid=InvoicePaymentStatus.UNPAID):
             Invoice.objects.create(
@@ -794,13 +800,12 @@ class OverviewExpandedSignalTests(OverviewTestBase):
     def test_contracts_expiring_counts_active_inside_the_window(self):
         import datetime
 
-        from django.utils import timezone
         from vs_procurement.constants import ContractStatus
         from vs_procurement.models import Vendor, VendorContract
 
         entity = self._entity("SIGCON")
         vendor = Vendor.objects.create(entity=entity, code="V2", name="Services Co")
-        today = timezone.localdate()
+        today = self.today()
 
         def contract(ref, end, status=ContractStatus.ACTIVE):
             VendorContract.objects.create(
@@ -829,7 +834,6 @@ class OverviewExpandedSignalTests(OverviewTestBase):
     def test_team_overdue_tasks_walks_the_callers_own_subtree(self):
         import datetime
 
-        from django.utils import timezone
         from vs_todo.models import Task
         from vs_user.models import OrgNode, Position, PositionAssignment
 
@@ -844,7 +848,7 @@ class OverviewExpandedSignalTests(OverviewTestBase):
         PositionAssignment.objects.create(user=report, position=seat, is_primary=True)
         PositionAssignment.objects.create(user=outsider, position=lone, is_primary=True)
 
-        yesterday = timezone.localdate() - datetime.timedelta(days=1)
+        yesterday = self.today() - datetime.timedelta(days=1)
 
         def task(assignee, deadline, done=False):
             Task.objects.create(
@@ -924,7 +928,6 @@ class OverviewDelegationAndExportTests(OverviewTestBase):
         # has NOT downloaded yet - collect the file and its row must go away. A
         # file already taken, or one that has expired or been purged (there is
         # nothing left to collect either way), never keeps the notice on-screen.
-        from django.utils import timezone
         from vs_exports.constants import ExportFormat
         from vs_exports.models import ExportFile, ExportRun
 

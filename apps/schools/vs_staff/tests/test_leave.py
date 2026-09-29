@@ -11,13 +11,12 @@ from __future__ import annotations
 
 import datetime as dt
 
-from django.utils import timezone
-
 from schools.vs_staff.approvals import ensure_tenant_approval_templates
 from schools.vs_staff.constants import LEAVE_APPROVER_GROUP_CODE, LeaveStatus
 from schools.vs_staff.models import LeaveRequest
 from schools.vs_staff.services import leave as leave_service
 from vs_audit.models import AuditActionType, AuditEvent
+from vs_config.clock import tenant_today
 from vs_workflow.models import WorkflowInstance
 
 from .base import StaffFixture
@@ -238,7 +237,7 @@ class DecisionTests(LeaveFixture):
         from vs_workflow.models import WorkflowStageAction
         from vs_workflow.services import actions
 
-        start = timezone.localdate() + dt.timedelta(days=30)
+        start = tenant_today(self.tenant) + dt.timedelta(days=30)
         row = self._file(
             start_date=start.isoformat(),
             end_date=(start + dt.timedelta(days=4)).isoformat(),
@@ -366,7 +365,7 @@ class ReportingTests(LeaveFixture):
 
         A school may set either, both or neither, so nothing here resolves it.
         """
-        today = dt.date.today()
+        today = tenant_today(self.tenant)
         LeaveRequest.all_objects.create(
             tenant=self.tenant, staff=self.eze, leave_type="SICK",
             start_date=today - dt.timedelta(days=1),
@@ -473,7 +472,7 @@ class ReversalTests(LeaveFixture):
 
     def test_leave_that_has_not_started_may_have_its_approval_undone(self):
         """Nobody reads as away and no day has been taken, which is what reversal is for."""
-        start = timezone.localdate() + dt.timedelta(days=14)
+        start = tenant_today(self.tenant) + dt.timedelta(days=14)
         row = self._file(start, start + dt.timedelta(days=3))
         instance = self._approve(row)
 
@@ -485,7 +484,7 @@ class ReversalTests(LeaveFixture):
 
     def test_leave_running_today_refuses_the_reversal(self):
         """Mr Eze is not in front of his class this morning, and the directory says so."""
-        today = timezone.localdate()
+        today = tenant_today(self.tenant)
         row = self._file(today - dt.timedelta(days=2), today + dt.timedelta(days=2))
         instance = self._approve(row)
 
@@ -493,7 +492,7 @@ class ReversalTests(LeaveFixture):
 
     def test_leave_that_starts_today_refuses_the_reversal(self):
         """The first day is where the answer changes, so the boundary is its own case."""
-        today = timezone.localdate()
+        today = tenant_today(self.tenant)
         row = self._file(today, today + dt.timedelta(days=4))
         instance = self._approve(row)
 
@@ -501,7 +500,7 @@ class ReversalTests(LeaveFixture):
 
     def test_leave_already_taken_refuses_the_reversal(self):
         """The days are gone and the count of days taken is built from approved rows."""
-        end = timezone.localdate() - dt.timedelta(days=7)
+        end = tenant_today(self.tenant) - dt.timedelta(days=7)
         row = self._file(end - dt.timedelta(days=4), end)
         instance = self._approve(row)
 
@@ -518,8 +517,8 @@ class ReversalTests(LeaveFixture):
 
         row = LeaveRequest.all_objects.create(
             tenant=self.tenant, staff=self.eze, leave_type="ANNUAL",
-            start_date=timezone.localdate() - dt.timedelta(days=10),
-            end_date=timezone.localdate() - dt.timedelta(days=6),
+            start_date=tenant_today(self.tenant) - dt.timedelta(days=10),
+            end_date=tenant_today(self.tenant) - dt.timedelta(days=6),
             days=5, status=LeaveStatus.REJECTED,
         )
         self.assertIsNone(
@@ -530,7 +529,7 @@ class ReversalTests(LeaveFixture):
         """They withdrew it, so the absence never happened however the dates read."""
         from schools.vs_staff.workflow_handlers import LeaveRequestWorkflowHandler
 
-        today = timezone.localdate()
+        today = tenant_today(self.tenant)
         row = LeaveRequest.all_objects.create(
             tenant=self.tenant, staff=self.eze, leave_type="SICK",
             start_date=today - dt.timedelta(days=1),

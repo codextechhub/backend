@@ -21,6 +21,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
+from vs_config.clock import tenant_today
 from vs_finance.models import (
     Account,
     Customer,
@@ -84,8 +85,9 @@ def _platform_tenant():
 class _PaymentsFixtureMixin:
     """A seeded ledger entity with a customer, a vendor, and the Fake provider wired in.
 
-    The fiscal year is built for *today's* year so a receipt/payout dated today always
-    lands in an OPEN period (the booking date is ``date.today()``).
+    The fiscal year is built for the entity's own year so a receipt/payout dated
+    today always lands in an OPEN period (the booking date is the entity's
+    tenant's day, from ``vs_config.clock.tenant_today``).
     """
 
     # Prepare or verify the build test path.
@@ -95,7 +97,7 @@ class _PaymentsFixtureMixin:
             name="Test Books", code="TBOOK", kind=LedgerEntity.Kind.TENANT,
         )
         seed_chart_of_accounts(entity)
-        today = datetime.date.today()
+        today = tenant_today(entity.tenant)
         year = FiscalYear.objects.create(
             entity=entity, year=today.year,
             start_date=datetime.date(today.year, 1, 1),
@@ -148,7 +150,7 @@ class _PaymentsFixtureMixin:
     def make_posted_invoice(self, entity, customer, *, amount):
         inv = Invoice.objects.create(
             entity=entity, customer=customer,
-            invoice_date=datetime.date.today(), due_date=datetime.date.today(),
+            invoice_date=tenant_today(entity.tenant), due_date=tenant_today(entity.tenant),
         )
         InvoiceLine.objects.create(
             invoice=inv, revenue_account=Account.objects.get(entity=entity, code="4100"),
@@ -189,7 +191,7 @@ class CollectionTests(_PaymentsFixtureMixin, TestCase):
         self.assertTrue(intent.provider_reference)
         self.assertEqual(
             intent.reference,
-            f"CXP-{entity.tenant_id}{timezone.localdate():%y%m%d}1",
+            f"CXP-{entity.tenant_id}{tenant_today(entity.tenant):%y%m%d}1",
         )
         self.assertTrue(
             PaymentEvent.objects.filter(
@@ -230,7 +232,7 @@ class CollectionTests(_PaymentsFixtureMixin, TestCase):
 
         entity, customer, _ = self.build()
         inv = self.make_posted_invoice(entity, customer, amount=50000)
-        future = datetime.date.today() + datetime.timedelta(days=14)
+        future = tenant_today(entity.tenant) + datetime.timedelta(days=14)
         Invoice.objects.filter(pk=inv.pk).update(invoice_date=future, due_date=future)
         inv.refresh_from_db()
 
@@ -1050,7 +1052,7 @@ class PayoutBatchTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(batch.item_count, 3)
         self.assertEqual(batch.total_amount, 60000)
         self.assertEqual(batch.instructions.count(), 3)
-        prefix = f"CXP-{entity.tenant_id}{timezone.localdate():%y%m%d}"
+        prefix = f"CXP-{entity.tenant_id}{tenant_today(entity.tenant):%y%m%d}"
         self.assertEqual(batch.reference, f"{prefix}1")
         self.assertEqual(
             set(batch.instructions.values_list("reference", flat=True)),
@@ -1125,7 +1127,7 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
     def _bank_line(self, bank_account, *, amount, reference="", description="", day=None):
         from vs_finance.models import BankStatementLine
         return BankStatementLine.objects.create(
-            bank_account=bank_account, txn_date=day or datetime.date.today(),
+            bank_account=bank_account, txn_date=day or tenant_today(bank_account.entity.tenant),
             description=description, reference=reference, amount=amount,
         )
 
@@ -1211,7 +1213,7 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
         intentB.save(update_fields=["confirmed_at"])
 
         ba = self._bank_account(entity)
-        today = datetime.date.today()
+        today = tenant_today(entity.tenant)
         # No references → forces the amount fallback; one line lands near A, one near B.
         line_near_a = self._bank_line(ba, amount=40000, day=today - datetime.timedelta(days=5))
         line_near_b = self._bank_line(ba, amount=40000, day=today - datetime.timedelta(days=1))
@@ -1269,7 +1271,7 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
         ba = self._bank_account(entity)
         self._bank_line(ba, amount=12000, reference=intent.reference)
         # A window entirely in the past excludes today's confirmation and bank line.
-        past = datetime.date.today() - datetime.timedelta(days=10)
+        past = tenant_today(entity.tenant) - datetime.timedelta(days=10)
         recon = reconciliation.settlement_reconciliation(
             entity, start_date=past - datetime.timedelta(days=5), end_date=past,
         )
@@ -1480,7 +1482,7 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
             gl_account=Account.objects.get(entity=entity, code="1100"),
         )
         BankStatementLine.objects.create(
-            bank_account=ba, txn_date=datetime.date.today(),
+            bank_account=ba, txn_date=tenant_today(entity.tenant),
             reference=intent.reference, amount=40000,
         )
         resp = self.client.get(
@@ -1636,7 +1638,7 @@ class PayoutBatchApprovalTests(TestCase):
             tenant=self.tenant,
         )
         seed_chart_of_accounts(self.entity)
-        today = datetime.date.today()
+        today = tenant_today(self.entity.tenant)
         year = FiscalYear.objects.create(
             entity=self.entity, year=today.year,
             start_date=datetime.date(today.year, 1, 1),

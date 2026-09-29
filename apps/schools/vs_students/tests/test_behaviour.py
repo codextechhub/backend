@@ -57,9 +57,9 @@ class EnrolmentTests(StudentsFixture):
 
     def test_a_birth_date_no_pupil_has_is_refused_as_the_import_refuses_it(self):
         """1998 for 2008 is the digit a form gets wrong as often as a file."""
-        import datetime as dt
+        from vs_config.clock import tenant_today
 
-        this_year = dt.date.today().year
+        this_year = tenant_today(self.tenant).year
         for dob, words in (
             (f"{this_year - 28}-05-01", "over 25"),
             (f"{this_year}-01-01", "under 2"),
@@ -74,12 +74,12 @@ class EnrolmentTests(StudentsFixture):
         self.assertFalse(Student.all_objects.filter(first_name="Zainab").exists())
 
     def test_editing_a_birth_date_keeps_the_same_bounds(self):
-        import datetime as dt
+        from vs_config.clock import tenant_today
 
         pupil = self.student()
         response = self.patch(
             self.admin, "student-detail",
-            {"date_of_birth": f"{dt.date.today().year - 30}-01-01"}, pk=pupil.pk,
+            {"date_of_birth": f"{tenant_today(self.tenant).year - 30}-01-01"}, pk=pupil.pk,
         )
         self.assertEqual(response.status_code, 400, response.data)
         self.assertIn("over 25", str(response.data))

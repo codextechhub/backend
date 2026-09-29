@@ -15,6 +15,7 @@ import itertools
 from django.test import SimpleTestCase
 
 from core.test_utils import TenantAPIClient
+from vs_config.clock import tenant_today
 from vs_finance.models import Account
 from vs_finance.tests_branch_scope import _FinanceBranchFixture
 
@@ -120,8 +121,6 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
     )
 
     def setUp(self):
-        import datetime
-
         from django.utils import timezone
 
         from vs_finance.models import BankAccount, BankStatementLine
@@ -201,7 +200,7 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
             bank = BankAccount.objects.create(entity=e, name=f"Bank {tag}", branch=branch,
                                               gl_account=gl)
             BankStatementLine.objects.create(
-                bank_account=bank, txn_date=datetime.date.today(), amount=777,
+                bank_account=bank, txn_date=tenant_today(e.tenant), amount=777,
                 description=f"LINE-{tag}", reference=f"LINE-{tag}")
 
     vendor = PaymentsNameOnlyWhatTheClerkReachesTests.vendor

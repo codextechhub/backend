@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime
 
 from core.test_utils import TenantAPIClient
+from vs_config.clock import tenant_today
 from vs_finance.models import Refund, WriteOffRequest
 
 from .tests_branch_scope import _FinanceBranchFixture
@@ -179,7 +180,7 @@ class AdjustmentPendingCountTests(_AccessFixture):
         listed = client.get(f"/v1/finance/ar-adjustments/?entity={self.books.code}").json()
         blocks = adjustments(
             self.books, types.SimpleNamespace(start=datetime.date(2026, 1, 1)),
-            datetime.date.today(), EVERY_BLOCK,
+            tenant_today(self.books.tenant), EVERY_BLOCK,
         )
 
         self.assertEqual(

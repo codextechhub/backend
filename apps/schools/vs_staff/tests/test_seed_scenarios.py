@@ -183,12 +183,11 @@ class ScenarioCoverageTests(_Base):
         all have nothing behind them, and a state the module shows could not be
         checked against the API at all.
         """
-        from django.utils import timezone
-
         from schools.vs_staff.services.leave import on_leave_today
+        from vs_config.clock import tenant_today
 
         self.seed()
-        away = on_leave_today(self.multi.tenant, today=timezone.localdate())
+        away = on_leave_today(self.multi.tenant, today=tenant_today(self.multi.tenant))
         self.assertTrue(away, "nobody in the cast has leave running today")
         for staff in StaffProfile.all_objects.filter(pk__in=away):
             with self.subTest(staff=staff.pk):
