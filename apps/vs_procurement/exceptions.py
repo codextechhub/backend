@@ -196,3 +196,15 @@ class MissingControlAccountError(PostingError):
             f"No {label or 'control'} account '{code}' found in this entity's chart of accounts.",
             code=code, **kwargs,
         )
+
+
+class SettlementBranchError(PostingError):
+    """A bill named for a payment's advance belongs to another branch than the payment.
+
+    A 400, like the same-branch bank refusal it sits beside: the request named the
+    wrong bill, and choosing one of the payment's own branch fixes it.
+    """
+
+    error_code = "SETTLEMENT_BRANCH"
+    default_message = "This bill belongs to another branch than the payment."
+    http_status = 400

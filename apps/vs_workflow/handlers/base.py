@@ -1,5 +1,5 @@
 """BaseWorkflowHandler - subclass this in workflow_handlers.py of your app."""
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, Iterable, Optional, Type
 
 from vs_workflow.constants import DocumentAudience
 from vs_workflow.exceptions import ReversalNotAllowedError
@@ -134,6 +134,23 @@ class BaseWorkflowHandler:
         summary = self.get_document_summary(document)
         link = summary.get("link") if isinstance(summary, dict) else None
         return link if isinstance(link, str) and link else None
+
+    def hidden_document_ids(self, user, tenant) -> Optional[Iterable[str]]:
+        """The ids of this type's documents ``user`` may not see in ``tenant``, or None.
+
+        The engine narrows approvals by the branch each instance is filed under,
+        which is the document's own ``branch``. A document whose reach is not one
+        branch answers here instead: a payout batch has no branch, and is hidden
+        from a reader when one of its lines pays a vendor another branch keeps to
+        itself. Every approval read goes through
+        :func:`vs_workflow.services.visibility.exclude_hidden_documents`, so a
+        hidden document is absent from the inbox, the instance list and the
+        dashboards, and a 404 on its instance, its approve and its reject.
+
+        Ids are strings, as ``WorkflowInstance.document_object_id`` holds them.
+        None (the default) hides nothing.
+        """
+        return None
 
     # Lifecycle callbacks let the source app mirror workflow outcomes on its document.
     def on_submitted(self, instance, context: Dict) -> None: ...

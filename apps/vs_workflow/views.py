@@ -59,6 +59,7 @@ from vs_workflow.services.approvers import (
     EligibleApprover, describe_group_members, resolve_approvers, resolve_group_users,
 )
 from vs_workflow.services.positions import bind_position
+from vs_workflow.services.visibility import exclude_hidden_documents
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -575,6 +576,9 @@ class WorkflowInstanceViewSet(
               .prefetch_related("stage_instances__stage", "stage_instances__actions",
                                 "stage_instances__eligible_approvers", "audit_logs")
               .order_by("-updated_at", "-created_at"))
+        # A document its own module keeps from this reader is absent here too, so
+        # its detail, approve and reject answer 404.
+        qs = exclude_hidden_documents(qs, self.request.user, self.get_tenant())
         if self.action == "retrieve":
             # Names for the approval timeline's "who did it" labels.
             qs = qs.prefetch_related(
