@@ -41,8 +41,9 @@ from .models import LeaveRequest, StaffDocument, StaffProfile, StaffQualificatio
 USER = "vs_user.user"
 
 
-def staff_history_starts(staff_pk):
-    return history_starts(spec_for(StaffProfile), staff_pk)
+def staff_history_starts(staff_pk, zone):
+    """The first day, in *zone*, the staff record can be read as at, or ``None``."""
+    return history_starts(spec_for(StaffProfile), staff_pk, zone)
 
 
 def _live_file_names(model, rows, attr="file") -> dict:

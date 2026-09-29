@@ -869,14 +869,18 @@ class FieldExceptionsAsAtTests(_FieldAccessApi):
         super().setUp()
         import datetime as dt
 
-        from vs_history.as_at import RECORD_DAY_TIMEZONE, record_today
+        from zoneinfo import ZoneInfo
+
+        from vs_config.clock import DEFAULT_TIME_ZONE
+        from vs_history.as_at import record_today
         from vs_history.models import RecordVersion
 
-        today = record_today()
+        zone = ZoneInfo(DEFAULT_TIME_ZONE)
+        today = record_today(zone)
 
         def moment(days_ago):
             day = today - dt.timedelta(days=days_ago)
-            return dt.datetime(day.year, day.month, day.day, 12, tzinfo=RECORD_DAY_TIMEZONE)
+            return dt.datetime(day.year, day.month, day.day, 12, tzinfo=zone)
 
         self.day = lambda days_ago: (today - dt.timedelta(days=days_ago)).isoformat()
         RecordVersion.objects.filter(

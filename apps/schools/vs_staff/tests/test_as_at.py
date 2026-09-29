@@ -10,16 +10,20 @@ from __future__ import annotations
 import datetime as dt
 from contextlib import contextmanager
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from schools.vs_staff.constants import LeaveStatus, LeaveType
 from schools.vs_staff.models import LeaveRequest, StaffQualification
-from vs_history.as_at import RECORD_DAY_TIMEZONE
+from vs_config.clock import DEFAULT_TIME_ZONE
 
 from .base import StaffFixture
 
+#: The zone a school keeps until it chooses another.
+DEFAULT_ZONE = ZoneInfo(DEFAULT_TIME_ZONE)
+
 
 def _at(month, day, hour=10):
-    return dt.datetime(2026, month, day, hour, tzinfo=RECORD_DAY_TIMEZONE)
+    return dt.datetime(2026, month, day, hour, tzinfo=DEFAULT_ZONE)
 
 
 @contextmanager

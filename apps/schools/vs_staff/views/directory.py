@@ -404,7 +404,7 @@ class StaffDetailView(StaffViewMixin, APIView):
         ).exists()
 
     def get(self, request, pk):
-        from vs_history.as_at import parse_as_at
+        from vs_history.as_at import parse_as_at, request_zone
 
         from .. import as_at as past
 
@@ -415,7 +415,7 @@ class StaffDetailView(StaffViewMixin, APIView):
         if as_at is None:
             data = StaffDetailSerializer(staff, context=context).data
             if access.profile_view == PROFILE_FULL:
-                starts = past.staff_history_starts(staff.pk)
+                starts = past.staff_history_starts(staff.pk, request_zone(request))
                 data["history_starts"] = starts.isoformat() if starts else None
             return success_response(data=data)
         record, _children, meta = past.staff_at(staff, as_at)

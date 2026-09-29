@@ -49,12 +49,14 @@ def as_at_meta(as_at: AsAt, starts, **extra) -> dict:
     return {"date": as_at.date.isoformat(), "history_starts": starts.isoformat(), **extra}
 
 
-def student_history_starts(student_pk):
-    return history_starts(spec_for(Student), student_pk)
+def student_history_starts(student_pk, zone):
+    """The first day, in *zone*, the student can be read as at, or ``None``."""
+    return history_starts(spec_for(Student), student_pk, zone)
 
 
-def guardian_history_starts(guardian_pk):
-    return history_starts(spec_for(Guardian), guardian_pk)
+def guardian_history_starts(guardian_pk, zone):
+    """The first day, in *zone*, the guardian can be read as at, or ``None``."""
+    return history_starts(spec_for(Guardian), guardian_pk, zone)
 
 
 def enrolments_at(student_pk, as_at: AsAt) -> list:

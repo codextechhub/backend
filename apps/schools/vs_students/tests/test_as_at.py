@@ -9,10 +9,13 @@ from __future__ import annotations
 import datetime as dt
 from contextlib import contextmanager
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from schools.vs_students.constants import DocumentType, Relationship
 from schools.vs_students.models import Guardian, StudentDocument
-from vs_history.as_at import RECORD_DAY_TIMEZONE
+from vs_config.clock import DEFAULT_TIME_ZONE, TIME_ZONE_KEY
+from vs_config.models import ConfigurationDefinition
+from vs_config.services.resolution import set_value
 from vs_rbac.tests.helpers import (
     install_declared_fields,
     make_assignment,
@@ -24,9 +27,12 @@ from vs_rbac.tests.helpers import (
 
 from .base import StudentsFixture
 
+#: The zone a school keeps until it chooses another.
+DEFAULT_ZONE = ZoneInfo(DEFAULT_TIME_ZONE)
+
 
 def _at(month, day, hour=10):
-    return dt.datetime(2026, month, day, hour, tzinfo=RECORD_DAY_TIMEZONE)
+    return dt.datetime(2026, month, day, hour, tzinfo=DEFAULT_ZONE)
 
 
 @contextmanager
@@ -48,6 +54,37 @@ class AsAtFixture(StudentsFixture):
 
     def as_at(self, name, day, user=None, **kwargs):
         return self.get(user or self.admin, name, {"as_at": day}, **kwargs)
+
+
+
+class StudentRecordOnTheSchoolsClockTests(AsAtFixture):
+    """A school on Nairobi time (UTC+3) reads its record days on its own clock.
+
+    Tunde is enrolled at 21:30 UTC on 14 March: 00:30 on the 15th in Nairobi,
+    still 22:30 on the 14th in Lagos.
+    """
+
+    def setUp(self):
+        super().setUp()
+        set_value(
+            definition=ConfigurationDefinition.objects.get(key=TIME_ZONE_KEY),
+            value="Africa/Nairobi", actor=None, tenant=self.tenant,
+        )
+        enrolled = dt.datetime(2026, 3, 14, 21, 30, tzinfo=dt.timezone.utc)
+        with mock.patch("vs_history.recorder.timezone.now", return_value=enrolled):
+            self.late = self.student(first="Tunde", last="Okoye")
+
+    def test_the_live_record_names_the_schools_own_first_day(self):
+        data = self.get(self.admin, "student-detail", pk=self.late.pk).data["data"]
+        self.assertEqual(data["history_starts"], "2026-03-15")
+
+    def test_the_day_before_on_the_schools_clock_is_refused(self):
+        response = self.as_at("student-detail", "2026-03-14", pk=self.late.pk)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["error"]["detail"]["history_starts"], "2026-03-15")
+        self.assertEqual(
+            self.as_at("student-detail", "2026-03-15", pk=self.late.pk).status_code, 200,
+        )
 
 
 class StudentRecordAsAtTests(AsAtFixture):
