@@ -32,6 +32,7 @@ from vs_tenants.exceptions import BranchAlreadyInState, TenantSlugFrozen
 from vs_tenants.models import Branch, BranchLifecycle, BranchStatus, Tenant
 from vs_audit.models import AuditModuleKey, AuditActionType, AuditSeverity
 from vs_audit.services import AuditDiffService, emit_audit_event
+from vs_config.clock import tenant_today
 from vs_config.models import Capability, CapabilityEntitlement
 from vs_config.services.capabilities import set_entitlement
 from vs_finance.payroll import PAYROLL_SCOPE_CHOICES
@@ -299,7 +300,7 @@ class ChangeSchoolPlanSerializer(serializers.Serializer):
         return plan
 
     def validate_subscription_expires_at(self, value):
-        if value and value < timezone.localdate():
+        if value and value < tenant_today(self.context["school"].tenant):
             raise serializers.ValidationError("Subscription expiry cannot be in the past.")
         return value
 
@@ -400,9 +401,9 @@ class SchoolPackageSetupWriteSerializer(serializers.Serializer):
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         errors = {}
 
-        # --- Subscription expiry ---
+        # A school being created keeps the platform's zone, so its day is the platform's.
         expires_at = attrs.get("subscription_expires_at")
-        if expires_at and expires_at < timezone.localdate():
+        if expires_at and expires_at < tenant_today(None):
             errors["subscription_expires_at"] = (
                 "Subscription expiry date cannot be in the past."
             )

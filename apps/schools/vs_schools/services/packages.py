@@ -28,6 +28,7 @@ from datetime import datetime, time
 from django.db import transaction
 from django.utils import timezone
 
+from vs_config.clock import tenant_zone
 from vs_config.models import Capability, CapabilityEntitlement
 from vs_config.services.capabilities import set_entitlement, tenant_is_provisioned
 from vs_rbac.plan_grants import revoke_grants_beyond_the_tenants_depth
@@ -35,21 +36,23 @@ from vs_rbac.plan_grants import revoke_grants_beyond_the_tenants_depth
 logger = logging.getLogger("vs_schools")
 
 
-def subscription_ends_at(expires_at):
+def subscription_ends_at(expires_at, zone):
     """The moment a subscription dated ``expires_at`` stops covering anything.
 
     ``ends_at`` is exclusive and the stored expiry is a date, so a school paid
     up to the 31st keeps the 31st: the grant ends at midnight opening the 1st,
-    not at midnight opening the 31st. An expiry that is already a datetime is
-    handed back untouched, since something more precise than a date has
-    already been decided elsewhere.
+    not at midnight opening the 31st. That midnight is the school's own, in
+    *zone*, so a school behind UTC is not cut off during the evening of its
+    last paid day. An expiry that is already a datetime is handed back
+    untouched, since something more precise than a date has already been
+    decided elsewhere.
     """
     if expires_at is None:
         return None
     if isinstance(expires_at, datetime):
         return expires_at
     naive = datetime.combine(expires_at, time.min) + timezone.timedelta(days=1)
-    return timezone.make_aware(naive, timezone.get_current_timezone())
+    return timezone.make_aware(naive, zone)
 
 
 def sellable_modules():
@@ -94,7 +97,7 @@ def apply_plan_entitlements(
 
     Returns the entitlement rows written, in catalogue order.
     """
-    ends_at = subscription_ends_at(expires_at)
+    ends_at = subscription_ends_at(expires_at, tenant_zone(school.tenant))
     reason = reason or f"Package plan {plan.name} for {school.name}"
     had_a_plan_already = tenant_is_provisioned(school.tenant)
     rows = []
