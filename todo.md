@@ -1566,6 +1566,56 @@ starting role at an onboarding school; M09 that staff imported during setup are 
 and how a failure is handled; M04 that a starting role is held to the grant ceiling. MRD: a school
 runs its own staff rules and can approve hires before they are invited.
 
+### D72. Settings, Academic structure: the school's word for a term, its term names and its arms (c21710f7, 8cc6c5ee, 2026-09-29)
+MODULES: M13 academic structure, M06 configuration and capability, M11 student
+management (promotion), M14 calendar, M17 billing and invoicing, M25
+dashboards (the "This term" switch), MRD. Check M09 school onboarding and M01
+only if they describe term_structure as more than the starting point.
+Three school settings (vs_academics 0010, seed_config_catalogue), read by any
+signed-in member of the school with no key, written under
+school.settings.update and a school-wide caller (else 403
+SHARED_RECORD_READ_ONLY, "Only a school-wide administrator can change the
+school's academic structure settings.", nothing written), 400s keyed on the
+field in sentences, audited with an optional reason. Full contract in
+docs/academics-api-plan.md section 10.
+- GET, PUT /v1/academics/rules/: {term_word, term_word_options, term_names,
+  default_arms}. "Academic structure settings saved."
+- academics.terms.word TERM | SEMESTER, default null = what term_structure
+  implies (SEMESTER on 2_SEMESTERS). academics.terms.names 1 to 6 names, at
+  most 30 characters, unique ignoring case, default null = First/Second/Third
+  Term or First/Second Semester. academics.classes.default_arms 1 to 12, same
+  rules, default A, B, C. term_structure stays and stays locked once live; it
+  is the starting point, and saving the defaults it implies stores nothing.
+- The word: every backend sentence naming a term uses the school's word
+  (session and term refusals, term list message, calendar warnings, alerts and
+  import warning, "Mid-semester break" label, also accepted by the calendar
+  import, the exam refusal, the dashboard's "This semester", the fee due rule
+  "End of the semester billed", fee structure link messages). Stored term
+  names are never renamed.
+- The names pre-fill new years on the session drawer. A session created with
+  no terms still gets none (no dates to give them); the seed command builds its
+  years from the names.
+- generate-arms with no arms makes the school's default arms; a class is
+  "{level} {arm}".
+- BEHAVIOUR CHANGE, promotion under SAME_ARM: pupils whose arm has no class at
+  the next level used to all go to the level's first class; they are now
+  shared across its classes by the SPREAD allocation, counting pupils keeping
+  their arm. A matching arm still wins. level_map rows carry arm_fallback and
+  arm_note ("No JSS2 class has arm A, so these students are shared across
+  JSS2's classes.").
+- BEHAVIOUR CHANGE (8cc6c5ee): an invoice row's period label reads "First Term
+  2026/2027", the dashboard's order, instead of "2026/2027 First Term". Labels
+  are read from the fee structure's link, never stored on invoices.
+MUST SAY: M13 the three settings, the route, its read rule (any member, no
+key) and write rule, every refusal, that term_structure is the starting point,
+that changing the word never renames a term, the default arms on
+generate-arms, and that no terms are invented for a session sent without them;
+M06 the three definitions and their null defaults; M11 the arm fallback,
+arm_fallback and arm_note; M14 the calendar sentences and the Mid-semester
+break label and import alias; M17 the due rule label in the school's word and
+the one period name; M25 the switch label. MRD: a school names its own terms,
+says Term or Semester, and chooses its default arms.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

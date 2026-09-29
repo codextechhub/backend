@@ -1077,8 +1077,11 @@ share, so the preview shows exactly what the run will do.
   repeating, ACTIVE, as giving them a class by hand does, with the reason
   "Placed in JSS2 A by the end-of-year promotion." in their status history.
   The preview writes nothing.
-- **Arms.** SAME_ARM moves JSS1 B to next year's JSS2 B, or to the first class
-  at the level by name when there is no B. SPREAD shares the pupils promoting
+- **Arms.** SAME_ARM moves JSS1 B to next year's JSS2 B. Pupils whose arm has
+  no class at the next level are shared across that level's classes as SPREAD
+  shares them, counting the pupils keeping their arm as seats taken, and the
+  level map says so (`arm_fallback`, `arm_note`; see the academics API plan,
+  section 10.3). SPREAD shares the pupils promoting
   into a level evenly across that level's classes in the target year. Pupils
   are taken in order of last name, first name and id; each joins the class
   with the fewest pupils, counting seats already taken in the target year,
@@ -1113,5 +1116,9 @@ share, so the preview shows exactly what the run will do.
   joined with ", " and `to_id` is null. A class none of whose pupils is
   promoting has an empty list, and `to` and `to_id` still name where it would
   go.
+- `level_map[].arm_fallback` and `level_map[].arm_note`: under SAME_ARM, true
+  and a sentence ("No JSS2 class has arm A, so these students are shared
+  across JSS2's classes.") where some of the class's pupils have no class of
+  their arm next year and are shared out; false and null otherwise.
 - `students[].suspended`: whether the pupil is suspended, so the review screen
   can mark the ones promoted under PROMOTE.
