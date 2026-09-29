@@ -149,7 +149,7 @@ class CreditLot:
 
 
 # Load a customer's credit as dated, drainable lots.
-def credit_lots(entity, customer_ids=None, *, as_of=None) -> dict[int, list[CreditLot]]:
+def credit_lots(entity, customer_ids=None, *, as_of=None, scope=None) -> dict[int, list[CreditLot]]:
     """Customer credit as FIFO-ordered :class:`CreditLot` parcels, keyed by customer id.
 
     A lot is included only when its own accounting date is on or before ``as_of``
@@ -159,6 +159,11 @@ def credit_lots(entity, customer_ids=None, *, as_of=None) -> dict[int, list[Cred
 
     Lots with nothing left are dropped: callers want spendable credit, and keeping
     zero rows would make every FIFO walk scan exhausted receipts forever.
+
+    ``scope`` (a :class:`vs_rbac.scoping.BranchScope`) keeps only the receipts and
+    credit notes in a reader's branches, so a screen showing one branch's documents
+    shows the credit those documents hold and not another branch's. ``None`` reads
+    the whole entity, which is what every posting guard and payout needs.
     """
     from .models import CreditNote, Payment
 
@@ -169,6 +174,8 @@ def credit_lots(entity, customer_ids=None, *, as_of=None) -> dict[int, list[Cred
         customer_ids = list(customer_ids)
         payments = payments.filter(customer_id__in=customer_ids)
         notes = notes.filter(customer_id__in=customer_ids)
+    if scope is not None:  # Only the reader's branches.
+        payments, notes = scope.filter(payments), scope.filter(notes)
     if as_of is not None:  # Only credit that exists by the cutoff may be spent.
         payments = payments.filter(payment_date__lte=as_of)
         notes = notes.filter(note_date__lte=as_of)

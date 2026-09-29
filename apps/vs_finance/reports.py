@@ -831,7 +831,7 @@ def _reversal_dates(journal_ids) -> dict[int, object]:
 
 def customer_account_movements(
     customer, *, invoices=None, credit_notes=None, refunds=None, payments=None,
-    concessions=None,
+    concessions=None, scope=None,
 ):
     """Return every movement that changes a customer's account balance.
 
@@ -846,21 +846,28 @@ def customer_account_movements(
     row dated when the reversal posted. Dropping it instead (which is what filtering on
     ``status=POSTED`` did once the void services started writing REVERSED) rewrote
     every running balance printed for a date before the void.
+
+    ``scope`` (a :class:`vs_rbac.scoping.BranchScope`) narrows the documents this
+    loads itself to a reader's branches; documents a caller passes in are taken as
+    already narrowed.
     """
+    from vs_rbac.scoping import UNNARROWED
+
     from .constants import CreditNoteKind
     from .models import Concession, CreditNote, Invoice, Payment, Refund
 
     live = (DocumentStatus.POSTED, DocumentStatus.REVERSED)
+    narrow = (scope or UNNARROWED).filter
     if invoices is None:
-        invoices = Invoice.objects.filter(customer=customer, status__in=live)
+        invoices = narrow(Invoice.objects.filter(customer=customer, status__in=live))
     if credit_notes is None:
-        credit_notes = CreditNote.objects.filter(customer=customer, status__in=live)
+        credit_notes = narrow(CreditNote.objects.filter(customer=customer, status__in=live))
     if refunds is None:
-        refunds = Refund.objects.filter(customer=customer, status__in=live)
+        refunds = narrow(Refund.objects.filter(customer=customer, status__in=live))
     if payments is None:
-        payments = Payment.objects.filter(customer=customer, status__in=live)
+        payments = narrow(Payment.objects.filter(customer=customer, status__in=live))
     if concessions is None:
-        concessions = Concession.objects.filter(customer=customer, status__in=live)
+        concessions = narrow(Concession.objects.filter(customer=customer, status__in=live))
 
     # (date, type_order, doc_type, number, description, debit, credit, journal_id).
     rows: list = []
@@ -915,20 +922,26 @@ def customer_account_movements(
 
 
 # Handle the customer statement workflow.
-def customer_statement(customer, *, start_date=None, end_date=None) -> CustomerStatement:
+def customer_statement(customer, *, start_date=None, end_date=None,
+                       scope=None) -> CustomerStatement:
     """Build a :class:`CustomerStatement` for ``customer`` over ``[start_date, end_date]``.
 
     ``end_date`` defaults to today; ``start_date`` of ``None`` runs from the account's
     inception (a zero opening balance). Movements are ordered by date, then by a stable
     document-type ordering so same-day documents read sensibly (invoice before its
     receipt).
+
+    ``scope`` (a :class:`vs_rbac.scoping.BranchScope`) builds the statement from the
+    documents in a reader's branches only, movements and aging alike, so the Ikeja
+    bursar's statement of a family billed at two branches is Ikeja's account with
+    that family. ``None`` is the whole account, which is what the customer is sent.
     """
     from .constants import DocumentStatus
     from .models import Invoice
 
     entity = customer.entity
     end_date = end_date or tenant_today(entity.tenant)
-    movements = customer_account_movements(customer)
+    movements = customer_account_movements(customer, scope=scope)
 
     statement = CustomerStatement(
         entity_id=entity.id, customer_id=customer.id,
@@ -965,7 +978,7 @@ def customer_statement(customer, *, start_date=None, end_date=None) -> CustomerS
     # every time a later payment landed - and disagreed with the running balance
     # printed directly above it, which was correctly dated all along.
     invoices, debit_notes, settled_by_invoice, settled_by_note, _credit = _ar_snapshot(
-        customer.entity, as_of=end_date, customer=customer,
+        customer.entity, as_of=end_date, customer=customer, scope=scope,
     )
     for inv in invoices:
         due = int(inv.total) - settled_by_invoice.get(inv.pk, 0)

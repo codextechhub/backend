@@ -136,6 +136,19 @@ def _branch_visible(request, qs):
     return qs.filter(branch_q(request, include_shared=True))
 
 
+def _document_scope(request):
+    """The reader's reach over the documents raised against a customer.
+
+    A customer is master data and a school-wide one stays reachable by everybody
+    (:func:`_branch_visible`). The invoices, receipts, notes, refunds and concessions
+    under it are transactions, and they are narrowed to the reader's own branches
+    only: a family billed at both Ikeja and Lekki is one customer, and the Ikeja
+    bursar opening that family sees Ikeja's documents and the balance they make,
+    never Lekki's. A whole-school reader is not narrowed at all.
+    """
+    return branch_scope(request, include_shared=False)
+
+
 # Support the resolve customer workflow.
 def _resolve_customer(request, entity, ref, field="customer", *, required=True):
     """Resolve a customer by **code** or id within ``entity`` and the caller's branches."""
@@ -234,18 +247,23 @@ def _reversal_date(body):
 # --------------------------------------------------------------------------- #
 
 # Support the customer ledger workflow.
-def _customer_ledger(entity, customer_ids=None):
-    """Net AR position per customer, in two aggregate queries (no per-row N+1).
+def _customer_ledger(entity, customer_ids=None, *, scope=None):
+    """Net AR position per customer, in a few aggregate queries (no per-row N+1).
 
     Returns ``{customer_id: {"outstanding", "credit", "overdue", "lifetime_paid"}}``
     where ``outstanding`` is the sum of open invoice balances and ``credit`` the
     customer's stored 2140 position. Net = outstanding − credit (positive owes,
-    negative in credit). Computed in a few aggregate queries (no N+1).
+    negative in credit).
 
     ``credit`` comes from :func:`~vs_finance.receivables.customer_credit_balances`
-    rather than being re-derived here. This screen used to keep its own copy of that
-    arithmetic, which is how the console ended up with two definitions of "available
-    credit" that could disagree - one of them refund-blind.
+    rather than being re-derived here, so the console has one definition of
+    "available credit" and it is refund-aware.
+
+    ``scope`` (a :class:`vs_rbac.scoping.BranchScope`) counts only the documents in
+    a reader's branches. A family billed at Ikeja and at Lekki is one customer, and
+    without it the Ikeja bursar's balance column would carry Lekki's invoices and
+    receipts. ``None`` is the whole entity, which is what a customer-facing figure
+    (a printed invoice, a notification) needs.
     """
     from django.db.models import F, Q, Sum
     from django.db.models.functions import Coalesce
@@ -265,6 +283,8 @@ def _customer_ledger(entity, customer_ids=None):
         inv = inv.filter(customer_id__in=customer_ids)
         pay = pay.filter(customer_id__in=customer_ids)
         dn = dn.filter(customer_id__in=customer_ids)
+    if scope is not None:
+        inv, pay, dn = scope.filter(inv), scope.filter(pay), scope.filter(dn)
 
     out: dict[int, dict] = {}
 
@@ -285,7 +305,7 @@ def _customer_ledger(entity, customer_ids=None):
     for r in dn.values("customer_id").annotate(
         c=Coalesce(Sum(F("total") - F("amount_paid")), 0)):
         slot(r["customer_id"])["outstanding"] += int(r["c"] or 0)
-    for cid, credit in customer_credit_balances(entity, customer_ids).items():
+    for cid, credit in customer_credit_balances(entity, customer_ids, scope=scope).items():
         slot(cid)["credit"] = credit
     return out
 
@@ -328,6 +348,7 @@ class CustomerListCreateView(_FinanceBase):
         from .money import format_naira
 
         entity = resolve_entity(request)
+        scope = _document_scope(request)
         qs = Customer.objects.filter(
             branch_q(request, include_shared=True), entity=entity,
         ).select_related("receivable_account")
@@ -345,7 +366,7 @@ class CustomerListCreateView(_FinanceBase):
             qs = qs.filter(is_active=False)
         elif status_f in ("ACTIVE", "CREDIT", "OVERDUE"):
             base_ids = list(qs.filter(is_active=True).values_list("id", flat=True))
-            led_all = _customer_ledger(entity, base_ids)
+            led_all = _customer_ledger(entity, base_ids, scope=scope)
             keep = [
                 cid for cid in base_ids
                 if _account_status(
@@ -358,7 +379,7 @@ class CustomerListCreateView(_FinanceBase):
         paginator = XVSPagination()
         paginator.page_size = 25
         page = paginator.paginate_queryset(qs.order_by("code"), request, view=self)
-        ledger = _customer_ledger(entity, [c.id for c in page])
+        ledger = _customer_ledger(entity, [c.id for c in page], scope=scope)
         rows = []
         for c in page:
             row = CustomerSerializer(c).data
@@ -473,7 +494,8 @@ class CustomerDetailView(_FinanceBase):
 
         entity = resolve_entity(request)
         customer = _resolve_customer(request, entity, pk)
-        led = _customer_ledger(entity, [customer.id]).get(customer.id, {})
+        scope = _document_scope(request)
+        led = _customer_ledger(entity, [customer.id], scope=scope).get(customer.id, {})
         net = led.get("outstanding", 0) - led.get("credit", 0)
         today = tenant_today(entity.tenant)
 
@@ -483,15 +505,15 @@ class CustomerDetailView(_FinanceBase):
         # POSTED so it can - the open-item panels below re-filter to POSTED, because a
         # voided invoice is history but is not something the customer still owes.
         history = (DocumentStatus.POSTED, DocumentStatus.REVERSED)
-        invoices = list(Invoice.objects.filter(
+        invoices = list(scope.filter(Invoice.objects.filter(
             entity=entity, customer=customer, status__in=history,
-        ).order_by("invoice_date", "id")[:500])
-        payments = list(Payment.objects.filter(
+        )).order_by("invoice_date", "id")[:500])
+        payments = list(scope.filter(Payment.objects.filter(
             entity=entity, customer=customer, status__in=history,
-        ).order_by("payment_date", "id")[:500])
-        credit_notes = list(CreditNote.objects.filter(
+        )).order_by("payment_date", "id")[:500])
+        credit_notes = list(scope.filter(CreditNote.objects.filter(
             entity=entity, customer=customer, status__in=history,
-        ).order_by("note_date", "id")[:500])
+        )).order_by("note_date", "id")[:500])
         # DEBIT notes are supplementary AR charges - their unsettled balance is an
         # open item, just like an invoice. CREDIT notes remain account movements but
         # are value returned to the customer, not amounts the customer still owes.
@@ -500,12 +522,12 @@ class CustomerDetailView(_FinanceBase):
             if n.kind == CreditNoteKind.DEBIT and n.status == DocumentStatus.POSTED
         ]
         open_invoice_pool = [i for i in invoices if i.status == DocumentStatus.POSTED]
-        refunds = list(Refund.objects.filter(
+        refunds = list(scope.filter(Refund.objects.filter(
             entity=entity, customer=customer, status__in=history,
-        ).order_by("refund_date", "id")[:500])
-        concessions = list(Concession.objects.filter(
+        )).order_by("refund_date", "id")[:500])
+        concessions = list(scope.filter(Concession.objects.filter(
             entity=entity, customer=customer, status__in=history,
-        ).order_by("concession_date", "id")[:500])
+        )).order_by("concession_date", "id")[:500])
 
         # Handle the inv status workflow.
         def inv_status(i):
@@ -738,7 +760,9 @@ class CustomerSummaryView(_FinanceBase):
             qs = qs.filter(is_active=active == "true")
 
         custs = list(qs.values("id", "is_active"))
-        ledger = _customer_ledger(entity, [c["id"] for c in custs])
+        ledger = _customer_ledger(
+            entity, [c["id"] for c in custs], scope=_document_scope(request),
+        )
         receivable = 0
         on_credit = 0
         counts = {"ACTIVE": 0, "CREDIT": 0, "OVERDUE": 0, "INACTIVE": 0}
@@ -3272,7 +3296,9 @@ class CustomerStatementView(_FinanceBase):
         customer = _resolve_customer(request, entity, request.query_params.get("customer"))
         start = _date(request.query_params.get("start"), "start")
         end = _date(request.query_params.get("end"), "end")
-        stmt = customer_statement(customer, start_date=start, end_date=end)
+        stmt = customer_statement(
+            customer, start_date=start, end_date=end, scope=_document_scope(request),
+        )
 
         from .exports import ReportTable
 

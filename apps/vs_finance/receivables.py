@@ -279,7 +279,8 @@ def post_payment(payment, *, actor_user=None, auto_allocate=True, allocations=No
 
 # Handle customer credit balances in bulk so list screens and posting guards share
 # one definition without introducing a query per customer.
-def customer_credit_balances(entity, customer_ids=None, *, as_of=None) -> dict[int, int]:
+def customer_credit_balances(entity, customer_ids=None, *, as_of=None,
+                             scope=None) -> dict[int, int]:
     """Return customer-credit (2140) balances keyed by customer id.
 
     Credit is the sum of the customer's :class:`~vs_finance.chronology.CreditLot`
@@ -296,10 +297,14 @@ def customer_credit_balances(entity, customer_ids=None, *, as_of=None) -> dict[i
     inside a lot (allocations, prior refunds) are not. That is the safe direction -
     value that has since been spent stays spent, so an as-of figure can only ever be
     conservative and never authorises paying the same kobo out twice.
+
+    ``scope`` narrows the lots to a reader's branches (see
+    :func:`~vs_finance.chronology.credit_lots`). It is for display only: a guard
+    deciding whether credit exists must read the whole entity.
     """
     from .chronology import credit_lots
 
-    lots = credit_lots(entity, customer_ids, as_of=as_of)
+    lots = credit_lots(entity, customer_ids, as_of=as_of, scope=scope)
     return {
         customer_id: sum(lot.remaining for lot in customer_lots)
         for customer_id, customer_lots in lots.items()
