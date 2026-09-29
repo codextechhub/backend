@@ -80,10 +80,20 @@ class FeeStructureTermLink(models.Model):
 
     @property
     def label(self) -> str:
-        """The human period label an invoice row shows (``2026/2027 First Term``)."""
-        if self.term_id:
-            return f"{self.session.name} {self.term.name}"
-        return self.session.name
+        """The period an invoice row names: ``First Term 2026/2027``, or the year alone."""
+        return period_name(self.session, self.term if self.term_id else None)
+
+
+def period_name(session, term=None) -> str:
+    """The one way a billing period is named: the term, then its year.
+
+    ``First Term 2026/2027``, or ``2026/2027`` for a fee billed for the whole
+    year. The invoice list and the finance dashboard both name periods, and
+    they read the same bill, so they name it with this one function.
+    """
+    if term is None:
+        return session.name
+    return f"{term.name} {session.name}"
 
 
 class FeeDueBasis(models.TextChoices):

@@ -54,7 +54,7 @@ class FeeLabelWordTests(FALFixture):
     def test_a_semester_school_reads_this_semester_and_its_own_term_name(self):
         period = self.this_period(self.greenfield, self.greenfield_books)
         self.assertEqual(period.label, "This semester")
-        self.assertIn("First Term", period.name)
+        self.assertEqual(period.name, "First Term 2026/2027")
 
     def test_the_due_rules_name_the_semester_billed(self):
         response = self.client_for(self.greenfield_bursar, "school.fees.view").get(

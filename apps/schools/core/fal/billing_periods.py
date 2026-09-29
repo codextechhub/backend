@@ -29,7 +29,7 @@ def current_term(entity, as_of):
     from schools.vs_academics.models import AcademicTerm
     from schools.vs_academics.services.words import term_word
 
-    from .models import FeeStructureTermLink
+    from .models import FeeStructureTermLink, period_name
 
     tenant = getattr(entity, "tenant", None)
     if tenant is None or tenant.kind != Tenant.Kind.SCHOOL:
@@ -51,7 +51,7 @@ def current_term(entity, as_of):
     return BillingPeriod(
         key="term",
         label=f"This {term_word(tenant)}",
-        name=f"{term.name} {term.session.name}",
+        name=period_name(term.session, term),
         start=term.start_date,
         end=term.end_date,
         invoices=Q(reference__in=[f"FEE:{code}" for code in codes]),
