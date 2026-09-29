@@ -13,6 +13,7 @@ from vs_rbac.permissions import (
 )
 from vs_rbac.scoping import WholeTenantWriteMixin
 
+from ..constants import TaxTreatment
 from ..views import resolve_entity
 from ..models import (
     CostCenter,
@@ -189,11 +190,20 @@ class TaxCodeListCreateView(WholeTenantWriteMixin, _FinanceBase):
         code = str(body.get("code", "")).strip()
         if not code:
             raise ValidationError({"code": "A tax code is required."})
+        treatment = str(body.get("treatment") or TaxTreatment.STANDARD).upper()
+        if treatment not in TaxTreatment.values:
+            raise ValidationError({"treatment": (
+                f"Treatment must be one of {', '.join(TaxTreatment.values)}.")})
+        rate_bps = _int(body.get("rate_bps", 0), "rate_bps", minimum=0)
+        if rate_bps and treatment != TaxTreatment.STANDARD:
+            raise ValidationError({"rate_bps": (
+                f"A {TaxTreatment(treatment).label.lower()} code charges no tax, so its rate is 0.")})
         tax, created = TaxCode.objects.update_or_create(
             entity=entity, code=code,
             defaults={
                 "name": body.get("name", code),
-                "rate_bps": _int(body.get("rate_bps", 0), "rate_bps", minimum=0),
+                "rate_bps": rate_bps,
+                "treatment": treatment,
                 "is_recoverable": _bool(body.get("is_recoverable", True), default=True),
                 "collected_account": _resolve_account(
                     request, entity, body.get("collected_account"), "collected_account"),

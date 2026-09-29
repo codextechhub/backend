@@ -148,7 +148,7 @@ class Seeder:
         date = self.start
         entry = JournalEntry.objects.create(
             entity=self.entity, date=date,
-            period=FiscalPeriod.objects.get(entity=self.entity, start_date__lte=date, end_date__gte=date),
+            period=FiscalPeriod.objects.get(entity=self.entity, is_closing=False, start_date__lte=date, end_date__gte=date),
             narration=f"{MARK} Balances brought forward from the bank",
             reference=f"{MARK}-OPENING",
         )

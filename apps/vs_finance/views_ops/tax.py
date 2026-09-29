@@ -43,6 +43,27 @@ from .base import (
 #: The refusal subject for a branch-bound write to a filing with no branch.
 SHARED_FILING = "a school-wide tax filing"
 
+#: What a filing read loads with it: the obligation, the branch shares and the payments.
+FILING_PREFETCH = ("shares__branch", "remittances__branch", "remittances__bank_account")
+
+
+def _filing_branch(entity, ref, field):
+    """The tenant branch ``ref`` (an id) names, or ``None`` for a blank ``ref``.
+
+    Refuses a branch of another tenant with the same 404-style message as an
+    unknown id, so a caller learns nothing about branches outside their books.
+    """
+    from vs_tenants.models import Branch
+
+    if ref in (None, ""):
+        return None
+    branch = None
+    if str(ref).isdigit() and entity.tenant_id:
+        branch = Branch.all_objects.filter(tenant_id=entity.tenant_id, pk=int(ref)).first()
+    if branch is None:
+        raise ValidationError({field: f"No branch '{ref}' in this tenant."})
+    return branch
+
 
 class _TaxObligationWriteMixin(WholeTenantWriteMixin):
     """Every write to a tax obligation needs whole-tenant reach.
@@ -240,7 +261,7 @@ class TaxFilingListCreateView(WholeTenantWriteMixin, _FinanceBase):
         entity = resolve_entity(request)
         qs = TaxFiling.objects.filter(
             branch_q(request, include_shared=True), entity=entity,
-        ).select_related("obligation")
+        ).select_related("obligation__liability_account").prefetch_related(*FILING_PREFETCH)
         if (ob := request.query_params.get("obligation")):
             qs = qs.filter(obligation_id=ob)
         if (status_val := request.query_params.get("filing_status")):
@@ -270,7 +291,7 @@ class TaxFilingListCreateView(WholeTenantWriteMixin, _FinanceBase):
         )
         return success_response(
             f"Tax filing {filing.document_number} prepared.",
-            data=TaxFilingSerializer(filing).data, status=201,
+            data=_filing_data(filing), status=201,
         )
 
 
@@ -292,7 +313,7 @@ class _TaxFilingActionBase(_FinanceBase):
         filing = TaxFiling.objects.filter(
             branch_q(request, include_shared=True), entity=entity, pk=pk,
         ).select_related(
-            "obligation").first()
+            "obligation__liability_account").prefetch_related(*FILING_PREFETCH).first()
         if filing is None:
             raise NotFound("Tax filing not found for this entity.")
         if request.method not in SAFE_METHODS:
@@ -304,6 +325,13 @@ class _TaxFilingActionBase(_FinanceBase):
 
 
 # Group endpoint behavior for Tax Filing Detail View.
+def _filing_data(filing):
+    """The serialized filing, re-read with its shares and remittances."""
+    fresh = TaxFiling.objects.select_related("obligation__liability_account").prefetch_related(
+        *FILING_PREFETCH).get(pk=filing.pk)
+    return TaxFilingSerializer(fresh).data
+
+
 class TaxFilingDetailView(_TaxFilingActionBase):
     """docstring-name: Tax filings"""
     rbac_permission = "finance.tax.view"
@@ -318,7 +346,10 @@ class TaxFilingDetailView(_TaxFilingActionBase):
 
 # Group endpoint behavior for Tax Filing File View.
 class TaxFilingFileView(_TaxFilingActionBase):
-    """POST - submit a draft return (net input VAT, book any penalty).
+    """POST - submit a draft return: declare its lines, post each branch's netting/penalty.
+
+    ``adjustment_branch`` (optional, a branch id) names the branch that bears a
+    penalty; without it the penalty is shared in proportion to each branch's tax.
 
     docstring-name: File a tax return
     """
@@ -327,11 +358,15 @@ class TaxFilingFileView(_TaxFilingActionBase):
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
-        from ..tax_filing import file_filing
+        from ..tax_filing import ANY_SHARE, file_filing
 
         entity, filing = self._filing(request, pk)
         body = request.data or {}
         adjustment = body.get("adjustment_amount")
+        adjustment_branch = (
+            _filing_branch(entity, body.get("adjustment_branch"), "adjustment_branch")
+            if body.get("adjustment_branch") not in (None, "") else ANY_SHARE
+        )
         file_filing(
             filing,
             filed_date=_date(body.get("filed_date"), "filed_date", required=True),
@@ -339,12 +374,12 @@ class TaxFilingFileView(_TaxFilingActionBase):
             adjustment_amount=_money(adjustment, "adjustment_amount") if adjustment not in (None, "") else 0,
             adjustment_account=_resolve_account(
                 request, entity, body.get("adjustment_account"), "adjustment_account"),
+            adjustment_branch=adjustment_branch,
             actor_user=request.user,
         )
-        filing.refresh_from_db()
         return success_response(
             f"Tax filing {filing.document_number} filed.",
-            data=TaxFilingSerializer(filing).data,
+            data=_filing_data(filing),
         )
 
 
@@ -363,16 +398,22 @@ class TaxFilingUnfileView(_TaxFilingActionBase):
 
         _, filing = self._filing(request, pk)
         unfile_filing(filing, actor_user=request.user)
-        filing.refresh_from_db()
         return success_response(
             f"Tax filing {filing.document_number} un-filed.",
-            data=TaxFilingSerializer(filing).data,
+            data=_filing_data(filing),
         )
 
 
-# Group endpoint behavior for Tax Filing Pay View.
 class TaxFilingPayView(_TaxFilingActionBase):
-    """POST - remit a filed return (Dr liability, Cr bank).
+    """POST - remit a filed return's branch shares (``Dr payable, Cr bank`` per share).
+
+    One payment: ``bank_account``, ``pay_date``, optional ``amount`` and optional
+    ``branch`` (the share it pays). Without ``branch`` it pays the only unpaid
+    share, else the bank account's own branch's share, else, from a tenant-wide
+    account, every unpaid share. Several payments at once: ``shares``, a list of
+    ``{branch, bank_account, amount?}`` sharing the one ``pay_date``, all recorded
+    or none. Each bank account must be the share's branch's own or a tenant-wide
+    one.
 
     docstring-name: Pay a tax filing
     """
@@ -381,22 +422,69 @@ class TaxFilingPayView(_TaxFilingActionBase):
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
-        from ..tax_filing import pay_filing
+        from ..tax_filing import ANY_SHARE, pay_filing_shares
 
         entity, filing = self._filing(request, pk)
         body = request.data or {}
-        bank = _resolve_bank_account(
-            request, entity, body.get("bank_account"),
-            document_branch=filing.branch_id, noun="tax filing")
-        amount = _money(body["amount"], "amount") if body.get("amount") not in (None, "") else None
-        pay_filing(
-            filing, bank_account=bank,
-            pay_date=_date(body.get("pay_date"), "pay_date", required=True),
-            amount=amount, actor_user=request.user,
-        )
-        filing.refresh_from_db()
+        pay_date = _date(body.get("pay_date"), "pay_date", required=True)
+        rows = body.get("shares")
+        if rows in (None, ""):
+            rows = [{key: body[key] for key in ("branch", "bank_account", "amount") if key in body}]
+            fields = ("branch", "bank_account", "amount")
+        elif not isinstance(rows, list) or not rows:
+            raise ValidationError({"shares": "Give at least one {branch, bank_account} payment."})
+        else:
+            fields = None
+
+        payments = []
+        for i, row in enumerate(rows):
+            names = fields or (f"shares[{i}].branch", f"shares[{i}].bank_account", f"shares[{i}].amount")
+            if not isinstance(row, dict):
+                raise ValidationError({f"shares[{i}]": "Each payment is an object."})
+            named = "branch" in row and row.get("branch") not in ("",)
+            branch = _filing_branch(entity, row.get("branch"), names[0]) if named else ANY_SHARE
+            bank = _resolve_bank_account(
+                request, entity, row.get("bank_account"), names[1],
+                document_branch=(branch.pk if branch not in (None, ANY_SHARE) else filing.branch_id),
+                noun="tax filing")
+            amount = (_money(row["amount"], names[2])
+                      if row.get("amount") not in (None, "") else None)
+            payments.append((branch, bank, amount))
+
+        pay_filing_shares(filing, payments=payments, pay_date=pay_date, actor_user=request.user)
         return success_response(
             f"Tax filing {filing.document_number} remitted.",
-            data=TaxFilingSerializer(filing).data,
+            data=_filing_data(filing),
         )
 
+
+class TaxRemittanceReverseView(_TaxFilingActionBase):
+    """POST - reverse one remittance recorded in error; the return goes back to FILED.
+
+    Body: ``reason`` (required) and optional ``date`` for the reversal (default:
+    the remittance's own date, or today once that month is closed).
+
+    docstring-name: Reverse a tax remittance
+    """
+
+    rbac_permission = "finance.tax.pay"
+
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk, remittance_pk):
+        from ..tax_filing import reverse_remittance
+
+        _, filing = self._filing(request, pk)
+        remittance = filing.remittances.filter(pk=remittance_pk).first()
+        if remittance is None:
+            raise NotFound("Tax remittance not found on this filing.")
+        body = request.data or {}
+        if not str(body.get("reason") or "").strip():
+            raise ValidationError({"reason": "Give the reason the payment is being reversed."})
+        reverse_remittance(
+            remittance, reason=body["reason"], date=_date(body.get("date"), "date"),
+            actor_user=request.user,
+        )
+        return success_response(
+            f"Remittance on tax filing {filing.document_number} reversed.",
+            data=_filing_data(filing),
+        )

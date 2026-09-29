@@ -163,7 +163,7 @@ class Seeder:
             date = self.day(offset)
             entry = JournalEntry.objects.create(
                 entity=self.entity, date=date, source=JournalSource.BANK,
-                period=FiscalPeriod.objects.get(entity=self.entity, start_date__lte=date, end_date__gte=date),
+                period=FiscalPeriod.objects.get(entity=self.entity, is_closing=False, start_date__lte=date, end_date__gte=date),
                 narration=f"{MARK} {narration}", reference=f"{MARK}-SPEND-{n}",
             )
             JournalLine.objects.create(
@@ -251,7 +251,7 @@ class Seeder:
 
         entry = JournalEntry.objects.create(
             entity=self.entity, date=self.start,
-            period=FiscalPeriod.objects.get(entity=self.entity, start_date__lte=self.start, end_date__gte=self.start),
+            period=FiscalPeriod.objects.get(entity=self.entity, is_closing=False, start_date__lte=self.start, end_date__gte=self.start),
             narration=f"{MARK} Depreciation brought forward on the asset register",
             reference=f"{MARK}-ASSETS-BF",
         )

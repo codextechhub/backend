@@ -251,11 +251,17 @@ def reconciliation(banks: list[dict]) -> list[dict]:
 # --------------------------------------------------------------------------- #
 
 def _expense_lines(entity, start, end, scope, sets):
+    """Expense lines dated in ``[start, end]``, the year-end close's lines left out.
+
+    A closing journal is dated the year's last day and credits every expense
+    account flat, so counted as spending it would turn that day's spend negative.
+    """
     from .branch_ledger import ledger_lines
 
     return scope.filter(
         ledger_lines(entity).filter(
             entry__date__gte=start, entry__date__lte=end, account_id__in=sets["expense"],
+            entry__period__is_closing=False,
         ),
         "entry__",
     )

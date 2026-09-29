@@ -356,6 +356,26 @@ class TaxFilingWriteTests(_SharedWriteFixture):
         )
 
     def filing(self, month, *, branch=None, status=TaxFilingStatus.DRAFT):
+        """A return for ``month`` whose figures match the N500 withheld that month.
+
+        The withholding is posted for the return's own branch, or Ikeja's for a
+        return of the whole tenant, so filing finds the lines the draft shows.
+        """
+        from .posting import post_journal, resolve_period
+
+        date = datetime.date(2026, month, 10)
+        entry = JournalEntry.objects.create(
+            entity=self.books, branch=branch or self.ikeja, date=date,
+            period=resolve_period(self.books, date), narration="Vendor withholding",
+        )
+        for line_no, (code, debit, credit) in enumerate(
+            (("5300", 50_000, 0), ("2300", 0, 50_000)), start=1,
+        ):
+            entry.lines.create(
+                account=Account.objects.get(entity=self.books, code=code),
+                debit=debit, credit=credit, line_no=line_no,
+            )
+        post_journal(entry)
         return TaxFiling.objects.create(
             entity=self.books, obligation=self.obligation, branch=branch,
             period_start=datetime.date(2026, month, 1),

@@ -117,7 +117,7 @@ class SchoolBooksProvisioningTests(_SchoolCreationMixin, TestCase):
 
         # And they are usable, not just present.
         self.assertTrue(Account.objects.filter(entity=entity, code="1100").exists())
-        self.assertEqual(FiscalPeriod.objects.filter(entity=entity).count(), 12)
+        self.assertEqual(FiscalPeriod.objects.filter(entity=entity, is_closing=False).count(), 12)
 
     def test_the_books_keep_the_schools_currency(self):
         self._create({
@@ -328,7 +328,7 @@ class ProvisionSchoolBooksCommandTests(TestCase):
         for school in (self.old, self.other):
             entity = LedgerEntity.objects.get(tenant=school.tenant)
             self.assertEqual(entity.kind, LedgerEntity.Kind.TENANT)
-            self.assertEqual(FiscalPeriod.objects.filter(entity=entity).count(), 12)
+            self.assertEqual(FiscalPeriod.objects.filter(entity=entity, is_closing=False).count(), 12)
 
     def test_it_is_idempotent(self):
         self._run()

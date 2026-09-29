@@ -142,9 +142,10 @@ def _current_period(entity, period=None):
 
     When the caller pins a ``period`` we use it. Otherwise the *default* is the
     period that **contains today** (so the as-of is the present day), falling back
-    to the latest open period, then the latest period.
+    to the latest open period, then the latest period. A closing period is never
+    the anchor: it holds the year-end close, not a month of trading.
     """
-    qs = FiscalPeriod.objects.filter(entity=entity).select_related("fiscal_year")
+    qs = FiscalPeriod.objects.filter(entity=entity, is_closing=False).select_related("fiscal_year")
     if period is not None:  # Caller explicitly pinned a period.
         return period
     today = tenant_today(entity.tenant)
@@ -172,9 +173,9 @@ def _fiscal_year_label(current) -> str | None:
 
 # Build trailing fiscal-period window.
 def _period_window(entity, current, n=SPARK_POINTS):
-    """The up-to-``n`` fiscal periods ending at ``current`` (ascending)."""
+    """The up-to-``n`` ordinary fiscal periods ending at ``current`` (ascending)."""
     all_p = list(  # Load all entity periods in chronological order.
-        FiscalPeriod.objects.filter(entity=entity)
+        FiscalPeriod.objects.filter(entity=entity, is_closing=False)
         .select_related("fiscal_year")
         .order_by("fiscal_year__year", "period_no")
     )
@@ -244,7 +245,9 @@ def _net_income_series(entity, window_periods, source=None) -> list[int]:
     Every income/expense leg contributes ``credit − debit`` to net income (income is
     credit-natural so adds; expense is debit-natural so its ``c−d`` is negative and
     subtracts). Accumulated within each period's fiscal year up to its period number -
-    so it's true year-to-date even when the window starts mid-year.
+    so it's true year-to-date even when the window starts mid-year. The year-end
+    close's own period is left out, so a closed year's last point still reads the
+    year's real result.
     """
     if not window_periods:  # No period window means no series.
         return []
@@ -253,6 +256,7 @@ def _net_income_series(entity, window_periods, source=None) -> list[int]:
         key: cr - dr
         for key, (dr, cr) in _movements_by_period(
             source, account__account_type__in=[AccountType.INCOME, AccountType.EXPENSE],
+            period__is_closing=False,
         ).items()
     }
     out = []  # YTD series values.
@@ -312,9 +316,15 @@ def _payable_account_ids(entity) -> set:
 
 # Build revenue/expense actual-vs-plan block.
 def _revenue_vs_budget(entity, fiscal_year) -> dict:
+    """Income and expense of ``fiscal_year`` against the school's plan for it.
+
+    The actuals are the same year the plan covers (the dashboard's anchor year),
+    read from its ordinary periods, so an earlier year never counts towards this
+    year's plan and a closed year still shows what it earned.
+    """
     from .reports import budget_vs_actual, income_statement
 
-    pnl = income_statement(entity)  # YTD, whole open year
+    pnl = income_statement(entity, fiscal_year=fiscal_year)  # The anchor year's result.
     rev_actual, exp_actual = pnl.total_income, pnl.total_expense  # Actual P&L totals.
 
     budget = None  # Optional approved/latest budget.

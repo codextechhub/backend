@@ -3099,10 +3099,11 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
         file_filing(filing, filed_date=datetime.date(2026, 2, 5), filing_reference="VAT-202601")
         filing.refresh_from_db()
         self.assertEqual(filing.filing_status, TaxFilingStatus.FILED)
-        # Netting journal cleared input VAT 1300 against output 2200.
-        self.assertIsNotNone(filing.filing_journal)
-        self.assertEqual(filing.filing_journal.lines.get(account__code="1300").credit, 30000)
-        self.assertEqual(filing.filing_journal.lines.get(account__code="2200").debit, 30000)
+        # The one share's netting journal cleared input VAT 1300 against output 2200.
+        netting = filing.shares.get().filing_journal
+        self.assertIsNotNone(netting)
+        self.assertEqual(netting.lines.get(account__code="1300").credit, 30000)
+        self.assertEqual(netting.lines.get(account__code="2200").debit, 30000)
 
         pay_filing(filing, bank_account=bank, pay_date=datetime.date(2026, 2, 20))
         filing.refresh_from_db()
@@ -3181,9 +3182,10 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
         filing.refresh_from_db()
         self.assertEqual(filing.adjustment_amount, 5000)
         self.assertEqual(filing.amount_due, 55000)
-        # Dr 5300 penalty 5,000 ; Cr 2300 payable 5,000.
-        self.assertEqual(filing.filing_journal.lines.get(account__code="5300").debit, 5000)
-        self.assertEqual(filing.filing_journal.lines.get(account__code="2300").credit, 5000)
+        # Dr 5300 penalty 5,000 ; Cr 2300 payable 5,000, on the one share's journal.
+        penalty = filing.shares.get().filing_journal
+        self.assertEqual(penalty.lines.get(account__code="5300").debit, 5000)
+        self.assertEqual(penalty.lines.get(account__code="2300").credit, 5000)
 
     # Verify pay before file is rejected and audited behavior.
     def test_pay_before_file_is_rejected_and_audited(self):
@@ -3215,13 +3217,13 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
                                 period_end=datetime.date(2026, 1, 31))
         file_filing(filing, filed_date=datetime.date(2026, 2, 5), filing_reference="VAT-202601")
         filing.refresh_from_db()
-        netting = filing.filing_journal
+        netting = filing.shares.get().filing_journal
         self.assertIsNotNone(netting)
 
         unfile_filing(filing)
         filing.refresh_from_db()
         self.assertEqual(filing.filing_status, TaxFilingStatus.DRAFT)
-        self.assertIsNone(filing.filing_journal)
+        self.assertIsNone(filing.shares.get().filing_journal)
         self.assertEqual(filing.filing_reference, "")
         self.assertIsNone(filing.filed_at)
         # The netting journal is reversed (audit-correct undo), not edited.
@@ -4513,7 +4515,9 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(payload["periods"][0]["start_date"], "2027-01-01")
         self.assertEqual(payload["periods"][-1]["end_date"], "2027-12-31")
         self.assertEqual(
-            FiscalPeriod.objects.filter(entity=entity, fiscal_year__year=2027).count(), 12,
+            FiscalPeriod.objects.filter(
+                entity=entity, fiscal_year__year=2027, is_closing=False,
+            ).count(), 12,
         )
 
         # The shared picker mode is deliberately unpaginated: with three years,
@@ -4552,7 +4556,9 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         )
         self.assertEqual(duplicate.status_code, 400, duplicate.content)
         self.assertEqual(
-            FiscalPeriod.objects.filter(entity=entity, fiscal_year__year=2027).count(), 12,
+            FiscalPeriod.objects.filter(
+                entity=entity, fiscal_year__year=2027, is_closing=False,
+            ).count(), 12,
         )
 
     # Verify expense claim reject only from draft behavior.
@@ -5957,7 +5963,10 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(resp.status_code, 201, resp.content)
         entity = LedgerEntity.objects.get(code="QTR15")
         fiscal_year = FiscalYear.objects.get(entity=entity, year=2026)
-        periods = list(FiscalPeriod.objects.filter(fiscal_year=fiscal_year).order_by("period_no"))
+        periods = list(
+            FiscalPeriod.objects.filter(fiscal_year=fiscal_year, is_closing=False)
+            .order_by("period_no")
+        )
 
         self.assertEqual(fiscal_year.start_date, datetime.date(2026, 1, 15))
         self.assertEqual(fiscal_year.end_date, datetime.date(2027, 1, 14))
@@ -5980,7 +5989,9 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
             fiscal_start_day=15,
         )
         self.assertEqual([period.id for period in repeated], [period.id for period in periods])
-        self.assertEqual(FiscalPeriod.objects.filter(fiscal_year=fiscal_year).count(), 4)
+        self.assertEqual(
+            FiscalPeriod.objects.filter(fiscal_year=fiscal_year, is_closing=False).count(), 4,
+        )
 
     def test_entity_create_quarterly_day_31_clamps_boundaries_without_gaps(self):
         self._seed()
@@ -5998,7 +6009,10 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(resp.status_code, 201, resp.content)
         entity = LedgerEntity.objects.get(code="QTR31")
         fiscal_year = FiscalYear.objects.get(entity=entity, year=2026)
-        periods = list(FiscalPeriod.objects.filter(fiscal_year=fiscal_year).order_by("period_no"))
+        periods = list(
+            FiscalPeriod.objects.filter(fiscal_year=fiscal_year, is_closing=False)
+            .order_by("period_no")
+        )
 
         self.assertEqual(
             [(period.start_date, period.end_date) for period in periods],
@@ -6027,7 +6041,10 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(resp.status_code, 201, resp.content)
         entity = LedgerEntity.objects.get(code="MDEFAULT")
         fiscal_year = FiscalYear.objects.get(entity=entity, year=2026)
-        periods = list(FiscalPeriod.objects.filter(fiscal_year=fiscal_year).order_by("period_no"))
+        periods = list(
+            FiscalPeriod.objects.filter(fiscal_year=fiscal_year, is_closing=False)
+            .order_by("period_no")
+        )
 
         self.assertEqual(len(periods), 12)
         self.assertEqual(periods[0].name, "2026-01")
@@ -9606,21 +9623,24 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         self._soft_close(jan)
 
         journals, net_income = close_fiscal_year(
-            entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
+            entity, jan.fiscal_year)
 
         self.assertEqual(len(journals), 1)
         self.assertEqual(net_income, 60000)
         self.assertEqual(journals[0].source, "CLOSING")
         jan.fiscal_year.refresh_from_db()
         self.assertEqual(jan.fiscal_year.status, PeriodStatus.CLOSED)
-        # P&L accounts now read flat; the ₦600 net sits in Retained Earnings.
+        # January keeps its own figures; the close sits in the year's closing period,
+        # which zeroes the P&L accounts and puts the ₦600 net in Retained Earnings.
+        closing = journals[0].period
+        self.assertTrue(closing.is_closing)
         rev = AccountBalance.objects.get(account__code="4100", period=jan)
-        self.assertEqual(rev.debit_total, 100000)
-        self.assertEqual(rev.credit_total, 100000)
-        exp = AccountBalance.objects.get(account__code="5200", period=jan)
-        self.assertEqual(exp.debit_total, 40000)
-        self.assertEqual(exp.credit_total, 40000)
-        re = AccountBalance.objects.get(account__code="3200", period=jan)
+        self.assertEqual((rev.debit_total, rev.credit_total), (0, 100000))
+        rev_closed = AccountBalance.objects.get(account__code="4100", period=closing)
+        self.assertEqual((rev_closed.debit_total, rev_closed.credit_total), (100000, 0))
+        exp_closed = AccountBalance.objects.get(account__code="5200", period=closing)
+        self.assertEqual((exp_closed.debit_total, exp_closed.credit_total), (0, 40000))
+        re = AccountBalance.objects.get(account__code="3200", period=closing)
         self.assertEqual(re.credit_total, 60000)
         self.assertEqual(re.debit_total, 0)
 
@@ -9633,7 +9653,7 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         jan.save(update_fields=["status"])
 
         journals, net_income = close_fiscal_year(
-            entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31),
+            entity, jan.fiscal_year,
         )
 
         self.assertEqual(len(journals), 1)
@@ -9651,10 +9671,10 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         self._soft_close(jan)
 
         _journals, net_income = close_fiscal_year(
-            entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
+            entity, jan.fiscal_year)
 
         self.assertEqual(net_income, -60000)
-        re = AccountBalance.objects.get(account__code="3200", period=jan)
+        re = AccountBalance.objects.get(account__code="3200", period__is_closing=True)
         self.assertEqual(re.debit_total, 60000)   # a loss debits equity
         self.assertEqual(re.credit_total, 0)
 
@@ -9665,9 +9685,9 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         entity, jan = self.build_ledger()
         post_journal(self.make_entry(entity, jan, [("1100", 100000, 0), ("4100", 0, 100000)]))
         self._soft_close(jan)
-        close_fiscal_year(entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
+        close_fiscal_year(entity, jan.fiscal_year)
         with self.assertRaises(PeriodCloseError):
-            close_fiscal_year(entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
+            close_fiscal_year(entity, jan.fiscal_year)
 
     def test_open_period_blocks_close_unless_forced(self):
         from vs_finance.close import close_fiscal_year
@@ -9676,10 +9696,10 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         entity, jan = self.build_ledger()  # Jan left OPEN.
         post_journal(self.make_entry(entity, jan, [("1100", 100000, 0), ("4100", 0, 100000)]))
         with self.assertRaises(PeriodCloseError):
-            close_fiscal_year(entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
+            close_fiscal_year(entity, jan.fiscal_year)
         # force posts into the still-open period and seals the year.
         _journals, net = close_fiscal_year(
-            entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31),
+            entity, jan.fiscal_year,
             require_periods_closed=False, reason="Auditors need the year sealed today.")
         self.assertEqual(net, 100000)
         jan.fiscal_year.refresh_from_db()
@@ -9693,7 +9713,7 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         post_journal(self.make_entry(entity, jan, [("1100", 500000, 0), ("3100", 0, 500000)]))
         self._soft_close(jan)
         journals, net = close_fiscal_year(
-            entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
+            entity, jan.fiscal_year)
         self.assertEqual(journals, [])
         self.assertEqual(net, 0)
         jan.fiscal_year.refresh_from_db()

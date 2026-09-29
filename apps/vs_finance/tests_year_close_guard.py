@@ -88,7 +88,7 @@ PL_TYPES = (AccountType.INCOME, AccountType.EXPENSE)
 BURSAR_KEYS = (
     "finance.period.view", "finance.period.close", "finance.period.reopen",
     "finance.period.force_close", "finance.fiscalyear.reopen",
-    "finance.journal.view", "finance.journal.reverse",
+    "finance.journal.view", "finance.journal.reverse", "finance.report.view",
 )
 CLOSER_KEYS = (
     "finance.period.view", "finance.period.close", "finance.period.reopen",
@@ -187,7 +187,12 @@ class _YearFixture(TestCase):
         self.post(self.lekki, datetime.date(2026, 3, 20), [("5200", 40000, 0), ("1100", 0, 40000)])
 
     def seal_months(self, status=PeriodStatus.CLOSED, books=None):
-        FiscalPeriod.objects.filter(fiscal_year=self.year(books)).update(status=status)
+        FiscalPeriod.objects.filter(
+            fiscal_year=self.year(books), is_closing=False,
+        ).update(status=status)
+
+    def closing_period(self, books=None):
+        return FiscalPeriod.objects.get(fiscal_year=self.year(books), is_closing=True)
 
     def close_year(self, books=None):
         self.seal_months(books=books)
@@ -434,10 +439,10 @@ class ReopenFiscalYearTests(_YearFixture):
 
         self.assertEqual(year.status, PeriodStatus.OPEN)
         self.assertEqual(len(reversals), 2)
-        december = self.month(12)
+        closing = self.closing_period()
         for reversal in reversals:
             self.assertEqual(reversal.date, datetime.date(2026, 12, 31))
-            self.assertEqual(reversal.period_id, december.pk)
+            self.assertEqual(reversal.period_id, closing.pk)
             self.assertEqual(reversal.status, DocumentStatus.POSTED)
         for journal in journals:
             journal.refresh_from_db()
@@ -492,10 +497,10 @@ class ReopenFiscalYearTests(_YearFixture):
         with self.assertRaises(PeriodCloseError):
             reopen_fiscal_year(self.books, self.year(), reason=REASON)
 
-    def test_reopen_refuses_when_the_closing_month_is_locked(self):
+    def test_reopen_refuses_when_the_closing_period_is_locked(self):
         self.trade()
         journals, _ = self.close_year()
-        FiscalPeriod.objects.filter(pk=self.month(12).pk).update(status=PeriodStatus.LOCKED)
+        FiscalPeriod.objects.filter(pk=self.closing_period().pk).update(status=PeriodStatus.LOCKED)
 
         with self.assertRaises(PeriodCloseError):
             reopen_fiscal_year(self.books, self.year(), reason=REASON)
@@ -785,6 +790,184 @@ class CloseLockTests(_YearFixture):
         self.assertLess(year, month)
 
 
+class ClosingPeriodTests(_YearFixture):
+    """The close lives in its own period, so every month and the year keep their figures.
+
+    Lagoon View earns N1,000 at Ikeja in January and N100 more in December, and
+    Lekki earns N700 and spends N400 in March. After the 2026 close the year's
+    income statement still reads a profit of N1,400, December still reads its N100,
+    and the balance sheet carries the N1,400 in Retained Earnings.
+    """
+
+    def december_sale(self):
+        self.post(self.ikeja, datetime.date(2026, 12, 15), [("1100", 10000, 0), ("4100", 0, 10000)])
+
+    def test_every_year_is_created_with_its_closing_period(self):
+        from .fiscal_calendar import open_fiscal_year
+
+        closing = self.closing_period()
+        self.assertEqual(closing.period_no, 13)
+        self.assertEqual((closing.start_date, closing.end_date),
+                         (datetime.date(2026, 12, 31), datetime.date(2026, 12, 31)))
+        self.assertEqual(closing.status, PeriodStatus.CLOSED)
+
+        year, periods = open_fiscal_year(
+            self.books, year=2027, start_month=1, start_day=1, frequency="MONTHLY",
+        )
+        self.assertEqual(len(periods), 12)
+        self.assertTrue(FiscalPeriod.objects.filter(
+            fiscal_year=year, is_closing=True, start_date=datetime.date(2027, 12, 31),
+        ).exists())
+
+    def test_the_year_end_date_resolves_to_the_last_month(self):
+        self.assertEqual(resolve_period(self.books, datetime.date(2026, 12, 31)), self.month(12))
+
+        window = posting_window(self.books, today=datetime.date(2026, 6, 15))
+        listed = {p["id"] for p in window["open"] + window["blocked"]}
+        self.assertNotIn(self.closing_period().pk, listed)
+
+    def test_the_closing_period_rejects_ordinary_postings(self):
+        entry = self.entry(self.ikeja, datetime.date(2026, 12, 31), [("1100", 5000, 0), ("4100", 0, 5000)])
+        entry.period = self.closing_period()
+        entry.save(update_fields=["period"])
+
+        for flags in ({}, {"allow_restricted": True}):
+            with self.subTest(flags=flags):
+                with self.assertRaises(PeriodClosedError) as caught:
+                    post_journal(entry, **flags)
+                self.assertIn("closing period", caught.exception.message)
+        with self.assertRaises(PeriodCloseError):
+            close_period(self.books, self.closing_period())
+        with self.assertRaises(PeriodCloseError):
+            reopen_period(self.books, self.closing_period(), reason=REASON)
+
+    def test_the_closing_journals_post_into_the_closing_period(self):
+        self.trade()
+        journals, _ = self.close_year()
+        closing = self.closing_period()
+        self.assertEqual({j.period_id for j in journals}, {closing.pk})
+
+    def test_a_closed_year_still_shows_its_real_profit(self):
+        from .reports import income_statement, income_statement_compare
+
+        self.trade()
+        self.december_sale()
+        self.close_year()
+
+        year = income_statement(self.books, fiscal_year=self.year())
+        self.assertEqual(year.total_income, 180000)
+        self.assertEqual(year.net_income, 140000)
+        december = income_statement(self.books, period=self.month(12))
+        self.assertEqual(december.total_income, 10000)
+        self.assertEqual(december.net_income, 10000)
+        compare = income_statement_compare(self.books, fiscal_year=self.year())
+        self.assertEqual(compare.fiscal_year, 2026)
+        self.assertEqual(compare.net_totals.amount, 140000)
+
+    def test_the_balance_sheet_and_trial_balance_show_the_moved_profit(self):
+        from .reports import balance_sheet, trial_balance
+
+        self.trade()
+        self.december_sale()
+        self.close_year()
+
+        sheet = balance_sheet(self.books, as_of=datetime.date(2026, 12, 31))
+        retained = {row.code: row.amount for row in sheet.equity_rows}
+        self.assertEqual(retained.get("3200"), 140000)
+        self.assertEqual(sheet.retained_earnings, 0)
+        self.assertEqual(sheet.current_year_earnings, 0)
+        self.assertTrue(sheet.is_balanced)
+
+        balances = {row.code: (row.debit, row.credit) for row in trial_balance(self.books).rows}
+        self.assertEqual(balances.get("3200"), (0, 140000))
+        self.assertNotIn("4100", balances)
+        self.assertNotIn("5200", balances)
+
+    def test_the_equity_statement_shows_the_close_as_a_transfer(self):
+        from .reports import RETAINED_EARNINGS_COLUMN, statement_of_changes_in_equity
+
+        self.trade()
+        self.close_year()
+
+        soce = statement_of_changes_in_equity(self.books, period=self.closing_period())
+        columns = {c.key: c for c in soce.columns}
+        self.assertEqual(columns["3200"].transfers, 130000)
+        self.assertEqual(columns["3200"].contributions, 0)
+        self.assertEqual(columns[RETAINED_EARNINGS_COLUMN].transfers, -130000)
+        self.assertEqual(soce.total_profit, 0)
+        self.assertEqual(soce.total_transfers, 0)
+        self.assertTrue(soce.is_reconciled)
+
+    def test_the_next_years_prior_year_column_reads_the_real_figures(self):
+        from .reports import income_statement_compare
+
+        self.trade()
+        self.close_year()
+        seed_fiscal_year(self.books, year=2027, start_month=1)
+        self.post(self.ikeja, datetime.date(2027, 2, 1), [("1100", 5000, 0), ("4100", 0, 5000)])
+
+        compare = income_statement_compare(
+            self.books, fiscal_year=FiscalYear.objects.get(entity=self.books, year=2027),
+        )
+        self.assertEqual(compare.prior_fiscal_year, 2026)
+        self.assertEqual(compare.income_totals.prior_year, 170000)
+        self.assertEqual(compare.net_totals.prior_year, 130000)
+        self.assertEqual(compare.net_totals.amount, 5000)
+
+    def test_budget_against_actual_and_the_dashboard_read_the_closed_years_actuals(self):
+        from .dashboard import _revenue_vs_budget
+        from .models import Budget
+        from .reports import budget_vs_actual
+
+        self.trade()
+        self.close_year()
+        plan = Budget.objects.create(entity=self.books, fiscal_year=self.year(), name="2026 plan")
+
+        report = budget_vs_actual(plan)
+        actuals = {row.code: row.actual for row in report.rows}
+        self.assertEqual(actuals.get("4100"), 170000)
+        self.assertEqual(actuals.get("5200"), 40000)
+        card = _revenue_vs_budget(self.books, self.year())
+        self.assertEqual(card["revenue"]["actual"]["kobo"], 170000)
+        self.assertEqual(card["expense"]["actual"]["kobo"], 40000)
+
+    def test_current_year_earnings_are_only_the_open_years(self):
+        from .constants import IFRSLine
+        from .reports import balance_sheet_sections
+
+        self.trade()
+        seed_fiscal_year(self.books, year=2027, start_month=1)
+        self.post(self.ikeja, datetime.date(2027, 2, 1), [("1100", 5000, 0), ("4100", 0, 5000)])
+
+        sections = balance_sheet_sections(self.books, as_of=datetime.date(2027, 6, 30))
+
+        self.assertEqual(sections.current_year_earnings, 5000)
+        equity = next(s for s in sections.sections if s.key == "equity")
+        lines = {g.line: g.amount for g in equity.groups}
+        self.assertEqual(lines.get(IFRSLine.RETAINED_EARNINGS), 130000)
+        self.assertTrue(sections.is_balanced)
+
+    def test_the_income_statement_endpoint_takes_a_fiscal_year(self):
+        self.trade()
+        self.december_sale()
+        self.close_year()
+        client = TenantAPIClient(user=self.adaeze)
+        base = f"/v1/finance/reports/income-statement/?entity={self.books.code}"
+
+        year = client.get(f"{base}&fiscal_year=2026")
+        self.assertEqual(year.status_code, 200, year.data)
+        self.assertEqual(year.data["data"]["fiscal_year"], 2026)
+        self.assertEqual(year.data["data"]["totals"]["net"]["amount"]["kobo"], 140000)
+
+        december = client.get(f"{base}&fiscal_year=2026&period=12")
+        self.assertEqual(december.status_code, 200, december.data)
+        self.assertEqual(december.data["data"]["period"], self.month(12).name)
+        self.assertEqual(december.data["data"]["totals"]["net"]["amount"]["kobo"], 10000)
+
+        missing = client.get(f"{base}&fiscal_year=1999")
+        self.assertEqual(missing.status_code, 404, missing.data)
+
+
 @tag("slow")
 class YearCloseRaceTests(TransactionTestCase):
     """A posting in flight holds the year close back, and never holds another posting.
@@ -793,14 +976,21 @@ class YearCloseRaceTests(TransactionTestCase):
     before commit, and then acts against it from the main thread with a short
     ``lock_timeout``: a year close must time out waiting for it, a second posting
     into the same month must not.
+
+    The fixture creates its own school and tenant rather than lean on the platform
+    tenant the migrations seed, because a flush by another TransactionTestCase
+    under ``--keepdb`` can remove that row.
     """
 
     serialized_rollback = True
 
     def setUp(self):
         seed_currencies()
+        school = make_school(slug="race-year-close", name="Race School")
+        make_branch(school, name="Main Branch")
         self.books = LedgerEntity.objects.create(
             name="Race Books", code="RACEYR", kind=LedgerEntity.Kind.TENANT,
+            tenant=school.tenant,
         )
         seed_chart_of_accounts(self.books)
         seed_fiscal_year(self.books, year=2026, start_month=1)

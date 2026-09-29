@@ -1119,7 +1119,14 @@ class InvoiceVoidView(_FinanceBase):
 
 # Support the build fee items workflow.
 def _build_fee_items(request, structure, entity, raw_items):
-    """(Re)create a structure's fee items from a request ``items`` list."""
+    """(Re)create a structure's fee items from a request ``items`` list.
+
+    An item sent with a tax code keeps it. One sent without takes the entity's
+    exempt VAT code (:func:`vs_finance.seed.exempt_vat_code`), so every fee item
+    states its VAT treatment and the tenant changes it where a fee is taxable.
+    """
+    from .seed import exempt_vat_code
+
     if not raw_items:
         raise ValidationError({"items": "At least one fee item is required."})
     for i, item in enumerate(raw_items, start=1):
@@ -1136,7 +1143,7 @@ def _build_fee_items(request, structure, entity, raw_items):
             tax_code=_resolve_tax(
                 entity, item.get("tax_code"), f"items[{i}].tax_code",
                 usage="sales",
-            ),
+            ) or exempt_vat_code(entity),
             is_optional=bool(item.get("is_optional", False)),
         )
 
@@ -1181,6 +1188,12 @@ class FeeStructureListCreateView(_FinanceBase):
 
     POST body: ``{code, name, applies_to?, description?, is_active?, items:[{description,
     revenue_account, amount, tax_code?}]}``.
+
+    A new structure is shared across the tenant when its creator covers several
+    branches (``shared_when_ambiguous``): it is a price list published once for
+    every branch, and making a bursar who covers Ikeja and Lekki pick one would
+    hide "Year 1 Fees 2026/27" from the other. A creator pinned to one branch
+    still stamps that branch, so a site with its own prices keeps them to itself.
 
     docstring-name: Fee structures
     """
@@ -1234,12 +1247,7 @@ class FeeStructureListCreateView(_FinanceBase):
             code = FeeStructure.generate_code(entity, name)
         structure = FeeStructure.objects.create(
             entity=entity, code=code, name=name,
-            # ``shared_when_ambiguous=True``: a fee structure is a template a
-            # school publishes once for every branch, so school-wide is the point
-            # of it rather than an accident. Forcing a bursar who covers Ikeja and
-            # Lekki to pick one would make "JSS1 Tuition 2026/27" invisible at the
-            # other. A branch-pinned bursar still stamps her branch, so a site
-            # with its own fees keeps them to itself.
+            # Shared across the tenant when the caller covers several branches.
             branch=_raised_branch(request, entity, body, shared_when_ambiguous=True),
             applies_to=_resolve_applies_to(body.get("applies_to")),
             description=body.get("description", ""),
@@ -1305,7 +1313,14 @@ class FeeStructureDuplicateView(_FinanceBase):
 
     Body: ``{code?, name?}`` - a code is derived from the name when omitted; the clone copies
     applies_to, description and every line (incl. fee code / optional flag) and is
-    created **inactive** so it can be reviewed before use.
+    created **inactive** so it can be reviewed before use. Each line keeps its
+    source's tax code; a source line with none takes the entity's exempt VAT code,
+    as a newly created line would.
+
+    The clone's code follows the same rule as creating a structure outright: a
+    code the caller chose is honoured and its collision refused, and without one
+    a code is derived from the name. Copying last period's price list to amend it
+    is the common case, and it should not stop to demand a code nobody has chosen.
 
     docstring-name: Fee structures
     """
@@ -1319,10 +1334,7 @@ class FeeStructureDuplicateView(_FinanceBase):
         source = _resolve_fee_structure(request, entity, pk)
         body = request.data or {}
         new_name = str(body.get("name", "")).strip() or f"{source.name} (copy)"
-        # Same rule as creating one outright: a code the caller chose is honoured
-        # and its collision refused, and no code at all is derived from the name.
-        # A clone is where this matters most - duplicating "JSS1 Tuition" to amend
-        # it for next term should not stop to demand a code nobody has decided on.
+        # A chosen code is honoured and checked; a missing one is derived from the name.
         new_code = str(body.get("code", "")).strip().upper()
         if new_code:
             if FeeStructure.objects.filter(entity=entity, code=new_code).exists():
@@ -1340,11 +1352,15 @@ class FeeStructureDuplicateView(_FinanceBase):
             applies_to=source.applies_to, description=source.description,
             is_active=False, created_by=request.user,
         )
-        for item in source.items.all():
+        from .seed import exempt_vat_code
+
+        # Source item's own tax code, or the exempt code where it had none.
+        for item in source.items.select_related("tax_code").all():
             FeeItem.objects.create(
                 structure=clone, line_no=item.line_no, code=item.code,
                 description=item.description, revenue_account=item.revenue_account,
-                amount=item.amount, tax_code=item.tax_code, is_optional=item.is_optional,
+                amount=item.amount, tax_code=item.tax_code or exempt_vat_code(entity),
+                is_optional=item.is_optional,
             )
         clone.refresh_from_db()
         return success_response(

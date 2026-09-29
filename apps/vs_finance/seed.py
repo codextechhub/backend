@@ -8,7 +8,7 @@ horizontal-module rule.
 """
 from __future__ import annotations
 
-from .constants import AccountType, IFRSLine, TaxFilingFrequency, TaxObligationType
+from .constants import AccountType, IFRSLine, TaxFilingFrequency, TaxObligationType, TaxTreatment
 
 #: ISO currencies the platform knows out of the box. NGN is the platform base.
 DEFAULT_CURRENCIES = [  # Currency rows created by seed_currencies.
@@ -80,6 +80,16 @@ DEFAULT_TAX_OBLIGATIONS = [  # Starter statutory obligations.
      "State Internal Revenue Service", TaxFilingFrequency.MONTHLY, 10),  # PAYE authority and due day.
     ("PENSION", "Pension Contributions", TaxObligationType.PENSION, "2320", None,  # Pension payable account.
      "Pension Fund Administrator", TaxFilingFrequency.MONTHLY, 7),  # Pension authority and due day.
+]
+
+#: Starter VAT codes: the standard rate beside a zero-rated and an exempt code, so a
+#: fee or sale can say how it is treated instead of leaving the code blank. Only
+#: the standard code carries a rate. ``code`` is the stable key for idempotent
+#: seeding. (code, name, rate_bps, treatment, collected_code, paid_code, recoverable)
+DEFAULT_TAX_CODES = [
+    ("VAT-STD", "VAT 7.5%", 750, TaxTreatment.STANDARD, "2200", "1300", True),
+    ("VAT-ZERO", "VAT zero rated", 0, TaxTreatment.ZERO_RATED, "2200", "1300", True),
+    ("VAT-EXEMPT", "VAT exempt", 0, TaxTreatment.EXEMPT, None, None, False),
 ]
 
 #: IFRS-for-SMEs presentation line for each default-chart account code. Lets the
@@ -216,6 +226,10 @@ def seed_fiscal_year(
     ``(entity, year)`` and each period by ``(fiscal_year, period_no)``, so an existing
     matching set of books is left untouched. A different calendar cannot be overlaid
     on an existing fiscal year.
+
+    The year's closing period is created with it (:func:`ensure_closing_period`).
+    It is not in the returned list, which holds the ordinary periods a posting can
+    use, in order.
     """
     import calendar
     import datetime
@@ -315,7 +329,47 @@ def seed_fiscal_year(
                 end_date=end,  # Period end date.
             )
         periods.append(period)  # Preserve period order.
+    ensure_closing_period(fiscal_year)
     return fiscal_year, periods  # Return fiscal year and its periods.
+
+
+#: Period number of a fiscal year's closing period, after the ordinary periods.
+CLOSING_PERIOD_NO = 13
+
+
+def ensure_closing_period(fiscal_year):
+    """Return ``fiscal_year``'s closing period, creating it when it is missing.
+
+    The closing period is period 13 of the year, one day long on the year's last
+    day, and CLOSED from the start: only the year-end close posts into it, under its
+    CLOSED-period escape hatch (see :class:`~vs_finance.models.FiscalPeriod`). A year
+    whose period 13 is already an ordinary adjustment period takes the next free
+    number. Idempotent.
+    """
+    from django.db.models import Max
+
+    from .constants import PeriodStatus
+    from .models import FiscalPeriod
+
+    existing = FiscalPeriod.objects.filter(fiscal_year=fiscal_year, is_closing=True).first()
+    if existing is not None:
+        return existing
+    highest = (
+        FiscalPeriod.objects.filter(fiscal_year=fiscal_year)
+        .aggregate(n=Max("period_no"))["n"] or 0
+    )
+    period, _ = FiscalPeriod.objects.get_or_create(
+        fiscal_year=fiscal_year, is_closing=True,
+        defaults={
+            "entity_id": fiscal_year.entity_id,
+            "period_no": max(CLOSING_PERIOD_NO, highest + 1),
+            "name": f"FY{fiscal_year.year} closing",
+            "start_date": fiscal_year.end_date,
+            "end_date": fiscal_year.end_date,
+            "status": PeriodStatus.CLOSED,
+        },
+    )
+    return period
 
 
 # Create statutory tax obligations for one entity.
@@ -349,4 +403,52 @@ def seed_tax_obligations(entity):
             },
         )
 
+    seed_tax_codes(entity)
     return list(TaxObligation.objects.filter(entity=entity).order_by("code"))
+
+
+def seed_tax_codes(entity):
+    """Create the starter VAT codes for ``entity`` (idempotent, keyed by code).
+
+    A code whose accounts are missing from the chart is skipped. An existing code
+    is left exactly as the tenant set it. Returns the codes created.
+    """
+    from .models import Account, TaxCode
+
+    accounts = {a.code: a for a in Account.objects.filter(entity=entity, code__in=("2200", "1300"))}
+    created = []
+    for code, name, rate, treatment, collected, paid, recoverable in DEFAULT_TAX_CODES:
+        if (collected and collected not in accounts) or (paid and paid not in accounts):
+            continue
+        tax, made = TaxCode.objects.get_or_create(
+            entity=entity, code=code,
+            defaults={
+                "name": name, "rate_bps": rate, "treatment": treatment,
+                "is_recoverable": recoverable,
+                "collected_account": accounts.get(collected) if collected else None,
+                "paid_account": accounts.get(paid) if paid else None,
+            },
+        )
+        if made:
+            created.append(tax)
+    return created
+
+
+#: The code a fee item carries when nobody chose one.
+EXEMPT_VAT_CODE = "VAT-EXEMPT"
+
+
+def exempt_vat_code(entity):
+    """``entity``'s exempt VAT code, seeding the starter codes first when it is missing.
+
+    A fee item saved without a tax code takes this one, so a blank code never
+    stands for "exempt" by accident and the printed invoice can say what the
+    item really is. The exempt code needs no accounts, so seeding always makes it.
+    """
+    from .models import TaxCode
+
+    code = TaxCode.objects.filter(entity=entity, code=EXEMPT_VAT_CODE).first()
+    if code is None:
+        seed_tax_codes(entity)
+        code = TaxCode.objects.get(entity=entity, code=EXEMPT_VAT_CODE)
+    return code

@@ -41,7 +41,7 @@ class ProvisionBooksServiceTests(TestCase):
         # Usable means: a chart to post to and open periods to post into.
         codes = set(Account.objects.filter(entity=entity).values_list("code", flat=True))
         self.assertTrue({"1100", "1200", "3100"}.issubset(codes))
-        periods = FiscalPeriod.objects.filter(entity=entity)
+        periods = FiscalPeriod.objects.filter(entity=entity, is_closing=False)
         self.assertEqual(periods.count(), 12)
         self.assertTrue(all(p.status == "OPEN" for p in periods))
 
@@ -56,7 +56,7 @@ class ProvisionBooksServiceTests(TestCase):
 
         names = list(
             FiscalPeriod.objects
-            .filter(entity=entity).order_by("period_no")
+            .filter(entity=entity, is_closing=False).order_by("period_no")
             .values_list("name", flat=True)
         )
         self.assertEqual(names[0], "2026-09")

@@ -24,6 +24,7 @@ from ..constants import (
     TaxFilingFrequency,
     TaxFilingStatus,
     TaxObligationType,
+    TaxSourceRole,
 )
 from ..money import MoneyField
 from .core import TimeStampedModel, LedgerEntity, FinanceDocument
@@ -745,18 +746,28 @@ class TaxObligation(TimeStampedModel):
 class TaxFiling(FinanceDocument):
     """A single statutory return for one obligation over one period, with its remittance.
 
-    Lifecycle ``DRAFT → FILED → PAID`` (perpetual ledger; the liability already sits in the
-    control account from source transactions):
+    A return declares **source lines**, not a date window. The source lines of an
+    obligation are the ledger lines on its payable account (and its recoverable
+    account, where it has one) that the tax module did not write itself. Each one
+    is declared by exactly one filed return, through a :class:`TaxFilingLine`; a
+    return collects every undeclared source line dated on or before its
+    ``period_end``, so last month's filing and remittance never reduce this month's
+    tax, and a line recorded late for an already filed month is picked up by the
+    next open return and listed under ``late_items``.
 
-    * **Prepare** (:func:`vs_finance.tax_filing.prepare_filing`): derive the amount owed
-      from the GL movement of the obligation's ``liability_account`` over the period (for
-      VAT, less the recoverable input movement). No posting - a draft worksheet.
-    * **File** (:func:`vs_finance.tax_filing.file_filing`): freeze the figures and submit.
-      Posts a netting/penalty journal only if there is recoverable input to clear or a
-      penalty/interest adjustment, so the liability account is left holding exactly
-      ``amount_due``.
-    * **Pay** (:func:`vs_finance.tax_filing.pay_filing`): ``Dr liability, Cr bank`` for the
-      remittance; supports partial payment. Reuses :class:`InvoicePaymentStatus`.
+    Lifecycle ``DRAFT → FILED → PAID`` (see :mod:`vs_finance.tax_filing`):
+
+    * **Prepare** works the figures out from the undeclared source lines and writes
+      them, with the per-branch breakdown (:class:`TaxFilingShare`), onto a draft.
+      Nothing posts and no line is claimed.
+    * **File** stamps the lines, posts one netting/penalty journal per branch share
+      where one is needed, and freezes the figures. A nil return files too.
+    * **Pay** remits branch shares (:class:`TaxRemittance`); the return is PAID when
+      every share is.
+
+    ``amount_due = max(gross − recoverable − brought forward, 0) + adjustment``. When
+    the credits exceed the tax, the excess is ``carried_forward_credit`` and the next
+    return of the same obligation brings it forward (``credit_from``).
     """
 
     DOC_TYPE = DocType.TAX_FILING
@@ -770,13 +781,21 @@ class TaxFiling(FinanceDocument):
     filing_status = models.CharField(
         max_length=10, choices=TaxFilingStatus.choices, default=TaxFilingStatus.DRAFT,
     )
-    gross_liability = MoneyField(help_text="Output/payable accrued in the period, in kobo.")
-    recoverable_amount = MoneyField(help_text="Recoverable input netted off (VAT), in kobo.")
+    gross_liability = MoneyField(help_text="Net tax on the declared payable lines, in kobo.")
+    recoverable_amount = MoneyField(help_text="Net input tax on the declared recoverable lines, in kobo.")
+    brought_forward_credit = MoneyField(
+        help_text="Credit carried forward by the previous return and used here, in kobo.",
+    )
+    carried_forward_credit = MoneyField(
+        help_text="Credit this return leaves for the next one, in kobo.",
+    )
     adjustment_amount = MoneyField(
         help_text="Penalty / interest added at filing (increases amount due), in kobo.",
     )
-    amount_due = MoneyField(help_text="gross_liability − recoverable_amount + adjustment, in kobo.")
-    amount_paid = MoneyField(help_text="Remitted so far, in kobo.")
+    amount_due = MoneyField(
+        help_text="max(gross − recoverable − brought forward, 0) + adjustment, in kobo.",
+    )
+    amount_paid = MoneyField(help_text="Remitted so far, net of reversed remittances, in kobo.")
     payment_status = models.CharField(
         max_length=8, choices=InvoicePaymentStatus.choices,
         default=InvoicePaymentStatus.UNPAID,
@@ -799,7 +818,23 @@ class TaxFiling(FinanceDocument):
     filing_journal = models.ForeignKey(
         "JournalEntry", on_delete=models.PROTECT, related_name="tax_filing_postings",
         null=True, blank=True,
-        help_text="The netting/penalty journal posted at filing (if any).",
+        help_text="The single netting/penalty journal of a return filed before returns "
+                  "were split by branch; a branch share holds its own journal.",
+    )
+    credit_from = models.OneToOneField(
+        "self", on_delete=models.PROTECT, related_name="credit_carried_into",
+        null=True, blank=True,
+        help_text="The earlier filed return whose carried-forward credit this one uses.",
+    )
+    declared_line_count = models.PositiveIntegerField(
+        default=0, help_text="Source lines on the return (claimed once it is filed).",
+    )
+    late_line_count = models.PositiveIntegerField(
+        default=0, help_text="Source lines dated before period_start, recorded late.",
+    )
+    late_items = models.JSONField(
+        default=list, blank=True,
+        help_text="Late source lines grouped by the month they are dated in.",
     )
 
     class Meta(FinanceDocument.Meta):
@@ -813,15 +848,24 @@ class TaxFiling(FinanceDocument):
         return self.amount_due - self.amount_paid
 
     def recompute_due(self, *, save: bool = True) -> None:
-        self.amount_due = self.gross_liability - self.recoverable_amount + self.adjustment_amount
+        """Set ``amount_due`` and ``carried_forward_credit`` from the declared figures.
+
+        Credits (recoverable input and the credit brought forward) reduce the tax
+        but never below nil; what they leave over is carried forward rather than
+        lost. A penalty is owed in cash whatever the credits are, so it is added
+        after the floor.
+        """
+        net = self.gross_liability - self.recoverable_amount - self.brought_forward_credit
+        self.amount_due = max(net, 0) + self.adjustment_amount
+        self.carried_forward_credit = max(-net, 0)
         if save:
-            self.save(update_fields=["amount_due", "updated_at"])
+            self.save(update_fields=["amount_due", "carried_forward_credit", "updated_at"])
 
     def refresh_payment_status(self, *, save: bool = True) -> None:
-        if self.amount_paid <= 0:
-            status = InvoicePaymentStatus.UNPAID
-        elif self.amount_paid >= self.amount_due:
+        if self.amount_due <= 0 or self.amount_paid >= self.amount_due:
             status = InvoicePaymentStatus.PAID
+        elif self.amount_paid <= 0:
+            status = InvoicePaymentStatus.UNPAID
         else:
             status = InvoicePaymentStatus.PARTIAL
         self.payment_status = status
@@ -830,6 +874,158 @@ class TaxFiling(FinanceDocument):
 
     def __str__(self) -> str:
         return f"{self.document_number or self.pk}: {self.amount_due} kobo"
+
+
+class TaxFilingShare(TimeStampedModel):
+    """One branch's part of a return: its figures, its netting journal and what it has paid.
+
+    A tenant files one return per obligation, but each branch's tax is booked and
+    paid in that branch's books. The share's ``amount_due`` is what the branch
+    remits; it can be less than the branch's own net tax when another branch's
+    surplus credit covers part of it, and that transfer stays visible as the two
+    branches' opposite balances on the payable account.
+
+    ``branch`` is null in two cases only: the books of a tenant that owns no branch
+    (the platform's own), and ``branch_pending`` lines at a tenant with several
+    branches whose entries carry none. A pending share is shown on a draft and
+    stops the return being filed until its lines are given a branch.
+    """
+
+    filing = models.ForeignKey(TaxFiling, on_delete=models.CASCADE, related_name="shares")
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        related_name="finance_tax_filing_shares", null=True, blank=True,
+    )
+    branch_pending = models.BooleanField(
+        default=False, help_text="Lines whose entries carry no branch at a tenant with several.",
+    )
+    gross_liability = MoneyField(help_text="This branch's net tax on its payable lines, in kobo.")
+    recoverable_amount = MoneyField(help_text="This branch's net recoverable input tax, in kobo.")
+    brought_forward_credit = MoneyField(help_text="This branch's credit brought forward, in kobo.")
+    adjustment_amount = MoneyField(help_text="This branch's part of the penalty, in kobo.")
+    amount_due = MoneyField(help_text="What this branch remits, in kobo.")
+    amount_paid = MoneyField(help_text="Remitted so far, net of reversals, in kobo.")
+    carried_forward_credit = MoneyField(help_text="This branch's credit left for the next return, in kobo.")
+    payment_status = models.CharField(
+        max_length=8, choices=InvoicePaymentStatus.choices,
+        default=InvoicePaymentStatus.UNPAID,
+    )
+    line_count = models.PositiveIntegerField(default=0)
+    filing_journal = models.OneToOneField(
+        "JournalEntry", on_delete=models.PROTECT, related_name="tax_filing_share",
+        null=True, blank=True,
+        help_text="The netting/penalty journal posted for this branch at filing.",
+    )
+
+    class Meta:
+        ordering = ["filing", "branch_pending", "branch__name", "id"]
+        indexes = [models.Index(fields=["filing"])]
+
+    @property
+    def balance_due(self) -> int:
+        return self.amount_due - self.amount_paid
+
+    @property
+    def document_number(self) -> str:
+        """The return's number, so a refusal names the document a person knows."""
+        return self.filing.document_number
+
+    def refresh_payment_status(self) -> None:
+        if self.amount_due <= 0 or self.amount_paid >= self.amount_due:
+            self.payment_status = InvoicePaymentStatus.PAID
+        elif self.amount_paid <= 0:
+            self.payment_status = InvoicePaymentStatus.UNPAID
+        else:
+            self.payment_status = InvoicePaymentStatus.PARTIAL
+
+    def __str__(self) -> str:
+        return f"{self.filing_id}/{self.branch_id or '-'}: {self.amount_due} kobo"
+
+
+class TaxFilingLine(TimeStampedModel):
+    """The declaration of one source line by the filed return that covers it.
+
+    A link row rather than a column on :class:`JournalLine`: a posted journal line
+    is immutable, the declaration is a fact about the return, and the ledger's
+    busiest table stays free of tax vocabulary. The one-to-one on ``journal_line``
+    makes the database refuse a second declaration of the same line, whichever
+    obligation or concurrent filing attempts it. Filing writes these rows and
+    un-filing deletes them, which releases the lines to the next return.
+
+    ``branch`` is the branch the line was counted under (the entry's own, or the
+    tenant's only branch for an entry with none), and ``is_late`` marks a line
+    dated before the return's period.
+    """
+
+    filing = models.ForeignKey(TaxFiling, on_delete=models.CASCADE, related_name="declared_lines")
+    journal_line = models.OneToOneField(
+        "JournalLine", on_delete=models.PROTECT, related_name="tax_declaration",
+    )
+    role = models.CharField(max_length=12, choices=TaxSourceRole.choices)
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        related_name="finance_tax_filing_lines", null=True, blank=True,
+    )
+    is_late = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["filing", "id"]
+        indexes = [models.Index(fields=["filing"])]
+
+    def __str__(self) -> str:
+        return f"{self.filing_id} declares line {self.journal_line_id}"
+
+
+class TaxRemittance(TimeStampedModel):
+    """One payment of one branch share of a return, and its journal.
+
+    The journal (``Dr payable, Cr bank``, source TAX, dated ``pay_date``, carrying
+    the share's branch) belongs to this row, so the journal screen cannot reverse
+    it on its own; :func:`vs_finance.tax_filing.reverse_remittance` does, and puts
+    the amount back on the share and the return. A reversed remittance keeps its
+    row with the reversal journal beside it.
+    """
+
+    filing = models.ForeignKey(TaxFiling, on_delete=models.PROTECT, related_name="remittances")
+    share = models.ForeignKey(TaxFilingShare, on_delete=models.PROTECT, related_name="remittances")
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        related_name="finance_tax_remittances", null=True, blank=True,
+    )
+    bank_account = models.ForeignKey(
+        BankAccount, on_delete=models.PROTECT, related_name="tax_remittances",
+    )
+    pay_date = models.DateField()
+    amount = MoneyField(help_text="Amount remitted, in kobo.")
+    journal = models.OneToOneField(
+        "JournalEntry", on_delete=models.PROTECT, related_name="tax_remittance",
+    )
+    reversal_journal = models.OneToOneField(
+        "JournalEntry", on_delete=models.PROTECT, related_name="tax_remittance_reversal",
+        null=True, blank=True,
+    )
+    reversed_at = models.DateField(null=True, blank=True)
+    reversal_reason = models.CharField(max_length=255, blank=True, default="")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_tax_remittances", null=True, blank=True,
+    )
+
+    class Meta:
+        ordering = ["filing", "pay_date", "id"]
+        indexes = [models.Index(fields=["filing"])]
+
+    @property
+    def is_reversed(self) -> bool:
+        return self.reversal_journal_id is not None
+
+    @property
+    def document_number(self) -> str:
+        """The return's number, so a refusal names the document a person knows."""
+        return self.filing.document_number
+
+    def __str__(self) -> str:
+        return f"{self.filing_id}: {self.amount} kobo on {self.pay_date}"
 
 
 class PayrollRun(FinanceDocument):

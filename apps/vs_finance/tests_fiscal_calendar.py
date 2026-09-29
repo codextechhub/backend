@@ -199,7 +199,9 @@ class FiscalCalendarRolloverTests(TestCase):
             (2027, datetime.date(2027, 9, 1), datetime.date(2028, 8, 31)),
         ])
         self.assertEqual(
-            FiscalPeriod.objects.filter(entity=entity, fiscal_year__year=2027).count(), 12,
+            FiscalPeriod.objects.filter(
+                entity=entity, fiscal_year__year=2027, is_closing=False,
+            ).count(), 12,
         )
         audit = FinanceAuditLog.objects.get(
             entity=entity, action=FinanceAuditAction.FISCAL_YEAR_OPENED,
@@ -213,7 +215,7 @@ class FiscalCalendarRolloverTests(TestCase):
         roll_fiscal_calendar(entity, today=datetime.date(2027, 7, 15))
 
         self.assertEqual(
-            list(FiscalPeriod.objects.filter(entity=entity, fiscal_year__year=2027)
+            list(FiscalPeriod.objects.filter(entity=entity, fiscal_year__year=2027, is_closing=False)
                  .order_by("period_no").values_list("start_date", flat=True)),
             [datetime.date(2027, 9, 1), datetime.date(2027, 12, 1),
              datetime.date(2028, 3, 1), datetime.date(2028, 6, 1)],

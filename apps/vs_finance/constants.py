@@ -180,6 +180,7 @@ class JournalSource(models.TextChoices):
     OPENING = "OPENING", "Opening Balance"
     FX = "FX", "FX Revaluation"
     SYSTEM = "SYSTEM", "System"
+    TAX = "TAX", "Tax return"
 
 
 # Group behavior for Invoice Source.
@@ -591,6 +592,7 @@ class FinanceAuditAction(models.TextChoices):
     TAX_FILING_UNFILED = "TAX_FILING_UNFILED", "Tax filing un-filed (reverted to draft)"
     TAX_FILING_PAID = "TAX_FILING_PAID", "Tax filing paid / remitted"
     TAX_FILING_REJECTED = "TAX_FILING_REJECTED", "Tax filing action rejected"
+    TAX_REMITTANCE_REVERSED = "TAX_REMITTANCE_REVERSED", "Tax remittance reversed"
 
 
 # Define Finance Audit Status values.
@@ -616,6 +618,26 @@ class TaxFilingFrequency(models.TextChoices):
     MONTHLY = "MONTHLY", "Monthly"
     QUARTERLY = "QUARTERLY", "Quarterly"
     ANNUAL = "ANNUAL", "Annual"
+
+
+class TaxTreatment(models.TextChoices):
+    """How a supply is treated for VAT, carried on its tax code.
+
+    Only a STANDARD code charges tax at its rate. A ZERO_RATED supply is taxable
+    at nil, so the input tax spent making it stays recoverable; an EXEMPT supply
+    is outside the tax, and charges none. Both carry a rate of zero, which the
+    tax code enforces, so every reader that multiplies a line by its code's rate
+    already puts nothing on the output tax account for them.
+    """
+    STANDARD = "STANDARD", "Standard rated"
+    ZERO_RATED = "ZERO_RATED", "Zero rated"
+    EXEMPT = "EXEMPT", "Exempt"
+
+
+class TaxSourceRole(models.TextChoices):
+    """Which of an obligation's accounts a declared source line sits on."""
+    PAYABLE = "PAYABLE", "Tax payable"
+    RECOVERABLE = "RECOVERABLE", "Recoverable input tax"
 
 
 # Define Tax Filing Status values.

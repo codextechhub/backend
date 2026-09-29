@@ -697,6 +697,48 @@ rows in one query.
 MUST SAY: the collection branch rule and its visibility, the checkout family
 rule, bucket=open, the real-person approver count, and proxy attribution.
 
+### D80. A closed year keeps its real figures, and tax returns declare the transactions they cover (hash pending, 2026-09-29)
+MODULES: M19 finance and accounting, M17 billing and invoicing, M25 dashboards and
+analytics, M26 reporting and exports, MRD.
+From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF).
+MUST SAY:
+- Closing period (M19, M25, M26). Every fiscal year has one closing period
+  (FiscalPeriod.is_closing, number 13, one day on the year's last day, created
+  CLOSED with the year; migration vs_finance 0034 creates it for existing years and
+  moves earlier closing journals and their reversals into it). Ordinary postings
+  never resolve to it; only the year close posts there and a reopen reverses there.
+  closing_date must be the year's last day or omitted. The income statement, its
+  comparison, budget-vs-actual, the finance dashboard and the statutory pack read a
+  year's ordinary periods only, so a closed year keeps its real profit; the balance
+  sheet and trial balance include the closing period. New ?fiscal_year= on the
+  income statement and the statutory pack (whose P&L now covers one fiscal year).
+  The income statement comparison defaults to the year today falls in. The
+  balance sheet's current-year earnings are only the open year's result. The
+  equity statement shows the close as a transfers column. The period list hides
+  closing periods unless ?include_closing=true.
+- Tax returns (M19). A return declares source lines, not a date window: every
+  undeclared line on the obligation's tax accounts dated on or before the period
+  end, excluding the tax module's own netting, penalty, remittance and
+  carry-forward journals (JournalSource.TAX). TaxFilingLine records which return
+  declared each line; unfiling releases them. A line dated before the period start
+  is a late item shown under its own month. The return shows a per-branch
+  breakdown (TaxFilingShare); lines with no branch are a "no branch yet" group
+  that blocks filing at a multi-branch tenant and count as the only branch at a
+  one-branch tenant. Paying books one remittance per branch share from that
+  branch's bank (TaxRemittance), and the return is PAID when every share is paid;
+  a remittance can be reversed, returning the return to FILED. Excess input VAT
+  carries forward to the next return. Nil returns file with nothing to remit. The
+  filed figures must match the prepared draft. Penalties split across branches in
+  proportion to their tax unless an adjustment branch is named. Migration vs_finance
+  0035 links existing filings, payments and declared lines.
+- VAT treatment (M19, M17). TaxCode.treatment is STANDARD, ZERO_RATED or EXEMPT;
+  only a standard code carries a rate. Every entity has VAT-STD, VAT-ZERO and
+  VAT-EXEMPT. A fee item with no tax code takes VAT-EXEMPT (new, updated, cloned,
+  and existing items by migration); an explicit code is kept. Printed invoices name
+  each line's treatment.
+- Needs Attention: unbranched tax lines block filing at a multi-branch school until
+  the branch backfill runs.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

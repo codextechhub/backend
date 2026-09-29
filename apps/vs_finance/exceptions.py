@@ -49,7 +49,9 @@ class PeriodClosedError(PostingError):
 
         A month can read OPEN inside a CLOSED or LOCKED year. Telling the caller to
         re-open the month would send them to a screen that cannot help, so the
-        message names the year and says to reopen it instead.
+        message names the year and says to reopen it instead. ``status`` is
+        ``"missing"`` when no period covers the date, and ``"CLOSING"`` for a
+        year's closing period, which no ordinary posting may use.
         """
         self.period_label = period_label  # Store the period label for diagnostics.
         self.status = status  # Store the period status for diagnostics.
@@ -77,6 +79,11 @@ class PeriodClosedError(PostingError):
             "Open Fiscal Periods and create the next fiscal year if the calendar "
             "has run out."
             if status == "missing"
+            else (
+                f"Cannot post into '{period_label}': it is the year's closing period, "
+                f"which only the year-end close posts into. Post into an ordinary month."
+            )
+            if status == "CLOSING"
             else (
                 f"Cannot post into period '{period_label}': it is '{status}'. "
                 f"Re-open the period or post into the current open period."

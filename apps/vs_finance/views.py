@@ -148,16 +148,42 @@ class EntityScopedListMixin:
         raise NotImplementedError
 
 
+def _resolve_fiscal_year(entity, request, *, param="fiscal_year"):
+    """Resolve an optional ``?fiscal_year=<year label>`` (``2026``) for this entity."""
+    from .models import FiscalYear
+
+    raw = request.query_params.get(param)
+    if not raw:
+        return None
+    label = str(raw).upper().removeprefix("FY")
+    year = (
+        FiscalYear.objects.filter(entity=entity, year=int(label)).first()
+        if label.isdigit() else None
+    )
+    if year is None:
+        raise NotFound(f"No fiscal year matches '{raw}' for this entity.")
+    return year
+
+
 # Support the resolve period workflow.
 def _resolve_period(entity, request, *, param="period"):
-    """Resolve an optional ``?period=<id or period_no>`` for this entity, or ``None``."""
+    """Resolve an optional ``?period=<id or period_no>`` for this entity, or ``None``.
+
+    A value above 12 is a period id. A value of 12 or less is a period number: of
+    the year named by ``?fiscal_year=`` when given, else of the latest year. A
+    year's closing period is never reached by number.
+    """
     raw = request.query_params.get(param)
     if not raw:
         return None
     qs = FiscalPeriod.objects.filter(entity=entity)
+    by_number = qs.filter(is_closing=False)
+    fiscal_year = _resolve_fiscal_year(entity, request)
+    if fiscal_year is not None:
+        by_number = by_number.filter(fiscal_year=fiscal_year)
     period = (
         qs.filter(pk=int(raw)).first() if str(raw).isdigit() and int(raw) > 12
-        else qs.filter(period_no=int(raw)).order_by("-fiscal_year__year").first()
+        else by_number.filter(period_no=int(raw)).order_by("-fiscal_year__year").first()
         if str(raw).isdigit() else None
     )
     if period is None:
@@ -682,6 +708,10 @@ class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
     That key still gates the Fiscal Periods setup screen, and closing,
     reopening or locking a period each keep their own key.
 
+    A year's closing period is left out unless ``?include_closing=true``: it opens
+    and closes with its year, so it has no place among the months a person closes
+    or picks.
+
     docstring-name: Fiscal periods
     """
 
@@ -710,6 +740,8 @@ class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
     # Handle the entity qs workflow.
     def entity_qs(self, entity):
         qs = FiscalPeriod.objects.filter(entity=entity).select_related("fiscal_year")
+        if self.request.query_params.get("include_closing", "").lower() != "true":
+            qs = qs.filter(is_closing=False)  # Closing periods open and close with their year.
         if (status_val := self.request.query_params.get("status")):
             qs = qs.filter(status=status_val)
         if (year := self.request.query_params.get("year")):
@@ -2076,7 +2108,15 @@ class TrialBalanceView(APIView):
 
 # Group endpoint behavior for Income Statement View.
 class IncomeStatementView(APIView):
-    """docstring-name: Income statement"""
+    """GET /finance/reports/income-statement/?entity= - profit for a window, with comparisons.
+
+    The window is one fiscal year: ``?fiscal_year=2026`` names it, and without it the
+    year today falls in is used. ``?period=`` narrows it to one period of that year
+    (a period number of 12 or less is read within ``?fiscal_year=`` when given). The
+    year's closing period is never counted, so a closed year shows its real profit.
+
+    docstring-name: Income statement
+    """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
@@ -2089,7 +2129,10 @@ class IncomeStatementView(APIView):
         entity = resolve_entity(request)
         reader_scope = _reader_scope(request)
         period = _resolve_period(entity, request)
-        rep = income_statement_compare(entity, period=period, scope=reader_scope)
+        rep = income_statement_compare(
+            entity, period=period, fiscal_year=_resolve_fiscal_year(entity, request),
+            scope=reader_scope,
+        )
 
         # Support the mon workflow.
         def _mon(v):
@@ -2397,15 +2440,18 @@ class ChangesInEquityView(APIView):
         export = _maybe_export(request, ReportTable(
             title="Statement of Changes in Equity",
             subtitle=f"{entity.code} · {getattr(period, 'name', None) or 'Inception to date'}",
-            columns=["Component", "Opening", "Profit", "Contributions/(Distributions)", "Closing"],
+            columns=["Component", "Opening", "Profit", "Contributions/(Distributions)",
+                     "Year-end transfers", "Closing"],
             rows=[
-                [c.label, c.opening_naira, c.profit_naira, c.contributions_naira, c.closing_naira]
+                [c.label, c.opening_naira, c.profit_naira, c.contributions_naira,
+                 c.transfers_naira, c.closing_naira]
                 for c in soce.columns
             ],
             summary_rows=[[
                 "TOTAL",
                 format_naira(soce.total_opening), format_naira(soce.total_profit),
-                format_naira(soce.total_contributions), format_naira(soce.total_closing),
+                format_naira(soce.total_contributions), format_naira(soce.total_transfers),
+                format_naira(soce.total_closing),
             ]],
         ), filename=f"changes_in_equity_{entity.code}", narrowed=reader_scope.is_narrowed)
         if export is not None:
@@ -2423,13 +2469,15 @@ class ChangesInEquityView(APIView):
                         "key": c.key, "label": c.label, "code": c.code,
                         "account_id": c.account_id,
                         "opening": _money(c.opening), "profit": _money(c.profit),
-                        "contributions": _money(c.contributions), "closing": _money(c.closing),
+                        "contributions": _money(c.contributions),
+                        "transfers": _money(c.transfers), "closing": _money(c.closing),
                     }
                     for c in soce.columns
                 ],
                 "total_opening": _money(soce.total_opening),
                 "total_profit": _money(soce.total_profit),
                 "total_contributions": _money(soce.total_contributions),
+                "total_transfers": _money(soce.total_transfers),
                 "total_closing": _money(soce.total_closing),
                 "balance_sheet_equity": _money(soce.balance_sheet_equity),
                 "is_reconciled": soce.is_reconciled,
@@ -2445,6 +2493,9 @@ class StatutoryPackView(APIView):
     whole: a branch-bound reader is refused rather than handed a branch-shaped
     pack that looks like a filing and is not one. Their own statements are on the
     individual report endpoints, narrowed to their branches.
+
+    ``?fiscal_year=2026`` names the year its income statement covers; without it
+    (and without ``?period=``) the year ``?as_of=`` falls in is used.
 
     docstring-name: Statutory reporting pack
     """
@@ -2465,7 +2516,10 @@ class StatutoryPackView(APIView):
         entity = resolve_entity(request)
         as_of = _resolve_date_param(request, "as_of")
         period = _resolve_period(entity, request)
-        pack = statutory_pack(entity, as_of=as_of, period=period)
+        pack = statutory_pack(
+            entity, as_of=as_of, period=period,
+            fiscal_year=_resolve_fiscal_year(entity, request),
+        )
 
         # Export face: the IFRS-mapped Statement of Financial Position + Income
         # Statement as one flat table (the companion statements have their own exports).
@@ -2513,6 +2567,7 @@ class StatutoryPackView(APIView):
                 "entity": entity.code,
                 "as_of": str(pack.as_of),
                 "period": getattr(period, "name", None),
+                "fiscal_year": pack.fiscal_year,
                 "statement_of_financial_position": {
                     "sections": [
                         {
@@ -2544,6 +2599,7 @@ class StatutoryPackView(APIView):
                     "total_opening": _money(soce.total_opening),
                     "total_profit": _money(soce.total_profit),
                     "total_contributions": _money(soce.total_contributions),
+                    "total_transfers": _money(soce.total_transfers),
                     "total_closing": _money(soce.total_closing),
                     "is_reconciled": soce.is_reconciled,
                 },

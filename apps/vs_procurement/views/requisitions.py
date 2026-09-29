@@ -322,7 +322,7 @@ class RequisitionBudgetAvailabilityView(_ProcBase):
             raise ValidationError({"cost_center": "Select a cost centre to check its budget."})
         as_of = _date(request.query_params.get("date"), "date") or tenant_today(entity.tenant)
         period = FiscalPeriod.objects.filter(
-            entity=entity, start_date__lte=as_of, end_date__gte=as_of,
+            entity=entity, start_date__lte=as_of, end_date__gte=as_of, is_closing=False,
         ).select_related("fiscal_year").first()
         if period is None:
             return success_response("No fiscal period covers this date.", data={

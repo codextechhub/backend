@@ -61,7 +61,7 @@ class EntityResolverTests(FALFixture):
         )
         self.assertEqual(
             FiscalPeriod.objects.filter(
-                entity_id=self.corona_books.entity_ref,
+                entity_id=self.corona_books.entity_ref, is_closing=False,
             ).count(),
             12,
         )

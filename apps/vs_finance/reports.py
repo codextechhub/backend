@@ -1074,6 +1074,8 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
     excluded), signed to each account's normal balance so an expense budget of
     ``100`` lines up with ``100`` of actual expense. Pass a configured ``period_no``
     to scope both sides to a single period; otherwise the whole fiscal year is summed.
+    The year's closing period is left out, so a closed year's actuals still read
+    what was earned and spent.
     """
     from .constants import AccountType, NormalBalance
     from .models import BudgetLine
@@ -1111,10 +1113,10 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
     for line in budget_lines:
         slot_for(line.account)["budget"] += line.amount
 
-    # Actual movement per account from the period balances of this fiscal year.
+    # Actual movement per account from this fiscal year's ordinary periods.
     balances = (
         _budget_actuals(budget)
-        .filter(period__fiscal_year=fiscal_year)
+        .filter(period__fiscal_year=fiscal_year, period__is_closing=False)
         .select_related("account", "period")
     )
     if period_no is not None:
@@ -1380,22 +1382,44 @@ class IncomeStatement:
         return self.total_income - self.total_expense
 
 
-# Handle the income statement workflow.
-def income_statement(entity, *, period=None, scope=None) -> IncomeStatement:
-    """Build the income statement (P&L) for ``entity``, optionally one ``period``.
+def fiscal_year_as_of(entity, as_of):
+    """The fiscal year ``as_of`` falls in: the latest year begun on or before it.
 
-    Sums INCOME and EXPENSE accounts from :class:`AccountBalance`. When ``period`` is
-    given only that period's balances count; otherwise every period is aggregated
-    (year/life-to-date). The result's ``net_income`` is what the Balance Sheet folds
-    into equity until the year is closed to Retained Earnings. ``scope`` narrows it
-    to a reader's journals (see :mod:`vs_finance.branch_ledger`).
+    That is the year covering ``as_of`` when one does. Past the end of the calendar
+    it is the last year opened, which is still the year being reported on until
+    the next one exists. ``None`` when no year has begun by ``as_of``.
+    """
+    from .models import FiscalYear
+
+    return (
+        FiscalYear.objects.filter(entity=entity, start_date__lte=as_of)
+        .order_by("-start_date").first()
+    )
+
+
+# Handle the income statement workflow.
+def income_statement(entity, *, period=None, fiscal_year=None, scope=None) -> IncomeStatement:
+    """Build the income statement (P&L) for ``entity`` over a window.
+
+    Sums INCOME and EXPENSE accounts from :class:`AccountBalance`. The window is
+    ``period`` when given, else every ordinary period of ``fiscal_year`` when given,
+    else every ordinary period on record (life to date). ``scope`` narrows it to a
+    reader's journals (see :mod:`vs_finance.branch_ledger`).
+
+    Closing periods are always left out. They hold only the year-end journals that
+    move a year's result into Retained Earnings, so a statement of profit that
+    counted them would read zero for every closed year.
     """
     from .branch_ledger import ledger_balances
     from .constants import AccountType
 
-    qs = ledger_balances(entity, scope).select_related("account")
+    qs = ledger_balances(entity, scope).select_related("account").filter(
+        period__is_closing=False,
+    )
     if period is not None:
         qs = qs.filter(period=period)
+    elif fiscal_year is not None:
+        qs = qs.filter(period__fiscal_year=fiscal_year)
 
     income = _net_by_account(qs, account_types={AccountType.INCOME})
     expense = _net_by_account(qs, account_types={AccountType.EXPENSE})
@@ -1462,12 +1486,19 @@ class IncomeStatementCompare:
 
 
 # Handle the income statement compare workflow.
-def income_statement_compare(entity, *, period=None, scope=None) -> IncomeStatementCompare:
+def income_statement_compare(entity, *, period=None, fiscal_year=None,
+                             scope=None) -> IncomeStatementCompare:
     """Build the income statement with Budget + Prior-year comparison columns.
 
     Scope is a **fiscal year**: ``period`` (a :class:`FiscalPeriod`) narrows both this
-    year and the prior year to that single period number; otherwise the whole current
-    fiscal year (the latest) is used. See :class:`IncomeStatementCompare`.
+    year and the prior year to that single period number; otherwise the whole of
+    ``fiscal_year`` is used, and without one the year today falls in
+    (:func:`fiscal_year_as_of`; the latest year when none has begun). See
+    :class:`IncomeStatementCompare`.
+
+    Both years read their ordinary periods only, never the closing period, so a
+    closed year shows the profit it made and the next year's prior-year column
+    reads it too.
 
     ``scope`` narrows the actuals, this year and last, to a reader's journals. The
     budget is the entity's plan and has no branch, so a narrowed statement carries
@@ -1478,8 +1509,15 @@ def income_statement_compare(entity, *, period=None, scope=None) -> IncomeStatem
     from .constants import AccountType, BudgetStatus
     from .models import Budget, BudgetLine, FiscalYear
 
-    fy = period.fiscal_year if period is not None else (
-        FiscalYear.objects.filter(entity=entity).order_by("-year").first())
+    if period is not None:
+        fy = period.fiscal_year
+    elif fiscal_year is not None:
+        fy = fiscal_year
+    else:
+        fy = (
+            fiscal_year_as_of(entity, tenant_today(entity.tenant))
+            or FiscalYear.objects.filter(entity=entity).order_by("-year").first()
+        )
     if fy is None:
         return IncomeStatementCompare(
             entity_id=entity.id, period_id=None, period_name=None,
@@ -1491,7 +1529,7 @@ def income_statement_compare(entity, *, period=None, scope=None) -> IncomeStatem
     # Support the actuals workflow.
     def _actuals(fiscal_year):
         qs = ledger_balances(entity, scope).filter(
-            period__fiscal_year=fiscal_year,
+            period__fiscal_year=fiscal_year, period__is_closing=False,
         ).select_related("account")
         if period_no is not None:
             qs = qs.filter(period__period_no=period_no)
@@ -1589,9 +1627,14 @@ def income_statement_compare(entity, *, period=None, scope=None) -> IncomeStatem
 class BalanceSheet:
     """Assets, liabilities and equity at a point in time (kobo).
 
-    ``retained_earnings`` is the *current* (unclosed) net income folded into equity so
-    the accounting equation balances before the year is closed. ``is_balanced`` is the
-    headline check: ``total_assets == total_liabilities + total_equity``.
+    ``retained_earnings`` is all the unclosed net income folded into equity, so the
+    accounting equation balances before a year is closed. It splits in two:
+    ``current_year_earnings``, the result of the fiscal year ``as_of`` falls in
+    (:func:`fiscal_year_as_of`), and
+    ``prior_unclosed_earnings``, the result of earlier years never formally closed,
+    which belongs with Retained Earnings rather than under this year's name.
+    ``is_balanced`` is the headline check: ``total_assets == total_liabilities +
+    total_equity``.
     """
 
     entity_id: int
@@ -1603,6 +1646,12 @@ class BalanceSheet:
     total_liabilities: int = 0
     total_equity_accounts: int = 0
     retained_earnings: int = 0
+    current_year_earnings: int = 0
+
+    @property
+    def prior_unclosed_earnings(self) -> int:
+        """Net income of earlier years that no year-end close has moved yet."""
+        return self.retained_earnings - self.current_year_earnings
 
     @property
     # Handle the total equity workflow.
@@ -1629,7 +1678,10 @@ def balance_sheet(entity, *, as_of=None, scope=None) -> BalanceSheet:
     on or before ``as_of`` (period granularity - partial-period cut-offs are not
     interpolated). The same window's net income (income − expense) is reported as
     ``retained_earnings`` and folded into equity, which is what makes ``assets ==
-    liabilities + equity`` hold while the year is still open. ``scope`` narrows it
+    liabilities + equity`` hold while the year is still open. Closing periods are in
+    the window, so a closed year's result sits in the Retained Earnings account and
+    not in this figure; see :class:`BalanceSheet` for how the figure splits between
+    the year ``as_of`` falls in and earlier unclosed years. ``scope`` narrows it
     to a reader's journals; the equation still holds, because every journal
     balances (see :mod:`vs_finance.branch_ledger` for what a branch's cash means).
     """
@@ -1653,11 +1705,11 @@ def balance_sheet(entity, *, as_of=None, scope=None) -> BalanceSheet:
     equity_rows, total_equity_accounts = _statement_rows(equity)
 
     # Unclosed P&L for the same window → folded into equity as retained earnings.
-    income = _net_by_account(qs, account_types={AccountType.INCOME})
-    expense = _net_by_account(qs, account_types={AccountType.EXPENSE})
-    _, total_income = _statement_rows(income)
-    _, total_expense = _statement_rows(expense)
-    retained = total_income - total_expense
+    retained = _net_income(qs)
+
+    # The part that is the result of the year as_of falls in.
+    current_year = fiscal_year_as_of(entity, as_of)
+    current = _net_income(qs.filter(period__fiscal_year=current_year)) if current_year else 0
 
     return BalanceSheet(
         entity_id=entity.id,
@@ -1669,6 +1721,7 @@ def balance_sheet(entity, *, as_of=None, scope=None) -> BalanceSheet:
         total_liabilities=total_liabilities,
         total_equity_accounts=total_equity_accounts,
         retained_earnings=retained,
+        current_year_earnings=current,
     )
 
 
@@ -1856,14 +1909,16 @@ def cash_flow_statement(entity, *, period=None, scope=None) -> CashFlowStatement
 # component (share capital, retained earnings, other reserves), splitting the
 # movement into *profit for the period* and *owner contributions / distributions*.
 #
-# In this ledger the year is never closed into Retained Earnings (P&L sits unclosed
-# and the Balance Sheet folds it into equity - see ``balance_sheet``). The SOCE
-# mirrors that exactly: each booked EQUITY account becomes a column whose movement in
-# the window is a contribution/distribution, and a synthetic *Retained earnings*
-# column carries the unclosed net income (opening = cumulative P&L before the window,
-# profit = P&L during the window). Closing therefore equals
-# ``balance_sheet(as_of=window end).total_equity`` - the invariant ``is_reconciled``
-# proves.
+# Until a year is closed its P&L sits unclosed and the Balance Sheet folds it into
+# equity (see ``balance_sheet``). The SOCE mirrors that: each booked EQUITY account
+# becomes a column whose movement in the window is a contribution/distribution, and
+# a synthetic *Retained earnings* column carries the unclosed net income (opening =
+# cumulative P&L before the window, profit = P&L during the window). A year-end
+# close moves a year's result from the synthetic column into the booked Retained
+# Earnings account inside the year's closing period; that movement is a *transfer*
+# between the two columns, never a profit or an owner contribution. Closing
+# therefore equals ``balance_sheet(as_of=window end).total_equity`` - the invariant
+# ``is_reconciled`` proves.
 
 
 #: Key/label for the synthetic retained-earnings (unclosed P&L) column.
@@ -1875,9 +1930,12 @@ RETAINED_EARNINGS_COLUMN = "retained_earnings"
 class EquityMovement:
     """One equity component's opening → closing walk over a window (kobo).
 
-    ``closing == opening + profit + contributions``. ``profit`` is non-zero only for
-    the synthetic retained-earnings column; booked equity accounts move via
-    ``contributions`` (share issues +, dividends / drawings −).
+    ``closing == opening + profit + contributions + transfers``. ``profit`` is
+    non-zero only for the synthetic retained-earnings column; booked equity accounts
+    move via ``contributions`` (share issues +, dividends / drawings −).
+    ``transfers`` is the year-end close moving a year's result out of the synthetic
+    column and into the booked Retained Earnings account; across all columns it sums
+    to zero.
     """
 
     key: str
@@ -1887,11 +1945,12 @@ class EquityMovement:
     opening: int = 0
     profit: int = 0
     contributions: int = 0
+    transfers: int = 0
 
     @property
     # Handle the closing workflow.
     def closing(self) -> int:
-        return self.opening + self.profit + self.contributions
+        return self.opening + self.profit + self.contributions + self.transfers
 
     @property
     # Handle the opening naira workflow.
@@ -1907,6 +1966,10 @@ class EquityMovement:
     # Handle the contributions naira workflow.
     def contributions_naira(self) -> str:
         return format_naira(self.contributions)
+
+    @property
+    def transfers_naira(self) -> str:
+        return format_naira(self.transfers)
 
     @property
     # Handle the closing naira workflow.
@@ -1945,6 +2008,10 @@ class StatementOfChangesInEquity:
     # Handle the total contributions workflow.
     def total_contributions(self) -> int:
         return sum(c.contributions for c in self.columns)
+
+    @property
+    def total_transfers(self) -> int:
+        return sum(c.transfers for c in self.columns)
 
     @property
     # Handle the total closing workflow.
@@ -1997,17 +2064,23 @@ def statement_of_changes_in_equity(entity, *, period=None, scope=None) -> Statem
         # false closing-equity mismatch.
         window_qs = base.filter(period__start_date__lte=as_of)
 
+    # The year-end close's own period is a transfer, never profit or a contribution.
+    ordinary_qs = window_qs.filter(period__is_closing=False)
+    closing_qs = window_qs.filter(period__is_closing=True)
+
     opening_map = _net_by_account(prior_qs, account_types={AccountType.EQUITY})
-    window_map = _net_by_account(window_qs, account_types={AccountType.EQUITY})
+    window_map = _net_by_account(ordinary_qs, account_types={AccountType.EQUITY})
+    transfer_map = _net_by_account(closing_qs, account_types={AccountType.EQUITY})
+    maps = (opening_map, window_map, transfer_map)
 
     # One column per booked equity account (union of accounts seen opening or in-window).
     columns: list[EquityMovement] = []
     account_ids = sorted(
-        set(opening_map) | set(window_map),
-        key=lambda aid: (opening_map.get(aid) or window_map[aid])[0].code,
+        set(opening_map) | set(window_map) | set(transfer_map),
+        key=lambda aid: next(m[aid] for m in maps if aid in m)[0].code,
     )
     for aid in account_ids:
-        acc = (opening_map.get(aid) or window_map.get(aid))[0]
+        acc = next(m[aid] for m in maps if aid in m)[0]
         columns.append(EquityMovement(
             key=acc.code,
             label=acc.name,
@@ -2015,6 +2088,7 @@ def statement_of_changes_in_equity(entity, *, period=None, scope=None) -> Statem
             code=acc.code,
             opening=opening_map.get(aid, [None, 0])[1],
             contributions=window_map.get(aid, [None, 0])[1],
+            transfers=transfer_map.get(aid, [None, 0])[1],
         ))
 
     # Synthetic retained-earnings column: unclosed P&L before vs during the window.
@@ -2022,7 +2096,8 @@ def statement_of_changes_in_equity(entity, *, period=None, scope=None) -> Statem
         key=RETAINED_EARNINGS_COLUMN,
         label="Retained earnings (unclosed P&L)",
         opening=_net_income(prior_qs),
-        profit=_net_income(window_qs),
+        profit=_net_income(ordinary_qs),
+        transfers=_net_income(closing_qs),
     ))
 
     # Independent reconciliation target: balance-sheet equity at the window end.
@@ -2153,6 +2228,7 @@ class StatutoryPack:
     entity_code: str
     as_of: object
     period_id: int | None
+    fiscal_year: int | None = None  # Year label the income statement covers, if one year.
     sofp_sections: list = field(default_factory=list)
     income_lines: list = field(default_factory=list)
     total_assets: int = 0
@@ -2226,14 +2302,17 @@ def _group_rows_by_ifrs_line(rows, line_map, *, ordered_lines, extra=None) -> tu
 
 
 # Handle the statutory pack workflow.
-def statutory_pack(entity, *, as_of=None, period=None) -> StatutoryPack:
+def statutory_pack(entity, *, as_of=None, period=None, fiscal_year=None) -> StatutoryPack:
     """Assemble the IFRS-for-SMEs statutory pack for ``entity``.
 
-    The Statement of Financial Position is taken as at ``as_of`` (default today); the
-    Income Statement, cash-flow statement and statement of changes in equity are scoped
-    to ``period`` when given (else year/inception-to-date). Every figure is *regrouped*
-    from the existing statements, so the pack's totals reconcile to them exactly.
-    It is the school's filing, so it is only ever built for the whole entity.
+    The Statement of Financial Position is taken as at ``as_of`` (default today). The
+    Income Statement covers ``period`` when given, else the ordinary periods of
+    ``fiscal_year``, else of the year ``as_of`` falls in: a filing reports one
+    year's profit, and a closed year still shows the profit it made. The cash-flow
+    statement and statement of changes in equity are scoped to ``period`` when
+    given (else inception to date). Every figure is *regrouped* from the existing
+    statements, so the pack's totals reconcile to them exactly. It is the school's
+    filing, so it is only ever built for the whole entity.
     """
     from .constants import IFRSLine
 
@@ -2266,7 +2345,9 @@ def statutory_pack(entity, *, as_of=None, period=None) -> StatutoryPack:
     )
 
     # --- Income statement (regroup the P&L) ----------------------------------- #
-    pnl = income_statement(entity, period=period)
+    if period is None and fiscal_year is None:
+        fiscal_year = fiscal_year_as_of(entity, as_of)
+    pnl = income_statement(entity, period=period, fiscal_year=fiscal_year)
     income_lines, _ = _group_rows_by_ifrs_line(
         list(pnl.income_rows) + list(pnl.expense_rows), line_map,
         ordered_lines=_ifrs_income_lines(),
@@ -2277,6 +2358,10 @@ def statutory_pack(entity, *, as_of=None, period=None) -> StatutoryPack:
         entity_code=entity.code,
         as_of=as_of,
         period_id=getattr(period, "id", None),
+        fiscal_year=(
+            period.fiscal_year.year if period is not None
+            else getattr(fiscal_year, "year", None)
+        ),
         sofp_sections=sofp_sections,
         income_lines=income_lines,
         total_assets=total_assets,
@@ -2301,9 +2386,10 @@ class BalanceSheetSections:
     """The balance sheet grouped into IFRS Statement-of-Financial-Position sections.
 
     ``sections`` are :class:`IFRSSection` (non-current assets, current assets, equity,
-    non-current liabilities, current liabilities). Equity keeps the unclosed net income
-    as its own *Current year earnings* line rather than folding it into Retained
-    earnings, so it reads like the balance-sheet screen. Totals reconcile to
+    non-current liabilities, current liabilities). Equity keeps the result of the year
+    ``as_of`` falls in as its own *Current year earnings* line, so it reads like the
+    balance-sheet screen. The result of earlier years never formally closed is not
+    this year's, so it joins the Retained earnings line. Totals reconcile to
     :func:`balance_sheet`.
     """
 
@@ -2334,6 +2420,8 @@ def balance_sheet_sections(entity, *, as_of=None, scope=None) -> BalanceSheetSec
     unclosed net income as a distinct *Current year earnings* equity line.
     ``scope`` narrows it as :func:`balance_sheet` does.
     """
+    from .constants import IFRSLine
+
     as_of = as_of or tenant_today(entity.tenant)
     bs = balance_sheet(entity, as_of=as_of, scope=scope)
     line_map = _ifrs_line_map(entity)
@@ -2346,13 +2434,17 @@ def balance_sheet_sections(entity, *, as_of=None, scope=None) -> BalanceSheetSec
     }
     sections: list[IFRSSection] = []
     for key, label, lines in _ifrs_sofp_sections():
+        extra = (
+            {IFRSLine.RETAINED_EARNINGS: bs.prior_unclosed_earnings}
+            if key == "equity" and bs.prior_unclosed_earnings else None
+        )
         groups, total = _group_rows_by_ifrs_line(
-            section_rows[key], line_map, ordered_lines=lines)
-        if key == "equity" and bs.retained_earnings:
+            section_rows[key], line_map, ordered_lines=lines, extra=extra)
+        if key == "equity" and bs.current_year_earnings:
             groups.append(IFRSLineGroup(
                 line=CURRENT_YEAR_EARNINGS_LINE, label="Current year earnings",
-                amount=bs.retained_earnings))
-            total += bs.retained_earnings
+                amount=bs.current_year_earnings))
+            total += bs.current_year_earnings
         sections.append(IFRSSection(key=key, label=label, groups=groups, total=total))
 
     section_total = {s.key: s.total for s in sections}
@@ -2362,5 +2454,5 @@ def balance_sheet_sections(entity, *, as_of=None, scope=None) -> BalanceSheetSec
         total_liabilities=(
             section_total["non_current_liabilities"] + section_total["current_liabilities"]),
         total_equity=section_total["equity"],
-        current_year_earnings=bs.retained_earnings,
+        current_year_earnings=bs.current_year_earnings,
     )

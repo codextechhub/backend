@@ -264,8 +264,8 @@ def invoice_pdf(invoice, *, note: str = "") -> bytes:
         rows.append([
             Paragraph(description, styles["Small"]),
             line["quantity"], _bare(line["unit_price"]),
-            # "Exempt" is not an amount, so it must survive the currency strip.
-            line["tax_amount"] if line.get("is_exempt") else _bare(line["tax_amount"]),
+            # A treatment label is not an amount, so it must survive the currency strip.
+            line["tax_amount"] if line.get("tax_label") else _bare(line["tax_amount"]),
             _bare(line["net_amount"]),
         ])
 

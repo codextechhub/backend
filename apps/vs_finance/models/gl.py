@@ -17,6 +17,7 @@ from ..constants import (
     NORMAL_BALANCE_BY_TYPE,
     NormalBalance,
     PeriodStatus,
+    TaxTreatment,
 )
 from ..money import MoneyField
 from .core import TimeStampedModel, LedgerEntity, FinanceDocument
@@ -217,6 +218,16 @@ class FiscalPeriod(TimeStampedModel):
     service refuses to write into anything but an OPEN one (SOFT_CLOSED only for
     privileged close-process auto-entries). Closing a period is the control that
     stops the past being silently rewritten.
+
+    Each fiscal year also has one **closing period** (``is_closing``): period 13,
+    one day long, on the year's last day. Only the year-end closing journals post
+    into it, and the reversal that reopening the year posts. Keeping them out of
+    the last month is what lets every month and the full year still show their
+    real income and expense after the close: statements of profit read a year's
+    ordinary periods only, while the balance sheet and trial balance include the
+    closing period, so Retained Earnings shows the profit moved into it. No date
+    resolves to it (:func:`vs_finance.posting.resolve_period`), so an ordinary
+    posting never reaches it, and it is CLOSED from the day it is created.
     """
 
     entity = models.ForeignKey(
@@ -237,12 +248,20 @@ class FiscalPeriod(TimeStampedModel):
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="finance_periods_closed", null=True, blank=True,
     )
+    is_closing = models.BooleanField(
+        default=False,
+        help_text="The year's closing period: only the year-end closing journals post here.",
+    )
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
                 fields=["fiscal_year", "period_no"],
                 name="uniq_finance_period_year_no",
+            ),
+            models.UniqueConstraint(
+                fields=["fiscal_year"], condition=models.Q(is_closing=True),
+                name="uniq_finance_closing_period_per_year",
             ),
         ]
         indexes = [
@@ -262,6 +281,11 @@ class TaxCode(TimeStampedModel):
     basis points (``750`` = 7.5%) so the calculation stays integer-exact, mirroring
     the kobo rule for money. ``collected_account``/``paid_account`` are the control
     accounts the tax posts to (output vs input VAT, WHT payable …).
+
+    ``treatment`` says how the supply is taxed (:class:`~vs_finance.constants.TaxTreatment`).
+    Only a STANDARD code may carry a rate: a zero-rated or exempt code is held at
+    zero by a database constraint, so an exempt fee line can never put tax on the
+    output account, whichever screen or service prices it.
     """
 
     entity = models.ForeignKey(
@@ -271,6 +295,10 @@ class TaxCode(TimeStampedModel):
     name = models.CharField(max_length=120)
     rate_bps = models.PositiveIntegerField(
         help_text="Rate in basis points; 750 = 7.5%. Integer-exact, never a float.",
+    )
+    treatment = models.CharField(
+        max_length=12, choices=TaxTreatment.choices, default=TaxTreatment.STANDARD,
+        help_text="Standard rated, zero rated or exempt. Only a standard code carries a rate.",
     )
     is_recoverable = models.BooleanField(
         default=True, help_text="Input tax recoverable against output tax (e.g. VAT).",
@@ -289,6 +317,10 @@ class TaxCode(TimeStampedModel):
         constraints = [
             models.UniqueConstraint(
                 fields=["entity", "code"], name="uniq_finance_taxcode_entity_code",
+            ),
+            models.CheckConstraint(
+                check=models.Q(treatment=TaxTreatment.STANDARD) | models.Q(rate_bps=0),
+                name="ck_finance_taxcode_rate_only_when_standard",
             ),
         ]
         ordering = ["entity", "code"]

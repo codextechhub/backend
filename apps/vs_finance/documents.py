@@ -16,6 +16,7 @@ from django.template.loader import render_to_string
 
 from core.media import signed_url
 
+from .constants import TaxTreatment
 from .money import format_naira, naira_in_words
 from .pay_links import invoice_pay_url
 
@@ -186,6 +187,21 @@ def _customer_net_after(entity, customer) -> int:
 # Invoice document                                                            #
 # --------------------------------------------------------------------------- #
 
+def _vat_label(line):
+    """What the VAT column prints instead of an amount, or ``None`` to print the amount.
+
+    The line's tax code says how the supply is treated: an exempt or zero-rated
+    code prints its treatment, and a line with no code prints "No VAT" rather
+    than claiming an exemption nobody chose. A standard-rated line prints its tax.
+    """
+    if not line.tax_code_id:
+        return "No VAT"
+    treatment = line.tax_code.treatment
+    if treatment == TaxTreatment.STANDARD:
+        return None
+    return TaxTreatment(treatment).label
+
+
 # Build printable invoice template context.
 def invoice_document_context(invoice) -> dict:
     """Build the render context for the branded invoice document."""
@@ -203,8 +219,9 @@ def invoice_document_context(invoice) -> dict:
             "sub": sub,  # Secondary line text.
             "quantity": qty_str,  # Display quantity.
             "unit_price": format_naira(ln.unit_price),  # Display unit price.
-            "tax_amount": format_naira(ln.tax_amount) if ln.tax_code_id else "Exempt",  # Display tax or exemption.
-            "is_exempt": ln.tax_code_id is None,  # Boolean for template styling.
+            "tax_amount": _vat_label(ln) or format_naira(ln.tax_amount),  # Tax amount or treatment.
+            "tax_label": _vat_label(ln),  # Treatment printed in place of an amount.
+            "is_exempt": bool(ln.tax_code_id) and ln.tax_code.treatment == TaxTreatment.EXEMPT,
             "net_amount": format_naira(ln.net_amount),  # Display net line amount.
         })
 

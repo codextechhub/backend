@@ -212,7 +212,7 @@
         </td>
         <td class="num">{{ line.quantity }}</td>
         <td class="num">{{ line.unit_price }}</td>
-        <td class="num">{% if line.is_exempt %}<span class="vat-tag exempt">Exempt</span>{% else %}{{ line.tax_amount }}{% endif %}</td>
+        <td class="num">{% if line.tax_label %}<span class="vat-tag exempt">{{ line.tax_label }}</span>{% else %}{{ line.tax_amount }}{% endif %}</td>
         <td class="num">{{ line.net_amount }}</td>
       </tr>
       {% endfor %}

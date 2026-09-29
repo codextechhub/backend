@@ -42,10 +42,11 @@ DEMO_CUSTOMERS = [
     ("CUST-004", "Dunamis Consulting", "dunamis.ar@example.com"),
 ]
 
-# (line_no, description, revenue_code, amount_kobo, tax_code_or_None)
+# (line_no, description, revenue_code, amount_kobo, tax_code_or_None). The first
+# item is an exempt supply and says so with the seeded exempt code, not a blank one.
 DEMO_FEE_ITEMS = [
-    (1, "Tuition", "4100", 15_000_00, None),
-    (2, "Technology levy", "4100", 2_500_00, "VAT"),
+    (1, "Tuition", "4100", 15_000_00, "VAT-EXEMPT"),
+    (2, "Technology levy", "4100", 2_500_00, "VAT-STD"),
     (3, "Library & resources", "4100", 1_000_00, None),
 ]
 

@@ -62,7 +62,9 @@ from .models import (
     Refund,
     TaxCode,
     TaxFiling,
+    TaxFilingShare,
     TaxObligation,
+    TaxRemittance,
     WriteOffRequest,
 )
 from .money import format_naira
@@ -218,7 +220,7 @@ class FiscalPeriodSerializer(serializers.ModelSerializer):
         model = FiscalPeriod
         fields = [
             "id", "period_no", "name", "fiscal_year",
-            "start_date", "end_date", "status", "closed_at",
+            "start_date", "end_date", "status", "closed_at", "is_closing",
         ]
 
 
@@ -741,7 +743,7 @@ class TaxCodeSerializer(serializers.ModelSerializer):
     class Meta:
         model = TaxCode
         fields = [
-            "id", "code", "name", "rate_bps", "is_recoverable",
+            "id", "code", "name", "rate_bps", "treatment", "is_recoverable",
             "collected_account", "paid_account", "is_active",
         ]
 
@@ -1092,7 +1094,53 @@ class TaxObligationSerializer(serializers.ModelSerializer):
         ]
 
 
+class TaxFilingShareSerializer(serializers.ModelSerializer):
+    """One branch's part of a return: what it declared, what it owes and has paid."""
+
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    label = serializers.SerializerMethodField()
+    balance_due = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = TaxFilingShare
+        fields = [
+            "id", "branch_id", "branch_name", "branch_pending", "label",
+            "gross_liability", "recoverable_amount", "brought_forward_credit",
+            "adjustment_amount", "amount_due", "amount_paid", "balance_due",
+            "carried_forward_credit", "payment_status", "line_count", "filing_journal_id",
+        ]
+
+    def get_label(self, obj) -> str:
+        if obj.branch_pending:
+            return "No branch yet"
+        return obj.branch.name if obj.branch_id else "All"
+
+
+class TaxRemittanceSerializer(serializers.ModelSerializer):
+    """One payment of a branch share, and whether it has been reversed."""
+
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    bank_account_name = serializers.CharField(source="bank_account.name", read_only=True)
+    is_reversed = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = TaxRemittance
+        fields = [
+            "id", "share_id", "branch_id", "branch_name", "bank_account_id",
+            "bank_account_name", "pay_date", "amount", "journal_id", "is_reversed",
+            "reversed_at", "reversal_journal_id", "reversal_reason",
+        ]
+
+
 class TaxFilingSerializer(serializers.ModelSerializer):
+    """A return with its per-branch breakdown, late items and remittances.
+
+    ``filing_journal_id`` names the return's one netting/penalty journal: the
+    journal of a return filed as a whole, or the single share's journal when the
+    return has one share. A return split over several branches lists each
+    branch's journal on its share in ``branch_breakdown``.
+    """
+
     obligation_code = serializers.CharField(source="obligation.code", read_only=True)
     obligation_type = serializers.CharField(source="obligation.obligation_type", read_only=True)
     authority_name = serializers.CharField(source="obligation.authority_name", read_only=True)
@@ -1100,6 +1148,9 @@ class TaxFilingSerializer(serializers.ModelSerializer):
     liability_account_name = serializers.CharField(source="obligation.liability_account.name", read_only=True, default=None)
     balance_due = serializers.IntegerField(read_only=True)
     amount_due_naira = serializers.SerializerMethodField()
+    filing_journal_id = serializers.SerializerMethodField()
+    branch_breakdown = TaxFilingShareSerializer(source="shares", many=True, read_only=True)
+    remittances = TaxRemittanceSerializer(many=True, read_only=True)
 
     class Meta:
         model = TaxFiling
@@ -1109,14 +1160,23 @@ class TaxFilingSerializer(serializers.ModelSerializer):
             "period_start", "period_end", "due_date",
             "filing_status", "status",
             "gross_liability", "recoverable_amount", "adjustment_amount",
+            "brought_forward_credit", "carried_forward_credit", "credit_from_id",
             "amount_due", "amount_due_naira", "amount_paid", "balance_due",
             "payment_status", "adjustment_account_id",
             "filing_reference", "filed_at", "narration",
             "currency", "filing_journal_id",
+            "declared_line_count", "late_line_count", "late_items",
+            "branch_breakdown", "remittances",
         ]
 
     def get_amount_due_naira(self, obj) -> str:
         return format_naira(obj.amount_due)
+
+    def get_filing_journal_id(self, obj):
+        if obj.filing_journal_id is not None:
+            return obj.filing_journal_id
+        shares = list(obj.shares.all())
+        return shares[0].filing_journal_id if len(shares) == 1 else None
 
 
 # --------------------------------------------------------------------------- #

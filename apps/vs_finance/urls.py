@@ -192,6 +192,7 @@ from .views_ops import (
     TaxFilingListCreateView,
     TaxFilingPayView,
     TaxFilingUnfileView,
+    TaxRemittanceReverseView,
     TaxFilingSummaryView,
     TaxObligationDetailView,
     TaxObligationListCreateView,
@@ -428,6 +429,8 @@ urlpatterns = [
     path("tax-filings/<int:pk>/file/", TaxFilingFileView.as_view(), name="finance-tax-filing-file"),
     path("tax-filings/<int:pk>/unfile/", TaxFilingUnfileView.as_view(), name="finance-tax-filing-unfile"),
     path("tax-filings/<int:pk>/pay/", TaxFilingPayView.as_view(), name="finance-tax-filing-pay"),
+    path("tax-filings/<int:pk>/remittances/<int:remittance_pk>/reverse/",
+         TaxRemittanceReverseView.as_view(), name="finance-tax-remittance-reverse"),
 
     # Payroll
     path("payroll-runs/", PayrollRunListCreateView.as_view(), name="finance-payroll-list"),

@@ -317,6 +317,10 @@ def close_period(entity, period, *, actor_user=None, soft=False, force=False,
     from .models import FiscalPeriod, FiscalYear
     from .posting import read_key_shared
 
+    if period.is_closing:
+        raise PeriodCloseError(
+            f"'{period}' is the year's closing period; it opens and closes with its "
+            f"fiscal year, not on its own.")
     if force:
         reason = require_reason(reason, act=f"force-close period '{period}'")
     read_key_shared(FiscalYear, period.fiscal_year_id, ("status",))  # Year before month.
@@ -368,6 +372,9 @@ def reopen_period(entity, period, *, actor_user=None, reason=None):
     from .models import FiscalPeriod, FiscalYear
     from .posting import read_key_shared
 
+    if period.is_closing:
+        raise PeriodCloseError(
+            f"'{period}' is the year's closing period; reopen the fiscal year instead.")
     reason = require_reason(reason, act=f"reopen period '{period}'")
     year = read_key_shared(FiscalYear, period.fiscal_year_id, ("year", "status"))
     FiscalPeriod.objects.select_for_update().only("pk").get(pk=period.pk)
@@ -518,14 +525,17 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     year its owner: the journal screen offers no raw reverse, and only
     :func:`reopen_fiscal_year` undoes it.
 
-    * ``closing_date`` defaults to the year's ``end_date`` and must fall inside the
-      year being closed. The closing entry zeroes the whole year's income and
-      expense, so dated in the next year it would land in that year's first month:
-      the closed year's accounts would never reach zero inside it, and the next year
-      would open carrying minus this year's result. The formal close journal
-      may post into OPEN, SOFT_CLOSED or CLOSED because closing the final month before
-      closing the year is the normal operator sequence. A LOCKED period remains
-      immutable, so the year must be closed before the final period is locked.
+    * The closing journals post into the year's closing period
+      (:func:`vs_finance.seed.ensure_closing_period`), dated the year's last day,
+      never into the last month. Every month and the full year keep their real
+      income and expense; the statements of profit leave the closing period out,
+      and the balance sheet and trial balance include it, so Retained Earnings
+      shows the profit moved. The closing period is CLOSED, which the close's
+      escape hatch covers; a LOCKED closing period refuses.
+    * ``closing_date`` may be left out, or given as the year's ``end_date``. Any
+      other date is refused: outside the year it would carry the close into
+      another year, and inside it there is nowhere to put it but the closing period,
+      which has one date.
     * ``require_periods_closed`` (default) refuses while any period in the year is still
       OPEN - draft/late entries should be posted and the months soft-/closed first.
       Passing ``False`` forces the close over OPEN months and needs a ``reason``
@@ -550,7 +560,8 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     """
     from .constants import JournalSource
     from .models import Account, FiscalPeriod, JournalEntry, JournalLine
-    from .posting import _period_accepts_posting, post_journal, resolve_period
+    from .posting import _period_accepts_posting, post_journal
+    from .seed import ensure_closing_period
     from vs_tenants.models import Branch
 
     _lock_fiscal_year(fiscal_year)
@@ -559,14 +570,16 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
             f"Fiscal year {fiscal_year.year} is already '{fiscal_year.status}'.")
 
     closing_date = closing_date or fiscal_year.end_date  # Default to the last day of the year.
-    if not fiscal_year.start_date <= closing_date <= fiscal_year.end_date:  # Inside the year only.
+    if closing_date != fiscal_year.end_date:
         from rest_framework.exceptions import ValidationError
 
         raise ValidationError({
             "closing_date": (
                 f"The closing date must fall inside FY{fiscal_year.year} "
-                f"({fiscal_year.start_date} to {fiscal_year.end_date}); "
-                f"{closing_date} does not. Leave it out to close on {fiscal_year.end_date}."
+                f"({fiscal_year.start_date} to {fiscal_year.end_date}) on its last day: "
+                f"the closing entry is dated {fiscal_year.end_date}, in the year's closing "
+                f"period. {closing_date} is not that day. Leave it out to close on "
+                f"{fiscal_year.end_date}."
             ),
         })
 
@@ -574,8 +587,8 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     if forced:
         reason = require_reason(reason, act=f"force-close FY{fiscal_year.year}")
     else:  # Months must be settled before the year is sealed.
-        open_count = FiscalPeriod.objects.filter(  # Count periods still fully open.
-            fiscal_year=fiscal_year, status=PeriodStatus.OPEN,
+        open_count = FiscalPeriod.objects.filter(  # Count months still fully open.
+            fiscal_year=fiscal_year, status=PeriodStatus.OPEN, is_closing=False,
         ).count()
         if open_count:  # Refuse while any month is still OPEN.
             raise PeriodCloseError(
@@ -594,17 +607,17 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
 
     period = None
     if buckets:
-        period = resolve_period(entity, closing_date)  # The period the closing entries post into.
+        period = ensure_closing_period(fiscal_year)  # The closing entries' own period.
         if not _period_accepts_posting(  # Formal close may use CLOSED, but never LOCKED.
             period, allow_restricted=True, allow_closed=True,
         ):
             raise PeriodCloseError(
-                f"The closing date {closing_date} falls in a LOCKED period; "
-                f"close the fiscal year before locking its final period.")
+                f"The closing period of FY{fiscal_year.year} is LOCKED, so no closing "
+                f"entry can post into it.")
 
     soft_closed = (
         FiscalPeriod.objects.select_for_update()
-        .filter(fiscal_year=fiscal_year, status=PeriodStatus.SOFT_CLOSED)
+        .filter(fiscal_year=fiscal_year, status=PeriodStatus.SOFT_CLOSED, is_closing=False)
         .order_by("period_no")
     )
     for month in soft_closed:  # Nothing may post into the year after it closes.
@@ -682,21 +695,22 @@ def reopen_fiscal_year(entity, fiscal_year, *, actor_user=None, reason=None):
     """Reopen a CLOSED fiscal year so it can be corrected and closed again.
 
     Every closing journal the year still has in force (one per branch) is reversed
-    through :func:`vs_finance.posting.reverse_journal`, as the year's own act, and
-    dated on the closing journal's own date. The reversal therefore lands inside the
-    year it undoes: the income and expense accounts read their full-year totals again
-    in that year, and Retained Earnings loses the result it was given. Dated today
-    it would pour a whole year's income and expense into the current month.
+    through :func:`vs_finance.posting.reverse_journal`, as the year's own act, on the
+    closing journal's own date and in the year's closing period. The reversal
+    therefore lands inside the year it undoes and outside its months: the income and
+    expense accounts read their full-year totals again, Retained Earnings loses the
+    result it was given, and no month's figures move. Dated today it would pour a
+    whole year's income and expense into the current month.
 
     The year is set OPEN before the reversals post, so the posting guard admits
-    them; the closing month is normally CLOSED by then, which ``allow_closed``
-    covers. Months keep their own status: re-open the one that needs a correction,
+    them; the closing period is CLOSED, which ``allow_closed`` covers. Months keep
+    their own status: re-open the one that needs a correction,
     post it, close it, and close the year again, which rolls the corrected result
     into Retained Earnings.
 
     Needs a ``reason`` (:func:`require_reason`), stored on the FISCAL_YEAR_REOPENED
     audit row with the journals reversed. Refuses a LOCKED year, a year that is not
-    closed, and a year whose closing journal sits in a LOCKED month, where no
+    closed, and a year whose closing journal sits in a LOCKED period, where no
     reversal can post. Returns ``(fiscal_year, reversals)``.
     """
     from .constants import DocumentStatus

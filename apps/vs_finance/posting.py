@@ -180,6 +180,9 @@ def ensure_period_open(
                 period_label=label, status=str(year[1]), fiscal_year_label=f"FY{year[0]}",
             )
 
+    if getattr(period, "is_closing", False) and not allow_closed:  # Year-end close only.
+        raise PeriodClosedError(period_label=label, status="CLOSING")
+
     _refuse_period_status(
         label, status, allow_restricted=allow_restricted, allow_closed=allow_closed,
     )
@@ -247,7 +250,7 @@ def posting_window(entity, *, today=None) -> dict:
     today = today or tenant_today(entity.tenant)
     periods = list(
         FiscalPeriod.objects
-        .filter(entity=entity)
+        .filter(entity=entity, is_closing=False)  # No date is picked in a closing period.
         .select_related("fiscal_year")
         .order_by("start_date", "period_no")
     )
@@ -478,12 +481,16 @@ def resolve_period(entity, date):
     Used by sub-ledger services (AR/AP) to attach a journal to the right period from a
     document date. ``None`` is returned when no period covers the date; the posting
     guard then fails closed, refusing to post a dateless/period-less entry.
+
+    A year's closing period shares its last day with the last month, and is never
+    the answer: the year's last day resolves to the ordinary month, so no posting
+    reaches the closing period by its date. Only the year-end close names it.
     """
     from .models import FiscalPeriod
 
     return (  # Return matching period or None.
         FiscalPeriod.objects
-        .filter(entity=entity, start_date__lte=date, end_date__gte=date)
+        .filter(entity=entity, start_date__lte=date, end_date__gte=date, is_closing=False)
         .order_by("period_no")
         .first()
     )
@@ -823,6 +830,8 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
         remedy=f"Date the reversal {entry.date} or later.",
     )
     period = resolve_period(entry.entity, reversal_date)  # Resolve period for selected reversal date.
+    if entry.period is not None and entry.period.is_closing and reversal_date == entry.date:
+        period = entry.period  # A closing journal is undone in its own closing period.
     if date is None and not _period_accepts_posting(  # Original period may now be closed.
         period, allow_restricted=allow_restricted, allow_closed=allow_closed,
     ):
