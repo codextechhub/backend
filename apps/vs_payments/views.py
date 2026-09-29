@@ -113,6 +113,31 @@ def _entity_obj(request, entity, model, ref, field):
     return obj  # Return the resolved object.
 
 
+def _collection_payer(request, entity, ref, invoice):
+    """The customer a collection names, within reach or as the named invoice's owner.
+
+    A collection for an invoice belongs to the invoice's branch
+    (:func:`vs_payments.services.collection_branch_id`), so the family it bills
+    need not be in the caller's reach. The Okafor family is filed under Ikeja and
+    owes a Lekki invoice: Tola, who keeps Lekki's books, may name them beside
+    that invoice. Any other family outside her branches, including one that does
+    not own the invoice, is refused exactly as one that does not exist.
+    """
+    try:
+        return _entity_obj(request, entity, Customer, ref, "customer")
+    except ValidationError:
+        if invoice is None:
+            raise
+        owner = Customer.objects.filter(entity=entity, pk=invoice.customer_id)
+        match = Q(code__iexact=str(ref))
+        if str(ref).isdigit():
+            match |= Q(pk=int(ref))
+        payer = owner.filter(match).first()
+        if payer is None:
+            raise
+        return payer
+
+
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 
 
@@ -214,8 +239,8 @@ class CollectionListCreateView(APIView):
         if amount <= 0:  # Reject empty or negative collections.
             raise ValidationError({"amount": "A positive amount (in kobo) is required."})
         
-        customer = _entity_obj(request, entity, Customer, body.get("customer"), "customer")
         invoice = _entity_obj(request, entity, Invoice, body.get("invoice"), "invoice")
+        customer = _collection_payer(request, entity, body.get("customer"), invoice)
         # Deposit into the branch the receipt is booked to, or a school-wide bank.
         deposit = _resolve_account(
             request, entity, body.get("deposit_account"), "deposit_account",

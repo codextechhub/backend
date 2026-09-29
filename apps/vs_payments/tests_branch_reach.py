@@ -140,6 +140,55 @@ class PaymentsNameOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         })
         self.assertNotIn("belongs to", str(accepted.data))
 
+    def _tola_and_the_okafors(self):
+        """Tola keeps Lekki's books; the Okafors are filed under Ikeja and owe Lekki."""
+        from vs_finance.models import InvoiceLine
+        from vs_finance.receivables import post_invoice
+
+        okafor = self.customer(self.books, "COKAF", self.ikeja)
+        invoice = self.invoice(self.books, okafor, self.lekki)
+        InvoiceLine.objects.filter(invoice=invoice).update(
+            revenue_account=Account.objects.get(entity=self.books, code="4100"))
+        post_invoice(invoice)
+        n = next(_clerks)
+        tola = TenantAPIClient(user=self.grant(
+            self.user_for(self.tenant, f"tola-{n}@corona.test"), "payments.collection.create",
+            tenant=self.tenant, role_key=f"tola-{n}", branch=self.lekki))
+        return tola, invoice
+
+    def test_the_family_owing_the_invoice_may_be_named_from_the_invoices_branch(self):
+        """Tola names the Okafors beside their Lekki invoice and starts the checkout."""
+        from .providers import registry
+        from .providers.fake import FakeProvider
+
+        registry.register("PAYSTACK", FakeProvider(secret="test-secret"))
+        self.addCleanup(registry.unregister)
+        tola, invoice = self._tola_and_the_okafors()
+
+        for customer in ("COKAF", str(invoice.customer_id)):
+            with self.subTest(customer=customer):
+                accepted = self.post(tola, "collections/", {
+                    "amount": 5_000, "customer": customer, "invoice": invoice.pk})
+                self.assertEqual(accepted.status_code, 201, accepted.data)
+        self.assertEqual(
+            set(CollectionIntent.objects.filter(invoice=invoice)
+                .values_list("customer__code", flat=True)), {"COKAF"})
+
+    def test_another_branchs_family_is_unknown_unless_it_owes_the_named_invoice(self):
+        """Without the invoice, or beside one they do not owe, the Okafors do not exist to Tola."""
+        tola, invoice = self._tola_and_the_okafors()
+        self.customer(self.books, "CADE", self.ikeja)
+
+        for body in ({"customer": "COKAF"},
+                     {"customer": "CADE", "invoice": invoice.pk},
+                     {"customer": "CIKJP", "invoice": invoice.pk}):
+            with self.subTest(body=body):
+                refused = self.post(tola, "collections/", {"amount": 5_000, **body})
+                self.assertEqual(refused.status_code, 400, refused.data)
+                self.assertIn(f"No customer '{body['customer']}' in this entity.",
+                              str(refused.data))
+        self.assertFalse(CollectionIntent.objects.exists())
+
     def test_a_virtual_account_for_another_branchs_customer(self):
         refused = self.post(self.clerk("payments.virtual_account.create"),
                             "virtual-accounts/", {"customer": "CLEKP"})

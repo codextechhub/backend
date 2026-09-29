@@ -161,6 +161,11 @@ SETTLED_ELSEWHERE = {
     "vs_tickets/views.py::assign::User":
         "The person a ticket is being handed to. A support desk assigns across "
         "sites by design, and assign_ticket validates the assignee.",
+    "vs_payments/views.py::_collection_payer::Customer":
+        "Reached only after the in-reach lookup fails, and only for the one family "
+        "that owns the invoice the caller named, itself resolved within her "
+        "branches. The collection belongs to that invoice's branch, so the "
+        "invoice answers the branch question; any other family is still refused.",
 }
 
 #: Flagged lookups nothing answers.
