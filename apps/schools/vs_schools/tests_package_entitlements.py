@@ -28,13 +28,14 @@ rather than fenced.
 Creating a school with ``package_setup_data`` is the main creation path, so it
 has to be exercised here rather than assumed.
 """
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from vs_config.clock import tenant_today, tenant_zone
 from vs_config.models import (
     Capability,
     CapabilityDependency,
@@ -393,12 +394,13 @@ class SubscriptionExpiryTests(_PackageFixture):
             self.assertIsNotNone(
                 row.ends_at, "a grant with no end date is a product given away",
             )
-            self.assertEqual(row.ends_at.date(), expires + timedelta(days=1))
+            opens = row.ends_at.astimezone(tenant_zone(school.tenant))
+            self.assertEqual((opens.date(), opens.time()), (expires + timedelta(days=1), time.min))
 
     def test_the_school_keeps_the_product_on_its_last_paid_day(self):
         # ``ends_at`` is exclusive and the expiry is a date, so a school paid
         # up to the 31st must still work on the 31st.
-        expires = date.today()
+        expires = tenant_today(None)
         self._create("Last Day School", "ent-last-day", expires=expires)
         tenant = School.objects.get(slug="ent-last-day").tenant
         self.assertTrue(effective_capability(self.finance, tenant=tenant))

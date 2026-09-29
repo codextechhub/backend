@@ -10,6 +10,7 @@ from unittest import mock
 from django.db.models import Sum
 from django.test import TestCase, override_settings
 
+from vs_config.clock import tenant_today
 from vs_finance.constants import (
     AccountType,
     DocType,
@@ -4595,9 +4596,9 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         fund = PettyCashFund.objects.create(
             entity=entity, name="Front Desk", custodian_name="Lola",
             gl_account=Account.objects.get(entity=entity, code="1110"), float_amount=5000000)
-        establish_fund(fund, bank_account=bank, amount=5000000, date=datetime.date.today())
+        establish_fund(fund, bank_account=bank, amount=5000000, date=tenant_today(entity.tenant))
         v = PettyCashVoucher.objects.create(
-            entity=entity, fund=fund, voucher_date=datetime.date.today(), payee="Shop")
+            entity=entity, fund=fund, voucher_date=tenant_today(entity.tenant), payee="Shop")
         PettyCashVoucherLine.objects.create(
             voucher=v, expense_account=Account.objects.get(entity=entity, code="5300"),
             quantity=1, unit_price=120000, line_no=1)
@@ -6772,7 +6773,7 @@ class FinanceDashboardTests(_ARFixtureMixin, TestCase):
         self.assertEqual(d["fiscal_year"], "2026")
 
         # As-of defaults to the present day; pinning a period moves it to period-end.
-        self.assertEqual(d["as_of"], datetime.date.today().isoformat())
+        self.assertEqual(d["as_of"], tenant_today(entity.tenant).isoformat())
         pinned = finance_dashboard(entity, period=period)
         self.assertEqual(pinned["as_of"], period.end_date.isoformat())
 

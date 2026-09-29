@@ -6,6 +6,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from core.test_utils import TenantAPIClient
+from vs_config.clock import tenant_today
 from vs_finance.constants import DocumentStatus, FinanceAuditAction
 from vs_finance.models import Account, FinanceAuditLog, LedgerEntity
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies
@@ -256,7 +257,7 @@ class ProcurementSettingsAPITests(TestCase):
         explicit_rfq = RequestForQuotation.objects.get(pk=explicit.data["data"]["id"])
         self.assertEqual(str(explicit_rfq.response_due_date), "2026-08-03")
 
-        today = datetime.date.today()
+        today = tenant_today(self.entity.tenant)
         RequestForQuotation.objects.create(
             entity=self.entity, title="Within horizon", issue_date=today,
             response_due_date=today + datetime.timedelta(days=7), rfq_status="ISSUED",
@@ -279,7 +280,7 @@ class ProcurementSettingsAPITests(TestCase):
             default_expense_account=Account.objects.get(entity=self.entity, code="5300"),
             kyc_status=VendorKycStatus.VERIFIED,
         )
-        today = datetime.date.today()
+        today = tenant_today(self.entity.tenant)
         VendorContract.objects.create(
             entity=self.entity, vendor=vendor, reference="LONG-NOTICE",
             title="Long notice", start_date=today - datetime.timedelta(days=30),

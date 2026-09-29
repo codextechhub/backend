@@ -17,6 +17,7 @@ from django.db import close_old_connections
 from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
+from vs_config.clock import tenant_today
 from vs_finance.constants import (
     DocumentStatus, FinanceAuditAction, FinanceAuditStatus, InvoicePaymentStatus,
 )
@@ -290,8 +291,8 @@ class VendorQuotationPortalTests(_P2PFixtureMixin, TestCase):
         )
         self.rfq = RequestForQuotation.objects.create(
             entity=self.entity, title="Office supplies", rfq_status=RfqStatus.ISSUED,
-            issue_date=timezone.localdate(),
-            response_due_date=timezone.localdate() + datetime.timedelta(days=5),
+            issue_date=tenant_today(self.entity.tenant),
+            response_due_date=tenant_today(self.entity.tenant) + datetime.timedelta(days=5),
             response_due_at=timezone.now() + datetime.timedelta(days=5),
         )
         self.line = RfqLine.objects.create(
@@ -638,7 +639,7 @@ class VendorQuotationPortalTests(_P2PFixtureMixin, TestCase):
             f"/v1/procurement/quotations/?entity={self.entity.code}",
             {
                 "rfq": self.rfq.pk, "vendor": self.vendor.pk,
-                "quote_date": str(timezone.localdate()),
+                "quote_date": str(tenant_today(self.entity.tenant)),
                 "lines": [{
                     "rfq_line": self.line.pk, "description": "Printer paper",
                     "quantity": "2", "unit_price": 95_000,
@@ -1367,14 +1368,12 @@ class VendorCategoryConsoleAPITests(_P2PFixtureMixin, TestCase):
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_insights_are_report_gated_entity_scoped_and_use_posted_invoices(self, _permission):
-        from django.utils import timezone
-
         entity, _, vendor, _, _ = self.build_p2p()
         category = VendorCategory.objects.create(entity=entity, code="CLOUD", name="Cloud")
         vendor.category = category
         vendor.save(update_fields=["category", "updated_at"])
         invoice = self.make_bill(
-            entity, vendor, [("5300", 1, 750_000, None, None)], date=timezone.localdate(),
+            entity, vendor, [("5300", 1, 750_000, None, None)], date=tenant_today(entity.tenant),
         )
         invoice.status = DocumentStatus.POSTED
         invoice.subtotal = invoice.total = 750_000
@@ -1839,7 +1838,7 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(grn.total_value, 1_000_000)
         self.assertEqual(
             grn.document_number,
-            f"GN-{grn.entity.tenant_id}{timezone.localdate():%y%m%d}1",
+            f"GN-{grn.entity.tenant_id}{tenant_today(grn.entity.tenant):%y%m%d}1",
         )
 
         lines = {l.account.code: l for l in grn.journal.lines.all()}
@@ -4759,7 +4758,7 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         submit_quotation(quo)
         # A validity date in the past makes the offer stale - award must refuse it.
         VendorQuotation.objects.filter(pk=quo.pk).update(
-            valid_until=datetime.date.today() - datetime.timedelta(days=1),
+            valid_until=tenant_today(entity.tenant) - datetime.timedelta(days=1),
         )
         quo.refresh_from_db()
         with self.assertRaises(SourcingError):
@@ -5171,7 +5170,7 @@ class SourcingConsoleAPITests(_P2PFixtureMixin, TestCase):
             entity=entity, title="Draft", issue_date=datetime.date(2026, 1, 3))
         open_rfq = self._issued_rfq(entity)
         closing = self._issued_rfq(entity, lines=[("Cable", 2)])
-        closing.response_due_date = datetime.date.today() + datetime.timedelta(days=3)
+        closing.response_due_date = tenant_today(entity.tenant) + datetime.timedelta(days=3)
         closing.save(update_fields=["response_due_date", "updated_at"])
         self._submitted_quote(entity, open_rfq, vendor)
 
@@ -6123,7 +6122,7 @@ class ContractConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(r1.status_code, 201)
         self.assertEqual(r2.status_code, 201)
         ref1, ref2 = r1.data["data"]["reference"], r2.data["data"]["reference"]
-        prefix = f"CT-{entity.tenant_id}{timezone.localdate():%y%m%d}"
+        prefix = f"CT-{entity.tenant_id}{tenant_today(entity.tenant):%y%m%d}"
         self.assertEqual((ref1, ref2), (f"{prefix}1", f"{prefix}2"))
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
@@ -6198,7 +6197,7 @@ class ContractConsoleAPITests(_P2PFixtureMixin, TestCase):
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_summary_counts_are_entity_scoped(self, _perm):
         entity, _, vendor, _, _ = self.build_p2p()
-        today = datetime.date.today()
+        today = tenant_today(entity.tenant)
         self._contract(entity, vendor, ref="A", start=today - datetime.timedelta(days=30),
                        end=today + datetime.timedelta(days=200), value=10_000_000,
                        status=ContractStatus.ACTIVE)
@@ -6294,7 +6293,7 @@ class ContractConsoleAPITests(_P2PFixtureMixin, TestCase):
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_list_expiring_filter_and_empty_shape(self, _perm):
         entity, _, vendor, _, _ = self.build_p2p()
-        today = datetime.date.today()
+        today = tenant_today(entity.tenant)
         self._contract(entity, vendor, ref="SOON", start=today - datetime.timedelta(days=100),
                        end=today + datetime.timedelta(days=10), status=ContractStatus.ACTIVE)
         self._contract(entity, vendor, ref="LATER", start=today, end=today + datetime.timedelta(days=300),

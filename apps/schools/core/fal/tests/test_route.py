@@ -269,8 +269,7 @@ class FalRouteTests(FALFixture):
         linked to First Term is due when First Term ends, whatever term is
         running on the day the bursar previews it.
         """
-        import datetime
-
+        from vs_config.clock import tenant_today
         from vs_finance.models import Invoice
 
         from ..due_dates import resolve_due_date
@@ -279,7 +278,7 @@ class FalRouteTests(FALFixture):
         self.post(self.link_url(), {"session": self.session.pk, "term": self.term.pk})
         student = self.student(self.corona, self.ikeja)
         expected = resolve_due_date(
-            basis="TERM_END", days_after=30, invoice_date=datetime.date.today(),
+            basis="TERM_END", days_after=30, invoice_date=tenant_today(self.corona.tenant),
             term_end=self.term.end_date, session_end=self.session.end_date,
         )
 

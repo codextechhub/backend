@@ -1,10 +1,22 @@
 """Reading records as they stood at the end of a chosen day.
 
 A page asks for a date with ``?as_at=YYYY-MM-DD``. :func:`parse_as_at` turns it
-into an :class:`AsAt`, whose ``moment`` is the first instant of the following
-day in :data:`RECORD_DAY_TIMEZONE`: a version counts when it was recorded
-before that instant, so a change made at 21:00 on the chosen day is included
-and one made at 00:30 the next morning is not.
+into an :class:`AsAt`, which carries the day and the zone that day is counted
+in. Its ``moment`` is the first instant of the following day in that zone: a
+version counts when it was recorded before that instant, so a change made at
+21:00 on the chosen day is included and one made at 00:30 the next morning is
+not.
+
+**Whose day.** A day is the tenant's calendar day, never the server's and never
+a fixed zone's. :func:`request_zone` resolves the zone from ``request.tenant``
+through :func:`vs_config.clock.tenant_zone` (the platform's zone when there is
+no tenant), so a school in Nairobi asking for 14 March at 00:30 on 15 March is
+answered on Nairobi's calendar: the day has ended, the date is not refused as
+being in the future, and every version recorded before Nairobi's midnight is
+included. Every function here that turns an instant into a day takes the zone
+from the :class:`AsAt` it is given, or from an explicit ``zone`` argument where
+there is no :class:`AsAt` (the live record naming its first day), so there is
+no default a caller can fall back to by leaving it out.
 
 Today, or no date at all, is the live record and answers ``None``, so a page
 passing today's date behaves exactly as one passing nothing.
@@ -23,12 +35,10 @@ from zoneinfo import ZoneInfo
 from django.db.models import Min
 from django.utils import timezone
 
+from vs_config.clock import tenant_zone
+
 from .models import RecordVersion, TrackingStart
 from .registry import TrackedModel, owner_key, rebuild
-
-#: The zone a school's day is counted in. The platform's schools keep West
-#: Africa Time, the same default the Export Centre schedules against.
-RECORD_DAY_TIMEZONE = ZoneInfo("Africa/Lagos")
 
 
 class AsAtError(Exception):
@@ -50,26 +60,33 @@ class HistoryNotKept(AsAtError):
     http_status = 409
 
 
-def record_today() -> dt.date:
-    return timezone.now().astimezone(RECORD_DAY_TIMEZONE).date()
+def request_zone(request) -> ZoneInfo:
+    """The zone the tenant *request* speaks for counts its days in."""
+    return tenant_zone(getattr(request, "tenant", None))
 
 
-def record_date(moment: dt.datetime) -> dt.date:
-    """The school day *moment* falls on."""
-    return moment.astimezone(RECORD_DAY_TIMEZONE).date()
+def record_today(zone: ZoneInfo) -> dt.date:
+    """The calendar day it currently is in *zone*."""
+    return timezone.now().astimezone(zone).date()
+
+
+def record_date(moment: dt.datetime, zone: ZoneInfo) -> dt.date:
+    """The day *moment* falls on in *zone*."""
+    return moment.astimezone(zone).date()
 
 
 @dataclass(frozen=True)
 class AsAt:
-    """A past school day, and the instant its records are read at."""
+    """A past day, the zone it is counted in, and the instant it ends."""
 
     date: dt.date
+    zone: ZoneInfo
 
     @property
     def moment(self) -> dt.datetime:
         """The first instant of the following day; versions before it count."""
         start = dt.datetime.combine(self.date + dt.timedelta(days=1), dt.time.min)
-        return start.replace(tzinfo=RECORD_DAY_TIMEZONE)
+        return start.replace(tzinfo=self.zone)
 
     def includes(self, when) -> bool:
         """Whether *when* (a datetime or a date) had happened by the end of the day."""
@@ -81,7 +98,11 @@ class AsAt:
 
 
 def parse_as_at(request) -> AsAt | None:
-    """The day ``?as_at=`` asks for, or ``None`` for the live record."""
+    """The day ``?as_at=`` asks for, or ``None`` for the live record.
+
+    The day is the calendar day of the tenant the request speaks for, so
+    "today" and "not yet happened" are judged on that tenant's clock.
+    """
     raw = (request.query_params.get("as_at") or "").strip()
     if not raw:
         return None
@@ -91,7 +112,8 @@ def parse_as_at(request) -> AsAt | None:
         raise AsAtError(
             "Give the date as YYYY-MM-DD, for example 2026-03-05.", as_at=raw,
         ) from exc
-    today = record_today()
+    zone = request_zone(request)
+    today = record_today(zone)
     if day > today:
         raise AsAtError(
             "That date has not happened yet. Pick today or an earlier day.",
@@ -99,24 +121,24 @@ def parse_as_at(request) -> AsAt | None:
         )
     if day == today:
         return None
-    return AsAt(day)
+    return AsAt(day, zone)
 
 
-def history_starts(spec: TrackedModel, record_id) -> dt.date | None:
-    """The first school day this record can be read as at, or ``None``."""
+def history_starts(spec: TrackedModel, record_id, zone: ZoneInfo) -> dt.date | None:
+    """The first day, in *zone*, this record can be read as at, or ``None``."""
     first = RecordVersion.objects.filter(
         record_type=spec.record_type, record_id=str(record_id),
     ).aggregate(first=Min("recorded_at"))["first"]
-    return record_date(first) if first else None
+    return record_date(first, zone) if first else None
 
 
 def require_history(spec: TrackedModel, record_id, as_at: AsAt, *, noun: str) -> dt.date:
     """Raise :class:`HistoryNotKept` unless *as_at* is within the record's history.
 
     *noun* names the record in the refusal ("this student's record"). Returns
-    the day the history starts.
+    the day the history starts, counted in the zone *as_at* was asked in.
     """
-    starts = history_starts(spec, record_id)
+    starts = history_starts(spec, record_id, as_at.zone)
     if starts is None or as_at.date < starts:
         when = f"{starts.day} {starts:%B %Y}" if starts else "today"
         raise HistoryNotKept(
@@ -126,8 +148,8 @@ def require_history(spec: TrackedModel, record_id, as_at: AsAt, *, noun: str) ->
     return starts
 
 
-def tracking_starts(spec: TrackedModel) -> dt.date | None:
-    """The first school day any list of *spec* can be read as at, or ``None``.
+def tracking_starts(spec: TrackedModel, zone: ZoneInfo) -> dt.date | None:
+    """The first day, in *zone*, any list of *spec* can be read as at, or ``None``.
 
     The stamped :class:`TrackingStart` when there is one. Before the baseline
     command has stamped it, the model's earliest version stands in, which can
@@ -141,7 +163,7 @@ def tracking_starts(spec: TrackedModel) -> dt.date | None:
         started = RecordVersion.objects.filter(
             record_type=spec.record_type,
         ).aggregate(first=Min("recorded_at"))["first"]
-    return record_date(started) if started else None
+    return record_date(started, zone) if started else None
 
 
 def require_list_history(spec: TrackedModel, owner_starts: dt.date, as_at: AsAt,
@@ -153,7 +175,7 @@ def require_list_history(spec: TrackedModel, owner_starts: dt.date, as_at: AsAt,
     tracking reached *spec*. *noun* names the list in the refusal ("this
     person's field exceptions"). Returns the day the list's history starts.
     """
-    tracked = tracking_starts(spec)
+    tracked = tracking_starts(spec, as_at.zone)
     starts = max(owner_starts, tracked) if tracked else None
     if starts is None or as_at.date < starts:
         when = f"{starts.day} {starts:%B %Y}" if starts else "today"

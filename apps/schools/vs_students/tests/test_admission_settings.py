@@ -587,10 +587,12 @@ class StageMoveTests(_AdmissionFixture):
 
     def test_a_past_view_reads_the_stage_then_and_judges_the_offer_on_that_day(self):
         """Tunde's offer ran to 24 March; the profile read as at the 30th says expired."""
-        from vs_history.as_at import RECORD_DAY_TIMEZONE
+        from zoneinfo import ZoneInfo
+
+        from vs_config.clock import DEFAULT_TIME_ZONE
 
         def recorded(month, day):
-            moment = dt.datetime(2026, month, day, 10, tzinfo=RECORD_DAY_TIMEZONE)
+            moment = dt.datetime(2026, month, day, 10, tzinfo=ZoneInfo(DEFAULT_TIME_ZONE))
             return mock.patch("vs_history.recorder.timezone.now", return_value=moment)
 
         stages = self.standard_stages()

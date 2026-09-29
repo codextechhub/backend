@@ -37,8 +37,9 @@ from .models import OrgNode, PlatformStaffProfile, Position, PositionAssignment,
 _MAX_DEPTH = 12
 
 
-def profile_history_starts(profile_pk):
-    return history_starts(spec_for(PlatformStaffProfile), profile_pk)
+def profile_history_starts(profile_pk, zone):
+    """The first day, in *zone*, the profile can be read as at, or ``None``."""
+    return history_starts(spec_for(PlatformStaffProfile), profile_pk, zone)
 
 
 def profile_at(profile, as_at: AsAt):
@@ -59,7 +60,7 @@ def profile_at(profile, as_at: AsAt):
     )
     if photo_retired:
         record.profile_photo = None
-    org_starts = organisation_starts()
+    org_starts = organisation_starts(as_at.zone)
     _install_organisation(record, profile.user_id, as_at, org_starts)
     meta = {
         "date": as_at.date.isoformat(),
@@ -70,10 +71,10 @@ def profile_at(profile, as_at: AsAt):
     return record, meta
 
 
-def organisation_starts():
-    """The first day both seats and units can be read as at, or ``None``."""
-    seats = tracking_starts(spec_for(Position))
-    units = tracking_starts(spec_for(OrgNode))
+def organisation_starts(zone):
+    """The first day, in *zone*, both seats and units can be read as at, or ``None``."""
+    seats = tracking_starts(spec_for(Position), zone)
+    units = tracking_starts(spec_for(OrgNode), zone)
     return max(seats, units) if seats and units else None
 
 

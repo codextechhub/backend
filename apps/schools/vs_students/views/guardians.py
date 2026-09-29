@@ -386,7 +386,7 @@ class GuardianDetailView(StudentsViewMixin, APIView):
         )
 
     def get(self, request, pk):
-        from vs_history.as_at import parse_as_at
+        from vs_history.as_at import parse_as_at, request_zone
 
         from .. import as_at as past
 
@@ -421,7 +421,7 @@ class GuardianDetailView(StudentsViewMixin, APIView):
                 student__in=wards, is_active=True,
             ).select_related("school_class")
         }
-        starts = past.guardian_history_starts(guardian.pk)
+        starts = past.guardian_history_starts(guardian.pk, request_zone(request))
         return success_response(data={
             **GuardianSerializer(guardian, context={"request": request}).data,
             "history_starts": starts.isoformat() if starts else None,

@@ -11,9 +11,9 @@ from datetime import timedelta
 
 from django.core.management import call_command
 from django.test import TestCase
-from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 
+from vs_config.clock import tenant_today
 from vs_user.models import (
     OrgNode, Position, PositionAssignment, User,
 )
@@ -117,7 +117,7 @@ class HierarchyTests(OrganogramFixtureMixin, TestCase):
 class TaskStatusTests(OrganogramFixtureMixin, TestCase):
     def setUp(self):
         self.build_org()
-        self.today = timezone.localdate()
+        self.today = tenant_today(self.member.tenant)
 
     def test_status_derivation(self):
         done = Task.objects.create(
@@ -147,7 +147,7 @@ class TaskStatusTests(OrganogramFixtureMixin, TestCase):
 class TaskServiceTests(OrganogramFixtureMixin, TestCase):
     def setUp(self):
         self.build_org()
-        self.today = timezone.localdate()
+        self.today = tenant_today(self.member.tenant)
 
     def test_self_set_task_has_no_assigned_by(self):
         task = tasks_svc.create_task(
@@ -186,7 +186,7 @@ class ReviewRequestDispatchTests(OrganogramFixtureMixin, TestCase):
 
     def setUp(self):
         self.build_org()
-        self.today = timezone.localdate()
+        self.today = tenant_today(self.member.tenant)
         from vs_notifications.services.seed import (
             seed_event_types, seed_notification_templates,
         )
@@ -291,7 +291,7 @@ class ReviewRequestDispatchTests(OrganogramFixtureMixin, TestCase):
 class DashboardTests(OrganogramFixtureMixin, TestCase):
     def setUp(self):
         self.build_org()
-        self.today = timezone.localdate()
+        self.today = tenant_today(self.member.tenant)
         # member: 1 done, 1 open; head: 1 open
         Task.objects.create(assignee=self.member, title="m1", deadline=self.today, is_done=True)
         Task.objects.create(assignee=self.member, title="m2", deadline=self.today)

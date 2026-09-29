@@ -256,7 +256,7 @@ class PlatformStaffProfileViewSet(
         of that day, plus an ``as_at`` block (``vs_user.as_at``). The live
         profile carries ``history_starts``, the earliest day it can be read at.
         """
-        from vs_history.as_at import parse_as_at
+        from vs_history.as_at import parse_as_at, request_zone
 
         from .. import as_at as past
 
@@ -280,7 +280,7 @@ class PlatformStaffProfileViewSet(
         )
         if as_at is None:
             data = serializer_class(profile, context=self.get_serializer_context()).data
-            starts = past.profile_history_starts(profile.pk)
+            starts = past.profile_history_starts(profile.pk, request_zone(request))
             data['history_starts'] = starts.isoformat() if starts else None
         else:
             record, meta = past.profile_at(profile, as_at)

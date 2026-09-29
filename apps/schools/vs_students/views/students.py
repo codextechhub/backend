@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 
 from core.response import success_response
 from core.search import search as core_search
-from vs_history.as_at import parse_as_at
+from vs_history.as_at import parse_as_at, request_zone
 from vs_audit.models import AuditActionType
 from vs_audit.services import emit_audit_event
 from vs_audit.models import AuditModuleKey
@@ -298,7 +298,7 @@ class StudentDetailView(StudentsViewMixin, generics.RetrieveUpdateAPIView):
         as_at = parse_as_at(request)
         if as_at is None:
             data = self.get_serializer(student).data
-            starts = past.student_history_starts(student.pk)
+            starts = past.student_history_starts(student.pk, request_zone(request))
             data["history_starts"] = starts.isoformat() if starts else None
             return success_response("Student retrieved.", data=data)
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from unittest import mock
 
+from vs_config.clock import tenant_today
 from vs_rbac.models import PermissionScope
 from vs_rbac.tests.helpers import (
     make_assignment,
@@ -25,8 +26,12 @@ from .base import StudentsFixture
 
 
 def years_ago(years, *, month=1, day=15):
-    """A birth date that makes a child *years* old by calendar year."""
-    return dt.date(dt.date.today().year - years, month, day)
+    """A birth date that makes a child *years* old by calendar year.
+
+    The year is the platform's, which every school in these tests keeps, so
+    the age matches the one the school's own clock gives on New Year's Eve.
+    """
+    return dt.date(tenant_today(None).year - years, month, day)
 
 
 class _SettingsFixture(StudentsFixture):
