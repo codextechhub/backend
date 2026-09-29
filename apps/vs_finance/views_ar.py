@@ -1898,8 +1898,9 @@ class _RefundActionBase(_FinanceBase):
     # Support the refund workflow.
     def _refund(self, request, pk):
         entity = resolve_entity(request)
-        refund = _refund_scope(request).filter(
-            Refund.objects.filter(entity=entity, pk=pk)).first()
+        # Exclusive, as _refund_scope: branch-bound readers never reach unbranched money.
+        refund = Refund.objects.filter(
+            branch_q(request, include_shared=False), entity=entity, pk=pk).first()
         if refund is None:
             raise NotFound("Refund not found for this entity.")
         return entity, refund
