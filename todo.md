@@ -614,6 +614,70 @@ MUST SAY:
   closing period is decided and is next (the full-year income statement reads zero
   until then).
 
+### D78. Settings, Display: a school's date format and clock, and a branch keeps its own time zone (03bc11e1, 724d624d, 84e43b78, 7b041944, 3634a4c5, 2026-09-29)
+MODULES: M01 school and branch management (settings), M06 configuration and
+capability, M03 identity (the login and /me tenant block), M11 student
+management, M12 staff management, M14 calendar and timetables, M13 academic
+structure (overview), M17 billing and invoicing, M18 payments and collections,
+M19 finance and accounting, M20 adjustments and concessions, M22 procurement,
+M05 audit (dashboard), MRD. Supersedes D53's "a school keeps one calendar, not
+branch" and its "procurement and student dates are still on the UTC day".
+Full contract in docs/schools/school_settings.md section 5 and
+docs/config/config_tenant_clock.md.
+- Two school settings (vs_config 0014, seed_config_catalogue), platform and
+  school scope: display.date_format D_MMM_YYYY ("29 Sep 2026", default) |
+  DD_MM_YYYY | YYYY_MM_DD, no month-first format; display.clock H12 ("8:00 am",
+  default) | H24. display.timezone gains branch scope: the school's zone is the
+  default, a branch may keep its own.
+- GET /v1/i/me/settings/display/ adds date_format, date_format_options,
+  clock, clock_options and branches [{id, name, timezone, source branch|school}]
+  (the reader's branches; none at a one-branch school). ?branch=<id> answers
+  {branch, timezone, source, options}.
+- PATCH without a branch takes any of timezone, date_format, clock (at least
+  one) and reason, whole-school caller (else 403 SHARED_RECORD_READ_ONLY "Only a
+  school-wide administrator can change the school's display settings. Choose
+  one of your branches to set its own time zone."), all or nothing, one
+  config.value.updated per value. PATCH ?branch= {timezone, reason} sets the
+  branch's zone for a caller covering that branch ("<Branch> keeps its own time
+  zone."); DELETE ?branch= removes it ("<Branch> follows the school's time zone
+  again.", config.value.cleared). 404 "No such branch at this school." for an
+  unknown, foreign or out-of-reach branch. 400s keyed on the field, in
+  sentences: bad zone, bad format, bad clock, nothing sent, format or clock
+  sent for a branch, a branch zone at a one-branch school, DELETE with no
+  branch. Live schools only for every value (TENANT_NOT_LIVE), unchanged.
+- The login response and /me tenant block carry display {time_zone,
+  date_format, clock, branch_zones {"<id>": "<zone>"}} for every signed-in
+  member, no key needed; the platform tenant carries the platform values.
+- BEHAVIOUR: anything belonging to a branch reads that branch's day: student
+  enrolment, applicant, placement, promotion and status dates, age and the
+  offer expiry flag, the student import's dates; staff event and exit dates,
+  appointments, tenure, leave running or Completed; the calendar hub and
+  academic overview through a ?branch= lens; invoices from a fee run with no
+  date (each family's branch), overdue buckets and customer overdue status,
+  opening balances, payment plan overdue, dunning reminders and summary, petty
+  cash, bank reconciliation, journal reversal and direct entry defaults;
+  quotations, RFQ deadlines, awarded orders, stock movements, restock
+  requisitions, vendor bill overdue, vendor payment reversals; gateway receipts
+  and payouts. The fiscal calendar, reports, dashboards, the dunning run,
+  contracts, subscriptions and document numbers stay on the school's day. A
+  school whose branches share its zone sees no change.
+- FIX: the audit dashboard's daily series and critical heatmap count in the
+  reader's tenant zone, not UTC. A new school's default subscription expiry is
+  a year from the school's today, not the server's.
+MUST SAY: M01 the display settings contract, keys, every refusal and the
+tenant display block; M06 the two definitions and branch scope on the time
+zone; M03 the display block on login and /me; in M11, M12, M14, M13, M17, M18,
+M19, M20 and M22 the rule "a record belonging to a branch follows that branch's
+day, the school's zone unless the branch keeps its own" wherever D53's rule
+is written, and the school-wide exceptions (fiscal calendar, reports, dunning
+run); M05 the dashboard's zone. MRD: display preferences and per-branch time
+zones as a capability; as a remaining gap, documents (invoices, receipts,
+PDFs, emails, exports, refusal sentences) still print fixed formats, some on
+the server's UTC clock, and do not follow the school's date format or clock
+(vs_exports render_file_name names a download on the server's UTC day, so its
+file name disagrees with the builder's preview between midnight and 1am
+Lagos).
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
