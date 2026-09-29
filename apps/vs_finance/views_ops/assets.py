@@ -204,6 +204,9 @@ class FixedAssetAcquireView(_FixedAssetActionBase):
 class FixedAssetDepreciateView(_FixedAssetActionBase):
     """POST {up_to_date} - post every due depreciation charge up to a date.
 
+    A charge dated in a closed fiscal year is left unposted and listed under
+    ``skipped_charges``; the later charges still post.
+
     docstring-name: Run depreciation
     """
 
@@ -221,10 +224,12 @@ class FixedAssetDepreciateView(_FixedAssetActionBase):
             actor_user=request.user,
         )
         asset.refresh_from_db()
-        return success_response(
-            f"Posted {len(posted)} depreciation charge(s) for {asset.name}.",
-            data=FixedAssetSerializer(asset).data,
-        )
+        data = dict(FixedAssetSerializer(asset).data)
+        data["skipped_charges"] = posted.skipped
+        message = f"Posted {len(posted)} depreciation charge(s) for {asset.name}"
+        if posted.skipped:
+            message += f"; skipped {len(posted.skipped)} dated in a closed year"
+        return success_response(f"{message}.", data=data)
 
 
 # Group endpoint behavior for Fixed Asset Run Depreciation View.

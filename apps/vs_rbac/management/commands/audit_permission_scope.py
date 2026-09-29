@@ -52,7 +52,7 @@ from django.urls import URLPattern, URLResolver, get_resolver
 WRITE_VERBS = {
     "create", "update", "delete", "configure", "edit", "import",
     "generate", "post", "approve", "approve_high_value", "approve_senior",
-    "reject", "reverse", "writeoff", "cancel", "close", "lock", "reopen",
+    "reject", "reverse", "writeoff", "cancel", "close", "force_close", "lock", "reopen",
     "settle", "pay", "submit", "send", "email", "email_statement", "allocate",
     "acquire", "activate", "depreciate", "dispose", "establish", "file",
     "reconcile", "replenish", "share", "resolve", "run", "rollback", "assign",

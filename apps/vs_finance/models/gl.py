@@ -373,6 +373,10 @@ class JournalEntry(FinanceDocument):
     A reversal is itself a journal whose ``reverses`` points back at the original and
     whose lines are the mirror image - the audit-friendly way to undo, leaving both
     entries permanently on the record.
+
+    A year-end closing journal names the year it closes in ``closes_fiscal_year``.
+    The year owns it the way an invoice owns its journal: it is reversed only by
+    reopening the year, never on its own from the journal screen.
     """
 
     DOC_TYPE = DocType.JOURNAL
@@ -412,6 +416,13 @@ class JournalEntry(FinanceDocument):
         "self", on_delete=models.PROTECT, related_name="reversed_by",
         null=True, blank=True,
         help_text="Set on a reversing entry; points at the journal it cancels.",
+    )
+    # The fiscal year this entry closes, when it is a year-end closing journal.
+    closes_fiscal_year = models.ForeignKey(
+        FiscalYear, on_delete=models.PROTECT, related_name="closing_journals",
+        null=True, blank=True,
+        help_text="Set on a year-end closing journal; the year owns it, so only "
+                  "reopening the year reverses it.",
     )
 
     class Meta(FinanceDocument.Meta):

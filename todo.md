@@ -580,6 +580,40 @@ from the server clock now read it as the code does.
 MUST SAY: that as-at days and subscription expiry follow the school's zone
 (reference D53's rule).
 
+### D75. A closed year stays closed, closes per branch, and reopens only with a reason (hash pending, 2026-09-29)
+MODULES: M19 finance and accounting, M04 roles and permissions, MRD.
+From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF).
+MUST SAY:
+- The posting guard reads the fiscal year as well as the month: nothing posts into
+  a CLOSED or LOCKED year, including privileged runs. A month of a closed year
+  cannot be reopened ("reopen the fiscal year first").
+- The year-end close is worked out per branch and closed together as one act: one
+  closing journal per branch (JournalEntry.closes_fiscal_year, related name
+  closing_journals; migration vs_finance 0033 back-fills earlier closes). At a
+  one-branch tenant unbranched lines close on the only branch; at a multi-branch
+  tenant the close is refused while income or expense entries have no branch,
+  naming the count. A tenant that owns no branch (CodeX today) closes as one
+  journal. The year close hard-closes every soft-closed month. The response adds
+  closing_journals; closing_journal stays as the first. Helper:
+  vs_finance.branch_ledger.branches_in_year.
+- A closing journal belongs to its year and cannot be reversed by hand. POST
+  /finance/fiscal-years/<id>/reopen/ with a reason (key finance.fiscalyear.reopen,
+  CRITICAL, whole-tenant caller) reverses every closing journal inside the year and
+  reopens it, audited FISCAL_YEAR_REOPENED; a LOCKED year cannot be reopened.
+- Forcing a period or year close needs finance.period.force_close (CRITICAL) and a
+  reason; reopening a period needs a reason. Forced closes record the checks they
+  overrode.
+- Year-close checks: a registry beside the period-close one. Registered: unposted
+  depreciation dated in the year blocks the close unless forced. The depreciation
+  run skips charges dated in a closed year, reports them as skipped_charges, and
+  carries on.
+- Postings and closes serialise: postings take FOR KEY SHARE on the year and month,
+  closes and reopens take FOR UPDATE (year before month), so postings never wait
+  for each other.
+- Needs Attention: the closing journal still sits in the final month; a separate
+  closing period is decided and is next (the full-year income statement reads zero
+  until then).
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

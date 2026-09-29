@@ -125,6 +125,7 @@ RESOURCE_BANDS = {
     ("finance", "fxrate"): CORE,
     ("finance", "taxcode"): CORE,
     ("finance", "period"): CORE,
+    ("finance", "fiscalyear"): CORE,
     ("finance", "journal"): CORE,
     ("finance", "directentry"): CORE,
     ("finance", "customer"): CORE,
@@ -189,10 +190,12 @@ RESOURCE_BANDS = {
 
 ACTION_BANDS = {
     # Closing, locking and reopening a period is the accounting tail rather
-    # than everyday bookkeeping.
+    # than everyday bookkeeping; so are forcing a close and reopening a year.
     ("finance", "period", "close"): ADVANCED,
+    ("finance", "period", "force_close"): ADVANCED,
     ("finance", "period", "lock"): ADVANCED,
     ("finance", "period", "reopen"): ADVANCED,
+    ("finance", "fiscalyear", "reopen"): ADVANCED,
 
     # Sending a customer their whole account position. Emailing one invoice
     # stays Core: a school that cannot send an invoice cannot collect a fee.

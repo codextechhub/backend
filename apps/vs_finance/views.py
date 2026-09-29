@@ -1697,11 +1697,24 @@ class DirectEntryCreateView(APIView):
         )
 
 
+def _is_forced(request) -> bool:
+    """Whether a close request asks to override its checks (``force`` in the body)."""
+    if request.method != "POST":
+        return False
+    body = request.data or {}
+    return bool(body.get("force", False)) if hasattr(body, "get") else False
+
+
 # Group endpoint behavior for Period Close View.
 class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
     """POST /finance/periods/<id>/close/?entity= - run the checklist and close a period.
 
-    Body (all optional): ``{"soft": bool, "force": bool, "run_depreciation": bool}``.
+    Body (all optional): ``{"soft": bool, "force": bool, "run_depreciation": bool,
+    "reason": str}``.
+
+    A forced close overrides the checklist, so it is its own act: it needs
+    ``finance.period.force_close`` rather than the ordinary close key, and a
+    ``reason``, which is stored on the audit row.
 
     docstring-name: Close a fiscal period
     """
@@ -1711,7 +1724,11 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
     @property
     # Handle the rbac permission workflow.
     def rbac_permission(self):
-        return "finance.period.close" if self.request.method == "POST" else "finance.period.view"
+        if self.request.method != "POST":
+            return "finance.period.view"
+        if _is_forced(self.request):
+            return "finance.period.force_close"
+        return "finance.period.close"
 
     # Support the period workflow.
     def _period(self, request, id):
@@ -1749,8 +1766,9 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
         period, checklist = close_period(
             entity, period, actor_user=request.user,
             soft=bool(body.get("soft", False)),
-            force=bool(body.get("force", False)),
+            force=_is_forced(request),
             run_depreciation=bool(body.get("run_depreciation", True)),
+            reason=body.get("reason"),
         )
         return success_response(
             message=f"Period '{period}' closed to {period.status}.",
@@ -1765,7 +1783,9 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
 class PeriodReopenView(_FiscalCalendarWriteMixin, APIView):
     """POST /finance/periods/<id>/reopen/?entity= - re-open a CLOSED/SOFT_CLOSED period.
 
-    A LOCKED period cannot be re-opened; an already-OPEN period is refused.
+    Body: ``{"reason": str}``, required and stored on the audit row. A LOCKED
+    period cannot be re-opened; an already-OPEN period is refused, and so is a
+    period of a CLOSED or LOCKED fiscal year (reopen the year first).
 
     docstring-name: Re-open a fiscal period
     """
@@ -1786,7 +1806,10 @@ class PeriodReopenView(_FiscalCalendarWriteMixin, APIView):
         from .close import reopen_period
 
         entity, period = self._period(request, id)
-        period = reopen_period(entity, period, actor_user=request.user)
+        period = reopen_period(
+            entity, period, actor_user=request.user,
+            reason=(request.data or {}).get("reason"),
+        )
         return success_response(
             message=f"Period '{period}' re-opened to {period.status}.",
             data=FiscalPeriodSerializer(period).data,
@@ -1827,19 +1850,29 @@ class PeriodLockView(_FiscalCalendarWriteMixin, APIView):
 
 # Group endpoint behavior for Fiscal Year Close View.
 class FiscalYearCloseView(_FiscalCalendarWriteMixin, APIView):
-    """POST /finance/fiscal-years/<id>/close/?entity= - post the year-end closing entry.
+    """POST /finance/fiscal-years/<id>/close/?entity= - post the year-end closing entries.
 
-    Zeroes every income/expense account for the year and rolls the net profit or loss
-    into Retained Earnings (3200), then marks the fiscal year CLOSED. Body (optional):
-    ``{"closing_date": ISO, "force": bool}`` - ``force`` closes the year even while some
-    periods are still OPEN. The formal entry may use an OPEN, SOFT_CLOSED or CLOSED
-    final period, but never a permanently LOCKED one.
+    Zeroes every income/expense account for the year, branch by branch, and rolls
+    each branch's net profit or loss into Retained Earnings (3200) on its own closing
+    journal, then marks the fiscal year CLOSED. Body (optional):
+    ``{"closing_date": ISO, "force": bool, "reason": str}`` - ``force`` closes the
+    year even while some periods are still OPEN, needs ``finance.period.force_close``
+    in place of the close key, and needs a ``reason``. The formal entries may use an
+    OPEN, SOFT_CLOSED or CLOSED final period, but never a permanently LOCKED one.
+
+    ``closing_journals`` lists every closing journal; ``closing_journal`` is the
+    first of them (``None`` when there was no P&L activity), for a caller that
+    reads one.
 
     docstring-name: Close a fiscal year
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Tenant-authenticated access.
-    rbac_permission = "finance.period.close"  # Same right that closes periods seals the year.
+
+    @property
+    def rbac_permission(self):
+        # The right that closes periods seals the year; forcing it is its own key.
+        return "finance.period.force_close" if _is_forced(self.request) else "finance.period.close"
 
     # Handle POST requests for this endpoint.
     def post(self, request, id):
@@ -1860,19 +1893,59 @@ class FiscalYearCloseView(_FiscalCalendarWriteMixin, APIView):
                 closing_date = datetime.date.fromisoformat(str(raw_date))
             except ValueError:
                 raise ValidationError({"closing_date": "Expected an ISO date (YYYY-MM-DD)."})
-        entry, net_income = close_fiscal_year(  # Post the closing entry + seal the year.
+        journals, net_income = close_fiscal_year(  # Post the closing entries + seal the year.
             entity, fy, actor_user=request.user, closing_date=closing_date,
-            require_periods_closed=not bool(body.get("force", False)),
+            require_periods_closed=not _is_forced(request),
+            reason=body.get("reason"),
         )
         fy.refresh_from_db()  # Pick up the CLOSED status.
+        serialized = [JournalEntryDetailSerializer(j).data for j in journals]
         return success_response(
             message=f"Fiscal year {fy.year} closed.",
             data={
                 "fiscal_year": FiscalYearSerializer(fy).data,  # The sealed year.
-                "closing_journal": (  # The closing journal (None when no P&L activity).
-                    JournalEntryDetailSerializer(entry).data if entry is not None else None
-                ),
+                "closing_journals": serialized,  # One per branch with P&L activity.
+                "closing_journal": serialized[0] if serialized else None,
                 "net_income": _money(net_income),  # Net result rolled to equity.
+            },
+        )
+
+
+# Group endpoint behavior for Fiscal Year Reopen View.
+class FiscalYearReopenView(_FiscalCalendarWriteMixin, APIView):
+    """POST /finance/fiscal-years/<id>/reopen/?entity= - reopen a CLOSED fiscal year.
+
+    Reverses every closing journal of the year inside the year, on its own date,
+    and sets the year back to OPEN so a month can be corrected and the year closed
+    again. Body: ``{"reason": str}``, required and stored on the audit row.
+
+    Reopening a year moves a whole year's result out of Retained Earnings, so it
+    has its own key, ``finance.fiscalyear.reopen``, and like every write to the
+    fiscal calendar it needs whole-tenant reach. A LOCKED year cannot be reopened.
+
+    docstring-name: Reopen a fiscal year
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.fiscalyear.reopen"
+
+    def post(self, request, id):
+        from .close import reopen_fiscal_year
+        from .models import FiscalYear
+
+        entity = resolve_entity(request)
+        fy = FiscalYear.objects.filter(entity=entity, id=id).first()
+        if fy is None:
+            raise NotFound("Fiscal year not found for this entity.")
+        fy, reversals = reopen_fiscal_year(
+            entity, fy, actor_user=request.user,
+            reason=(request.data or {}).get("reason"),
+        )
+        return success_response(
+            message=f"Fiscal year {fy.year} re-opened.",
+            data={
+                "fiscal_year": FiscalYearSerializer(fy).data,
+                "reversals": [JournalEntryDetailSerializer(r).data for r in reversals],
             },
         )
 

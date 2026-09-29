@@ -31,6 +31,11 @@ class VsFinanceConfig(AppConfig):
         from .media_policies import register as register_media_policies
 
         register_media_policies()
+        # Finance's own year-close checks, through the registry dependent apps use.
+        from .assets import depreciation_posted_for_year
+        from .close import register_year_close_check
+
+        register_year_close_check(depreciation_posted_for_year)
         from .provisioning import register_entity_provisioner
         from .provisioning_hooks import provision_adjustment_approvals
 

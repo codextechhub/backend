@@ -3817,7 +3817,7 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(period.status, PeriodStatus.CLOSED)
         self.assertIsNotNone(period.closed_at)
 
-        reopen_period(entity, jan)
+        reopen_period(entity, jan, reason="Late supplier invoice for January.")
         jan.refresh_from_db()
         self.assertEqual(jan.status, PeriodStatus.OPEN)
         self.assertIsNone(jan.closed_at)
@@ -3828,7 +3828,7 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(jan.status, PeriodStatus.LOCKED)
         # A LOCKED period cannot be reopened.
         with self.assertRaises(PeriodCloseError):
-            reopen_period(entity, jan)
+            reopen_period(entity, jan, reason="Late supplier invoice for January.")
 
     # Verify reopen closed period returns to open behavior.
     def test_reopen_closed_period_returns_to_open(self):
@@ -3837,7 +3837,7 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
         close_period(entity, jan)
         jan.refresh_from_db()
         self.assertEqual(jan.status, PeriodStatus.CLOSED)
-        reopen_period(entity, jan)
+        reopen_period(entity, jan, reason="Bank charge missed in January.")
         jan.refresh_from_db()
         self.assertEqual(jan.status, PeriodStatus.OPEN)
 
@@ -3875,7 +3875,7 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
         close_period(entity, jan)
         lock_period(entity, jan)
         with self.assertRaises(PeriodCloseError):
-            reopen_period(entity, jan)
+            reopen_period(entity, jan, reason="Bank charge missed in January.")
 
     # Verify soft close allows depreciation auto posting behavior.
     def test_soft_close_allows_depreciation_auto_posting(self):
@@ -3898,7 +3898,9 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
         jan.refresh_from_db()
         self.assertEqual(jan.status, PeriodStatus.OPEN)
         # Forcing over the failure closes it anyway.
-        period, checklist = close_period(entity, jan, force=True)
+        period, checklist = close_period(
+            entity, jan, force=True, reason="AR mismatch is a known import gap.",
+        )
         self.assertEqual(period.status, PeriodStatus.CLOSED)
         self.assertFalse(checklist.passed)
 
@@ -6181,7 +6183,8 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(closed.status_code, 200, closed.content)
         # Re-open the closed period back to OPEN.
         reopened = self.client.post(
-            f"/v1/finance/periods/{pid}/reopen/?entity={ec}", data={}, format="json")
+            f"/v1/finance/periods/{pid}/reopen/?entity={ec}",
+            data={"reason": "Correct a misposted receipt."}, format="json")
         self.assertEqual(reopened.status_code, 200, reopened.content)
         self.assertEqual(reopened.json()["data"]["status"], PeriodStatus.OPEN)
         # Close again, then lock it (permanently sealed).
@@ -9602,12 +9605,12 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         post_journal(self.make_entry(entity, jan, [("5200", 40000, 0), ("1100", 0, 40000)]))
         self._soft_close(jan)
 
-        entry, net_income = close_fiscal_year(
+        journals, net_income = close_fiscal_year(
             entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
 
-        self.assertIsNotNone(entry)
+        self.assertEqual(len(journals), 1)
         self.assertEqual(net_income, 60000)
-        self.assertEqual(entry.source, "CLOSING")
+        self.assertEqual(journals[0].source, "CLOSING")
         jan.fiscal_year.refresh_from_db()
         self.assertEqual(jan.fiscal_year.status, PeriodStatus.CLOSED)
         # P&L accounts now read flat; the ₦600 net sits in Retained Earnings.
@@ -9629,11 +9632,11 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         jan.status = PeriodStatus.CLOSED
         jan.save(update_fields=["status"])
 
-        entry, net_income = close_fiscal_year(
+        journals, net_income = close_fiscal_year(
             entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31),
         )
 
-        self.assertIsNotNone(entry)
+        self.assertEqual(len(journals), 1)
         self.assertEqual(net_income, 100000)
         jan.refresh_from_db()
         self.assertEqual(jan.status, PeriodStatus.CLOSED)
@@ -9647,7 +9650,7 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         post_journal(self.make_entry(entity, jan, [("5200", 100000, 0), ("1100", 0, 100000)]))
         self._soft_close(jan)
 
-        entry, net_income = close_fiscal_year(
+        _journals, net_income = close_fiscal_year(
             entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
 
         self.assertEqual(net_income, -60000)
@@ -9675,9 +9678,9 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         with self.assertRaises(PeriodCloseError):
             close_fiscal_year(entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
         # force posts into the still-open period and seals the year.
-        entry, net = close_fiscal_year(
+        _journals, net = close_fiscal_year(
             entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31),
-            require_periods_closed=False)
+            require_periods_closed=False, reason="Auditors need the year sealed today.")
         self.assertEqual(net, 100000)
         jan.fiscal_year.refresh_from_db()
         self.assertEqual(jan.fiscal_year.status, PeriodStatus.CLOSED)
@@ -9689,9 +9692,9 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         # Only a balance-sheet entry (capital injection) - no income/expense.
         post_journal(self.make_entry(entity, jan, [("1100", 500000, 0), ("3100", 0, 500000)]))
         self._soft_close(jan)
-        entry, net = close_fiscal_year(
+        journals, net = close_fiscal_year(
             entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
-        self.assertIsNone(entry)
+        self.assertEqual(journals, [])
         self.assertEqual(net, 0)
         jan.fiscal_year.refresh_from_db()
         self.assertEqual(jan.fiscal_year.status, PeriodStatus.CLOSED)
