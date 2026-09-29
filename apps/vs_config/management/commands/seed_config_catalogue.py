@@ -410,19 +410,35 @@ SCHOOL_SCOPED_DEFINITIONS = [
     (
         "display.timezone", "Time Zone",
         "The IANA time zone this school keeps its calendar in, such as "
-        "Africa/Lagos. It decides which day \"today\" is for due dates, "
-        "overdue checks, attendance and the calendar, and the local time shown "
-        "on documents. The platform value is the default for every school.",
+        "Africa/Lagos. It decides which day \"today\" is for due dates, overdue "
+        "checks, attendance and the calendar. A branch in another zone may keep "
+        "its own, and anything belonging to that branch then follows the "
+        "branch's day. The platform value is the default for every school.",
         "STRING", "Africa/Lagos", {},
+    ),
+    (
+        "display.date_format", "Date Format",
+        "How the school's screens write a date: D_MMM_YYYY (29 Sep 2026), "
+        "DD_MM_YYYY (29/09/2026) or YYYY_MM_DD (2026-09-29).",
+        "CHOICE", "D_MMM_YYYY",
+        {"choices": ["D_MMM_YYYY", "DD_MM_YYYY", "YYYY_MM_DD"]},
+    ),
+    (
+        "display.clock", "Clock",
+        "How the school's screens write a time of day: H12 (8:00 am) or H24 "
+        "(08:00).",
+        "CHOICE", "H12", {"choices": ["H12", "H24"]},
     ),
 ]
 
 #: School-scoped settings a BRANCH may also hold its own value of. Named here
 #: rather than widened for every school setting, because most of them are
 #: facts about the school that a branch answering differently would contradict.
-#: A branch's admission-number rule replaces the school's for its students, and
-#: its staff-number rule the school's for the staff posted there.
+#: A branch's admission-number rule replaces the school's for its students, its
+#: staff-number rule the school's for the staff posted there, and its time zone
+#: the school's for everything that belongs to it.
 BRANCH_OVERRIDABLE = frozenset({
+    "display.timezone",
     "students.admission_number.required",
     "students.admission_number.pattern",
     "students.admission_number.hint",
