@@ -2,8 +2,8 @@
 
 **Every literal segment is declared before ``<int:pk>``.** Django tries patterns
 in list order, so ``posting/``, ``roster/``, ``search/``, ``roles/bulk/``,
-``teaching/coverage/``, ``organogram/`` and the four child-detail prefixes
-would each be swallowed by the pk pattern and answer a confusing 404 about a
+``rules/``, ``number-policy/``, ``teaching/coverage/``, ``organogram/`` and the
+four child-detail prefixes would each be swallowed by the pk pattern and answer a confusing 404 about a
 person who does not exist. The same trap inside ``teaching/`` is why
 ``coverage/`` and ``class-teacher/`` precede ``<int:pk>/`` there too, and inside
 ``organogram/`` why ``tree/``, ``vacancies/``, ``current/`` and ``mine/`` do.
@@ -52,6 +52,7 @@ from .views.records import (
     QualificationListCreateView,
 )
 from .views.roles import StaffRolesView
+from .views.settings import StaffNumberPolicyView, StaffRulesView
 from .views.teaching import (
     ClassTeacherView,
     StaffTeachingView,
@@ -66,6 +67,11 @@ urlpatterns = [
     path("search/", StaffSearchView.as_view(), name="staff-search"),
     path("mine/", StaffMineView.as_view(), name="staff-mine"),
     path("roles/bulk/", StaffBulkRoleView.as_view(), name="staff-bulk-role"),
+    path("rules/", StaffRulesView.as_view(), name="staff-rules"),
+    path(
+        "number-policy/", StaffNumberPolicyView.as_view(),
+        name="staff-number-policy",
+    ),
 
     path(
         "teaching/coverage/", TeachingCoverageView.as_view(),

@@ -47,6 +47,14 @@ class StaffLeaveView(StaffViewMixin, APIView):
 
     ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
 
+    GET carries the person's requests, ``days_taken`` across every session,
+    and ``balances`` for one session: every leave type's ``allowance``,
+    ``taken``, ``pending`` and ``remaining`` (``services.leave.balances``).
+    The session is the one covering today (or the as-at day), falling back to
+    the school's active session, or the one named by ``?session=<id>``, which
+    must be this school's. ``balance_session`` names it, and is null with
+    ``balances`` empty where the school has no session to count against.
+
     docstring-name: A staff member's leave
     """
 
@@ -90,25 +98,56 @@ class StaffLeaveView(StaffViewMixin, APIView):
         staff, _access, admission = self.admit_profile_read(pk)
         as_at = parse_as_at(request)
         self.refuse_as_at_unless_full(as_at, admission)
+        session = self._balance_session(staff, as_at.date if as_at else None)
         if as_at is None:
             rows = staff.leave_requests.select_related("requested_by", "staff__user")
             days_taken = leave_service.days_taken(staff)
+            counted = None
         else:
             record, children, _meta = past.staff_at(staff, as_at)
             rows = sorted(children["leave_requests"], key=lambda row: row.start_date, reverse=True)
             for row in rows:
                 row.staff = record
             days_taken = past.days_taken_at(rows)
+            counted = rows
         return success_response(data={
             "leave": LeaveSerializer(rows, many=True, context={"as_at": as_at}).data,
             "days_taken": days_taken,
-            # Said explicitly, because a screen that shows days taken beside
-            # nothing else will be asked for a balance, and there is none.
+            "balances": (
+                leave_service.balances(staff, session, rows=counted)
+                if session is not None else []
+            ),
+            "balance_session": (
+                {
+                    "id": session.pk, "name": session.name,
+                    "start_date": session.start_date, "end_date": session.end_date,
+                }
+                if session is not None else None
+            ),
             "balance_note": (
-                "Days taken, counted from approved requests. There is no "
-                "balance: nothing records an entitlement to count against."
+                "Allowances are per academic session, set in Settings, Staff. "
+                "Taken counts approved leave and pending counts leave waiting "
+                "for a decision; remaining is the allowance less both. A type "
+                "with no allowance has no limit."
             ),
         })
+
+    def _balance_session(self, staff, on_date):
+        """The session the balances count: named, covering the day, or active."""
+        from schools.vs_academics.models import AcademicSession
+        from vs_config.clock import tenant_today
+
+        raw = (self.request.query_params.get("session") or "").strip()
+        if raw:
+            session = (
+                AcademicSession.all_objects.filter(tenant=self.tenant, pk=raw).first()
+                if raw.isdigit() else None
+            )
+            if session is None:
+                raise NotFound("No such session at this school.")
+            return session
+        day = on_date or tenant_today(self.tenant)
+        return leave_service.leave_session(staff, day) or self.active_session
 
     def post(self, request, pk):
         staff = self.get_staff_for_write(pk)

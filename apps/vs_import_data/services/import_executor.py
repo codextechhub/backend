@@ -169,15 +169,20 @@ def import_staff_row(import_batch, payload: dict, queued_by) -> ImportExecutionR
     # happened. One message for both would tell a school it had emailed people
     # it deliberately held back.
     name = f"{row.first_name} {row.last_name}"
+    if profile.employment_status == "PENDING_APPROVAL":
+        message = f"{name} added. Their invitation waits for the hire to be approved."
+    elif row.send_invitation:
+        message = f"{name} invited."
+    else:
+        message = (
+            f"{name} added. No invitation email was sent, so they can be "
+            f"invited later."
+        )
     return ImportExecutionResult(
         action=ImportRowActionChoices.CREATE,
         instance=profile,
         target_model="StaffProfile",
-        message=(
-            f"{name} invited." if row.send_invitation
-            else f"{name} added. No invitation email was sent, so they can be "
-                 f"invited later."
-        ),
+        message=message,
     )
 
 

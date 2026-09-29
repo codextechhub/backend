@@ -265,6 +265,77 @@ SCHOOL_SCOPED_DEFINITIONS = [
         {"choices": ["FOLLOW_ENROLMENT", "WARN", "HARD", "OFF"]},
     ),
     (
+        "staff.number.required", "Staff Number Required",
+        "Whether every new member of staff must be given a staff number, on "
+        "the Add form, on the import and when an edit would blank one.",
+        "BOOLEAN", False, {},
+    ),
+    (
+        "staff.number.pattern", "Staff Number Pattern",
+        "A regular expression every new staff number must match. Anchored by "
+        "the server, so it cannot match part of a longer number. Empty means "
+        "any shape is accepted.",
+        "STRING", "", {},
+    ),
+    (
+        "staff.number.hint", "Staff Number Hint",
+        "The sentence shown under the staff number field, and quoted "
+        "verbatim when a number is refused.",
+        "STRING", "", {},
+    ),
+    (
+        "staff.number.auto_issue", "Issue Staff Numbers Automatically",
+        "Whether a member of staff added with no staff number is given the "
+        "next number in the school's series, or the branch's where the "
+        "branch has its own rule. A number once held is never issued again.",
+        "BOOLEAN", False, {},
+    ),
+    (
+        "staff.starting_role", "Starting Role For New Staff",
+        "The key of the role every member of staff added at a live school "
+        "starts with. It must be one of the school's active roles.",
+        "STRING", "teacher", {},
+    ),
+    (
+        "staff.documents.required", "Required Staff Documents",
+        "The document types this school expects on every staff record. A "
+        "record missing one is flagged; nothing is refused.",
+        "JSON", [], {},
+    ),
+    (
+        "staff.self_editable_fields", "Fields Staff May Edit Themselves",
+        "The details a member of staff may change on their own record. The "
+        "staff number, job title, employment type, hire and exit dates, "
+        "email and posting are never among them.",
+        "JSON", ["middle_name", "date_of_birth", "photo", "phone"], {},
+    ),
+    (
+        "staff.hire.requires_approval", "Approve New Staff Before Inviting",
+        "Whether a member of staff added at this school waits for the New "
+        "staff approval ladder before their invitation is sent.",
+        "BOOLEAN", False, {},
+    ),
+    (
+        "staff.leave.allowances", "Leave Allowances",
+        "Days of each leave type a member of staff may take in one academic "
+        "session, keyed by leave type. A type left out has no limit. Leave "
+        "past its allowance is still filed, marked for the approver.",
+        "JSON", {}, {},
+    ),
+    (
+        "staff.leave.working_days", "Working Days For Leave",
+        "The weekdays a leave request counts, as ISO numbers (Monday is 1, "
+        "Sunday is 7).",
+        "JSON", [1, 2, 3, 4, 5], {},
+    ),
+    (
+        "staff.leave.exclude_closures", "Leave Skips School Closures",
+        "Whether a day the school calendar closes the school, at the "
+        "person's branch or school-wide, is left out of a leave request's "
+        "count.",
+        "BOOLEAN", True, {},
+    ),
+    (
         "display.timezone", "Time Zone",
         "The IANA time zone this school keeps its calendar in, such as "
         "Africa/Lagos. It decides which day \"today\" is for due dates, "
@@ -277,12 +348,17 @@ SCHOOL_SCOPED_DEFINITIONS = [
 #: School-scoped settings a BRANCH may also hold its own value of. Named here
 #: rather than widened for every school setting, because most of them are
 #: facts about the school that a branch answering differently would contradict.
-#: A branch's admission-number rule replaces the school's for its students.
+#: A branch's admission-number rule replaces the school's for its students, and
+#: its staff-number rule the school's for the staff posted there.
 BRANCH_OVERRIDABLE = frozenset({
     "students.admission_number.required",
     "students.admission_number.pattern",
     "students.admission_number.hint",
     "students.admission_number.auto_issue",
+    "staff.number.required",
+    "staff.number.pattern",
+    "staff.number.hint",
+    "staff.number.auto_issue",
 })
 
 #: The modules a school is sold. Every school is granted every one of them;

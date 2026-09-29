@@ -22,14 +22,6 @@ from rest_framework.exceptions import ValidationError
 
 from ..constants import PERM_ROLES_ASSIGN  # noqa: F401  (the view's key, named here)
 
-#: The role every member of staff added at a live school starts with.
-#:
-#: Adding somebody and deciding what they may reach are two different jobs held
-#: by two different people: the key that adds staff is not the key that assigns
-#: roles. So the add path grants this one baseline role and nothing else, and
-#: anything wider or narrower is a role admin's change afterwards. Matched on
-#: the KEY, because the name is the school's to rename and the key is not.
-STARTING_ROLE_KEY = "teacher"
 
 #: The only roles a school may hand out before it goes live.
 #:
@@ -176,15 +168,24 @@ def resolve_role(tenant, key_or_id, *, onboarding_keys=None):
 
 
 def find_starting_role(tenant):
-    """This school's active starting role, or ``None`` where it has none."""
+    """This school's active starting role, or ``None`` where it has none.
+
+    The starting role is the school's choice (``staff.starting_role``, default
+    ``teacher``). Adding somebody and deciding what they may reach are two jobs
+    held by two people: the key that adds staff is not the key that assigns
+    roles. So the add path grants this one baseline role and nothing else, and
+    anything wider or narrower is a role admin's change afterwards.
+    """
     from vs_rbac.models import TenantRoleTemplate
 
+    from .rules import starting_role_key
+
     return TenantRoleTemplate.objects.filter(
-        tenant=tenant, status="ACTIVE", key=STARTING_ROLE_KEY,
+        tenant=tenant, status="ACTIVE", key=starting_role_key(tenant),
     ).first()
 
 
-def starting_role(tenant, *, requested=""):
+def starting_role(tenant, *, requested="", actor=None):
     """The role a new member of staff at a live school is granted.
 
     ``requested`` is whatever the caller sent as ``role``. Naming the starting
@@ -192,23 +193,47 @@ def starting_role(tenant, *, requested=""):
     replaced, so a client still offering a role picker learns that the choice
     is not its to make instead of believing it was honoured.
 
-    A school that has retired its Teacher role cannot add anybody until it is
-    restored, and is told so, rather than creating accounts that sign in and
-    reach nothing.
+    A school whose starting role is no longer active cannot add anybody until
+    it is restored or another is chosen, and is told so by the role's own name,
+    rather than creating accounts that sign in and reach nothing.
+
+    The starting role is never a way round the grant ceiling. Where it carries
+    restricted permissions *actor* does not hold, the add is refused with a 403
+    naming the role, because the only other outcome is an account holding a
+    restricted grant nobody entitled to give it approved.
     """
+    from rest_framework.exceptions import PermissionDenied
+    from vs_rbac.models import TenantRoleTemplate
+
+    from .rules import starting_role_key
+
+    key = starting_role_key(tenant)
     role = find_starting_role(tenant)
     if role is None:
+        named = TenantRoleTemplate.objects.filter(tenant=tenant, key=key).first()
+        name = named.name if named is not None else key
         raise ValidationError({
             "role": (
-                "This school has no active Teacher role, which every new member "
-                "of staff starts with. Restore it in Roles & Permissions first."
+                f"This school has no active {name} role, which every new member "
+                f"of staff starts with. Restore it in Roles & Permissions, or "
+                f"choose another starting role in Settings, Staff."
             ),
         })
     if requested not in ("", None, role.key, str(role.pk)):
         raise ValidationError({
             "role": (
-                "New staff start as Teacher. Other roles are given from Roles "
-                "& Permissions once they are added."
+                f"New staff start as {role.name}. Other roles are given from "
+                f"Roles & Permissions once they are added."
             ),
         })
+    if actor is not None:
+        from vs_rbac.services import grant_needs_approval
+
+        if grant_needs_approval(actor, role):
+            raise PermissionDenied(
+                f"New staff start as {role.name}, which carries restricted "
+                f"permissions you do not hold, so you cannot add staff. Ask an "
+                f"administrator who holds them, or choose another starting role "
+                f"in Settings, Staff.",
+            )
     return role

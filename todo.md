@@ -1474,6 +1474,75 @@ MUST SAY:
   "worker not deployed" gap against the deployment and retire it if it no longer
   holds.
 
+### D71. Settings, Staff: a school's own staff rules, and hires approved before they are invited (be002879, 2026-09-29)
+MODULES: M12 staff management, M06 configuration and capability, M07 workflow
+and approval engine, M10 bulk data import, M04 roles and permissions, M14
+calendar (read only), MRD.
+Eleven school settings (vs_staff 0009, seed_config_catalogue), read under
+school.teachers.view, written under school.settings.update and a school-wide
+caller (else 403 SHARED_RECORD_READ_ONLY, nothing written), 400s keyed on the
+field in sentences, audited with an optional reason. Full contract in
+docs/staff-management-api-plan.md section 9.
+- GET, PUT /v1/i/me/staff/rules/: starting_role (+ options), required_documents
+  (+ document_types), self_editable_fields (+ options, locked floor),
+  hire_requires_approval, leave {allowances per type or null, leave_types,
+  working_days ISO 1-7, exclude_closures}. "Staff rules saved." 403 "Only a
+  school-wide administrator can change the school's staff rules."
+- GET, PUT, DELETE /v1/i/me/staff/number-policy/ (?branch=): the admission
+  policy's shape {required, pattern, hint, auto_issue, source, suggestion}; a
+  branch's rule is whole and governs staff whose main posting is that branch.
+  Enforced on the Add form, the PATCH (an echo of the stored number is not
+  re-checked) and the import (staff_number_required, staff_number_format).
+  Auto-issue continues the latest number's trailing digits under a tenant lock
+  and never offers a number any record has held (history read). GET open before
+  go-live. 403 "Only a school-wide administrator can change the school's staff
+  number rule. Choose one of your branches to set its own."
+- Starting role: the Add form grants the school's choice, named in its errors;
+  a role carrying restricted keys the saver (on PUT, when it changes) or the
+  adder (on create, 403) does not hold is refused. Every seeded Teacher carries
+  restricted exports.file.download, so the rule is the grant ceiling.
+- Required documents are a flag: record missing_documents [{type, label}]
+  (records group, null as-at); list ?missing_documents=true and
+  counts.missing_documents, both needing school.staff_records.view.
+- Self-service: the school's list replaces the fixed four; floor staff_number,
+  job_title, employment_type, hire_date, exit_date, email, branch; own record
+  carries self_editable_fields.
+- Leave: allowance per type per academic session (the session covering the
+  start date for the person's main posting). Filing over is allowed:
+  LeaveRequest.over_allowance_by (vs_staff 0010) counts approved and pending
+  leave in the session, OVER_ALLOWANCE warning, shown on the approval card, and
+  a document.over_allowance_by condition field. The leave list adds balances
+  [{leave_type, label, allowance, taken, pending, remaining}] and
+  balance_session, with ?session=.
+- Working days: days default to the school's working weekdays (Mon-Fri) less
+  closes_school events with no audience at the person's branch or school-wide.
+  BEHAVIOUR CHANGE: this replaces the inclusive calendar span for requests filed
+  or re-dated from now; stored counts are never recomputed; days stays
+  overridable; 422 NO_WORKING_DAYS for a range with no counted day.
+- Hire approval: new EmploymentStatus PENDING_APPROVAL "Awaiting approval"
+  (vs_staff 0010), document type schools.staff_hire "New staff member", ladder
+  staff-hire with an empty hire-approvers group (published when the setting is
+  turned on or the first hire is submitted). Add and import send nothing,
+  submit the record, answer "Added. Their invitation is waiting for the hire to
+  be approved." with awaiting_approval. Approve: invitation sent (unless the
+  import row said No), Invited. Reject/withdraw/cancel: Terminated, post
+  released, grants revoked, account REJECTED. Adder approves only when alone on
+  the stage. Resend 422 HIRE_AWAITING_APPROVAL; revoke withdraws the hire.
+  Never during onboarding.
+Defects fixed beside it (aefd1843, bdcbdb41, c659d468): the Add form's docs promised documents it
+never saves (dead attach_documents removed); the staff import ignored the
+onboarding role narrowing and refused a restricted role only at execution (now
+refused at validation with the grant's sentence; no restricted role was ever
+granted without approval).
+MUST SAY: M12 the eleven settings, both routes, their permission and reach
+rules, every refusal, the new status and document type, the leave balance and
+allowance contract, the working-day behaviour change and that stored counts are
+kept; M06 the eleven definitions and that the number keys are branch-scoped;
+M07 the schools.staff_hire type, its ladder, group and self-approval rule, and
+the leave condition field; M10 the staff import's number, approval and role
+rules; M04 that a starting role is held to the grant ceiling. MRD: a school
+runs its own staff rules and can approve hires before they are invited.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

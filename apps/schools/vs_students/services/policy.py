@@ -121,15 +121,10 @@ def compile_pattern(pattern: str):
     that matches a substring of a longer number: ``BFS/2025/0142XYZ`` must fail
     a school whose rule is ``BFS/\\d{4}/\\d{4}``.
     """
-    if not pattern:
-        return None
-    body = pattern
-    if body.startswith("^"):
-        body = body[1:]
-    if body.endswith("$") and not body.endswith("\\$"):
-        body = body[:-1]
+    from core.numbering import anchored_pattern
+
     try:
-        return re.compile(f"^(?:{body})$")
+        return anchored_pattern(pattern)
     except re.error as exc:
         raise InvalidAdmissionPattern(
             f"That pattern is not a valid expression: {exc}.",
@@ -257,12 +252,6 @@ def _definition(key):
     return definition
 
 
-#: Bounded so a pathological roll cannot spin: if twenty consecutive successors
-#: are all taken, the school is not numbering the way this reads it and no
-#: suggestion is better than a wrong one.
-_SUGGEST_TRIES = 20
-
-
 def suggest_number(
     tenant, *, policy: AdmissionPolicy | None = None, branch=None, skip=(),
 ) -> str:
@@ -306,6 +295,8 @@ def suggest_number(
     registrars enrolling at once can be handed the same number. The unique
     constraint is what actually prevents the collision.
     """
+    from core.numbering import split_series, successor
+
     from ..models import Student
 
     policy = policy or read_policy(tenant, branch)
@@ -321,31 +312,18 @@ def suggest_number(
     if not latest:
         return ""
 
-    # Anchored to the END, not merely the last run of digits anywhere. Without
-    # the anchor "BFS/2025/A" matched the YEAR and suggested "BFS/2026/A" - a
-    # confident wrong answer of exactly the kind this function exists to avoid.
-    # A number that does not end in digits has no successor we can read.
-    match = re.search(r"(\d+)$", latest)
-    if match is None:
+    # A number that does not end in digits has no successor to read.
+    parts = split_series(latest)
+    if parts is None:
         return ""
 
-    head, digits = latest[: match.start(1)], match.group(1)
-    compiled = compile_pattern(policy.pattern)
+    head, digits = parts
     # Without case, as the unique constraint compares them.
     taken = {
         n.lower() for n in
         Student.objects.filter(tenant=tenant, student_number__istartswith=head)
         .values_list("student_number", flat=True)
     } | {n.lower() for n in skip}
-
-    value = int(digits)
-    for _ in range(_SUGGEST_TRIES):
-        value += 1
-        # Grow the width only on a real overflow: 0099 -> 0100, not 100.
-        candidate = f"{head}{str(value).zfill(len(digits))}"
-        if candidate.lower() in taken:
-            continue
-        if compiled is not None and not compiled.match(candidate):
-            return ""
-        return candidate
-    return ""
+    return successor(
+        head, digits, taken=taken, compiled=compile_pattern(policy.pattern),
+    )

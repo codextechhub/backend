@@ -359,3 +359,167 @@ Tests per endpoint, security first: 403 without the key, 404 for another
 tenant's row, a PENDING tenant genuinely reaching the open surfaces and refused
 the closed ones, the empty-list shape, and `assertNumQueries` on the directory
 page.
+
+---
+
+## 9. A school's own staff rules (Settings, Staff)
+
+Built after the sections above were written, and reconciled with the code. The
+rules live in `vs_config` (declared by `vs_staff` 0009 and by
+`seed_config_catalogue`), are read through `services/rules.py` and
+`services/number_policy.py`, and every write goes through `set_value` /
+`clear_value`, so each change is in the configuration audit trail with the
+optional `reason`. A value already in force is not written again. **Every
+default is the behaviour a school had before it could choose, except the two
+leave-counting rules** (9.5).
+
+Reading needs `school.teachers.view`. Writing needs `school.settings.update`
+**and** `vs_rbac.scoping.assert_caller_may_configure`: a school-wide rule needs
+a caller whose reach is the whole school; a branch-bound caller holding the key
+gets 403 `SHARED_RECORD_READ_ONLY` and nothing is written. Refusals are 400s
+keyed on the field, in sentences (`error.detail.<field>`).
+
+### 9.1 `GET, PUT /v1/i/me/staff/rules/`
+
+Closed before go-live. Literal segment, declared before `<int:pk>/`.
+
+```json
+{
+  "starting_role": "teacher",
+  "starting_role_options": [{"value": "teacher", "label": "Teacher"}],
+  "required_documents": ["CV"],
+  "document_types": [{"value": "CV", "label": "CV"}],
+  "self_editable_fields": ["phone"],
+  "self_editable_options": [{"value": "phone", "label": "Phone"}],
+  "self_editable_locked": [{"value": "staff_number", "label": "Staff ID"}],
+  "hire_requires_approval": false,
+  "leave": {
+    "allowances": {"ANNUAL": 20, "SICK": null},
+    "leave_types": [{"value": "ANNUAL", "label": "Annual"}],
+    "working_days": [1, 2, 3, 4, 5],
+    "exclude_closures": true
+  }
+}
+```
+
+`allowances` always carries all seven leave types, `null` meaning no limit.
+`self_editable_options` and `self_editable_locked` take their labels from the
+Field Access registry (`Staff ID`, not `Staff number`); `branch` is labelled
+`Posting`. Leave type labels are the model's (`Annual`, `Sick`). PUT takes
+`starting_role`, `required_documents`, `self_editable_fields`,
+`hire_requires_approval` and `leave` (`allowances`, `working_days`,
+`exclude_closures`), all required, plus optional `reason`; message
+`Staff rules saved.`; answers with the GET body.
+
+Refusals: 403 "Only a school-wide administrator can change the school's staff
+rules."; `starting_role` "Choose one of this school's active roles for new
+staff to start with." and "{Role} carries restricted permissions you do not
+hold, so it cannot be the role every new member of staff starts with. Choose
+another, or ask an administrator who holds them." (checked only when the role
+changes); `required_documents` "'{X}' is not a document type this school can
+expect."; `self_editable_fields` "{Label} is the school's to set, so staff can
+never change it about themselves." and "'{x}' is not a detail of a staff
+record that staff could change about themselves."; `leave` "'{X}' is not a
+leave type this school records.", "Give {type} leave as a whole number of days
+from 0 to 366, or leave it empty for no limit.", "Choose at least one day of
+the week that counts for leave.", "Give the working days as weekdays numbered
+1 (Monday) to 7 (Sunday)."
+
+### 9.2 `GET, PUT, DELETE /v1/i/me/staff/number-policy/` (`?branch=<id>`)
+
+The admission-number policy's shape: `{required, pattern, hint, auto_issue,
+source: "branch"|"school"|"default", suggestion}`. GET is open before go-live
+(the Add form renders the hint). A branch's rule replaces the school's whole;
+the branch that governs a person is their main posting, and a school-wide
+posting follows the school's rule. PUT body `{required, pattern, hint,
+auto_issue?, reason?}`, message `Staff number rule saved.`; DELETE needs a
+branch (400 on `branch` otherwise), message "{Branch} follows the school's
+staff number rule again." A branch the caller cannot see is 404.
+
+Refusals: 403 "Only a school-wide administrator can change the school's staff
+number rule. Choose one of your branches to set its own."; `pattern` "That
+pattern is not a valid expression: {error}."
+
+Enforced on the Add form, the PATCH and the import, on `staff_number`: the
+school's hint, else "This school requires a staff number for every member of
+staff." / "That staff number is not in this school's format."; "Somebody at
+this school already has that staff ID."; and, where auto-issue is on, the rule
+requires a number and there is no series yet, "This school issues staff numbers
+automatically but has none to continue from yet. Type this person's number, and
+the next will follow it." A PATCH that sends back the stored number (any case)
+is not re-checked. Auto-issue continues the trailing digits of the most recently
+added person's number (`core.numbering`, shared with admission numbers) under a
+lock on the tenant row, and never offers a number any record has held,
+including one since changed, read from the record history. The import reports
+`staff_number_required` / `staff_number_format` per row and issues numbers when
+it writes.
+
+### 9.3 The starting role, required documents, self-service
+
+- **Starting role.** The Add form grants the school's choice; the list's
+  `starting_role` names it. "New staff start as {Role}. Other roles are given
+  from Roles & Permissions once they are added." for any other `role`; "This
+  school has no active {Role} role, which every new member of staff starts
+  with. Restore it in Roles & Permissions, or choose another starting role in
+  Settings, Staff." Where it carries restricted permissions the adder does not
+  hold: 403 "New staff start as {Role}, which carries restricted permissions you
+  do not hold, so you cannot add staff. Ask an administrator who holds them, or
+  choose another starting role in Settings, Staff." Every seeded Teacher role
+  carries `exports.file.download`, which is restricted, so the rule is the
+  grant ceiling rather than "no restricted role".
+- **Required documents** are a flag. The record carries `missing_documents:
+  [{type, label}]` (records group; null for an `?as_at=` read). The list takes
+  `?missing_documents=true` and its `counts.missing_documents` is the number
+  lacking one; both need `school.staff_records.view`, and are empty / null
+  without it or when nothing is expected. Nothing refuses an add.
+- **Self-service.** A person without `school.teachers.update` may PATCH only the
+  school's list on their own record (422 `FIELD_NOT_SELF_EDITABLE` otherwise).
+  The floor (`staff_number`, `job_title`, `employment_type`, `hire_date`,
+  `exit_date`, `email`, `branch`) can never be on it. The own record carries
+  `self_editable_fields`; nobody else's does.
+
+### 9.4 Leave allowances (per academic session)
+
+A leave belongs to the session covering its start date for the person's main
+posting. `POST /v1/i/me/staff/<id>/leave/` and the PATCH store
+`over_allowance_by` (days past the allowance counting approved and pending
+leave in that session; 0 within it or with no allowance), and add a warning
+`{code: "OVER_ALLOWANCE", message, over_allowance_by}`; the request is filed
+anyway. The approval card shows "Over allowance" in the summary and "Over
+allowance by" in the details, and `document.over_allowance_by` is a condition
+field. `GET /v1/i/me/staff/<id>/leave/` adds `balances: [{leave_type, label,
+allowance, taken, pending, remaining}]` for every type (`remaining = allowance
+- taken - pending`, negative once approved past it, null with no allowance) and
+`balance_session: {id, name, start_date, end_date}` (the session covering today
+or the as-at day, else the active one; `?session=<id>` names another, 404 if not
+this school's).
+
+### 9.5 Working days for leave
+
+`days` left out is the school's working weekdays in the range (default Monday
+to Friday) less the days its calendar closes the school (`closes_school`
+events with no audience, at the person's branch or school-wide; default on).
+This replaces the inclusive calendar span, which charged staff for weekends
+with no screen to correct it. It applies when a request is filed or its dates
+are corrected; a stored count is never recomputed; `days` stays overridable by
+the API. Dates holding no counted day: 422 `NO_WORKING_DAYS`.
+
+### 9.6 Approval before a new hire is invited
+
+With `hire_requires_approval` on (never during onboarding), `POST
+/v1/i/me/staff/` and the import create the account and the record with the
+starting role, send nothing, and submit the record as a `schools.staff_hire`
+document ("New staff member", school audience) to the `staff-hire` ladder,
+published with an empty `hire-approvers` group when the setting is turned on or
+the first hire is submitted. The record reads `PENDING_APPROVAL` ("Awaiting
+approval"; `?employment_status=PENDING_APPROVAL` filters it, and it is counted
+in `counts.by_employment_status`, and its `lifecycle` strip starts at Awaiting
+approval), the account stays `PENDING_APPROVAL`, the
+create answers "Added. Their invitation is waiting for the hire to be
+approved." with `data.awaiting_approval: true` (false otherwise). Approval sends
+the invitation (unless the import row said No) and moves to Invited; rejection,
+withdrawal or cancellation moves to Terminated, releases a reserved post,
+revokes the grant and marks the account REJECTED. The adder may approve only
+when alone on the stage. Resend: 422 `HIRE_AWAITING_APPROVAL`. Revoke withdraws
+the hire ("Hire withdrawn before it was approved. Nothing was sent to them.").
+Reversal is refused once the hire is decided.
