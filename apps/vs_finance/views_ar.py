@@ -25,7 +25,9 @@ from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 # ``include_shared=True`` is spelled out at every call site rather than left to the
 # default: a null branch means "shared across the school", so a school-wide fee
 # structure, customer or credit note stays visible to a branch-pinned caller.
-from vs_rbac.scoping import WholeTenantWriteMixin, branch_q, branch_scope
+from vs_rbac.scoping import (
+    WholeTenantWriteMixin, branch_q, branch_scope, caller_may_use_branch, resolve_branch,
+)
 
 
 # Support the paginate workflow.
@@ -136,6 +138,19 @@ def _branch_visible(request, qs):
     return qs.filter(branch_q(request, include_shared=True))
 
 
+def _document_scope(request):
+    """The reader's reach over the documents raised against a customer.
+
+    A customer is master data and a school-wide one stays reachable by everybody
+    (:func:`_branch_visible`). The invoices, receipts, notes, refunds and concessions
+    under it are transactions, and they are narrowed to the reader's own branches
+    only: a family billed at both Ikeja and Lekki is one customer, and the Ikeja
+    bursar opening that family sees Ikeja's documents and the balance they make,
+    never Lekki's. A whole-school reader is not narrowed at all.
+    """
+    return branch_scope(request, include_shared=False)
+
+
 # Support the resolve customer workflow.
 def _resolve_customer(request, entity, ref, field="customer", *, required=True):
     """Resolve a customer by **code** or id within ``entity`` and the caller's branches."""
@@ -234,18 +249,23 @@ def _reversal_date(body):
 # --------------------------------------------------------------------------- #
 
 # Support the customer ledger workflow.
-def _customer_ledger(entity, customer_ids=None):
-    """Net AR position per customer, in two aggregate queries (no per-row N+1).
+def _customer_ledger(entity, customer_ids=None, *, scope=None):
+    """Net AR position per customer, in a few aggregate queries (no per-row N+1).
 
     Returns ``{customer_id: {"outstanding", "credit", "overdue", "lifetime_paid"}}``
     where ``outstanding`` is the sum of open invoice balances and ``credit`` the
     customer's stored 2140 position. Net = outstanding − credit (positive owes,
-    negative in credit). Computed in a few aggregate queries (no N+1).
+    negative in credit).
 
     ``credit`` comes from :func:`~vs_finance.receivables.customer_credit_balances`
-    rather than being re-derived here. This screen used to keep its own copy of that
-    arithmetic, which is how the console ended up with two definitions of "available
-    credit" that could disagree - one of them refund-blind.
+    rather than being re-derived here, so the console has one definition of
+    "available credit" and it is refund-aware.
+
+    ``scope`` (a :class:`vs_rbac.scoping.BranchScope`) counts only the documents in
+    a reader's branches. A family billed at Ikeja and at Lekki is one customer, and
+    without it the Ikeja bursar's balance column would carry Lekki's invoices and
+    receipts. ``None`` is the whole entity, which is what a customer-facing figure
+    (a printed invoice, a notification) needs.
     """
     from django.db.models import F, Q, Sum
     from django.db.models.functions import Coalesce
@@ -265,6 +285,8 @@ def _customer_ledger(entity, customer_ids=None):
         inv = inv.filter(customer_id__in=customer_ids)
         pay = pay.filter(customer_id__in=customer_ids)
         dn = dn.filter(customer_id__in=customer_ids)
+    if scope is not None:
+        inv, pay, dn = scope.filter(inv), scope.filter(pay), scope.filter(dn)
 
     out: dict[int, dict] = {}
 
@@ -285,7 +307,7 @@ def _customer_ledger(entity, customer_ids=None):
     for r in dn.values("customer_id").annotate(
         c=Coalesce(Sum(F("total") - F("amount_paid")), 0)):
         slot(r["customer_id"])["outstanding"] += int(r["c"] or 0)
-    for cid, credit in customer_credit_balances(entity, customer_ids).items():
+    for cid, credit in customer_credit_balances(entity, customer_ids, scope=scope).items():
         slot(cid)["credit"] = credit
     return out
 
@@ -328,6 +350,7 @@ class CustomerListCreateView(_FinanceBase):
         from .money import format_naira
 
         entity = resolve_entity(request)
+        scope = _document_scope(request)
         qs = Customer.objects.filter(
             branch_q(request, include_shared=True), entity=entity,
         ).select_related("receivable_account")
@@ -345,7 +368,7 @@ class CustomerListCreateView(_FinanceBase):
             qs = qs.filter(is_active=False)
         elif status_f in ("ACTIVE", "CREDIT", "OVERDUE"):
             base_ids = list(qs.filter(is_active=True).values_list("id", flat=True))
-            led_all = _customer_ledger(entity, base_ids)
+            led_all = _customer_ledger(entity, base_ids, scope=scope)
             keep = [
                 cid for cid in base_ids
                 if _account_status(
@@ -358,7 +381,7 @@ class CustomerListCreateView(_FinanceBase):
         paginator = XVSPagination()
         paginator.page_size = 25
         page = paginator.paginate_queryset(qs.order_by("code"), request, view=self)
-        ledger = _customer_ledger(entity, [c.id for c in page])
+        ledger = _customer_ledger(entity, [c.id for c in page], scope=scope)
         rows = []
         for c in page:
             row = CustomerSerializer(c).data
@@ -473,7 +496,8 @@ class CustomerDetailView(_FinanceBase):
 
         entity = resolve_entity(request)
         customer = _resolve_customer(request, entity, pk)
-        led = _customer_ledger(entity, [customer.id]).get(customer.id, {})
+        scope = _document_scope(request)
+        led = _customer_ledger(entity, [customer.id], scope=scope).get(customer.id, {})
         net = led.get("outstanding", 0) - led.get("credit", 0)
         today = tenant_today(entity.tenant)
 
@@ -483,15 +507,15 @@ class CustomerDetailView(_FinanceBase):
         # POSTED so it can - the open-item panels below re-filter to POSTED, because a
         # voided invoice is history but is not something the customer still owes.
         history = (DocumentStatus.POSTED, DocumentStatus.REVERSED)
-        invoices = list(Invoice.objects.filter(
+        invoices = list(scope.filter(Invoice.objects.filter(
             entity=entity, customer=customer, status__in=history,
-        ).order_by("invoice_date", "id")[:500])
-        payments = list(Payment.objects.filter(
+        )).order_by("invoice_date", "id")[:500])
+        payments = list(scope.filter(Payment.objects.filter(
             entity=entity, customer=customer, status__in=history,
-        ).order_by("payment_date", "id")[:500])
-        credit_notes = list(CreditNote.objects.filter(
+        )).order_by("payment_date", "id")[:500])
+        credit_notes = list(scope.filter(CreditNote.objects.filter(
             entity=entity, customer=customer, status__in=history,
-        ).order_by("note_date", "id")[:500])
+        )).order_by("note_date", "id")[:500])
         # DEBIT notes are supplementary AR charges - their unsettled balance is an
         # open item, just like an invoice. CREDIT notes remain account movements but
         # are value returned to the customer, not amounts the customer still owes.
@@ -500,12 +524,12 @@ class CustomerDetailView(_FinanceBase):
             if n.kind == CreditNoteKind.DEBIT and n.status == DocumentStatus.POSTED
         ]
         open_invoice_pool = [i for i in invoices if i.status == DocumentStatus.POSTED]
-        refunds = list(Refund.objects.filter(
+        refunds = list(scope.filter(Refund.objects.filter(
             entity=entity, customer=customer, status__in=history,
-        ).order_by("refund_date", "id")[:500])
-        concessions = list(Concession.objects.filter(
+        )).order_by("refund_date", "id")[:500])
+        concessions = list(scope.filter(Concession.objects.filter(
             entity=entity, customer=customer, status__in=history,
-        ).order_by("concession_date", "id")[:500])
+        )).order_by("concession_date", "id")[:500])
 
         # Handle the inv status workflow.
         def inv_status(i):
@@ -738,7 +762,9 @@ class CustomerSummaryView(_FinanceBase):
             qs = qs.filter(is_active=active == "true")
 
         custs = list(qs.values("id", "is_active"))
-        ledger = _customer_ledger(entity, [c["id"] for c in custs])
+        ledger = _customer_ledger(
+            entity, [c["id"] for c in custs], scope=_document_scope(request),
+        )
         receivable = 0
         on_credit = 0
         counts = {"ACTIVE": 0, "CREDIT": 0, "OVERDUE": 0, "INACTIVE": 0}
@@ -1665,13 +1691,21 @@ class RefundAvailabilityView(_FinanceBase):
     cannot fund a refund dated before it, so the picker must not offer it: without
     this the screen advertises credit the posting guard will refuse.
 
+    One row per customer **and branch holding credit**, for the branches a refund
+    raised by this reader may belong to. A refund pays out only its own branch's
+    credit, so a family holding 300 at Ikeja and 200 at Lekki is two rows for a
+    bursar covering both branches, and one row (Ikeja's 300) for the Ikeja bursar.
+    School-wide credit is offered only to a whole-school user (:func:`_refund_scope`).
+
     docstring-name: Refund availability
     """
 
     rbac_permission = "finance.refund.create"
 
     def get(self, request):
-        from .receivables import customer_refund_available_balances
+        from vs_tenants.models import Branch
+
+        from .receivables import refundable_credit_by_branch
 
         entity = resolve_entity(request)
         as_of = _date(request.query_params.get("as_of"), "as_of", required=False)
@@ -1681,25 +1715,30 @@ class RefundAvailabilityView(_FinanceBase):
         if (search := (request.query_params.get("search") or "").strip()):
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
 
-        customer_ids = list(qs.values_list("id", flat=True))
-        available = customer_refund_available_balances(entity, customer_ids, as_of=as_of)
-        qs = qs.filter(id__in=[
-            customer_id for customer_id in customer_ids
-            if available.get(customer_id, 0) > 0
-        ]).order_by("code")
+        customers = {customer.pk: customer for customer in qs}
+        # The branches a refund raised here may belong to, so each row is one it can pay.
+        available = refundable_credit_by_branch(
+            entity, list(customers), as_of=as_of, scope=_refund_scope(request),
+        )
+        names = dict(Branch.objects.filter(
+            pk__in={branch_id for _cid, branch_id in available if branch_id},
+        ).values_list("pk", "name"))
+        keys = sorted(available, key=lambda k: (
+            customers[k[0]].code, k[1] is not None, names.get(k[1], "")))
 
         paginator = XVSPagination()
         paginator.page_size = 25
-        page = paginator.paginate_queryset(qs, request, view=self)
+        page = paginator.paginate_queryset(keys, request, view=self)
         rows = [{
-            "customer_id": customer.pk,
-            "customer_code": customer.code,
-            "customer_name": customer.name,
-            # The refund inherits it, so the screen offers only accounts it may use.
-            "branch_id": customer.branch_id,
-            "refundable_credit": available[customer.pk],
-            "refundable_credit_naira": format_naira(available[customer.pk]),
-        } for customer in page]
+            "customer_id": customer_id,
+            "customer_code": customers[customer_id].code,
+            "customer_name": customers[customer_id].name,
+            # The branch holding this credit; a refund of it is raised for this branch.
+            "branch_id": branch_id,
+            "branch_name": names.get(branch_id),
+            "refundable_credit": available[(customer_id, branch_id)],
+            "refundable_credit_naira": format_naira(available[(customer_id, branch_id)]),
+        } for customer_id, branch_id in page]
         response = paginator.get_paginated_response(rows)
         response.data["as_of"] = as_of.isoformat() if as_of else None  # Echo the basis of the figures.
         return response
@@ -1724,9 +1763,9 @@ class RefundListCreateView(_FinanceBase):
         # entity__tenant and branch: the serializer's approval_required scopes
         # through the ledger entity's owning tenant and the document's branch,
         # both of which would otherwise load per row on a multi-branch school.
-        qs = Refund.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
-        ).select_related(
+        qs = _refund_scope(request).filter(Refund.objects.filter(
+            entity=entity,
+        )).select_related(
             "customer", "entity__tenant", "branch")
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
@@ -1758,18 +1797,17 @@ def _build_refund(request, entity, body):
     actor_user = request.user
     customer = _resolve_customer(request, entity, body.get("customer"))
     customer = Customer.objects.select_for_update().get(pk=customer.pk)
-    # A refund continues the customer's chain: it hands back credit that arose on
-    # their account, so it belongs where they do, and is paid from there.
-    branch_id = _inherited_branch_id(request, customer)
+    branch_id = _refund_branch_id(request, entity, customer, body)
     bank_account = _resolve_bank_account(
         request, entity, body.get("bank_account"), required=False,
         document_branch=branch_id, noun="refund")
     refund_date = _date(body.get("refund_date"), "refund_date", required=True)
-    # Measure the credit on the refund's own date, so a doomed backdated draft is
-    # refused at creation rather than surviving all the way to the posting guard.
-    available = customer_refund_available_balance(customer, as_of=refund_date)
+    # Measure the branch's credit on the refund's own date, so a doomed backdated
+    # draft is refused at creation rather than surviving to the posting guard.
+    available = customer_refund_available_balance(
+        customer, as_of=refund_date, branch=branch_id)
     amount = _validated_refund_amount(
-        customer, body.get("amount", 0), available, as_of=refund_date)
+        customer, body.get("amount", 0), available, as_of=refund_date, branch=branch_id)
     return Refund.objects.create(
         entity=entity,
         customer=customer,
@@ -1785,23 +1823,62 @@ def _build_refund(request, entity, body):
     )
 
 
-def _validated_refund_amount(customer, raw_amount, available, *, as_of=None):
+def _refund_scope(request):
+    """The refunds, and the credit to refund, that the caller may see and act on.
+
+    Exclusive: money belongs to the branch that holds it, so a branch-bound bursar
+    sees and pays out her own branches' refunds and credit and never unbranched
+    (school-wide) money. A whole-school user is not narrowed and handles that too.
+    """
+    return branch_scope(request, include_shared=False)
+
+
+def _refund_branch_id(request, entity, customer, body):
+    """The branch a new refund belongs to, and so the only branch whose credit it pays out.
+
+    By default the refund continues the customer's chain and takes their branch. A
+    body ``branch`` names another, which is how credit a customer holds at a branch
+    other than their own (a family that moved from Lekki to Ikeja, a school-wide
+    family paid at Ikeja) is handed back from the branch that received it. The
+    caller must work in the branch they name.
+
+    A branch-bound caller never raises a school-wide refund: for a school-wide
+    customer the refund takes her own branch, or she is asked which when she works
+    in several (:func:`_raised_branch`).
+    """
+    raw = body.get("branch")
+    if raw in (None, ""):
+        if customer.branch_id is None and _refund_scope(request).is_narrowed:
+            return _raised_branch(request, entity, body).pk
+        return _inherited_branch_id(request, customer)
+    branch = resolve_branch(entity.tenant, raw)
+    if not caller_may_use_branch(request, branch):
+        raise PermissionDenied("You can only raise documents for your own branch.")
+    return branch.pk
+
+
+def _validated_refund_amount(customer, raw_amount, available, *, branch, as_of=None):
     """Apply the shared positive/available-credit boundary to a refund amount.
+
+    ``available`` is the credit of the refund's own ``branch`` (an id, or ``None`` for
+    school-wide). When that falls short while another branch holds the credit, the
+    refusal names both branches (:func:`~vs_finance.receivables.require_refund_branch_credit`).
 
     ``as_of`` is the refund's accounting date and only shapes the message: when the
     credit exists but not yet on that date, saying so ("you have it today, just not
     on 1 Sep") is the difference between a fixable error and a baffling one.
     """
+    from .receivables import customer_refund_available_balance, require_refund_branch_credit
+
     amount = _money(raw_amount, "amount")
     if amount <= 0:
         raise ValidationError({"amount": "A refund amount must be greater than zero."})
     if amount > available:
+        require_refund_branch_credit(customer, amount, branch, as_of=as_of)
         basis = f" as at {as_of}" if as_of else ""
         detail = ""
         if as_of is not None:  # Distinguish "no credit" from "not yet".
-            from .receivables import customer_refund_available_balance
-
-            today_available = customer_refund_available_balance(customer)
+            today_available = customer_refund_available_balance(customer, branch=branch)
             if today_available > available:
                 detail = (
                     f" {format_naira(today_available)} is available today - pick a "
@@ -1821,8 +1898,9 @@ class _RefundActionBase(_FinanceBase):
     # Support the refund workflow.
     def _refund(self, request, pk):
         entity = resolve_entity(request)
+        # Exclusive, as _refund_scope: branch-bound readers never reach unbranched money.
         refund = Refund.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
+            branch_q(request, include_shared=False), entity=entity, pk=pk).first()
         if refund is None:
             raise NotFound("Refund not found for this entity.")
         return entity, refund
@@ -2347,7 +2425,7 @@ class ARAdjustmentBatchView(_FinanceBase):
         documents = []
 
         if kind == "REFUND":
-            from .receivables import customer_refund_available_balances
+            from .receivables import refundable_credit_by_branch
 
             # The batch names one account; each refund's own branch is checked per line.
             bank_account = _resolve_bank_account(
@@ -2358,21 +2436,22 @@ class ARAdjustmentBatchView(_FinanceBase):
             # on that date - not today. A batch dated before the credit arrived is
             # refused per line here rather than blowing up mid-loop in the posting
             # service and rolling the whole batch back with a cryptic 409.
-            available = customer_refund_available_balances(
+            available = refundable_credit_by_branch(
                 entity, [customer.pk for customer in customers], as_of=common_date)
             for index, (item, customer) in enumerate(zip(items, customers)):
-                if customer.pk in seen_targets:
+                # Per line, not per batch: a batch may span branches, and each
+                # refund pays out its own branch's credit and is paid from there.
+                branch_id = _refund_branch_id(request, entity, customer, item)
+                # Once per customer and branch: each branch's credit is its own refund.
+                if (customer.pk, branch_id) in seen_targets:
                     raise ValidationError({
                         "items": {
                             index: {
-                                "customer": "A customer may appear only once per batch.",
+                                "customer": "A customer may appear only once per branch in a batch.",
                             },
                         },
                     })
-                seen_targets.add(customer.pk)
-                # Per line, not per batch: a batch may span branches, and each
-                # refund belongs where its own customer does and is paid from there.
-                branch_id = _inherited_branch_id(request, customer)
+                seen_targets.add((customer.pk, branch_id))
                 try:
                     require_own_branch_bank(bank_account, branch_id, noun="refund")
                 except ValidationError as exc:  # Re-key onto the offending batch line.
@@ -2381,8 +2460,9 @@ class ARAdjustmentBatchView(_FinanceBase):
                     amount = _validated_refund_amount(
                         customer,
                         item.get("amount", 0),
-                        available.get(customer.pk, 0),
+                        available.get((customer.pk, branch_id), 0),
                         as_of=common_date,
+                        branch=branch_id,
                     )
                 except ValidationError as exc:  # Re-key onto the offending batch line.
                     raise ValidationError({"items": {index: exc.detail}}) from exc
@@ -2651,7 +2731,8 @@ class ARAdjustmentListView(_FinanceBase):
         # document through its ledger entity's owning tenant and its branch, and
         # without these every row would lazy-load them back - on a multi-branch
         # school that is two extra queries a row for a handful of distinct scopes.
-        refunds = scope.filter(Refund.objects.filter(entity=entity)) if sees_refunds else Refund.objects.none()
+        refunds = (_refund_scope(request).filter(Refund.objects.filter(entity=entity))
+                   if sees_refunds else Refund.objects.none())
         for r in (refunds
                   .select_related("customer", "entity__tenant", "branch")
                   .order_by("-refund_date", "-id")[:1000]):
@@ -2683,11 +2764,12 @@ class ARAdjustmentListView(_FinanceBase):
         )
         refundable_credit = None
         if sees_refunds:
-            from .receivables import customer_refund_available_balances
+            from .receivables import refundable_credit_by_branch
             active_customer_ids = scope.filter(Customer.objects.filter(
                 entity=entity, is_active=True)).values_list("id", flat=True)
-            refundable_credit = sum(
-                customer_refund_available_balances(entity, active_customer_ids).values())
+            # The credit this reader could refund: their branches' credit only.
+            refundable_credit = sum(refundable_credit_by_branch(
+                entity, active_customer_ids, scope=_refund_scope(request)).values())
 
         rows = []
         if type_f in ("", "refund"):
@@ -3272,7 +3354,9 @@ class CustomerStatementView(_FinanceBase):
         customer = _resolve_customer(request, entity, request.query_params.get("customer"))
         start = _date(request.query_params.get("start"), "start")
         end = _date(request.query_params.get("end"), "end")
-        stmt = customer_statement(customer, start_date=start, end_date=end)
+        stmt = customer_statement(
+            customer, start_date=start, end_date=end, scope=_document_scope(request),
+        )
 
         from .exports import ReportTable
 

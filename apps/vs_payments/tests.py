@@ -247,6 +247,37 @@ class CollectionTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(inv.amount_paid, 0)
         self.assertEqual(customer_credit_balance(customer), 50000)  # held as credit
 
+    def test_collection_for_another_branchs_invoice_parks_as_credit(self):
+        """A receipt settles only its own branch's documents, and it still books.
+
+        The receipt takes the customer's branch (here school-wide) while the invoice
+        was raised at Lekki. Settling it would clear Lekki's receivable from another
+        branch's books, and refusing the booking would lose money the payer has
+        already sent, so it parks as customer credit.
+        """
+        from vs_rbac.tests.helpers import make_branch, make_school
+
+        entity, customer, _ = self.build()
+        lekki = make_branch(
+            make_school(slug="pay-branches", name="Corona", status="ACTIVE"),
+            name="Lekki Branch",
+        )
+        inv = self.make_posted_invoice(entity, customer, amount=50000)
+        Invoice.objects.filter(pk=inv.pk).update(branch=lekki)
+        inv.refresh_from_db()
+
+        intent = services.initiate_collection(
+            entity=entity, amount=50000, customer=customer, invoice=inv,
+        )
+        intent = services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+
+        self.assertEqual(intent.status, CollectionStatus.SUCCEEDED)
+        payment = Payment.objects.get(pk=intent.payment_id)
+        self.assertEqual((payment.status, payment.allocated_amount), ("POSTED", 0))
+        inv.refresh_from_db()
+        self.assertEqual(inv.amount_paid, 0)
+        self.assertEqual(customer_credit_balance(customer), 50000)
+
     # Verify failed collection books nothing behavior.
     def test_failed_collection_books_nothing(self):
         entity, customer, _ = self.build()

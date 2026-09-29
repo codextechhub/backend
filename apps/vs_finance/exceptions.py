@@ -246,3 +246,16 @@ class PeriodCloseError(FinanceError):
     def __init__(self, message=None, *, failures=None, **kwargs):
         self.failures = failures or []  # Preserve the list of close failures for callers.
         super().__init__(message, failures=self.failures, **kwargs)  # Pass structured failure context upstream.
+
+
+class SettlementBranchError(PostingError):
+    """A document named for settlement belongs to another branch than the money settling it.
+
+    A receipt or credit note settles only documents of its own branch, or
+    school-wide documents when it is school-wide itself. A 400: the request named
+    the wrong document, and naming one of the settling document's own branch fixes it.
+    """
+
+    error_code = "SETTLEMENT_BRANCH"
+    default_message = "This document belongs to another branch than the one settling it."
+    http_status = 400

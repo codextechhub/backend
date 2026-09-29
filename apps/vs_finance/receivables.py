@@ -23,6 +23,7 @@ from django.db import transaction
 
 from .account_mappings import resolve_mapped_account
 from .audit import record, record_rejection
+from .chronology import ANY_BRANCH
 from .constants import (
     AccountMappingKey,
     DocumentStatus,
@@ -30,7 +31,7 @@ from .constants import (
     InvoicePaymentStatus,
     JournalSource,
 )
-from .exceptions import FinanceError, PostingError
+from .exceptions import FinanceError, PostingError, SettlementBranchError
 from .posting import post_journal, resolve_period
 
 
@@ -250,7 +251,8 @@ def post_payment(payment, *, actor_user=None, auto_allocate=True, allocations=No
 
     ``allocations`` (a list of ``(invoice, amount_kobo)``) applies an explicit split;
     otherwise ``auto_allocate`` settles open invoices in ``strategy`` order
-    (``"oldest"`` by due date, or ``"largest"`` balance first).
+    (``"oldest"`` by due date, or ``"largest"`` balance first). Either way only
+    documents of the receipt's own branch are settled (see :func:`_build_invoice_plan`).
     """
     try:  # The atomic worker owns the ledger write and allocation updates.
         result = _post_payment_atomic(  # Post the receipt and optionally allocate it.
@@ -279,7 +281,8 @@ def post_payment(payment, *, actor_user=None, auto_allocate=True, allocations=No
 
 # Handle customer credit balances in bulk so list screens and posting guards share
 # one definition without introducing a query per customer.
-def customer_credit_balances(entity, customer_ids=None, *, as_of=None) -> dict[int, int]:
+def customer_credit_balances(entity, customer_ids=None, *, as_of=None,
+                             scope=None) -> dict[int, int]:
     """Return customer-credit (2140) balances keyed by customer id.
 
     Credit is the sum of the customer's :class:`~vs_finance.chronology.CreditLot`
@@ -296,10 +299,14 @@ def customer_credit_balances(entity, customer_ids=None, *, as_of=None) -> dict[i
     inside a lot (allocations, prior refunds) are not. That is the safe direction -
     value that has since been spent stays spent, so an as-of figure can only ever be
     conservative and never authorises paying the same kobo out twice.
+
+    ``scope`` narrows the lots to a reader's branches (see
+    :func:`~vs_finance.chronology.credit_lots`). It is for display only: a guard
+    deciding whether credit exists must read the whole entity.
     """
     from .chronology import credit_lots
 
-    lots = credit_lots(entity, customer_ids, as_of=as_of)
+    lots = credit_lots(entity, customer_ids, as_of=as_of, scope=scope)
     return {
         customer_id: sum(lot.remaining for lot in customer_lots)
         for customer_id, customer_lots in lots.items()
@@ -314,9 +321,9 @@ def customer_credit_balance(customer, *, as_of=None) -> int:
 
 
 def customer_refund_available_balances(
-    entity, customer_ids=None, *, exclude_refund_id=None, as_of=None,
+    entity, customer_ids=None, *, exclude_refund_id=None, as_of=None, branch=ANY_BRANCH,
 ) -> dict[int, int]:
-    """Return credit still available for a new refund request.
+    """Return credit still available for a new refund request, keyed by customer id.
 
     Three deductions sit between stored credit and refundable credit:
 
@@ -328,14 +335,56 @@ def customer_refund_available_balances(
       and again on post.
     * **``as_of``** - credit that does not yet exist on the refund's own accounting
       date cannot fund it. Callers must pass the refund date, not today.
+
+    ``branch`` measures one branch's credit, debit notes and reservations only (a
+    branch id, or ``None`` for school-wide), which is what a refund of that branch
+    can pay out. :data:`~vs_finance.chronology.ANY_BRANCH` reads every branch together.
     """
+    return _refund_available(
+        entity, customer_ids, exclude_refund_id=exclude_refund_id, as_of=as_of,
+        branch=branch, by_branch=False,
+    )
+
+
+def refundable_credit_by_branch(entity, customer_ids=None, *, as_of=None,
+                                scope=None) -> dict[tuple[int, int | None], int]:
+    """Refundable credit per ``(customer id, branch id)``, positive amounts only.
+
+    One refund pays out one branch's credit, so this is the figure a refund screen
+    offers: a family holding 30,000 at Ikeja and 20,000 at Lekki has two refundable
+    amounts, not one of 50,000. ``scope`` (a :class:`vs_rbac.scoping.BranchScope`)
+    keeps the branches a reader may refund from, and school-wide credit when the
+    scope is inclusive.
+    """
+    available = _refund_available(
+        entity, customer_ids, exclude_refund_id=None, as_of=as_of,
+        branch=ANY_BRANCH, by_branch=True,
+    )
+    ids = None if scope is None else scope.branch_ids
+    shared = scope is None or scope.include_shared
+    return {
+        key: amount for key, amount in available.items()
+        if amount > 0 and (ids is None or key[1] in ids or (key[1] is None and shared))
+    }
+
+
+def _refund_available(entity, customer_ids, *, exclude_refund_id, as_of, branch, by_branch):
+    """Refundable credit keyed by customer, or by ``(customer, branch)`` with ``by_branch``."""
     from django.db.models import F, Sum
     from django.db.models.functions import Coalesce
 
+    from .chronology import credit_lots
     from .constants import CreditNoteKind
     from .models import CreditNote, Refund
 
-    balances = customer_credit_balances(entity, customer_ids, as_of=as_of)
+    def key(customer_id, branch_id):
+        return (customer_id, branch_id) if by_branch else customer_id
+
+    credit: dict = defaultdict(int)
+    for customer_id, lots in credit_lots(
+            entity, customer_ids, as_of=as_of, branch=branch).items():
+        for lot in lots:
+            credit[key(customer_id, lot.branch_id)] += lot.remaining
 
     debit_notes = CreditNote.objects.filter(
         entity=entity, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT)
@@ -345,45 +394,103 @@ def customer_refund_available_balances(
         customer_ids = list(customer_ids)
         debit_notes = debit_notes.filter(customer_id__in=customer_ids)
         pending = pending.filter(customer_id__in=customer_ids)
+    if branch is not ANY_BRANCH:
+        debit_notes, pending = debit_notes.filter(branch_id=branch), pending.filter(branch_id=branch)
     if exclude_refund_id is not None:
         pending = pending.exclude(pk=exclude_refund_id)
 
-    owed = {
-        row["customer_id"]: int(row["amount"] or 0)
-        for row in debit_notes.values("customer_id").annotate(
-            amount=Coalesce(Sum(F("total") - F("amount_paid")), 0))
-    }
-    reserved = {
-        row["customer_id"]: int(row["amount"] or 0)
-        for row in pending.values("customer_id").annotate(amount=Coalesce(Sum("amount"), 0))
-    }
-    customer_keys = set(balances) | set(owed) | set(reserved)
+    owed: dict = defaultdict(int)
+    for row in debit_notes.values("customer_id", "branch_id").annotate(
+            amount=Coalesce(Sum(F("total") - F("amount_paid")), 0)):
+        owed[key(row["customer_id"], row["branch_id"])] += int(row["amount"] or 0)
+    reserved: dict = defaultdict(int)
+    for row in pending.values("customer_id", "branch_id").annotate(
+            amount=Coalesce(Sum("amount"), 0)):
+        reserved[key(row["customer_id"], row["branch_id"])] += int(row["amount"] or 0)
+
     return {
-        customer_id: max(
-            0,
-            balances.get(customer_id, 0)
-            - owed.get(customer_id, 0)
-            - reserved.get(customer_id, 0),
-        )
-        for customer_id in customer_keys
+        k: max(0, credit.get(k, 0) - owed.get(k, 0) - reserved.get(k, 0))
+        for k in set(credit) | set(owed) | set(reserved)
     }
 
 
-def customer_refund_available_balance(customer, *, exclude_refund_id=None, as_of=None) -> int:
-    """Credit available to one refund on its own date, after pending reservations."""
+def customer_refund_available_balance(customer, *, exclude_refund_id=None, as_of=None,
+                                      branch=ANY_BRANCH) -> int:
+    """Credit available to one refund on its own date, after pending reservations.
+
+    ``branch`` is the refund's own branch id (``None`` for school-wide); see
+    :func:`customer_refund_available_balances`.
+    """
     return customer_refund_available_balances(
         customer.entity, [customer.pk],
-        exclude_refund_id=exclude_refund_id, as_of=as_of,
+        exclude_refund_id=exclude_refund_id, as_of=as_of, branch=branch,
     ).get(customer.pk, 0)
+
+
+def require_refund_branch_credit(customer, amount, branch_id, *, as_of=None,
+                                 exclude_refund_id=None):
+    """Refuse a refund its own branch cannot fund while another branch holds the credit.
+
+    A refund pays out only the credit of its own branch (see
+    :func:`~vs_finance.chronology.credit_lots`). When that falls short but the
+    customer has refundable credit elsewhere, the ordinary "exceeds available credit"
+    message would read as a missing balance; this names both sides instead, for
+    example "This refund belongs to Ikeja Branch and OKAFOR's refundable credit of
+    ₦300.00 is held by Lekki Branch. Raise the refund for Lekki Branch."
+    Returns quietly when the own branch covers ``amount`` or no other branch holds
+    anything, so the caller's own shortfall message still applies.
+    """
+    from vs_tenants.models import Branch
+
+    from .money import format_naira
+
+    own = customer_refund_available_balance(
+        customer, exclude_refund_id=exclude_refund_id, as_of=as_of,
+        branch=branch_id,
+    )
+    if amount <= own:
+        return
+    elsewhere = {
+        branch: held for (_cid, branch), held in _refund_available(
+            customer.entity, [customer.pk], exclude_refund_id=exclude_refund_id,
+            as_of=as_of, branch=ANY_BRANCH, by_branch=True,
+        ).items()
+        if held > 0 and branch != branch_id
+    }
+    if not elsewhere:
+        return
+    names = dict(Branch.objects.filter(
+        pk__in=[b for b in (*elsewhere, branch_id) if b]).values_list("pk", "name"))
+    ordered = sorted(elsewhere, key=lambda b: (b is None, names.get(b, "")))
+    holders = " and ".join(names[b] if b else "the school as a whole" for b in ordered)
+    held = format_naira(sum(elsewhere.values()))
+    remedy = (f"Raise the refund for {names[ordered[0]]}." if ordered[0] is not None
+              else "Raise a school-wide refund.")
+    side = f"belongs to {names[branch_id]}" if branch_id is not None else "is school-wide"
+    raise SettlementBranchError(
+        f"This refund {side} and {customer.code}'s refundable credit of {held} is "
+        f"held by {holders}. {remedy}"
+    )
 
 
 #: Supported auto-allocation strategies for settling a receipt's cash.  # Keep strategy names explicit and small.
 ALLOCATION_STRATEGIES = ("oldest", "largest")
 
 
-def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_debit_notes=False,
+def _build_invoice_plan(source, allocations, *, strategy="oldest", include_debit_notes=False,
                         as_of=None, settlement="This settlement"):
     """An explicit ``[(target, amount)]`` plan, or open AR items in ``strategy`` order.
+
+    ``source`` is the document whose value settles the plan: a :class:`Payment` or a
+    CREDIT :class:`CreditNote`. Its customer names whose AR items are settled, and its
+    branch names which of them: only items of the source's own branch, or school-wide
+    items for a school-wide source. The settling journal is booked to the source's
+    branch while each item's receivable sits on the item's branch, so Ikeja's receipt
+    settling a Lekki invoice would clear Lekki's debt out of Ikeja's books. The
+    automatic plan draws only from those items; an explicit plan naming any other is
+    refused with :class:`SettlementBranchError` before anything is settled (see
+    :func:`_require_own_branch_targets`), because a caller who covers both branches
+    can name either.
 
     A *target* is an :class:`Invoice` or - when ``include_debit_notes`` is set - a posted
     DEBIT :class:`CreditNote`, which debits AR just like an invoice and is settled the
@@ -406,14 +513,13 @@ def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_deb
       would post something other than what was asked for. It raises instead, and
       says which date to use.
     """
-    from django.db.models import F
-
     from .chronology import accounting_date, describe, ensure_on_or_after
     from .constants import CreditNoteKind
     from .models import CreditNote, Invoice
 
     if allocations is not None:  # Explicit allocations always win over auto-allocation.
         plan = list(allocations)  # Normalize to a list so the caller can iterate safely.
+        _require_own_branch_targets(source, [target for target, _amount in plan])
         if as_of is not None:  # An explicitly named target must already exist on that date.
             for target, _amount in plan:
                 target_date = accounting_date(target)
@@ -427,21 +533,20 @@ def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_deb
                         f"document exists."
                     ),
                 )
-        return plan  # Explicit plan passed its date checks.
+        return plan  # Explicit plan passed its branch and date checks.
 
-    open_invoices = list(  # Load all open posted invoices for the customer.
-        Invoice.objects
-        .filter(customer=customer, status=DocumentStatus.POSTED)
-        .exclude(payment_status=InvoicePaymentStatus.PAID)
+    own = {"customer_id": source.customer_id, "branch_id": source.branch_id,
+           "status": DocumentStatus.POSTED}
+    open_invoices = list(  # Open posted invoices of the customer, in the source's branch.
+        Invoice.objects.filter(**own).exclude(payment_status=InvoicePaymentStatus.PAID)
     )
     if as_of is not None:  # Auto-allocation only settles what already exists.
         open_invoices = [inv for inv in open_invoices if inv.invoice_date <= as_of]
     # (target, balance_due, sort_date) - sort_date drives oldest-first across both types.
     items = [(inv, inv.balance_due, inv.due_date or inv.invoice_date) for inv in open_invoices]  # Invoice settlement candidates.
     if include_debit_notes:  # Optionally include posted debit notes in the settlement plan.
-        open_notes = list(  # Load open debit notes for the customer.
-            CreditNote.objects
-            .filter(customer=customer, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT)
+        open_notes = list(  # Open debit notes of the customer, in the source's branch.
+            CreditNote.objects.filter(kind=CreditNoteKind.DEBIT, **own)
             .exclude(settlement_status=InvoicePaymentStatus.PAID)
         )
         if as_of is not None:  # Same rule: a charge not yet raised cannot be settled.
@@ -453,6 +558,36 @@ def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_deb
     else:  # Default is oldest-first.
         items.sort(key=lambda t: (t[2], t[0].pk))  # Sort by document date, then pk.
     return [(target, balance) for target, balance, _date in items]  # Strip the sort date before returning.
+
+
+def _require_own_branch_targets(source, targets):
+    """Refuse a target named for ``source``'s value unless it is of the source's branch.
+
+    The rule :func:`_build_invoice_plan` applies to an automatic plan, applied to one a
+    person names. The message names both branches and the way out, for example "This
+    receipt belongs to Ikeja Branch and invoice INV-0002 belongs to Lekki Branch.
+    Apply it to an Ikeja Branch invoice."
+    """
+    from .models import CreditNote
+
+    noun = "credit note" if isinstance(source, CreditNote) else "receipt"
+    for target in targets:
+        if target.branch_id == source.branch_id:
+            continue
+        kind = "debit note" if isinstance(target, CreditNote) else "invoice"
+        number = target.document_number or f"the selected {kind}"
+        if source.branch_id is None:
+            raise SettlementBranchError(
+                f"This {noun} is school-wide and {kind} {number} belongs to "
+                f"{target.branch.name}. Apply it to a school-wide {kind}."
+            )
+        name = source.branch.name
+        article = "an" if name[:1].upper() in "AEIOU" else "a"
+        held = f"belongs to {target.branch.name}" if target.branch_id else "is school-wide"
+        raise SettlementBranchError(
+            f"This {noun} belongs to {name} and {kind} {number} {held}. "
+            f"Apply it to {article} {name} {kind}."
+        )
 
 
 # Support the apply payment subledger workflow.
@@ -660,7 +795,7 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
     # ``as_of`` the receipt's own date: cash received today cannot clear a bill raised
     # next week. Auto-allocation skips those, and the money falls through to 2140 as a
     # prepayment - which is what it is.
-    plan = (_build_invoice_plan(customer, allocations, strategy=strategy,  # Build the settlement plan from invoices.
+    plan = (_build_invoice_plan(payment, allocations, strategy=strategy,  # Build the settlement plan from invoices.
                                 include_debit_notes=True, as_of=payment.payment_date,
                                 settlement=f"Receipt {payment.document_number or payment.pk}")
             if (allocations is not None or auto_allocate) else [])  # Skip the plan when no allocation is requested.
@@ -723,7 +858,8 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
     Applying it to invoices reclassifies it back to AR (``Dr customer-credit · Cr AR``)
     and settles the invoices - no cash moves. ``allocations`` is an optional explicit
     ``[(invoice, amount)]`` plan; without it, open invoices are settled in ``strategy``
-    order (``"oldest"`` by due date, or ``"largest"`` balance first).
+    order (``"oldest"`` by due date, or ``"largest"`` balance first). Either way only
+    documents of the receipt's own branch are settled (see :func:`_build_invoice_plan`).
 
     Applying an older receipt to a newer invoice is ordinary and allowed - that is a
     prepayment finding its bill. What is *not* allowed is dating the reclassification
@@ -745,7 +881,7 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
     if remaining <= 0:  # Nothing left to allocate.
         return []
 
-    plan = _build_invoice_plan(payment.customer, allocations, strategy=strategy,  # Reuse the same allocation planner.
+    plan = _build_invoice_plan(payment, allocations, strategy=strategy,  # Reuse the same allocation planner.
                                include_debit_notes=True)
     applied, created, latest = _apply_payment_subledger(payment, plan, remaining=remaining)  # Apply stored credit to documents.
     if applied <= 0:  # No documents were eligible for allocation.
