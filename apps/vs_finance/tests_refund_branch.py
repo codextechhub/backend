@@ -13,7 +13,9 @@ received would overdraw Ikeja's customer credit and leave Lekki's standing, so:
   branch that holds the rest, whoever asks;
 * the refund screens offer each branch's credit as its own row and total, within
   the branches the reader can raise a refund for, so a bursar is never shown money
-  she cannot pay out.
+  she cannot pay out;
+* a branch-bound bursar neither sees nor pays out unbranched (school-wide) money;
+  a whole-school user does.
 """
 from __future__ import annotations
 
@@ -60,6 +62,17 @@ class _RefundFixture(_FinanceBranchFixture):
             tenant=self.tenant, role_key=role_key, branch=branch,
         )
         return TenantAPIClient(user=user)
+
+    def school_wide_receipt(self, amount):
+        from vs_finance.receivables import post_payment
+
+        payment = Payment.objects.create(
+            entity=self.books, customer=self.family, branch=None,
+            payment_date=datetime.date(2026, 1, 16), amount=amount,
+            deposit_account=self.bank,
+        )
+        post_payment(payment, auto_allocate=False)
+        return payment
 
     def refund(self, branch, amount):
         return Refund.objects.create(
@@ -123,6 +136,23 @@ class RefundCreationTests(_RefundFixture):
         self.assertEqual(response.data["error"]["code"], "SETTLEMENT_BRANCH")
         self.assertIn("This refund is school-wide", response.data["message"])
 
+    def test_a_branch_bursar_never_raises_a_school_wide_refund(self):
+        """Naming no branch for a school-wide family gives her own branch's refund."""
+        self.school_wide_receipt(15_000)
+
+        response = self.create(self.ikeja_bursar, 10_000)
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(Refund.objects.get(customer=self.family).branch_id, self.ikeja.pk)
+
+    def test_a_branch_bursar_cannot_see_or_post_a_school_wide_refund(self):
+        refund = self.refund(None, 10_000)
+
+        response = self.ikeja_bursar.get(
+            f"/v1/finance/refunds/{refund.pk}/?entity={self.books.code}")
+
+        self.assertEqual(response.status_code, 404, response.data)
+
     def test_a_branch_bursar_cannot_raise_a_refund_for_another_branch(self):
         response = self.create(self.ikeja_bursar, 20_000, branch=self.lekki)
 
@@ -149,7 +179,20 @@ class RefundScreenTests(_RefundFixture):
             ("OKAFOR", self.ikeja.pk): 30_000,
         })
 
+    def test_school_wide_credit_is_offered_to_a_whole_school_user_only(self):
+        self.school_wide_receipt(15_000)
+
+        self.assertEqual(self.availability(self.head), {
+            ("OKAFOR", self.ikeja.pk): 30_000,
+            ("OKAFOR", self.lekki.pk): 20_000,
+            ("OKAFOR", None): 15_000,
+        })
+        self.assertEqual(self.availability(self.ikeja_bursar), {
+            ("OKAFOR", self.ikeja.pk): 30_000,
+        })
+
     def test_the_refundable_credit_card_is_what_the_reader_can_refund(self):
+        self.school_wide_receipt(15_000)
         response = self.ikeja_bursar.get(
             f"/v1/finance/ar-adjustments/?entity={self.books.code}")
 

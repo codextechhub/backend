@@ -1693,6 +1693,7 @@ class RefundAvailabilityView(_FinanceBase):
     raised by this reader may belong to. A refund pays out only its own branch's
     credit, so a family holding 300 at Ikeja and 200 at Lekki is two rows for a
     bursar covering both branches, and one row (Ikeja's 300) for the Ikeja bursar.
+    School-wide credit is offered only to a whole-school user (:func:`_refund_scope`).
 
     docstring-name: Refund availability
     """
@@ -1715,8 +1716,7 @@ class RefundAvailabilityView(_FinanceBase):
         customers = {customer.pk: customer for customer in qs}
         # The branches a refund raised here may belong to, so each row is one it can pay.
         available = refundable_credit_by_branch(
-            entity, list(customers), as_of=as_of,
-            scope=branch_scope(request, include_shared=True),
+            entity, list(customers), as_of=as_of, scope=_refund_scope(request),
         )
         names = dict(Branch.objects.filter(
             pk__in={branch_id for _cid, branch_id in available if branch_id},
@@ -1761,9 +1761,9 @@ class RefundListCreateView(_FinanceBase):
         # entity__tenant and branch: the serializer's approval_required scopes
         # through the ledger entity's owning tenant and the document's branch,
         # both of which would otherwise load per row on a multi-branch school.
-        qs = Refund.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
-        ).select_related(
+        qs = _refund_scope(request).filter(Refund.objects.filter(
+            entity=entity,
+        )).select_related(
             "customer", "entity__tenant", "branch")
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
@@ -1821,6 +1821,16 @@ def _build_refund(request, entity, body):
     )
 
 
+def _refund_scope(request):
+    """The refunds, and the credit to refund, that the caller may see and act on.
+
+    Exclusive: money belongs to the branch that holds it, so a branch-bound bursar
+    sees and pays out her own branches' refunds and credit and never unbranched
+    (school-wide) money. A whole-school user is not narrowed and handles that too.
+    """
+    return branch_scope(request, include_shared=False)
+
+
 def _refund_branch_id(request, entity, customer, body):
     """The branch a new refund belongs to, and so the only branch whose credit it pays out.
 
@@ -1829,9 +1839,15 @@ def _refund_branch_id(request, entity, customer, body):
     other than their own (a family that moved from Lekki to Ikeja, a school-wide
     family paid at Ikeja) is handed back from the branch that received it. The
     caller must work in the branch they name.
+
+    A branch-bound caller never raises a school-wide refund: for a school-wide
+    customer the refund takes her own branch, or she is asked which when she works
+    in several (:func:`_raised_branch`).
     """
     raw = body.get("branch")
     if raw in (None, ""):
+        if customer.branch_id is None and _refund_scope(request).is_narrowed:
+            return _raised_branch(request, entity, body).pk
         return _inherited_branch_id(request, customer)
     branch = resolve_branch(entity.tenant, raw)
     if not caller_may_use_branch(request, branch):
@@ -1880,8 +1896,8 @@ class _RefundActionBase(_FinanceBase):
     # Support the refund workflow.
     def _refund(self, request, pk):
         entity = resolve_entity(request)
-        refund = Refund.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
+        refund = _refund_scope(request).filter(
+            Refund.objects.filter(entity=entity, pk=pk)).first()
         if refund is None:
             raise NotFound("Refund not found for this entity.")
         return entity, refund
@@ -2711,7 +2727,8 @@ class ARAdjustmentListView(_FinanceBase):
         # document through its ledger entity's owning tenant and its branch, and
         # without these every row would lazy-load them back - on a multi-branch
         # school that is two extra queries a row for a handful of distinct scopes.
-        refunds = scope.filter(Refund.objects.filter(entity=entity)) if sees_refunds else Refund.objects.none()
+        refunds = (_refund_scope(request).filter(Refund.objects.filter(entity=entity))
+                   if sees_refunds else Refund.objects.none())
         for r in (refunds
                   .select_related("customer", "entity__tenant", "branch")
                   .order_by("-refund_date", "-id")[:1000]):
@@ -2748,7 +2765,7 @@ class ARAdjustmentListView(_FinanceBase):
                 entity=entity, is_active=True)).values_list("id", flat=True)
             # The credit this reader could refund: their branches' credit only.
             refundable_credit = sum(refundable_credit_by_branch(
-                entity, active_customer_ids, scope=scope).values())
+                entity, active_customer_ids, scope=_refund_scope(request)).values())
 
         rows = []
         if type_f in ("", "refund"):

@@ -432,6 +432,10 @@ class EveryBranchBearingListNarrowsTests(_FinanceBranchFixture):
     is not listed - so this is a floor, not a proof of completeness. The floor is
     still worth having: it is what catches a narrowing removed from an existing
     screen by a refactor.
+
+    Screens in :attr:`EXCLUSIVE` read the school-wide row the other way: it holds
+    unbranched money, which a branch-bound caller neither sees nor pays out, so it
+    is listed for the unbound caller only.
     """
 
     #: (url path, permission key, builder attribute)
@@ -449,6 +453,9 @@ class EveryBranchBearingListNarrowsTests(_FinanceBranchFixture):
         ("bank-accounts/", "finance.bankaccount.view", "_bank_account"),
         ("fixed-assets/", "finance.fixedasset.view", "_fixed_asset_row"),
     )
+
+    #: Screens whose school-wide row a branch-bound caller must not get.
+    EXCLUSIVE = frozenset({"refunds/"})
 
     JAN = datetime.date(2026, 1, 12)
 
@@ -576,7 +583,10 @@ class EveryBranchBearingListNarrowsTests(_FinanceBranchFixture):
                 )
                 seen = self.ids(TenantAPIClient(user=user), path, e)
 
-                self.assertIn(shared.pk, seen, f"{path} hid the school-wide row")
+                if path in self.EXCLUSIVE:
+                    self.assertNotIn(shared.pk, seen, f"{path} showed unbranched money")
+                else:
+                    self.assertIn(shared.pk, seen, f"{path} hid the school-wide row")
                 self.assertIn(at_ikeja.pk, seen, f"{path} hid the caller's own row")
                 self.assertNotIn(at_lekki.pk, seen, f"{path} leaked another branch")
 
