@@ -87,10 +87,9 @@ class PeriodType(models.TextChoices):
 class DayOfWeek(models.IntegerChoices):
     """ISO-8601, so it agrees with ``date.isoweekday()`` without a conversion.
 
-    Saturday and Sunday are here although the design's day picker offers only
-    Monday to Friday. A Saturday school is a real thing and the column should
-    not be the reason it cannot be recorded; which days a form offers is the
-    client's choice.
+    All seven are storable because a Saturday school is a real thing. Which
+    days a school actually teaches is its ``calendar.teaching_days`` setting,
+    and a period or a lesson is placed only on one of those.
     """
 
     MONDAY = 1, "Monday"

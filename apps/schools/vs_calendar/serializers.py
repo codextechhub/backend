@@ -18,10 +18,12 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from .constants import PERIOD_MINUTES_MAX, PERIOD_MINUTES_MIN, DutyMatch
 from .models import (
     CalendarEvent,
     ClassTimetable,
     DayOfWeek,
+    EventType,
     Exam,
     ExamSlot,
     Period,
@@ -322,3 +324,147 @@ class ExamSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         return add_manage_flag(self, instance, super().to_representation(instance))
+
+
+# ── The school's calendar and timetable settings ───────────────────────────
+
+class _Raw(serializers.Field):
+    """A value passed through untouched, for its ``validate_`` method to judge."""
+
+    def to_internal_value(self, data):
+        return data
+
+    def to_representation(self, value):
+        return value
+
+
+_MINUTES_REFUSAL = (
+    f"A default period is {PERIOD_MINUTES_MIN} to {PERIOD_MINUTES_MAX} minutes "
+    f"long, or leave it empty for no default."
+)
+
+
+class CalendarRulesSerializer(serializers.Serializer):
+    """The school's calendar and timetable settings, as the settings screen saves them.
+
+    All seven are sent every time. Each refusal is keyed on its own field, as
+    a sentence. ``context`` carries the ``tenant``, because the invigilator
+    roles are checked against the school's own active roles.
+    """
+
+    teaching_days = _Raw(error_messages={
+        "required": "Choose the days the school teaches.",
+        "null": "Choose the days the school teaches.",
+    })
+    week_starts_on = serializers.ChoiceField(
+        choices=[(1, "Monday"), (7, "Sunday")],
+        error_messages={
+            "invalid_choice": (
+                "The school's week starts on Monday (1) or Sunday (7)."
+            ),
+            "required": "Say whether the school's week starts on Monday or Sunday.",
+            "null": "Say whether the school's week starts on Monday or Sunday.",
+        },
+    )
+    closes_school_by_type = _Raw(error_messages={
+        "required": "Say, for each kind of calendar entry, whether it closes the school.",
+        "null": "Say, for each kind of calendar entry, whether it closes the school.",
+    })
+    room_required_to_publish = serializers.BooleanField(error_messages={
+        "required": "Say whether a lesson needs a room before its timetable can be published.",
+        "invalid": "Say whether a lesson needs a room before its timetable can be published.",
+        "null": "Say whether a lesson needs a room before its timetable can be published.",
+    })
+    teacher_duty_match = serializers.ChoiceField(
+        choices=DutyMatch.choices,
+        error_messages={
+            "invalid_choice": (
+                "Choose Off, Warn or Refuse for a teacher with no teaching duty "
+                "for the lesson."
+            ),
+            "required": "Say what happens to a teacher with no teaching duty for the lesson.",
+            "null": "Say what happens to a teacher with no teaching duty for the lesson.",
+        },
+    )
+    invigilator_roles = _Raw(error_messages={
+        "required": "List the roles whose holders may invigilate.",
+        "null": "Choose at least one role whose holders may invigilate.",
+    })
+    default_period_minutes = serializers.IntegerField(
+        allow_null=True, min_value=PERIOD_MINUTES_MIN, max_value=PERIOD_MINUTES_MAX,
+        error_messages={
+            "required": (
+                "Send the default length of a period in minutes, or null for "
+                "no default."
+            ),
+            "invalid": _MINUTES_REFUSAL,
+            "min_value": _MINUTES_REFUSAL,
+            "max_value": _MINUTES_REFUSAL,
+            "max_string_length": _MINUTES_REFUSAL,
+        },
+    )
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=200)
+
+    def validate_teaching_days(self, value):
+        from .services.calendar_rules import teaching_days_problem
+
+        problem = teaching_days_problem(value)
+        if problem is None:
+            return sorted(value)
+        cause, entry = problem
+        if cause == "empty":
+            raise serializers.ValidationError(
+                "Choose at least one day the school teaches.",
+            )
+        if cause == "duplicate":
+            raise serializers.ValidationError(
+                f"{DayOfWeek(entry).label} is listed twice.",
+            )
+        raise serializers.ValidationError(
+            "Give each teaching day as a weekday number, 1 (Monday) to 7 "
+            "(Sunday).",
+        )
+
+    def validate_closes_school_by_type(self, value):
+        from .services.calendar_rules import DEFAULT_CLOSES_SCHOOL
+
+        if not isinstance(value, dict):
+            raise serializers.ValidationError(
+                "Say, for each kind of calendar entry, whether it closes the school.",
+            )
+        labels = dict(EventType.choices)
+        for key in value:
+            if key not in labels:
+                raise serializers.ValidationError(
+                    f"'{key}' is not a kind of calendar entry.",
+                )
+        for kind in DEFAULT_CLOSES_SCHOOL:
+            if kind not in value:
+                raise serializers.ValidationError(
+                    f"Say whether an entry of type {labels[kind]} closes the school.",
+                )
+            if not isinstance(value[kind], bool):
+                raise serializers.ValidationError(
+                    f"Say true or false for whether an entry of type "
+                    f"{labels[kind]} closes the school.",
+                )
+        return {kind: value[kind] for kind in DEFAULT_CLOSES_SCHOOL}
+
+    def validate_invigilator_roles(self, value):
+        from .services.calendar_rules import active_roles
+
+        if not isinstance(value, (list, tuple)) or not value:
+            raise serializers.ValidationError(
+                "Choose at least one role whose holders may invigilate.",
+            )
+        known = {key for key, _ in active_roles(self.context["tenant"])}
+        out = []
+        for item in value:
+            key = item.strip() if isinstance(item, str) else ""
+            if key not in known:
+                raise serializers.ValidationError(
+                    f"'{item}' is not one of this school's active roles.",
+                )
+            if key not in out:
+                out.append(key)
+        return out

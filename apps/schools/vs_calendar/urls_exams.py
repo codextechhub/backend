@@ -7,10 +7,15 @@ from .views.exams import (
     ExamSlotDetailView,
     ExamSlotListCreateView,
     ExamSlotPreviewView,
+    InvigilatorListView,
 )
 
 urlpatterns = [
     path("", ExamListCreateView.as_view(), name="calendar-exam-list"),
+    path(
+        "invigilators/", InvigilatorListView.as_view(),
+        name="calendar-exam-invigilators",
+    ),
     path("<int:pk>/", ExamDetailView.as_view(), name="calendar-exam-detail"),
     path(
         "<int:exam_id>/slots/",

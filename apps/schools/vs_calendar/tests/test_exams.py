@@ -157,7 +157,8 @@ class ExamPaperRefusalTests(_ExamBase):
         self.assertEqual(response.status_code, 422, response.data)
         self.assertEqual(response.data["error"]["code"], "EXAM_TIMES_INVALID")
 
-    def test_a_non_teacher_cannot_invigilate(self):
+    def test_a_person_without_an_invigilating_role_cannot_invigilate(self):
+        """By default only the teacher role invigilates, and the bursar holds none."""
         from vs_rbac.tests.helpers import make_school_admin
 
         bursar = make_school_admin(
@@ -165,7 +166,7 @@ class ExamPaperRefusalTests(_ExamBase):
         )
         response = self.paper(invigilator=bursar.pk)
         self.assertEqual(response.status_code, 422, response.data)
-        self.assertEqual(response.data["error"]["code"], "NOT_A_TEACHING_USER")
+        self.assertEqual(response.data["error"]["code"], "NOT_AN_INVIGILATOR")
 
 
 class ExamPaperWarningTests(_ExamBase):

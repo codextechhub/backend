@@ -209,6 +209,38 @@ def coverage(tenant, user, session):
     return rows, coverage_gaps, lead_gaps
 
 
+def duty_holders(tenant, session, pairs) -> dict:
+    """Who holds a teaching duty for each ``(class id, subject id)`` in *pairs*.
+
+    Answers ``{(class_id, subject_id): {user_id, ...}}``, with an empty set
+    for a pair nobody teaches. Lead and assistant both count: each is a duty
+    to teach the subject to the class.
+
+    The lookup other modules make rather than reading ``TeachingAssignment``
+    themselves, so that "has a duty" keeps one meaning across the platform.
+    One query, however many pairs are asked about.
+    """
+    from django.db.models import Q
+
+    from ..models import TeachingAssignment
+
+    pairs = {(int(c), int(s)) for c, s in pairs if c and s}
+    out = {pair: set() for pair in pairs}
+    if not pairs or session is None:
+        return out
+    wanted = Q()
+    for class_id, subject_id in pairs:
+        wanted |= Q(school_class_id=class_id, subject_id=subject_id)
+    rows = (
+        TeachingAssignment.objects.filter(tenant=tenant, session=session)
+        .filter(wanted)
+        .values_list("school_class_id", "subject_id", "staff__user_id")
+    )
+    for class_id, subject_id, user_id in rows:
+        out[(class_id, subject_id)].add(user_id)
+    return out
+
+
 def _visible_classes(tenant, user, session):
     """Classes this caller may see, inclusive of the school-wide ones.
 

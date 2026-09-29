@@ -32,7 +32,8 @@ from ..services.clashes import slot_warnings
 from ..services.scoping import lens_branch
 from ..services.teachers import display_name, teaching_users
 from .base import CalendarViewMixin
-from .timetable import GRID_DAYS
+from ..services.calendar_rules import read_calendar_rules
+from .timetable import GRID_RULE_KEYS
 
 
 class TeacherListView(CalendarViewMixin, APIView):
@@ -180,6 +181,10 @@ def _teachers_with_clashes(tenant, session):
 class TeacherTimetableView(CalendarViewMixin, APIView):
     """GET /v1/academics/timetable/teachers/<user_id>/
 
+    One column per teaching day of the school, in the order its week starts,
+    plus any day the person still holds a lesson on, flagged
+    ``is_teaching_day: false``; see ``CalendarRules.grid_days``.
+
     docstring-name: Teacher timetable
     """
 
@@ -218,9 +223,10 @@ class TeacherTimetableView(CalendarViewMixin, APIView):
             ).select_related("branch"),
         )
 
+        rules = read_calendar_rules(self.tenant, GRID_RULE_KEYS)
         days, teaching, free = [], 0, 0
         per_day = defaultdict(int)
-        for day in GRID_DAYS:
+        for day in rules.grid_days(held={key[0] for key in by_key}):
             in_force = periods_in_force(
                 self.tenant, session, day_of_week=day, queryset=period_rows,
             )
@@ -265,6 +271,7 @@ class TeacherTimetableView(CalendarViewMixin, APIView):
             days.append({
                 "day_of_week": int(day),
                 "day_label": DayOfWeek(day).label,
+                "is_teaching_day": day in rules.teaching_days,
                 "cells": cells,
             })
 

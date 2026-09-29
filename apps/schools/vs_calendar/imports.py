@@ -142,12 +142,18 @@ def _fmt(day) -> str:
 
 # ── the resolver ─────────────────────────────────────────────────────────────
 
-def resolve_row(payload: dict, *, tenant, session, batch_branch, multi_branch):
+def resolve_row(payload: dict, *, tenant, session, batch_branch, multi_branch,
+                closes_by_type=None):
     """Read one row into the event it describes, and everything wrong with it.
 
     Never raises for bad data. A row is a report, not an exception: the engine
     shows a school every fault in its file at once, and a resolver that stopped
     at the first one would make it upload the same file six times.
+
+    A blank Closes School cell takes the school's answer for the row's type
+    (``calendar.closes_school_by_type``), the same answer an entry created on
+    screen without saying gets. *closes_by_type* is that map, read once by a
+    caller resolving a whole file; left out, it is read here.
     """
     row = ResolvedRow()
 
@@ -226,13 +232,23 @@ def resolve_row(payload: dict, *, tenant, session, batch_branch, multi_branch):
 
     # ── closes the school ──
     raw_closes = _text(payload, "closes_school").lower()
-    if raw_closes in _TRUE:
+    if not raw_closes:
+        if closes_by_type is None:
+            from .constants import CFG_CLOSES_SCHOOL_BY_TYPE
+            from .services.calendar_rules import read_calendar_rules
+
+            closes_by_type = read_calendar_rules(
+                tenant, (CFG_CLOSES_SCHOOL_BY_TYPE,),
+            ).closes_school_by_type
+        row.closes_school = closes_by_type.get(row.event_type, False)
+    elif raw_closes in _TRUE:
         row.closes_school = True
     elif raw_closes not in _FALSE:
         row.issues.append(RowIssue(
             "invalid_choice",
             f"'{raw_closes}' is not yes or no. Write Yes if the school is shut "
-            f"on these days, or leave it blank.",
+            f"on these days, No if it is open, or leave it blank for the "
+            f"school's usual answer for this kind of entry.",
             "closes_school", raw_closes,
         ))
 
@@ -461,6 +477,8 @@ def validate_calendar_events_import_batch(import_batch) -> list[dict]:
 
     from schools.vs_academics.services.years import assert_year_is_writable
 
+    from .constants import CFG_CLOSES_SCHOOL_BY_TYPE
+    from .services.calendar_rules import read_calendar_rules
     from .services.scoping import branch_dimension_applies
 
     try:
@@ -495,11 +513,15 @@ def validate_calendar_events_import_batch(import_batch) -> list[dict]:
             "raw_value": str(issue.value or ""),
         })
 
+    closes_by_type = read_calendar_rules(
+        tenant, (CFG_CLOSES_SCHOOL_BY_TYPE,),
+    ).closes_school_by_type
     for row_number, raw_row in enumerate(rows, start=1):
         resolved = resolve_row(
             _payload_of(raw_row, columns),
             tenant=tenant, session=session,
             batch_branch=import_batch.branch, multi_branch=multi_branch,
+            closes_by_type=closes_by_type,
         )
         for issue in resolved.issues:
             record(row_number, issue)

@@ -126,3 +126,83 @@ def display_name(user) -> str:
         return ""
     full = (getattr(user, "full_name", "") or "").strip()
     return full or f"User {user.pk}"
+
+
+# ── Invigilators ─────────────────────────────────────────────────────────────
+#
+# Who may supervise an exam paper is the school's choice rather than a fixed
+# role: ``exams.invigilator_roles`` names the roles whose active holders may,
+# ``["teacher"]`` until the school says otherwise. A school that has its
+# bursary staff or its administrators sit with a hall adds their roles there.
+
+def _invigilator_rows(tenant, roles):
+    """``(user_id, role name)`` for every active grant of an eligible, active role."""
+    from vs_rbac.models import TenantUserRoleAssignment
+
+    return (
+        TenantUserRoleAssignment.objects.filter(
+            tenant=tenant,
+            assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+            role__key__in=list(roles),
+            role__status="ACTIVE",
+        )
+        .values_list("user_id", "role__name")
+    )
+
+
+def invigilators(tenant, *, roles=None):
+    """Every person who may invigilate at this school, with their eligible roles.
+
+    Answers ``[(user, "Head of Department, Teacher"), ...]``, active users of
+    this tenant only, ordered by display name. *roles* defaults to the
+    school's ``exams.invigilator_roles``.
+    """
+    from vs_user.models import User
+
+    from .calendar_rules import read_invigilator_roles
+
+    roles = roles if roles is not None else read_invigilator_roles(tenant)
+    held = {}
+    for user_id, role_name in _invigilator_rows(tenant, roles):
+        held.setdefault(user_id, set()).add(role_name)
+    people = User.objects.filter(
+        tenant=tenant, status=User.Status.ACTIVE, id__in=list(held),
+    ).order_by("first_name", "last_name", "id")
+    return [(person, ", ".join(sorted(held[person.pk]))) for person in people]
+
+
+def assert_may_invigilate(tenant, user):
+    """Refuse a person who holds no role whose holders may invigilate here.
+
+    ``None`` passes: a paper may be scheduled before anybody is put in the
+    room. Another tenant's user is refused with the same sentence as a person
+    who holds no such role, so the endpoint cannot be used to probe ids.
+    """
+    from ..exceptions import NotAnInvigilator
+    from vs_user.models import User
+
+    from .calendar_rules import active_roles, read_invigilator_roles
+
+    if user is None:
+        return None
+    if getattr(user, "tenant_id", None) != tenant.id:
+        raise NotAnInvigilator(field="invigilator")
+    if user.status != User.Status.ACTIVE:
+        raise NotAnInvigilator(
+            f"{display_name(user)}'s account is not active, so they cannot "
+            f"invigilate.",
+            field="invigilator",
+        )
+    roles = read_invigilator_roles(tenant)
+    if _invigilator_rows(tenant, roles).filter(user_id=user.pk).exists():
+        return user
+    names = dict(active_roles(tenant))
+    allowed = [names[key] for key in roles if key in names]
+    raise NotAnInvigilator(
+        f"{display_name(user)} does not hold a role whose holders may "
+        f"invigilate at this school"
+        + (f" ({', '.join(allowed)})" if allowed else "")
+        + ". Choose someone who does, or add their role in Settings, Calendar "
+        "and timetables.",
+        field="invigilator",
+    )

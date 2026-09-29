@@ -169,3 +169,80 @@ def _t(value) -> str:
     hour = value.hour % 12 or 12
     suffix = "am" if value.hour < 12 else "pm"
     return f"{hour}:{value.minute:02d} {suffix}"
+
+
+@transaction.atomic
+def copy_bell_schedule(tenant, *, source, target, visible):
+    """Copy *source*'s periods into *target*, which must have none of its own.
+
+    Every period is copied as it stands: its branch, its day, its position,
+    its times, its type and whether it is active. So a school whose Ikeja
+    branch rings its own bell and whose Friday runs a short day gets both
+    again in the new year. Nothing is copied into a year that already has
+    periods, because merging two schedules would have to decide which of two
+    Period 1s wins.
+
+    *visible* is the caller's branch reach (``WHOLE_TENANT`` or a set of
+    branch ids). A branch-bound caller copies only the periods at their own
+    branches, and is refused only when the target already has periods there:
+    the school's shared periods are a school-wide administrator's to copy, the
+    same rule that keeps a branch-bound caller from creating one.
+
+    The target year's row is locked for the length of the copy, so two copies
+    sent at once cannot both find it empty.
+    """
+    from rest_framework.exceptions import PermissionDenied
+
+    from schools.vs_academics.models import AcademicSession
+    from vs_rbac.scoping import WHOLE_TENANT
+
+    from ..exceptions import BellScheduleNotEmpty, NothingToCopy
+
+    AcademicSession.all_objects.select_for_update().filter(pk=target.pk).first()
+
+    rows = Period.all_objects.filter(tenant=tenant, session=source)
+    existing = Period.all_objects.filter(tenant=tenant, session=target)
+    where = ""
+    if visible is not WHOLE_TENANT:
+        if not visible:
+            raise PermissionDenied(
+                "Your access to every branch has been withdrawn, so you cannot "
+                "create anything here. Ask a school administrator to restore it.",
+            )
+        rows = rows.filter(branch_id__in=visible)
+        existing = existing.filter(branch_id__in=visible)
+        where = " at your branch" if len(visible) == 1 else " at your branches"
+
+    rows = list(rows.order_by("branch_id", "day_of_week", "order_index", "pk"))
+    if not rows:
+        raise NothingToCopy(
+            f"{source.name} has no periods{where} to copy."
+            + (
+                " The school's shared periods are copied by a school-wide "
+                "administrator."
+                if where else ""
+            ),
+            field="from_session",
+        )
+    if existing.exists():
+        raise BellScheduleNotEmpty(
+            f"{target.name} already has periods{where}, so nothing was copied. "
+            f"Copying fills an empty bell schedule: change {target.name}'s "
+            f"periods on the Bell schedule instead.",
+        )
+
+    created = Period.all_objects.bulk_create([
+        Period(
+            tenant=tenant, session=target, branch_id=row.branch_id,
+            day_of_week=row.day_of_week, order_index=row.order_index,
+            label=row.label, period_type=row.period_type,
+            start_time=row.start_time, end_time=row.end_time,
+            is_active=row.is_active,
+        )
+        for row in rows
+    ])
+    return list(
+        Period.all_objects.filter(pk__in=[row.pk for row in created])
+        .select_related("branch")
+        .order_by("day_of_week", "start_time", "pk"),
+    )

@@ -39,7 +39,9 @@ class ClassTimetableDuplicateView(_ClassScoped):
     """POST /v1/academics/timetable/classes/<class_id>/duplicate/
 
     Copy another class's week into this one. ``?preview=1`` reports what would
-    happen and writes nothing.
+    happen and writes nothing. Both answers carry ``warnings``, the copied
+    lessons whose teacher has no teaching duty for this class under the
+    school's WARN or REFUSE; under REFUSE the copy itself is refused.
 
     Not in FRD v3.0.1. The design has a whole drawer for it, and two of its
     rules have to be computed here rather than in a client: which source lessons
@@ -141,6 +143,12 @@ class ClassTimetableClearView(_ClassScoped):
 class ClassTimetablePublishView(_ClassScoped):
     """POST /v1/academics/timetable/classes/<class_id>/publish/
 
+    Refuses an incomplete grid, a grid holding a lesson whose teacher has no
+    teaching duty for it (under the school's REFUSE), and a grid with a clash,
+    in that order; see ``services.publishing``. A grid that publishes answers
+    with ``warnings``: the ``TEACHER_HAS_NO_DUTY`` lessons it published under
+    the school's WARN, and an empty list otherwise.
+
     docstring-name: Publish a class timetable
     """
 
@@ -152,7 +160,7 @@ class ClassTimetablePublishView(_ClassScoped):
         session = self.session_required
         school_class = self._class(class_id)
 
-        record = publish_class_timetable(
+        record, warnings = publish_class_timetable(
             self.tenant, session, school_class,
             actor=request.user, visible=self.visible,
         )
@@ -178,5 +186,6 @@ class ClassTimetablePublishView(_ClassScoped):
                 "status": record.status,
                 "status_label": record.get_status_display(),
                 "published_at": record.published_at,
+                "warnings": [w.as_dict() for w in warnings],
             },
         )

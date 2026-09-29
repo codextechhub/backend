@@ -45,6 +45,7 @@ from ..exceptions import EventAudienceOutOfScope, EventOutsideSession
 from ..models import CalendarEvent, CalendarEventAudience
 from ..serializers import CalendarEventSerializer, CalendarEventWriteSerializer
 from ..services.calendar import term_of
+from ..services.calendar_rules import closes_school_default
 from ..services.scoping import (
     UNSET,
     lens_branch,
@@ -241,6 +242,10 @@ class _EventBase(CalendarViewMixin):
 class EventListCreateView(_EventBase, generics.ListCreateAPIView):
     """GET, POST /v1/academics/calendar/events/
 
+    An entry created without ``closes_school`` takes the school's answer for
+    its type (``calendar.closes_school_by_type``): a public holiday and the
+    half-term break close the school unless the school has said otherwise.
+
     docstring-name: Calendar events
     """
 
@@ -272,7 +277,10 @@ class EventListCreateView(_EventBase, generics.ListCreateAPIView):
             name=data["name"].strip(),
             event_type=data["event_type"],
             start_date=data["start_date"], end_date=data["end_date"],
-            closes_school=data.get("closes_school", False),
+            closes_school=(
+                data["closes_school"] if "closes_school" in data
+                else closes_school_default(self.tenant, data["event_type"])
+            ),
             description=(data.get("description") or "").strip(),
             created_by=request.user,
         )

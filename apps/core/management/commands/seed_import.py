@@ -1057,8 +1057,10 @@ TEMPLATES: list[dict] = [
                 "target_field": "closes_school",
                 "display_name": "Closes School",
                 "help_text": (
-                    "Yes when the school is shut on these days. Marks them "
-                    "non-teaching; does not delete lessons."
+                    "Yes when the school is shut on these days, No when it is "
+                    "open. Blank takes the school's usual answer for the "
+                    "entry's type. Marks the days non-teaching; does not "
+                    "delete lessons."
                 ),
                 "data_type": TemplateColumnDataTypeChoices.STRING,
                 "is_required": False,
