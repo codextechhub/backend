@@ -258,24 +258,33 @@ class RaisedBranchTests(_WriteFixture):
             Customer.objects.filter(entity=self.books, code__in=["RB8", "RB9"]).exists(),
         )
 
-    def test_a_single_branch_school_stamps_its_only_branch(self):
-        """One branch is the common case and it must not be a special case.
+    def test_a_single_branch_school_files_rows_as_an_unpinned_caller_does(self):
+        """A grant pinned to the only branch reaches the whole tenant.
 
-        The dimension recedes in the UI there, but the column still has to be
-        right: the row belongs to that branch, and if the school opens a second
-        one tomorrow the history must not read as school-wide.
+        So the pinned writer files exactly what an unpinned one would: a row
+        that names no branch is the tenant's, and a row that names Main is
+        Main's. The pin carries no meaning while there is nothing else to be
+        pinned against (``vs_rbac.scoping``).
         """
         solo = self.writer(
             self.solo_tenant, "raise-solo@fin.test", "w-solo",
             branches=[self.solo_main],
         )
-        response = self.post(
+        unnamed = self.post(
             solo, "customers/", self.solo_books, self.customer_body("RB10"),
         )
+        named = self.post(
+            solo, "customers/", self.solo_books,
+            self.customer_body("RB11", branch=self.solo_main.pk),
+        )
 
-        self.assertEqual(response.status_code, 201, response.data)
-        self.assertEqual(
+        self.assertEqual(unnamed.status_code, 201, unnamed.data)
+        self.assertEqual(named.status_code, 201, named.data)
+        self.assertIsNone(
             Customer.objects.get(entity=self.solo_books, code="RB10").branch_id,
+        )
+        self.assertEqual(
+            Customer.objects.get(entity=self.solo_books, code="RB11").branch_id,
             self.solo_main.pk,
         )
 

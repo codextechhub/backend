@@ -575,6 +575,12 @@ class WorkflowInstanceViewSet(
               .prefetch_related("stage_instances__stage", "stage_instances__actions",
                                 "stage_instances__eligible_approvers", "audit_logs")
               .order_by("-updated_at", "-created_at"))
+        if self.action == "retrieve":
+            # Names for the approval timeline's "who did it" labels.
+            qs = qs.prefetch_related(
+                "stage_instances__actions__actor", "stage_instances__actions__proxied_by",
+                "audit_logs__actor", "audit_logs__effective_user",
+            )
         p = self.request.query_params
         if p.get("document_type"): qs = qs.filter(document_type=p["document_type"])
         if p.get("status"):        qs = qs.filter(status=p["status"])

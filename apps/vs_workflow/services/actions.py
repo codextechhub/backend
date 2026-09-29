@@ -13,6 +13,8 @@ engine cannot be undone by editing the engine's account of it.
 import logging
 
 from django.db import transaction
+from django.db.models import Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from vs_workflow.constants import (
@@ -102,6 +104,21 @@ def _check_eligibility(stage_instance, actor) -> WorkflowStageApprover:
     return snap
 
 
+# The live votes on a stage attempt, each labelled with the real person who cast it.
+def _live_votes(stage_instance: WorkflowStageInstance):
+    """Live votes on the stage's current attempt, annotated with ``real_voter``.
+
+    Live means neither a reversal row nor itself reversed. ``real_voter`` is
+    ``proxied_by`` when the vote was cast under a proxy (an impersonation
+    session) and ``actor`` otherwise: the person at the keyboard, which is who
+    the one-vote rule and every approval count are about.
+    """
+    return WorkflowStageAction.objects.filter(
+        stage_instance=stage_instance, attempt=stage_instance.attempt,
+        reversed_at__isnull=True, is_reversal_of__isnull=True,
+    ).annotate(real_voter=Coalesce("proxied_by", "actor"))
+
+
 # Determine whether the current stage has enough approvals to advance.
 def _stage_fully_approved(stage_instance: WorkflowStageInstance) -> bool:
     """Check whether the stage's advance_rule threshold has been met.
@@ -109,12 +126,19 @@ def _stage_fully_approved(stage_instance: WorkflowStageInstance) -> bool:
     Counts only non-reversed, non-reversal APPROVED actions on the current
     attempt. Reversed votes are excluded so an admin reversal correctly
     re-opens a stage that had already crossed the threshold.
+
+    Approvals are counted as distinct real people, not rows. One person cannot
+    make a quorum of two by approving as herself and again under a proxy of a
+    colleague; :func:`record_action` refuses the second vote, and this count
+    would not credit it if one were ever written. Under ALL, a vote cast by
+    proxy fills the real voter's place, so the impersonated approver's own
+    place stays open until an admin reverses the proxied vote.
     """
     stage = stage_instance.stage
-    approved_count = WorkflowStageAction.objects.filter(
-        stage_instance=stage_instance, attempt=stage_instance.attempt,
-        action=StageActionEnum.APPROVED, reversed_at__isnull=True,
-        is_reversal_of__isnull=True).count()
+    approved_count = (
+        _live_votes(stage_instance).filter(action=StageActionEnum.APPROVED)
+        .order_by().values("real_voter").distinct().count()
+    )
     eligible_count = WorkflowStageApprover.objects.filter(
         stage_instance=stage_instance, attempt=stage_instance.attempt).count()
     rule = StageAdvanceRule(stage.advance_rule)
@@ -127,7 +151,26 @@ def _stage_fully_approved(stage_instance: WorkflowStageInstance) -> bool:
 
 # Record one approver decision and advance or terminate the workflow as needed.
 def record_action(instance_id, actor, action: str, comment: str = "") -> WorkflowInstance:
-    """Record an approver vote: APPROVED, REJECTED, or RETURNED."""
+    """Record an approver vote: APPROVED, REJECTED, or RETURNED.
+
+    Separation of duties is checked here as well as at approver resolution,
+    not instead of it: the eligible list is frozen when the stage activates,
+    and a requester who was a legitimate approver at that moment must not be
+    let through by a snapshot written before the engine knew who would submit.
+
+    The check compares people, not identities. The voter is both the person
+    named on the vote and, under a proxy (an impersonation session), the real
+    person at the keyboard; the requester is everyone
+    ``approvers.requester_ids`` counts. So Ada, who raised a refund as herself,
+    is refused when she proxies Chioma and approves it, while Ada proxying
+    Chioma to approve a refund Bola raised is an ordinary vote. The document
+    types whose handlers allow self-approval are exempt from the whole check.
+
+    The one-vote rule counts people the same way. A vote is refused when the
+    stage attempt already holds a live vote either in the named voter's name or
+    cast by the same real person, so Ada may not approve as herself and then
+    again as Chioma, in either order, nor twice under two different proxies.
+    """
     if action not in {StageActionEnum.APPROVED, StageActionEnum.REJECTED, StageActionEnum.RETURNED}:
         raise InvalidInstanceStateError(f"Unsupported action '{action}'.")
     if action in {StageActionEnum.REJECTED, StageActionEnum.RETURNED} and not comment.strip():
@@ -139,24 +182,21 @@ def record_action(instance_id, actor, action: str, comment: str = "") -> Workflo
             raise InstanceTerminalError(instance=str(instance.id), status=instance.status)
         if instance.status == WorkflowInstanceStatus.RETURNED:
             raise InvalidInstanceStateError("Instance is RETURNED. Wait for resubmission.")
-        # Separation of duties, and the one document type that is exempt.
-        #
-        # Checked here as well as at resolution, not instead of it: the eligible
-        # list is frozen when the stage activates, and a requester who was a
-        # legitimate approver at that moment must not be let through by a
-        # snapshot the engine wrote before it knew who would submit.
-        if actor.pk == instance.requested_by_id and not (
-            approvers_service.requester_may_self_approve(instance)
-        ):
-            raise RequesterCannotApproveError("Requesters cannot approve their own documents.")
+        # Separation of duties, counted on real people.
+        if not approvers_service.requester_may_self_approve(instance):
+            requesters = approvers_service.requester_ids(instance)
+            voters = {actor.pk, approvers_service.real_person_id(actor)}
+            if requesters & voters:
+                raise RequesterCannotApproveError(
+                    "Requesters cannot approve their own documents.")
 
         si = _active_stage_instance(instance)
         snap = _check_eligibility(si, actor)
 
-        # One active vote per actor per attempt keeps quorum math stable.
-        if WorkflowStageAction.objects.filter(
-            stage_instance=si, actor=actor, attempt=si.attempt,
-            is_reversal_of__isnull=True, reversed_at__isnull=True).exists():
+        # One live vote per person per attempt, by name and by real person.
+        if _live_votes(si).filter(
+            Q(actor=actor) | Q(real_voter=approvers_service.real_person_id(actor)),
+        ).exists():
             raise DuplicateApproverActionError("You have already voted on this stage.")
 
         action_row = WorkflowStageAction.objects.create(

@@ -12,6 +12,7 @@ from django.db.models import F
 from rest_framework.exceptions import NotFound
 from rest_framework.views import APIView
 
+from core.attribution import audit_row_attribution, vote_attribution
 from core.pagination import XVSPagination
 from core.response import success_response
 from vs_finance.views import resolve_entity
@@ -184,7 +185,11 @@ def _pending_context(entity, user, workflow_id, branch_filter):
 
 
 def _stage_rows(instance):
-    """Serialize prefetched stage evidence without per-stage database queries."""
+    """Serialize prefetched stage evidence without per-stage database queries.
+
+    A vote's ``actor`` is the approver whose vote it is; a vote cast under a
+    proxy also names the real person (see :mod:`core.attribution`).
+    """
     rows = []
     for stage_instance in instance.stage_instances.all():
         actions = []
@@ -194,6 +199,7 @@ def _stage_rows(instance):
                 "action": action.action,
                 "actor": _user_name(action.actor),
                 "on_behalf_of": _user_name(action.on_behalf_of) if action.on_behalf_of_id else None,
+                **vote_attribution(action, name=_user_name),
                 "comment": action.comment,
                 "acted_at": action.acted_at,
                 "attempt": action.attempt,
@@ -234,6 +240,7 @@ def _detail(entity, instance, snapshot, document, object_id):
             "id": str(log.id),
             "event_type": log.event_type,
             "actor": _user_name(log.actor) if log.actor_id else None,
+            **audit_row_attribution(log, name=_user_name),
             "message": log.message,
             "occurred_at": log.occurred_at,
         } for log in instance.audit_logs.all()],
@@ -427,7 +434,9 @@ class ProcurementApprovalDetailView(APIView):
                 "stage_instances__eligible_approvers",
                 "stage_instances__actions__actor",
                 "stage_instances__actions__on_behalf_of",
+                "stage_instances__actions__proxied_by",
                 "audit_logs__actor",
+                "audit_logs__effective_user",
             )
             .get()
         )

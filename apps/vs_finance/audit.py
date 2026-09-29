@@ -60,6 +60,10 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
 
     ``target`` may be passed instead of ``target_type``/``target_id`` for convenience;
     its class name and pk are used. Returns the created row.
+
+    Under a proxy, an ``actor_user`` that is either side of the proxy is recorded
+    as the real person, and the impersonated person lands in ``effective_user``,
+    so the trail can say "done by <real> for <impersonated>".
     """
     from .models import FinanceAuditLog
     from vs_tenants.context import add_proxy_audit_metadata, resolve_audit_identity
@@ -75,6 +79,7 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
     log = FinanceAuditLog.objects.create(
         entity=entity,
         actor=actor_user,
+        effective_user=effective_user if proxy_session is not None else None,
         action=action,
         status=status,
         target_type=target_type,
@@ -120,3 +125,20 @@ def record_rejection(*, entity, action, exc, actor_user=None, target=None,
             )
     except Exception:  # pragma: no cover - never mask the real error
         pass  # Swallow logging failures so the original business error still surfaces.
+
+
+def activity_actor(log) -> dict:
+    """The "who did it" keys of one activity-feed row built from a finance audit row.
+
+    Document drawers (invoices, payments, contracts, sourcing documents) list
+    their :class:`FinanceAuditLog` rows as activity. ``actor_name`` is the person
+    who really acted, or "System"; the attribution keys from
+    :mod:`core.attribution` add whom they acted as under a proxy, with a ready
+    ``acted_label``. Callers select ``actor`` and ``effective_user`` with the rows.
+    """
+    from core.attribution import audit_row_attribution, person_name
+
+    return {
+        "actor_name": person_name(log.actor) if log.actor_id else "System",
+        **audit_row_attribution(log),
+    }

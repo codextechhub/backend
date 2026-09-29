@@ -508,6 +508,7 @@ def _write_invoice_lines(request, entity, invoice, po, lines):
 
 def _serialize_invoice_detail(invoice):
     """Enrich the base invoice with safe, authoritative drawer-only data."""
+    from vs_finance.audit import activity_actor
     from vs_finance.models import FinanceAuditLog
     from vs_workflow.models import WorkflowInstance
 
@@ -561,14 +562,11 @@ def _serialize_invoice_detail(invoice):
     data["activity"] = [{
         "id": log.id, "action": log.action, "message": display_message(log),
         "status": log.status,
-        "actor_name": (
-            f"{getattr(log.actor, 'first_name', '')} {getattr(log.actor, 'last_name', '')}".strip()
-            or getattr(log.actor, "email", "System")
-        ) if log.actor_id else "System",
+        **activity_actor(log),
         "created_at": log.created_at,
     } for log in FinanceAuditLog.objects.filter(
         entity=invoice.entity, target_type="VendorInvoice", target_id=str(invoice.pk),
-    ).select_related("actor").order_by("-created_at")[:20]]
+    ).select_related("actor", "effective_user").order_by("-created_at")[:20]]
     return data
 
 class VendorInvoiceReferenceCheckView(_ProcBase):

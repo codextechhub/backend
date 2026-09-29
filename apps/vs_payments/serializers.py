@@ -124,18 +124,45 @@ class PayoutBatchSerializer(serializers.ModelSerializer):
 
 
 class PaymentEventSerializer(serializers.ModelSerializer):
-    """Read serializer for the append-only gateway action log (transactions log)."""
+    """Read serializer for the append-only gateway action log (transactions log).
+
+    ``actor_email`` is the person in whose name the action ran. An action taken
+    under a proxy also says who really did it: ``real_actor_name``,
+    ``proxied_user_name`` and the ready ``acted_label`` ("Ada Obi for Chioma
+    Okafor") come from :mod:`core.attribution`.
+    """
 
     entity_code = serializers.CharField(source="entity.code", read_only=True, default=None)
     action_display = serializers.CharField(source="get_action_display", read_only=True)
     actor_email = serializers.CharField(source="actor_user.email", read_only=True, default=None)
+    real_actor_name = serializers.SerializerMethodField()
+    proxied_user_name = serializers.SerializerMethodField()
+    acted_label = serializers.SerializerMethodField()
 
     class Meta:
         model = PaymentEvent
         fields = [
             "id", "entity_code", "provider", "action", "action_display", "reference",
             "succeeded", "message", "metadata", "actor_email", "created_at",
+            "real_actor_name", "proxied_user_name", "acted_label",
         ]
+
+    def _attribution(self, obj) -> dict:
+        from core.attribution import proxy_attribution
+
+        actor = obj.actor_user if obj.actor_user_id else None
+        if obj.proxied_by_id:
+            return proxy_attribution(obj.proxied_by, actor)
+        return proxy_attribution(actor)
+
+    def get_real_actor_name(self, obj) -> str | None:
+        return self._attribution(obj)["real_actor_name"]
+
+    def get_proxied_user_name(self, obj) -> str | None:
+        return self._attribution(obj)["proxied_user_name"]
+
+    def get_acted_label(self, obj) -> str:
+        return self._attribution(obj)["acted_label"]
 
 
 class PayoutBatchSummarySerializer(serializers.ModelSerializer):

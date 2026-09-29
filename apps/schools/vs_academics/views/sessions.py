@@ -253,9 +253,9 @@ class SessionRollForwardView(AcademicsViewMixin, APIView):
         from ..models import AcademicSession
         from ..services.rollover import roll_forward
 
-        from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
+        from vs_rbac.scoping import caller_reaches_whole_tenant
 
-        if visible_branch_ids(request.user, self.tenant) is not WHOLE_TENANT:
+        if not caller_reaches_whole_tenant(request.user, self.tenant):
             # Copying a year copies its shared structure, which is not a
             # branch's to create.
             from vs_rbac.exceptions import SharedRecordReadOnly

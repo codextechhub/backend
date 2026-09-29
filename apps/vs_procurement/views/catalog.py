@@ -14,6 +14,7 @@ from core.response import success_response
 from vs_finance.constants import AccountType, DocumentStatus
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
+from vs_rbac.scoping import WholeTenantWriteMixin
 
 from ..models import CatalogItem, PurchaseOrderLine, Vendor, VendorCategory
 from ..purchasing import vendor_purchase_block_reason
@@ -199,7 +200,18 @@ def _duplicate_error(exc):
     return ValidationError({"code": "A catalog item with this code already exists in this entity."})
 
 
-class CatalogItemListCreateView(_ProcBase):
+class _CatalogWriteMixin(WholeTenantWriteMixin):
+    """Every write to the item catalog needs whole-tenant reach.
+
+    A catalog item carries no branch: its price, preferred vendor and expense
+    account are the defaults every branch's requisitions and orders start
+    from, so Lekki's officer repricing an item reprices it for Ikeja too.
+    """
+
+    shared_subject = "the item catalog"
+
+
+class CatalogItemListCreateView(_CatalogWriteMixin, _ProcBase):
     """List or create reusable buying defaults; no operation here posts to the GL."""
 
     @property
@@ -263,7 +275,7 @@ class CatalogItemListCreateView(_ProcBase):
         )
 
 
-class CatalogItemDetailView(_ProcBase):
+class CatalogItemDetailView(_CatalogWriteMixin, _ProcBase):
     """Retrieve or update one item without rewriting any snapshotted document line."""
 
     @property

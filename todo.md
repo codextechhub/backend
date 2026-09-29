@@ -1616,6 +1616,50 @@ break label and import alias; M17 the due rule label in the school's word and
 the one period name; M25 the switch label. MRD: a school names its own terms,
 says Term or Semester, and chooses its default arms.
 
+### D73. Who really acted is on the record, approvals count real people, and shared records need a school-wide caller (hash pending, 2026-09-29)
+MODULES: M07 workflow and approval engine, M04 roles and permissions, M05 audit
+and activity logging, M19 finance and accounting, M18 payments and collections,
+M22 procurement and requisitions, M21 vendor management, M08 notifications and
+delivery, M12 staff management, M13 academic structure, MRD.
+From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF).
+MUST SAY:
+- Impersonation (M05, M07, M19, M18, M22). Acting as a colleague is not locked.
+  Every row that says who did something records both people:
+  FinanceAuditLog.effective_user and WorkflowAuditLog.effective_user (the
+  impersonated person; actor stays the real one), WorkflowStageAction.proxied_by
+  and PaymentEvent.proxied_by (the real person; actor stays the impersonated one).
+  The finance trail, workflow votes and audit, procurement activity feeds and
+  approval detail, the procurement dashboard's activity and the payments
+  transactions log add real_actor_name, proxied_user_name and acted_label ("Ada
+  Obi for Chioma Okafor"); existing keys are unchanged. Document stamps
+  (created_by, posted_by) still name the impersonated person; their audit rows
+  explain them. Migrations: vs_finance 0032, vs_payments 0008, vs_workflow 0021.
+- Separation of duties counts real people (M07). The requester cannot approve,
+  whether as themselves or through a proxy; the requester is the named requester
+  plus the real submitter and any real resubmitter. One real person has one vote
+  per step, and ANY, QUORUM and ALL steps count distinct real people. A step Ada
+  already voted on by proxy leaves her queue. One person may still sign two
+  different steps (accepted). The payout two-approver rule follows in the next
+  payments change.
+- Shared records need a school-wide caller (M19, M22, M21). A branch-bound holder
+  of the key gets 403 SHARED_RECORD_READ_ONLY and nothing is written for: period
+  close, soft close, reopen, lock, year create and close; dunning policies; tax
+  obligations; preparing a tax filing and filing, unfiling or paying a filing with
+  no branch; currencies, FX rates, tax codes, dimensions; cost centres; chart of
+  accounts create and edit (a branch's own bank ledger stays editable by it);
+  reversing, posting or submitting a journal with no branch; procurement catalogue
+  items and vendor categories. One choke point, WholeTenantWriteMixin and
+  shared_write_refusal in vs_rbac.scoping. These no-branch cases retire once
+  every transaction names a branch (finance_branch_books_design).
+- One-branch schools (M04, all modules). At a tenant with exactly one branch, a
+  grant pinned to that branch reaches the whole tenant for reading, writing,
+  granting and approval routing, and session branch_reach.whole_tenant is true;
+  a second branch narrows it again at once. visible_branch_ids is the one answer;
+  the evaluator's tenant-scope match, staff reach_of and the staff roster follow.
+- A direct entry takes its branch by the raised-branch rule (M19). The fiscal
+  calendar warning goes only to finance.period.create holders who reach the whole
+  tenant (M19, M08).
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

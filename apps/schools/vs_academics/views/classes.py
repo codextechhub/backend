@@ -674,10 +674,14 @@ def _offerings_caller_may_write(user, tenant, subject, levels, *, session):
     replace would otherwise delete. Asking to change a shared one is refused
     rather than ignored.
     """
-    from vs_rbac.scoping import WHOLE_TENANT, caller_may_change, visible_branch_ids
+    from vs_rbac.scoping import (
+        caller_may_change,
+        caller_reaches_whole_tenant,
+        visible_branch_ids,
+    )
 
     visible = visible_branch_ids(user, tenant)
-    if visible is WHOLE_TENANT or (
+    if caller_reaches_whole_tenant(user, tenant, visible=visible) or (
         subject.branch_id is not None
         and caller_may_change(user, tenant, [subject.branch_id], visible=visible)
     ):

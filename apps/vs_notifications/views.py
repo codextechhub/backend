@@ -528,15 +528,17 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
         codex-tenant rows would be inert for everybody else. ``branch`` is the
         named branch, or None for the tenant scope. ``whole_reach`` says whether
         the caller may act for the whole scope resolved: always true once a
-        branch has been accepted, and at the tenant scope only for a caller no
-        branch grant narrows.
+        branch has been accepted, and at the tenant scope only for a caller
+        whose reach is the whole tenant
+        (:func:`vs_rbac.scoping.caller_reaches_whole_tenant`, the rule every
+        shared-record write asks).
 
         The two ?branch= rules mirror vs_config.services.scopes: the branch must
         live under the asserted tenant, and it must be one the caller is
         entitled to. Every refusal raises the same NotFound, so the parameter
         cannot confirm that another tenant's or another branch's id exists.
         """
-        from vs_rbac.scoping import visible_branch_ids
+        from vs_rbac.scoping import caller_reaches_whole_tenant, visible_branch_ids
         from vs_tenants.references import find_branch_in_tenant
 
         asserted = request.tenant
@@ -545,7 +547,8 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
         branch_ref = (request.query_params.get("branch") or "").strip()
 
         if not branch_ref:
-            return (None if is_platform else asserted), None, reach is None
+            whole = caller_reaches_whole_tenant(request.user, asserted, visible=reach)
+            return (None if is_platform else asserted), None, whole
 
         branch = None if is_platform else find_branch_in_tenant(asserted, branch_ref)
         if branch is None or (reach is not None and branch.pk not in reach):

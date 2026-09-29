@@ -85,6 +85,29 @@ def resolve_audit_identity(actor_user, effective_user=None, impersonation_sessio
     return request_actor, request_effective, request_session
 
 
+def get_proxy_actor(for_user=None):
+    """Return the real person behind the current proxied request, or ``None``.
+
+    Under a proxy (an impersonation session) ``request.user`` is the person being
+    impersonated, so every stamp a view writes from it names that person. This
+    answers the other half: who was actually at the keyboard. It is ``None``
+    whenever the request is not proxied, so a caller can store the result as is.
+
+    ``for_user`` narrows the answer to rows the proxy itself produced. A row
+    stamped with someone else (a third party named by the action, or the real
+    person acting as themselves) was not done "for" anyone, so the answer is
+    ``None`` unless ``for_user`` is the impersonated person.
+    """
+    request_actor, request_effective, request_session = get_current_audit_identity()
+    if request_session is None or request_actor is None:
+        return None
+    if _same_user(request_actor, request_effective):
+        return None
+    if for_user is not None and not _same_user(for_user, request_effective):
+        return None
+    return request_actor
+
+
 def add_proxy_audit_metadata(metadata, effective_user, impersonation_session):
     """Copy metadata and append portable proxy attribution when applicable."""
     resolved = dict(metadata or {})

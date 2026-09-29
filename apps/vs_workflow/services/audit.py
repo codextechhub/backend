@@ -13,6 +13,9 @@ def write(instance: WorkflowInstance, event_type: AuditEventType, *,
     call write() inside a rollback-only savepoint because the audit entry
     would disappear with the savepoint. The log is the source of truth for
     "who did what and when" across the whole workflow lifecycle.
+
+    Under a proxy (an impersonation session) the row names the real person as
+    ``actor`` and the impersonated person as ``effective_user``.
     """
     from vs_tenants.context import add_proxy_audit_metadata, resolve_audit_identity
 
@@ -20,5 +23,6 @@ def write(instance: WorkflowInstance, event_type: AuditEventType, *,
     context = add_proxy_audit_metadata(context, effective_user, proxy_session)
     return WorkflowAuditLog.objects.create(
         instance=instance, event_type=event_type, actor=actor,
+        effective_user=effective_user if proxy_session is not None else None,
         stage_instance=stage_instance, context=context or {}, message=message,
     )

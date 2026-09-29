@@ -24,6 +24,18 @@ Read in order, first match wins::
     any active whole-tenant grant   -> the whole tenant
     else any active branch grant    -> exactly those branches, while in service
     else                            -> fall back to ``User.branch``
+    then: exactly the tenant's only branch -> the whole tenant
+
+The last line applies to whichever arm answered. Harbour Primary has one
+branch, Main, and its bursar holds her role pinned to Main. Every row Harbour
+has is a Main row or a shared one, so the pin says nothing a whole-tenant grant
+would not: she reads the tenant-level figures, changes shared records and
+grants roles across the tenant exactly as an unpinned bursar does. The day
+Harbour opens a second branch the same grant narrows to Main again, on the next
+request, because a shared row then binds a branch she does not work in. A
+caller covering every branch of a tenant with two or more stays narrowed: the
+next branch opened would inherit whatever they did to a shared row. The grant
+row itself is never rewritten; only its reading changes with the branch count.
 
 A whole-tenant grant dominating is not a detail: it is what "whole tenant"
 means, and it is how everybody working today holds their access. It dominates
@@ -86,14 +98,35 @@ class _NoGrants:
 _SILENT = _NoGrants()
 
 
-def _assignment_scope_rows(queryset, *, with_user=False):
-    """Read effective branch inputs in one query, including role reach."""
+def _assignment_scope_rows(queryset, *, with_user=False, extra=()):
+    """Read effective branch inputs in one query, including role reach.
+
+    ``extra`` names annotations to append to each row, after the branch inputs.
+    """
     fields = (
         "branch_id", "branch__status", "role__branch_id",
         "role__branch__status", "role__additional_branches__id",
         "role__additional_branches__status",
     )
-    return queryset.values_list(*(("user_id",) + fields if with_user else fields))
+    fields = (("user_id",) + fields if with_user else fields) + tuple(extra)
+    return queryset.values_list(*fields)
+
+
+def _only_branch_subquery(tenant):
+    """*tenant*'s only branch id as a subquery (NULL when it has several).
+
+    Uncorrelated, so the database evaluates it once however many rows carry it.
+    """
+    from django.db.models import Case, Count, F, Min, Subquery, When
+
+    from vs_tenants.models import Branch
+
+    return Subquery(
+        Branch.all_objects.filter(tenant=tenant).order_by().values("tenant")
+        .annotate(_count=Count("pk"), _lowest=Min("pk"))
+        .annotate(_only=Case(When(_count=1, then=F("_lowest"))))
+        .values("_only")[:1]
+    )
 
 
 def _effective_grant_rows(rows):
@@ -127,7 +160,9 @@ def _grant_scope(user, tenant):
     answer".
 
     One query: the branch ids of the caller's active grants, with ``None``
-    present in the result iff they hold a whole-tenant one.
+    present in the result iff they hold a whole-tenant one, each row also
+    carrying the tenant's only branch, which is memoised for
+    :func:`_only_branch_id`.
     """
     if getattr(user, "tenant_id", None) != tenant.pk:
         # Branch grants only exist inside the caller's own tenant, so this
@@ -142,14 +177,20 @@ def _grant_scope(user, tenant):
     # posting, the second must show nothing - and a filter that drops the
     # withdrawn rows makes the two indistinguishable. The status comes back with
     # the row instead, so this is still one query.
-    rows = set(_effective_grant_rows(_assignment_scope_rows(
+    # The tenant's only branch rides along on every row, so the one-branch rule
+    # costs a caller with grants no query of its own.
+    raw = list(_assignment_scope_rows(
         TenantUserRoleAssignment.objects.filter(
             tenant=tenant,
             user=user,
             assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
             role__status="ACTIVE",
-        ),
-    )))
+        ).annotate(_tenant_only_branch=_only_branch_subquery(tenant)),
+        extra=("_tenant_only_branch",),
+    ))
+    if raw:
+        _remember_only_branch(user, tenant, raw[0][-1])
+    rows = set(_effective_grant_rows(row[:-1] for row in raw))
     return _scope_from_rows(rows)
 
 
@@ -188,6 +229,95 @@ def _posting_fallback(user, extra_ids=None):
     return frozenset(ids) if ids else WHOLE_TENANT
 
 
+def only_branch_id(tenant) -> Optional[int]:
+    """The id of *tenant*'s one branch, or ``None`` when it has more than one.
+
+    Counted over every branch the tenant owns, whatever its status, which is
+    the same count that decides whether the branch dimension shows on a screen
+    at all: a suspended or pending second branch still has rows that a
+    tenant-wide change would reach. One query, reading at most two ids.
+
+    Not memoised. A caller asking on behalf of one person goes through
+    :func:`_only_branch_id`, which is.
+    """
+    from vs_tenants.models import Branch
+
+    if tenant is None:
+        return None
+    ids = list(
+        Branch.all_objects.filter(tenant=tenant).values_list("pk", flat=True)[:2]
+    )
+    return ids[0] if len(ids) == 1 else None
+
+
+def _only_branch_id(user, tenant) -> Optional[int]:
+    """:func:`only_branch_id`, memoised on the user instance, keyed by tenant.
+
+    The same life as :func:`visible_branch_ids`' own memo: ``request.user`` is
+    rebuilt per request, so a second branch opened between two requests is
+    seen by the next one, while a list judging many rows asks the database
+    once.
+    """
+    cache = getattr(user, "_rbac_only_branch", None)
+    if cache is not None and tenant.pk in cache:
+        return cache[tenant.pk]
+    return _remember_only_branch(user, tenant, only_branch_id(tenant))
+
+
+def _remember_only_branch(user, tenant, only):
+    """Memoise *only* as *tenant*'s only branch on *user*, and return it."""
+    cache = getattr(user, "_rbac_only_branch", None)
+    if cache is None:
+        cache = {}
+        try:
+            user._rbac_only_branch = cache
+        except AttributeError:  # pragma: no cover - defensive, mirrors visible_branch_ids
+            return only
+    cache[tenant.pk] = only
+    return only
+
+
+def _home_posting(user, tenant):
+    """The home-posting fallback and *tenant*'s only branch, in one query.
+
+    Returns ``(scope, only_branch_id)``. The caller's equal postings and the
+    tenant's branches come back as one list of branch rows, so a caller whose
+    grants say nothing learns both their posting set and whether it is the
+    tenant's only branch for the price of the postings query alone. That
+    keeps a posted reader's per-request cost where it was before the
+    one-branch rule existed.
+    """
+    from django.db.models import Exists, OuterRef, Q
+
+    from vs_tenants.models import Branch
+    from vs_user.models import User
+
+    postings = User.additional_branches.through.objects.filter(user_id=user.pk)
+    rows = (
+        Branch.all_objects
+        .filter(Q(tenant=tenant) | Q(pk__in=postings.values("branch_id")))
+        .annotate(_posted=Exists(postings.filter(branch_id=OuterRef("pk"))))
+        .values_list("pk", "tenant_id", "_posted")
+    )
+    extra_ids, own = [], []
+    for branch_id, tenant_id, posted in rows:
+        if posted:
+            extra_ids.append(branch_id)
+        if tenant_id == tenant.pk:
+            own.append(branch_id)
+    return _posting_fallback(user, extra_ids), (own[0] if len(own) == 1 else None)
+
+
+def _is_only_branch(scope, only_id) -> bool:
+    """Whether *scope* is exactly the tenant's only branch; see the module docstring."""
+    return (
+        scope is not WHOLE_TENANT
+        and only_id is not None
+        and len(scope) == 1
+        and next(iter(scope)) == only_id
+    )
+
+
 def visible_branch_ids_for(users, tenant):
     """:func:`visible_branch_ids` for many people, in one query.
 
@@ -201,7 +331,9 @@ def visible_branch_ids_for(users, tenant):
 
     The rule is not restated here. The rows are read by ``_scope_from_rows``,
     the same function the single version uses, and the no-grants fallback to
-    the holder's home posting is the same fallback for the same reason.
+    the holder's home posting is the same fallback for the same reason. The
+    tenant's only branch is looked up once for the whole list, and only when
+    somebody's answer is a single branch.
     """
     users = list(users)
     if not users or tenant is None:
@@ -239,6 +371,17 @@ def visible_branch_ids_for(users, tenant):
         if scope is _SILENT:
             scope = _posting_fallback(user, extras.get(user.pk, ()))
         answer[user.pk] = scope
+
+    home = {user.pk for user in users if getattr(user, "tenant_id", None) == tenant.pk}
+    single = [
+        user_id for user_id, scope in answer.items()
+        if user_id in home and scope is not WHOLE_TENANT and len(scope) == 1
+    ]
+    if single:
+        only = only_branch_id(tenant)
+        for user_id in single:
+            if _is_only_branch(answer[user_id], only):
+                answer[user_id] = WHOLE_TENANT
     return answer
 
 
@@ -248,8 +391,11 @@ def visible_branch_ids(user, tenant=None) -> Optional[FrozenSet[int]]:
     Memoised on the user instance for the life of the request, keyed by tenant:
     this is on the hot path of every list, every detail read and every aggregate,
     and ``request.user`` is rebuilt per request, so the cache can never go stale
-    across one. Cost is one query per request per tenant, and none at all for a
-    caller whose grants are all whole-tenant after the first call.
+    across one. Cost is one query per request per tenant, and one more for a
+    caller whose grants say nothing, to read their home postings; none at all
+    after the first call. Whichever query answers also brings the tenant's
+    only branch with it, so the one-branch rule (see the module docstring)
+    adds no query of its own.
 
     An empty frozenset is a real answer meaning "sees nothing", and is
     deliberately distinguishable from :data:`WHOLE_TENANT`.
@@ -271,7 +417,16 @@ def visible_branch_ids(user, tenant=None) -> Optional[FrozenSet[int]]:
         # ``branch_id`` rather than ``branch``: the id is already on the row, and
         # dereferencing the relation would fetch the whole Branch on the hot path
         # of every read just to read its primary key back.
-        scope = _posting_fallback(user)
+        scope, only = _home_posting(user, tenant)
+        _remember_only_branch(user, tenant, only)
+    if (
+        scope is not WHOLE_TENANT and len(scope) == 1
+        and getattr(user, "tenant_id", None) == tenant.pk
+        and _is_only_branch(scope, _only_branch_id(user, tenant))
+    ):
+        # Only ever for the tenant the caller belongs to: their only branch
+        # makes them whole-tenant at home, never in a tenant being asked about.
+        scope = WHOLE_TENANT
 
     if cache is None:
         cache = {}
@@ -284,12 +439,16 @@ def visible_branch_ids(user, tenant=None) -> Optional[FrozenSet[int]]:
 
 
 def branch_reach_payload(user, tenant=None) -> dict:
-    """:func:`visible_branch_ids` in the shape the session payload carries.
+    """The caller's reach in the shape the session payload carries.
 
-    ``whole_tenant`` is true when nothing narrows the caller; ``branch_ids`` is
-    then empty and means nothing. Otherwise ``branch_ids`` is exactly the set
-    of branches the caller may work in, and may be empty, which means they see
-    no branch rows at all.
+    ``whole_tenant`` is true when :func:`visible_branch_ids` answers the whole
+    tenant, which includes a caller pinned to a tenant's only branch. It is the
+    one answer every read narrows by and every shared-record write asks, so a
+    client that reads it to decide whether a shared screen is read-only agrees
+    with the server that refuses the write. ``branch_ids`` is then empty and
+    means nothing. Otherwise ``branch_ids`` is exactly the set of branches the
+    caller may work in, and may be empty, which means they see no branch rows
+    at all.
 
     The sign-in response and ``/me`` both carry it so a client can tell "this
     school has two branches" apart from "this person may work in two
@@ -355,7 +514,8 @@ class BranchScope:
         specifies ``Student.branch`` (declared non-null, so the question cannot
         arise there at all).
 
-    A whole-tenant caller is not narrowed in either mode, and :meth:`filter` then
+    A whole-tenant caller, including one pinned to a tenant's only branch, is
+    not narrowed in either mode, and :meth:`filter` then
     returns the queryset untouched rather than adding a tautological term, so a
     tenant that has never used a branch-pinned grant keeps byte-identical SQL.
     """
@@ -544,14 +704,32 @@ def branch_visible(request, qs, prefix: str = "", *, field: str = "branch",
 _UNRESOLVED = object()
 
 
+def caller_reaches_whole_tenant(user, tenant=None, *, visible=_UNRESOLVED) -> bool:
+    """Whether *user*'s reach is the whole of *tenant*, for a write to a shared row.
+
+    Exactly :func:`visible_branch_ids` answering the whole tenant, so the
+    screens a caller reads and the shared rows they may change cannot give two
+    answers. That includes a caller pinned to a tenant's only branch (see the
+    module docstring). A caller covering every branch of a tenant with two or
+    more is still branch-bound: the next branch opened would inherit their
+    change.
+
+    Pass ``visible`` when it is already resolved, so it is not looked up twice.
+    """
+    if visible is _UNRESOLVED:
+        visible = visible_branch_ids(user, tenant or getattr(user, "tenant", None))
+    return visible is WHOLE_TENANT
+
+
 def caller_may_change(user, tenant, branch_ids, *, visible=_UNRESOLVED) -> bool:
     """Whether *user* may change a row belonging to *branch_ids*, not merely read it.
 
     ``branch_ids`` is the row's whole branch set: one id for a row with a single
     branch, several for a row posted or linked to several, and empty for a row
-    shared across the tenant. A whole-tenant caller may change any row they can
-    see. A branch-bound caller may change a row only when its set is non-empty
-    and every branch in it is one of theirs.
+    shared across the tenant. A whole-tenant caller, which includes one pinned
+    to a tenant's only branch, may change any row they can see. A branch-bound
+    caller may change a row only when its set is non-empty and every branch in
+    it is one of theirs.
 
     Pass ``visible`` when judging many rows, so the caller's scope is resolved
     once rather than per row.
@@ -585,8 +763,10 @@ def assert_caller_may_configure(user, tenant, branch=None, *, message: str = "")
     tenant's own, it binds every branch, and only a caller whose reach is the
     whole tenant may change it: a branch administrator whose role carries the
     settings key still only reads it, because raising a minimum for Ikeja
-    raises it for Lekki too. With a ``branch`` the setting is that branch's own
-    override, and a caller who covers that branch may set or remove it.
+    raises it for Lekki too. A caller pinned to a tenant's only branch reaches
+    the whole tenant (:func:`caller_reaches_whole_tenant`) and may change it.
+    With a ``branch`` the setting is that branch's own override, and a caller
+    who covers that branch may set or remove it.
 
     The permission key is a separate question, answered before this by
     :class:`~vs_rbac.permissions.HasRBACPermission`. A view that accepts a
@@ -597,6 +777,45 @@ def assert_caller_may_configure(user, tenant, branch=None, *, message: str = "")
     assert_caller_may_change(
         user, tenant, () if branch is None else (branch,), message=message,
     )
+
+
+def shared_write_refusal(subject: str) -> str:
+    """The sentence a refused write to a shared record carries, naming *subject*."""
+    return f"Only a school-wide administrator can change {subject}."
+
+
+class WholeTenantWriteMixin:
+    """Refuse every write on a view whose rows are shared across the whole tenant.
+
+    For records that carry no branch and bind every branch at once: a fiscal
+    period, a tax code, a dunning ladder, a catalogue item. Holding the write
+    key is not enough to change one, because Lekki's bursar closing January
+    closes it for Ikeja too. The caller's reach has to be the whole tenant
+    (:func:`caller_reaches_whole_tenant`), and a refusal is a 403
+    ``SHARED_RECORD_READ_ONLY`` raised before the handler runs, so nothing is
+    written.
+
+    The check sits in :meth:`check_permissions`, after the permission classes,
+    so a caller without the key still gets the ordinary permission refusal, and
+    every unsafe method of the view is covered without its handler having to
+    remember. Reads are untouched.
+
+    ``shared_subject`` completes the refusal sentence
+    (:func:`shared_write_refusal`). A view mixing shared and branch rows does
+    not use this: it judges the row with :func:`assert_caller_may_change`.
+    """
+
+    shared_subject = "these records"
+
+    def check_permissions(self, request):
+        from rest_framework.permissions import SAFE_METHODS
+
+        super().check_permissions(request)
+        if request.method not in SAFE_METHODS:
+            assert_caller_may_configure(
+                request.user, getattr(request, "tenant", None),
+                message=shared_write_refusal(self.shared_subject),
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -629,9 +848,21 @@ def sole_caller_branch_id(request) -> Optional[int]:
     branch). It is never used to decide what a caller may reach: answering
     ``None`` for a caller entitled to two branches would read as "unbound", and
     unbound means the whole tenant.
+
+    A caller in a tenant with one branch works in that branch whatever their
+    grants say, so it is the answer for them even though their reach is the
+    whole tenant. :func:`raised_branch` does not default from this for a
+    whole-tenant caller: it files an unnamed row as the tenant's, exactly as
+    it does for an unpinned one.
     """
     ids = caller_branch_ids(request)
-    if ids is None or len(ids) != 1:
+    if ids is None:
+        user = getattr(request, "user", None)
+        tenant = getattr(user, "tenant", None)
+        if tenant is None or not getattr(user, "is_authenticated", False):
+            return None
+        return _only_branch_id(user, tenant)
+    if len(ids) != 1:
         return None
     return next(iter(ids))
 
@@ -673,7 +904,10 @@ def raised_branch(request, tenant, body, *, field: str = "branch",
     different one is refused rather than silently retargeted. A caller who is not
     bound at all may name any branch belonging to *tenant*, or leave it out -
     leaving it out means the row belongs to the tenant as a whole and is a valid
-    answer, not missing data.
+    answer, not missing data. A caller pinned to a tenant's only branch is not
+    bound (see the module docstring), so at Harbour Primary the pinned bursar
+    and the unpinned one file the same row the same way: tenant-wide when they
+    name no branch, Main when they name it.
 
     ``shared_when_ambiguous`` decides the one case in between: a caller bound to
     **several** branches who names none.

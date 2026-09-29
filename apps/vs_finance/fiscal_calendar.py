@@ -13,7 +13,8 @@ dated there fails at once. This module holds the two things that prevent that:
   it opens the next year itself, or only tells the finance staff, as
   :class:`~vs_finance.models.FinanceCalendarSettings` says. Whenever the calendar
   still needs a person afterwards - warn-only, an automatic opening that failed, a
-  gap no new year at the end can fill - the staff who may open a year are told.
+  gap no new year at the end can fill - the staff who may open a year are told
+  (:func:`calendar_alert_recipients`).
 
 Nothing here knows what kind of organisation keeps the books. The start month and
 period length of a new year are read from the year before it, so a September-to-
@@ -360,6 +361,35 @@ def _action(runway, *, settings, failure) -> str:
     return "Open a fiscal year in Finance settings."
 
 
+def calendar_alert_recipients(tenant) -> list:
+    """The people told the calendar needs them: those who can open a year.
+
+    Opening a year is a write to the fiscal calendar, which carries no branch,
+    so it takes both the key (:data:`CALENDAR_ALERT_PERMISSION`) and whole-tenant
+    reach (:func:`vs_rbac.scoping.caller_reaches_whole_tenant`), the same pair
+    the fiscal-year endpoint demands. A warning is only useful to somebody who
+    can act on it: Lekki's bursar holds the key through a role pinned to Lekki,
+    the endpoint would refuse her, and telling her daily that postings stop
+    would leave her with an alarm and no way to answer it. At a school with one
+    branch, a bursar pinned to it reaches the whole school and is told.
+
+    Holders are found at any branch and then judged on their whole reach, not
+    on the grant carrying the key, because that is how the endpoint judges them.
+    """
+    from vs_rbac.evaluator import ANY_BRANCH, resolve_users_with_permission
+    from vs_rbac.scoping import caller_reaches_whole_tenant, visible_branch_ids_for
+
+    holders = list(resolve_users_with_permission(
+        tenant, ANY_BRANCH, CALENDAR_ALERT_PERMISSION,
+    ))
+    reach = visible_branch_ids_for(holders, tenant)
+    return [
+        user for user in holders
+        if (caller_reaches_whole_tenant(user, tenant, visible=reach[user.pk])
+            if user.pk in reach else caller_reaches_whole_tenant(user, tenant))
+    ]
+
+
 def _warn(entity, runway, *, settings, failure, today) -> bool:
     """Tell the staff who may open a year, and record that they were told.
 
@@ -373,14 +403,11 @@ def _warn(entity, runway, *, settings, failure, today) -> bool:
         return False
     try:
         from vs_notifications.notify import send_notification
-        from vs_rbac.evaluator import resolve_users_with_permission
 
-        recipients = list(resolve_users_with_permission(
-            entity.tenant, None, CALENDAR_ALERT_PERMISSION,
-        ))
+        recipients = calendar_alert_recipients(entity.tenant)
         if not recipients:
             logger.warning(
-                "%s: nobody at entity %s holds %s.",
+                "%s: nobody at entity %s holds %s school-wide.",
                 CALENDAR_ALERT_EVENT, entity.code, CALENDAR_ALERT_PERMISSION,
             )
             return False
