@@ -218,6 +218,9 @@ class WorkflowTemplatePublishSerializer(serializers.Serializer):
     # default) writes the caller's own version.
     scope               = serializers.ChoiceField(
         choices=["TENANT", "PLATFORM"], required=False, default="TENANT")
+    # The branch a TENANT template is for; see WorkflowTemplateViewSet.publish
+    # for what leaving it out means. Resolved inside the tenant by the view.
+    branch              = serializers.IntegerField(required=False, allow_null=True, min_value=1)
     document_type       = serializers.CharField(max_length=100)
     code                = serializers.SlugField(max_length=100)
     name                = serializers.CharField(max_length=200)

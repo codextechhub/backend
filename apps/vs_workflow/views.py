@@ -20,7 +20,10 @@ from vs_rbac.permissions import (
 # with no branch is shared across the school - a tenant-wide template, a group
 # that approves for every site - and hiding those from a branch approver would
 # break the branch -> tenant -> platform cascade the engine actually runs.
-from vs_rbac.scoping import branch_q
+from vs_rbac.scoping import (
+    assert_caller_may_change, assert_caller_may_configure, branch_q,
+    caller_branch_ids, resolve_branch, sole_caller_branch,
+)
 from vs_tenants.models import Tenant
 from vs_rbac.permissions import user_has_rbac_permission
 
@@ -63,6 +66,73 @@ from vs_workflow.services.visibility import exclude_hidden_documents
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+# Who decides approvals is configuration like any other: a row with no branch
+# binds every branch, and only a caller whose reach is the whole tenant may
+# change it (vs_rbac.scoping.caller_may_change). These are the sentences a
+# refused write carries, one pair per kind of row: the shared form, and the
+# form for a row belonging to a branch the caller does not cover.
+TEMPLATE_SHARED = (
+    "Only a school-wide administrator can change the approval steps every "
+    "branch follows. Ask one to change them, or publish them for your own branch."
+)
+TEMPLATE_OTHER_BRANCH = "You can only publish approval steps for your own branch."
+GROUP_SHARED = (
+    "Only a school-wide administrator can change this approver group, because "
+    "it decides approvals for every branch. Ask one to change it, or create a "
+    "group for your branch."
+)
+GROUP_OTHER_BRANCH = (
+    "This approver group decides approvals for branches you do not work in, so "
+    "only an administrator who covers them can change it."
+)
+DYNAMIC_ROLE_SHARED = (
+    "Only a school-wide administrator can change a Dynamic Role, because it "
+    "decides approvals for every branch. Ask one to change it."
+)
+STAGE_SHARED = (
+    "Only a school-wide administrator can change who approves a step every "
+    "branch follows. Ask one to change it."
+)
+STAGE_OTHER_BRANCH = (
+    "You can only change who approves a step on your own branch's approval steps."
+)
+DELEGATION_NOT_YOURS = (
+    "Only the person who handed over their approvals, or an administrator, can "
+    "change this delegation."
+)
+DELEGATION_SHARED = (
+    "This delegation belongs to somebody whose approvals reach beyond your "
+    "branch, so only a school-wide administrator can change it."
+)
+
+
+def _assert_may_configure(request, branch, *, shared, other_branch):
+    """Refuse a write to workflow configuration owned by *branch* past the caller's reach (403).
+
+    ``branch`` is ``None`` for a row the whole tenant shares.
+    """
+    assert_caller_may_configure(
+        request.user, request.tenant, branch,
+        message=shared if branch is None else other_branch,
+    )
+
+
+def _branch_for_new_row(request, named):
+    """The branch a new template or group is for, when the caller names none.
+
+    The one named, else the caller's own branch when they work in exactly
+    one, else the whole tenant. A whole-tenant caller naming none writes the
+    tenant's own row, so their home posting never decides it. A caller bound
+    to several branches who names none is asking for the whole tenant, which
+    :func:`_assert_may_configure` then refuses.
+    """
+    if named is not None:
+        return named
+    if caller_branch_ids(request) is None:
+        return None
+    return sole_caller_branch(request, request.tenant)
+
 
 # Apply branch scope only when the user is branch-scoped.
 def _filter_by_branch(qs, branch):
@@ -134,33 +204,25 @@ def _preview_dynamic_role(d, requester, instance, scope):
              "evaluations": evaluations})
 
 
-# Resolve tenant/branch context once for all workflow views.
+# Resolve tenant context once for all workflow views.
 class TenantScopedMixin:
     """Single source of truth for "which tenant is this request about".
 
     ``request.tenant`` is resolved by TenantJWTAuthentication from the asserted
-    ``?tenant=`` and is always present on an authenticated request. This
-    replaces an earlier ``get_school()`` that read ``request._cached_school`` -
-    an attribute nothing in the codebase ever set, so every scope check built
-    on it silently passed. Models whose default manager is tenant-aware were
-    still scoped by the ambient context; models without one (stage instances,
-    stage actions) were not scoped at all.
+    ``?tenant=`` and is always present on an authenticated request. Querysets
+    scope by it explicitly rather than trusting the ambient context a
+    tenant-aware manager reads, because some workflow models (stage instances,
+    stage actions) have no such manager and would otherwise not be scoped at
+    all.
+
+    Branch scope is not here. Whose rows a caller sees comes from
+    :func:`vs_rbac.scoping.branch_q`, and which branch a new template or group
+    is for from :func:`_branch_for_new_row`; the caller's home posting
+    decides neither.
     """
 
     def get_tenant(self):
         return getattr(self.request, "tenant", None)
-
-    def get_branch(self):
-        """The caller's home posting.
-
-        Kept because it is still the right answer for "where is this person
-        based" (defaults, display), but it is deliberately no longer used to
-        decide *whose rows* anybody sees. ``User.branch`` holds one value and
-        cannot express "Ikeja and Lekki but not Yaba", which a set of grants can;
-        :func:`vs_rbac.scoping.branch_q` is the authority on scope and is what the
-        querysets below filter on.
-        """
-        return getattr(self.request.user, "branch", None)
 
 
 # ── Templates ────────────────────────────────────────────────────────────────
@@ -456,6 +518,14 @@ class WorkflowTemplateViewSet(
 
     @action(detail=False, methods=["post"], url_path="publish")
     def publish(self, request):
+        """Create or replace one set of approval steps.
+
+        ``branch`` names the branch the steps are for. Left out, they are the
+        caller's own branch's when the caller works in exactly one, and the
+        tenant's own otherwise. Steps for the whole tenant need a caller whose
+        reach is the whole tenant, and a branch's steps need that branch: a
+        refusal is 403 ``SHARED_RECORD_READ_ONLY`` and nothing is written.
+        """
         p = WorkflowTemplatePublishSerializer(data=request.data)
         p.is_valid(raise_exception=True)
         d = p.validated_data
@@ -471,12 +541,22 @@ class WorkflowTemplateViewSet(
                 "error": {"code": "PLATFORM_SCOPE_DENIED", "detail": {}},
             }, status=status.HTTP_403_FORBIDDEN)
 
+        # A shared template belongs to no branch; carrying the publisher's
+        # own branch would scope it out of every tenant that inherits it.
+        branch = None
+        if not as_platform:
+            branch = _branch_for_new_row(
+                request, resolve_branch(request.tenant, d.get("branch")),
+            )
+            _assert_may_configure(
+                request, branch,
+                shared=TEMPLATE_SHARED, other_branch=TEMPLATE_OTHER_BRANCH,
+            )
+
         # Template publishing replaces stage/route configuration through the service layer.
         t = templates_svc.publish_template(
             tenant=None if as_platform else request.tenant,
-            # A shared template belongs to no branch; carrying the publisher's
-            # own branch would scope it out of every tenant that inherits it.
-            branch=None if as_platform else self.get_branch(),
+            branch=branch,
             document_type=d["document_type"], code=d["code"], name=d["name"],
             description=d.get("description", ""),
             notification_events=d.get("notification_events", {}),
@@ -496,6 +576,11 @@ class WorkflowTemplateViewSet(
         to the platform template. Publishing again brings it back.
         """
         template = self.get_object()
+        if template.tenant_id is not None:
+            _assert_may_configure(
+                request, template.branch,
+                shared=TEMPLATE_SHARED, other_branch=TEMPLATE_OTHER_BRANCH,
+            )
         if template.tenant_id is None:
             return Response({
                 "success": False,
@@ -918,8 +1003,35 @@ class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
             qs = qs.filter(Q(name__icontains=term) | Q(code__icontains=term))
         return qs.order_by("name")
 
+    def _assert_may_change(self, group):
+        """Refuse a change to *group* unless the caller covers every branch it approves for (403)."""
+        from vs_workflow.services.groups import group_branch_ids
+
+        ids = group_branch_ids(group)
+        assert_caller_may_change(
+            self.request.user, self.request.tenant, ids,
+            message=GROUP_OTHER_BRANCH if ids else GROUP_SHARED,
+        )
+
     def perform_create(self, serializer):
-        serializer.save(tenant=self.request.tenant, created_by=self.request.user)
+        branch = _branch_for_new_row(
+            self.request, serializer.validated_data.get("branch"),
+        )
+        _assert_may_configure(
+            self.request, branch, shared=GROUP_SHARED, other_branch=GROUP_OTHER_BRANCH,
+        )
+        serializer.save(
+            tenant=self.request.tenant, created_by=self.request.user, branch=branch,
+        )
+
+    def perform_update(self, serializer):
+        self._assert_may_change(serializer.instance)
+        if "branch" in serializer.validated_data:
+            _assert_may_configure(
+                self.request, serializer.validated_data["branch"],
+                shared=GROUP_SHARED, other_branch=GROUP_OTHER_BRANCH,
+            )
+        serializer.save()
 
     def destroy(self, request, *args, **kwargs):
         """Refuse to delete a group a template still points at.
@@ -928,6 +1040,7 @@ class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
         stage resolvable (to nobody) and preserves audit history.
         """
         group = self.get_object()
+        self._assert_may_change(group)
         used_by = list(group.workflow_stages.filter(retired_at__isnull=True)
                        .values_list("template__code", "code")[:10])
         if used_by:
@@ -984,6 +1097,7 @@ class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
     def add_member(self, request, pk=None):
         """Add one person, role, or position to the group."""
         group = self.get_object()
+        self._assert_may_change(group)
         s = WorkflowApproverGroupMemberWriteSerializer(
             data=request.data, context={"tenant": request.tenant})
         s.is_valid(raise_exception=True)
@@ -1011,6 +1125,7 @@ class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
         """Remove one membership row. Scoped to this group so a member id from
         another tenant's group cannot be deleted by guessing it."""
         group = self.get_object()
+        self._assert_may_change(group)
         member = WorkflowApproverGroupMember.objects.filter(
             pk=member_id, group=group).first()
         if member is None:
@@ -1062,8 +1177,19 @@ class WorkflowDynamicRoleViewSet(TenantScopedMixin, ModelViewSet):
                            | Q(document_types=[]))
         return qs.order_by("name")
 
+    def _assert_may_change(self):
+        """A Dynamic Role serves every branch, so only a whole-tenant caller changes one (403)."""
+        assert_caller_may_configure(
+            self.request.user, self.request.tenant, message=DYNAMIC_ROLE_SHARED,
+        )
+
     def perform_create(self, serializer):
+        self._assert_may_change()
         serializer.save(tenant=self.request.tenant, created_by=self.request.user)
+
+    def perform_update(self, serializer):
+        self._assert_may_change()
+        serializer.save()
 
     def destroy(self, request, *args, **kwargs):
         """Refuse to delete a Dynamic Role any stage still points at.
@@ -1073,6 +1199,7 @@ class WorkflowDynamicRoleViewSet(TenantScopedMixin, ModelViewSet):
         audit history readable.
         """
         dynamic_role = self.get_object()
+        self._assert_may_change()
         used_by = list(dynamic_role.workflow_stages
                        .order_by("retired_at", "template__code")
                        .values_list("template__code", "code")[:10])
@@ -1216,8 +1343,30 @@ class WorkflowStageApproverOverrideViewSet(TenantScopedMixin, ModelViewSet):
                 stage__template__document_type=self.request.query_params["document_type"])
         return qs.order_by("stage__template__document_type", "stage__order")
 
+    def _assert_may_change(self, stage):
+        """Refuse repointing *stage* unless the caller covers the branch its steps are for (403).
+
+        A stage on a shared template, or on the tenant's own, binds every
+        branch; one on a branch's own template binds that branch.
+        """
+        _assert_may_configure(
+            self.request, stage.template.branch,
+            shared=STAGE_SHARED, other_branch=STAGE_OTHER_BRANCH,
+        )
+
     def perform_create(self, serializer):
+        self._assert_may_change(serializer.validated_data["stage"])
         serializer.save(tenant=self.get_tenant(), created_by=self.request.user)
+
+    def perform_update(self, serializer):
+        self._assert_may_change(serializer.instance.stage)
+        if "stage" in serializer.validated_data:
+            self._assert_may_change(serializer.validated_data["stage"])
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._assert_may_change(instance.stage)
+        instance.delete()
 
 
 # ── Delegations ───────────────────────────────────────────────────────────────
@@ -1272,16 +1421,39 @@ class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
         ]
         return Response(sorted(rows, key=lambda row: row["label"]))
 
+    def _assert_may_change(self, delegation):
+        """Refuse a change to *delegation* by anybody but its delegator or their administrator.
+
+        A delegation is its delegator's own. Its delegate is excluded on
+        purpose, since extending one's own borrowed authority is exactly what
+        must not be possible. An administrator holding template update may
+        change it only for somebody whose approvals stay inside their branches
+        (:func:`vs_rbac.grant_reach.assert_caller_may_change_person`).
+        """
+        from rest_framework.exceptions import PermissionDenied
+        from vs_rbac.grant_reach import assert_caller_may_change_person
+
+        user = self.request.user
+        if delegation.delegator_id == user.pk:
+            return
+        if not user_has_rbac_permission(user, PERM_TEMPLATE_UPDATE, tenant=self.request.tenant):
+            raise PermissionDenied(DELEGATION_NOT_YOURS)
+        assert_caller_may_change_person(
+            user, self.request.tenant, delegation.delegator, message=DELEGATION_SHARED,
+        )
+
+    def perform_update(self, serializer):
+        self._assert_may_change(serializer.instance)
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._assert_may_change(instance)
+        instance.delete()
+
     @action(detail=True, methods=["post"])
     def revoke(self, request, pk=None):
         delegation = self.get_object()
-        if (delegation.delegator_id != request.user.pk and
-                not user_has_rbac_permission(request.user, PERM_TEMPLATE_UPDATE, tenant=request.tenant)):
-            return Response({
-                "success": False,
-                "message": "You do not have permission to revoke this delegation.",
-                "error": {"code": "PERMISSION_DENIED", "detail": {}},
-            }, status=status.HTTP_403_FORBIDDEN)
+        self._assert_may_change(delegation)
         # Revocation is timestamped instead of deleting the delegation record.
         delegation.revoked_at = timezone.now()
         delegation.save(update_fields=["revoked_at"])
