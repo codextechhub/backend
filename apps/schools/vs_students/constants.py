@@ -146,9 +146,10 @@ class PromotionNotPlaced(models.TextChoices):
 class PromotionArms(models.TextChoices):
     """Which of next year's classes a promoted pupil joins.
 
-    SAME_ARM keeps an arm together (JSS1 B to JSS2 B, or the first class at
-    the level when there is no B). SPREAD shares the pupils moving into a
-    level evenly across that level's classes, emptiest first.
+    SAME_ARM keeps an arm together (JSS1 B to JSS2 B); pupils whose arm has
+    no class at the next level are shared across that level's classes as
+    SPREAD shares them. SPREAD shares the pupils moving into a level evenly
+    across that level's classes, emptiest first.
     """
 
     SAME_ARM = "SAME_ARM", "Keep each arm together"

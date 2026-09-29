@@ -13,8 +13,9 @@ apart two questions a bare ``branch=None`` would answer at once:
   :data:`ANY_BRANCH` says explicitly. Every grant the user holds counts,
   whole tenant or branch pinned;
 * *"the entity as a whole"* - the scope a document with ``branch IS NULL`` sits
-  in, which only whole-tenant grants reach. That is what an explicit ``None``
-  still means.
+  in, which only whole-tenant grants reach, together with grants pinned to the
+  tenant's only branch (:func:`_assignment_branch_q`). That is what an explicit
+  ``None`` still means.
 
 Conflating them is what made a branch-scoped grant confer nothing at all: the
 holder was not narrowed to their branch, they were locked out. Which rows such
@@ -65,10 +66,19 @@ def _assignment_branch_q(branch) -> Q:
 
     A role with selected branches caps every assignment. Its unpinned grant
     inherits that whole selected set, while an unpinned grant of an unbound role
-    remains school-wide. Only branches still in service confer authority.
+    remains tenant-wide. Only branches still in service confer authority.
+
+    An explicit ``None`` (the entity as a whole) is reached by tenant-wide
+    grants, and also by a grant whose reach is the tenant's only branch, the
+    rule :mod:`vs_rbac.scoping` states for reading and writing: at Harbour
+    Primary, which has one branch, a bursar pinned to Main approves and routes
+    a tenant-wide document exactly as an unpinned one does, and the day a
+    second branch opens she stops. The branch count is read in the same query
+    as the grants, against each assignment's own tenant, so no caller has to
+    pass the tenant for the rule to hold.
     """
     from vs_tenants.models import Branch
-    from django.db.models import F
+    from django.db.models import Exists, F, OuterRef
 
     live = Q(branch__status__in=Branch.IN_SERVICE_STATES)
     role_selected = Q(role__branch__isnull=False)
@@ -83,7 +93,21 @@ def _assignment_branch_q(branch) -> Q:
     if branch is ANY_BRANCH:
         return (Q(branch__isnull=True) & (~role_selected | inherited_live)) | explicit
     if branch is None:
-        return Q(branch__isnull=True) & ~role_selected
+        def only_branch(path):
+            return Q(~Exists(
+                Branch.all_objects.filter(tenant_id=OuterRef("tenant_id"))
+                .exclude(pk=OuterRef(path))
+            ))
+
+        return (
+            (Q(branch__isnull=True) & ~role_selected)
+            | (Q(branch__isnull=False) & explicit & only_branch("branch_id"))
+            | (
+                Q(branch__isnull=True) & role_selected
+                & Q(role__branch__status__in=Branch.IN_SERVICE_STATES)
+                & only_branch("role__branch_id")
+            )
+        )
     inherited = Q(branch__isnull=True) & (
         (Q(role__branch=branch) & Q(role__branch__status__in=Branch.IN_SERVICE_STATES))
         | (Q(role__additional_branches=branch) & Q(role__additional_branches__status__in=Branch.IN_SERVICE_STATES))
@@ -299,10 +323,10 @@ def resolve_users_with_permission(tenant, branch, permission_key: str):
     ``branch`` here is the scope of the *work* (the document being routed), not a
     caller's context, so it is passed positionally and an explicit ``None`` keeps
     its meaning: a document belonging to the entity as a whole is approved by
-    whole-tenant grant holders, never by somebody pinned to one branch. Routing
-    shares :func:`_assignment_branch_q` with the permission gate so a person this
-    function nominates as an approver cannot be someone ``has_permission`` would
-    then refuse.
+    whole-tenant grant holders, never by somebody pinned to one branch unless it
+    is the tenant's only branch. Routing shares :func:`_assignment_branch_q` with
+    the permission gate so a person this function nominates as an approver
+    cannot be someone ``has_permission`` would then refuse.
     """
     from django.contrib.auth import get_user_model
 

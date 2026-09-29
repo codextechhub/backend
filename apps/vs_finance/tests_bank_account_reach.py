@@ -268,7 +268,11 @@ class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
         )
 
     def test_a_tax_payment(self):
-        """A filing is the school's, so any account she can reach pays it."""
+        """A filing with no branch is the school's return, which she may not pay at all.
+
+        Covering two of three branches is not the whole school, so the refusal
+        comes before any bank is looked at (see ``tests_shared_write_reach``).
+        """
         from vs_finance.models import TaxFiling, TaxObligation
 
         filing = TaxFiling.objects.create(
@@ -281,8 +285,10 @@ class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
             with self.subTest(bank=bank.name):
                 response = self.post(client, f"finance/tax-filings/{filing.pk}/pay/",
                                      {"pay_date": JAN.isoformat(), "bank_account": bank.pk})
-                self.assertNotIn("Pay it from", str(response.data))
-                self.assertNotIn("No bank account", str(response.data))
+                self.assertEqual(response.status_code, 403, response.data)
+                self.assertEqual(response.data["error"]["code"], "SHARED_RECORD_READ_ONLY")
+                filing.refresh_from_db()
+                self.assertEqual(filing.amount_paid, 0)
 
     def test_a_vendor_payment(self):
         """Settling an Ikeja bill is Ikeja's money; checked once the bills resolve."""

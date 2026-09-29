@@ -58,12 +58,13 @@ def submit(profile, *, actor):
     return submit_for_approval(profile, actor)
 
 
-def _event(profile, *, to_status, reason, note="", actor=None, last_working_day=None):
+def _event(profile, *, to_status, reason, note="", actor=None, last_working_day=None,
+           from_status=EmploymentStatus.PENDING_APPROVAL):
     from ..models import StaffEmploymentEvent
 
     event = StaffEmploymentEvent.objects.create(
         tenant=profile.tenant, staff=profile,
-        from_status=EmploymentStatus.PENDING_APPROVAL, to_status=to_status,
+        from_status=from_status, to_status=to_status,
         reason=reason, effective_date=tenant_today(profile.tenant),
         last_working_day=last_working_day, note=note, changed_by=actor,
     )
@@ -103,12 +104,37 @@ def close(profile, *, reason, actor=None):
     Does nothing for a record no longer awaiting approval: an invited person is
     withdrawn by revoking their invitation, which has rules of its own.
     """
+    if profile.employment_status != EmploymentStatus.PENDING_APPROVAL:
+        return None
+    return close_unsent(
+        profile, reason=reason, actor=actor,
+        note="The hire was not approved, so no invitation was sent.",
+    )
+
+
+#: The statuses of a record whose invitation has not been sent yet.
+UNSENT_STATUSES = frozenset({
+    EmploymentStatus.PENDING_APPROVAL, EmploymentStatus.AWAITING_GO_LIVE,
+})
+
+
+@transaction.atomic
+def close_unsent(profile, *, reason, note, actor=None):
+    """Close a record whose invitation was never sent: record, post, grants, account.
+
+    The way the platform closes a refused hire of its own. The record moves to
+    Terminated with the reason and *note*, a post reserved for the person is
+    released, every active role grant is revoked, and the account, which was
+    never offered to anybody, is REJECTED so it can never be signed into.
+    Nothing is emailed. Does nothing for a record that is not unsent.
+    """
     from vs_rbac.models import TenantUserRoleAssignment
     from vs_user.models import User
 
     from .organogram import StaffOrganogramService
 
-    if profile.employment_status != EmploymentStatus.PENDING_APPROVAL:
+    from_status = profile.employment_status
+    if from_status not in UNSENT_STATUSES:
         return None
     today = tenant_today(profile.tenant)
     profile.employment_status = EmploymentStatus.TERMINATED
@@ -116,8 +142,7 @@ def close(profile, *, reason, actor=None):
     profile.save(update_fields=["employment_status", "exit_date", "updated_at"])
     event = _event(
         profile, to_status=EmploymentStatus.TERMINATED, reason=reason,
-        note="The hire was not approved, so no invitation was sent.",
-        actor=actor, last_working_day=today,
+        note=note, actor=actor, last_working_day=today, from_status=from_status,
     )
     StaffOrganogramService.close_for_exit(profile, today)
 
@@ -125,7 +150,7 @@ def close(profile, *, reason, actor=None):
         user=profile.user,
         assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
     ):
-        grant.revoke(by_user=actor, reason="The hire was not approved.")
+        grant.revoke(by_user=actor, reason=reason)
         grant.save(update_fields=[
             "assignment_status", "revoked_at", "revoked_by", "reason_note",
             "updated_at",

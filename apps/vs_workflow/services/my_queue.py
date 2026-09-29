@@ -6,7 +6,9 @@ queue with the *same* rules the queue screen lists it by. Two implementations of
 sees on their landing screen would stop matching the rows they find when they
 click through.
 
-The three filters that make a snapshot actionable are all here:
+The filters that make a snapshot actionable are all here:
+  * visible work only - a document its own module keeps from this person is not
+    theirs to decide (:mod:`vs_workflow.services.visibility`);
   * live work only - an ACTIVE stage on an IN_PROGRESS instance;
   * not already voted - the actor has an unreversed action for this attempt;
   * not stale - snapshots from a previous attempt of the same stage are ignored,
@@ -15,8 +17,11 @@ The three filters that make a snapshot actionable are all here:
 
 from __future__ import annotations
 
+from django.db.models import Q
+
 from vs_workflow.models import WorkflowStageAction, WorkflowStageApprover
 from vs_workflow.services import parking
+from vs_workflow.services.visibility import exclude_hidden_documents
 
 
 def pending_approval_snapshots(user, tenant=None) -> list[WorkflowStageApprover]:
@@ -46,14 +51,18 @@ def pending_approval_snapshots(user, tenant=None) -> list[WorkflowStageApprover]
     )
     if tenant is not None:
         snaps_qs = snaps_qs.filter(stage_instance__instance__tenant=tenant)
+    snaps_qs = exclude_hidden_documents(
+        snaps_qs, user, tenant, prefix="stage_instance__instance__")
 
     snaps = snaps_qs.select_related(
         "stage_instance__instance__template", "stage_instance__stage",
     ).order_by("-stage_instance__activated_at")
 
+    # A vote cast by this person under a proxy uses up their own vote too.
     already_acted = set(
         WorkflowStageAction.objects.filter(
-            actor=user, reversed_at__isnull=True, is_reversal_of__isnull=True,
+            Q(actor=user) | Q(proxied_by=user),
+            reversed_at__isnull=True, is_reversal_of__isnull=True,
         ).values_list("stage_instance_id", "attempt")
     )
 

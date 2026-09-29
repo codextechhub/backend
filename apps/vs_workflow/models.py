@@ -847,6 +847,14 @@ class WorkflowStageAction(models.Model):
         stage_instance: The stage activation this action belongs to.
         actor: The user who performed the action.
         on_behalf_of: Set when the actor is a delegate acting for another user.
+        proxied_by: Set when the vote was cast under a proxy (an impersonation
+            session): the real person at the keyboard. ``actor`` stays the
+            impersonated person, because eligibility is that person's. The
+            requester-cannot-approve rule, the one-vote rule and every approval
+            count use the real person (``proxied_by``, else ``actor``), so one
+            person cannot sign twice by switching identity. Stamped on insert
+            from the request's proxy identity, so every path that records a
+            vote gets it.
         action: ``APPROVED``, ``REJECTED``, or ``RETURNED``.
         attempt: Mirrors the attempt number of the parent stage_instance row.
         is_reversal_of: Points to the original action row if this row is a reversal.
@@ -861,6 +869,8 @@ class WorkflowStageAction(models.Model):
                                related_name="workflow_actions")
     on_behalf_of = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
                                      null=True, blank=True, related_name="+")
+    proxied_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                   null=True, blank=True, related_name="+")
     action = models.CharField(max_length=20, choices=WorkflowStageActionEnum.choices)
     comment = models.TextField(blank=True, default="")
     attempt = models.PositiveIntegerField(default=1)
@@ -887,6 +897,13 @@ class WorkflowStageAction(models.Model):
             ),
         ]
         indexes = [models.Index(fields=["stage_instance", "attempt"])]
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.proxied_by_id is None and self.actor_id:
+            from vs_tenants.context import get_proxy_actor
+
+            self.proxied_by = get_proxy_actor(for_user=self.actor)
+        return super().save(*args, **kwargs)
 
 
 class ApprovalDelegation(models.Model):
@@ -948,7 +965,11 @@ class WorkflowAuditLog(models.Model):
         instance: The workflow instance this event belongs to.
         event_type: Categorised event key (see AuditEventType).
         stage_instance: The stage activation involved in the event, if applicable.
-        actor: The user who triggered the event, if applicable.
+        actor: The user who triggered the event, if applicable. Under a proxy
+            (an impersonation session) this is the real person.
+        effective_user: The person being impersonated when the event was
+            proxied; null otherwise. ``context`` also carries its id, with the
+            session's, for rows written before this column existed.
         context: Freeform JSON payload carrying event-specific detail.
         message: Optional human-readable summary of the event.
         occurred_at: Timestamp of when the event was recorded.
@@ -960,6 +981,8 @@ class WorkflowAuditLog(models.Model):
                                        null=True, blank=True, related_name="+")
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
                                null=True, blank=True, related_name="+")
+    effective_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                       null=True, blank=True, related_name="+")
     context = models.JSONField(default=dict, blank=True)
     message = models.TextField(blank=True, default="")
     occurred_at = models.DateTimeField(auto_now_add=True, db_index=True)

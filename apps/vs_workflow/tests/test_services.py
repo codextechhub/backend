@@ -427,7 +427,12 @@ class RoleSourceResolveApproversTests(TestCase):
 
     def test_school_scope_ignores_branch_limited_assignments(self):
         """Mirrors the RBAC path: outside BRANCH scope only tenant-wide
-        assignments count."""
+        assignments count, and a grant pinned to a tenant's only branch is one.
+
+        With one branch the pinned assignee reaches the whole tenant, so a
+        SCHOOL-scope stage counts her. Once a second branch opens she is
+        branch-limited again and only BRANCH scope reaches her.
+        """
         from vs_rbac.tests.helpers import make_branch, make_school
         school = make_school(slug="scope-school")
         branch = make_branch(school)
@@ -447,10 +452,14 @@ class RoleSourceResolveApproversTests(TestCase):
         instance.save(update_fields=["branch"])
 
         stage = self._role_stage(role=role, scope="SCHOOL", code="school-scope")
+        stage_b = self._role_stage(role=role, scope="BRANCH", code="branch-scope")
+        self.assertEqual({e.user.pk for e in resolve_approvers(stage, instance)},
+                         {wide.pk, narrow.pk})
+
+        make_branch(school, name="Second Branch", is_main=False)
+
         self.assertEqual({e.user.pk for e in resolve_approvers(stage, instance)},
                          {wide.pk})
-
-        stage_b = self._role_stage(role=role, scope="BRANCH", code="branch-scope")
         self.assertEqual({e.user.pk for e in resolve_approvers(stage_b, instance)},
                          {wide.pk, narrow.pk})
 
@@ -701,7 +710,16 @@ class GroupSourceResolveApproversTests(TestCase):
         self._add(kind="ROLE", role=role)
         self._add(kind="USER", user=person)
 
+        # One branch: the pinned member reaches the whole tenant.
         school_scoped = resolve_approvers(self._stage(scope="SCHOOL"), self.instance)
+        self.assertEqual({e.user.pk for e in school_scoped},
+                         {wide.pk, narrow.pk, person.pk})
+
+        # A second branch makes her branch-limited again.
+        from vs_rbac.tests.helpers import make_branch
+        make_branch(self.tenant, name="Second Branch", is_main=False)
+        school_scoped = resolve_approvers(
+            self._stage(scope="SCHOOL", code="grp-school-2"), self.instance)
         self.assertEqual({e.user.pk for e in school_scoped}, {wide.pk, person.pk})
 
         branch_scoped = resolve_approvers(

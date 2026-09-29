@@ -746,7 +746,7 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
 
 @transaction.atomic
 def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
-                      actor_user=None):  # Create and post a raw direct journal entry.
+                      actor_user=None, branch=None):  # Create and post a raw direct journal entry.
     """Create a direct entry with :func:`create_direct_entry` and post it straight away.
 
     For callers that have already settled that the entry needs no approval. The
@@ -754,7 +754,7 @@ def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
     """
     entry = create_direct_entry(
         entity, lines=lines, date=date, narration=narration, reference=reference,
-        actor_user=actor_user,
+        actor_user=actor_user, branch=branch,
     )
     post_journal(entry, actor_user=actor_user)  # Run normal posting guards and balance updates.
     entry.refresh_from_db()
@@ -763,7 +763,7 @@ def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
 
 @transaction.atomic
 def create_direct_entry(entity, *, lines, date=None, narration="", reference="",
-                        actor_user=None):  # Create a raw direct journal entry as a draft.
+                        actor_user=None, branch=None):  # Create a raw direct journal entry as a draft.
     """Build a direct journal entry - money/balances seated into the books with no source doc.
 
     This is the *sanctioned* way to record anything that has no sub-ledger document behind
@@ -782,6 +782,11 @@ def create_direct_entry(entity, *, lines, date=None, narration="", reference="",
     today. The entry is returned as a DRAFT: the normal :func:`post_journal` guards
     (period open, balanced, accounts active/postable) apply when it is posted, directly
     or on approval, and it is reversible like any journal.
+
+    ``branch`` is the branch the entry belongs to, or ``None`` for an entry shared
+    across the school. A direct entry starts a chain, so an API caller settles it
+    with the platform rule for that (:func:`vs_rbac.scoping.raised_branch`) before
+    calling here; this function records it and does not judge it.
     """
     from .accounts import resolve_account
     from .models import FiscalPeriod, JournalEntry, JournalLine
@@ -798,7 +803,8 @@ def create_direct_entry(entity, *, lines, date=None, narration="", reference="",
         )
 
     entry = JournalEntry.objects.create(
-        entity=entity, date=date, period=resolve_period(entity, date),  # Entity, date, and resolved period.
+        entity=entity, branch=branch,  # Entity and the branch the entry was raised for.
+        date=date, period=resolve_period(entity, date),  # Date and resolved period.
         source=JournalSource.OPENING,  # Direct entries use opening/sourceless source.
         narration=narration or "Opening balances",  # Default narration.
         reference=reference, created_by=actor_user,  # External reference and actor.

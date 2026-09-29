@@ -1101,9 +1101,9 @@ TEMPLATES: list[dict] = [
         # same three ways the others are.
         #
         # There is no school column, deliberately: the handler takes its tenant
-        # from the batch, so there is nothing for a crafted file to name. The
-        # role column resolves inside THAT tenant, so a platform role key is not
-        # reachable and a file cannot create a CodeX hire.
+        # from the batch, so there is nothing for a crafted file to name. There
+        # is no role column either: everybody starts on the school's starting
+        # role, as on the Add form (schools/vs_staff/imports.py).
         # -----------------------------------------------------------------------
         "template": {
             "code": "staff_master_v1",
@@ -1118,19 +1118,22 @@ TEMPLATES: list[dict] = [
             ),
             "instructions": (
                 "One person per row. Everybody arrives as Invited with an "
-                "account in Pending Activation. "
+                "account in Pending Activation, or as Awaiting approval where "
+                "the school approves each hire before inviting it. "
                 "Send Invitation decides whether the activation email goes out "
                 "as the row is imported: Yes sends it, No creates the account "
                 "and holds the invitation so you can send it later from the "
                 "invitations screen. A blank cell counts as Yes. "
                 "Email must be unique within this school; the same address may "
                 "be an account at another school, which is fine. "
-                "Role must already exist in this school's role catalogue - a "
-                "role the engine cannot find is a hard error, not a warning, "
-                "because there is no invite-now-decide-later. "
-                "Staff ID is your school's own format and is only checked for "
-                "not already being taken here; leave it blank if you do not "
-                "number your staff. "
+                "There is no role column: everybody starts on the school's "
+                "starting role (Settings, Staff), and other roles are given "
+                "from Roles & Permissions once they are added. A file that "
+                "still has a Role column is imported with it ignored. "
+                "Staff ID is your school's own format, checked against the "
+                "staff number rule in Settings, Staff and for not already being "
+                "taken here; a blank one is given the next number where the "
+                "school issues them automatically. "
                 "Employment Type is one of Full-time, Part-time, Contract or "
                 "Volunteer. Hire Date is YYYY-MM-DD. "
                 "Leave Branch blank for somebody who works across the whole "
@@ -1153,7 +1156,6 @@ TEMPLATES: list[dict] = [
                 "Employment Type": "Full-time",
                 "Hire Date": "2021-09-06",
                 "Branch": "",
-                "Role": "teacher",
                 "Send Invitation": "Yes",
             },
             "validation_rules": {
@@ -1240,8 +1242,10 @@ TEMPLATES: list[dict] = [
                 "target_field": "staff_number",
                 "display_name": "Staff ID",
                 "help_text": (
-                    "Your school's own format. Only checked for not already "
-                    "being taken here. Leave blank if you do not number staff."
+                    "Your school's own format, checked against the staff number "
+                    "rule in Settings, Staff. Leave blank if you do not number "
+                    "staff, or to be given the next number where the school "
+                    "issues them automatically."
                 ),
                 "data_type": TemplateColumnDataTypeChoices.STRING,
                 "is_required": False,
@@ -1302,20 +1306,6 @@ TEMPLATES: list[dict] = [
                 "column_order": 11,
             },
             {
-                "column_name": "Role",
-                "target_field": "role",
-                "display_name": "Role",
-                "help_text": (
-                    "A role key from this school's own catalogue, for example "
-                    "teacher or branch_admin. Required on every row."
-                ),
-                "data_type": TemplateColumnDataTypeChoices.STRING,
-                "is_required": True,
-                "max_length": 120,
-                "sample_value": "teacher",
-                "column_order": 12,
-            },
-            {
                 "column_name": "Send Invitation",
                 "target_field": "send_invitation",
                 "display_name": "Send Invitation",
@@ -1331,7 +1321,7 @@ TEMPLATES: list[dict] = [
                 "allowed_values": ["Yes", "No"],
                 "sample_value": "Yes",
                 "default_value": "Yes",
-                "column_order": 13,
+                "column_order": 12,
             },
         ],
     },

@@ -292,3 +292,48 @@ class SingleBranchEventTests(_SingleBranchBase):
         row = response.data["data"][0]
         self.assertNotIn("branch", row)
         self.assertNotIn("scope_label", row)
+
+
+class SchoolWordTests(_Base):
+    """Brightfield runs two semesters, so its calendar says semester, not term.
+
+    Its terms keep the names it stored ("First Term"); only the sentences and
+    the half-term break's label change.
+    """
+
+    def setUp(self):
+        from schools.vs_schools.models import School
+
+        School.objects.filter(pk=self.school.pk).update(term_structure="2_SEMESTERS")
+
+    def test_a_date_outside_every_semester_is_warned_about_in_that_word(self):
+        response = self.post(self.admin, "calendar-event-list", {
+            "name": "Christmas break", "event_type": "HOLIDAY",
+            "start_date": "2025-12-19", "end_date": "2026-01-02",
+        })
+        self.assertEqual(response.status_code, 201, response.data)
+        details = [w["detail"] for w in response.data["data"]["warnings"]]
+        self.assertIn(
+            "This date falls outside every semester in 2025/2026. It will show "
+            "on the calendar and be flagged in the events list.",
+            details,
+        )
+
+    def test_the_half_term_break_is_a_mid_semester_break(self):
+        response = self.post(self.admin, "calendar-event-list", {
+            "name": "Break", "event_type": "MIDTERM_BREAK",
+            "start_date": "2025-10-27", "end_date": "2025-10-31",
+        })
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["data"]["type_label"], "Mid-semester break")
+        self.assertEqual(response.data["data"]["term"]["name"], "First Term")
+
+    def test_a_term_school_still_reads_mid_term_break(self):
+        from schools.vs_schools.models import School
+
+        School.objects.filter(pk=self.school.pk).update(term_structure="3_TERMS")
+        response = self.post(self.admin, "calendar-event-list", {
+            "name": "Break", "event_type": "MIDTERM_BREAK",
+            "start_date": "2025-10-27", "end_date": "2025-10-31",
+        })
+        self.assertEqual(response.data["data"]["type_label"], "Mid-term break")

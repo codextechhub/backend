@@ -392,17 +392,22 @@ def approvals_waiting_on(entity, user) -> dict | None:
     if user is None or not getattr(user, "is_authenticated", False):
         return None
     from vs_workflow.models import WorkflowStageAction, WorkflowStageApprover
+    from vs_workflow.services.visibility import exclude_hidden_documents
 
+    waiting = WorkflowStageApprover.objects.filter(
+        user=user,
+        attempt=F("stage_instance__attempt"),
+        stage_instance__status="ACTIVE",
+        stage_instance__instance__status="IN_PROGRESS",
+        stage_instance__instance__tenant=entity.tenant,
+        stage_instance__instance__document_type__in=list(APPROVAL_TYPES),
+    )
+    # A document the approval queue hides from this user is not counted either.
+    waiting = exclude_hidden_documents(
+        waiting, user, entity.tenant, prefix="stage_instance__instance__")
     snaps = list(
-        WorkflowStageApprover.objects.filter(
-            user=user,
-            attempt=F("stage_instance__attempt"),
-            stage_instance__status="ACTIVE",
-            stage_instance__instance__status="IN_PROGRESS",
-            stage_instance__instance__tenant=entity.tenant,
-            stage_instance__instance__document_type__in=list(APPROVAL_TYPES),
-        ).values("stage_instance_id", "stage_instance__attempt", "stage_instance__instance_id",
-                 "stage_instance__instance__document_type")
+        waiting.values("stage_instance_id", "stage_instance__attempt",
+                       "stage_instance__instance_id", "stage_instance__instance__document_type")
     )
     if not snaps:
         return {"total": 0, "items": []}

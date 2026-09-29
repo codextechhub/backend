@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import (
+    AcademicRulesView,
     ClassArchiveView,
     ClassDetailView,
     ClassListCreateView,
@@ -78,4 +79,5 @@ urlpatterns = [
 
     path("structure/tree/", StructureTreeView.as_view(), name="academics-structure-tree"),
     path("overview/", OverviewView.as_view(), name="academics-overview"),
+    path("rules/", AcademicRulesView.as_view(), name="academics-rules"),
 ]

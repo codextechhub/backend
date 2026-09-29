@@ -263,3 +263,18 @@ class NoWorkingDays(StaffError):
         "there is no leave to take."
     )
     http_status = 422
+
+
+class InvitationHeldForGoLive(StaffError):
+    """A resend aimed at somebody imported while the school is being set up.
+
+    Their invitation is created and sent with everybody else's when the school
+    goes live, so there is nothing to send yet.
+    """
+
+    error_code = "INVITATION_HELD_FOR_GO_LIVE"
+    default_message = (
+        "Invitations for staff imported during setup go out when the school "
+        "goes live."
+    )
+    http_status = 422

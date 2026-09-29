@@ -323,7 +323,9 @@ class GenerateArmsView(_ClassBase, APIView):
     branch are skipped rather than refused, so a school that adds a fourth arm
     types A, B, C, D and gets one new class instead of an error about three.
     Each new class gets the school's default class size, or no limit when the
-    school has not set one.
+    school has not set one. A request naming no arms makes the school's
+    default arms (``academics.classes.default_arms``, A, B and C until the
+    school chooses). Each class is named "{level} {arm}".
 
     docstring-name: Generate class arms
     """
@@ -355,9 +357,15 @@ class GenerateArmsView(_ClassBase, APIView):
             ).values_list("code", flat=True)
         }
 
+        arms = writer.validated_data.get("arms")
+        if arms is None:
+            from ..services.academic_rules import read_academic_rules
+
+            arms = read_academic_rules(self.tenant).default_arms
+
         capacity = _default_capacity(self.tenant)
         made = []
-        for arm in writer.validated_data["arms"]:
+        for arm in arms:
             arm = arm.strip()
             if not arm:
                 continue
@@ -666,10 +674,14 @@ def _offerings_caller_may_write(user, tenant, subject, levels, *, session):
     replace would otherwise delete. Asking to change a shared one is refused
     rather than ignored.
     """
-    from vs_rbac.scoping import WHOLE_TENANT, caller_may_change, visible_branch_ids
+    from vs_rbac.scoping import (
+        caller_may_change,
+        caller_reaches_whole_tenant,
+        visible_branch_ids,
+    )
 
     visible = visible_branch_ids(user, tenant)
-    if visible is WHOLE_TENANT or (
+    if caller_reaches_whole_tenant(user, tenant, visible=visible) or (
         subject.branch_id is not None
         and caller_may_change(user, tenant, [subject.branch_id], visible=visible)
     ):

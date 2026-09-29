@@ -20,6 +20,8 @@ school they had not yet joined.
 **A hire still awaiting approval has no invitation yet.** Revoking it calls the
 hire off instead: its approval is cancelled and the hire is closed exactly as a
 refused one is (``services.hire``), with the reason given here.
+Somebody imported during setup, whose invitation waits for go-live, is closed
+the same way, with nothing sent.
 
 FRD M12 v2.1, FR-020.
 """
@@ -58,6 +60,15 @@ def revoke(staff, *, reason, actor, request=None):
         from . import hire
 
         return hire.withdraw(staff, reason=reason.strip(), actor=actor)
+    if staff.employment_status == EmploymentStatus.AWAITING_GO_LIVE:
+        from . import hire
+
+        hire.close_unsent(
+            staff, reason=reason.strip(), actor=actor,
+            note="Withdrawn before the school went live, so no invitation was sent.",
+        )
+        audit.emit_invitation_revoked(staff, reason, actor=actor)
+        return staff
     if staff.user.status != User.Status.PENDING:
         raise InvitationAlreadyAccepted(
             "This invitation has already been accepted, so there is nothing to "

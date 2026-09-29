@@ -70,6 +70,42 @@ class PaymentsNameOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         self.assertEqual(refused.status_code, 400, refused.data)
         self.assertIn(f"No invoice '{lekki_invoice.pk}' in this entity.", str(refused.data))
 
+    def test_a_payment_request_for_an_invoice_alone_deposits_into_the_invoices_branch(self):
+        """No customer named: the invoice's customer decides the branch, as it decides the receipt's."""
+        from vs_finance.models import BankAccount
+
+        lekki_invoice = self.invoice(self.books, self.lekki_customer, self.lekki)
+        cash_type = Account.objects.get(entity=self.books, code="1000").account_type
+        ledgers = {}
+        for tag, branch in (("IKJ", self.ikeja), ("LEK", self.lekki)):
+            ledgers[tag] = Account.objects.create(
+                entity=self.books, code=f"117{len(ledgers)}", name=f"Collections {tag}",
+                account_type=cash_type, is_postable=True)
+            BankAccount.objects.create(entity=self.books, name=f"Collections {tag}",
+                                       branch=branch, gl_account=ledgers[tag])
+        n = next(_clerks)
+        user = self.user_for(self.tenant, f"clerk-{n}@corona.test")
+        for branch in (self.ikeja, self.lekki):
+            self.grant(user, "payments.collection.create", tenant=self.tenant,
+                       role_key=f"clerk-{n}-{branch.pk}", branch=branch)
+        okafor = TenantAPIClient(user=user)
+
+        refused = self.post(okafor, "collections/", {
+            "amount": 5_000, "invoice": lekki_invoice.pk,
+            "deposit_account": ledgers["IKJ"].code,
+        })
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertIn("This payment request belongs to Lekki Branch. "
+                      "Deposit it into a Lekki Branch account or a school-wide one.",
+                      str(refused.data))
+        self.assertFalse(CollectionIntent.objects.filter(invoice=lekki_invoice).exists())
+
+        accepted = self.post(okafor, "collections/", {
+            "amount": 5_000, "invoice": lekki_invoice.pk,
+            "deposit_account": ledgers["LEK"].code,
+        })
+        self.assertNotIn("belongs to", str(accepted.data))
+
     def test_a_virtual_account_for_another_branchs_customer(self):
         refused = self.post(self.clerk("payments.virtual_account.create"),
                             "virtual-accounts/", {"customer": "CLEKP"})
@@ -361,6 +397,102 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         event.refresh_from_db()
         self.assertEqual(event.status, "FAILED")
 
+
+
+class PayoutBatchApprovalsStayWithinReachTests(_FinanceBranchFixture):
+    """The payout approval inbox holds only the batches the approver can reach.
+
+    Mrs Bello is Ikeja's bursar and is named on Corona's payout approver group, so
+    the approval route puts her on every batch; a batch has no branch of its own.
+    One batch pays an Ikeja vendor, another pays a Lekki vendor and a school-wide
+    one. The payout screens already keep the second from her. The approval inbox,
+    the instance behind it and its approve and reject answer the same way, while
+    the head bursar, who covers the whole school, sees and decides both.
+    """
+
+    def setUp(self):
+        from vs_workflow.constants import GroupMemberKind
+        from vs_workflow.models import WorkflowApproverGroup, WorkflowApproverGroupMember
+
+        from .approvals import ensure_tenant_approval_templates
+        from .constants import WF_DEFAULT_APPROVE_GROUP, PayoutStatus
+        from .models import PayoutInstruction
+        from .services import submit_payout_batch_for_approval
+
+        super().setUp()
+        e = self.books
+        vendor = PaymentsNameOnlyWhatTheClerkReachesTests.vendor
+        vendors = {"IKJ": vendor(self, "AVIKJ", self.ikeja),
+                   "LEK": vendor(self, "AVLEK", self.lekki),
+                   "ALL": vendor(self, "AVALL", None)}
+
+        def batch(ref, *codes):
+            row = PayoutBatch.objects.create(entity=e, provider="PAYSTACK", reference=ref)
+            for n, code in enumerate(codes):
+                PayoutInstruction.objects.create(
+                    entity=e, provider="PAYSTACK", reference=f"{ref}-{n}", amount=2_000,
+                    beneficiary_name=vendors[code].name, beneficiary_account_number="0123456789",
+                    vendor_source_type="vs_procurement.Vendor",
+                    vendor_source_id=str(vendors[code].pk), batch=row,
+                    status=PayoutStatus.PENDING)
+            return row
+
+        self.ikeja_batch = batch("ABAT-IKJ", "IKJ")
+        self.mixed_batch = batch("ABAT-MIXED", "LEK", "ALL")
+
+        ensure_tenant_approval_templates(self.tenant)
+        self.bello = self.grant(self.user_for(self.tenant, "bello@corona.test"),
+                                "payments.payout.view", tenant=self.tenant,
+                                role_key="ikeja-bursar", branch=self.ikeja)
+        self.head = self.grant(self.user_for(self.tenant, "head@corona.test"),
+                               "payments.payout.view", tenant=self.tenant,
+                               role_key="head-bursar")
+        group = WorkflowApproverGroup.all_objects.get(
+            tenant=self.tenant, code=WF_DEFAULT_APPROVE_GROUP)
+        for user in (self.bello, self.head):
+            WorkflowApproverGroupMember.objects.create(
+                group=group, kind=GroupMemberKind.USER, user=user)
+
+        clerk = self.user_for(self.tenant, "payout-clerk@corona.test")
+        self.instances = {
+            b.reference: submit_payout_batch_for_approval(b, requested_by=clerk)
+            for b in (self.ikeja_batch, self.mixed_batch)
+        }
+
+    def inbox(self, user):
+        response = TenantAPIClient(user=user).get("/v1/workflow/dashboard/pending/")
+        self.assertEqual(response.status_code, 200, response.data)
+        return {row["document_object_id"] for row in response.data["results"]}
+
+    def act(self, user, reference, action):
+        return TenantAPIClient(user=user).post(
+            f"/v1/workflow/instances/{self.instances[reference].pk}/actions/",
+            {"action": action, "comment": "Checked."}, format="json")
+
+    def test_the_inbox_holds_only_the_batches_in_reach(self):
+        self.assertEqual(self.inbox(self.bello), {str(self.ikeja_batch.pk)})
+        self.assertEqual(self.inbox(self.head),
+                         {str(self.ikeja_batch.pk), str(self.mixed_batch.pk)})
+
+    def test_the_finance_dashboard_counts_only_the_batches_in_reach(self):
+        from vs_finance.dashboard_blocks import approvals_waiting_on
+
+        self.assertEqual(approvals_waiting_on(self.books, self.bello)["total"], 1)
+        self.assertEqual(approvals_waiting_on(self.books, self.head)["total"], 2)
+
+    def test_a_batch_out_of_reach_cannot_be_read_approved_or_rejected(self):
+        instance = self.instances["ABAT-MIXED"]
+        client = TenantAPIClient(user=self.bello)
+        self.assertEqual(
+            client.get(f"/v1/workflow/instances/{instance.pk}/").status_code, 404)
+        for action in ("APPROVED", "REJECTED"):
+            with self.subTest(action=action):
+                self.assertEqual(self.act(self.bello, "ABAT-MIXED", action).status_code, 404)
+        instance.refresh_from_db()
+        self.assertEqual(instance.status, "IN_PROGRESS")
+
+        self.assertEqual(self.act(self.bello, "ABAT-IKJ", "REJECTED").status_code, 200)
+        self.assertEqual(self.act(self.head, "ABAT-MIXED", "REJECTED").status_code, 200)
 
 class PaymentsViewsStartFromTheReachTests(SimpleTestCase):
     """No payments view reaches a gateway table except through :class:`PaymentsReach`.

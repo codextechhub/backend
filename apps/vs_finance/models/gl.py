@@ -563,6 +563,13 @@ class FinanceAuditLog(models.Model):
     period state changes, master-data edits). A best-effort copy is still mirrored to
     ``vs_audit`` so the platform-wide activity view stays complete - but the record
     here is the source of truth.
+
+    An action taken under a proxy (an impersonation session) records the real
+    person as ``actor`` and the impersonated person as ``effective_user``, so a
+    document's stamps (``created_by``, ``posted_by``), which carry the
+    impersonated person, are explained by the audit row beside them. Rows written
+    before ``effective_user`` existed keep the pair only in ``metadata``
+    (``effective_user_id``); the immutability triggers keep them as written.
     """
 
     entity = models.ForeignKey(
@@ -572,6 +579,12 @@ class FinanceAuditLog(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="finance_audit_events", null=True, blank=True,
         help_text="The user who acted; null for system/automated actions.",
+    )
+    # Under a proxy, ``actor`` is the real person and this is whom they acted as.
+    effective_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_audit_events_as_proxied", null=True, blank=True,
+        help_text="The person being impersonated when the action was proxied; null otherwise.",
     )
     action = models.CharField(max_length=32, choices=FinanceAuditAction.choices)
     status = models.CharField(

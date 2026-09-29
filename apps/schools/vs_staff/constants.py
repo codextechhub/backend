@@ -88,6 +88,10 @@ class EmploymentStatus(models.TextChoices):
     #: sent. Only the approval decides where it goes next: Invited when it is
     #: approved, Terminated when it is not (``hire_approval.py``).
     PENDING_APPROVAL = "PENDING_APPROVAL", "Awaiting approval"
+    #: Imported while the school is still being set up. The account and the
+    #: starting role exist and no invitation has been sent: every one goes out
+    #: together when the school goes live (``services/setup_invitations.py``).
+    AWAITING_GO_LIVE = "AWAITING_GO_LIVE", "Invited at go-live"
     INVITED = "INVITED", "Invited"
     ACTIVE = "ACTIVE", "Active"
     #: **Derived, never set.** Nobody moves a person here: a member of staff is
@@ -104,6 +108,7 @@ class EmploymentStatus(models.TextChoices):
 #: The only moves an administrator may make, read as {from: (to, ...)}.
 #:
 #: PENDING_APPROVAL has no moves: only the hire's approval decides where it goes.
+#: AWAITING_GO_LIVE has none either: going live is what moves it.
 #: INVITED has none either. It leaves only when the invited person uses
 #: their own link and sets a password, which is what promotes the account; an
 #: administrator doing it on their behalf would move the employment status while
@@ -122,6 +127,7 @@ class EmploymentStatus(models.TextChoices):
 #: is a belt rather than a path anybody walks.
 EMPLOYMENT_TRANSITIONS: dict[str, tuple[str, ...]] = {
     EmploymentStatus.PENDING_APPROVAL: (),
+    EmploymentStatus.AWAITING_GO_LIVE: (),
     EmploymentStatus.INVITED: (),
     EmploymentStatus.ACTIVE: (
         EmploymentStatus.SUSPENDED,
@@ -407,6 +413,7 @@ ORG_UNIT_CODE_PREFIX: dict[str, str] = {
 #: in the same transaction and no open appointment of theirs should remain.
 NON_HOLDING_STATUSES = frozenset({
     EmploymentStatus.PENDING_APPROVAL,
+    EmploymentStatus.AWAITING_GO_LIVE,
     EmploymentStatus.INVITED,
     EmploymentStatus.RESIGNED,
     EmploymentStatus.TERMINATED,

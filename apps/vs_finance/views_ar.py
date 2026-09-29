@@ -25,7 +25,7 @@ from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 # ``include_shared=True`` is spelled out at every call site rather than left to the
 # default: a null branch means "shared across the school", so a school-wide fee
 # structure, customer or credit note stays visible to a branch-pinned caller.
-from vs_rbac.scoping import branch_q, branch_scope
+from vs_rbac.scoping import WholeTenantWriteMixin, branch_q, branch_scope
 
 
 # Support the paginate workflow.
@@ -3345,8 +3345,19 @@ def _normalize_channels(raw):
     return ",".join(chosen) if chosen else DunningChannel.EMAIL
 
 
+class _DunningPolicyWriteMixin(WholeTenantWriteMixin):
+    """Every write to a dunning policy needs whole-tenant reach.
+
+    A policy carries no branch: its ladder decides when every branch's overdue
+    customers are reminded, so Lekki's bursar shortening it would chase
+    Ikeja's customers too. Branch-bound holders of the keys read the policies.
+    """
+
+    shared_subject = "the dunning policies"
+
+
 # Group endpoint behavior for Dunning Policy List Create View.
-class DunningPolicyListCreateView(_FinanceBase):
+class DunningPolicyListCreateView(_DunningPolicyWriteMixin, _FinanceBase):
     """GET (list) dunning policies, or POST to create one (optionally with stages).
 
     docstring-name: Dunning policies
@@ -3409,7 +3420,7 @@ class DunningPolicyListCreateView(_FinanceBase):
 
 
 # Group endpoint behavior for Dunning Policy Detail View.
-class DunningPolicyDetailView(_FinanceBase):
+class DunningPolicyDetailView(_DunningPolicyWriteMixin, _FinanceBase):
     """GET / PATCH one dunning policy (by id). PATCH updates name / active / default and,
     if ``stages`` is given, replaces the whole reminder ladder.
 

@@ -16,10 +16,6 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from django.db.models import Q
-
-from ..models import CalendarEvent, CalendarEventAudience
-
 
 def term_of(session, on_date, terms=None):
     """The term covering *on_date*, or None. Compares dates, never archived_at."""
@@ -34,15 +30,32 @@ def current_term(session, today, terms=None):
     return term_of(session, today, terms=terms)
 
 
-def visible_events(tenant, session, *, visible_branches):
-    """Every event of the year the caller may see.
+def event_type_label(event_type, word_choice) -> str:
+    """The label an event type prints at a school whose word for a term is *word_choice*.
 
-    Inclusive: school-wide events plus the caller's own branches'.
+    Only the half-term break names the thing: a school that says Semester
+    reads "Mid-semester break". Every other type prints its own label.
     """
-    from .scoping import scope_to_visible_branches
+    from schools.vs_academics.services.words import word_for
 
-    rows = CalendarEvent.objects.filter(tenant=tenant, session=session)
-    return rows
+    from ..models import EventType
+
+    if event_type == EventType.MIDTERM_BREAK:
+        return f"Mid-{word_for(word_choice)} break"
+    return EventType(event_type).label
+
+
+def school_word(context, tenant) -> str:
+    """The school's TERM or SEMESTER, read once per serializer context.
+
+    A list of events words every row the same way, so the choice is kept in
+    the context the rows share rather than read again for each.
+    """
+    from schools.vs_academics.services.academic_rules import read_term_word
+
+    if "term_word" not in context:
+        context["term_word"] = read_term_word(tenant)
+    return context["term_word"]
 
 
 def audience_labels(event, *, audience_rows=None):

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from ..models import CalendarEvent, EventType, Exam, ExamSlot, PublishState, Sitting
+from ..models import CalendarEvent, EventType, Exam, PublishState, Sitting
 from .base import _Base
 
 

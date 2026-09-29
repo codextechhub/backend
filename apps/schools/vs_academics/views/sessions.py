@@ -37,6 +37,7 @@ from ..services.sessions import (
     validate_terms,
 )
 from ..services.scoping import assert_may_change, row_branch_ids
+from ..services.words import term_word
 from .base import AcademicsViewMixin
 
 
@@ -252,9 +253,9 @@ class SessionRollForwardView(AcademicsViewMixin, APIView):
         from ..models import AcademicSession
         from ..services.rollover import roll_forward
 
-        from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
+        from vs_rbac.scoping import caller_reaches_whole_tenant
 
-        if visible_branch_ids(request.user, self.tenant) is not WHOLE_TENANT:
+        if not caller_reaches_whole_tenant(request.user, self.tenant):
             # Copying a year copies its shared structure, which is not a
             # branch's to create.
             from vs_rbac.exceptions import SharedRecordReadOnly
@@ -361,7 +362,10 @@ class TermListCreateView(AcademicsViewMixin, generics.ListCreateAPIView):
 
     def list(self, request, *args, **kwargs):
         data = TermSerializer(self.get_queryset(), many=True).data
-        return success_response("Terms retrieved.", data=data)
+        return success_response(
+            f"{term_word(self.tenant, plural=True, capital=True)} retrieved.",
+            data=data,
+        )
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
@@ -433,7 +437,10 @@ class TermDetailView(AcademicsViewMixin, generics.RetrieveUpdateDestroyAPIView):
         return AcademicTerm.objects.filter(tenant=self.tenant)
 
     def retrieve(self, request, *args, **kwargs):
-        return success_response("Term retrieved.", data=self.get_serializer(self.get_object()).data)
+        return success_response(
+            f"{term_word(self.tenant, capital=True)} retrieved.",
+            data=self.get_serializer(self.get_object()).data,
+        )
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
