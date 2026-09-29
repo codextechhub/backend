@@ -140,16 +140,49 @@ class PayrollScopeReachTests(_ReachFixture):
 
 class DisplaySettingsReachTests(_ReachFixture):
 
-    def stored(self):
+    def stored(self, branch=None):
         definition = ConfigurationDefinition.objects.get(key=TIME_ZONE_KEY)
-        return resolve_value(definition, tenant=self.tenant)[1]
+        row = resolve_value(definition, tenant=self.tenant, branch=branch)[1]
+        expected = f"branch:{branch.pk}" if branch is not None else f"tenant:{self.tenant.pk}"
+        return row if row is not None and row.scope_key == expected else None
 
     def test_a_branch_bound_caller_holding_the_key_is_refused_and_nothing_moves(self):
-        response = self.send(self.ngozi, "patch", DISPLAY_URL, {"timezone": "Africa/Nairobi"})
-        self.assert_refused(
-            response, "Only a school-wide administrator can change the school's time zone.",
-        )
+        for body in ({"timezone": "Africa/Nairobi"}, {"date_format": "DD_MM_YYYY"},
+                     {"clock": "H24"}):
+            with self.subTest(body=body):
+                response = self.send(self.ngozi, "patch", DISPLAY_URL, body)
+                self.assert_refused(
+                    response,
+                    "Only a school-wide administrator can change the school's "
+                    "display settings. Choose one of your branches to set its "
+                    "own time zone.",
+                )
         self.assertIsNone(self.stored())
+        self.assertFalse(ConfigurationAuditEvent.all_objects.filter(
+            tenant=self.tenant, action="config.value.updated",
+        ).exists())
+
+    def test_a_branch_bound_caller_sets_and_removes_their_own_branchs_zone(self):
+        response = self.send(
+            self.ngozi, "patch", DISPLAY_URL, {"timezone": "Africa/Nairobi"},
+            branch=self.ikeja.pk,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.stored(self.ikeja).value, "Africa/Nairobi")
+        self.assertIsNone(self.stored())
+        removed = self.send(self.ngozi, "delete", DISPLAY_URL, branch=self.ikeja.pk)
+        self.assertEqual(removed.status_code, 200, removed.data)
+        self.assertIsNone(self.stored(self.ikeja))
+
+    def test_another_branchs_zone_is_a_404_to_a_branch_bound_caller(self):
+        for method in ("get", "patch", "delete"):
+            with self.subTest(method=method):
+                body = {"timezone": "Africa/Nairobi"} if method == "patch" else None
+                response = self.send(
+                    self.ngozi, method, DISPLAY_URL, body, branch=self.lekki.pk,
+                )
+                self.assertEqual(response.status_code, 404, response.data)
+        self.assertIsNone(self.stored(self.lekki))
 
     def test_a_school_wide_caller_changes_it(self):
         response = self.send(self.adaeze, "patch", DISPLAY_URL, {"timezone": "Africa/Nairobi"})
