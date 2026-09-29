@@ -543,3 +543,238 @@ Nothing. No rule was softened to make a test pass.
 - **`success_response` no longer coerces `[]` to `{}`** - that was fixed
   upstream, so the empty-list shape is a plain list. Earlier drafts of this plan
   said otherwise.
+
+---
+
+## 12. Settings, Calendar and timetables
+
+The "Calendar and timetables" group of a school's own settings. Seven
+school-scoped `vs_config` definitions, declared by `vs_calendar` migration
+`0002_calendar_and_timetable_settings` and by `seed_config_catalogue` with the
+same shape, read and written in `services/calendar_rules.py`.
+
+| Key | Type | Default | What it changes |
+| --- | --- | --- | --- |
+| `calendar.teaching_days` | JSON list of ISO weekdays, 1 to 7, at least one, none repeated | `[1, 2, 3, 4, 5]` | Grid day columns, where a period or lesson may go, the overview's teaching-day counts |
+| `calendar.week_starts_on` | CHOICE 1 (Monday) or 7 (Sunday) | `1` | Order of the grid day columns; exposed for date pickers |
+| `calendar.closes_school_by_type` | JSON map of the six event types to true/false | HOLIDAY and MIDTERM_BREAK true, the other four false | `closes_school` of an entry created or imported without it |
+| `timetable.room_required_to_publish` | BOOLEAN | `true` | Whether the publish gate refuses a lesson with no room |
+| `timetable.teacher_duty_match` | CHOICE OFF, WARN, REFUSE | `OFF` | A lesson whose teacher holds no teaching duty for its class and subject |
+| `exams.invigilator_roles` | JSON list of the school's active role keys, at least one | `["teacher"]` | Who may invigilate a paper, and the invigilator picker |
+| `timetable.default_period_minutes` | INTEGER 10 to 240, or null | `null` (no default) | Exposed only: the period form pre-fills an end time |
+
+The defaults keep a school that has set nothing where it was, with one
+exception to know: an entry created without `closes_school` takes its type's
+value, so a public holiday or a half-term break closes the school unless the
+school says otherwise, where the column's own default leaves every entry open.
+No stored event changes. The teaching days are one set for the
+whole school, deliberately separate from `staff.leave.working_days`: the days
+a school teaches and the days a leave request counts are different questions.
+
+A stored value that breaks the rules below reads as the default. A saved
+invigilator role that is no longer active is left out of `invigilator_roles`
+in the answer.
+
+### 12.1 `GET, PUT /v1/academics/calendar/rules/`
+
+GET is open to any signed-in member of the school, with no permission key: the
+week start and the teaching days shape every calendar screen and grid. The
+school is the one the caller's own token names, so a member of another school
+gets 404 before the view runs. PUT needs `school.settings.update` and a caller
+whose reach is the whole school: a branch-bound caller holding the key is
+refused with 403 `SHARED_RECORD_READ_ONLY`, "Only a school-wide administrator
+can change the school's calendar and timetable settings.", and nothing is
+written.
+
+```json
+{
+  "teaching_days": [1, 2, 3, 4, 5],
+  "week_starts_on": 1,
+  "closes_school_by_type": {
+    "HOLIDAY": true, "MIDTERM_BREAK": true, "EXAM_PERIOD": false,
+    "SCHOOL_EVENT": false, "PTA": false, "SPORTS": false
+  },
+  "event_types": [
+    {"value": "HOLIDAY", "label": "Public holiday"},
+    {"value": "MIDTERM_BREAK", "label": "Mid-term break"},
+    {"value": "EXAM_PERIOD", "label": "Exam period"},
+    {"value": "SCHOOL_EVENT", "label": "School event"},
+    {"value": "PTA", "label": "PTA"},
+    {"value": "SPORTS", "label": "Sports day"}
+  ],
+  "room_required_to_publish": true,
+  "teacher_duty_match": "OFF",
+  "teacher_duty_match_options": [
+    {"value": "OFF", "label": "Off: anyone with the teacher role may take any lesson"},
+    {"value": "WARN", "label": "Warn when the teacher has no teaching duty for the class and subject"},
+    {"value": "REFUSE", "label": "Refuse a teacher with no teaching duty for the class and subject"}
+  ],
+  "invigilator_roles": ["teacher"],
+  "invigilator_role_options": [{"value": "teacher", "label": "Teacher"}],
+  "default_period_minutes": null
+}
+```
+
+`event_types` labels are in the school's word for a term ("Mid-semester
+break"). `invigilator_role_options` is every active role of the school, by
+name. `teaching_days` is always ascending.
+
+PUT takes `teaching_days`, `week_starts_on`, `closes_school_by_type`,
+`room_required_to_publish`, `teacher_duty_match`, `invigilator_roles` and
+`default_period_minutes` every time, plus an optional `reason` (at most 200
+characters), and answers with the GET body and "Calendar and timetable settings
+saved.". Each write is audited as `config.value.updated`; an unchanged value
+writes nothing; a default period set back to null clears the school's value
+(`config.value.cleared`). A role listed twice is saved once. Refusals are 400
+keyed on the field:
+
+- `teaching_days` missing or null: "Choose the days the school teaches."; empty
+  or not a list: "Choose at least one day the school teaches."; an entry that is
+  not an integer 1 to 7: "Give each teaching day as a weekday number, 1
+  (Monday) to 7 (Sunday)."; a repeat: "Monday is listed twice."
+- `week_starts_on` missing or null: "Say whether the school's week starts on
+  Monday or Sunday."; anything but 1 or 7: "The school's week starts on Monday
+  (1) or Sunday (7)."
+- `closes_school_by_type` missing, null or not an object: "Say, for each kind
+  of calendar entry, whether it closes the school."; an unknown key: "'FUNERAL'
+  is not a kind of calendar entry."; a type left out: "Say whether an entry of
+  type PTA closes the school."; not true or false: "Say true or false for
+  whether an entry of type Sports day closes the school."
+- `room_required_to_publish` missing, null or not a boolean: "Say whether a
+  lesson needs a room before its timetable can be published."
+- `teacher_duty_match` missing or null: "Say what happens to a teacher with no
+  teaching duty for the lesson."; anything else: "Choose Off, Warn or Refuse
+  for a teacher with no teaching duty for the lesson."
+- `invigilator_roles` missing: "List the roles whose holders may invigilate.";
+  null, empty or not a list: "Choose at least one role whose holders may
+  invigilate."; an unknown or inactive role: "'ghost' is not one of this
+  school's active roles."
+- `default_period_minutes` missing: "Send the default length of a period in
+  minutes, or null for no default."; outside 10 to 240 or not an integer: "A
+  default period is 10 to 240 minutes long, or leave it empty for no default."
+
+### 12.2 Teaching days and the week start
+
+- **Grids.** The class grid (`GET /v1/academics/timetable/classes/<id>/`) and
+  the teacher grid (`GET .../teachers/<id>/`) draw one day per teaching day, in
+  week order from `week_starts_on` (a Sunday-start school teaching Sunday to
+  Thursday draws Sunday first). Each day carries `is_teaching_day`. A day the
+  school no longer teaches but the grid still holds a lesson on is drawn too,
+  with `is_teaching_day: false`, so the lesson can be seen and cleared: it
+  still counts in clashes and at the publish gate.
+- **Writes.** A lesson (slot create, slot move, grid save) or a period
+  (create, or a move to another day) on a day the school does not teach is
+  refused with 422 `DAY_NOT_TAUGHT`, keyed `day_of_week`: "Saturday is not one
+  of the school's teaching days, so no lesson can be scheduled on it. Add
+  Saturday to the teaching days in Settings, Calendar and timetables first."
+  (for a period: "... so no period can be set for it. ..."). A period with no
+  day runs on every teaching day. Duplicating a week skips, and counts in
+  `skipped`, a source lesson on a day no longer taught.
+- **Overview.** `teaching_days_total` and `teaching_days_elapsed` count the
+  school's teaching days less every closed date.
+
+### 12.3 Closing the school
+
+`POST /v1/academics/calendar/events/` without `closes_school` takes the type's
+value from `closes_school_by_type`; an explicit value wins. The calendar import
+does the same for a blank Closes School cell, and an unreadable cell is refused
+with "'maybe' is not yes or no. Write Yes if the school is shut on these days,
+No if it is open, or leave it blank for the school's usual answer for this kind
+of entry.". Editing an event, or changing the setting, never changes a stored
+`closes_school`.
+
+### 12.4 Publishing a class timetable
+
+The gate refuses, in this order:
+
+1. 409 `TIMETABLE_INCOMPLETE`: "1 lesson has no teacher or room yet. Fill it in
+   and publish again." ("N lessons have ... Fill them in ..."). With
+   `room_required_to_publish` false only the teacher counts: "1 lesson has no
+   teacher yet. Fill it in and publish again.". `detail.items` names each
+   ("Monday Period 1 - Mathematics has no room."), `detail.slot_ids` lists them.
+2. 409 `TIMETABLE_TEACHER_HAS_NO_DUTY`, under REFUSE only: "1 lesson has a
+   teacher with no teaching duty for it. Give the duty in Teaching duties, or
+   change the teacher, and publish again." (plural: "N lessons have a teacher
+   with no teaching duty for them. Give the duties in Teaching duties, or
+   change the teachers, and publish again."). `detail.items`: "Monday Period 1
+   - Mathematics: Chukwuemeka Eze has no teaching duty for JSS1 A
+   Mathematics."; `detail.slot_ids`.
+3. 409 `TIMETABLE_HAS_CLASHES`, unchanged.
+
+A publish that succeeds answers `{status, status_label, published_at,
+warnings}`; `warnings` lists the `TEACHER_HAS_NO_DUTY` lessons published under
+WARN and is empty otherwise.
+
+### 12.5 The teaching duty
+
+A duty is `vs_staff`'s `TeachingAssignment` (lead or assistant) for the
+lesson's class and subject in its session, read through
+`vs_staff.services.teaching.duty_holders`. A lesson with no teacher is never a
+mismatch.
+
+- **OFF**: nothing changes.
+- **WARN**: the save stands and its `warnings` carry, beside any clash,
+  `{"code": "TEACHER_HAS_NO_DUTY", "detail": "Chioma Okafor has no teaching duty
+  for JSS1 A Mathematics.", "slot_ids": [412]}`. The same warning is on the
+  slot create, slot update, grid save and grid read responses, on the slot
+  preview (with `slot_ids: []`), on a duplicate's summary and preview, and on
+  the publish answer.
+- **REFUSE**: a slot create, slot update or grid save with such a teacher is
+  refused with 422 `NO_TEACHING_DUTY`, `detail.field: "teacher"`: "Chioma
+  Okafor has no teaching duty for JSS1 A Mathematics. Give her the duty in
+  Teaching duties first, or choose Chukwuemeka Eze, who has it." (the pronoun
+  follows the person's recorded gender, "them" when none; several holders:
+  "..., or choose a colleague who has it: A, B or C."; none: "... Give her the
+  duty in Teaching duties first."). A duplicate that would copy such a teacher
+  is refused with `NO_TEACHING_DUTY`: "N copied lessons have a teacher with no
+  teaching duty for JSS1 B. Copy without teachers, or give them the duties in
+  Teaching duties first.", `detail.items` naming each. The grid read still
+  lists the warnings, because a duty withdrawn after the save leaves such a
+  lesson behind, and publishing refuses it (12.4).
+
+### 12.6 Invigilators
+
+A paper's invigilator must be an active person holding an active grant of a
+role in `invigilator_roles`, else 422 `NOT_AN_INVIGILATOR`, `detail.field:
+"invigilator"`: "Bola Adeyemi does not hold a role whose holders may invigilate
+at this school (Teacher). Choose someone who does, or add their role in
+Settings, Calendar and timetables."; an inactive account: "Bola Adeyemi's
+account is not active, so they cannot invigilate."; another school's person:
+"That person does not hold a role whose holders may invigilate at this
+school.". This replaces `NOT_A_TEACHING_USER` on the exam paper writes only.
+
+`GET /v1/academics/exams/invigilators/` (key `academics.exam.view`) is the
+picker: `[{"id": 31, "name": "Chioma Okafor", "role_label": "Teacher"}]`,
+alphabetical, `role_label` joining the eligible roles a person holds. A
+branch-bound caller sees the people whose reach covers one of their branches
+and everybody whose reach is the whole school. Never an email address.
+
+### 12.7 `POST /v1/academics/timetable/periods/copy/?session=<target>`
+
+Copies another year's bell schedule into the target year, which is `?session=`
+or else the active year, exactly as for adding a period. A button; starting a
+year copies nothing. Body `{"from_session": <id>}`. Needs
+`academics.timetable.create`, the key that adds a period. Answers 201,
+"5 periods copied from 2025/2026 into 2026/2027.", with `{"copied": 5,
+"periods": [...]}`, each in the bell schedule's own shape, and one audit event.
+
+Every period is copied as it stands: branch, day, position, times, type and
+whether it is active. Branch scoping: a school-wide caller copies every period
+into a target with none at all; a branch-bound caller copies only the periods
+at their own branches, into a target with none there, never the school's
+shared ones. Refusals:
+
+- 400 `from_session` missing: "Say which year to copy the bell schedule
+  from."; not an id: "Give the year to copy from by its id."; the target
+  itself: "A year's bell schedule cannot be copied into itself. Choose an
+  earlier year."
+- 404 another school's year: "No such session at this school."
+- 409 `SESSION_ARCHIVED_READ_ONLY` for an archived target, as every write.
+- 409 `BELL_SCHEDULE_NOT_EMPTY`: "2026/2027 already has periods, so nothing
+  was copied. Copying fills an empty bell schedule: change 2026/2027's periods
+  on the Bell schedule instead." (branch-bound: "... already has periods at
+  your branch, ...").
+- 422 `BELL_SCHEDULE_EMPTY`: "2025/2026 has no periods to copy." (branch-bound:
+  "2025/2026 has no periods at your branch to copy. The school's shared periods
+  are copied by a school-wide administrator.").
+- 403 for a branch-bound caller whose every branch has been withdrawn.
