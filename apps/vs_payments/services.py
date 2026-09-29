@@ -860,13 +860,24 @@ def _validate_instruction_snapshot(payout, vendor) -> None:
 
 
 def _validate_approved_instance(batch, approved_instance):
-    """Require exact terminal approval and the minimum distinct human votes."""
+    """Require exact terminal approval and the minimum distinct human votes.
+
+    Approvers are counted as real people: each live approval is its
+    ``proxied_by`` when cast under a proxy (an impersonation session), else its
+    ``actor``, and everyone who put the batch forward is left out
+    (:func:`vs_workflow.services.approvers.requester_ids`: the named requester
+    and the real submitter and resubmitters). Ada who submits a batch and then
+    approves it as Chioma and as Bola by proxy is one person and the requester,
+    so the batch counts no approver and waits.
+    """
     from django.contrib.contenttypes.models import ContentType
+    from django.db.models.functions import Coalesce
     from vs_workflow.constants import (
         WorkflowInstanceStatus,
         WorkflowStageAction as StageActionEnum,
     )
     from vs_workflow.models import WorkflowInstance, WorkflowStageAction
+    from vs_workflow.services.approvers import requester_ids
 
     if approved_instance is None:
         raise PayoutApprovalRequiredError()
@@ -891,8 +902,9 @@ def _validate_approved_instance(batch, approved_instance):
             action=StageActionEnum.APPROVED,
             reversed_at__isnull=True,
             is_reversal_of__isnull=True,
-        ).exclude(actor_id=instance.requested_by_id).values_list("actor_id", flat=True)
-    )
+        ).annotate(real_voter=Coalesce("proxied_by", "actor"))
+        .values_list("real_voter", flat=True)
+    ) - requester_ids(instance)
     required = 2 if batch.total_amount >= WF_DEFAULT_HIGH_VALUE_THRESHOLD else 1
     if len(actor_ids) < required:
         requirement = (

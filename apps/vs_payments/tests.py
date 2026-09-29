@@ -44,6 +44,7 @@ from .constants import CollectionStatus, PayoutBatchStatus, PayoutStatus, Virtua
 from .exceptions import (
     DuplicateWebhookError,
     PaymentStateError,
+    PayoutApprovalRequiredError,
     ProviderError,
     ProviderNotConfiguredError,
     WebhookSignatureError,
@@ -2532,6 +2533,61 @@ class PayoutBatchApprovalTests(TestCase):
 
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+
+    def _approved_by(self, batch, votes):
+        """Mark ``batch``'s instance approved with ``votes``, ``(actor, proxied_by)`` pairs.
+
+        The votes are written directly because the engine refuses a requester's
+        proxied vote as it is cast; the dispatch gate is the last check between an
+        approval and the provider and must hold on its own.
+        """
+        from vs_workflow.constants import (
+            WorkflowInstanceStatus,
+            WorkflowStageAction as ActionEnum,
+        )
+        from vs_workflow.models import WorkflowInstance, WorkflowStageAction
+
+        instance = self._instance_for(batch)
+        stage_instance = instance.stage_instances.order_by("pk").first()
+        for actor, proxied_by in votes:
+            WorkflowStageAction.objects.create(
+                stage_instance=stage_instance, actor=actor, proxied_by=proxied_by,
+                action=ActionEnum.APPROVED, attempt=stage_instance.attempt,
+            )
+        WorkflowInstance.all_objects.filter(pk=instance.pk).update(
+            status=WorkflowInstanceStatus.APPROVED)
+        instance.refresh_from_db()
+        return instance
+
+    def test_the_requester_approving_by_proxy_counts_as_nobody(self):
+        """Ada submits, then approves as Chioma and as Bola: that is Ada alone.
+
+        Two approval rows name two people, but one person made both at the
+        keyboard, and she raised the batch. It counts no approver and waits.
+        """
+        self._seed_tenant_ladder()
+        ada = self.requester
+        chioma = self._make_approver()
+        bola = self._make_senior_approver()
+        batch = self._draft_batch(90_000_000)
+        self._submit_for_approval(batch)
+        instance = self._approved_by(batch, [(chioma, ada), (bola, ada)])
+
+        with self.assertRaises(PayoutApprovalRequiredError) as refused:
+            services._validate_approved_instance(batch, instance)
+        self.assertIn("two distinct human approvers", str(refused.exception))
+        self.assertEqual(refused.exception.extra.get("distinct_approved_actors"), 0)
+
+    def test_two_real_people_approving_pass_the_two_approver_rule(self):
+        """Chioma and Bola each approve at their own keyboards: two approvers."""
+        self._seed_tenant_ladder()
+        chioma = self._make_approver()
+        bola = self._make_senior_approver()
+        batch = self._draft_batch(90_000_000)
+        self._submit_for_approval(batch)
+        instance = self._approved_by(batch, [(chioma, None), (bola, None)])
+
+        self.assertEqual(services._validate_approved_instance(batch, instance), instance)
 
     # --- 10. surviving a change in how approvers are resolved -------------- #
 
