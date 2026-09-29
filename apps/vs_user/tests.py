@@ -2463,6 +2463,77 @@ class AuthContextParityTests(TestCase):
                          set(self._me_tenant()))
 
 
+class TenantDisplayBlockTests(TestCase):
+    """Every signed-in member is told how the school writes dates and times.
+
+    Bright Star keeps Lagos time and writes 29/09/2026 on a 24-hour clock; its
+    Lekki branch sits on Nairobi time. A teacher holding no settings key signs
+    in and must still get all of it, from the login response and from /me
+    alike, or every date on her screens is written the platform's way.
+    """
+
+    def setUp(self):
+        from django.test import RequestFactory
+
+        from vs_config.clock import TIME_ZONE_KEY
+        from vs_config.display import CLOCK_KEY, DATE_FORMAT_KEY
+        from vs_config.models import ConfigurationDefinition
+        from vs_config.services.resolution import set_value
+        from vs_rbac.tests.helpers import make_branch, make_school, make_staff_user
+
+        self.password = "Str0ng!pass123"
+        self.school = make_school(slug="bright-star-display", name="Bright Star")
+        self.ikeja = make_branch(self.school, name="Ikeja Branch")
+        self.lekki = make_branch(self.school, name="Lekki Branch", is_main=False)
+        self.teacher = make_staff_user(
+            self.ikeja, email="teacher@bright-display.test", password=self.password,
+        )
+        tenant = self.school.tenant
+        for key, value, scope in (
+            (DATE_FORMAT_KEY, "DD_MM_YYYY", {"tenant": tenant}),
+            (CLOCK_KEY, "H24", {"tenant": tenant}),
+            (TIME_ZONE_KEY, "Africa/Nairobi", {"branch": self.lekki}),
+        ):
+            set_value(
+                definition=ConfigurationDefinition.objects.get(key=key),
+                value=value, actor=None, **scope,
+            )
+        self.expected = {
+            "time_zone": "Africa/Lagos", "date_format": "DD_MM_YYYY", "clock": "H24",
+            "branch_zones": {str(self.lekki.pk): "Africa/Nairobi"},
+        }
+        self.factory = RequestFactory()
+
+    def test_the_login_response_carries_the_display_block(self):
+        request = self.factory.post("/v1/user/auth/login/")
+        result = LoginService.login(
+            self.teacher.email, self.password, tenant="bright-star-display",
+            request=request,
+        )
+        self.assertEqual(result["tenant"]["display"], self.expected)
+
+    def test_me_carries_the_same_block_without_a_settings_key(self):
+        from rest_framework.test import APIRequestFactory, force_authenticate
+
+        from vs_user.views.me import CurrentUserView
+
+        request = APIRequestFactory().get("/v1/user/auth/me/")
+        request.tenant = self.teacher.tenant
+        request.rbac_tenant = self.teacher.tenant
+        force_authenticate(request, user=self.teacher)
+        body = CurrentUserView.as_view()(request).data
+        self.assertEqual(body.get("data", body)["tenant"]["display"], self.expected)
+
+    def test_the_platform_tenant_carries_the_platform_defaults(self):
+        from vs_rbac.tests.helpers import codex_tenant
+        from vs_tenants.context import tenant_context_block
+
+        self.assertEqual(tenant_context_block(codex_tenant())["display"], {
+            "time_zone": "Africa/Lagos", "date_format": "D_MMM_YYYY",
+            "clock": "H12", "branch_zones": {},
+        })
+
+
 # =============================================================================
 # Per-tenant email, Phase 1 - sign-in resolves the tenant instead of guessing it
 # =============================================================================

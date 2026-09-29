@@ -145,12 +145,21 @@ def tenant_context_block(tenant) -> dict:
     fact by being refused - which means a screen that makes no request looks
     open, and a school still being set up can wander into a page it will never
     be allowed to use. One field answers it before the first request.
+
+    ``display`` is how the tenant's screens show a date and a time: its zone,
+    its date format, its clock and the branches that keep a zone of their own
+    (:func:`vs_config.display.display_preferences`). Every signed-in member
+    needs it to write a date the school's way, so it rides here rather than
+    behind a settings key.
     """
     if tenant is None:
         return {}
+    from vs_config.display import display_preferences
+
     return {
         "slug": tenant.slug,
         "name": tenant.name,
         "kind": tenant.kind,
         "status": tenant.status,
+        "display": display_preferences(tenant),
     }
