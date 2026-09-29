@@ -295,13 +295,48 @@ class WorkflowTemplatePublishSerializer(serializers.Serializer):
         return value
 
 
-class WorkflowStageActionReadSerializer(serializers.ModelSerializer):
+class _ProxyAttributionFields(serializers.Serializer):
+    """The three "who did it" fields shared by votes and audit rows.
+
+    ``real_actor_name`` and ``proxied_user_name`` are set only for an action
+    taken under a proxy (an impersonation session); ``acted_label`` is always
+    ready to display: "Ada Obi for Chioma Okafor" when proxied, otherwise the
+    actor's own name. See :mod:`core.attribution`.
+    """
+
+    real_actor_name = serializers.SerializerMethodField()
+    proxied_user_name = serializers.SerializerMethodField()
+    acted_label = serializers.SerializerMethodField()
+
+    def attribution(self, obj) -> dict:
+        raise NotImplementedError
+
+    def get_real_actor_name(self, obj) -> str | None:
+        return self.attribution(obj)["real_actor_name"]
+
+    def get_proxied_user_name(self, obj) -> str | None:
+        return self.attribution(obj)["proxied_user_name"]
+
+    def get_acted_label(self, obj) -> str:
+        return self.attribution(obj)["acted_label"]
+
+
+class WorkflowStageActionReadSerializer(_ProxyAttributionFields, serializers.ModelSerializer):
+    """One vote or reversal. ``actor`` is the approver whose vote it is;
+    ``proxied_by`` is the real person when the vote was cast under a proxy."""
+
     class Meta:
         model = WorkflowStageAction
         fields = [
             "id", "action", "actor", "on_behalf_of", "comment", "attempt",
             "acted_at", "reversed_at", "reversed_by", "reversal_reason", "is_reversal_of",
+            "proxied_by", "real_actor_name", "proxied_user_name", "acted_label",
         ]
+
+    def attribution(self, obj) -> dict:
+        from core.attribution import vote_attribution
+
+        return vote_attribution(obj)
 
 
 class WorkflowStageApproverReadSerializer(serializers.ModelSerializer):
@@ -330,11 +365,20 @@ class WorkflowStageInstanceReadSerializer(serializers.ModelSerializer):
         ]
 
 
-class WorkflowAuditLogReadSerializer(serializers.ModelSerializer):
+class WorkflowAuditLogReadSerializer(_ProxyAttributionFields, serializers.ModelSerializer):
+    """One engine event. ``actor`` is the person who really acted;
+    ``effective_user`` is whom they acted as when the event was proxied."""
+
     class Meta:
         model = WorkflowAuditLog
         fields = ["id", "event_type", "actor", "stage_instance",
-                  "context", "message", "occurred_at"]
+                  "context", "message", "occurred_at",
+                  "effective_user", "real_actor_name", "proxied_user_name", "acted_label"]
+
+    def attribution(self, obj) -> dict:
+        from core.attribution import audit_row_attribution
+
+        return audit_row_attribution(obj)
 
 
 class WorkflowInstanceListSerializer(serializers.ModelSerializer):

@@ -579,6 +579,12 @@ class WorkflowInstanceViewSet(
         # A document its own module keeps from this reader is absent here too, so
         # its detail, approve and reject answer 404.
         qs = exclude_hidden_documents(qs, self.request.user, self.get_tenant())
+        if self.action == "retrieve":
+            # Names for the approval timeline's "who did it" labels.
+            qs = qs.prefetch_related(
+                "stage_instances__actions__actor", "stage_instances__actions__proxied_by",
+                "audit_logs__actor", "audit_logs__effective_user",
+            )
         p = self.request.query_params
         if p.get("document_type"): qs = qs.filter(document_type=p["document_type"])
         if p.get("status"):        qs = qs.filter(status=p["status"])

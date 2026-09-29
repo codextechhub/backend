@@ -203,18 +203,16 @@ def _contract_activity(entity, contract_id):
     first, capped. Contract lifecycle *and* milestone-completion events both record with
     ``target=contract``, so they all land here. Only called on single-record detail reads.
     """
+    from vs_finance.audit import activity_actor
     from vs_finance.models import FinanceAuditLog
 
     return [{
         "id": log.id, "action": log.action, "message": log.message, "status": log.status,
-        "actor_name": (
-            f"{getattr(log.actor, 'first_name', '')} {getattr(log.actor, 'last_name', '')}".strip()
-            or getattr(log.actor, "email", "System")
-        ) if log.actor_id else "System",
+        **activity_actor(log),
         "created_at": log.created_at,
     } for log in FinanceAuditLog.objects.filter(
         entity=entity, target_type="VendorContract", target_id=str(contract_id),
-    ).select_related("actor").order_by("-created_at")[:20]]
+    ).select_related("actor", "effective_user").order_by("-created_at")[:20]]
 
 
 class VendorContractListSerializer(serializers.ModelSerializer):
@@ -638,18 +636,16 @@ def _sourcing_activity(entity, target_type, target_id):
     :class:`FinanceAuditLog` rows for this exact document, newest first, capped. Only
     called on single-record detail reads, so the bounded query is not an N+1 concern.
     """
+    from vs_finance.audit import activity_actor
     from vs_finance.models import FinanceAuditLog
 
     return [{
         "id": log.id, "action": log.action, "message": log.message, "status": log.status,
-        "actor_name": (
-            f"{getattr(log.actor, 'first_name', '')} {getattr(log.actor, 'last_name', '')}".strip()
-            or getattr(log.actor, "email", "System")
-        ) if log.actor_id else "System",
+        **activity_actor(log),
         "created_at": log.created_at,
     } for log in FinanceAuditLog.objects.filter(
         entity=entity, target_type=target_type, target_id=str(target_id),
-    ).select_related("actor").order_by("-created_at")[:20]]
+    ).select_related("actor", "effective_user").order_by("-created_at")[:20]]
 
 
 def _quotation_is_expired(quotation, context=None) -> bool:

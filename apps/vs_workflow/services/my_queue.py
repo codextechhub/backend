@@ -17,6 +17,8 @@ The filters that make a snapshot actionable are all here:
 
 from __future__ import annotations
 
+from django.db.models import Q
+
 from vs_workflow.models import WorkflowStageAction, WorkflowStageApprover
 from vs_workflow.services import parking
 from vs_workflow.services.visibility import exclude_hidden_documents
@@ -56,9 +58,11 @@ def pending_approval_snapshots(user, tenant=None) -> list[WorkflowStageApprover]
         "stage_instance__instance__template", "stage_instance__stage",
     ).order_by("-stage_instance__activated_at")
 
+    # A vote cast by this person under a proxy uses up their own vote too.
     already_acted = set(
         WorkflowStageAction.objects.filter(
-            actor=user, reversed_at__isnull=True, is_reversal_of__isnull=True,
+            Q(actor=user) | Q(proxied_by=user),
+            reversed_at__isnull=True, is_reversal_of__isnull=True,
         ).values_list("stage_instance_id", "attempt")
     )
 

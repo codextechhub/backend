@@ -27,6 +27,7 @@ from vs_finance.views import resolve_entity
 from vs_finance.constants import AccountType, DocumentStatus
 from vs_rbac.field_enforcement import assert_writable
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
+from vs_rbac.scoping import WholeTenantWriteMixin
 from vs_config.clock import tenant_today
 
 from ..constants import PAYMENT_TERM_DAYS, PaymentTerms, VendorKycStatus, VendorRisk
@@ -284,7 +285,18 @@ def _category_parent(entity, ref, *, category=None, active=True):
         raise ValidationError({"parent": "Re-parenting would move a descendant below level 3."})
     return parent
 
-class VendorCategoryListCreateView(_ProcBase):
+class _VendorCategoryWriteMixin(WholeTenantWriteMixin):
+    """Every write to a vendor category needs whole-tenant reach.
+
+    A category carries no branch: it is the taxonomy every branch files its
+    vendors and catalog items under, so renaming or re-parenting one from
+    Lekki moves Ikeja's vendors with it.
+    """
+
+    shared_subject = "the vendor categories"
+
+
+class VendorCategoryListCreateView(_VendorCategoryWriteMixin, _ProcBase):
     """GET (list) / POST (create) vendor categories for an entity.
 
     docstring-name: Vendor categories
@@ -345,7 +357,7 @@ class VendorCategoryListCreateView(_ProcBase):
         )
 
 
-class VendorCategoryDetailView(_ProcBase):
+class VendorCategoryDetailView(_VendorCategoryWriteMixin, _ProcBase):
     """Retrieve or update one category without rewriting linked business documents."""
 
     @property

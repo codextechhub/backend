@@ -16,6 +16,7 @@ from django.db import transaction
 
 from vs_rbac.scoping import (
     WHOLE_TENANT,
+    only_branch_id,
     visible_branch_ids,
     visible_branch_ids_for,
 )
@@ -240,6 +241,11 @@ def reach_of(staff):
     list where the person holds only revoked grants is a real answer meaning
     they reach the school-wide rows and nothing else, and must not be rendered
     as though no narrowing applied.
+
+    A reach of exactly the school's only branch also reads as school-wide,
+    because ``vs_rbac.scoping.visible_branch_ids`` answers it that way for
+    every read and write the person makes; a profile that said "Main only"
+    would describe a narrowing the server does not apply.
     """
     grants = [
         grant for grant in staff.user.tenant_role_assignments.all()
@@ -273,4 +279,6 @@ def reach_of(staff):
         if branch_id in branches
     ]
     rows.sort(key=lambda row: row[0].name)
+    if len(rows) == 1 and rows[0][0].pk == only_branch_id(staff.tenant_id):
+        return True, []
     return False, rows

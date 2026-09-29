@@ -29,6 +29,7 @@ from rest_framework import generics
 from rest_framework.exceptions import ValidationError
 
 from core.response import success_response
+from schools.vs_academics.services.words import term_word
 from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
 
@@ -105,7 +106,9 @@ class _EventBase(CalendarViewMixin):
             # give the school two truths the day a term's dates were corrected.
             row = self.session.terms.filter(pk=term).first() if self.session else None
             if row is None:
-                raise ValidationError({"term": "No such term in this session."})
+                raise ValidationError({
+                    "term": f"No such {term_word(self.tenant)} in this session.",
+                })
             qs = qs.filter(start_date__lte=row.end_date, end_date__gte=row.start_date)
 
         scope = (params.get("scope") or "").strip()
@@ -143,7 +146,8 @@ class _EventBase(CalendarViewMixin):
             out.append({
                 "code": WARN_EVENT_OUTSIDE_ANY_TERM,
                 "detail": (
-                    f"This date falls outside every term in {session.name}. It "
+                    f"This date falls outside every {term_word(self.tenant)} in "
+                    f"{session.name}. It "
                     f"will show on the calendar and be flagged in the events "
                     f"list."
                 ),

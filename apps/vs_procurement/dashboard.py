@@ -451,7 +451,13 @@ def _pending_approvals(entity, user, branch_filter) -> list:
 
 
 def _recent_activity(entity) -> list:
-    """Return the five newest successful procurement audit events for ``entity``."""
+    """Return the five newest successful procurement audit events for ``entity``.
+
+    ``actor`` is the person who really acted; an event taken under a proxy also
+    carries whom they acted as (see :mod:`core.attribution`).
+    """
+    from core.attribution import audit_row_attribution
+
     rows = (
         FinanceAuditLog.objects.filter(
             entity=entity,
@@ -459,7 +465,7 @@ def _recent_activity(entity) -> list:
             # Failed attempts belong in audit, but not in a completed-activity feed.
             status=FinanceAuditStatus.SUCCESS,
         )
-        .select_related("actor")
+        .select_related("actor", "effective_user")
         # The Dashboard intentionally shows at most the five newest successful events.
         .order_by("-created_at", "-id")[:5]
     )
@@ -477,6 +483,7 @@ def _recent_activity(entity) -> list:
             ),
             "reference": row.document_number,
             "actor": _requester_name(row.actor),
+            **audit_row_attribution(row, name=_requester_name),
             "occurred_at": row.created_at.isoformat(),
         }
         for row in rows

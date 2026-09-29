@@ -9,7 +9,8 @@ that are not a school's get ``None``.
 Between terms the answer is the term that last started: in the holiday after
 First Term the bursar is still collecting First Term fees, and "This term"
 should keep meaning the term those fees were billed for until Second Term
-begins. A term in a draft session is not considered, so next year's calendar
+begins. The label says the school's own word, so a school that says Semester
+reads "This semester". A term in a draft session is not considered, so next year's calendar
 being set up early never takes over the dashboard; an archived session's terms
 are, so asking about a day in last year (the term before this one, for a
 comparison) finds last year's term.
@@ -26,8 +27,9 @@ def current_term(entity, as_of):
     from vs_tenants.models import Tenant
 
     from schools.vs_academics.models import AcademicTerm
+    from schools.vs_academics.services.words import term_word
 
-    from .models import FeeStructureTermLink
+    from .models import FeeStructureTermLink, period_name
 
     tenant = getattr(entity, "tenant", None)
     if tenant is None or tenant.kind != Tenant.Kind.SCHOOL:
@@ -48,8 +50,8 @@ def current_term(entity, as_of):
     ).values_list("fee_structure__code", flat=True)
     return BillingPeriod(
         key="term",
-        label="This term",
-        name=f"{term.name} {term.session.name}",
+        label=f"This {term_word(tenant)}",
+        name=period_name(term.session, term),
         start=term.start_date,
         end=term.end_date,
         invoices=Q(reference__in=[f"FEE:{code}" for code in codes]),

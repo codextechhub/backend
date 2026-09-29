@@ -24,7 +24,7 @@ def _history(entity):
         FinanceAuditLog.objects.filter(
             entity=entity,
             action=FinanceAuditAction.PROCUREMENT_SETTINGS_UPDATED,
-        ).select_related("actor").order_by("-created_at", "-id")[:10]
+        ).select_related("actor", "effective_user").order_by("-created_at", "-id")[:10]
     )
     return FinanceAuditLogSerializer(rows, many=True).data
 

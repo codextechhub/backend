@@ -30,6 +30,8 @@ from rest_framework.exceptions import NotFound
 from rest_framework.views import APIView
 
 from core.response import error_response, success_response
+from schools.vs_academics.services.academic_rules import read_term_word
+from schools.vs_academics.services.words import term_word
 from vs_finance.models import FeeStructure
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 from vs_rbac.scoping import assert_caller_may_configure, branch_q
@@ -42,7 +44,7 @@ from .exceptions import (
     InvalidTermLinkError,
     TermNotLinkedError,
 )
-from .due_dates import resolve_due_date
+from .due_dates import due_basis_label, resolve_due_date
 from .models import FeeDueBasis, SchoolFeeDuePolicy
 from .registry import get_fee_term_bridge
 from .serializers import (
@@ -180,7 +182,10 @@ class LinkTermView(_FalView):
         )
         if link is None:
             return success_response(
-                message="Fee structure is not linked to a term.",
+                message=(
+                    f"Fee structure is not linked to a "
+                    f"{term_word(request.tenant)}."
+                ),
                 data={"linked": False},
             )
         return success_response(
@@ -216,7 +221,7 @@ class LinkTermView(_FalView):
                 code="FINANCE_UNAVAILABLE",
             )
         return success_response(
-            message="Fee structure linked to the term.",
+            message=f"Fee structure linked to the {term_word(request.tenant)}.",
             data=link_payload(result.value),
         )
 
@@ -329,12 +334,16 @@ class FeeDuePolicyView(APIView):
             ).isoformat()
             for basis in FeeDueBasis
         }
+        word = read_term_word(tenant)
         return {
             "basis": row.basis,
-            "basis_display": row.get_basis_display(),
+            "basis_display": due_basis_label(row.basis, word),
             "days_after": row.days_after,
             "options": [
-                {"value": b.value, "label": b.label, "due_if_billed_today": preview[b.value]}
+                {
+                    "value": b.value, "label": due_basis_label(b.value, word),
+                    "due_if_billed_today": preview[b.value],
+                }
                 for b in FeeDueBasis
             ],
             "resolved_against": {

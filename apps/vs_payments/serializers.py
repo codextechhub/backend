@@ -154,6 +154,11 @@ class PaymentEventSerializer(serializers.ModelSerializer):
     for a caller whose roles hide ``payments.virtual_account.account_number`` the
     number is left out of the message, as it is absent from the account's own
     record, so the log says no more than the record would.
+
+    ``actor_email`` is the person in whose name the action ran. An action taken
+    under a proxy also says who really did it: ``real_actor_name``,
+    ``proxied_user_name`` and the ready ``acted_label`` ("Ada Obi for Chioma
+    Okafor") come from :mod:`core.attribution`.
     """
 
     entity_code = serializers.CharField(source="entity.code", read_only=True, default=None)
@@ -161,12 +166,16 @@ class PaymentEventSerializer(serializers.ModelSerializer):
     actor_email = serializers.CharField(source="actor_user.email", read_only=True, default=None)
     message = serializers.SerializerMethodField()
     metadata = serializers.SerializerMethodField()
+    real_actor_name = serializers.SerializerMethodField()
+    proxied_user_name = serializers.SerializerMethodField()
+    acted_label = serializers.SerializerMethodField()
 
     class Meta:
         model = PaymentEvent
         fields = [
             "id", "entity_code", "provider", "action", "action_display", "reference",
             "succeeded", "message", "metadata", "actor_email", "created_at",
+            "real_actor_name", "proxied_user_name", "acted_label",
         ]
 
     def get_message(self, obj):
@@ -188,6 +197,23 @@ class PaymentEventSerializer(serializers.ModelSerializer):
             self._account_numbers_readable = can_read(
                 self.context.get("request"), "payments.virtual_account.account_number")
         return self._account_numbers_readable
+
+    def _attribution(self, obj) -> dict:
+        from core.attribution import proxy_attribution
+
+        actor = obj.actor_user if obj.actor_user_id else None
+        if obj.proxied_by_id:
+            return proxy_attribution(obj.proxied_by, actor)
+        return proxy_attribution(actor)
+
+    def get_real_actor_name(self, obj) -> str | None:
+        return self._attribution(obj)["real_actor_name"]
+
+    def get_proxied_user_name(self, obj) -> str | None:
+        return self._attribution(obj)["proxied_user_name"]
+
+    def get_acted_label(self, obj) -> str:
+        return self._attribution(obj)["acted_label"]
 
 
 class PayoutBatchSummarySerializer(serializers.ModelSerializer):

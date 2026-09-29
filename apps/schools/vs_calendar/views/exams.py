@@ -27,6 +27,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.views import APIView
 
 from core.response import success_response
+from schools.vs_academics.services.academic_rules import read_term_word
 from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
 
@@ -48,12 +49,18 @@ from ..exceptions import (
 )
 from ..models import CalendarEvent, Exam, ExamSlot, EventType, PublishState
 from ..serializers import ExamSerializer, ExamSlotSerializer, ExamSlotWriteSerializer
+from ..services.calendar import event_type_label
 from ..services.clashes import SITTING_RANK, exam_clashes, exam_slot_warnings
 from ..services.publishing import publish_exam
 from ..services.scoping import assert_may_change, scope_to_visible_branches
 from ..services.teachers import assert_is_teacher
 from .base import CalendarViewMixin
 from .timetable import _visible_classes
+
+
+def _type_label(event, tenant) -> str:
+    """An event's type label in the school's word for a term."""
+    return event_type_label(event.event_type, read_term_word(tenant))
 
 
 class ExamListCreateView(CalendarViewMixin, generics.ListCreateAPIView):
@@ -154,7 +161,7 @@ class ExamListCreateView(CalendarViewMixin, generics.ListCreateAPIView):
         if event.event_type != EventType.EXAM_PERIOD:
             raise ExamEventNotExamPeriod(
                 f"{event.name} is a "
-                f"{event.get_event_type_display().lower()}, and an exam "
+                f"{_type_label(event, self.tenant).lower()}, and an exam "
                 f"timetable sits inside an exam period.",
                 event=event.name,
             )

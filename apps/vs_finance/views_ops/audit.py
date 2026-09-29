@@ -37,7 +37,7 @@ class FinanceAuditLogListView(_FinanceBase):
     # Handle GET /finance/audit.
     def get(self, request):
         entity = resolve_entity(request)  # Scope audit rows to the active entity.
-        qs = FinanceAuditLog.objects.filter(entity=entity).select_related("actor")
+        qs = FinanceAuditLog.objects.filter(entity=entity).select_related("actor", "effective_user")
         params = request.query_params  # Query parameters drive optional filters.
         if (action := params.get("action")):
             qs = qs.filter(action=action)

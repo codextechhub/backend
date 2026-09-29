@@ -169,6 +169,10 @@ class ValidationTests(_ImportMixin, _Base):
         self.assertEqual(self.errors([row(event_type="MIDTERM_BREAK")]), [])
         self.assertEqual(self.errors([row(event_type="mid-term break")]), [])
 
+    def test_a_semester_schools_label_for_the_break_is_accepted(self):
+        """A school that says Semester reads "Mid-semester break" on its calendar."""
+        self.assertEqual(self.errors([row(event_type="Mid-semester break")]), [])
+
     def test_a_one_day_entry_repeats_its_date(self):
         self.assertEqual(
             self.errors([row(start_date="2025-10-01", end_date="2025-10-01")]),

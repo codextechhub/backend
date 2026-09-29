@@ -327,15 +327,30 @@ class TenantIsolationTests(_BranchSettingsFixture):
         self.assertEqual(branch.status_code, 200, branch.data)
         self.assertEqual(branch.data["data"][0]["source"], "branch")
 
-    def test_a_single_branch_tenants_branch_admin_is_still_narrowed(self):
-        """One branch does not make a branch admin a tenant admin."""
-        refused = self.patch(self.green_branch_admin, [self.item(FEE_EMAIL, EMAIL, False)])
-        self.assertEqual(refused.status_code, 403, refused.data)
-        allowed = self.patch(
-            self.green_branch_admin, [self.item(FEE_EMAIL, EMAIL, False)],
+    def test_a_single_branch_tenants_branch_admin_writes_both_scopes(self):
+        """Pinned to the only branch, the tenant scope reaches nobody else.
+
+        Green Field has one branch, so a tenant-wide switch changes only what
+        its branch admin already covers. The same grant at Bright Star, where a
+        second branch exists, is refused the tenant scope
+        (``test_the_whole_tenant_patch_is_refused_with_a_403``).
+        """
+        whole = self.patch(self.green_branch_admin, [self.item(FEE_EMAIL, EMAIL, False)])
+        self.assertEqual(whole.status_code, 200, whole.data)
+        self.assertFalse(self.setting(self.green.tenant, None, FEE_EMAIL, EMAIL).is_enabled)
+        branch = self.patch(
+            self.green_branch_admin, [self.item(FEE_EMAIL, EMAIL, True)],
             branch=self.green_main.pk,
         )
-        self.assertEqual(allowed.status_code, 200, allowed.data)
+        self.assertEqual(branch.status_code, 200, branch.data)
+
+    def test_a_single_branch_tenants_branch_admin_is_narrowed_once_a_second_opens(self):
+        """The rule reads the branch count at the request, not at the grant."""
+        make_branch(self.green, name="Ajah Branch", is_main=False)
+        refused = self.patch(self.green_branch_admin, [self.item(FEE_EMAIL, EMAIL, False)])
+        self.assertEqual(refused.status_code, 403, refused.data)
+        self.assertEqual(refused.data["code"], NotificationErrorCode.BRANCH_SCOPE_REQUIRED)
+        self.assertIsNone(self.setting(self.green.tenant, None, FEE_EMAIL, EMAIL))
 
 
 class BranchSettingAuditTests(_BranchSettingsFixture):

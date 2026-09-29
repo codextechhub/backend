@@ -216,7 +216,22 @@ class DetailListTests(_ReadFixture):
         page = self.reader.fee_invoices(self.corona.pk).unwrap()
 
         self.assertTrue(page.items)
-        self.assertEqual(page.items[0].term_label, "2026/2027 First Term")
+        self.assertEqual(page.items[0].term_label, "First Term 2026/2027")
+
+    def test_the_invoice_row_and_the_dashboard_name_the_period_alike(self):
+        """The bursar reads one bill on two screens, so it has one name."""
+        from vs_finance.models import LedgerEntity
+
+        from ..billing_periods import current_term
+
+        self.session.status = "ACTIVE"
+        self.session.save(update_fields=["status"])
+        period = current_term(
+            LedgerEntity.objects.get(pk=self.corona_books.entity_ref),
+            datetime.date(2026, 10, 1),
+        )
+        page = self.reader.fee_invoices(self.corona.pk).unwrap()
+        self.assertEqual(page.items[0].term_label, period.name)
 
     def test_fee_rows_carry_the_cash_axis_not_the_ledger_lifecycle(self):
         page = self.reader.fee_invoices(

@@ -6,10 +6,24 @@ two passes reading a row differently, so both call :func:`resolve_row` and the
 handler writes only what that resolver read.
 
 The engine takes its tenant from the batch and the template carries no school
-column, so there is no way for a row to name a different school. The role column
-is a role key **inside this school**, resolved against this tenant's own
-catalogue, so a platform role key is not resolvable and a row cannot make
-somebody a CodeX hire.
+column, so there is no way for a row to name a different school.
+
+**There is no role column.** Everybody imported starts on the school's starting
+role (Settings, Staff), exactly as a person added on the Add form does, whoever
+uploads the file: adding people and deciding what they may reach are two jobs,
+and the key that imports staff is not the key that assigns roles. A file that
+still carries a Role column is not refused; the column is ignored and the
+validation says so once (:func:`role_column_note`).
+
+**The same holds while a school is onboarding.** The Add form then grants
+School Admin or Branch Admin, picked person by person, because the people it
+adds before go-live are the school's first administrators and nobody is there
+to review a wider grant. A file has nowhere to make that choice, and onboarding
+itself requires a fully imported staff list before data setup can finish, so
+the import grants the starting role there too: the baseline every member of
+staff gets at a live school without review. The two administrator roles stay
+the Add form's. Nobody imported during setup is emailed until the school goes
+live (``services/setup_invitations.py``).
 
 A row creates the account, the invitation, the grant and the staff record
 through the same service a single add uses. A second creation path would be a
@@ -24,7 +38,6 @@ from dataclasses import dataclass, field as dc_field
 
 from .constants import EmploymentStatus, EmploymentType
 from .services.numbers import staff_number_taken
-from .services.roles import ONBOARDING_ROLE_KEYS, ONBOARDING_ROLE_REFUSAL
 
 #: The template's columns, in the order a school reads them.
 #:
@@ -43,11 +56,15 @@ COLUMNS = (
     "employment_type",
     "hire_date",
     "branch",
-    "role",
     "send_invitation",
 )
 
-REQUIRED_COLUMNS = ("first_name", "last_name", "email", "role")
+REQUIRED_COLUMNS = ("first_name", "last_name", "email")
+
+#: Headers a school's older file may still carry for the role it no longer sets.
+_ROLE_HEADERS = frozenset({"role", "role key", "role_key"})
+
+_RESOLVE = object()
 
 _EMPLOYMENT_TYPES = {label.lower(): code for code, label in EmploymentType.choices}
 _EMPLOYMENT_TYPES.update({code.lower(): code for code, _ in EmploymentType.choices})
@@ -137,8 +154,56 @@ def _date(value: str):
     return None
 
 
+def starting_role_for_import(tenant, actor=None):
+    """``(role, refusal)``: the role every imported person starts on, or why none.
+
+    The Add form's own rule (``services.roles.starting_role``), so the two
+    cannot disagree: the school's starting role, refused by its name when it is
+    no longer active, and refused when it carries restricted permissions
+    *actor* does not hold, because an import is not a way round the grant
+    ceiling. The same at a school still onboarding; the module docstring says
+    why.
+    """
+    from rest_framework.exceptions import APIException, ValidationError
+
+    from .services.roles import starting_role
+
+    try:
+        return starting_role(tenant, actor=actor), ""
+    except ValidationError as exc:
+        detail = exc.detail.get("role") if isinstance(exc.detail, dict) else exc.detail
+        return None, str(detail[0] if isinstance(detail, list) else detail)
+    except APIException as exc:
+        return None, str(exc.detail)
+
+
+def role_column_note(headers, role) -> dict | None:
+    """One file-level warning where the file still carries a Role column.
+
+    Not a refusal: a school re-uploading last term's file should not be sent to
+    delete a column. The column is never read, because the template does not
+    map it, and this says what happens instead.
+    """
+    if role is None:
+        return None
+    found = [h for h in headers or () if str(h).strip().casefold() in _ROLE_HEADERS]
+    if not found:
+        return None
+    return {
+        "row_number": None,
+        "column_name": found[0],
+        "value": "",
+        "code": "role_column_ignored",
+        "message": (
+            f"Roles are not imported. Everybody in this file starts as "
+            f"{role.name}; give other roles from Roles & Permissions."
+        ),
+        "severity": "warning",
+    }
+
+
 def resolve_row(payload: dict, *, tenant, batch_branch=None, multi_branch=False,
-                actor=None):
+                actor=None, role=_RESOLVE):
     """Read one row into the values a create would use, with its own reasons.
 
     Every refusal is a row issue rather than an exception, so a bad row is
@@ -146,16 +211,13 @@ def resolve_row(payload: dict, *, tenant, batch_branch=None, multi_branch=False,
     own behaviour is that critical issues block the batch and warnings allow it
     after confirmation, and nothing here changes that.
 
-    The role column obeys the rules a single add obeys. While the school is
-    onboarding only School Admin and Branch Admin may be given, as on the Add
-    form. And a role carrying restricted permissions *actor* does not hold is
-    refused here, where the file is checked, with the sentence the grant itself
-    would refuse it with: the account service refuses that grant anyway, and a
-    batch that validates clean and then fails row by row is the worse way to
-    find out. *actor* is the uploader when the file is checked and whoever runs
-    it when it is written.
+    The role is the school's starting role, from
+    :func:`starting_role_for_import` for *actor*: the uploader when the file is
+    checked, whoever runs it when it is written. :func:`validate_rows` resolves
+    it once for the file and passes it as *role*, reporting a refusal once
+    rather than on every row; a row resolved on its own resolves it here and
+    carries the refusal as its own issue.
     """
-    from vs_rbac.models import TenantRoleTemplate
     from vs_tenants.models import Branch
     from vs_user.email_normalization import normalize_email
 
@@ -244,45 +306,11 @@ def resolve_row(payload: dict, *, tenant, batch_branch=None, multi_branch=False,
         else:
             row.hire_date = parsed
 
-    # A role is required and there is no invite-now-decide-later. A row naming
-    # a role this school does not have is a hard error rather than a warning:
-    # importing somebody with no role would create an account that can sign in
-    # and reach nothing.
-    raw_role = _text(payload, "role")
-    if not raw_role:
-        row.issues.append(RowIssue(
-            code="required", field="role", message="A role is needed for every row.",
-        ))
-    else:
-        role = TenantRoleTemplate.objects.filter(
-            tenant=tenant, status="ACTIVE",
-        ).filter(key=raw_role).first()
-        if role is None:
-            role = TenantRoleTemplate.objects.filter(
-                tenant=tenant, status="ACTIVE", name__iexact=raw_role,
-            ).first()
-        if role is None:
-            row.issues.append(RowIssue(
-                code="unknown_role", field="role", value=raw_role,
-                message=(
-                    f"'{raw_role}' is not a role at this school. Build it in "
-                    f"access control first, then import this row."
-                ),
-            ))
-        elif _onboarding(tenant) and role.key not in ONBOARDING_ROLE_KEYS:
-            row.issues.append(RowIssue(
-                code="role_not_before_go_live", field="role", value=raw_role,
-                message=ONBOARDING_ROLE_REFUSAL,
-            ))
-        elif actor is not None and _needs_approval(actor, role):
-            from vs_rbac.serializers import restricted_grant_refusal
-
-            row.issues.append(RowIssue(
-                code="restricted_role", field="role", value=raw_role,
-                message=restricted_grant_refusal(role, adding=True),
-            ))
-        else:
-            row.role = role
+    if role is _RESOLVE:
+        role, refusal = starting_role_for_import(tenant, actor)
+        if refusal:
+            row.issues.append(RowIssue(code="starting_role", field="", message=refusal))
+    row.role = role
 
     raw_branch = _text(payload, "branch")
     if raw_branch:
@@ -344,18 +372,6 @@ def _check_staff_number(row, tenant):
         ))
 
 
-def _onboarding(tenant) -> bool:
-    from vs_tenants.models import Tenant
-
-    return getattr(tenant, "status", None) == Tenant.Status.PENDING
-
-
-def _needs_approval(actor, role) -> bool:
-    from vs_rbac.services import grant_needs_approval
-
-    return grant_needs_approval(actor, role)
-
-
 def create_staff_from_row(row: ResolvedRow, *, tenant, created_by, request=None):
     """Write one imported person, through the same services a single add uses.
 
@@ -373,6 +389,9 @@ def create_staff_from_row(row: ResolvedRow, *, tenant, created_by, request=None)
     approves each hire the person is written Awaiting approval and submitted
     to the ladder, their invitation created (and emailed, if the row said so)
     only when the hire is approved.
+
+    At a school still onboarding nobody is invited yet: the record reads
+    Invited at go-live, and the invitation goes out when the school goes live.
     """
     from vs_user.serializers import UserCreateSerializer
     from vs_user.services.user import UserCreationService
@@ -399,23 +418,29 @@ def create_staff_from_row(row: ResolvedRow, *, tenant, created_by, request=None)
         context={"request": actor_request},
     )
     account.is_valid(raise_exception=True)
+    from vs_tenants.models import Tenant
+
     staff_number = number_policy.settle_number(tenant, row.staff_number, branch=row.branch)
+    setup = getattr(tenant, "status", None) == Tenant.Status.PENDING
     held = hire.needs_approval(tenant)
     user = UserCreationService.create_pending(
         account.validated_data, created_by, request=request,
     )
-    # Left at PENDING_APPROVAL only where the school approves each hire.
-    if not held:
+    # Left at PENDING_APPROVAL where the school is not live yet or approves each hire.
+    if not (setup or held):
         UserCreationService.finalize_invitation(
             user=user, requested_by=created_by, send_email=row.send_invitation,
         )
+    status = (
+        EmploymentStatus.AWAITING_GO_LIVE if setup
+        else EmploymentStatus.PENDING_APPROVAL if held else None
+    )
     profile = creation.create_profile(
         tenant=tenant, user=user, actor=created_by,
         staff_number=staff_number, job_title=row.job_title,
         employment_type=row.employment_type, hire_date=row.hire_date,
         branch=row.branch, middle_name=row.middle_name,
-        employment_status=EmploymentStatus.PENDING_APPROVAL if held else None,
-        invite_on_approval=row.send_invitation,
+        employment_status=status, invite_on_approval=row.send_invitation,
     )
     if held:
         hire.submit(profile, actor=created_by)
@@ -445,6 +470,11 @@ def validate_rows(import_batch) -> list[dict]:
     Also catches what a per-row resolver cannot: the same address twice in one
     file. Two rows that each pass on their own would create one account and then
     fail, so the second is refused here with the first named.
+
+    Two issues belong to the file rather than to a row, and carry no row
+    number: a starting role the uploader cannot give, which is an error, and a
+    Role column the file still carries, which is a warning that the column is
+    ignored.
     """
     from schools.vs_staff.services.scoping import branch_dimension_applies
 
@@ -462,11 +492,21 @@ def validate_rows(import_batch) -> list[dict]:
     seen_numbers: dict[str, int] = {}
     issues = []
 
+    role, refusal = starting_role_for_import(tenant, import_batch.uploaded_by)
+    if refusal:
+        issues.append({
+            "row_number": None, "column_name": "", "value": "",
+            "code": "starting_role", "message": refusal, "severity": "error",
+        })
+    note = role_column_note(import_batch.uploaded_headers, role)
+    if note is not None:
+        issues.append(note)
+
     for number, raw_row in enumerate(import_batch.preview_rows or [], start=1):
         row = resolve_row(
             _payload_of(raw_row, columns), tenant=tenant,
             batch_branch=import_batch.branch, multi_branch=multi,
-            actor=import_batch.uploaded_by,
+            actor=import_batch.uploaded_by, role=role,
         )
         for issue in row.issues:
             issues.append({

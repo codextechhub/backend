@@ -6,7 +6,7 @@ from rest_framework.views import APIView
 
 from core.response import success_response
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
-from vs_rbac.scoping import assert_caller_may_configure
+from vs_rbac.scoping import WholeTenantWriteMixin
 
 from .account_mappings import (
     account_mapping_options,
@@ -43,12 +43,12 @@ from .views import resolve_entity
 def _settings_history(entity, action):
     rows = (
         FinanceAuditLog.objects.filter(entity=entity, action=action)
-        .select_related("actor").order_by("-created_at", "-id")[:10]
+        .select_related("actor", "effective_user").order_by("-created_at", "-id")[:10]
     )
     return FinanceAuditLogSerializer(rows, many=True).data
 
 
-class WholeTenantSettingsMixin:
+class WholeTenantSettingsMixin(WholeTenantWriteMixin):
     """Refuse any write to a tenant-wide settings screen from a branch-bound caller.
 
     A ledger entity's settings carry no branch: an account mapping, a document
@@ -62,27 +62,19 @@ class WholeTenantSettingsMixin:
     refusal is a 403 ``SHARED_RECORD_READ_ONLY`` raised before the handler
     runs, so nothing is written.
 
-    The check sits in :meth:`check_permissions`, after the permission classes,
-    so a caller without the key still gets the ordinary permission refusal and
-    every unsafe method of every view built on this is covered without the
-    handler having to remember it. Reads are untouched: a branch-bound holder
-    of the view key still sees the settings that govern their branch.
+    The gate itself is :class:`vs_rbac.scoping.WholeTenantWriteMixin`, which
+    every other shared-record screen uses too. Reads are untouched: a
+    branch-bound holder of the view key still sees the settings that govern
+    their branch.
 
     ``settings_subject`` names what is being changed in the refusal message.
     """
 
     settings_subject = "these settings"
 
-    def check_permissions(self, request):
-        super().check_permissions(request)
-        if request.method not in SAFE_METHODS:
-            assert_caller_may_configure(
-                request.user, request.tenant,
-                message=(
-                    "Only a school-wide administrator can change "
-                    f"{self.settings_subject}."
-                ),
-            )
+    @property
+    def shared_subject(self):
+        return self.settings_subject
 
 
 class _FinanceSettingsView(WholeTenantSettingsMixin, APIView):

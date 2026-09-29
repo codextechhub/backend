@@ -592,7 +592,7 @@ class NumberPolicyImportTests(_SettingsMixin, _ImportFixture):
         self.save_policy(required=True, auto_issue=True)
         row = resolve_row(
             {"first_name": "Ifeoma", "last_name": "Anyanwu",
-             "email": "ifeoma@brightfield.test", "role": "teacher"},
+             "email": "ifeoma@brightfield.test"},
             tenant=self.tenant, actor=self.admin,
         )
         self.assertTrue(row.ok, row.issues)
@@ -882,6 +882,57 @@ class HireApprovalTests(_SettingsFixture):
         )
         self.assertEqual(instance.status, "CANCELLED")
 
+    def seat(self, *people):
+        """Put exactly *people* in the hire-approvers group."""
+        from vs_workflow.models import WorkflowApproverGroup, WorkflowApproverGroupMember
+
+        group = WorkflowApproverGroup.all_objects.get(tenant=self.tenant, code="hire-approvers")
+        WorkflowApproverGroupMember.objects.filter(group=group).delete()
+        for person in people:
+            WorkflowApproverGroupMember.objects.create(group=group, kind="USER", user=person)
+
+    def vote(self, staff_id, person):
+        from vs_workflow.services import actions
+
+        instance = WorkflowInstance.all_objects.get(
+            document_type="schools.staff_hire", document_object_id=str(staff_id),
+        )
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
+            with self.captureOnCommitCallbacks(execute=True):
+                actions.record_action(instance.id, person, "APPROVED", "")
+
+    def test_the_adder_alone_in_the_group_approves_their_own_hire(self):
+        """Adaeze runs Brightfield on her own: her hires are not stranded."""
+        self.save_rules(hire_requires_approval=True)
+        self.seat(self.admin)
+        staff_id = self.add_with_mail()[0].data["data"]["id"]
+
+        self.vote(staff_id, self.admin)
+
+        staff = StaffProfile.all_objects.get(pk=staff_id)
+        self.assertEqual(staff.employment_status, EmploymentStatus.INVITED)
+
+    def test_the_adder_cannot_approve_while_somebody_else_is_on_the_stage(self):
+        """With the Lekki head in the group, Adaeze's own hire is hers to decide."""
+        self.save_rules(hire_requires_approval=True)
+        self.seat(self.admin, self.lekki_head)
+        staff_id = self.add_with_mail()[0].data["data"]["id"]
+
+        from vs_workflow.exceptions import NotAnEligibleApproverError
+
+        with self.assertRaises(NotAnEligibleApproverError):
+            self.vote(staff_id, self.admin)
+        self.assertEqual(
+            StaffProfile.all_objects.get(pk=staff_id).employment_status,
+            EmploymentStatus.PENDING_APPROVAL,
+        )
+
+        self.vote(staff_id, self.lekki_head)
+        self.assertEqual(
+            StaffProfile.all_objects.get(pk=staff_id).employment_status,
+            EmploymentStatus.INVITED,
+        )
+
     def test_turning_it_on_publishes_the_ladder(self):
         from vs_workflow.models import WorkflowTemplate
 
@@ -904,7 +955,7 @@ class HireApprovalImportTests(_SettingsMixin, _ImportFixture):
         self.save_rules(hire_requires_approval=True)
         row = resolve_row(
             {"first_name": "Ifeoma", "last_name": "Anyanwu",
-             "email": "ifeoma@brightfield.test", "role": "teacher"},
+             "email": "ifeoma@brightfield.test"},
             tenant=self.tenant, actor=self.admin,
         )
         with mock.patch("vs_user.tasks.send_invitation_email_task.delay") as delay:
