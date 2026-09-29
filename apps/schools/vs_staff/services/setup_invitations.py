@@ -29,7 +29,7 @@ import logging
 
 from django.db import transaction
 
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 
 from ..constants import EmploymentStatus
 from . import audit
@@ -72,7 +72,7 @@ def release(profile, *, actor=None):
         tenant=locked.tenant, staff=locked,
         from_status=EmploymentStatus.AWAITING_GO_LIVE,
         to_status=EmploymentStatus.INVITED,
-        effective_date=tenant_today(locked.tenant),
+        effective_date=branch_today(locked.tenant, locked.branch_id),
         reason="Invited when the school went live", changed_by=actor,
     )
     audit.emit_employment_status_changed(locked, event, actor=actor)

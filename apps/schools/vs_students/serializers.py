@@ -62,13 +62,13 @@ from .models import (
 from .services import documents as document_service
 
 
-def _age_on(dob, when=None, *, tenant=None):
-    """Age in whole years on *when*, or on the school's own today."""
-    from vs_config.clock import tenant_today
+def _age_on(dob, when=None, *, tenant=None, branch=None):
+    """Age in whole years on *when*, or on today at the student's branch."""
+    from vs_config.clock import branch_today
 
     if not dob:
         return None
-    when = when or tenant_today(tenant)
+    when = when or branch_today(tenant, branch)
     return when.year - dob.year - ((when.month, when.day) < (dob.month, dob.day))
 
 
@@ -406,16 +406,17 @@ class _AdmissionStageFields(serializers.Serializer):
         return offer_expired(obj, self._today(obj))
 
     def _today(self, obj):
-        from vs_config.clock import tenant_today
+        """Today at the applicant's branch, read once per branch for a page."""
+        from vs_config.clock import branch_today
 
         as_at = self.context.get("as_at")
         if as_at:
             return as_at.date
-        context = self.context
-        if "_tenant_today" not in context:
-            tenant = getattr(context.get("request"), "tenant", None) or obj.tenant
-            context["_tenant_today"] = tenant_today(tenant)
-        return context["_tenant_today"]
+        days = self.context.setdefault("_branch_today", {})
+        if obj.branch_id not in days:
+            tenant = getattr(self.context.get("request"), "tenant", None) or obj.tenant
+            days[obj.branch_id] = branch_today(tenant, obj.branch_id)
+        return days[obj.branch_id]
 
 
 #: The stage fields every student payload carries, in the order they are listed.
@@ -546,7 +547,7 @@ class StudentDetailSerializer(FieldAccessMixin, _AdmissionStageFields, _BranchAw
         # at a past day is a history snapshot, which carries no tenant.
         if as_at:
             return _age_on(obj.date_of_birth, as_at.date)
-        return _age_on(obj.date_of_birth, tenant=obj.tenant)
+        return _age_on(obj.date_of_birth, tenant=obj.tenant, branch=obj.branch_id)
 
     def _enrolment(self, obj):
         installed = getattr(obj, "_active_enrolments", None)
@@ -598,11 +599,17 @@ def _context_tenant(serializer):
     return tenant
 
 
-def _plausible_birth_date(value, tenant):
-    """Refuse a birth date outside the school's age range, in the import's words."""
+def _plausible_birth_date(value, tenant, branch=None):
+    """Refuse a birth date outside the school's age range, in the import's words.
+
+    Judged on today at *branch* where the student's branch is known (an edit),
+    else on the school's today (an enrolment, whose branch is resolved later).
+    """
     from .ages import date_of_birth_problem
 
-    problem = date_of_birth_problem(value, tenant=tenant) if value else ""
+    problem = (
+        date_of_birth_problem(value, tenant=tenant, branch=branch) if value else ""
+    )
     if problem:
         raise serializers.ValidationError(problem)
     return value
@@ -655,7 +662,10 @@ class StudentWriteSerializer(FieldAccessMixin, serializers.ModelSerializer):
         ]
 
     def validate_date_of_birth(self, value):
-        return _plausible_birth_date(value, _context_tenant(self))
+        return _plausible_birth_date(
+            value, _context_tenant(self),
+            getattr(self.instance, "branch_id", None),
+        )
 
     def validate(self, attrs):
         # Refused explicitly rather than silently dropped: a school that types

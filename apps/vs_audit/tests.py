@@ -1191,6 +1191,38 @@ class AuditDashboardTenantIsolationTests(AuditTenantIsolationFixture, TestCase):
         self.assertEqual(criticals(self._kpis(self.green_officer)), 2)
 
 
+class AuditDashboardClockTests(AuditTenantIsolationFixture, TestCase):
+    """The dashboard counts in the reader's own day, never the server's UTC one.
+
+    Greenfield's two critical incidents happened at 23:30 UTC, which is 00:30
+    the next morning in Lagos: they belong to that Lagos day, hour 0.
+    """
+
+    def setUp(self):
+        import datetime as dt
+
+        self.build()
+        two_days_ago = timezone.now() - dt.timedelta(days=2)
+        self.instant = two_days_ago.astimezone(dt.timezone.utc).replace(
+            hour=23, minute=30, second=0, microsecond=0,
+        )
+        AuditEvent.objects.filter(
+            id__in=[self.green_current.id, self.green_legacy.id],
+        ).update(event_at=self.instant)
+
+    def test_the_heatmap_and_the_daily_series_use_the_schools_zone(self):
+        from zoneinfo import ZoneInfo
+
+        response = TenantAPIClient(self.green_officer).get("/v1/audit/dashboard-summary/")
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        local = self.instant.astimezone(ZoneInfo("Africa/Lagos"))
+        self.assertEqual(local.hour, 0)
+        self.assertEqual(data["critical_heatmap"][local.weekday()][0], 2)
+        series = {row["date"]: row["CRITICAL"] for row in data["severity_series"]}
+        self.assertEqual(series.get(local.date().isoformat()), 2)
+
+
 class AuditExportTenantIsolationTests(AuditTenantIsolationFixture, TestCase):
     """The copy that leaves the building carries no more than the screen showed."""
 

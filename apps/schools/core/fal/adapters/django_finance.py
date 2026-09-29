@@ -51,7 +51,7 @@ from django.db.models import (
 )
 from django.db.models.functions import TruncMonth
 from django.utils import timezone
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 from vs_tenants.context import get_current_audit_identity
 
 from schools.vs_academics.services.words import term_word
@@ -884,7 +884,8 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
             # this structure bills is known at exactly this point; vs_finance
             # gets the answer as a plain date and stays ignorant of terms.
             basis, days_after = policy_for(structure.entity.tenant_id)
-            invoice_date = tenant_today(structure.entity.tenant)
+            # One date for the run: the pinned branch's day, else the school's.
+            invoice_date = branch_today(structure.entity.tenant, structure.branch_id)
             due_date = resolve_due_date(
                 basis=basis, days_after=days_after, invoice_date=invoice_date,
                 term_end=link.term.end_date if link.term_id else None,
@@ -1246,7 +1247,7 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
     @envelope
     def ar_ageing(self, school_ref, branch_ref=None, period=None):
         entity = self._entity_of(school_ref)
-        today = tenant_today(entity.tenant)
+        today = branch_today(entity.tenant, branch_ref)
         rows = (
             _invoice_qs(entity, branch_ref, period)
             .annotate(bal=_BALANCE).filter(bal__gt=0)
@@ -1299,7 +1300,7 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
     @envelope
     def debtors(self, school_ref, branch_ref=None, filters=(), page=1, page_size=20):
         entity = self._entity_of(school_ref)
-        today = tenant_today(entity.tenant)
+        today = branch_today(entity.tenant, branch_ref)
         qs = (
             _invoice_qs(entity, branch_ref)
             .filter(_filter_q("debtors", filters))
@@ -1827,7 +1828,7 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
             with transaction.atomic():
                 requisition = PurchaseRequisition.objects.create(
                     entity=entity, branch_id=branch_id, requested_by=user,
-                    created_by=user, request_date=tenant_today(entity.tenant),
+                    created_by=user, request_date=branch_today(entity.tenant, branch_id),
                     title=(narration or "")[:200],
                     justification=(narration or "")[:255],
                 )
@@ -1966,7 +1967,7 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
                 grn = GoodsReceivedNote.objects.create(
                     entity=entity, branch_id=order.branch_id, vendor=order.vendor,
                     purchase_order=order, received_by=user, created_by=user,
-                    received_date=received_date or tenant_today(entity.tenant),
+                    received_date=received_date or branch_today(entity.tenant, order.branch_id),
                 )
                 # The lines name no ledger account, but the helper reads accounts
                 # under a caller's reach, so it is given the acting user as caller.

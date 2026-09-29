@@ -16,7 +16,7 @@ from vs_finance.constants import DocumentStatus, PaymentMethod
 from vs_finance.money import format_naira
 from vs_finance.views import resolve_entity
 from vs_finance.views_ops.base import require_own_branch_bank
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 
 from .. import approvals, payables
 from ..constants import ProcApprovalState, VendorKycStatus, WhtSource
@@ -606,7 +606,10 @@ class VendorPaymentReverseView(_ProcBase):
             request, _payment_queryset(entity), pk,
             "No such vendor payment in this entity.",
         )
-        reversal_date = _date(request.data.get("date"), "date") or tenant_today(entity.tenant)
+        reversal_date = (
+            _date(request.data.get("date"), "date")
+            or branch_today(entity.tenant, payment.branch_id)
+        )
         payables.reverse_vendor_payment(payment, actor_user=request.user, date=reversal_date)
         return success_response(
             f"Vendor payment {payment.document_number} reversed.",

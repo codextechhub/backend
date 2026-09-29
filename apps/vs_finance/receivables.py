@@ -210,7 +210,7 @@ def post_opening_balance(customer, *, actor_user=None, date=None):
     Returns the invoice or ``None``. Runs the normal :func:`post_invoice` guards
     (open period, etc.).
     """
-    from vs_config.clock import tenant_today
+    from vs_config.clock import branch_today
 
     from .constants import InvoiceSource
     from .models import Invoice, InvoiceLine
@@ -227,7 +227,7 @@ def post_opening_balance(customer, *, actor_user=None, date=None):
     invoice = Invoice.objects.create(
         entity=customer.entity, customer=customer,
         branch=customer.branch,  # Opening balance belongs where the customer does.
-        invoice_date=date or tenant_today(customer.entity.tenant),
+        invoice_date=date or branch_today(customer.entity.tenant, customer.branch_id),
         source=InvoiceSource.OPENING,
         narration=f"Opening balance for {customer.code}",
         created_by=actor_user,

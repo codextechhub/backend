@@ -49,8 +49,9 @@ and the go-live lock on `me/profile/`.
 | `/v1/i/me/settings/security/` | PATCH | `school.settings.update` | `?branch=<id>` (optional), body below |
 | `/v1/i/me/settings/payroll-scope/` | GET | `school.settings.view` | none |
 | `/v1/i/me/settings/payroll-scope/` | PATCH | `school.settings.update` | `scope`, `reason` |
-| `/v1/i/me/settings/display/` | GET | `school.settings.view` | none |
-| `/v1/i/me/settings/display/` | PATCH | `school.settings.update` | `timezone`, `reason` |
+| `/v1/i/me/settings/display/` | GET | `school.settings.view` | `?branch=<id>` (optional) |
+| `/v1/i/me/settings/display/` | PATCH | `school.settings.update` | `?branch=<id>` (optional); `timezone`, `date_format`, `clock`, `reason` |
+| `/v1/i/me/settings/display/` | DELETE | `school.settings.update` | `?branch=<id>` (required) |
 | `/v1/i/me/profile/` | PATCH | `school.profile.update` | refuses `currency` / `term_structure` changes once live |
 
 Both keys are TENANT-scoped and seeded in
@@ -203,16 +204,37 @@ this endpoint answers 400 so a form can show it on the field.
 
 Switching back to CENTRAL is never refused.
 
-## 5. Display: the school's time zone
+## 5. Display: time zones, date format and clock
 
-`display.timezone`, read everywhere through `vs_config.clock`
-(`docs/config/config_tenant_clock.md`). It decides which calendar day "today"
-is for the school: when a fee falls overdue, which day the calendar hub
-highlights, the date an invoice raised just after midnight carries. Every
-school starts on Africa/Lagos. A school-level setting only, so `?branch=` is
-not read. Live schools only, like the rest of this slice.
+Three settings, one screen:
 
-### GET
+| Key | Values | Scope | Read through |
+|---|---|---|---|
+| `display.timezone` | any IANA zone, default `Africa/Lagos` | platform, school, **branch** | `vs_config.clock` (`docs/config/config_tenant_clock.md`) |
+| `display.date_format` | `D_MMM_YYYY` ("29 Sep 2026", default), `DD_MM_YYYY` ("29/09/2026"), `YYYY_MM_DD` ("2026-09-29") | platform, school | `vs_config.display` |
+| `display.clock` | `H12` ("8:00 am", default), `H24` ("08:00") | platform, school | `vs_config.display` |
+
+The time zone decides which calendar day "today" is: when a fee falls overdue,
+which day the calendar hub highlights, the date an invoice raised just after
+midnight carries. The school's zone is the default; a branch in another zone
+(a Nairobi branch of a Lagos school) may keep its own, and everything that
+belongs to that branch (its students, the staff posted there, its invoices,
+its stock movements) is then judged on the branch's day. There is no
+month-first date format on purpose: 03/04/2026 would mean two different days
+to two readers.
+
+Every signed-in member receives the effective values in the login and `/me`
+tenant block (section 5.4), with no settings key. Server-rendered documents
+(invoices, receipts, PDFs, emails, exports) do not read the format or the clock
+yet.
+
+Live schools only, for all three values and for a branch's zone alike, like the
+rest of this slice. A school being onboarded has no settings screen, and it
+reads the defaults from its tenant block until it goes live.
+
+### 5.1 GET
+
+Without `?branch=`:
 
 ```json
 {
@@ -223,51 +245,126 @@ not read. Live schools only, like the rest of this slice.
     "source": "default",
     "options": [
       {"value": "Africa/Abidjan", "label": "Abidjan (Greenwich Mean Time, UTC+0)"},
-      {"value": "Africa/Accra", "label": "Accra (Greenwich Mean Time, UTC+0)"},
-      {"value": "Europe/London", "label": "London (UK time, UTC+0, UTC+1 in summer)"},
       {"value": "Africa/Lagos", "label": "Lagos (West Africa Time, UTC+1)"},
-      {"value": "Africa/Johannesburg", "label": "Johannesburg (South Africa Standard Time, UTC+2)"},
       {"value": "Africa/Nairobi", "label": "Nairobi (East Africa Time, UTC+3)"},
       "... twenty in all, west to east"
+    ],
+    "date_format": "D_MMM_YYYY",
+    "date_format_options": [
+      {"value": "D_MMM_YYYY", "label": "29 Sep 2026"},
+      {"value": "DD_MM_YYYY", "label": "29/09/2026"},
+      {"value": "YYYY_MM_DD", "label": "2026-09-29"}
+    ],
+    "clock": "H12",
+    "clock_options": [
+      {"value": "H12", "label": "12-hour (8:00 am, 2:30 pm)"},
+      {"value": "H24", "label": "24-hour (08:00, 14:30)"}
+    ],
+    "branches": [
+      {"id": 11, "name": "Ikeja Branch", "timezone": "Africa/Lagos", "source": "school"},
+      {"id": 12, "name": "Nairobi Branch", "timezone": "Africa/Nairobi", "source": "branch"}
     ]
   }
 }
 ```
 
-- `source` is `school` when this school has chosen, `platform` when a
+- `source` is `school` when this school has chosen its zone, `platform` when a
   platform value applies, and `default` when neither is set and the
   definition's Africa/Lagos applies.
 - `options` is a short suggested list: the common West, Central, East and
-  Southern African zones, Ghana and the UK. A school on a zone outside it
-  finds its own zone first in the list, labelled with its IANA name
-  (`{"value": "America/New_York", "label": "America/New York"}`), so a select
-  can show the current value.
+  Southern African zones, Ghana and the UK. A zone outside it is offered first,
+  labelled with its IANA name (`{"value": "America/New_York", "label":
+  "America/New York"}`), so a select can show the current value.
+- `date_format_options` labels are the school's own today written each way.
+- `branches` lists the branches the reader can see (a branch-bound reader sees
+  only theirs), the main branch first then by name, each with the zone it keeps:
+  `source` `branch` for its own, `school` when it follows the school. A school
+  with one branch lists none, because that branch's zone is the school's.
 
-### PATCH
-
-```json
-{"timezone": "Africa/Nairobi", "reason": "Our school is in Kenya"}
-```
-
-- Any zone in the tz database is accepted, not only the suggested ones.
-- A name that is not a zone is a 400 on the field, and nothing is written or
-  audited:
+With `?branch=<id>`:
 
 ```json
 {
-  "success": false,
-  "message": "'Lagos' is not a recognised time zone. Use an IANA name such as Africa/Lagos.",
-  "error": {"code": "REQUEST_ERROR",
-            "detail": {"timezone": ["'Lagos' is not a recognised time zone. Use an IANA name such as Africa/Lagos."]}}
+  "branch": {"id": 12, "name": "Nairobi Branch"},
+  "timezone": "Africa/Nairobi",
+  "source": "branch",
+  "options": ["... as above, the branch's zone first when outside the list"]
 }
 ```
 
-- Success answers `"Display settings saved."` with the refreshed GET body and
-  writes one `config.value.updated` audit event with the tenant, the actor,
-  the reason and the zone before and after. `reason` defaults to "Updated from
-  the school's display settings".
-- The new zone applies from the next read in any request, including later
-  in the same one.
+`source` is `branch` or `school`. The branch must be this school's and one the
+reader can see, or the answer is a 404 ("No such branch at this school."),
+whether it is unknown, another school's, or outside the reader's reach.
+
+### 5.2 PATCH
+
+Without `?branch=`, any of the three (at least one) and an optional reason:
+
+```json
+{"timezone": "Africa/Accra", "date_format": "DD_MM_YYYY", "clock": "H24",
+ "reason": "Moving to Ghana"}
+```
+
+Needs a caller whose reach is the whole school. Answers `"Display settings
+saved."` with the refreshed GET body. Each value changed is one
+`config.value.updated` audit event with the value before and after; the
+reason defaults to "Updated from the school's display settings". Every value
+or none is written.
+
+With `?branch=<id>`, the branch's own zone:
+
+```json
+{"timezone": "Africa/Nairobi", "reason": "The branch is in Nairobi"}
+```
+
+Needs that branch in the caller's reach (a branch administrator holding
+`school.settings.update` may set their own branch's zone). Answers "<Branch
+name> keeps its own time zone." with the branch GET body, audited as
+`config.value.updated` on the branch scope (reason defaults to "Updated from
+<Branch name>'s display settings").
+
+### 5.3 DELETE
+
+`DELETE ?branch=<id>` removes the branch's own zone, so the branch follows the
+school's again. Answers "<Branch name> follows the school's time zone again."
+with the branch GET body, audited as `config.value.cleared`. Removing a zone
+the branch never had answers the same and audits nothing.
+
+### 5.4 The tenant block every member receives
+
+The login response and `GET /v1/user/auth/me/` carry, in `tenant`:
+
+```json
+"display": {"time_zone": "Africa/Lagos", "date_format": "D_MMM_YYYY",
+            "clock": "H12", "branch_zones": {"12": "Africa/Nairobi"}}
+```
+
+`branch_zones` lists only the branches with a zone of their own (id to zone),
+for the whole school rather than the reader's reach: a zone is no secret, and a
+shared record from another branch needs that branch's day. The platform tenant
+carries the platform values and no branch zones. Built by
+`vs_config.display.display_preferences`, through `vs_tenants.context.tenant_context_block`,
+so login and `/me` cannot drift.
+
+### 5.5 Refusals
+
+| Case | Status | Detail |
+|---|---|---|
+| Caller without `school.settings.view` (GET) or `.update` (PATCH, DELETE) | 403 | the permission refusal |
+| School not live | 403 `TENANT_NOT_LIVE` | |
+| Not a school (a platform caller as itself) | 404 | "This tenant has no school profile." |
+| School-level PATCH by a branch-bound caller | 403 `SHARED_RECORD_READ_ONLY` | "Only a school-wide administrator can change the school's display settings. Choose one of your branches to set its own time zone." |
+| Branch unknown, another school's, or outside the caller's reach | 404 | "No such branch at this school." |
+| Not a zone | 400 on `timezone` | "'Lagos' is not a recognised time zone. Use an IANA name such as Africa/Lagos." |
+| Date format outside the choices | 400 on `date_format` | "'MM_DD_YYYY' is not a date format this school can use. Choose D_MMM_YYYY, DD_MM_YYYY or YYYY_MM_DD." |
+| Clock outside the choices | 400 on `clock` | "'H13' is not a clock this school can use. Choose H12 or H24." |
+| Nothing to change | 400 on `non_field_errors` | "Send a time zone, a date format or a clock to change." |
+| Date format or clock sent with `?branch=` | 400 on the field | "The date format and the clock are the school's, not a branch's. Save them without choosing a branch." |
+| Branch zone at a school with one branch | 400 on `branch` | "<School name> has one branch, so its time zone is the school's. Change the school's time zone instead." |
+| DELETE without `?branch=` | 400 on `branch` | "Name the branch whose own time zone to remove. The school's time zone is changed, never removed." |
+
+Nothing is written and nothing is audited on a refusal. A new zone applies
+from the next read in any request, including later in the same one.
 
 ## 6. The profile lock at go-live
 

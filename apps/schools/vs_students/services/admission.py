@@ -40,7 +40,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 
 from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 
 from ..constants import CFG_CONFIRM_DOCUMENTS, DocumentType, StudentStatus
 from ..exceptions import DocumentsMissing, NotAnApplicant, StudentSettingNotRegistered
@@ -386,7 +386,7 @@ def move_to_stage(student, stage, *, actor, offer_expires_on=None, reason=""):
             status=locked.status,
         )
 
-    today = tenant_today(locked.tenant)
+    today = branch_today(locked.tenant, locked.branch_id)
     is_offer = stage is not None and stage.is_offer
     if offer_expires_on is not None:
         if not is_offer:

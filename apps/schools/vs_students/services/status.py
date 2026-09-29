@@ -13,7 +13,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from vs_audit.models import AuditActionType, AuditModuleKey
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 from vs_audit.services import emit_audit_event
 
 from ..constants import (
@@ -135,7 +135,7 @@ def transition(
     if to_status != StudentStatus.TRANSFERRED:
         destination_school = ""
 
-    effective_date = effective_date or tenant_today(student.tenant)
+    effective_date = effective_date or branch_today(student.tenant, student.branch_id)
 
     student.status = to_status
     student.save(update_fields=["status", "updated_at"])

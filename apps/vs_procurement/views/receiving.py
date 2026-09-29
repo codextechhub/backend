@@ -18,7 +18,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from core.response import success_response
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_day_q, tenant_today
 
 from .. import payables, purchasing
 from ..models import (
@@ -323,10 +323,11 @@ def _invoice_list_queryset(entity):
     )
 
 
-def _invoice_display_filter(qs, value, *, today):
+def _invoice_display_filter(qs, value, *, tenant):
     """Map console tabs to persisted lifecycle fields without conflating them.
 
-    ``today`` is the school's calendar day, which decides the overdue tab.
+    The overdue tab judges each bill on the day at its own branch, the school's
+    for a shared one (:func:`vs_config.clock.branch_day_q`).
     """
     if value == "DRAFT":
         return qs.filter(status="DRAFT", approval_state="NOT_SUBMITTED")
@@ -337,12 +338,19 @@ def _invoice_display_filter(qs, value, *, today):
     if value == "POSTED":
         return qs.filter(status="POSTED")
     if value == "OVERDUE":
-        return qs.filter(status="POSTED", due_date__lt=today).exclude(payment_status="PAID")
+        return qs.filter(
+            _past_due(tenant), status="POSTED",
+        ).exclude(payment_status="PAID")
     if value == "DISPUTED":
         return qs.filter(match_status__in=("UNDER_RECEIVED", "OVER_BILLED"))
     if value in ("PARTIAL", "PAID"):
         return qs.filter(payment_status=value)
     return qs
+
+
+def _past_due(tenant):
+    """Bills whose due date has passed at their own branch."""
+    return branch_day_q(tenant, "branch", lambda day: Q(due_date__lt=day))
 
 
 def _validate_vendor_reference(entity, vendor, reference, *, exclude_id=None):
@@ -640,7 +648,7 @@ class VendorInvoiceListCreateView(_ProcBase):
         if (vendor := request.query_params.get("vendor")):
             qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
         if (display_status := request.query_params.get("display_status")):
-            qs = _invoice_display_filter(qs, display_status, today=tenant_today(entity.tenant))
+            qs = _invoice_display_filter(qs, display_status, tenant=entity.tenant)
         if (search := request.query_params.get("search", "").strip()):
             qs = qs.filter(Q(document_number__icontains=search) | Q(vendor_reference__icontains=search)
                            | Q(vendor__code__icontains=search) | Q(vendor__name__icontains=search)
@@ -731,7 +739,9 @@ class VendorInvoiceSummaryView(_ProcBase):
             request.query_params,
         )
         today = tenant_today(entity.tenant)
-        overdue = qs.filter(status="POSTED", due_date__lt=today).exclude(payment_status="PAID")
+        overdue = qs.filter(
+            _past_due(entity.tenant), status="POSTED",
+        ).exclude(payment_status="PAID")
         data = {
             "as_of": today,
             "under_review": {"count": qs.filter(approval_state="PENDING").count()},

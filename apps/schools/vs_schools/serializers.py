@@ -1424,12 +1424,11 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         # --- 5. Optional package setup ---
         if package_setup_data:
             report_stage("plan")
-            # subscription_expires_at defaults to 1 year if not provided
+            # A year from the school's own today unless an expiry is given.
             expires_at = package_setup_data.pop("subscription_expires_at", None)
             if not expires_at:
-                from datetime import date
                 from dateutil.relativedelta import relativedelta
-                expires_at = date.today() + relativedelta(years=1)
+                expires_at = tenant_today(school.tenant) + relativedelta(years=1)
 
             setup = SchoolPackageSetup.objects.create(
                 school=school,

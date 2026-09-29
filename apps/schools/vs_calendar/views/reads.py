@@ -36,7 +36,7 @@ from rest_framework.views import APIView
 from core.response import success_response
 from schools.vs_academics.services.academic_rules import read_term_word
 from schools.vs_academics.services.words import word_for
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 
 from ..constants import (
     ALERT_CLASS_HAS_NO_TIMETABLE,
@@ -63,15 +63,19 @@ from ..services.scoping import (
 from .base import CalendarViewMixin
 
 
-def _on_date(request, tenant):
-    """``?on=`` when it is a date, else the school's own today."""
+def _on_date(request, tenant, branch=None):
+    """``?on=`` when it is a date, else today at the branch being looked through.
+
+    Without a branch lens it is the school's own today: a reader looking at
+    every branch at once is looking at the school's calendar.
+    """
     raw = (request.query_params.get("on") or "").strip()
     if raw:
         try:
             return date.fromisoformat(raw)
         except ValueError:
             pass
-    return tenant_today(tenant)
+    return branch_today(tenant, branch)
 
 
 def _term_payload(term):
@@ -96,7 +100,7 @@ class CurrentView(CalendarViewMixin, APIView):
             # 200 with nothing, not 404: a school that has not started its year
             # is not a school with a broken calendar.
             return success_response(data={})
-        today = _on_date(request, self.tenant)
+        today = _on_date(request, self.tenant, lens_branch(self))
         terms = list(session.terms.all())
         term = term_of(session, today, terms=terms)
         return success_response(data={
@@ -125,7 +129,7 @@ class YearView(CalendarViewMixin, APIView):
         session = self.session
         if session is None:
             return success_response(data={})
-        today = _on_date(request, self.tenant)
+        today = _on_date(request, self.tenant, lens_branch(self))
         terms = list(session.terms.all())
 
         rows = []
@@ -168,14 +172,13 @@ class OverviewView(CalendarViewMixin, APIView):
         session = self.session
         if session is None:
             return success_response(data={})
-        today = _on_date(request, self.tenant)
-        terms = list(session.terms.all())
-        term = term_of(session, today, terms=terms)
-
         # The hub counts what the screens below it list, so it reads through
         # the same lens they do. A hub saying "12 events, 4 classes" over
         # screens showing 5 and 2 is worse than a hub with no counts on it.
         lens = lens_branch(self)
+        today = _on_date(request, self.tenant, lens)
+        terms = list(session.terms.all())
+        term = term_of(session, today, terms=terms)
 
         events = list(
             narrow_to_lens(

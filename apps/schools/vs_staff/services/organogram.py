@@ -31,7 +31,7 @@ from typing import List, Optional
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Prefetch, Q
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 
 from ..constants import NON_HOLDING_STATUSES, OFF_ROLL_STATUSES, OrgUnitKind
 from ..exceptions import NotEligibleForPost
@@ -121,7 +121,7 @@ class StaffOrganogramService:
                 "They no longer work here, so they cannot be appointed to a post.",
             )
 
-        start = start_date or tenant_today(staff.tenant)
+        start = start_date or branch_today(staff.tenant, staff.branch_id)
         if is_primary:
             current = list(
                 StaffPositionAssignment.all_objects.filter(
@@ -155,7 +155,7 @@ class StaffOrganogramService:
         """End an open appointment, today by default. An ended one is left alone."""
         if assignment.end_date is not None:
             return assignment
-        end = end_date or tenant_today(assignment.tenant)
+        end = end_date or branch_today(assignment.tenant, assignment.staff.branch_id)
         if end < assignment.start_date:
             raise NotEligibleForPost(
                 f"This appointment started on {assignment.start_date}, so it cannot "
@@ -179,7 +179,7 @@ class StaffOrganogramService:
         """
         from ..models import StaffPositionAssignment
 
-        end = end_date or tenant_today(staff.tenant)
+        end = end_date or branch_today(staff.tenant, staff.branch_id)
         closed = 0
         for row in StaffPositionAssignment.all_objects.filter(
             staff=staff, end_date__isnull=True,

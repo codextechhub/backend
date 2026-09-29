@@ -16,7 +16,7 @@ from __future__ import annotations
 from django.db import transaction
 from django.utils import timezone
 
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 from vs_workflow.conditions.fields import ConditionField
 from vs_workflow.constants import ConditionFieldType, DocumentAudience
 from vs_workflow.handlers.base import BaseWorkflowHandler
@@ -183,7 +183,7 @@ class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
         """
         if document is None or document.status != LeaveStatus.APPROVED:
             return None
-        today = tenant_today(document.tenant)
+        today = branch_today(document.tenant, document.staff.branch_id)
         if document.start_date > today:
             return None
         if document.end_date < today:

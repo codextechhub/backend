@@ -19,7 +19,7 @@ import logging
 from django.db import transaction
 from django.utils import timezone
 
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today, tenant_today
 
 from .audit import record
 from .constants import (
@@ -230,7 +230,7 @@ def remind_invoice(invoice, *, actor_user=None, send=True, message=""):
     if not stages:  # A policy with no ladder cannot generate a reminder.
         raise PostingError(f"Dunning policy '{policy.name}' has no stages defined.")
 
-    as_of = tenant_today(invoice.entity.tenant)
+    as_of = branch_today(invoice.entity.tenant, invoice.branch_id)
     due = invoice.due_date or invoice.invoice_date  # Fall back to invoice date when no due date exists.
     days_overdue = max((as_of - due).days, 0)  # Do not report negative overdue days.
     stage = _stage_for(stages, days_overdue) or stages[0]  # Use qualifying stage or gentlest stage.

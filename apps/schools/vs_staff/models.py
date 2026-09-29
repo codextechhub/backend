@@ -37,7 +37,7 @@ from django.db.models import Q
 from django.db.models.functions import Lower
 from django.utils import timezone
 
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 from vs_history.queryset import VersionedManager
 from vs_rbac.managers import TenantAwareManager
 
@@ -446,9 +446,10 @@ class LeaveRequest(_Owned):
 
         An approved absence whose end date has passed reads Completed. It is
         derived here rather than stored, because a value that follows from a
-        date it sits beside is a second thing that can be wrong.
+        date it sits beside is a second thing that can be wrong. "Passed" is
+        judged on the day at the person's branch.
         """
-        today = today or tenant_today(self.tenant)
+        today = today or branch_today(self.tenant, self.staff.branch_id)
         if self.status == LeaveStatus.APPROVED and self.end_date < today:
             return "COMPLETED"
         return self.status

@@ -17,7 +17,7 @@ from core.media import signed_url
 from vs_finance.constants import DocumentStatus
 from vs_finance.money import format_naira
 from vs_rbac.field_enforcement import FieldAccessMixin, can_read
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 
 from .constants import ProcApprovalState, QuotationStatus
 from .purchasing import po_receipt_stage
@@ -169,15 +169,18 @@ class ContractMilestoneSerializer(serializers.ModelSerializer):
 
 
 def _row_today(row, context):
-    """The school's calendar day for ``row``, read once per entity per render.
+    """Today at ``row``'s branch, read once per entity and branch per render.
 
-    ``context`` is the serializer's, which a list's rows share, so a page of rows
-    loads its entity's tenant once rather than once per row.
+    A document raised for a branch (a quotation, a bill) is judged on that
+    branch's day; a row with no branch (a contract, a shared document) on the
+    school's. ``context`` is the serializer's, which a list's rows share, so a
+    page of rows loads its entity's tenant once rather than once per row.
     """
-    cache = context.setdefault("_tenant_today", {}) if context is not None else {}
-    if row.entity_id not in cache:
-        cache[row.entity_id] = tenant_today(row.entity.tenant)
-    return cache[row.entity_id]
+    cache = context.setdefault("_branch_today", {}) if context is not None else {}
+    key = (row.entity_id, getattr(row, "branch_id", None))
+    if key not in cache:
+        cache[key] = branch_today(row.entity.tenant, key[1])
+    return cache[key]
 
 
 def _contract_is_expired(contract, context=None) -> bool:

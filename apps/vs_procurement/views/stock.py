@@ -18,7 +18,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from core.response import success_response
 from vs_finance.money import format_naira
 from vs_finance.views import resolve_entity
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 
 from .. import stock
 from ..models import (
@@ -659,15 +659,20 @@ class StockIssueView(_ProcBase):
         if item is None:
             raise NotFound("No such stock item in this entity.")
         body = request.data
+        # quantity: strictly positive, finite, bounded (over-issue is caught in the service).
+        quantity = _quantity(body.get("quantity"), "quantity")
+        moved_on = _date(body.get("movement_date"), "movement_date")
+        # Which store it left. Optional for a caller with one; required once they
+        # have more, so nobody has to guess which branch the stock came from.
+        location = _movement_location(request, entity, body.get("location"))
         movement = stock.issue_stock(
             item,
-            # quantity: strictly positive, finite, bounded (over-issue is caught in the service).
-            quantity=_quantity(body.get("quantity"), "quantity"),
-            movement_date=_date(body.get("movement_date"), "movement_date")
-            or tenant_today(entity.tenant),
-            # Which store it left. Optional for a caller with one; required once they
-            # have more, so nobody has to guess which branch the stock came from.
-            location=_movement_location(request, entity, body.get("location")),
+            quantity=quantity,
+            # Undated, it is today at the store's branch.
+            movement_date=moved_on or branch_today(
+                entity.tenant, getattr(location, "branch_id", None),
+            ),
+            location=location,
             # An override expense account, if given, must be an active postable EXPENSE.
             expense_account=_resolve_expense_account(
                 request, entity, body.get("expense_account"), "expense_account"),
@@ -715,8 +720,9 @@ class StockRestockRequisitionView(_ProcBase):
         item_ids = (request.data or {}).get("item_ids") or None
         if item_ids is not None and (not isinstance(item_ids, list) or not all(str(i).isdigit() for i in item_ids)):
             raise ValidationError({"item_ids": "Give a list of stock item ids."})
+        branch = _raised_branch(request, entity, {})
         req = draft_restock_requisition(
-            entity, as_of=tenant_today(entity.tenant), branch=_raised_branch(request, entity, {}),
+            entity, as_of=branch_today(entity.tenant, branch), branch=branch,
             store_scope=_branch_scope(request, entity, include_shared=True),
             user=request.user, item_ids=item_ids,
         )
@@ -741,15 +747,20 @@ class StockAdjustView(_ProcBase):
             raise NotFound("No such stock item in this entity.")
         body = request.data
         unit_cost = body.get("unit_cost")
+        # A signed, non-zero, finite delta (+ write-up, − shrinkage); the service guards
+        # a decrease against on-hand and picks the write-up/shrinkage accounts.
+        quantity_delta = _signed_qty(body.get("quantity_delta"), "quantity_delta")
+        moved_on = _date(body.get("movement_date"), "movement_date")
+        # A count corrects one shelf; say which, unless the caller has only one.
+        location = _movement_location(request, entity, body.get("location"))
         movement = stock.adjust_stock(
             item,
-            # A signed, non-zero, finite delta (+ write-up, − shrinkage); the service guards
-            # a decrease against on-hand and picks the write-up/shrinkage accounts.
-            quantity_delta=_signed_qty(body.get("quantity_delta"), "quantity_delta"),
-            movement_date=_date(body.get("movement_date"), "movement_date")
-            or tenant_today(entity.tenant),
-            # A count corrects one shelf; say which, unless the caller has only one.
-            location=_movement_location(request, entity, body.get("location")),
+            quantity_delta=quantity_delta,
+            # Undated, it is today at the store's branch.
+            movement_date=moved_on or branch_today(
+                entity.tenant, getattr(location, "branch_id", None),
+            ),
+            location=location,
             # Adjustment account, if given, must be active postable EXPENSE (defaults to 5150).
             adjustment_account=_resolve_expense_account(
                 request, entity, body.get("adjustment_account"), "adjustment_account"),
