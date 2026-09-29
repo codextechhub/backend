@@ -14,7 +14,7 @@ import datetime
 
 from django.db import transaction
 
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 
 from .exceptions import FinanceError, PostingError
 from .receivables import post_invoice
@@ -39,6 +39,10 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
     the school chases, and nothing would report them missing. Deriving it at this
     level rather than in a caller is what makes that true for every caller,
     including the school bridge, which bills a cohort and passes no date.
+
+    An omitted ``invoice_date`` is today at the branch each invoice is raised
+    for (the customer's), so a family billed at a branch that keeps its own
+    time zone is billed on that branch's day, and its due date counts from it.
     """
     from .models import Invoice, InvoiceLine
 
@@ -48,13 +52,11 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
     if not structure.is_active:  # Inactive structures must not be billed.
         raise PostingError(f"Fee structure {structure.code} is inactive.")
 
-    invoice_date = invoice_date or tenant_today(structure.entity.tenant)
+    due_after = None
     if due_date is None:  # Never leave it null: null is not a deadline, it is never overdue.
         from .document_settings import resolve_finance_document_settings
         policy = resolve_finance_document_settings(structure.entity)
-        due_date = invoice_date + datetime.timedelta(
-            days=policy.default_invoice_due_days,
-        )
+        due_after = datetime.timedelta(days=policy.default_invoice_due_days)
     reference = f"FEE:{structure.code}"  # Stable idempotency reference for this structure.
     created = []  # Collect generated posted invoices for the return value.
 
@@ -69,6 +71,7 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
         ).exists():
             continue
 
+        dated = invoice_date or branch_today(structure.entity.tenant, customer.branch_id)
         invoice = Invoice.objects.create(
             entity=structure.entity, customer=customer,  # Scope invoice to the structure entity and customer.
             # The *customer* decides the branch, not the structure: a school-wide
@@ -77,7 +80,7 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
             # scope. A structure pinned to a branch is simply billed to the
             # customers selected for it.
             branch=customer.branch,
-            invoice_date=invoice_date, due_date=due_date,  # Store billing and optional due dates.
+            invoice_date=dated, due_date=due_date or dated + due_after,  # Billing and due dates.
             source="MANUAL", reference=reference,  # Mark source and idempotency reference.
             narration=f"{structure.name} ({structure.code})",  # Describe the generated fee bill.
             created_by=actor_user,  # Attribute creation to the caller.

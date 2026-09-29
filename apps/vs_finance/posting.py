@@ -16,7 +16,7 @@ from typing import Iterable, Protocol
 from django.db import transaction
 from django.utils import timezone
 
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today, tenant_today
 
 from .constants import (
     DocumentStatus,
@@ -826,7 +826,7 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
     if date is None and not _period_accepts_posting(  # Original period may now be closed.
         period, allow_restricted=allow_restricted, allow_closed=allow_closed,
     ):
-        reversal_date = tenant_today(entry.entity.tenant)
+        reversal_date = branch_today(entry.entity.tenant, entry.branch_id)
         # Falling forward to today must not turn a future-dated source into a
         # backdated reversal.  Re-run chronology after changing the date; the
         # surrounding transaction leaves the source untouched if today is earlier.
@@ -939,7 +939,7 @@ def create_direct_entry(entity, *, lines, date=None, narration="", reference="",
         date = (  # Prefer earliest fiscal period start, otherwise today.
             FiscalPeriod.objects.filter(entity=entity)
             .order_by("start_date").values_list("start_date", flat=True).first()
-            or tenant_today(entity.tenant)
+            or branch_today(entity.tenant, branch)
         )
 
     entry = JournalEntry.objects.create(

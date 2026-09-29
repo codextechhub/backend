@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from django.db import transaction
 
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 
 from ..constants import EmploymentStatus
 from . import audit
@@ -65,7 +65,7 @@ def _event(profile, *, to_status, reason, note="", actor=None, last_working_day=
     event = StaffEmploymentEvent.objects.create(
         tenant=profile.tenant, staff=profile,
         from_status=from_status, to_status=to_status,
-        reason=reason, effective_date=tenant_today(profile.tenant),
+        reason=reason, effective_date=branch_today(profile.tenant, profile.branch_id),
         last_working_day=last_working_day, note=note, changed_by=actor,
     )
     audit.emit_employment_status_changed(profile, event, actor=actor)
@@ -136,7 +136,7 @@ def close_unsent(profile, *, reason, note, actor=None):
     from_status = profile.employment_status
     if from_status not in UNSENT_STATUSES:
         return None
-    today = tenant_today(profile.tenant)
+    today = branch_today(profile.tenant, profile.branch_id)
     profile.employment_status = EmploymentStatus.TERMINATED
     profile.exit_date = today
     profile.save(update_fields=["employment_status", "exit_date", "updated_at"])

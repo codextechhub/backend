@@ -19,7 +19,7 @@ from django.db import IntegrityError, transaction
 from django.db.models.functions import Lower
 
 from vs_audit.models import AuditActionType, AuditModuleKey
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 from vs_audit.services import emit_audit_event
 
 from ..constants import StudentStatus
@@ -186,17 +186,20 @@ def enrol(
         for field in PERSONAL_FIELDS
     }
 
+    # Today at the branch the child joins, which may keep its own zone.
+    joined_on = branch_today(tenant, branch)
+
     def create(student_number):
         return Student.objects.create(
             tenant=tenant, branch=branch,
             student_number=student_number,
             status=StudentStatus.APPLICANT,
             enrolment_date=(
-                tenant_today(tenant) if as_applicant
-                else (data.get("enrolment_date") or tenant_today(tenant))
+                joined_on if as_applicant
+                else (data.get("enrolment_date") or joined_on)
             ),
             applied_for=data.get("applied_for") if as_applicant else None,
-            applied_on=tenant_today(tenant) if as_applicant else None,
+            applied_on=joined_on if as_applicant else None,
             created_by=actor,
             **personal,
         )

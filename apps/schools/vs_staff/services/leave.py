@@ -33,7 +33,7 @@ from __future__ import annotations
 from django.db import transaction
 from django.utils import timezone
 
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_day_q
 
 from ..constants import LEAVE_LIVE_STATUSES, LeaveStatus, LeaveType
 from ..exceptions import InvalidDateRange, LeaveAlreadyDecided, NoWorkingDays
@@ -426,15 +426,25 @@ def days_taken(staff, *, since=None, until=None):
     return [{"leave_type": row["leave_type"], "days": row["days"] or 0} for row in rows]
 
 
-def _school_today(tenant):
-    """The school's own day: *tenant*'s, else the request's tenant.
+def _covers_today(tenant, today):
+    """Leave rows covering *today*, or today where the person on leave works.
 
-    The fallback is the tenant ``LeaveRequest.objects`` already scopes these
-    queries to, so the day and the rows always belong to the same school.
+    Without *today*, each request is judged on the day at the branch of the
+    person it belongs to, so somebody at a Nairobi branch is back from leave at
+    Nairobi's midnight, not Lagos's. *tenant* falls back to the request's,
+    which is the tenant ``LeaveRequest.objects`` already scopes these queries
+    to, so the day and the rows always belong to the same school.
     """
+    from django.db.models import Q
+
+    if today is not None:
+        return Q(start_date__lte=today, end_date__gte=today)
     from vs_tenants.context import get_current_tenant
 
-    return tenant_today(tenant if tenant is not None else get_current_tenant())
+    return branch_day_q(
+        tenant if tenant is not None else get_current_tenant(), "staff__branch",
+        lambda day: Q(start_date__lte=day, end_date__gte=day),
+    )
 
 
 def on_leave_expression(*, today=None, tenant=None):
@@ -453,11 +463,10 @@ def on_leave_expression(*, today=None, tenant=None):
 
     from ..models import LeaveRequest
 
-    today = today or _school_today(tenant)
     return Exists(
         LeaveRequest.objects.filter(
+            _covers_today(tenant, today),
             staff=OuterRef("pk"), status=LeaveStatus.APPROVED,
-            start_date__lte=today, end_date__gte=today,
         ),
     )
 
@@ -480,11 +489,10 @@ def on_leave_until_expression(*, today=None, tenant=None):
 
     from ..models import LeaveRequest
 
-    today = today or _school_today(tenant)
     return Subquery(
         LeaveRequest.objects.filter(
+            _covers_today(tenant, today),
             staff=OuterRef("pk"), status=LeaveStatus.APPROVED,
-            start_date__lte=today, end_date__gte=today,
         )
         .order_by("-end_date")
         .values("end_date")[:1],
@@ -502,10 +510,9 @@ def on_leave_today(tenant, *, today=None):
     """
     from ..models import LeaveRequest
 
-    today = today or tenant_today(tenant)
     return set(
         LeaveRequest.objects.filter(
+            _covers_today(tenant, today),
             tenant=tenant, status=LeaveStatus.APPROVED,
-            start_date__lte=today, end_date__gte=today,
         ).values_list("staff_id", flat=True)
     )

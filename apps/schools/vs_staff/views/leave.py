@@ -135,7 +135,7 @@ class StaffLeaveView(StaffViewMixin, APIView):
     def _balance_session(self, staff, on_date):
         """The session the balances count: named, covering the day, or active."""
         from schools.vs_academics.models import AcademicSession
-        from vs_config.clock import tenant_today
+        from vs_config.clock import branch_today
 
         raw = (self.request.query_params.get("session") or "").strip()
         if raw:
@@ -146,7 +146,7 @@ class StaffLeaveView(StaffViewMixin, APIView):
             if session is None:
                 raise NotFound("No such session at this school.")
             return session
-        day = on_date or tenant_today(self.tenant)
+        day = on_date or branch_today(self.tenant, staff.branch_id)
         return leave_service.leave_session(staff, day) or self.active_session
 
     def post(self, request, pk):

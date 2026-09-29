@@ -726,10 +726,10 @@ class StaffDetailSerializer(StaffListSerializer):
         """
         if not obj.hire_date:
             return None
-        from vs_config.clock import tenant_today
+        from vs_config.clock import branch_today
 
         as_at = self.context.get("as_at")
-        today = as_at.date if as_at else tenant_today(obj.tenant)
+        today = as_at.date if as_at else branch_today(obj.tenant, obj.branch_id)
         years = today.year - obj.hire_date.year
         months = today.month - obj.hire_date.month
         if today.day < obj.hire_date.day:

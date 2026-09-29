@@ -17,7 +17,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field as dc_field
 
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 
 from .ages import date_of_birth_problem
 from .constants import Gender, Relationship, StudentStatus
@@ -270,6 +270,11 @@ def resolve_row(
     if not row.last_name:
         row.issues.append(RowIssue("required", "A last name is required.", "last_name"))
 
+    # The branch before the dates: a date is judged on the row's branch's day.
+    _resolve_branch(row, payload, tenant=tenant, batch_branch=batch_branch,
+                    multi_branch=multi_branch)
+    today = branch_today(tenant, row.branch)
+
     raw_dob = _text(payload, "date_of_birth")
     row.date_of_birth = _as_date(raw_dob)
     if not raw_dob:
@@ -282,7 +287,7 @@ def resolve_row(
             f"'{raw_dob}' is not a date this importer can read. Use YYYY-MM-DD.",
             "date_of_birth", raw_dob,
         ))
-    elif row.date_of_birth > tenant_today(tenant):
+    elif row.date_of_birth > today:
         row.issues.append(RowIssue(
             "business_rule", "That date of birth is in the future.",
             "date_of_birth", raw_dob,
@@ -290,7 +295,7 @@ def resolve_row(
     else:
         # The year is the digit a spreadsheet gets wrong. See ages.py.
         problem = date_of_birth_problem(
-            row.date_of_birth, tenant=tenant,
+            row.date_of_birth, tenant=tenant, today=today,
             bounds=(rules.min_age_years, rules.max_age_years),
         )
         if problem:
@@ -317,7 +322,7 @@ def resolve_row(
                 f"'{raw_admitted}' is not a date this importer can read.",
                 "admission_date", raw_admitted,
             ))
-        elif row.admission_date > tenant_today(tenant):
+        elif row.admission_date > today:
             # The enrol form defaults this to today and never offers a future
             # date, so this is a fault only a file can carry.
             row.issues.append(RowIssue(
@@ -344,9 +349,7 @@ def resolve_row(
                 f"{REQUIRABLE_FIELDS[field]} is required at this school.", field,
             ))
 
-    # The branch first: the admission-number rule is the row's branch's.
-    _resolve_branch(row, payload, tenant=tenant, batch_branch=batch_branch,
-                    multi_branch=multi_branch)
+    # The admission-number rule is the row's branch's, resolved above.
     _resolve_number(
         row, payload, tenant=tenant,
         policy=_policy_for(tenant, row.branch, policies),
@@ -724,12 +727,12 @@ def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
         gender=row.gender, address=row.address,
         previous_school=row.previous_school,
         status=StudentStatus.APPLICANT,
-        enrolment_date=row.admission_date or tenant_today(tenant),
+        enrolment_date=row.admission_date or branch_today(tenant, row.branch),
         applied_for=(
             row.school_class.level
             if applicant and row.school_class is not None else None
         ),
-        applied_on=tenant_today(tenant) if applicant else None,
+        applied_on=branch_today(tenant, row.branch) if applicant else None,
         created_by=created_by,
     )
     if not row.student_number and not applicant:

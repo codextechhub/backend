@@ -20,7 +20,7 @@ from rest_framework.views import APIView
 
 from core.mixins import RetrieveModelMixin
 from core.response import success_response
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_day_q, tenant_today
 from vs_rbac.permissions import (
     HasAnyModuleAccess,
     HasRBACPermission,
@@ -1075,7 +1075,7 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
         if (pay := params.get("payment_status")):
             qs = qs.filter(payment_status=pay)
         if (bucket := params.get("bucket")):
-            qs = _invoice_bucket(qs, bucket, tenant_today(entity.tenant))
+            qs = _invoice_bucket(qs, bucket, entity.tenant)
         if (search := params.get("search")):
             qs = qs.filter(
                 Q(document_number__icontains=search)
@@ -1090,22 +1090,24 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
 
 
 # Support the invoice bucket workflow.
-def _invoice_bucket(qs, bucket, today):
+def _invoice_bucket(qs, bucket, tenant):
     """Filter invoices to a derived status bucket (the design's status tabs).
 
-    ``today`` is the entity's own day, which decides what counts as overdue.
+    What counts as overdue is judged on the day at each invoice's own branch
+    (:func:`vs_config.clock.branch_day_q`), the school's for a shared one.
     """
     from django.db.models import Q
     from .constants import DocumentStatus, InvoicePaymentStatus
 
-    not_overdue = Q(due_date__gte=today) | Q(due_date__isnull=True)
+    past_due = branch_day_q(tenant, "branch", lambda day: Q(due_date__lt=day))
+    not_overdue = ~past_due | Q(due_date__isnull=True)
     posted = qs.filter(status=DocumentStatus.POSTED)
     if bucket == "draft":
         return qs.filter(status=DocumentStatus.DRAFT)
     if bucket == "paid":
         return posted.filter(payment_status=InvoicePaymentStatus.PAID)
     if bucket == "overdue":
-        return posted.exclude(payment_status=InvoicePaymentStatus.PAID).filter(due_date__lt=today)
+        return posted.exclude(payment_status=InvoicePaymentStatus.PAID).filter(past_due)
     if bucket == "partial":
         return posted.filter(payment_status=InvoicePaymentStatus.PARTIAL).filter(not_overdue)
     if bucket == "issued":
@@ -1155,13 +1157,15 @@ class InvoiceSummaryView(APIView):
             branch_q(request, include_shared=True),
             entity=entity, status=DocumentStatus.POSTED,
         ).aggregate(t=Coalesce(Sum("amount"), 0))["t"]
-        overdue_balance = unpaid_posted.filter(due_date__lt=today).aggregate(t=Coalesce(Sum(bal), 0))["t"]
+        overdue_balance = unpaid_posted.filter(
+            branch_day_q(entity.tenant, "branch", lambda day: Q(due_date__lt=day)),
+        ).aggregate(t=Coalesce(Sum(bal), 0))["t"]
         outstanding = unpaid_posted.aggregate(t=Coalesce(Sum(bal), 0))["t"]
         total_all = base.aggregate(t=Coalesce(Sum("total"), 0))["t"]
         rate = round(collected * 100 / invoiced, 1) if invoiced else 0.0
 
         by_status = {
-            b: _invoice_bucket(base, b, today).count()
+            b: _invoice_bucket(base, b, entity.tenant).count()
             for b in ("draft", "issued", "partial", "paid", "overdue")
         }
         total_count = base.count()

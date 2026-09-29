@@ -20,7 +20,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 
 from core.pagination import XVSPagination
 from core.response import error_response, success_response
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_day_q, branch_today, tenant_today
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 # ``include_shared=True`` is spelled out at every call site rather than left to the
 # default: a null branch means "shared across the school", so a school-wide fee
@@ -274,7 +274,8 @@ def _customer_ledger(entity, customer_ids=None, *, scope=None):
     from .models import CreditNote, Invoice, Payment
     from .receivables import customer_credit_balances
 
-    today = tenant_today(entity.tenant)
+    # Each invoice is overdue by its own branch's day.
+    overdue = branch_day_q(entity.tenant, "branch", lambda day: Q(due_date__lt=day))
     bal = F("total") - F("amount_paid") - F("amount_credited")
     inv = Invoice.objects.filter(entity=entity, status=DocumentStatus.POSTED)
     pay = Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED)
@@ -297,7 +298,7 @@ def _customer_ledger(entity, customer_ids=None, *, scope=None):
 
     for r in inv.values("customer_id").annotate(
         outstanding=Coalesce(Sum(bal), 0),
-        overdue_bal=Coalesce(Sum(bal, filter=Q(due_date__lt=today)), 0),
+        overdue_bal=Coalesce(Sum(bal, filter=overdue), 0),
     ):
         d = slot(r["customer_id"])
         d["outstanding"] = int(r["outstanding"] or 0)
@@ -499,7 +500,6 @@ class CustomerDetailView(_FinanceBase):
         scope = _document_scope(request)
         led = _customer_ledger(entity, [customer.id], scope=scope).get(customer.id, {})
         net = led.get("outstanding", 0) - led.get("credit", 0)
-        today = tenant_today(entity.tenant)
 
         # A voided document is still part of the account's history: it moved the
         # balance on its own date and was undone on the reversal's date, and
@@ -535,7 +535,10 @@ class CustomerDetailView(_FinanceBase):
         def inv_status(i):
             if i.payment_status == InvoicePaymentStatus.PAID:
                 return "PAID"
-            if i.due_date and i.due_date < today and i.balance_due > 0:
+            if (
+                i.due_date and i.due_date < branch_today(entity.tenant, i.branch_id)
+                and i.balance_due > 0
+            ):
                 return "OVERDUE"
             if i.payment_status == InvoicePaymentStatus.PARTIAL:
                 return "PARTIAL"
@@ -1401,7 +1404,8 @@ class FeeStructureGenerateView(_FinanceBase):
             raise ValidationError({"applies_to":
                 "Only customer fee structures can generate AR invoices."})
         body = request.data or {}
-        invoice_date = _date(body.get("invoice_date"), "invoice_date") or tenant_today(entity.tenant)
+        # None dates each invoice on its own branch's day (see generate_invoices).
+        invoice_date = _date(body.get("invoice_date"), "invoice_date")
         due_date = _date(body.get("due_date"), "due_date")
         if body.get("all_active"):
             qs = _branch_visible(request, Customer.objects.filter(entity=entity, is_active=True))
@@ -3617,7 +3621,6 @@ class DunningSummaryView(_FinanceBase):
         from django.db.models import F
 
         entity = resolve_entity(request)
-        today = tenant_today(entity.tenant)
         buckets = {k: {"amount": 0, "count": 0} for k in
                    ("due_soon", "overdue_1_30", "overdue_31_60", "overdue_60_plus")}
         # Drop fully-settled invoices in SQL (balance_due is a property); only the
@@ -3628,10 +3631,11 @@ class DunningSummaryView(_FinanceBase):
         )
                  .exclude(due_date__isnull=True)
                  .annotate(_balance=balance).filter(_balance__gt=0)
-                 .only("due_date", "total", "amount_paid", "amount_credited"))
+                 .only("due_date", "total", "amount_paid", "amount_credited", "branch_id"))
         for inv in owing:
             bal = inv.balance_due
-            d = (today - inv.due_date).days  # >0 overdue, <=0 upcoming
+            # Days past due by the invoice's own branch's day: >0 overdue, <=0 upcoming.
+            d = (branch_today(entity.tenant, inv.branch_id) - inv.due_date).days
             if -7 <= d <= 0:
                 key = "due_soon"
             elif 1 <= d <= 30:

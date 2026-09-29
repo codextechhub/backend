@@ -16,7 +16,7 @@ from __future__ import annotations
 from django.db import transaction
 from django.utils import timezone
 
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 
 from .accounts import resolve_account
 from .account_mappings import resolve_mapped_account
@@ -420,7 +420,8 @@ def _record_reconciliation(bank_account, *, matched_count, actor_user=None):
     stmt_val = stmt if stmt is not None else book  # Fall back to book balance when no statement exists.
     difference = book - stmt_val  # Difference between ledger and statement.
     recon = BankReconciliation.objects.create(
-        bank_account=bank_account, as_of_date=tenant_today(bank_account.entity.tenant),
+        bank_account=bank_account,
+        as_of_date=branch_today(bank_account.entity.tenant, bank_account.branch_id),
         book_balance=book, statement_balance=stmt_val, difference=difference,
         matched_count=matched_count,
         status=BankReconStatus.BALANCED if difference == 0 else BankReconStatus.OUT_OF_BALANCE,

@@ -10,7 +10,7 @@ from rest_framework.exceptions import NotFound
 from rest_framework.views import APIView
 
 from core.response import success_response
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 from vs_tenants.references import resolve_branch_reference
 
 from ..constants import PERM_STRUCTURE_VIEW
@@ -92,7 +92,9 @@ class OverviewView(AcademicsViewMixin, APIView):
             )
         data = build_overview(
             request.user, self.tenant,
-            today=tenant_today(self.tenant), multi_branch=self.multi_branch, branch=branch,
+            # Today at the branch filtered to, else the school's.
+            today=branch_today(self.tenant, branch),
+            multi_branch=self.multi_branch, branch=branch,
             session=self.session,
         )
         return success_response("Overview retrieved.", data=data)

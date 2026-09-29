@@ -27,12 +27,14 @@ MAX_AGE_YEARS = DEFAULT_MAX_AGE
 
 def date_of_birth_problem(
     dob: dt.date, *, tenant=None, today: dt.date | None = None, bounds=None,
+    branch=None,
 ) -> str:
     """The sentence to show for an implausible birth date, or "" when it is fine.
 
     *bounds* is ``(youngest, oldest)`` already read for *tenant*, which a
     caller checking many rows passes so the range is read once rather than per
-    row. Without either, the default range applies.
+    row. Without either, the default range applies. Without *today*, it is
+    today at the student's *branch* (the school's day when none is given).
     """
     if bounds is None:
         if tenant is not None:
@@ -43,9 +45,9 @@ def date_of_birth_problem(
             bounds = (MIN_AGE_YEARS, MAX_AGE_YEARS)
     youngest, oldest = bounds
     if today is None:
-        from vs_config.clock import tenant_today
+        from vs_config.clock import branch_today
 
-        today = tenant_today(tenant)
+        today = branch_today(tenant, branch)
     if dob > today:
         return "That date is in the future."
     years = today.year - dob.year

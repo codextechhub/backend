@@ -22,7 +22,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from vs_config.clock import tenant_today, tenant_zone
+from vs_config.clock import branch_today, branch_zone
 from vs_finance.accounts import resolve_account
 from vs_finance.constants import CASH_BANK_CODE, PaymentMethod
 from vs_finance.exceptions import FinanceError
@@ -552,7 +552,7 @@ def _dating_metadata(metadata) -> dict:
     return {key: metadata[key] for key in keys if key in (metadata or {})}
 
 
-def _booking_date(entity, paid_at):
+def _booking_date(entity, paid_at, branch=None):
     """Return ``(booking_date, dating_metadata)`` for money the provider says moved at ``paid_at``.
 
     A payment belongs to the day it was made, not the day we got round to booking
@@ -562,9 +562,9 @@ def _booking_date(entity, paid_at):
     then show the parent owing money they had already paid.
 
     * ``paid_at`` absent (the provider gave no instant, or the caller supplied the
-      status itself): the tenant's today, and no dating metadata.
-    * The paid day, in the tenant's own time zone and never later than today, when
-      its fiscal period still accepts an ordinary posting.
+      status itself): today, and no dating metadata.
+    * The paid day, never later than today, when its fiscal period still accepts
+      an ordinary posting.
     * When that period is closed, the first open day after it, because a closed
       month cannot be rewritten. The metadata then records the true paid day
       (``paid_on``), the day booked (``booked_on``) and why they differ, so the
@@ -574,16 +574,20 @@ def _booking_date(entity, paid_at):
       that state, and booking into an earlier open period would date a receipt
       before the payer paid.
 
+    "Today" and "the paid day" are read on the clock of *branch*, the branch the
+    record is booked to, which is the school's unless that branch keeps its own
+    time zone.
+
     This is the same "earliest open day on or after" rule a bank adjustment uses
     (:func:`vs_finance.banking.resolve_adjustment_date`), without its fall-back to
     an earlier day.
     """
     from vs_finance.posting import _period_accepts_posting, posting_window, resolve_period
 
-    today = tenant_today(entity.tenant)
+    today = branch_today(entity.tenant, branch)
     if paid_at is None:
         return today, {}
-    paid_on = min(paid_at.astimezone(tenant_zone(entity.tenant)).date(), today)
+    paid_on = min(paid_at.astimezone(branch_zone(entity.tenant, branch)).date(), today)
     metadata = {"paid_on": paid_on.isoformat()}
     if _period_accepts_posting(resolve_period(entity, paid_on)):
         return paid_on, metadata
@@ -633,7 +637,9 @@ def _book_receipt(intent, *, actor_user=None, paid_at=None):
         intent.entity, CASH_BANK_CODE, label="Cash & bank",
     )
 
-    received, dating = _booking_date(intent.entity, paid_at)
+    received, dating = _booking_date(
+        intent.entity, paid_at, branch=intent.customer.branch_id,
+    )
     if dating:  # Keep the true paid day beside the receipt, however it was booked.
         intent.metadata = {**(intent.metadata or {}), **dating}
     payment = Payment.objects.create(
@@ -1652,16 +1658,17 @@ def _book_vendor_payment(payout, *, actor_user=None, paid_at=None):
         TaxCode.objects.filter(entity=payout.entity, pk=metadata["wht_tax_code_id"]).first()
         if metadata.get("wht_tax_code_id") else None
     )
-    payment_date, dating = _booking_date(payout.entity, paid_at)
-    if dating:  # Keep the true paid day beside the payment, however it was booked.
-        payout.metadata = {**metadata, **dating}
     paid_from = payout.source_account or resolve_account(
         payout.entity, CASH_BANK_CODE, label="Cash & bank",
     )
+    # The branch whose bank the money left: its journal, its bills and its day.
+    paying_branch_id = _paying_branch_id(paid_from)
+    payment_date, dating = _booking_date(payout.entity, paid_at, branch=paying_branch_id)
+    if dating:  # Keep the true paid day beside the payment, however it was booked.
+        payout.metadata = {**metadata, **dating}
     vp = VendorPayment.objects.create(
         entity=payout.entity, vendor=vendor, payment_date=payment_date,
-        # The branch whose bank the money left: its journal and the bills it settles.
-        branch_id=_paying_branch_id(paid_from),
+        branch_id=paying_branch_id,
         currency=payout.currency, method=PaymentMethod.BANK_TRANSFER,
         gross_amount=payout.amount, wht_amount=wht,
         net_amount=payout.amount - wht,

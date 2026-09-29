@@ -7,7 +7,7 @@ import logging
 import secrets
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
@@ -18,10 +18,9 @@ from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 
 from core.uploads import validate_upload
-from vs_config.conf import get_config
 from vs_finance.documents import _issuer_block
 from vs_notifications.notify import UnregisteredRecipient, send_notification
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today, branch_zone
 
 from . import sourcing
 from .constants import QuotationLineResponse, QuotationStatus, RfqInvitationStatus, RfqStatus
@@ -66,19 +65,16 @@ def make_invitation_token(invitation: RfqInvitation) -> str:
     )
 
 
-def _entity_timezone(entity) -> ZoneInfo:
-    name = get_config("display.timezone", "UTC", tenant=entity.tenant)
-    try:
-        return ZoneInfo(str(name or "UTC"))
-    except ZoneInfoNotFoundError:
-        return ZoneInfo("UTC")
+def _rfq_zone(rfq) -> ZoneInfo:
+    """The zone an RFQ's deadline is set in: its branch's, else the school's."""
+    return branch_zone(rfq.entity.tenant, rfq.branch_id)
 
 
 def ensure_exact_deadline(rfq: RequestForQuotation) -> None:
     """Populate the exact deadline from a date-only input at 23:59:59 local time."""
     if rfq.response_due_at is not None or rfq.response_due_date is None:
         return
-    local = datetime.combine(rfq.response_due_date, time(23, 59, 59), _entity_timezone(rfq.entity))
+    local = datetime.combine(rfq.response_due_date, time(23, 59, 59), _rfq_zone(rfq))
     rfq.response_due_at = local.astimezone(ZoneInfo("UTC"))
     rfq.save(update_fields=["response_due_at", "updated_at"])
 
@@ -87,7 +83,7 @@ def format_deadline(invitation: RfqInvitation) -> str:
     deadline = invitation.deadline
     if deadline is None:
         return "No deadline"
-    return deadline.astimezone(_entity_timezone(invitation.rfq.entity)).strftime("%d %b %Y, %I:%M %p %Z")
+    return deadline.astimezone(_rfq_zone(invitation.rfq)).strftime("%d %b %Y, %I:%M %p %Z")
 
 
 def invitation_url(raw_token: str) -> str:
@@ -355,7 +351,8 @@ def _quotation(invitation: RfqInvitation, *, create: bool = False) -> VendorQuot
             # branch context of its own; the RFQ it answers is the only source.
             branch_id=invitation.rfq.branch_id,
             vendor_managed=True,
-            quote_date=tenant_today(invitation.rfq.entity.tenant), currency=invitation.rfq.entity.base_currency,
+            quote_date=branch_today(invitation.rfq.entity.tenant, invitation.rfq.branch_id),
+            currency=invitation.rfq.entity.base_currency,
             subtotal=0, tax_total=0, total=0,
         )
     return quote
@@ -442,7 +439,7 @@ def save_draft(invitation: RfqInvitation, email: str, body: dict) -> dict:
     quote = _quotation(invitation, create=True)
     if quote.quotation_status != QuotationStatus.DRAFT:
         raise ValidationError({"quotation": "Request a revision before editing a submitted quotation."})
-    quote.quote_date = tenant_today(quote.entity.tenant)
+    quote.quote_date = branch_today(quote.entity.tenant, quote.branch_id)
     if "valid_until" in body:
         raw_valid_until = body.get("valid_until")
         try:
@@ -548,7 +545,7 @@ def submit(invitation: RfqInvitation, email: str, raw_token: str) -> dict:
         context = _recipient_context(invitation, recipient) | {
             "quotation_number": quote.document_number,
             "revision": revision,
-            "submitted_at": now.astimezone(_entity_timezone(invitation.rfq.entity)).strftime("%d %b %Y, %I:%M %p %Z"),
+            "submitted_at": now.astimezone(_rfq_zone(invitation.rfq)).strftime("%d %b %Y, %I:%M %p %Z"),
         }
         transaction.on_commit(lambda: _safe_notify(
             event_key="procurement.quotation_receipt", context=context,

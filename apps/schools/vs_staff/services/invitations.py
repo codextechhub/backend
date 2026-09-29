@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from django.db import transaction
 
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today
 
 from ..constants import EmploymentStatus
 from ..exceptions import InvitationAlreadyAccepted, ReasonRequired
@@ -84,7 +84,7 @@ def revoke(staff, *, reason, actor, request=None):
         invitation.consume()
 
     from_status = staff.employment_status
-    today = tenant_today(staff.tenant)
+    today = branch_today(staff.tenant, staff.branch_id)
     staff.employment_status = EmploymentStatus.TERMINATED
     staff.exit_date = today
     staff.save(update_fields=["employment_status", "exit_date", "updated_at"])
