@@ -69,6 +69,42 @@ class PaymentsNameOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         self.assertEqual(refused.status_code, 400, refused.data)
         self.assertIn(f"No invoice '{lekki_invoice.pk}' in this entity.", str(refused.data))
 
+    def test_a_payment_request_for_an_invoice_alone_deposits_into_the_invoices_branch(self):
+        """No customer named: the invoice's customer decides the branch, as it decides the receipt's."""
+        from vs_finance.models import BankAccount
+
+        lekki_invoice = self.invoice(self.books, self.lekki_customer, self.lekki)
+        cash_type = Account.objects.get(entity=self.books, code="1000").account_type
+        ledgers = {}
+        for tag, branch in (("IKJ", self.ikeja), ("LEK", self.lekki)):
+            ledgers[tag] = Account.objects.create(
+                entity=self.books, code=f"117{len(ledgers)}", name=f"Collections {tag}",
+                account_type=cash_type, is_postable=True)
+            BankAccount.objects.create(entity=self.books, name=f"Collections {tag}",
+                                       branch=branch, gl_account=ledgers[tag])
+        n = next(_clerks)
+        user = self.user_for(self.tenant, f"clerk-{n}@corona.test")
+        for branch in (self.ikeja, self.lekki):
+            self.grant(user, "payments.collection.create", tenant=self.tenant,
+                       role_key=f"clerk-{n}-{branch.pk}", branch=branch)
+        okafor = TenantAPIClient(user=user)
+
+        refused = self.post(okafor, "collections/", {
+            "amount": 5_000, "invoice": lekki_invoice.pk,
+            "deposit_account": ledgers["IKJ"].code,
+        })
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertIn("This payment request belongs to Lekki Branch. "
+                      "Deposit it into a Lekki Branch account or a school-wide one.",
+                      str(refused.data))
+        self.assertFalse(CollectionIntent.objects.filter(invoice=lekki_invoice).exists())
+
+        accepted = self.post(okafor, "collections/", {
+            "amount": 5_000, "invoice": lekki_invoice.pk,
+            "deposit_account": ledgers["LEK"].code,
+        })
+        self.assertNotIn("belongs to", str(accepted.data))
+
     def test_a_virtual_account_for_another_branchs_customer(self):
         refused = self.post(self.clerk("payments.virtual_account.create"),
                             "virtual-accounts/", {"customer": "CLEKP"})

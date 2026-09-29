@@ -216,11 +216,13 @@ class CollectionListCreateView(APIView):
         
         customer = _entity_obj(request, entity, Customer, body.get("customer"), "customer")
         invoice = _entity_obj(request, entity, Invoice, body.get("invoice"), "invoice")
-        # The receipt this collects carries the customer's branch, so it lands in
+        # The receipt this collects carries its customer's branch, the one named or
+        # else the invoice's (the customer the service books it to), so it lands in
         # that branch's bank or a school-wide one.
+        payer = customer if customer is not None else getattr(invoice, "customer", None)
         deposit = _resolve_account(
             request, entity, body.get("deposit_account"), "deposit_account",
-            document_branch=getattr(customer, "branch_id", None), noun="payment request",
+            document_branch=getattr(payer, "branch_id", None), noun="payment request",
             verb="Deposit it into")
 
         intent = services.initiate_collection(  # Hand off to the business service for PSP initiation.
