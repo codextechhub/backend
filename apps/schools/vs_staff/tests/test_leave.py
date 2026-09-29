@@ -18,6 +18,7 @@ from schools.vs_staff.constants import LEAVE_APPROVER_GROUP_CODE, LeaveStatus
 from schools.vs_staff.models import LeaveRequest
 from schools.vs_staff.services import leave as leave_service
 from vs_audit.models import AuditActionType, AuditEvent
+from vs_config.clock import tenant_today
 from vs_workflow.models import WorkflowInstance
 
 from .base import StaffFixture
@@ -366,7 +367,7 @@ class ReportingTests(LeaveFixture):
 
         A school may set either, both or neither, so nothing here resolves it.
         """
-        today = dt.date.today()
+        today = tenant_today(self.tenant)
         LeaveRequest.all_objects.create(
             tenant=self.tenant, staff=self.eze, leave_type="SICK",
             start_date=today - dt.timedelta(days=1),
