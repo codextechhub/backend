@@ -1616,7 +1616,7 @@ break label and import alias; M17 the due rule label in the school's word and
 the one period name; M25 the switch label. MRD: a school names its own terms,
 says Term or Semester, and chooses its default arms.
 
-### D73. Who really acted is on the record, approvals count real people, and shared records need a school-wide caller (hash pending, 2026-09-29)
+### D73. Who really acted is on the record, approvals count real people, and shared records need a school-wide caller (229f364d, 2026-09-29)
 MODULES: M07 workflow and approval engine, M04 roles and permissions, M05 audit
 and activity logging, M19 finance and accounting, M18 payments and collections,
 M22 procurement and requisitions, M21 vendor management, M08 notifications and
