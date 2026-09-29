@@ -13,7 +13,10 @@ Matching is deliberately conservative: first on a shared reference, then - for a
 still open - on an exact signed-amount match within the date window. Money stays integer
 **kobo**; the bank line's ``amount`` is signed (+inflow/-outflow) and we sign each gateway
 record the same way (collection ``+amount``, payout ``-amount``) so a correct pairing nets
-to zero. Nothing here writes - it never mutates a bank line or books a journal.  # Read-only, two-pass matching only.
+to zero. A payout is signed at what left the account, which is its line less any WHT
+withheld (:func:`vs_payments.services.payout_sent_amount`), because the bank line shows
+the transfer and the WHT never leaves. Nothing here writes - it never mutates a bank line
+or books a journal.
 """
 from __future__ import annotations
 
@@ -26,6 +29,7 @@ from vs_rbac.scoping import UNNARROWED
 
 from .constants import CollectionStatus, PayoutStatus
 from .reach import PaymentsReach
+from .services import payout_sent_amount
 
 
 @dataclass
@@ -179,7 +183,8 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
             amount=int(ci.amount), confirmed_at=confirmed,
         ))
     for po in payouts.only(  # Iterate over paid payouts using only the required columns.
-        "id", "reference", "provider", "provider_reference", "amount", "confirmed_at",
+        "id", "reference", "provider", "provider_reference", "amount", "status",
+        "metadata", "confirmed_at",
     ):
         confirmed = po.confirmed_at  # Confirmation timestamp for the payout.
         if not _date_in_window(confirmed, start_date, end_date):  # Skip rows outside the window.
@@ -187,7 +192,8 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
         rows.append(SettlementRow(  # Payouts are negative signed movements.
             kind="PAYOUT", gateway_id=po.id, reference=po.reference,
             provider=po.provider, provider_reference=po.provider_reference,
-            amount=-int(po.amount), confirmed_at=confirmed,
+            # What left the account, net of WHT: the bank line shows that, not the gross.
+            amount=-payout_sent_amount(po), confirmed_at=confirmed,
         ))
 
     bank_qs = reach.bank_lines(BankStatementLine.objects.filter(bank_account__entity=entity))

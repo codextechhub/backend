@@ -964,13 +964,20 @@ _MOVEMENT_COLS = [  # Common projection shape for the movements feed.
     "kind", "gateway_id", "reference", "created_at", "direction", "party", "provider",
     "amount", "status", "narration", "provider_reference", "confirmed_at",
     "email", "account_code", "account_name", "beneficiary_account",
+    "sent_amount", "wht_amount",
 ]
 
 
 # Support the movement querysets workflow.
 def _movement_querysets(reach, *, provider=None, group=None):
-    """The collection (in) + payout (out) value-querysets projected to a common shape."""
-    from django.db.models import CharField, F, Value
+    """The collection (in) + payout (out) value-querysets projected to a common shape.
+
+    ``amount`` is each record's own figure, the gross of a payout line.
+    ``sent_amount`` is what moved: a collection's amount, and a payout's line less
+    its WHT (:func:`vs_payments.services.payout_sent_expression`), with
+    ``wht_amount`` the difference. :class:`MovementsView` presents them.
+    """
+    from django.db.models import BigIntegerField, CharField, F, Value
     from django.db.models.functions import Coalesce
 
     cols = reach.collections()
@@ -990,6 +997,7 @@ def _movement_querysets(reach, *, provider=None, group=None):
         email=F("payer_email"),
         account_code=F("deposit_account__code"), account_name=F("deposit_account__name"),
         beneficiary_account=Value("", output_field=CharField()),
+        sent_amount=F("amount"), wht_amount=Value(0, output_field=BigIntegerField()),
     ).values(*_MOVEMENT_COLS)
     pv = pos.annotate(
         kind=Value("payout", output_field=CharField()), gateway_id=F("id"),
@@ -997,6 +1005,8 @@ def _movement_querysets(reach, *, provider=None, group=None):
         email=Value("", output_field=CharField()),
         account_code=F("source_account__code"), account_name=F("source_account__name"),
         beneficiary_account=F("beneficiary_account_number"),
+        sent_amount=services.payout_sent_expression(),
+        wht_amount=services.payout_wht_expression(),
     ).values(*_MOVEMENT_COLS)
     return cv, pv  # Return both common-shape querysets for the feed.
 
@@ -1021,6 +1031,11 @@ class MovementsView(APIView):
     """GET /payments/movements/ - unified, paginated money-movement feed: confirmed-or-
     pending collections (in) + payouts (out), newest first. Filters: ``?direction=in|out``,
     ``?group=SETTLED|PENDING|FAILED|REFUNDED``, ``?provider=``.
+
+    ``amount`` is the money that moved: on a payout, the line less the WHT
+    withheld, which is what was sent and what the bank shows. ``gross_amount``
+    is the line itself and ``wht_amount`` the WHT, equal to ``amount`` and 0 on
+    a collection.
 
     A payout row carries the beneficiary's name and account number only for a
     caller whose roles let them read those fields; for anybody else the keys
@@ -1062,6 +1077,8 @@ class MovementsView(APIView):
             if row["kind"] == "payout":  # A collection's party is its customer, not a beneficiary.
                 for name in hidden:  # Absent, not masked: a marker is itself an answer.
                     row.pop(name, None)
+            row["gross_amount"] = row["amount"]  # The record's own figure.
+            row["amount"] = row.pop("sent_amount")  # What moved, net of any WHT.
             row["amount_naira"] = format_naira(row["amount"])  # Add a display amount.
             row["created_at"] = row["created_at"].isoformat() if row["created_at"] else None  # Normalize timestamps.
             row["confirmed_at"] = row["confirmed_at"].isoformat() if row["confirmed_at"] else None  # Normalize timestamps.
@@ -1071,7 +1088,7 @@ class MovementsView(APIView):
 
 # Group endpoint behavior for Movements Summary View.
 class MovementsSummaryView(APIView):
-    """GET /payments/movements/summary/ - money-in (7d) / money-out (7d) / pending / failed
+    """GET /payments/movements/summary/ - money-in (7d) / money-out (7d, net of WHT) / pending / failed
     across both gateways, for the Transactions Log header.
 
     docstring-name: Movements summary
@@ -1100,8 +1117,9 @@ class MovementsSummaryView(APIView):
             pending=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["PENDING"][0])),
             failed=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["FAILED"][0])),
         )
-        p = pos.aggregate(
-            out7d=Coalesce(Sum("amount", filter=Q(status="PAID", confirmed_at__gte=cutoff)), 0),
+        p = pos.aggregate(  # Money out is what was sent, net of WHT.
+            out7d=Coalesce(Sum(services.payout_sent_expression(),
+                               filter=Q(status="PAID", confirmed_at__gte=cutoff)), 0),
             pending=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["PENDING"][1])),
             failed=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["FAILED"][1])),
         )

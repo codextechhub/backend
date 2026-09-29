@@ -1018,6 +1018,69 @@ def payout_transfer_amount(payout) -> int:
     return int(payout.amount) - _payout_wht(payout)
 
 
+def payout_sent_amount(payout) -> int:
+    """Kobo that left the account for ``payout``, or will leave it: never the WHT.
+
+    A payout line's ``amount`` is the gross it settles, and the supplier is sent
+    the gross less the WHT withheld, so any screen or report that sets a payout
+    against money moving (a bank line, a feed of movements) reads this instead:
+
+    * what the provider said it sent, where that differed from what it was asked
+      (``provider_sent_amount``, recorded on confirmation);
+    * otherwise what dispatch asked it to send (``transfer_amount``, the net);
+    * for a line not yet dispatched, the net it will be sent
+      (:func:`payout_transfer_amount`);
+    * for a line dispatched before the net was recorded, its gross, which is what
+      was sent then (:func:`_expected_transfer`).
+
+    :func:`payout_sent_expression` is the same rule as a query expression, for a
+    feed that pages in the database.
+    """
+    metadata = payout.metadata or {}
+    if "provider_sent_amount" in metadata:
+        return int(metadata["provider_sent_amount"])
+    if "transfer_amount" in metadata:
+        return int(metadata["transfer_amount"])
+    if payout.status == PayoutStatus.PENDING:
+        return payout_transfer_amount(payout)
+    return int(payout.amount)
+
+
+def payout_wht_expression():
+    """:func:`_payout_wht` over a ``PayoutInstruction`` queryset: kobo withheld, 0 when none."""
+    from django.db.models import BigIntegerField, Value
+    from django.db.models.fields.json import KeyTextTransform
+    from django.db.models.functions import Cast, Coalesce
+
+    return Coalesce(
+        Cast(KeyTextTransform("wht_amount", "metadata"), BigIntegerField()),
+        Value(0), output_field=BigIntegerField())
+
+
+def payout_sent_expression():
+    """:func:`payout_sent_amount` over a ``PayoutInstruction`` queryset."""
+    from django.db.models import BigIntegerField, Case, ExpressionWrapper, F, When
+    from django.db.models.fields.json import KeyTextTransform
+    from django.db.models.functions import Cast, Coalesce
+
+    kobo = BigIntegerField()
+
+    def recorded(key):
+        return Cast(KeyTextTransform(key, "metadata"), kobo)
+
+    return Coalesce(
+        recorded("provider_sent_amount"),
+        recorded("transfer_amount"),
+        Case(
+            When(status=PayoutStatus.PENDING, then=ExpressionWrapper(
+                F("amount") - payout_wht_expression(), output_field=kobo)),
+            default=Cast(F("amount"), kobo),
+            output_field=kobo,
+        ),
+        output_field=kobo,
+    )
+
+
 def _expected_transfer(payout) -> tuple[int, bool]:
     """``(kobo the provider was asked to send, whether that was the net)`` for ``payout``.
 
