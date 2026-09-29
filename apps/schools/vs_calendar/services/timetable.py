@@ -211,8 +211,8 @@ def duplicate_grid(tenant, session, *, source_class, target_class, actor,
     Lekki Period 6 has no home in an Ikeja week that ends at Period 5.
 
     Copying without teachers or rooms is allowed and produces slots with gaps in
-    them. That is the only way such a slot can exist, and it is why the publish
-    gate checks completeness separately from clashes.
+    them, as the lesson form and the grid save may too. The publish gate checks
+    completeness separately from clashes for that reason.
     """
     source_rows = list(
         TimetableSlot.objects.filter(session=session, school_class=source_class)

@@ -188,9 +188,9 @@ class NoBellSchedule(CalendarError):
 class TimetableIncomplete(CalendarError):
     """Checked before clashes, because it is the more actionable message.
 
-    Only reachable by duplicating another class's week without its teachers or
-    rooms, which is a supported path that saves happily. Nothing else can write
-    a slot with a gap in it.
+    A lesson with a gap in it is an ordinary saved state: the lesson form, the
+    grid save and a duplicate made without teachers or rooms all write one. The
+    gate is the one place a gap is refused.
     """
 
     error_code = "TIMETABLE_INCOMPLETE"

@@ -49,7 +49,8 @@ def _users_for_roles(role_ids, tenant, branch) -> list:
     The role itself must be ACTIVE, the assignment must be ACTIVE, and the
     user must be active. ``branch`` narrows to branch-limited assignments for
     that branch (plus tenant-wide ones); pass None to count tenant-wide
-    assignments only.
+    assignments only, which in a tenant with one branch includes those pinned
+    to it.
 
     The branch condition comes from ``vs_rbac`` rather than being spelled out
     here. It was a fourth copy of one rule, and a copy is free to drift from the
@@ -471,6 +472,51 @@ def requester_may_self_approve(instance: WorkflowInstance) -> bool:
     return bool(getattr(handler, "allows_requester_self_approval", False))
 
 
+def requester_ids(instance: WorkflowInstance) -> set:
+    """Everyone who put this document forward, counted as real people.
+
+    Separation of duties is between people, not between the identities they
+    happen to be using. Under a proxy (an impersonation session) the document
+    names the impersonated person as ``requested_by``, while the audit row for
+    the submission names the real person at the keyboard as its ``actor``. Both
+    are the requester for this rule: Ada who submits as Chioma may not approve,
+    and neither may Chioma, whose name is on the document.
+
+    A resubmission after a return counts the same way, since putting a returned
+    document forward again is raising it. Nothing here reaches across steps or
+    documents: a person in two approver groups may still sign two steps of a
+    document somebody else raised. An unsaved instance (the approver preview's
+    stand-in) has no submission yet, so only its named requester counts.
+    """
+    from vs_workflow.constants import AuditEventType
+    from vs_workflow.models import WorkflowAuditLog
+
+    ids = {instance.requested_by_id}
+    if instance._state.adding:
+        return ids - {None}
+    ids.update(
+        WorkflowAuditLog.objects.filter(
+            instance_id=instance.pk, actor__isnull=False,
+            event_type__in=[AuditEventType.INSTANCE_SUBMITTED,
+                            AuditEventType.INSTANCE_RESUBMITTED],
+        ).values_list("actor_id", flat=True)
+    )
+    ids.discard(None)
+    return ids
+
+
+def real_person_id(user):
+    """The id of the person really acting as *user* in the current request.
+
+    Under a proxy (an impersonation session) of *user* it is the operator at
+    the keyboard; otherwise, including outside any request, it is *user*.
+    """
+    from vs_tenants.context import get_proxy_actor
+
+    proxied_by = get_proxy_actor(for_user=user)
+    return getattr(proxied_by, "pk", None) or getattr(user, "pk", None)
+
+
 def _self_approval_only_when_alone(instance: WorkflowInstance) -> bool:
     """Whether the type lets its requester decide only when nobody else can.
 
@@ -579,7 +625,8 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     # place to look for which types those are - see
     # ``BaseWorkflowHandler.allows_requester_self_approval``.
     base_users = [u for u in base_users if u is not None]
-    others = [u for u in base_users if u.pk != instance.requested_by_id]
+    requesters = requester_ids(instance)
+    others = [u for u in base_users if u.pk not in requesters]
     if not requester_may_self_approve(instance) or (
         others and _self_approval_only_when_alone(instance)
     ):
@@ -598,7 +645,7 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
         Q(document_type="") | Q(document_type=instance.document_type),
     ).select_related("delegator", "delegate"))
     if not requester_may_self_approve(instance):
-        delegations = [d for d in delegations if d.delegate_id != instance.requested_by_id]
+        delegations = [d for d in delegations if d.delegate_id not in requesters]
 
     # The second door, running the same filter. See the docstring.
     contained_delegate_ids = {

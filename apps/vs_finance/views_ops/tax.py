@@ -5,6 +5,11 @@ from __future__ import annotations
 
 from rest_framework.exceptions import NotFound, ValidationError
 from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
+from vs_rbac.scoping import (
+    WholeTenantWriteMixin,
+    assert_caller_may_change,
+    shared_write_refusal,
+)
 
 from core.response import success_response
 
@@ -35,8 +40,22 @@ from .base import (
 # Tax remittance / filing                                                     #
 # --------------------------------------------------------------------------- #
 
+#: The refusal subject for a branch-bound write to a filing with no branch.
+SHARED_FILING = "a school-wide tax filing"
+
+
+class _TaxObligationWriteMixin(WholeTenantWriteMixin):
+    """Every write to a tax obligation needs whole-tenant reach.
+
+    An obligation carries no branch: its liability account and filing day
+    govern the return every branch's tax is remitted through.
+    """
+
+    shared_subject = "the tax obligations"
+
+
 # Group endpoint behavior for Tax Obligation List Create View.
-class TaxObligationListCreateView(_FinanceBase):
+class TaxObligationListCreateView(_TaxObligationWriteMixin, _FinanceBase):
     """GET (list) / POST (create) statutory tax obligations for an entity.
 
     docstring-name: Tax obligations
@@ -87,7 +106,7 @@ class TaxObligationListCreateView(_FinanceBase):
 
 
 # Group endpoint behavior for Tax Obligation Detail View.
-class TaxObligationDetailView(_FinanceBase):
+class TaxObligationDetailView(_TaxObligationWriteMixin, _FinanceBase):
     """docstring-name: Tax obligations"""
     @property
     # Handle the rbac permission workflow.
@@ -199,11 +218,16 @@ class TaxFilingSummaryView(_FinanceBase):
 
 
 # Group endpoint behavior for Tax Filing List Create View.
-class TaxFilingListCreateView(_FinanceBase):
+class TaxFilingListCreateView(WholeTenantWriteMixin, _FinanceBase):
     """GET (list) / POST (prepare from GL) tax filings for an entity.
+
+    Preparing a filing reads the obligation's accounts across every branch and
+    files the draft with no branch, so it needs whole-tenant reach.
 
     docstring-name: Tax filings
     """
+
+    shared_subject = SHARED_FILING
 
     @property
     # Handle the rbac permission workflow.
@@ -252,8 +276,18 @@ class TaxFilingListCreateView(_FinanceBase):
 
 # Define Tax Filing Action Base values.
 class _TaxFilingActionBase(_FinanceBase):
+    """Resolve one filing in the caller's reach; on a write, one they may change.
+
+    A filing with no branch is the school's return, so filing, un-filing or
+    paying it needs whole-tenant reach. A branch-bound caller is refused with a
+    403 ``SHARED_RECORD_READ_ONLY`` before anything is posted; a filing of one
+    of their own branches is theirs.
+    """
+
     # Support the filing workflow.
     def _filing(self, request, pk):
+        from rest_framework.permissions import SAFE_METHODS
+
         entity = resolve_entity(request)
         filing = TaxFiling.objects.filter(
             branch_q(request, include_shared=True), entity=entity, pk=pk,
@@ -261,6 +295,11 @@ class _TaxFilingActionBase(_FinanceBase):
             "obligation").first()
         if filing is None:
             raise NotFound("Tax filing not found for this entity.")
+        if request.method not in SAFE_METHODS:
+            assert_caller_may_change(
+                request.user, getattr(request, "tenant", None), (filing.branch_id,),
+                message=shared_write_refusal(SHARED_FILING),
+            )
         return entity, filing
 
 

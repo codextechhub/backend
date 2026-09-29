@@ -336,6 +336,12 @@ class DirectEntryCreateSerializer(serializers.Serializer):
     date = serializers.DateField(required=False)
     narration = serializers.CharField(required=False, allow_blank=True, default="")
     reference = serializers.CharField(required=False, allow_blank=True, default="")
+    branch = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True,
+        help_text="Branch id or code the entry belongs to. A caller bound to one "
+                  "branch may leave it out; a caller bound to several must name "
+                  "one; a whole-tenant caller may leave it out for a school-wide entry.",
+    )
     lines = DirectEntryLineSerializer(many=True)
 
     def validate_lines(self, value):
@@ -1352,18 +1358,46 @@ class FixedAssetSerializer(serializers.ModelSerializer):
 # --------------------------------------------------------------------------- #
 
 class FinanceAuditLogSerializer(serializers.ModelSerializer):
+    """One row of the finance trail.
+
+    ``before``/``after`` are the field-level snapshot the UI summarises ("N
+    fields changed"); ``metadata`` is an internal bag (ids, request context)
+    with no reader value and is not exposed.
+
+    ``actor`` is the email of the person who really acted. An action taken under
+    a proxy also names whom they acted as: ``real_actor_name``,
+    ``proxied_user_name`` and the ready ``acted_label`` ("Ada Obi for Chioma
+    Okafor") come from :mod:`core.attribution`. Querysets feeding this
+    serializer select ``actor`` and ``effective_user`` together.
+    """
+
     actor = serializers.CharField(source="actor.email", read_only=True, default=None)
     action_display = serializers.CharField(source="get_action_display", read_only=True)
+    real_actor_name = serializers.SerializerMethodField()
+    proxied_user_name = serializers.SerializerMethodField()
+    acted_label = serializers.SerializerMethodField()
 
     class Meta:
         model = FinanceAuditLog
-        # `before`/`after` are the human-meaningful field-level snapshot the UI
-        # summarises ("N fields changed"); `metadata` is an internal bag (ids,
-        # request context) with no reader value - deliberately NOT exposed.
         fields = [
             "id", "action", "action_display", "status", "actor", "target_type",
             "target_id", "document_number", "message", "before", "after", "created_at",
+            "real_actor_name", "proxied_user_name", "acted_label",
         ]
+
+    def _attribution(self, obj) -> dict:
+        from core.attribution import audit_row_attribution
+
+        return audit_row_attribution(obj)
+
+    def get_real_actor_name(self, obj) -> str | None:
+        return self._attribution(obj)["real_actor_name"]
+
+    def get_proxied_user_name(self, obj) -> str | None:
+        return self._attribution(obj)["proxied_user_name"]
+
+    def get_acted_label(self, obj) -> str:
+        return self._attribution(obj)["acted_label"]
 
 
 # --------------------------------------------------------------------------- #

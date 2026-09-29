@@ -22,6 +22,21 @@ import datetime
 from typing import Optional
 
 
+def due_basis_label(basis: str, word_choice: str) -> str:
+    """The label a due rule prints at a school whose word for a term is *word_choice*.
+
+    ``FeeDueBasis`` holds the labels for a school that says Term; a school
+    that says Semester reads "End of the semester billed".
+    """
+    from schools.vs_academics.services.words import word_for
+
+    from .models import FeeDueBasis
+
+    if basis == FeeDueBasis.TERM_END:
+        return f"End of the {word_for(word_choice)} billed"
+    return FeeDueBasis(basis).label
+
+
 def month_end(day: datetime.date) -> datetime.date:
     """The last day of the month ``day`` falls in."""
     return day.replace(day=calendar.monthrange(day.year, day.month)[1])

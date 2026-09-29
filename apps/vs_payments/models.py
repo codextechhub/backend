@@ -388,6 +388,10 @@ class PaymentEvent(TimeStampedModel):
     those capture the *accounting*; this captures the *gateway* actions around it
     (initiation, confirmation, failure, webhook receipt) including rejected attempts.
     Rows are never updated or deleted.
+
+    ``actor_user`` is the person in whose name the action ran. Under a proxy (an
+    impersonation session) that is the impersonated person, and ``proxied_by``
+    names the real person at the keyboard; it is null otherwise.
     """
 
     entity = models.ForeignKey(
@@ -401,6 +405,10 @@ class PaymentEvent(TimeStampedModel):
     message = models.CharField(max_length=255, blank=True, default="")
     metadata = models.JSONField(default=dict, blank=True)
     actor_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        related_name="+", null=True, blank=True,
+    )
+    proxied_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         related_name="+", null=True, blank=True,
     )

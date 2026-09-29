@@ -11,6 +11,7 @@ from vs_rbac.permissions import (
     HasRBACPermission,
     IsAuthenticatedAndActive,
 )
+from vs_rbac.scoping import WholeTenantWriteMixin
 
 from ..views import resolve_entity
 from ..models import (
@@ -44,9 +45,14 @@ from .base import (
 # --------------------------------------------------------------------------- #
 # Setup / reference data                                                      #
 # --------------------------------------------------------------------------- #
+#
+# Currencies, FX rates, tax codes, cost centres and dimensions carry no branch,
+# so a write to any of them binds every branch at once and needs whole-tenant reach
+# (:class:`vs_rbac.scoping.WholeTenantWriteMixin`). Reads stay open as each
+# view's docstring describes.
 
 # Group endpoint behavior for Currency List Create View.
-class CurrencyListCreateView(_FinanceBase):
+class CurrencyListCreateView(WholeTenantWriteMixin, _FinanceBase):
     """GET (list) / POST (create) currencies - **global** reference data (no entity).
 
     Reading is open to anyone holding a finance key: a currency is a code, a
@@ -55,6 +61,8 @@ class CurrencyListCreateView(_FinanceBase):
 
     docstring-name: Currencies
     """
+
+    shared_subject = "the currencies"
 
     rbac_modules = ["finance"]
     rbac_permission = "finance.currency.create"
@@ -95,11 +103,13 @@ class CurrencyListCreateView(_FinanceBase):
 
 
 # Group endpoint behavior for Fx Rate List Create View.
-class FxRateListCreateView(_FinanceBase):
+class FxRateListCreateView(WholeTenantWriteMixin, _FinanceBase):
     """GET (list) / POST (create) FX rates - **global** reference data (no entity).
 
     docstring-name: FX rates
     """
+
+    shared_subject = "the exchange rates"
 
     @property
     # Handle the rbac permission workflow.
@@ -139,7 +149,7 @@ class FxRateListCreateView(_FinanceBase):
 
 
 # Group endpoint behavior for Tax Code List Create View.
-class TaxCodeListCreateView(_FinanceBase):
+class TaxCodeListCreateView(WholeTenantWriteMixin, _FinanceBase):
     """GET (list) / POST (create) tax codes for an entity.
 
     Reading is open to anyone holding a finance key: a tax code is a name, a
@@ -150,6 +160,8 @@ class TaxCodeListCreateView(_FinanceBase):
 
     docstring-name: Tax codes
     """
+
+    shared_subject = "the tax codes"
 
     rbac_modules = ["finance"]
     rbac_permission = "finance.taxcode.create"
@@ -197,7 +209,7 @@ class TaxCodeListCreateView(_FinanceBase):
 
 
 # Group endpoint behavior for Cost Center List Create View.
-class CostCenterListCreateView(_FinanceBase):
+class CostCenterListCreateView(WholeTenantWriteMixin, _FinanceBase):
     """GET (list) / POST (create) cost centres for an entity.
 
     Reading is open to anyone working in finance, and to the procurement staff
@@ -209,8 +221,17 @@ class CostCenterListCreateView(_FinanceBase):
     on reports they were allowed to run. Creating one still needs
     ``finance.costcenter.create``.
 
+    A cost centre carries no branch, so it is shared by every branch posting to
+    the books, and a write needs whole-tenant reach as well as the key. The POST
+    is create-or-update by code: Lekki's bursar posting ``ADMIN`` with a new name
+    would rename the cost centre Ikeja's lines already carry, so a branch-bound
+    caller is refused (403 ``SHARED_RECORD_READ_ONLY``) whether the code is new
+    or not.
+
     docstring-name: Cost centers
     """
+
+    shared_subject = "the cost centres"
 
     rbac_modules = ["finance"]
 
@@ -267,7 +288,7 @@ class CostCenterListCreateView(_FinanceBase):
 
 
 # Group endpoint behavior for Dimension List Create View.
-class DimensionListCreateView(_FinanceBase):
+class DimensionListCreateView(WholeTenantWriteMixin, _FinanceBase):
     """GET (list) / POST (create) analytical dimensions for an entity.
 
     Reading is open to anyone working in finance: a dimension is a name and
@@ -277,6 +298,8 @@ class DimensionListCreateView(_FinanceBase):
 
     docstring-name: Dimensions
     """
+
+    shared_subject = "the dimensions"
 
     rbac_modules = ["finance"]
 

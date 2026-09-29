@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from ..models import CalendarEvent, Exam, ExamSlot, Sitting, TimetableSlot
+from ..models import CalendarEvent, Exam, TimetableSlot
 from .base import _Base, _SingleBranchBase
 
 

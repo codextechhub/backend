@@ -310,7 +310,13 @@ class TenantBoundaryTests(_RowFixture):
         That is not a defect in the predicate; branch narrows *within* a tenant
         and was never the thing keeping tenants apart. It is pinned here so nobody
         reads "branch scoping is on" as "tenant scoping is redundant".
+
+        The rival opens a second branch first, so the outsider's pin narrows
+        them. With one branch they would reach their whole tenant, and then the
+        predicate would not narrow them at all, exactly as it does not narrow a
+        rival holding a whole-tenant grant.
         """
+        make_branch(self.rival_tenant, name="Lekki", is_main=False)
         mine = self.row_at(self.tenant, self.ikeja, "b2-mine@scope.test")
         shared = self.row_at(self.tenant, None, "b2-shared@scope.test")
         outsider = self.pinned_at(
@@ -351,6 +357,23 @@ class TenantBoundaryTests(_RowFixture):
                 self.assertLessEqual(
                     self.visible(user, include_shared=False), everything,
                 )
+
+    def test_the_one_branch_rule_only_widens_a_caller_at_home(self):
+        """Pinned to their own tenant's only branch: whole-tenant there, and nowhere else."""
+        from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
+
+        outsider = make_staff_user(self.rival_ikeja, email="home-only@scope.test")
+        make_assignment(
+            self.rival_tenant, outsider,
+            self.role_granting(self.rival_tenant, "Bursar home-only"),
+            branch=self.rival_ikeja,
+        )
+
+        self.assertIs(visible_branch_ids(outsider, self.rival_tenant), WHOLE_TENANT)
+        self.assertEqual(
+            visible_branch_ids(outsider, self.solo_tenant),
+            frozenset({self.rival_ikeja.pk}),
+        )
 
 
 class RenderingTests(_RowFixture):

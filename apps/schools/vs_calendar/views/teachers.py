@@ -30,7 +30,7 @@ from ..serializers import TimetableSlotSerializer
 from ..services.bells import periods_in_force
 from ..services.clashes import slot_warnings
 from ..services.scoping import lens_branch
-from ..services.teachers import display_name, teaching_user_ids, teaching_users
+from ..services.teachers import display_name, teaching_users
 from .base import CalendarViewMixin
 from .timetable import GRID_DAYS
 

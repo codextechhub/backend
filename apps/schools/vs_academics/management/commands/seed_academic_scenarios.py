@@ -52,6 +52,7 @@ from schools.vs_academics.models import (
     Subject,
     SubjectOffering,
 )
+from schools.vs_academics.services.academic_rules import read_academic_rules
 from schools.vs_academics.services.sessions import (
     activate_session,
     set_branches,
@@ -100,19 +101,20 @@ SUBJECTS = (
 )
 
 
-def _terms_for(name, start, end):
-    """Three terms that sit inside the year and do not overlap.
+def _terms_for(names, start, end):
+    """One term per name, inside the year and not overlapping.
 
-    Proportional to the year's own length rather than fixed, so a school with a
-    different calendar still gets a coherent set instead of terms that spill
-    out of their session.
+    The names are the school's own (``academics.terms.names``), so a school on
+    two semesters is seeded with two. Proportional to the year's own length
+    rather than fixed, so a school with a different calendar still gets a
+    coherent set instead of terms that spill out of their session.
     """
     span = (end - start).days
-    third = span // 3
+    share = span // len(names)
     out = []
-    for i, label in enumerate(("First Term", "Second Term", "Third Term")):
-        t_start = start + dt.timedelta(days=i * third)
-        t_end = start + dt.timedelta(days=(i + 1) * third - 21)
+    for i, label in enumerate(names):
+        t_start = start + dt.timedelta(days=i * share)
+        t_end = start + dt.timedelta(days=(i + 1) * share - 21)
         out.append({
             "name": label, "order_index": i + 1,
             "start_date": t_start, "end_date": min(t_end, end),
@@ -196,7 +198,9 @@ class Command(BaseCommand):
                 session = AcademicSession.all_objects.create(
                     tenant=tenant, name=name, start_date=start, end_date=end,
                 )
-                terms = _terms_for(name, start, end)
+                terms = _terms_for(
+                    read_academic_rules(tenant).term_names, start, end,
+                )
                 # Through the real validator, so a calendar this command gets
                 # wrong fails here rather than becoming data nobody trusts.
                 validate_terms(session, terms)

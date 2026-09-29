@@ -743,14 +743,17 @@ class StaffDetailSerializer(StaffListSerializer):
         """Where this person sits on the ordinary path, or that they are off it.
 
         Invited then Active is the whole of the ordinary path, preceded by
-        Awaiting approval for a hire the school has not approved yet. The other
+        Awaiting approval for a hire the school has not approved yet, or by
+        Invited at go-live for somebody imported while it was set up. The other
         statuses are not later stages of it and must not be drawn as though they
         were: a strip that showed Terminated as step three would say a school
         expects everybody to get there.
         """
         path = [EmploymentStatus.INVITED, EmploymentStatus.ACTIVE]
-        if obj.employment_status == EmploymentStatus.PENDING_APPROVAL:
-            path = [EmploymentStatus.PENDING_APPROVAL, *path]
+        if obj.employment_status in (
+            EmploymentStatus.PENDING_APPROVAL, EmploymentStatus.AWAITING_GO_LIVE,
+        ):
+            path = [obj.employment_status, *path]
         if obj.employment_status in path:
             return {
                 "on_path": True,

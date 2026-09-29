@@ -108,7 +108,13 @@ class PaymentsReach:
     def _hidden_virtual_accounts(self):
         return VirtualAccount.objects.filter(entity=self.entity).exclude(self._virtual_account_q())
 
-    def _hidden_batches(self):
+    def hidden_batches(self):
+        """The batches of this entity withheld from this caller, for a reader outside views.
+
+        The approval inbox reads a batch through the workflow engine rather than
+        through :meth:`batches`, and asks this for the ones to leave out (see
+        :meth:`vs_payments.workflow_handlers.PayoutBatchApprovalHandler.hidden_document_ids`).
+        """
         return PayoutBatch.objects.filter(entity=self.entity).filter(
             Exists(self._hidden_payouts().filter(batch=OuterRef("pk"))))
 
@@ -151,7 +157,7 @@ class PaymentsReach:
         ).exclude(
             Exists(self._hidden_collections().filter(reference=ref))
             | Exists(self._hidden_payouts().filter(reference=ref))
-            | Exists(self._hidden_batches().filter(reference=ref))
+            | Exists(self.hidden_batches().filter(reference=ref))
             | Exists(self._hidden_virtual_accounts().exclude(provider_reference="")
                      .filter(provider_reference=ref))
             | Exists(self._hidden_virtual_accounts().annotate(_pk_text=Cast("pk", CharField()))

@@ -22,9 +22,11 @@ and each default is how every school promoted before it could choose:
   year being left) defaults to HOLD, or to PROMOTE where the school says so.
   A run that places one of them, promoted or repeating, makes them ACTIVE, as
   giving them a class by hand does;
-* SAME_ARM moves each arm up whole (JSS1 B to JSS2 B, or the first class at
-  the level); SPREAD shares the pupils promoting into a level evenly across
-  its classes (:func:`_spread`). A repeat keeps its arm either way;
+* SAME_ARM moves each arm up whole (JSS1 B to JSS2 B); SPREAD shares the
+  pupils promoting into a level evenly across its classes (:func:`_spread`).
+  Under SAME_ARM, pupils whose arm has no class at the next level are shared
+  out the way SPREAD shares them, rather than all landing in one class, and
+  the level map says so for their class. A repeat keeps its arm either way;
 * the capacity rule the run follows is the enrolment rule under
   FOLLOW_ENROLMENT, or the school's own WARN, HARD or OFF for the promotion.
 
@@ -107,6 +109,10 @@ class Candidate:
     #: and class disagree puts a child on a register nobody opens.
     repeat_class: object | None
     outcome: str
+    #: True where the pupil's arm has no class they may join at the next
+    #: level, so ``target_class`` is not their arm's. Under SAME_ARM such a
+    #: pupil is shared out (:func:`_spread`) and the level map names why.
+    arm_fallback: bool = False
 
 
 @dataclass
@@ -150,24 +156,27 @@ def _target_class(source_class, target_classes_by_level_code, branch_id):
     Same arm first - JSS1 B goes to JSS2 B - then any class at that level,
     because a school that renamed its arms should not have its cohort blocked.
     Only classes a pupil at *branch_id* may join are considered (see
-    :func:`_class_at`).
+    :func:`_class_at`). Answers ``(class, cause, arm_fallback)``, where
+    ``arm_fallback`` says the class is not the pupil's arm.
     """
     level = source_class.level
     if level is None:
-        return None, EXC_NO_CLASS_ASSIGNED
+        return None, EXC_NO_CLASS_ASSIGNED, False
     # THREE states, not two. A null next_level means "leave the school" only
     # when the level says so; on its own it means nobody has wired the chain
     # yet, and the two must not be treated alike - Level.next_level's own
     # comment says so, and FRD v2.7 FR-005 requires the refusal.
     if getattr(level, "is_terminal", False):
-        return None, EXC_TERMINAL_LEVEL
+        return None, EXC_TERMINAL_LEVEL, False
     if level.next_level_id is None:
-        return None, EXC_LEVEL_NOT_WIRED
+        return None, EXC_LEVEL_NOT_WIRED, False
 
-    found = _class_at(
+    found, arm_matched = _class_at(
         source_class, level.next_level, target_classes_by_level_code, branch_id,
     )
-    return (found, None) if found else (None, EXC_NO_CLASS_AT_NEXT_LEVEL)
+    if found is None:
+        return None, EXC_NO_CLASS_AT_NEXT_LEVEL, False
+    return found, None, not arm_matched
 
 
 def _reachable(classes, branch_id):
@@ -184,23 +193,29 @@ def _reachable(classes, branch_id):
 def _class_at(source_class, level, target_classes_by_level_code, branch_id):
     """The target year's class at *level* a pupil at *branch_id* may join, same arm first.
 
-    Same arm because JSS1 B should become JSS2 B; any class at the level as a
-    fallback, because a school that renamed its arms should not have its
-    cohort blocked.
+    Answers ``(class, arm_matched)``. Same arm because JSS1 B should become
+    JSS2 B; the first class at the level otherwise, because a school that
+    renamed its arms should not have its cohort blocked. That first class is
+    only a placeholder for a promoted pupil: :func:`classify` shares the
+    pupils with no matching arm across the level's classes, so a renamed arm
+    never sends a whole cohort into one room. A blank arm matches only a
+    blank arm.
     """
     if level is None:
-        return None
+        return None, False
     candidates = _reachable(
         target_classes_by_level_code.get((level.code or "").lower(), []),
         branch_id,
     )
     if not candidates:
-        return None
+        return None, False
     arm = (getattr(source_class, "arm", "") or "").lower()
     same_arm = next(
         (c for c in candidates if (c.arm or "").lower() == arm), None,
     )
-    return same_arm or candidates[0]
+    if same_arm is not None:
+        return same_arm, True
+    return candidates[0], False
 
 
 def _repeat_class(source_class, target_classes_by_level_code, branch_id):
@@ -215,7 +230,7 @@ def _repeat_class(source_class, target_classes_by_level_code, branch_id):
     return _class_at(
         source_class, source_class.level, target_classes_by_level_code,
         branch_id,
-    )
+    )[0]
 
 
 def classify(tenant, user, *, from_session, to_session, overrides=None,
@@ -331,7 +346,9 @@ def classify(tenant, user, *, from_session, to_session, overrides=None,
 
         source = enrolment.school_class
         per_class_counts[source.pk] = per_class_counts.get(source.pk, 0) + 1
-        target, cause = _target_class(source, by_level_code, student.branch_id)
+        target, cause, arm_fallback = _target_class(
+            source, by_level_code, student.branch_id,
+        )
         repeat_target = _repeat_class(source, by_level_code, student.branch_id)
         can_graduate = StudentStatus.GRADUATED in ALLOWED_TRANSITIONS.get(
             student.status, frozenset(),
@@ -391,15 +408,22 @@ def classify(tenant, user, *, from_session, to_session, overrides=None,
                     "students": 0,
                 })
 
-        plan.candidates.append(
-            Candidate(student, enrolment, target, repeat_target, outcome),
-        )
+        plan.candidates.append(Candidate(
+            student, enrolment, target, repeat_target, outcome,
+            # Only keeping arms can fall back from one; spreading has no arm.
+            arm_fallback=arm_fallback and rules.arms == PromotionArms.SAME_ARM,
+        ))
 
     for entry in plan.class_exceptions:
         entry["students"] = per_cause_counts.get((entry["class"], entry["cause"]), 0)
 
     if rules.arms == PromotionArms.SPREAD:
         _spread(plan.candidates, by_level_code, to_session)
+    else:
+        _spread(
+            plan.candidates, by_level_code, to_session,
+            only=lambda cand: cand.arm_fallback,
+        )
 
     plan.level_map = _level_map(plan.candidates, per_class_counts)
     # A school that does not check capacity has no class to name.
@@ -410,10 +434,13 @@ def classify(tenant, user, *, from_session, to_session, overrides=None,
     return plan
 
 
-def _spread(candidates, target_classes_by_level_code, to_session):
+def _spread(candidates, target_classes_by_level_code, to_session, *, only=None):
     """Share the pupils promoting into each level evenly across its classes.
 
-    Rewrites ``target_class`` on every PROMOTE candidate that has one. Each
+    Rewrites ``target_class`` on every PROMOTE candidate that has one, or,
+    with *only*, on the PROMOTE candidates *only* picks: SAME_ARM passes the
+    pupils whose arm has no class at the next level, and the pupils keeping
+    their arm are counted as seats their classes already take. Each
     pupil, taken in order of last name, first name and id, joins the class
     at their next level with the fewest pupils, ties broken by class name:
     the load of a class is the seats already taken in the target year, plus
@@ -427,7 +454,8 @@ def _spread(candidates, target_classes_by_level_code, to_session):
     are not allocated again: their seat is counted where it is, and their
     target is that class. The order is fixed by the pupils and classes alone,
     never by the database, so the preview and the run allocate identically.
-    Two queries whatever the size of the cohort.
+    Two queries whatever the size of the cohort, and none when nobody is to
+    be shared out.
     """
     from django.db.models import Count
 
@@ -438,7 +466,12 @@ def _spread(candidates, target_classes_by_level_code, to_session):
         c for c in candidates
         if c.outcome in (PromotionOutcome.PROMOTE, PromotionOutcome.REPEAT)
     ]
-    if not moving or not pool:
+    shared = [
+        c for c in moving
+        if c.outcome == PromotionOutcome.PROMOTE and c.target_class is not None
+        and (only is None or only(c))
+    ]
+    if not shared or not pool:
         return
     placed = dict(
         ClassEnrolment.objects.filter(
@@ -453,19 +486,21 @@ def _spread(candidates, target_classes_by_level_code, to_session):
             "school_class_id", "n",
         ),
     )
+    sharing = {id(c) for c in shared}
     for cand in moving:
-        if (
-            cand.outcome == PromotionOutcome.REPEAT
-            and cand.repeat_class is not None
-            and cand.student.pk not in placed
-        ):
+        if cand.student.pk in placed:
+            continue
+        if cand.outcome == PromotionOutcome.REPEAT and cand.repeat_class is not None:
             load[cand.repeat_class.pk] = load.get(cand.repeat_class.pk, 0) + 1
+        elif (
+            cand.outcome == PromotionOutcome.PROMOTE
+            and cand.target_class is not None and id(cand) not in sharing
+        ):
+            # Keeping their arm: a seat in that class before anybody is shared.
+            load[cand.target_class.pk] = load.get(cand.target_class.pk, 0) + 1
 
     promoting = sorted(
-        (
-            c for c in moving
-            if c.outcome == PromotionOutcome.PROMOTE and c.target_class is not None
-        ),
+        shared,
         key=lambda c: (
             (c.student.last_name or "").casefold(),
             (c.student.first_name or "").casefold(),
@@ -501,6 +536,11 @@ def _level_map(candidates, per_class_counts):
     ``to_id`` is set only when there is exactly one. A class none of whose
     pupils is promoting has an empty list, and ``to`` and ``to_id`` name
     where the class would go, so the map still shows the route.
+
+    ``arm_fallback`` is true where arms are kept and some of the class's
+    pupils have no class of their arm at the next level, so they are shared
+    across that level's classes instead; ``arm_note`` is the sentence the
+    promotion screen prints to say so, and null otherwise.
     """
     rows: dict = {}
     for cand in candidates:
@@ -521,7 +561,12 @@ def _level_map(candidates, per_class_counts):
                 "terminal": bool(terminal),
                 "students": per_class_counts.get(source.pk, 0),
                 "to_classes": {},
+                "arm_fallback": False,
+                "arm_note": None,
             }
+        if cand.arm_fallback and not row["arm_fallback"]:
+            row["arm_fallback"] = True
+            row["arm_note"] = _arm_note(source, cand.target_class.level)
         if cand.outcome == PromotionOutcome.PROMOTE and cand.target_class is not None:
             target = cand.target_class
             entry = row["to_classes"].setdefault(
@@ -544,6 +589,21 @@ def _level_map(candidates, per_class_counts):
         out.append(row)
     out.sort(key=lambda r: r["from"])
     return out
+
+
+def _arm_note(source, level) -> str:
+    """Why a class's pupils are shared out rather than kept together."""
+    level_name = level.name if level is not None else "the next level"
+    arm = (source.arm or "").strip()
+    if not arm:
+        return (
+            f"{source.name} has no arm to match, so these students are shared "
+            f"across {level_name}'s classes."
+        )
+    return (
+        f"No {level_name} class has arm {arm}, so these students are shared "
+        f"across {level_name}'s classes."
+    )
 
 
 def _over_capacity(candidates, to_session):

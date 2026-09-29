@@ -1027,6 +1027,69 @@ def payout_transfer_amount(payout) -> int:
     return int(payout.amount) - _payout_wht(payout)
 
 
+def payout_sent_amount(payout) -> int:
+    """Kobo that left the account for ``payout``, or will leave it: never the WHT.
+
+    A payout line's ``amount`` is the gross it settles, and the supplier is sent
+    the gross less the WHT withheld, so any screen or report that sets a payout
+    against money moving (a bank line, a feed of movements) reads this instead:
+
+    * what the provider said it sent, where that differed from what it was asked
+      (``provider_sent_amount``, recorded on confirmation);
+    * otherwise what dispatch asked it to send (``transfer_amount``, the net);
+    * for a line not yet dispatched, the net it will be sent
+      (:func:`payout_transfer_amount`);
+    * for a line dispatched before the net was recorded, its gross, which is what
+      was sent then (:func:`_expected_transfer`).
+
+    :func:`payout_sent_expression` is the same rule as a query expression, for a
+    feed that pages in the database.
+    """
+    metadata = payout.metadata or {}
+    if "provider_sent_amount" in metadata:
+        return int(metadata["provider_sent_amount"])
+    if "transfer_amount" in metadata:
+        return int(metadata["transfer_amount"])
+    if payout.status == PayoutStatus.PENDING:
+        return payout_transfer_amount(payout)
+    return int(payout.amount)
+
+
+def payout_wht_expression():
+    """:func:`_payout_wht` over a ``PayoutInstruction`` queryset: kobo withheld, 0 when none."""
+    from django.db.models import BigIntegerField, Value
+    from django.db.models.fields.json import KeyTextTransform
+    from django.db.models.functions import Cast, Coalesce
+
+    return Coalesce(
+        Cast(KeyTextTransform("wht_amount", "metadata"), BigIntegerField()),
+        Value(0), output_field=BigIntegerField())
+
+
+def payout_sent_expression():
+    """:func:`payout_sent_amount` over a ``PayoutInstruction`` queryset."""
+    from django.db.models import BigIntegerField, Case, ExpressionWrapper, F, When
+    from django.db.models.fields.json import KeyTextTransform
+    from django.db.models.functions import Cast, Coalesce
+
+    kobo = BigIntegerField()
+
+    def recorded(key):
+        return Cast(KeyTextTransform(key, "metadata"), kobo)
+
+    return Coalesce(
+        recorded("provider_sent_amount"),
+        recorded("transfer_amount"),
+        Case(
+            When(status=PayoutStatus.PENDING, then=ExpressionWrapper(
+                F("amount") - payout_wht_expression(), output_field=kobo)),
+            default=Cast(F("amount"), kobo),
+            output_field=kobo,
+        ),
+        output_field=kobo,
+    )
+
+
 def _expected_transfer(payout) -> tuple[int, bool]:
     """``(kobo the provider was asked to send, whether that was the net)`` for ``payout``.
 
@@ -1546,9 +1609,24 @@ def _refresh_batch(payout):
         )
 
 
+def _paying_branch_id(account):
+    """The branch of the bank account behind ledger ``account``, where a payout's money left.
+
+    A ledger account backs at most one bank account. The result is the bank
+    account's own branch, and is None only where the ledger account backs no bank
+    account or the bank account names no branch.
+    """
+    bank = getattr(account, "bank_account", None)
+    return getattr(bank, "branch_id", None)
+
 # Support the book vendor payment workflow.
 def _book_vendor_payment(payout, *, actor_user=None, paid_at=None):
     """Create + post the ``vs_procurement.VendorPayment`` for a paid payout.
+
+    The payment belongs to the branch of the bank account the money left
+    (:func:`_paying_branch_id`), so a payout from Ikeja's bank books its journal to
+    Ikeja and settles Ikeja's open bills for the vendor, oldest first (see
+    :func:`vs_procurement.payables._auto_settlement_candidates`).
 
     Gross is the payout line's amount, WHT is the figure resolved when the line
     was created, and net (what the bank is credited with) is their difference,
@@ -1577,15 +1655,18 @@ def _book_vendor_payment(payout, *, actor_user=None, paid_at=None):
     payment_date, dating = _booking_date(payout.entity, paid_at)
     if dating:  # Keep the true paid day beside the payment, however it was booked.
         payout.metadata = {**metadata, **dating}
+    paid_from = payout.source_account or resolve_account(
+        payout.entity, CASH_BANK_CODE, label="Cash & bank",
+    )
     vp = VendorPayment.objects.create(
         entity=payout.entity, vendor=vendor, payment_date=payment_date,
+        # The branch whose bank the money left: its journal and the bills it settles.
+        branch_id=_paying_branch_id(paid_from),
         currency=payout.currency, method=PaymentMethod.BANK_TRANSFER,
         gross_amount=payout.amount, wht_amount=wht,
         net_amount=payout.amount - wht,
         wht_tax_code=wht_code, wht_source=metadata.get("wht_source", ""),
-        payment_account=payout.source_account or resolve_account(
-            payout.entity, CASH_BANK_CODE, label="Cash & bank",
-        ),
+        payment_account=paid_from,
         reference=payout.reference,
         narration=payout.narration or f"Gateway payout {payout.reference}",
         # System-approved: this vendor payment records a disbursement the gateway

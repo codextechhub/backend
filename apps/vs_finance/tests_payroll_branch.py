@@ -436,7 +436,13 @@ class PerBranchRunTests(_PayrollFixture):
         self.assertEqual(response.status_code, 422, response.data)
         self.assertIn("Yaba Branch", str(response.data))
 
-    def test_a_single_branch_school_runs_its_one_branch(self):
+    def test_a_single_branch_school_runs_as_an_unpinned_officer_would(self):
+        """An officer pinned to the only branch reaches the whole tenant.
+
+        Naming no branch therefore raises the run an unpinned officer would
+        raise: the tenant's, over the whole roster, which at one branch is the
+        same people (``vs_rbac.scoping``).
+        """
         self.salary(self.solo_books, "Solo Staff", self.solo_main)
         self.set_scope(self.solo_tenant, "PER_BRANCH")
         solo = self.officer(
@@ -448,7 +454,7 @@ class PerBranchRunTests(_PayrollFixture):
         self.assertEqual(response.status_code, 201, response.data)
         run = PayrollRun.objects.get(entity=self.solo_books)
         self.assertEqual(self.names_on(run), ["Solo Staff"])
-        self.assertEqual(run.branch_id, self.solo_main.pk)
+        self.assertIsNone(run.branch_id)
 
 
 class PerBranchStampingTests(_PayrollFixture):

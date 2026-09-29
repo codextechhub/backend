@@ -48,7 +48,6 @@ widely read document a school produces.
 """
 from __future__ import annotations
 
-from django.db.models import Q
 
 #: The prebuilt role key that means "this person stands in front of a class".
 #: ``core.management.commands.seed_school_permissions.ROLE_TEACHER`` is the same

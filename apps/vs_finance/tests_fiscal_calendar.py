@@ -275,7 +275,7 @@ class FiscalCalendarRolloverTests(TestCase):
             created_at=datetime.datetime(2027, 7, 8, 9, 0, tzinfo=datetime.timezone.utc),
         )
 
-        with patch("vs_rbac.evaluator.resolve_users_with_permission",
+        with patch("vs_finance.fiscal_calendar.calendar_alert_recipients",
                    return_value=[object()]), \
                 patch("vs_notifications.notify.send_notification",
                       return_value=["n1"]) as send:
@@ -291,7 +291,7 @@ class FiscalCalendarRolloverTests(TestCase):
         seed_fiscal_year(entity, year=2026)
         seed_fiscal_year(entity, year=2027, start_month=9)
 
-        with patch("vs_rbac.evaluator.resolve_users_with_permission",
+        with patch("vs_finance.fiscal_calendar.calendar_alert_recipients",
                    return_value=[object()]), \
                 patch("vs_notifications.notify.send_notification",
                       return_value=["n1"]) as send:
@@ -308,7 +308,7 @@ class FiscalCalendarRolloverTests(TestCase):
 
         with patch("vs_finance.fiscal_calendar.open_fiscal_year",
                    side_effect=ValidationError({"year": "Boom."})), \
-                patch("vs_rbac.evaluator.resolve_users_with_permission",
+                patch("vs_finance.fiscal_calendar.calendar_alert_recipients",
                       return_value=[object()]), \
                 patch("vs_notifications.notify.send_notification",
                       return_value=["n1"]) as send:

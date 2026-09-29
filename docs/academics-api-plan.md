@@ -546,3 +546,115 @@ Two of those are questions above rather than dead code.
 8. **Export datasets** from `AppConfig.ready`.
 9. **Seeder scenarios** - one multi-branch school and one single-branch school,
    driven through the real services, so the receding branch dimension is provable.
+
+---
+
+## 10. Settings, Academic structure
+
+The "Academic structure" group of a school's own settings: what the school
+calls a term, the names a new year's terms are given, and the arms a level's
+classes are generated with. Three school-scoped `vs_config` definitions,
+declared by `vs_academics` migration `0010_academic_structure_settings` and by
+`seed_config_catalogue` with the same shape, read in
+`services/academic_rules.py`.
+
+| Key | Type | Default | Scopes |
+| --- | --- | --- | --- |
+| `academics.terms.word` | CHOICE TERM, SEMESTER | null: SEMESTER on `2_SEMESTERS`, else TERM | platform, school |
+| `academics.terms.names` | JSON list, 1 to 6 names | null: First, Second, Third Term on `3_TERMS`; First, Second Semester on `2_SEMESTERS` | platform, school |
+| `academics.classes.default_arms` | JSON list, 1 to 12 names | `["A", "B", "C"]` | platform, school |
+
+The school's `term_structure` (onboarding, locked once live) stays the starting
+point: a null reads as what it implies, and a value the school saves replaces
+it. Saving what the screen already showed stores nothing, so a school that
+accepted its structure's defaults and then corrects the structure before going
+live follows the corrected one. A stored value that breaks the list rules below
+reads as the default.
+
+### 10.1 `GET, PUT /v1/academics/rules/`
+
+GET is open to any signed-in member of the school, with no permission key:
+these are words every screen prints, a teacher's register as much as the
+settings screen. The school is the one the caller's own token names, so a
+member of another school asking for this one gets 404 before the view runs.
+PUT needs `school.settings.update` and a caller whose reach is the whole
+school: a branch-bound caller holding the key is refused with 403
+`SHARED_RECORD_READ_ONLY`, "Only a school-wide administrator can change the
+school's academic structure settings.", and nothing is written.
+
+```json
+{
+  "term_word": "TERM",
+  "term_word_options": [
+    {"value": "TERM", "label": "Term"},
+    {"value": "SEMESTER", "label": "Semester"}
+  ],
+  "term_names": ["First Term", "Second Term", "Third Term"],
+  "default_arms": ["A", "B", "C"]
+}
+```
+
+PUT takes `term_word`, `term_names` and `default_arms` every time, plus an
+optional `reason` for the audit trail (at most 200 characters), and answers
+with the GET body and "Academic structure settings saved.". Names are saved
+without surrounding spaces. Each write is audited as `config.value.updated`;
+an unchanged value writes nothing. Refusals are 400 keyed on the field, in
+sentences. The term names are refused in the word being saved, shown here for
+a Semester school:
+
+- `term_word`: "Choose Term or Semester for what the school calls the parts of
+  its year." (missing or null: "Say whether the school says Term or
+  Semester.")
+- `term_names` missing: "List the names of the school's semesters."
+- `term_names` empty or not a list: "Name at least one semester."
+- more than six: "A year can have at most 6 semesters."
+- a blank or non-text entry: "Every semester needs a name."
+- an entry over 30 characters: "{name} is longer than 30 characters. Shorten
+  it."
+- a repeat, whatever its case: "{name} is listed twice. Give each semester a
+  different name."
+- `default_arms` missing: "List the arms a level's classes are generated
+  with."
+- `default_arms` empty or not a list: "Name at least one arm."
+- more than twelve: "The default list can have at most 12 arms."
+- a blank entry: "Every arm needs a name."
+- an entry over 30 characters: "{arm} is longer than 30 characters. Shorten
+  it."
+- a repeat: "{arm} is listed twice. Give each arm a different name."
+
+### 10.2 What each setting changes
+
+- **The word.** Every backend sentence that names a term asks
+  `services/words.term_word(tenant, plural=False, capital=False)`: the term
+  refusals of sessions and terms, the term list's message ("Semesters
+  retrieved."), the calendar's warnings and alerts ("This date falls outside
+  every semester in 2025/2026."), the half-term break's label ("Mid-semester
+  break", which the calendar import also accepts), the dashboard switch ("This
+  semester"), the fee due rule ("End of the semester billed") and the fee
+  structure link messages. Changing the word never renames a stored term: "First
+  Term" stays "First Term" at a school that says Semester until the school
+  renames it.
+- **The names.** They pre-fill every new academic year on the session drawer,
+  one term per name, so the count is the school's as well. The server does not
+  invent terms for a session created with no `terms`: a term needs dates, and
+  a year whose dates the server guessed would date the school's fee bills
+  ("End of the term billed") by the guess. The seed command's years are the
+  one place the server makes terms from the names.
+- **The arms.** `POST /v1/academics/classes/generate-arms/` with no `arms`
+  makes the school's default arms; arms named in the request win. A class is
+  named "{level} {arm}".
+
+### 10.3 Promotion when an arm has no class next year
+
+Under SAME_ARM, pupils whose arm has no class they may join at the next level
+(a school that renamed JSS1 A, B and C to JSS2 Red, Blue and Green) are shared
+across that level's classes the way SPREAD shares them: emptiest first,
+counting seats taken in the target year, repeats and the pupils keeping their
+arm, ties by class name, pupils ordered by last name, first name and id. A
+matching arm still wins. The preview and the run share the classification. Each
+`level_map` row carries `arm_fallback` (true where some of its pupils were
+shared out for want of their arm) and `arm_note`, the sentence the promotion
+screen prints: "No JSS2 class has arm A, so these students are shared across
+JSS2's classes." (a class with no arm: "{class} has no arm to match, so these
+students are shared across JSS2's classes."), or null. Under SPREAD both are
+always false and null.

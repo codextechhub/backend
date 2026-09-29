@@ -114,10 +114,12 @@ class SurfaceTests(SimpleTestCase):
         "DocumentListCreateView", "DocumentDetailView",
         # Read only: the Add form renders the rule's hint during onboarding.
         "StaffNumberPolicyView",
+        # A setup import's held invitation has to be withdrawable before go-live.
+        "StaffInvitationRevokeView",
     }
     CLOSED = {
         "StaffRulesView",
-        "StaffStatusView", "StaffHistoryView", "StaffInvitationRevokeView",
+        "StaffStatusView", "StaffHistoryView",
         "StaffAccountSuspendView", "StaffAccountReactivateView",
         "StaffAccountUnlockView", "StaffAccountEmailView",
         "StaffTeachingView", "TeachingAssignmentDetailView",

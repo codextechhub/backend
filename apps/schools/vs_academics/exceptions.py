@@ -192,3 +192,18 @@ class NoSessionYet(AcademicsError):
         "to a school year, so there has to be one to put them in."
     )
     http_status = 409
+
+
+class AcademicSettingNotRegistered(AcademicsError):
+    """An academic structure setting's configuration definition is missing.
+
+    Refused rather than stored nowhere: answering success would leave a school
+    believing it had renamed its terms while every screen kept the old names.
+    """
+
+    error_code = "ACADEMIC_SETTING_NOT_REGISTERED"
+    default_message = (
+        "The academic structure settings are not registered on this platform "
+        "yet. Run the migrations and seed_config_catalogue."
+    )
+    http_status = 500

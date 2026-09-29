@@ -31,7 +31,13 @@ from vs_rbac.permissions import (
 # branch stays visible to a branch-pinned caller; getting that backwards hides
 # every school-wide record from a branch admin, which looks like missing data
 # rather than a permission error and so goes unreported.
-from vs_rbac.scoping import branch_q, branch_scope
+from vs_rbac.scoping import (
+    WholeTenantWriteMixin,
+    assert_caller_may_change,
+    branch_q,
+    branch_scope,
+    shared_write_refusal,
+)
 
 from .models import (
     Account,
@@ -108,6 +114,22 @@ def resolve_entity(request):
     if entity is None:
         raise NotFound(f"No ledger entity matches '{raw}'.")
     return entity
+
+
+#: The refusal subject for a branch-bound write to the chart of accounts.
+CHART_OF_ACCOUNTS = "the chart of accounts"
+
+
+class _FiscalCalendarWriteMixin(WholeTenantWriteMixin):
+    """Every write to the fiscal calendar needs whole-tenant reach.
+
+    A period or a year carries no branch: closing January, reopening it,
+    locking it, closing the year or opening the next one does it for every
+    branch posting to the books. Lekki's bursar may read the calendar and run
+    the close checklist, and may not move it.
+    """
+
+    shared_subject = "the fiscal periods and years"
 
 
 # Group behavior for Entity Scoped List Mixin.
@@ -220,7 +242,7 @@ class EntityListCreateView(generics.ListCreateAPIView):
 
 
 # Group endpoint behavior for Account List Create View.
-class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
+class AccountListCreateView(WholeTenantWriteMixin, EntityScopedListMixin, generics.ListAPIView):
     """GET /finance/accounts/?entity= - the entity's chart of accounts.
 
     Three shapes:
@@ -246,12 +268,15 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
       journals of their branches plus the school-wide ones, read through
       :func:`vs_finance.branch_ledger.ledger_balances` exactly as their financial
       statements are. A whole-school reader's balances are unchanged.
-    * Creating an account keeps ``finance.account.create``.
+    * Creating an account keeps ``finance.account.create``, and needs
+      whole-tenant reach as well: a new account carries no branch and joins
+      the chart every branch posts to.
 
     docstring-name: Chart of accounts
     """
 
     serializer_class = AccountSerializer
+    shared_subject = CHART_OF_ACCOUNTS
 
     def get_permissions(self):
         if self.request.method == "POST":
@@ -417,6 +442,11 @@ class AccountDetailView(APIView):
     :func:`_reader_scope`); the account itself is the school's and reads the same
     for everyone.
 
+    Editing follows the account's branch, which is the branch of the bank
+    account behind it. A branch-bound caller may edit the ledger account of
+    their own branch's bank; every other account belongs to the whole chart,
+    and changing it needs whole-tenant reach (403 ``SHARED_RECORD_READ_ONLY``).
+
     docstring-name: Account detail & ledger
     """
 
@@ -430,16 +460,25 @@ class AccountDetailView(APIView):
         """The account behind ``pk``; with ``request``, only one the caller may change.
 
         A write passes ``request`` so another branch's bank ledger answers like an
-        unknown account (see :func:`vs_finance.accounts.accounts_a_caller_may_name`).
+        unknown account (see :func:`vs_finance.accounts.accounts_a_caller_may_name`),
+        and an account behind no branch's bank is refused with a 403 unless the
+        caller reaches the whole tenant.
         """
         from .accounts import accounts_a_caller_may_name
         from .models import Account
         qs = Account.objects.filter(entity=entity, pk=pk)
         if request is not None:
             qs = accounts_a_caller_may_name(request, qs)
-        acc = qs.select_related("parent").first()
+        acc = qs.select_related("parent", "bank_account").first()
         if acc is None:
             raise NotFound("No such account in this entity.")
+        if request is not None:
+            bank = getattr(acc, "bank_account", None)
+            assert_caller_may_change(
+                request.user, getattr(request, "tenant", None),
+                (bank.branch_id,) if bank is not None else (),
+                message=shared_write_refusal(CHART_OF_ACCOUNTS),
+            )
         return acc
 
     def get(self, request, pk):
@@ -718,7 +757,7 @@ class PostingWindowView(APIView):
 
 
 # Group endpoint behavior for Fiscal Year List View.
-class FiscalYearListView(EntityScopedListMixin, generics.ListAPIView):
+class FiscalYearListView(_FiscalCalendarWriteMixin, EntityScopedListMixin, generics.ListAPIView):
     """List fiscal years or open the next fiscal calendar for an entity.
 
     ``?status=OPEN`` narrows to open years (the ones a new budget can target).
@@ -1431,6 +1470,12 @@ class JournalSubmitView(APIView):
     handler's ``on_approved`` posting. Only meaningful when a template exists for
     ``finance.journal`` at this journal's scope (see :func:`approvals.approval_required`).
 
+    A draft with no branch belongs to the books as a whole, so submitting it
+    needs whole-tenant reach, exactly as reversing one does: Lekki's bursar may
+    read the school's January accrual and may not send it for posting. A
+    branch-bound caller is refused with a 403 ``SHARED_RECORD_READ_ONLY`` and
+    nothing is submitted. A draft of one of her own branches is hers.
+
     docstring-name: Submit a journal for approval
     """
 
@@ -1447,6 +1492,10 @@ class JournalSubmitView(APIView):
         ).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
+        assert_caller_may_change(
+            request.user, getattr(request, "tenant", None), (entry.branch_id,),
+            message="Only a school-wide administrator can submit a school-wide journal.",
+        )
         from vs_workflow.services import release as release_svc
 
         instance = submit_for_approval(entry, requested_by=request.user)
@@ -1471,6 +1520,11 @@ class JournalPostView(APIView):
     as posted without approval (:func:`vs_finance.approvals.guard_direct_post`).
     With no template at all, the draft posts directly.
 
+    A draft with no branch belongs to the books as a whole, so posting it needs
+    whole-tenant reach, exactly as reversing one does. A branch-bound caller is
+    refused with a 403 ``SHARED_RECORD_READ_ONLY`` before the approval guard
+    runs, and nothing is posted. A draft of one of her own branches is hers.
+
     docstring-name: Post a journal entry
     """
 
@@ -1488,6 +1542,10 @@ class JournalPostView(APIView):
         ).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
+        assert_caller_may_change(
+            request.user, getattr(request, "tenant", None), (entry.branch_id,),
+            message="Only a school-wide administrator can post a school-wide journal.",
+        )
         guard_direct_post(entry, request, noun="journal")
         post_journal(entry, actor_user=request.user)
         entry.refresh_from_db()
@@ -1500,6 +1558,12 @@ class JournalPostView(APIView):
 # Group endpoint behavior for Journal Reverse View.
 class JournalReverseView(APIView):
     """POST /finance/journals/<id>/reverse/?entity= - reverse a posted journal.
+
+    A journal with no branch belongs to the books as a whole, so reversing it
+    needs whole-tenant reach: Lekki's bursar reversing the school's January
+    accrual would move every branch's statements. A branch-bound caller is
+    refused with a 403 ``SHARED_RECORD_READ_ONLY`` and nothing is posted. A
+    journal of one of her own branches is hers to reverse.
 
     docstring-name: Reverse a journal entry
     """
@@ -1518,6 +1582,10 @@ class JournalReverseView(APIView):
         ).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
+        assert_caller_may_change(
+            request.user, getattr(request, "tenant", None), (entry.branch_id,),
+            message="Only a school-wide administrator can reverse a school-wide journal.",
+        )
         # Optional reversal date; when omitted the service reverses into the original
         # period, or into the current open period if that period has since closed.
         body = request.data or {}
@@ -1557,6 +1625,14 @@ class DirectEntryCreateView(APIView):
       approval;
     * no route at all: the entry posts directly.
 
+    A direct entry starts a chain, so its branch comes from the caller under the
+    platform rule (:func:`vs_rbac.scoping.raised_branch`). Ikeja's bursar, bound to
+    Ikeja alone, files it at Ikeja whether or not she names the branch, and can
+    later reverse it herself. A caller bound to Ikeja and Lekki names one (400
+    otherwise), because an entry left school-wide would be one neither could
+    reverse. A whole-tenant caller may name a branch or leave the entry
+    school-wide. The approval route is chosen at the entry's branch.
+
     docstring-name: Post a direct entry
     """
 
@@ -1569,12 +1645,15 @@ class DirectEntryCreateView(APIView):
 
         from .approvals import approval_required, confirm_unconfigured_post
         from .posting import create_direct_entry, post_journal
-        from .views_ops import _resolve_account, _resolve_cost_center, _resolve_dimensions
+        from .views_ops import (
+            _raised_branch, _resolve_account, _resolve_cost_center, _resolve_dimensions,
+        )
 
         entity = resolve_entity(request)
         serializer = DirectEntryCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        branch = _raised_branch(request, entity, request.data)
         # Resolve each line's account under the caller's reach, and its optional cost
         # centre + analytical dimensions against this entity, before anything is written.
         lines = [
@@ -1591,6 +1670,7 @@ class DirectEntryCreateView(APIView):
                 entity, lines=lines,
                 date=data.get("date"), narration=data.get("narration", ""),
                 reference=data.get("reference", ""), actor_user=request.user,
+                branch=branch,
             )
             if approval_required(entry):
                 from vs_workflow.services import release as release_svc
@@ -1618,7 +1698,7 @@ class DirectEntryCreateView(APIView):
 
 
 # Group endpoint behavior for Period Close View.
-class PeriodCloseView(APIView):
+class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
     """POST /finance/periods/<id>/close/?entity= - run the checklist and close a period.
 
     Body (all optional): ``{"soft": bool, "force": bool, "run_depreciation": bool}``.
@@ -1682,7 +1762,7 @@ class PeriodCloseView(APIView):
 
 
 # Group endpoint behavior for Period Reopen View.
-class PeriodReopenView(APIView):
+class PeriodReopenView(_FiscalCalendarWriteMixin, APIView):
     """POST /finance/periods/<id>/reopen/?entity= - re-open a CLOSED/SOFT_CLOSED period.
 
     A LOCKED period cannot be re-opened; an already-OPEN period is refused.
@@ -1714,7 +1794,7 @@ class PeriodReopenView(APIView):
 
 
 # Group endpoint behavior for Period Lock View.
-class PeriodLockView(APIView):
+class PeriodLockView(_FiscalCalendarWriteMixin, APIView):
     """POST /finance/periods/<id>/lock/?entity= - permanently seal a CLOSED period.
 
     Only a CLOSED period can be locked; the lock is irreversible.
@@ -1746,7 +1826,7 @@ class PeriodLockView(APIView):
 
 
 # Group endpoint behavior for Fiscal Year Close View.
-class FiscalYearCloseView(APIView):
+class FiscalYearCloseView(_FiscalCalendarWriteMixin, APIView):
     """POST /finance/fiscal-years/<id>/close/?entity= - post the year-end closing entry.
 
     Zeroes every income/expense account for the year and rolls the net profit or loss

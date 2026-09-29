@@ -1476,8 +1476,8 @@ MUST SAY:
 
 ### D71. Settings, Staff: a school's own staff rules, and hires approved before they are invited (be002879, 2026-09-29)
 MODULES: M12 staff management, M06 configuration and capability, M07 workflow
-and approval engine, M10 bulk data import, M04 roles and permissions, M14
-calendar (read only), MRD.
+and approval engine, M10 bulk data import, M09 school onboarding, M04 roles and
+permissions, M14 calendar (read only), MRD.
 Eleven school settings (vs_staff 0009, seed_config_catalogue), read under
 school.teachers.view, written under school.settings.update and a school-wide
 caller (else 403 SHARED_RECORD_READ_ONLY, nothing written), 400s keyed on the
@@ -1529,19 +1529,136 @@ docs/staff-management-api-plan.md section 9.
   released, grants revoked, account REJECTED. Adder approves only when alone on
   the stage. Resend 422 HIRE_AWAITING_APPROVAL; revoke withdraws the hire.
   Never during onboarding.
+- Staff import (owner's decision, ec907841): the template has no Role column. Everybody
+  imported starts on the school's starting role, as on the Add form, whoever
+  uploads. A file still carrying a Role column imports with it ignored and one
+  file-level warning role_column_ignored ("Roles are not imported. Everybody in
+  this file starts as {Role}; give other roles from Roles & Permissions."). A
+  starting role the uploader cannot give (retired, or restricted keys they
+  lack) is one file-level error starting_role with the Add form's sentence. A
+  school still onboarding imports on the starting role too (onboarding's data
+  step requires a full staff import); School Admin and Branch Admin stay the
+  Add form's. Reseed staff_master_v1 (seed_import --dataset-type staff) to
+  drop the column.
+- Setup imports are invited at go-live (owner's decision): new EmploymentStatus
+  AWAITING_GO_LIVE "Invited at go-live" (vs_staff 0011), account left
+  PENDING_APPROVAL, no email. approve_go_live (M09) sends every held
+  invitation after activation commits, one transaction each, failures logged
+  and audited (STAFF_EMPLOYMENT_STATUS_CHANGED, FAILED) without blocking
+  go-live or the rest, idempotent. Hire approval does not hold the setup list.
+  Resend during setup 422 INVITATION_HELD_FOR_GO_LIVE "Invitations for staff
+  imported during setup go out when the school goes live."; once live it sends
+  a held one. Revoke is open before go-live and closes a held invitation. The
+  Add form during onboarding is unchanged.
 Defects fixed beside it (aefd1843, bdcbdb41, c659d468): the Add form's docs promised documents it
 never saves (dead attach_documents removed); the staff import ignored the
-onboarding role narrowing and refused a restricted role only at execution (now
-refused at validation with the grant's sentence; no restricted role was ever
-granted without approval).
+onboarding role narrowing and refused a restricted role only at execution
+(since superseded: the import has no role column). No restricted role was ever
+granted without approval.
 MUST SAY: M12 the eleven settings, both routes, their permission and reach
 rules, every refusal, the new status and document type, the leave balance and
 allowance contract, the working-day behaviour change and that stored counts are
 kept; M06 the eleven definitions and that the number keys are branch-scoped;
 M07 the schools.staff_hire type, its ladder, group and self-approval rule, and
-the leave condition field; M10 the staff import's number, approval and role
-rules; M04 that a starting role is held to the grant ceiling. MRD: a school
+the leave condition field; M10 the staff import's number and approval
+rules, that it has no role column, the ignored-column warning and the
+starting role at an onboarding school; M09 that staff imported during setup are invited when the school goes live,
+and how a failure is handled; M04 that a starting role is held to the grant ceiling. MRD: a school
 runs its own staff rules and can approve hires before they are invited.
+
+### D72. Settings, Academic structure: the school's word for a term, its term names and its arms (c21710f7, 8cc6c5ee, 2026-09-29)
+MODULES: M13 academic structure, M06 configuration and capability, M11 student
+management (promotion), M14 calendar, M17 billing and invoicing, M25
+dashboards (the "This term" switch), MRD. Check M09 school onboarding and M01
+only if they describe term_structure as more than the starting point.
+Three school settings (vs_academics 0010, seed_config_catalogue), read by any
+signed-in member of the school with no key, written under
+school.settings.update and a school-wide caller (else 403
+SHARED_RECORD_READ_ONLY, "Only a school-wide administrator can change the
+school's academic structure settings.", nothing written), 400s keyed on the
+field in sentences, audited with an optional reason. Full contract in
+docs/academics-api-plan.md section 10.
+- GET, PUT /v1/academics/rules/: {term_word, term_word_options, term_names,
+  default_arms}. "Academic structure settings saved."
+- academics.terms.word TERM | SEMESTER, default null = what term_structure
+  implies (SEMESTER on 2_SEMESTERS). academics.terms.names 1 to 6 names, at
+  most 30 characters, unique ignoring case, default null = First/Second/Third
+  Term or First/Second Semester. academics.classes.default_arms 1 to 12, same
+  rules, default A, B, C. term_structure stays and stays locked once live; it
+  is the starting point, and saving the defaults it implies stores nothing.
+- The word: every backend sentence naming a term uses the school's word
+  (session and term refusals, term list message, calendar warnings, alerts and
+  import warning, "Mid-semester break" label, also accepted by the calendar
+  import, the exam refusal, the dashboard's "This semester", the fee due rule
+  "End of the semester billed", fee structure link messages). Stored term
+  names are never renamed.
+- The names pre-fill new years on the session drawer. A session created with
+  no terms still gets none (no dates to give them); the seed command builds its
+  years from the names.
+- generate-arms with no arms makes the school's default arms; a class is
+  "{level} {arm}".
+- BEHAVIOUR CHANGE, promotion under SAME_ARM: pupils whose arm has no class at
+  the next level used to all go to the level's first class; they are now
+  shared across its classes by the SPREAD allocation, counting pupils keeping
+  their arm. A matching arm still wins. level_map rows carry arm_fallback and
+  arm_note ("No JSS2 class has arm A, so these students are shared across
+  JSS2's classes.").
+- BEHAVIOUR CHANGE (8cc6c5ee): an invoice row's period label reads "First Term
+  2026/2027", the dashboard's order, instead of "2026/2027 First Term". Labels
+  are read from the fee structure's link, never stored on invoices.
+MUST SAY: M13 the three settings, the route, its read rule (any member, no
+key) and write rule, every refusal, that term_structure is the starting point,
+that changing the word never renames a term, the default arms on
+generate-arms, and that no terms are invented for a session sent without them;
+M06 the three definitions and their null defaults; M11 the arm fallback,
+arm_fallback and arm_note; M14 the calendar sentences and the Mid-semester
+break label and import alias; M17 the due rule label in the school's word and
+the one period name; M25 the switch label. MRD: a school names its own terms,
+says Term or Semester, and chooses its default arms.
+
+### D73. Who really acted is on the record, approvals count real people, and shared records need a school-wide caller (229f364d, 2026-09-29)
+MODULES: M07 workflow and approval engine, M04 roles and permissions, M05 audit
+and activity logging, M19 finance and accounting, M18 payments and collections,
+M22 procurement and requisitions, M21 vendor management, M08 notifications and
+delivery, M12 staff management, M13 academic structure, MRD.
+From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF).
+MUST SAY:
+- Impersonation (M05, M07, M19, M18, M22). Acting as a colleague is not locked.
+  Every row that says who did something records both people:
+  FinanceAuditLog.effective_user and WorkflowAuditLog.effective_user (the
+  impersonated person; actor stays the real one), WorkflowStageAction.proxied_by
+  and PaymentEvent.proxied_by (the real person; actor stays the impersonated one).
+  The finance trail, workflow votes and audit, procurement activity feeds and
+  approval detail, the procurement dashboard's activity and the payments
+  transactions log add real_actor_name, proxied_user_name and acted_label ("Ada
+  Obi for Chioma Okafor"); existing keys are unchanged. Document stamps
+  (created_by, posted_by) still name the impersonated person; their audit rows
+  explain them. Migrations: vs_finance 0032, vs_payments 0008, vs_workflow 0021.
+- Separation of duties counts real people (M07). The requester cannot approve,
+  whether as themselves or through a proxy; the requester is the named requester
+  plus the real submitter and any real resubmitter. One real person has one vote
+  per step, and ANY, QUORUM and ALL steps count distinct real people. A step Ada
+  already voted on by proxy leaves her queue. One person may still sign two
+  different steps (accepted). The payout two-approver rule follows in the next
+  payments change.
+- Shared records need a school-wide caller (M19, M22, M21). A branch-bound holder
+  of the key gets 403 SHARED_RECORD_READ_ONLY and nothing is written for: period
+  close, soft close, reopen, lock, year create and close; dunning policies; tax
+  obligations; preparing a tax filing and filing, unfiling or paying a filing with
+  no branch; currencies, FX rates, tax codes, dimensions; cost centres; chart of
+  accounts create and edit (a branch's own bank ledger stays editable by it);
+  reversing, posting or submitting a journal with no branch; procurement catalogue
+  items and vendor categories. One choke point, WholeTenantWriteMixin and
+  shared_write_refusal in vs_rbac.scoping. These no-branch cases retire once
+  every transaction names a branch (finance_branch_books_design).
+- One-branch schools (M04, all modules). At a tenant with exactly one branch, a
+  grant pinned to that branch reaches the whole tenant for reading, writing,
+  granting and approval routing, and session branch_reach.whole_tenant is true;
+  a second branch narrows it again at once. visible_branch_ids is the one answer;
+  the evaluator's tenant-scope match, staff reach_of and the staff roster follow.
+- A direct entry takes its branch by the raised-branch rule (M19). The fiscal
+  calendar warning goes only to finance.period.create holders who reach the whole
+  tenant (M19, M08).
 
 ## Undone
 

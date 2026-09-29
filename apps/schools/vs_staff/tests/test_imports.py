@@ -42,7 +42,6 @@ HEADINGS = {
     "employment_type": "Employment Type",
     "hire_date": "Hire Date",
     "branch": "Branch",
-    "role": "Role",
     "send_invitation": "Send Invitation",
 }
 
@@ -95,7 +94,6 @@ class _ImportFixture(StaffFixture):
             "Employment Type": "Full-time",
             "Hire Date": "2023-09-04",
             "Branch": "",
-            "Role": "teacher",
             "Send Invitation": "Yes",
         }
         values.update(overrides)
@@ -170,17 +168,6 @@ class RowRefusalTests(_ImportFixture):
             [("required", "Email")],
         )
 
-    def test_a_role_this_school_does_not_have_is_refused(self):
-        """A hard error, not a warning: there is no invite-now-decide-later.
-
-        Somebody created without a role has an account that signs in and
-        reaches nothing, and no screen would explain why.
-        """
-        issues = validate_rows(self.batch(self.row(**{"Role": "caretaker"})))
-        self.assertTrue(issues)
-        self.assertEqual(issues[0]["column_name"], "Role")
-        self.assertEqual(issues[0]["severity"], "error")
-
     def test_the_same_address_twice_in_one_file_names_the_earlier_row(self):
         """Two rows that each pass alone would create one account, then fail."""
         issues = validate_rows(self.batch(self.row(), self.row()))
@@ -201,14 +188,15 @@ class RowRefusalTests(_ImportFixture):
         self.assertEqual(validate_rows(batch), [])
 
 
-class ImportedRolesKeepTheAddRulesTests(_ImportFixture):
-    """A role column may not grant what the Add form would refuse.
+class ImportedStaffStartOnTheStartingRoleTests(_ImportFixture):
+    """A file carries no role: everybody starts where the Add form starts them.
 
-    Brightfield's Lekki head holds every staff key and no finance key. A file
-    naming Bursar for Funke, where Bursar carries the restricted right to post
-    journals, is refused on the row that names it, before anything is written,
-    and says where the role can be given instead. A school still onboarding
-    gives out School Admin and Branch Admin only, from a file as from the form.
+    Brightfield's Lekki head holds every staff key and no finance key. Where
+    the school's starting role is Bursar, which carries the restricted right to
+    post journals, her file is refused once, before anything is written, with
+    the sentence the Add form gives her. Tolu's old file still has a Role
+    column saying School Admin for Funke; it imports, Funke starts as Teacher,
+    and the validation says so once.
     """
 
     @classmethod
@@ -216,61 +204,134 @@ class ImportedRolesKeepTheAddRulesTests(_ImportFixture):
         super().setUpTestData()
         from vs_rbac.tests.helpers import make_permission, make_role, make_role_permission
 
+        cls.assistant = make_role(cls.school, name="Class Assistant", key="class_assistant")
         cls.bursar = make_role(cls.school, name="Bursar", key="bursar")
-        make_role_permission(
-            cls.bursar, make_permission("finance.journal.post", is_restricted=True),
+        cls.restricted = make_permission("finance.journal.post", is_restricted=True)
+        make_role_permission(cls.bursar, cls.restricted)
+
+    def choose_starting_role(self, key):
+        from vs_config.models import ConfigurationDefinition
+        from vs_config.services.resolution import set_value
+
+        set_value(
+            definition=ConfigurationDefinition.objects.get(key="staff.starting_role"),
+            value=key, actor=self.admin, tenant=self.tenant,
         )
 
-    def issues_for(self, batch):
-        return [(i["code"], i["column_name"]) for i in validate_rows(batch)]
+    def batch_from(self, uploader, *rows, headers=None):
+        batch = self.batch(*rows)
+        batch.uploaded_by = uploader
+        batch.uploaded_headers = headers or list(rows[0])
+        batch.save(update_fields=["uploaded_by", "uploaded_headers"])
+        return batch
 
-    def test_a_restricted_role_the_uploader_does_not_hold_is_refused_on_its_row(self):
-        batch = self.batch(self.row(Role="bursar"))
-        batch.uploaded_by = self.lekki_head
-        batch.save(update_fields=["uploaded_by"])
+    def test_the_template_has_no_role_column(self):
+        from core.management.commands.seed_import import TEMPLATES_BY_DATASET_TYPE
 
-        issues = validate_rows(batch)
+        from schools.vs_staff.imports import COLUMNS, REQUIRED_COLUMNS
+
+        self.assertNotIn("role", COLUMNS)
+        self.assertNotIn("role", REQUIRED_COLUMNS)
+        for entry in TEMPLATES_BY_DATASET_TYPE["staff"]:
+            fields = {column["target_field"] for column in entry["columns"]}
+            self.assertNotIn("role", fields)
+            self.assertNotIn("Role", entry["template"]["sample_row_data"])
+            self.assertEqual(fields, set(COLUMNS))
+
+    def test_a_role_column_is_ignored_with_one_note_for_the_file(self):
+        rows = [
+            {**self.row(), "Role": "school_admin"},
+            {**self.row(**{"Email": "two@brightfield.test", "Staff ID": "BFS/IMP/002"}),
+             "Role": "school_admin"},
+        ]
+
+        issues = validate_rows(self.batch_from(self.admin, *rows))
 
         self.assertEqual(
-            [(i["code"], i["column_name"]) for i in issues],
-            [("restricted_role", "Role")],
+            [(i["code"], i["row_number"], i["severity"], i["message"]) for i in issues],
+            [("role_column_ignored", None, "warning",
+              "Roles are not imported. Everybody in this file starts as Teacher; "
+              "give other roles from Roles & Permissions.")],
         )
-        self.assertIn("Bursar carries restricted permissions", issues[0]["message"])
-        self.assertIn("where it goes for approval", issues[0]["message"])
+
+    def test_everybody_imported_starts_on_the_schools_starting_role(self):
+        from schools.vs_staff.imports import create_staff_from_row, resolve_row
+        from vs_rbac.models import TenantUserRoleAssignment
+
+        self.choose_starting_role("class_assistant")
+        row = resolve_row(
+            {"first_name": "Funke", "last_name": "Adeyemi",
+             "email": "funke@brightfield.test", "role": "school_admin"},
+            tenant=self.tenant, actor=self.admin,
+        )
+        self.assertTrue(row.ok, row.issues)
+
+        profile = create_staff_from_row(row, tenant=self.tenant, created_by=self.admin)
+
+        grants = TenantUserRoleAssignment.objects.filter(
+            user=profile.user, assignment_status="ACTIVE",
+        )
+        self.assertEqual([g.role.key for g in grants], ["class_assistant"])
+
+    def test_a_restricted_starting_role_the_uploader_lacks_refuses_the_file_once(self):
+        self.choose_starting_role("bursar")
+
+        issues = validate_rows(self.batch_from(
+            self.lekki_head, self.row(),
+            self.row(**{"Email": "two@brightfield.test", "Staff ID": "BFS/IMP/002"}),
+        ))
+
+        self.assertEqual(
+            [(i["code"], i["row_number"], i["severity"]) for i in issues],
+            [("starting_role", None, "error")],
+        )
+        self.assertIn(
+            "New staff start as Bursar, which carries restricted permissions you "
+            "do not hold",
+            issues[0]["message"],
+        )
 
     def test_the_executor_refuses_the_same_row_before_writing_anybody(self):
         from schools.vs_staff.imports import resolve_row
 
+        self.choose_starting_role("bursar")
         row = resolve_row(
             {"first_name": "Funke", "last_name": "Adeyemi",
-             "email": "funke@brightfield.test", "role": "bursar"},
+             "email": "funke@brightfield.test"},
             tenant=self.tenant, actor=self.lekki_head,
         )
         self.assertFalse(row.ok)
-        self.assertIsNone(row.role)
+        self.assertEqual([issue.code for issue in row.issues], ["starting_role"])
 
-    def test_an_uploader_holding_every_restricted_key_may_name_the_role(self):
+    def test_an_uploader_holding_every_restricted_key_imports_on_it(self):
         """The grant rule: whoever holds a restricted key may hand it on directly."""
         from vs_rbac.tests.helpers import make_role_permission
 
-        make_role_permission(self.role, self.bursar.role_permissions.get().permission)
+        self.choose_starting_role("bursar")
+        make_role_permission(self.role, self.restricted)
 
-        self.assertEqual(self.issues_for(self.batch(self.row(Role="bursar"))), [])
+        self.assertEqual(validate_rows(self.batch_from(self.admin, self.row())), [])
 
-    def test_a_school_still_onboarding_gives_out_only_the_two_admin_roles(self):
+    def test_a_school_still_onboarding_imports_everybody_on_the_starting_role(self):
+        """Onboarding needs its staff list imported; the admin roles stay the Add form's."""
+        from schools.vs_staff.imports import create_staff_from_row, resolve_row
+        from vs_rbac.models import TenantUserRoleAssignment
+
         self.tenant.status = "PENDING"
         self.tenant.save(update_fields=["status"])
+        self.assertEqual(validate_rows(self.batch_from(self.admin, self.row())), [])
 
-        teacher = validate_rows(self.batch(self.row()))
-        admin = validate_rows(self.batch(self.row(Role="school_admin")))
-
-        self.assertEqual(
-            [(i["code"], i["message"]) for i in teacher],
-            [("role_not_before_go_live",
-              "Until this school goes live, only School Admin and Branch Admin "
-              "can be given out.")],
+        row = resolve_row(
+            {"first_name": "Funke", "last_name": "Adeyemi",
+             "email": "funke@brightfield.test", "role": "school_admin"},
+            tenant=self.tenant, actor=self.admin,
         )
-        self.assertEqual(admin, [])
+        profile = create_staff_from_row(row, tenant=self.tenant, created_by=self.admin)
+
+        grants = TenantUserRoleAssignment.objects.filter(
+            user=profile.user, assignment_status="ACTIVE",
+        )
+        self.assertEqual([g.role.key for g in grants], ["teacher"])
 
 
 class AnImportedGrantFollowsItsRowTests(_ImportFixture):
@@ -297,7 +358,6 @@ class AnImportedGrantFollowsItsRowTests(_ImportFixture):
             "first_name": "Ifeoma",
             "last_name": "Anyanwu",
             "email": "ifeoma.anyanwu@brightfield.test",
-            "role": "teacher",
             "branch": "",
         }
         payload.update(overrides)
@@ -353,7 +413,6 @@ class SendInvitationColumnTests(_ImportFixture):
             "first_name": "Ifeoma",
             "last_name": "Anyanwu",
             "email": "ifeoma.anyanwu@brightfield.test",
-            "role": "teacher",
             "branch": "",
         }
         payload.update(overrides)
@@ -404,7 +463,7 @@ class SendInvitationColumnTests(_ImportFixture):
 
                 row = resolve_row(
                     {"first_name": "A", "last_name": "B", "email": f"{answer}@x.test",
-                     "role": "teacher", "send_invitation": answer},
+                     "send_invitation": answer},
                     tenant=self.tenant,
                 )
                 self.assertFalse(row.send_invitation)
@@ -587,7 +646,7 @@ class HeldBackPeopleAreVisibleOnTheStaffListTests(_ImportFixture):
         row = resolve_row(
             {
                 "first_name": "Ifeoma", "last_name": "Anyanwu", "email": email,
-                "role": "teacher", "send_invitation": send,
+                "send_invitation": send,
             },
             tenant=self.tenant,
         )

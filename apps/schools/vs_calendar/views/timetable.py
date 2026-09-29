@@ -20,12 +20,11 @@ from rest_framework.views import APIView
 from core.response import success_response
 from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
-from vs_rbac.scoping import WHOLE_TENANT, caller_may_change
+from vs_rbac.scoping import caller_may_change
 
 from ..constants import (
     PERM_TIMETABLE_CREATE,
     PERM_TIMETABLE_DELETE,
-    PERM_TIMETABLE_PUBLISH,
     PERM_TIMETABLE_UPDATE,
     PERM_TIMETABLE_VIEW,
 )
@@ -34,18 +33,13 @@ from ..models import (
     DayOfWeek,
     Period,
     PeriodType,
-    PublishState,
-    Room,
     TimetableSlot,
 )
 from ..serializers import TimetableSlotSerializer, TimetableSlotWriteSerializer
 from ..services.bells import periods_in_force
 from ..services.clashes import grid_clashes, slot_warnings
-from ..services.publishing import publish_class_timetable
 from ..services.scoping import assert_may_change, row_branch_ids, scope_to_visible_branches
-from ..services.teachers import display_name, teaching_users
 from ..services.timetable import (
-    duplicate_grid,
     require_bell_schedule,
     timetable_for,
     touch_timetable,

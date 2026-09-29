@@ -195,3 +195,19 @@ def emit_invitation_revoked(staff, reason, actor=None):
         summary=f"Invitation revoked before it was accepted.",
         metadata={"reason": reason},
     )
+
+
+def emit_setup_invitation_failed(staff, error, actor=None):
+    """A held invitation that could not be sent when the school went live."""
+    emit_audit_event(
+        module_key=MODULE,
+        action_type=AuditActionType.STAFF_EMPLOYMENT_STATUS_CHANGED,
+        entity_type="StaffProfile", entity_id=str(staff.pk),
+        entity_label=_name(staff), actor_user=actor, tenant=staff.tenant,
+        severity=AuditSeverity.WARNING, status="FAILED",
+        summary=(
+            "The invitation held for go-live could not be sent. Resend it from "
+            "the staff list."
+        ),
+        metadata={"error": (error or "")[:500], "to_status": "INVITED"},
+    )

@@ -333,7 +333,29 @@ def approve_go_live(tenant, pk, *, actor=None) -> GoLiveRequest:
         context=activated_context,
         recipients=effects.notification_recipients(tenant),
     )
+    _release_setup_invitations(tenant, actor)
     return request
+
+
+def _release_setup_invitations(tenant, actor):
+    """Send the invitations held for staff imported while the school was set up.
+
+    After the activation has committed and been recorded, never inside it: the
+    school is live whatever happens here. The staff module sends each person's
+    invitation in its own transaction, audits any it cannot send, and finds
+    nobody on a second run (``vs_staff.services.setup_invitations``). Anything
+    that escapes it is logged rather than raised, because a go-live that has
+    happened must not report a failure.
+    """
+    try:
+        from schools.vs_staff.services.setup_invitations import release_all
+
+        release_all(tenant, actor=actor)
+    except Exception:  # noqa: BLE001 - the school is live; see the docstring
+        logger.exception(
+            "Releasing held staff invitations failed for tenant %s.",
+            getattr(tenant, "slug", tenant),
+        )
 
 
 def _record_activation_failure(tenant, request, actor, exc):

@@ -379,7 +379,12 @@ class WholeTenantGrantReachTests(_BranchGrantFixture):
         self.assertIs(visible_branch_ids(officer, self.tenant), WHOLE_TENANT)
 
     def test_a_branch_pinned_holder_is_untouched_by_the_widening(self):
-        """The people the change must not reach, in both shapes of school."""
+        """The people the change must not reach, in both shapes of school.
+
+        In a school with one branch the pin names every branch there is, so
+        the holder reaches the whole tenant; that is the one-branch rule in
+        :mod:`vs_rbac.scoping`, not this widening.
+        """
         pinned = self.person(self.tenant, "pinned@grant.test", branch=self.lekki)
         role = self.role_granting(self.tenant, "Storekeeper Ikeja")
         make_assignment(self.tenant, pinned, role, branch=self.ikeja)
@@ -390,10 +395,7 @@ class WholeTenantGrantReachTests(_BranchGrantFixture):
         solo_pinned = self.person(self.solo_tenant, "pinned@solo-grant.test")
         solo_role = self.role_granting(self.solo_tenant, "Storekeeper Main")
         make_assignment(self.solo_tenant, solo_pinned, solo_role, branch=self.solo_branch)
-        self.assertEqual(
-            visible_branch_ids(solo_pinned, self.solo_tenant),
-            frozenset({self.solo_branch.pk}),
-        )
+        self.assertIs(visible_branch_ids(solo_pinned, self.solo_tenant), WHOLE_TENANT)
 
     def test_no_grants_at_all_still_falls_back_to_the_home_posting(self):
         """The arm ``User.branch`` keeps, and the one it was always for."""
@@ -535,6 +537,7 @@ class BranchScopeQueryCostTests(_BranchGrantFixture):
     """The branch answer is on the hot path, so it is resolved once per request."""
 
     def test_visible_branches_are_resolved_once_per_user_per_tenant(self):
+        """One query, which also answers whether the branch is the tenant's only one."""
         sunday = self.person(self.tenant, "sunday-cost@grant.test")
         role = self.role_granting(self.tenant, "Storekeeper")
         make_assignment(self.tenant, sunday, role, branch=self.ikeja)
@@ -546,7 +549,11 @@ class BranchScopeQueryCostTests(_BranchGrantFixture):
         self.assertEqual(first, second)
 
     def test_a_home_posting_reads_grants_and_equal_postings_once(self):
-        """The fallback reads equal postings once and caches the branch set."""
+        """The fallback reads equal postings once and caches the branch set.
+
+        Two queries: the grants, then the equal postings, which bring the
+        tenant's branches with them so the one-branch rule costs nothing more.
+        """
         legacy = self.person(self.tenant, "legacy-cost@grant.test", branch=self.lekki)
         legacy = type(legacy).objects.get(pk=legacy.pk)  # Unwarmed, as a request is.
 

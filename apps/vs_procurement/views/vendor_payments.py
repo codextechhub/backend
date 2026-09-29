@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from django.db import transaction
 from django.db.models import Q
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
 from vs_finance.constants import DocumentStatus, PaymentMethod
@@ -24,6 +24,7 @@ from ..models import VendorInvoice, VendorPayment, VendorPaymentAllocation
 from ..serializers import VendorPaymentListSerializer, VendorPaymentSerializer
 from .base import (
     _ProcBase,
+    _branch_q,
     _branch_scoped,
     _branch_visible,
     _date,
@@ -450,6 +451,32 @@ def _recheck_branch_before_posting(request, entity, payment):
         _resolve_bank_account(request, entity, bank.pk, document_branch=branch_id)
 
 
+def post_payment_for_caller(request, entity, payment):
+    """Post an approved vendor payment on behalf of the caller behind ``request``.
+
+    The one route by which a person posts a vendor payment, whether from the
+    procurement screen or through the school's FAL, so both ask the same
+    questions before any money is booked:
+
+    * the payment is one this caller can reach (404 otherwise, as for a payment
+      that does not exist);
+    * it carries a saved allocation plan, because the plan is what was approved
+      and posting must not settle different bills from the ones approved;
+    * the plan's bills, its branch and its bank account still hold for this
+      caller (:func:`_recheck_branch_before_posting`).
+
+    ``request`` needs only a ``user``: a caller with no HTTP request passes the
+    acting user as ``SimpleNamespace(user=user)``. A gateway payout's booking is
+    not a person posting and does not come through here.
+    """
+    if not _branch_visible(request, VendorPayment.objects.filter(pk=payment.pk)).exists():
+        raise NotFound("No such vendor payment in this entity.")
+    if not payment.allocations.exists():
+        raise ValidationError({"allocations": "An approved invoice-allocation plan is required before posting."})
+    _recheck_branch_before_posting(request, entity, payment)
+    return payables.post_vendor_payment(payment, actor_user=request.user, auto_allocate=False)
+
+
 class VendorPaymentPostView(_ProcBase):
     """Post an approved payment through the payables accounting boundary."""
     rbac_permission = "procurement.vendor_payment.post"
@@ -461,12 +488,7 @@ class VendorPaymentPostView(_ProcBase):
             request, _payment_queryset(entity), pk,
             "No such vendor payment in this entity.",
         )
-        if not payment.allocations.exists():
-            raise ValidationError({"allocations": "An approved invoice-allocation plan is required before posting."})
-        _recheck_branch_before_posting(request, entity, payment)
-        # Explicit allocations are approval evidence; never let posting silently
-        # invent a different oldest-first plan.
-        payables.post_vendor_payment(payment, actor_user=request.user, auto_allocate=False)
+        post_payment_for_caller(request, entity, payment)
         return success_response(
             f"Vendor payment {payment.document_number} posted.",
             data=_serialize_detail(_payment_queryset(entity).get(pk=pk)),
@@ -482,8 +504,10 @@ class VendorPaymentAllocateAdvanceView(_ProcBase):
     disbursement already happened.
 
     Body ``{allocations:[{vendor_invoice, amount}]}`` for an explicit split, or
-    ``{auto_allocate:true}`` to settle the vendor's open bills oldest-first. Each
-    amount is capped at the bill's balance and the advance still remaining.
+    ``{auto_allocate:true}`` to settle the vendor's open bills oldest-first: only bills
+    of the payment's own branch (school-wide bills for a school-wide payment) that the
+    caller can reach. Each amount is capped at the bill's balance and the advance still
+    remaining.
 
     The AP mirror of ``/finance/payments/<id>/allocate/``. Note the deliberate
     difference from *posting*: posting refuses to settle a bill dated after the
@@ -521,7 +545,9 @@ class VendorPaymentAllocateAdvanceView(_ProcBase):
             payables.allocate_vendor_payment(
                 payment, allocations=plan, actor_user=request.user, strict=True)
         elif body.get("auto_allocate"):
-            payables.allocate_vendor_payment(payment, actor_user=request.user)
+            # Oldest-first among the payment's own branch's bills this caller reaches.
+            payables.allocate_vendor_payment(
+                payment, actor_user=request.user, bill_scope=_branch_q(request))
         else:
             raise ValidationError(
                 {"allocations": "Provide allocations or auto_allocate=true."})
