@@ -13,6 +13,9 @@ himself a role that already carries it is closed by the assignment ceiling.
 
 Each rule is checked in a single-branch school and a multi-branch one, because
 Mr Okafor's Deputy Head grant pinned to one branch is still a role he holds.
+In the multi-branch school both roles are Lekki's own, since a caller pinned
+to Lekki may change only roles that reach no further
+(:mod:`vs_rbac.grant_reach`), and the ladder is what is under test here.
 School Admin, provisioned or backfilled, must still end up with manage: that is
 the trusted bootstrap path for restricted keys.
 """
@@ -103,13 +106,17 @@ class _RestrictionRules(_SchoolShape):
         make_permission(VIEW, sensitivity_level="CRITICAL")
 
         self.okafor = make_school_admin(self.ikeja, email=f"far-okafor-{shape}@test.com")
-        self.deputy_head = make_role(self.tenant, name="Deputy Head", key="deputy-head")
+        self.deputy_head = make_role(
+            self.tenant, name="Deputy Head", key="deputy-head", branch=self.lekki,
+        )
         for key in ROLE_KEYS:
             make_role_permission(self.deputy_head, make_permission(key))
         # In the multi-branch school his grant is pinned to Lekki.
         make_assignment(self.tenant, self.okafor, self.deputy_head, branch=self.lekki)
 
-        self.storekeeper = make_role(self.tenant, name="Storekeeper", key="storekeeper")
+        self.storekeeper = make_role(
+            self.tenant, name="Storekeeper", key="storekeeper", branch=self.lekki,
+        )
         make_role_permission(self.storekeeper, make_permission(VIEW))
 
     def _save_role(self, role, keys):
@@ -148,13 +155,7 @@ class _RestrictionRules(_SchoolShape):
             {"user": self.okafor.pk, "role": self.storekeeper.pk},
             format="json",
         )
-        # Pinned to Lekki in the multi-branch school, he may not grant a
-        # school-wide role at all, and that refusal comes before any ladder.
-        expected = (
-            status.HTTP_400_BAD_REQUEST if self.multi_branch
-            else status.HTTP_202_ACCEPTED
-        )
-        self.assertEqual(response.status_code, expected, response.data)
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED, response.data)
         self.assertFalse(
             TenantUserRoleAssignment.objects.filter(
                 user=self.okafor, role=self.storekeeper,

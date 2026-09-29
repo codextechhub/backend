@@ -500,7 +500,10 @@ class TenantRoleTemplateListCreateView(TenantScopedRBACMixin, CreateModelMixin, 
     """
     Tenant-facing:
     - GET: list role templates in a tenant
-    - POST: create a role template in a tenant
+    - POST: create a role template in a tenant. A branch-bound caller may
+      create one only for branches they cover; a role with no branches is
+      school-wide and a whole-school caller's to create (403
+      ``SHARED_RECORD_READ_ONLY`` otherwise).
 
     docstring-name: Roles
     """
@@ -924,6 +927,12 @@ class TenantRoleTemplateDetailView(TenantScopedRBACMixin, RetrieveModelMixin, Up
     - PATCH/PUT: update role fields and optionally replace permission_keys
     - DELETE: blocked for system or locked roles
 
+    Every write needs a caller who covers every branch the role reaches, and
+    the branches it is being given: a school-wide role is a whole-school
+    caller's to change. Anybody else is refused with 403
+    ``SHARED_RECORD_READ_ONLY`` before anything is written
+    (:mod:`vs_rbac.grant_reach`).
+
     docstring-name: Roles
     """
     serializer_class = TenantRoleTemplateDetailSerializer
@@ -970,7 +979,10 @@ class TenantRoleTemplateDetailView(TenantScopedRBACMixin, RetrieveModelMixin, Up
         return super().update(request, *args, **kwargs)
 
     def delete(self, request, *args, **kwargs):
+        from .grant_reach import assert_caller_may_define
+
         instance = self.get_object()
+        assert_caller_may_define(request.user, self.tenant, instance)
         if instance.is_system_role:
             return error_response(
                 message="System roles cannot be deleted.",
@@ -1692,6 +1704,17 @@ class _UserPermissionOverrideBase(TenantScopedRBACMixin):
             )
         return None
 
+    def _reject_outside_reach(self, target):
+        """Refuse an exception on somebody whose access reaches past the caller (403).
+
+        Judged on the identity the permission gate judged (``request.user``),
+        by :func:`vs_rbac.grant_reach.assert_caller_may_change_person`. A
+        platform operator acting on a school is not narrowed by a branch.
+        """
+        from .grant_reach import assert_caller_may_change_person
+
+        assert_caller_may_change_person(self.request.user, self.tenant, target)
+
     def _role_permission_keys(self, target):
         from .evaluator import get_role_permissions
 
@@ -1779,6 +1802,7 @@ class UserPermissionOverrideListCreateView(
         self._target = target
         if (denied := self._reject_self(target)) is not None:
             return denied
+        self._reject_outside_reach(target)
 
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -1846,6 +1870,7 @@ class UserPermissionOverrideDetailView(_UserPermissionOverrideBase, APIView):
         target = self.get_target_user()
         if (denied := self._reject_self(target)) is not None:
             return denied
+        self._reject_outside_reach(target)
 
         override = (
             UserPermissionOverride.objects
@@ -2017,7 +2042,10 @@ class RoleFieldAccessView(TenantScopedRBACMixin, APIView):
 
     An administrator may change a field they cannot read, and may change a
     role they hold. Neither is refused; both are audited, the first through
-    ``actor_holds_read``.
+    ``actor_holds_read``. A caller whose branches do not cover every branch the
+    role reaches is refused with 403 ``SHARED_RECORD_READ_ONLY`` and nothing is
+    written: a school-wide role's switches bind its holders at every branch
+    (:func:`vs_rbac.grant_reach.assert_caller_may_define`).
 
     The response is the GET shape for the fields named in ``changes``, showing
     what is now stored.
@@ -2088,10 +2116,12 @@ class RoleFieldAccessView(TenantScopedRBACMixin, APIView):
         )
 
     def patch(self, request, *args, **kwargs):
+        from .grant_reach import assert_caller_may_define
         from .models import RoleFieldAccess
         from .serializers import RoleFieldAccessPatchSerializer
 
         role = self._role()
+        assert_caller_may_define(request.user, self.tenant, role, verb="see")
         body = RoleFieldAccessPatchSerializer(data=request.data)
         body.is_valid(raise_exception=True)
         changes = body.validated_data["changes"]
@@ -2384,6 +2414,7 @@ class UserFieldAccessOverrideListCreateView(
         target = self._get_target()
         if (denied := self._reject_self(target)) is not None:
             return denied
+        self._reject_outside_reach(target)
 
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -2465,6 +2496,7 @@ class UserFieldAccessOverrideDetailView(_UserFieldAccessOverrideBase, APIView):
         target = self.get_target_user()
         if (denied := self._reject_self(target)) is not None:
             return denied
+        self._reject_outside_reach(target)
 
         override = (
             UserFieldAccessOverride.objects
