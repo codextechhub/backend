@@ -753,6 +753,11 @@ class AuditDashboardSummaryView(APIView):
       - signin_series: SUCCESS vs FAIL login attempt counts per day for the last 30 days
       - critical_heatmap: hour-of-day x day-of-week grid for the last 30 days
 
+    Days, hours and weekdays are the reader's tenant's own (its
+    ``display.timezone``, :func:`vs_config.clock.tenant_zone`), the platform's
+    for a platform reader, never the server's UTC: an incident at 00:30 in
+    Lagos belongs to that Lagos day and that hour.
+
     docstring-name: Audit dashboard summary
     """
 
@@ -760,9 +765,11 @@ class AuditDashboardSummaryView(APIView):
     rbac_permission = "platform.audit.view"
 
     def get(self, request):
+        from vs_config.clock import tenant_zone
         from vs_user.models import LoginSession, AuthAttempt, AccountLockout
         from vs_admin_console.models import ImpersonationSession
 
+        zone = tenant_zone(getattr(request, "tenant", None) or request.user.tenant)
         now = timezone.now()
         last_24h = now - timedelta(hours=24)
         last_14d = now - timedelta(days=14)
@@ -803,7 +810,7 @@ class AuditDashboardSummaryView(APIView):
         # Daily severity rollup for the last 14 days
         severity_rows = (
             events.filter(event_at__gte=last_14d)
-            .annotate(day=TruncDate("event_at"))
+            .annotate(day=TruncDate("event_at", tzinfo=zone))
             .values("day", "severity")
             .annotate(count=Count("id"))
         )
@@ -831,7 +838,7 @@ class AuditDashboardSummaryView(APIView):
         # Sign-in success vs failure for the last 30 days
         signin_rows = (
             AuthAttempt.objects.filter(created_at__gte=last_30d)
-            .annotate(day=TruncDate("created_at"))
+            .annotate(day=TruncDate("created_at", tzinfo=zone))
             .values("day", "result")
             .annotate(count=Count("id"))
         )
@@ -852,7 +859,7 @@ class AuditDashboardSummaryView(APIView):
         )
         grid = [[0] * 24 for _ in range(7)]
         for event in critical_qs.only("event_at"):
-            local = timezone.localtime(event.event_at)
+            local = event.event_at.astimezone(zone)
             grid[local.weekday()][local.hour] += 1
 
         return success_response(
