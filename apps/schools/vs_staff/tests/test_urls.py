@@ -25,6 +25,8 @@ class LiteralSegmentTests(SimpleTestCase):
         "staff-search": "/v1/i/me/staff/search/",
         "staff-mine": "/v1/i/me/staff/mine/",
         "staff-bulk-role": "/v1/i/me/staff/roles/bulk/",
+        "staff-rules": "/v1/i/me/staff/rules/",
+        "staff-number-policy": "/v1/i/me/staff/number-policy/",
         "staff-teaching-coverage": "/v1/i/me/staff/teaching/coverage/",
         "staff-class-teacher": "/v1/i/me/staff/teaching/class-teacher/",
         "staff-org-nodes": "/v1/i/me/staff/organogram/nodes/",
@@ -110,8 +112,11 @@ class SurfaceTests(SimpleTestCase):
         "StaffRolesView", "StaffResendInvitationView",
         "QualificationListCreateView", "QualificationDetailView",
         "DocumentListCreateView", "DocumentDetailView",
+        # Read only: the Add form renders the rule's hint during onboarding.
+        "StaffNumberPolicyView",
     }
     CLOSED = {
+        "StaffRulesView",
         "StaffStatusView", "StaffHistoryView", "StaffInvitationRevokeView",
         "StaffAccountSuspendView", "StaffAccountReactivateView",
         "StaffAccountUnlockView", "StaffAccountEmailView",

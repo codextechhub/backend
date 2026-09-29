@@ -1,8 +1,10 @@
-"""Approval-rule provisioning for leave requests.
+"""Approval-rule provisioning for leave requests and for new hires.
 
 Every absence a school records is a :class:`~schools.vs_staff.models.LeaveRequest`
 submitted to the workflow engine on creation, so an absence is never both filed
-and allowed by the same act. This module publishes the ladder that decides it.
+and allowed by the same act. At a school that approves each hire before inviting
+it, every new staff record is submitted the same way. This module publishes the
+ladders that decide both, each with an approver group of its own.
 
 **Per tenant only, and there is no platform-wide fallback.** A WORKFLOW_GROUP
 stage cannot live on a global template, because a group is owned by one school
@@ -25,6 +27,10 @@ create a group is the right number.
 from __future__ import annotations
 
 from .constants import (
+    HIRE_APPROVER_GROUP_CODE,
+    HIRE_DOCUMENT_TYPE,
+    HIRE_TEMPLATE_CODE,
+    HIRE_TEMPLATE_NAME,
     LEAVE_APPROVER_GROUP_CODE,
     LEAVE_DOCUMENT_TYPE,
     LEAVE_TEMPLATE_CODE,
@@ -34,7 +40,7 @@ from .constants import (
 TEMPLATE_LABEL = "leave request"
 
 
-def _default_stages_payload(*, group_code: str) -> list:
+def _default_stages_payload(*, group_code: str, label: str = "Leave approval") -> list:
     """One stage: somebody the school nominated says yes or no.
 
     One stage rather than two, which is where this differs from money. A payout
@@ -65,7 +71,7 @@ def _default_stages_payload(*, group_code: str) -> list:
     return [
         {
             "code": "approve",
-            "label": "Leave approval",
+            "label": label,
             "kind": "APPROVAL",
             "order": 10,
             "approver_source": "WORKFLOW_GROUP",
@@ -117,6 +123,50 @@ def ensure_tenant_approval_templates(tenant, *, created_by=None):
         description=f"Approval rule for a {TEMPLATE_LABEL} at this school.",
         created_by=created_by,
         stages_payload=_default_stages_payload(group_code=group.code),
+    )
+    return template, True
+
+
+def ensure_hire_approval_template(tenant, *, created_by=None):
+    """Give one school its New staff approval ladder. Returns ``(template, created)``.
+
+    Published when a school turns hire approval on, and again before a hire is
+    submitted, so a school whose setting was written some other way still has
+    a ladder to submit to. Non-destructive for the reason
+    :func:`ensure_tenant_approval_templates` gives.
+
+    The shape is the leave ladder's: one stage, one member's vote carries it,
+    scoped to the branch the new person is posted to, and an EMPTY group, so a
+    hire added before anybody is nominated parks rather than being invited
+    unseen. A person nominated later makes it actionable.
+    """
+    from vs_workflow.models import WorkflowTemplate
+    from vs_workflow.services.groups import ensure_approver_group
+    from vs_workflow.services.templates import publish_template
+
+    existing = WorkflowTemplate.all_objects.filter(
+        tenant=tenant, branch=None, document_type=HIRE_DOCUMENT_TYPE,
+        code=HIRE_TEMPLATE_CODE,
+    ).first()
+    if existing is not None:
+        return existing, False
+
+    group, _ = ensure_approver_group(
+        tenant, HIRE_APPROVER_GROUP_CODE,
+        description=(
+            "Approves each new member of staff before their invitation is sent. "
+            "Empty until somebody adds the people, roles or seats that should "
+            "approve a hire, so new staff wait until then."
+        ),
+    )
+    template = publish_template(
+        tenant=tenant, branch=None, document_type=HIRE_DOCUMENT_TYPE,
+        code=HIRE_TEMPLATE_CODE, name=HIRE_TEMPLATE_NAME,
+        description="Approval rule for a new member of staff at this school.",
+        created_by=created_by,
+        stages_payload=_default_stages_payload(
+            group_code=group.code, label="New staff approval",
+        ),
     )
     return template, True
 

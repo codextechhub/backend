@@ -340,7 +340,8 @@ class StaffResendInvitationView(StaffViewMixin, APIView):
     Refused for any account that has already been activated, with 422 rather
     than a silent success: an invitation that has been used is not an invitation
     any more, and telling a school one was resent when nothing was sent is worse
-    than refusing.
+    than refusing. Refused too for a hire still awaiting approval
+    (``HIRE_AWAITING_APPROVAL``), which has no invitation until it is approved.
 
     The key moved with the create. Resending is the same act as inviting, aimed
     at the same account, so it needs the same key: leaving it on
@@ -358,9 +359,12 @@ class StaffResendInvitationView(StaffViewMixin, APIView):
         from vs_user.models import User
         from vs_user.services.invitation import InvitationService
 
-        from ..exceptions import InvitationAlreadyAccepted
+        from ..constants import EmploymentStatus
+        from ..exceptions import HireAwaitingApproval, InvitationAlreadyAccepted
 
         staff = self.get_staff_for_write(pk)
+        if staff.employment_status == EmploymentStatus.PENDING_APPROVAL:
+            raise HireAwaitingApproval()
         if staff.user.status != User.Status.PENDING:
             raise InvitationAlreadyAccepted(
                 "This invitation has already been accepted, so there is nothing "
@@ -390,21 +394,31 @@ class StaffInvitationRevokeView(StaffViewMixin, APIView):
     invitation, and inventing one would tell somebody they had been un-hired by
     a school they had not joined.
 
+    A hire still awaiting approval has no invitation to revoke: the same call
+    withdraws the hire, cancelling its approval and closing it as a refused
+    hire is closed.
+
     docstring-name: Revoke a staff invitation
     """
 
     rbac_permission = PERM_TRANSITION
 
     def post(self, request, pk):
+        from ..constants import EmploymentStatus
+
         staff = self.get_staff_for_write(pk)
         payload = RevokeInvitationSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
+        awaiting = staff.employment_status == EmploymentStatus.PENDING_APPROVAL
         invitations.revoke(
             staff, reason=payload.validated_data["reason"],
             actor=request.user, request=request,
         )
         return success_response(
-            message="Invitation withdrawn. The link no longer works.",
+            message=(
+                "Hire withdrawn before it was approved. Nothing was sent to them."
+                if awaiting else "Invitation withdrawn. The link no longer works."
+            ),
             data=StaffDetailSerializer(
                 self.get_staff(pk), context=self.serializer_context(),
             ).data,

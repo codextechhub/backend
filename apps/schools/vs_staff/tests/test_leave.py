@@ -97,13 +97,14 @@ class FilingTests(LeaveFixture):
             "value": "Travelling for a family ceremony.",
         }, items)
 
-    def test_days_defaults_to_the_inclusive_calendar_span(self):
+    def test_days_default_to_the_working_days_in_the_range(self):
+        """22 December to 2 January is twelve days and ten of them are weekdays."""
         self.post(self.admin, "staff-leave", self.body(), pk=self.eze.pk)
         row = LeaveRequest.all_objects.get(staff=self.eze)
-        self.assertEqual(row.days, 12)
+        self.assertEqual(row.days, 10)
 
-    def test_a_school_may_correct_the_day_count(self):
-        """Working days are not calendar days and nothing records a teaching week."""
+    def test_a_caller_may_send_its_own_day_count(self):
+        """The count the school works out is a default, not a rule."""
         self.post(
             self.admin, "staff-leave", self.body(days=8), pk=self.eze.pk,
         )
@@ -336,9 +337,9 @@ class ReportingTests(LeaveFixture):
         taken = leave_service.days_taken(self.eze)
         self.assertEqual(taken, [{"leave_type": "ANNUAL", "days": 5}])
 
-    def test_the_payload_says_there_is_no_balance(self):
+    def test_the_payload_says_what_the_balances_count(self):
         response = self.get(self.admin, "staff-leave", pk=self.eze.pk)
-        self.assertIn("no balance", response.data["data"]["balance_note"])
+        self.assertIn("per academic session", response.data["data"]["balance_note"])
 
     def test_completed_is_derived_and_never_stored(self):
         """An approved absence whose end date has passed reads Completed.

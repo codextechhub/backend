@@ -22,7 +22,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field as dc_field
 
-from .constants import EmploymentType
+from .constants import EmploymentStatus, EmploymentType
 from .services.numbers import staff_number_taken
 from .services.roles import ONBOARDING_ROLE_KEYS, ONBOARDING_ROLE_REFUSAL
 
@@ -310,7 +310,38 @@ def resolve_row(payload: dict, *, tenant, batch_branch=None, multi_branch=False,
     # Blank at a multi-branch school is not an error: across the whole school is
     # a real posting, and a registrar genuinely has it.
 
+    _check_staff_number(row, tenant)
     return row
+
+
+def _check_staff_number(row, tenant):
+    """The staff-number rule for the row's posting, as row issues.
+
+    A blank the rule requires passes where the rule issues numbers and has a
+    series to continue, because the write issues one; uniqueness is checked
+    above, against the school and against the rest of the file.
+    """
+    from .services.number_policy import compile_pattern, read_policy, suggest_number
+
+    policy = read_policy(tenant, row.branch)
+    if not row.staff_number:
+        if policy.required and not (
+            policy.auto_issue and suggest_number(tenant, policy=policy, branch=row.branch)
+        ):
+            row.issues.append(RowIssue(
+                code="staff_number_required", field="staff_number",
+                message=(
+                    policy.hint
+                    or "This school requires a staff number for every member of staff."
+                ),
+            ))
+        return
+    compiled = compile_pattern(policy.pattern)
+    if compiled is not None and not compiled.match(row.staff_number):
+        row.issues.append(RowIssue(
+            code="staff_number_format", field="staff_number", value=row.staff_number,
+            message=policy.hint or "That staff number is not in this school's format.",
+        ))
 
 
 def _onboarding(tenant) -> bool:
@@ -336,11 +367,17 @@ def create_staff_from_row(row: ResolvedRow, *, tenant, created_by, request=None)
     row still reaches PENDING and still gets a real invitation, so the school
     can send it later from the same resend path that chases anybody else; the
     difference is visible on the staff list as the invitation's email status.
+
+    The school's staff rules apply as they do to a single add: a blank staff
+    number is issued where the rule issues numbers, and where the school
+    approves each hire the person is written Awaiting approval and submitted
+    to the ladder, their invitation created (and emailed, if the row said so)
+    only when the hire is approved.
     """
     from vs_user.serializers import UserCreateSerializer
     from vs_user.services.user import UserCreationService
 
-    from .services import creation
+    from .services import creation, hire, number_policy
 
     # The serializer reads the ACTOR off the request to decide the owning
     # tenant, and an import runs from a queue with no request in flight. The
@@ -362,20 +399,27 @@ def create_staff_from_row(row: ResolvedRow, *, tenant, created_by, request=None)
         context={"request": actor_request},
     )
     account.is_valid(raise_exception=True)
+    staff_number = number_policy.settle_number(tenant, row.staff_number, branch=row.branch)
+    held = hire.needs_approval(tenant)
     user = UserCreationService.create_pending(
         account.validated_data, created_by, request=request,
     )
-    # Same reason the single add does it: PENDING_APPROVAL is the platform
-    # hiring workflow's state, and a school approves nobody.
-    UserCreationService.finalize_invitation(
-        user=user, requested_by=created_by, send_email=row.send_invitation,
-    )
-    return creation.create_profile(
+    # Left at PENDING_APPROVAL only where the school approves each hire.
+    if not held:
+        UserCreationService.finalize_invitation(
+            user=user, requested_by=created_by, send_email=row.send_invitation,
+        )
+    profile = creation.create_profile(
         tenant=tenant, user=user, actor=created_by,
-        staff_number=row.staff_number, job_title=row.job_title,
+        staff_number=staff_number, job_title=row.job_title,
         employment_type=row.employment_type, hire_date=row.hire_date,
         branch=row.branch, middle_name=row.middle_name,
+        employment_status=EmploymentStatus.PENDING_APPROVAL if held else None,
+        invite_on_approval=row.send_invitation,
     )
+    if held:
+        hire.submit(profile, actor=created_by)
+    return profile
 
 
 def _payload_of(raw_row: dict, columns) -> dict:

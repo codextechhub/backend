@@ -27,7 +27,8 @@ from . import audit, employment
 @transaction.atomic
 def create_profile(*, tenant, user, actor, staff_number="", job_title="",
                    employment_type="", hire_date=None, branch=None,
-                   middle_name="", date_of_birth=None, photo=None):
+                   middle_name="", date_of_birth=None, photo=None,
+                   employment_status=None, invite_on_approval=True):
     """The staff record for an account that has just been created.
 
     Called inside the same transaction as the account, never before it: there is
@@ -36,6 +37,9 @@ def create_profile(*, tenant, user, actor, staff_number="", job_title="",
     Where the record starts is read from the account rather than fixed at
     Invited, because this is also the call that gives a record to somebody whose
     login is already in use. See :func:`services.employment.starting_status`.
+    ``employment_status`` overrides it for a hire held for approval, which
+    starts at Awaiting approval; ``invite_on_approval`` says whether that
+    approval emails the invitation.
 
     The posting is mirrored onto ``User.branch`` so the identity layer's own
     fallback narrowing keeps agreeing with the record.
@@ -46,7 +50,8 @@ def create_profile(*, tenant, user, actor, staff_number="", job_title="",
         tenant=tenant, user=user, branch=branch,
         staff_number=(staff_number or "").strip(), job_title=job_title or "",
         employment_type=employment_type or "",
-        employment_status=employment.starting_status(user),
+        employment_status=employment_status or employment.starting_status(user),
+        invite_on_approval=invite_on_approval,
         hire_date=hire_date, middle_name=middle_name or "",
         date_of_birth=date_of_birth, created_by=actor,
     )

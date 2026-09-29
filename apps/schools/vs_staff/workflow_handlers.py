@@ -1,11 +1,11 @@
-"""Workflow handler for the leave-request document type.
+"""Workflow handlers for the leave-request and new-hire document types.
 
 Registered from ``VsStaffConfig.ready()`` so the engine knows what to do when a
-leave instance is approved, rejected, withdrawn or cancelled. The engine never
+leave or hire instance is approved, rejected, withdrawn or cancelled. The engine never
 imports this app; this app registers itself with the engine, which is the same
 direction ``vs_finance``, ``vs_procurement`` and ``vs_payments`` run in.
 
-**The status column is written here and nowhere else.** No serializer sets it,
+**A leave request's status column is written here and nowhere else.** No serializer sets it,
 because a status a form can set is a status that disagrees with the instance
 that decided it: an administrator could mark their own leave approved without
 anybody voting, and the profile would show an approval the trail has no record
@@ -23,7 +23,19 @@ from vs_workflow.handlers.base import BaseWorkflowHandler
 from vs_workflow.handlers.registry import register_handler
 from vs_workflow.presentation import document_details, fields_section
 
-from .constants import LEAVE_DOCUMENT_TYPE, LEAVE_TEMPLATE_CODE, LeaveStatus, LeaveType
+from .constants import (
+    HIRE_DOCUMENT_TYPE,
+    HIRE_TEMPLATE_CODE,
+    LEAVE_DOCUMENT_TYPE,
+    LEAVE_TEMPLATE_CODE,
+    EmploymentStatus,
+    LeaveStatus,
+    LeaveType,
+)
+
+
+def _days(count) -> str:
+    return f"{count} day" if count == 1 else f"{count} days"
 
 
 @register_handler(LEAVE_DOCUMENT_TYPE)
@@ -38,6 +50,8 @@ class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
                        ConditionFieldType.CHOICE, tuple(LeaveType.choices)),
         ConditionField("document.days", "Days requested", "document",
                        ConditionFieldType.NUMBER),
+        ConditionField("document.over_allowance_by", "Days over the allowance",
+                       "document", ConditionFieldType.NUMBER),
     )
 
     def resolve_default_template_code(self, document) -> str:
@@ -61,24 +75,37 @@ class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
             name = " ".join(
                 part for part in (user.first_name, user.last_name) if part
             ).strip()
+        fields = [
+            {
+                "label": "Dates",
+                "value": f"{document.start_date} to {document.end_date}",
+            },
+        ]
+        over = getattr(document, "over_allowance_by", 0) or 0
+        if over:
+            fields.append({"label": "Over allowance", "value": _days(over)})
         return {
             "title": name or "Leave request",
             "subtitle": f"{document.get_leave_type_display()} leave",
-            "fields": [
-                {
-                    "label": "Dates",
-                    "value": f"{document.start_date} to {document.end_date}",
-                },
-            ],
+            "fields": fields,
         }
 
     def get_document_details(self, document) -> dict:
+        """The count, the job and the reason, and how far past the allowance it goes.
+
+        The allowance line appears only where the request exceeds it. Filing
+        over the allowance is allowed, so this is where the approver learns it.
+        """
         staff = getattr(document, "staff", None)
-        return document_details(fields_section("Leave details", [
+        rows = [
             ("Days", getattr(document, "days", 0)),
             ("Job title", getattr(staff, "job_title", "") or "-"),
             ("Reason", getattr(document, "note", "")),
-        ]))
+        ]
+        over = getattr(document, "over_allowance_by", 0) or 0
+        if over:
+            rows.append(("Over allowance by", _days(over)))
+        return document_details(fields_section("Leave details", rows))
 
     def validate_document(self, document, requested_by) -> None:
         """Only a pending request may be submitted.
@@ -190,3 +217,137 @@ class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
             row.status = LeaveStatus.PENDING
             row.decided_at = None
             row.save(update_fields=["status", "decided_at", "updated_at"])
+
+
+@register_handler(HIRE_DOCUMENT_TYPE)
+class StaffHireWorkflowHandler(BaseWorkflowHandler):
+    """A new member of staff, held back from their invitation until approved.
+
+    The document is the staff record. Approval sends the invitation; a
+    rejection, a withdrawal or a cancellation closes the hire. Both are carried
+    out by ``services.hire``, which does nothing to a record no longer awaiting
+    approval, so a late or repeated callback changes nothing.
+
+    The person who added somebody may approve the hire only when nobody else
+    is on the stage, the rule a role grant keeps: a school with one
+    administrator is not left with hires nobody can release, and a school with
+    two gets the other person's decision.
+    """
+
+    noun = "New staff member"
+    document_type = HIRE_DOCUMENT_TYPE
+    audience = DocumentAudience.SCHOOL
+    allows_requester_self_approval = True
+    self_approval_only_when_alone = True
+
+    def resolve_default_template_code(self, document) -> str:
+        return HIRE_TEMPLATE_CODE
+
+    def get_document_summary(self, document) -> dict:
+        """The person, the job and where they will work."""
+        user = getattr(document, "user", None)
+        name = ""
+        if user is not None:
+            name = " ".join(
+                part for part in (user.first_name, user.last_name) if part
+            ).strip()
+        branch = getattr(document, "branch", None)
+        return {
+            "title": name or "New member of staff",
+            "subtitle": document.job_title or "New member of staff",
+            "fields": [
+                {"label": "Posting", "value": branch.name if branch else "School-wide"},
+                {"label": "Starting role", "value": _starting_role_name(document)},
+            ],
+        }
+
+    def get_document_details(self, document) -> dict:
+        user = getattr(document, "user", None)
+        return document_details(fields_section("New staff details", [
+            ("Email", getattr(user, "email", "") or "-"),
+            ("Staff ID", document.staff_number or "-"),
+            ("Employment type", document.get_employment_type_display() or "-"),
+            ("Hire date", str(document.hire_date) if document.hire_date else "-"),
+        ]))
+
+    def validate_document(self, document, requested_by) -> None:
+        """Only a record awaiting approval may be submitted, once."""
+        from vs_workflow.exceptions import WorkflowError
+
+        if document.employment_status != EmploymentStatus.PENDING_APPROVAL:
+            raise WorkflowError(
+                "This person is not waiting for approval, so there is nothing to "
+                "submit.",
+                error_code="INVALID_DOCUMENT_STATE",
+            )
+
+    def _profile(self, instance):
+        from .models import StaffProfile
+
+        return (
+            StaffProfile.all_objects.select_related("user", "tenant")
+            .filter(pk=instance.document_object_id).first()
+        )
+
+    def _actor(self, context):
+        from vs_user.models import User
+
+        actor_id = (context or {}).get("actor_id")
+        return User.objects.filter(pk=actor_id).first() if actor_id else None
+
+    def on_approved(self, instance, context: dict) -> None:
+        from .services import hire
+
+        profile = self._profile(instance)
+        if profile is not None:
+            hire.approve(profile, requested_by=instance.requested_by)
+
+    def _close(self, instance, context, reason):
+        from .services import hire
+
+        profile = self._profile(instance)
+        if profile is not None:
+            hire.close(profile, reason=reason, actor=self._actor(context))
+
+    def on_rejected(self, instance, context: dict) -> None:
+        self._close(instance, context, "Hire not approved")
+
+    def on_withdrawn(self, instance, context: dict) -> None:
+        self._close(instance, context, "Hire withdrawn before approval")
+
+    def on_cancelled(self, instance, context: dict) -> None:
+        reason = ((context or {}).get("reason") or "").strip()
+        self._close(instance, context, reason or "Hire cancelled before approval")
+
+    def reversal_block_reason(self, document) -> str | None:
+        """Why a decided hire cannot be reopened, or ``None`` while it waits.
+
+        An approval sends an invitation the person may already have opened, and
+        a rejection closes the account for good. Neither comes back with the
+        engine's record of the vote: an approved hire is withdrawn by revoking
+        the invitation, and a closed one is added again.
+        """
+        if document is None:
+            return None
+        status = document.employment_status
+        if status == EmploymentStatus.PENDING_APPROVAL:
+            return None
+        if status == EmploymentStatus.TERMINATED and document.user.status == "REJECTED":
+            return (
+                "This hire has already been closed and its account cannot be "
+                "reopened, so the decision cannot be undone. Add the person again "
+                "instead."
+            )
+        return (
+            "This person has already been sent their invitation, so the approval "
+            "cannot be undone. Revoke the invitation instead."
+        )
+
+
+def _starting_role_name(profile) -> str:
+    """The role the hire was given at creation, as the school names it."""
+    grant = (
+        profile.user.tenant_role_assignments.filter(assignment_status="ACTIVE")
+        .select_related("role").order_by("pk").first()
+    )
+    return grant.role.name if grant is not None else "-"
