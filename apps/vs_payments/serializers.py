@@ -1,10 +1,12 @@
 """DRF serializers for the gateway records (read views + action responses)."""
 from __future__ import annotations
 
+import re
+
 from rest_framework import serializers
 
 from vs_finance.money import format_naira
-from vs_rbac.field_enforcement import FieldAccessMixin
+from vs_rbac.field_enforcement import FieldAccessMixin, can_read
 
 from .models import (
     CollectionIntent,
@@ -123,12 +125,42 @@ class PayoutBatchSerializer(serializers.ModelSerializer):
         return format_naira(obj.total_amount)
 
 
+#: The ``metadata`` keys of a gateway action a reader of the log is shown.
+#:
+#: The column is free-form JSON that every gateway action writes into, so what it
+#: holds is whatever a writer put there, today or in a row written years ago:
+#: internal record ids, per-line breakdowns, and anything a later writer adds. The
+#: log shows a named set of figures and codes that explain the action on its own
+#: row, and never the column itself.
+EVENT_METADATA_FIELDS = (
+    "channel",  # How a collection was taken (checkout, virtual account).
+    "error_code",  # Why a rejected action was refused.
+    "gross_amount", "wht_amount", "transfer_amount", "wht_source",  # A payout's money.
+    "submitted", "failed",  # A batch submission's outcome counts.
+    "overturned_status",  # The no-money answer a confirmed collection overturned.
+    "paid_on", "booked_on", "booked_late_reason",  # When money moved and was booked.
+)
+
+#: Actions whose message names a virtual account by its number.
+_VIRTUAL_ACCOUNT_ACTIONS = ("VIRTUAL_ACCOUNT_CREATED", "VIRTUAL_ACCOUNT_STATUS_CHANGED")
+_VIRTUAL_ACCOUNT_NUMBER = re.compile(r"^Virtual account \S+ ")
+
+
 class PaymentEventSerializer(serializers.ModelSerializer):
-    """Read serializer for the append-only gateway action log (transactions log)."""
+    """Read serializer for the append-only gateway action log (transactions log).
+
+    ``metadata`` carries only :data:`EVENT_METADATA_FIELDS`, and only scalar values
+    of them. A virtual account's actions name its account number in the message;
+    for a caller whose roles hide ``payments.virtual_account.account_number`` the
+    number is left out of the message, as it is absent from the account's own
+    record, so the log says no more than the record would.
+    """
 
     entity_code = serializers.CharField(source="entity.code", read_only=True, default=None)
     action_display = serializers.CharField(source="get_action_display", read_only=True)
     actor_email = serializers.CharField(source="actor_user.email", read_only=True, default=None)
+    message = serializers.SerializerMethodField()
+    metadata = serializers.SerializerMethodField()
 
     class Meta:
         model = PaymentEvent
@@ -136,6 +168,26 @@ class PaymentEventSerializer(serializers.ModelSerializer):
             "id", "entity_code", "provider", "action", "action_display", "reference",
             "succeeded", "message", "metadata", "actor_email", "created_at",
         ]
+
+    def get_message(self, obj):
+        message = obj.message or ""
+        if obj.action in _VIRTUAL_ACCOUNT_ACTIONS and not self._reads_account_numbers():
+            return _VIRTUAL_ACCOUNT_NUMBER.sub("Virtual account ", message)
+        return message
+
+    def get_metadata(self, obj):
+        stored = obj.metadata if isinstance(obj.metadata, dict) else {}
+        return {
+            key: stored[key] for key in EVENT_METADATA_FIELDS
+            if key in stored and isinstance(stored[key], (str, int, float, bool))
+        }
+
+    def _reads_account_numbers(self) -> bool:
+        """Evaluated once per page; the access map behind it is cached on the request."""
+        if not hasattr(self, "_account_numbers_readable"):
+            self._account_numbers_readable = can_read(
+                self.context.get("request"), "payments.virtual_account.account_number")
+        return self._account_numbers_readable
 
 
 class PayoutBatchSummarySerializer(serializers.ModelSerializer):
