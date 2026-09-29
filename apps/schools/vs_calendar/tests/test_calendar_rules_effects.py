@@ -14,6 +14,7 @@ from vs_config.services.resolution import set_value
 
 from ..models import (
     CalendarEvent,
+    ClassTimetable,
     EventType,
     Exam,
     Period,
@@ -379,6 +380,73 @@ class RoomRequiredTests(_EffectsBase):
             response.data["error"]["detail"]["items"],
             ["Monday Period 1 - Mathematics has no teacher."],
         )
+
+
+# ── publishing a week that holds a day no longer taught ─────────────────────
+
+class DayNotTaughtPublishTests(_EffectsBase):
+    """Brightfield taught Saturdays, gave JSS1 A Saturday lessons, then stopped."""
+
+    def strand(self, *days):
+        self.configure(teaching_days=[1, 2, 3, 4, 5, 6, 7])
+        ids = [self.lesson(day_of_week=day).data["data"]["id"] for day in days]
+        self.configure(teaching_days=[1, 2, 3, 4, 5])
+        return ids
+
+    def test_a_lesson_on_a_day_no_longer_taught_blocks_publishing(self):
+        (saturday,) = self.strand(6)
+        self.lesson(day_of_week=1)
+        response = self.publish()
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(
+            response.data["error"]["code"], "TIMETABLE_LESSON_ON_DAY_NOT_TAUGHT",
+        )
+        self.assertEqual(
+            response.data["message"],
+            "JSS1 A has 1 lesson on Saturday, which is not a teaching day. Move "
+            "or remove it on the timetable, and publish again.",
+        )
+        self.assertEqual(response.data["error"]["detail"], {
+            "school_class": "JSS1 A",
+            "days": [6],
+            "items": ["Saturday Period 1 - Mathematics."],
+            "slot_ids": [saturday],
+        })
+        self.assertIsNone(
+            ClassTimetable.objects.filter(school_class=self.jss1a).first().published_at,
+        )
+
+    def test_several_lessons_on_several_days_are_named_together(self):
+        ids = self.strand(6, 7)
+        response = self.publish()
+        self.assertEqual(
+            response.data["message"],
+            "JSS1 A has 2 lessons on Saturday and Sunday, which are not teaching "
+            "days. Move or remove them on the timetable, and publish again.",
+        )
+        self.assertEqual(response.data["error"]["detail"]["days"], [6, 7])
+        self.assertEqual(response.data["error"]["detail"]["slot_ids"], ids)
+
+    def test_it_publishes_once_the_lesson_is_removed(self):
+        (saturday,) = self.strand(6)
+        self.assertEqual(self.publish().status_code, 409)
+        removed = self.delete(self.admin, "calendar-slot-detail", pk=saturday)
+        self.assertEqual(removed.status_code, 200, removed.data)
+        response = self.publish()
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["status"], PublishState.PUBLISHED)
+
+    def test_a_gap_is_still_named_first(self):
+        self.strand(6)
+        self.lesson(day_of_week=1, teacher=None)
+        self.assertEqual(
+            self.publish().data["error"]["code"], "TIMETABLE_INCOMPLETE",
+        )
+
+    def test_another_class_is_not_blocked(self):
+        self.strand(6)
+        self.lesson(school_class=self.jss1b.pk, day_of_week=1, room=self.room_a2.pk)
+        self.assertEqual(self.publish(self.jss1b).status_code, 200)
 
 
 # ── the teaching duty ───────────────────────────────────────────────────────

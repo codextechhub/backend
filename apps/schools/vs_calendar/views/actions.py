@@ -143,9 +143,10 @@ class ClassTimetableClearView(_ClassScoped):
 class ClassTimetablePublishView(_ClassScoped):
     """POST /v1/academics/timetable/classes/<class_id>/publish/
 
-    Refuses an incomplete grid, a grid holding a lesson whose teacher has no
-    teaching duty for it (under the school's REFUSE), and a grid with a clash,
-    in that order; see ``services.publishing``. A grid that publishes answers
+    Refuses an incomplete grid, a grid holding a lesson on a day the school
+    does not teach, a grid holding a lesson whose teacher has no teaching duty
+    for it (under the school's REFUSE), and a grid with a clash, in that order;
+    see ``services.publishing``. A grid that publishes answers
     with ``warnings``: the ``TEACHER_HAS_NO_DUTY`` lessons it published under
     the school's WARN, and an empty list otherwise.
 

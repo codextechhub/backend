@@ -61,9 +61,10 @@ SLOT_RULE_KEYS = (CFG_TEACHING_DAYS, CFG_TEACHER_DUTY_MATCH)
 def assert_day_taught(day_of_week, teaching_days, *, what="lesson"):
     """Refuse a *what* placed on a weekday the school does not teach.
 
-    Every grid draws the school's teaching days and no others, so a row on
-    another day would be stored, never shown, and still counted in clashes and
-    at the publish gate.
+    Every grid is drawn on the school's teaching days, so a row on another day
+    is not a place a school means to put anything. A row already there from
+    before the day stopped being taught is drawn, flagged, and blocks
+    publishing (``services.publishing``).
     """
     if day_of_week is None or day_of_week in teaching_days:
         return

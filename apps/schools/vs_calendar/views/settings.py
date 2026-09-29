@@ -32,8 +32,8 @@ class CalendarRulesView(CalendarViewMixin, APIView):
     the audit trail, and answers with the GET body. Refusals are 400s keyed on
     the field, in sentences. Nothing already stored changes: an event keeps its
     own ``closes_school``, a lesson on a day the school stops teaching stays
-    (and is drawn, flagged, until it is cleared), and a published timetable
-    stays published.
+    (drawn, flagged, and blocking the next publish of its class until it is
+    moved or removed), and a published timetable stays published.
 
     docstring-name: Calendar and timetable settings
     """

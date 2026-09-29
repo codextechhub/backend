@@ -165,8 +165,9 @@ class CalendarRules:
 
         The teaching days, plus any day in *held*: the days a grid actually
         holds lessons on. A lesson on a day the school has stopped teaching is
-        drawn rather than hidden, so it can be seen and cleared; while it is
-        hidden it still counts in clashes and at the publish gate. The order
+        drawn rather than hidden, so it can be seen and cleared: it still
+        counts in clashes, and it blocks publishing until it is moved or
+        removed. The order
         starts from ``week_starts_on``, so a Sunday-start school teaching
         Sunday to Thursday draws Sunday first.
         """

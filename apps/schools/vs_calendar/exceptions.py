@@ -248,6 +248,22 @@ class TimetableIncomplete(CalendarError):
     http_status = 409
 
 
+class TimetableLessonOnDayNotTaught(CalendarError):
+    """Lessons on a weekday the school no longer teaches.
+
+    Such a lesson was saved while the day was taught. The grids still draw it,
+    flagged, so it can be moved or removed; a published timetable must not
+    carry a lesson on a day the school is shut.
+    """
+
+    error_code = "TIMETABLE_LESSON_ON_DAY_NOT_TAUGHT"
+    default_message = (
+        "Some lessons are on a day that is not a teaching day. Move or remove "
+        "them on the timetable, and publish again."
+    )
+    http_status = 409
+
+
 class TimetableHasDutyGaps(CalendarError):
     """Lessons whose teacher has no teaching duty for them, under REFUSE.
 

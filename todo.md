@@ -1705,10 +1705,16 @@ docs/timetable-api-plan.md section 12.
   409 BELL_SCHEDULE_NOT_EMPTY, 422 BELL_SCHEDULE_EMPTY.
 - The publish answer carries warnings; the TIMETABLE_INCOMPLETE sentence says
   "no teacher" alone when rooms are not required.
+- A lesson on a day the school no longer teaches blocks publishing its class:
+  409 TIMETABLE_LESSON_ON_DAY_NOT_TAUGHT ("JSS1 A has 1 lesson on Saturday,
+  which is not a teaching day. Move or remove it on the timetable, and publish
+  again."), detail {school_class, days, items, slot_ids}, checked after
+  incompleteness and before the duty check. Exam timetables are unaffected.
 MUST SAY: M14 the seven settings and the route, its read and write rules,
 every refusal, the day columns and is_teaching_day, DAY_NOT_TAUGHT, the
-closes-school defaults and that stored events never change, the three-step
-publish gate and its warnings, the duty match modes and their codes, the
+closes-school defaults and that stored events never change, the four-step
+publish gate (incomplete, day not taught, duty, clashes) and its warnings,
+the duty match modes and their codes, the
 invigilator rule and picker, and the bell schedule copy with its branch rule;
 M06 the seven definitions and their defaults; M12 that teaching duties can
 gate the timetable; M10 the blank Closes School cell and the reworded refusal;

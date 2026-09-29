@@ -660,8 +660,8 @@ keyed on the field:
   week order from `week_starts_on` (a Sunday-start school teaching Sunday to
   Thursday draws Sunday first). Each day carries `is_teaching_day`. A day the
   school no longer teaches but the grid still holds a lesson on is drawn too,
-  with `is_teaching_day: false`, so the lesson can be seen and cleared: it
-  still counts in clashes and at the publish gate.
+  with `is_teaching_day: false`, so the lesson can be moved or removed: it
+  still counts in clashes, and it blocks publishing its class (12.4).
 - **Writes.** A lesson (slot create, slot move, grid save) or a period
   (create, or a move to another day) on a day the school does not teach is
   refused with 422 `DAY_NOT_TAUGHT`, keyed `day_of_week`: "Saturday is not one
@@ -692,14 +692,22 @@ The gate refuses, in this order:
    `room_required_to_publish` false only the teacher counts: "1 lesson has no
    teacher yet. Fill it in and publish again.". `detail.items` names each
    ("Monday Period 1 - Mathematics has no room."), `detail.slot_ids` lists them.
-2. 409 `TIMETABLE_TEACHER_HAS_NO_DUTY`, under REFUSE only: "1 lesson has a
+2. 409 `TIMETABLE_LESSON_ON_DAY_NOT_TAUGHT`, a lesson on a day the school no
+   longer teaches: "JSS1 A has 1 lesson on Saturday, which is not a teaching
+   day. Move or remove it on the timetable, and publish again." (plural: "JSS1
+   A has 2 lessons on Saturday and Sunday, which are not teaching days. Move or
+   remove them on the timetable, and publish again."). `detail`:
+   `{"school_class": "JSS1 A", "days": [6], "items": ["Saturday Period 1 -
+   Mathematics."], "slot_ids": [412]}`. Exam timetables are not affected: a
+   paper is dated inside its exam period and never reads the teaching days.
+3. 409 `TIMETABLE_TEACHER_HAS_NO_DUTY`, under REFUSE only: "1 lesson has a
    teacher with no teaching duty for it. Give the duty in Teaching duties, or
    change the teacher, and publish again." (plural: "N lessons have a teacher
    with no teaching duty for them. Give the duties in Teaching duties, or
    change the teachers, and publish again."). `detail.items`: "Monday Period 1
    - Mathematics: Chukwuemeka Eze has no teaching duty for JSS1 A
    Mathematics."; `detail.slot_ids`.
-3. 409 `TIMETABLE_HAS_CLASHES`, unchanged.
+4. 409 `TIMETABLE_HAS_CLASHES`, unchanged.
 
 A publish that succeeds answers `{status, status_label, published_at,
 warnings}`; `warnings` lists the `TEACHER_HAS_NO_DUTY` lessons published under
@@ -730,7 +738,7 @@ mismatch.
   teaching duty for JSS1 B. Copy without teachers, or give them the duties in
   Teaching duties first.", `detail.items` naming each. The grid read still
   lists the warnings, because a duty withdrawn after the save leaves such a
-  lesson behind, and publishing refuses it (12.4).
+  lesson behind, and publishing refuses it (12.4, step 3).
 
 ### 12.6 Invigilators
 

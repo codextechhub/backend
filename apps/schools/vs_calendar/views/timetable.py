@@ -207,7 +207,8 @@ class ClassTimetableDetailView(CalendarViewMixin, APIView):
 
     GET returns the whole grid: one day per teaching day of the school, in the
     order its week starts, plus any day the class still holds a lesson on,
-    flagged ``is_teaching_day: false`` so it can be seen and cleared. Its
+    flagged ``is_teaching_day: false`` so it can be moved or removed (it
+    blocks publishing until it is). Its
     ``warnings`` are the grid's clashes and, under the school's WARN or REFUSE,
     its ``TEACHER_HAS_NO_DUTY`` lessons. PUT replaces it in one transaction
     and writes one audit event, not one per cell: replacing a grid is one
