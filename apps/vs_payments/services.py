@@ -1600,9 +1600,24 @@ def _refresh_batch(payout):
         )
 
 
+def _paying_branch_id(account):
+    """The branch of the bank account behind ledger ``account``, where a payout's money left.
+
+    A ledger account backs at most one bank account. The result is the bank
+    account's own branch, and is None only where the ledger account backs no bank
+    account or the bank account names no branch.
+    """
+    bank = getattr(account, "bank_account", None)
+    return getattr(bank, "branch_id", None)
+
 # Support the book vendor payment workflow.
 def _book_vendor_payment(payout, *, actor_user=None, paid_at=None):
     """Create + post the ``vs_procurement.VendorPayment`` for a paid payout.
+
+    The payment belongs to the branch of the bank account the money left
+    (:func:`_paying_branch_id`), so a payout from Ikeja's bank books its journal to
+    Ikeja and settles Ikeja's open bills for the vendor, oldest first (see
+    :func:`vs_procurement.payables._auto_settlement_candidates`).
 
     Gross is the payout line's amount, WHT is the figure resolved when the line
     was created, and net (what the bank is credited with) is their difference,
@@ -1631,15 +1646,18 @@ def _book_vendor_payment(payout, *, actor_user=None, paid_at=None):
     payment_date, dating = _booking_date(payout.entity, paid_at)
     if dating:  # Keep the true paid day beside the payment, however it was booked.
         payout.metadata = {**metadata, **dating}
+    paid_from = payout.source_account or resolve_account(
+        payout.entity, CASH_BANK_CODE, label="Cash & bank",
+    )
     vp = VendorPayment.objects.create(
         entity=payout.entity, vendor=vendor, payment_date=payment_date,
+        # The branch whose bank the money left: its journal and the bills it settles.
+        branch_id=_paying_branch_id(paid_from),
         currency=payout.currency, method=PaymentMethod.BANK_TRANSFER,
         gross_amount=payout.amount, wht_amount=wht,
         net_amount=payout.amount - wht,
         wht_tax_code=wht_code, wht_source=metadata.get("wht_source", ""),
-        payment_account=payout.source_account or resolve_account(
-            payout.entity, CASH_BANK_CODE, label="Cash & bank",
-        ),
+        payment_account=paid_from,
         reference=payout.reference,
         narration=payout.narration or f"Gateway payout {payout.reference}",
         # System-approved: this vendor payment records a disbursement the gateway
