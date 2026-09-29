@@ -70,11 +70,10 @@ class PaymentsNameOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         self.assertEqual(refused.status_code, 400, refused.data)
         self.assertIn(f"No invoice '{lekki_invoice.pk}' in this entity.", str(refused.data))
 
-    def test_a_payment_request_for_an_invoice_alone_deposits_into_the_invoices_branch(self):
-        """No customer named: the invoice's customer decides the branch, as it decides the receipt's."""
+    def _collections_ledgers(self):
+        """A bank ledger per branch, Ikeja's and Lekki's, keyed by branch tag."""
         from vs_finance.models import BankAccount
 
-        lekki_invoice = self.invoice(self.books, self.lekki_customer, self.lekki)
         cash_type = Account.objects.get(entity=self.books, code="1000").account_type
         ledgers = {}
         for tag, branch in (("IKJ", self.ikeja), ("LEK", self.lekki)):
@@ -83,28 +82,112 @@ class PaymentsNameOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
                 account_type=cash_type, is_postable=True)
             BankAccount.objects.create(entity=self.books, name=f"Collections {tag}",
                                        branch=branch, gl_account=ledgers[tag])
+        return ledgers
+
+    def _clerk_for_ikeja_and_lekki(self):
         n = next(_clerks)
         user = self.user_for(self.tenant, f"clerk-{n}@corona.test")
         for branch in (self.ikeja, self.lekki):
             self.grant(user, "payments.collection.create", tenant=self.tenant,
                        role_key=f"clerk-{n}-{branch.pk}", branch=branch)
-        okafor = TenantAPIClient(user=user)
+        return TenantAPIClient(user=user)
 
-        refused = self.post(okafor, "collections/", {
-            "amount": 5_000, "invoice": lekki_invoice.pk,
-            "deposit_account": ledgers["IKJ"].code,
+    def test_a_payment_request_for_an_invoice_deposits_into_the_invoices_branch(self):
+        """The invoice decides the branch, as it decides the receipt's, whoever is named.
+
+        The Okafor family is filed under Ikeja and owes a Lekki invoice. The money
+        is Lekki's, so it deposits into Lekki's bank whether the request names the
+        family or only the invoice, and Ikeja's bank is refused. A clerk covering
+        both branches is held to it, because the rule belongs to the money.
+        """
+        okafor = self.customer(self.books, "COKAF", self.ikeja)
+        lekki_invoice = self.invoice(self.books, okafor, self.lekki)
+        ledgers = self._collections_ledgers()
+        clerk = self._clerk_for_ikeja_and_lekki()
+
+        for named in ({"customer": "COKAF"}, {}):
+            with self.subTest(named=named):
+                refused = self.post(clerk, "collections/", {
+                    "amount": 5_000, "invoice": lekki_invoice.pk,
+                    "deposit_account": ledgers["IKJ"].code, **named,
+                })
+                self.assertEqual(refused.status_code, 400, refused.data)
+                self.assertIn("This payment request belongs to Lekki Branch. "
+                              "Deposit it into a Lekki Branch account or a school-wide one.",
+                              str(refused.data))
+                self.assertFalse(CollectionIntent.objects.filter(invoice=lekki_invoice).exists())
+
+                accepted = self.post(clerk, "collections/", {
+                    "amount": 5_000, "invoice": lekki_invoice.pk,
+                    "deposit_account": ledgers["LEK"].code, **named,
+                })
+                self.assertNotIn("belongs to", str(accepted.data))
+
+    def test_a_payment_request_naming_no_invoice_deposits_into_the_customers_branch(self):
+        """A top-up has no invoice, so the family's own branch takes the money."""
+        self.customer(self.books, "COKAF", self.ikeja)
+        ledgers = self._collections_ledgers()
+        clerk = self._clerk_for_ikeja_and_lekki()
+
+        refused = self.post(clerk, "collections/", {
+            "amount": 5_000, "customer": "COKAF", "deposit_account": ledgers["LEK"].code,
         })
         self.assertEqual(refused.status_code, 400, refused.data)
-        self.assertIn("This payment request belongs to Lekki Branch. "
-                      "Deposit it into a Lekki Branch account or a school-wide one.",
-                      str(refused.data))
-        self.assertFalse(CollectionIntent.objects.filter(invoice=lekki_invoice).exists())
+        self.assertIn("This payment request belongs to Ikeja Branch.", str(refused.data))
 
-        accepted = self.post(okafor, "collections/", {
-            "amount": 5_000, "invoice": lekki_invoice.pk,
-            "deposit_account": ledgers["LEK"].code,
+        accepted = self.post(clerk, "collections/", {
+            "amount": 5_000, "customer": "COKAF", "deposit_account": ledgers["IKJ"].code,
         })
         self.assertNotIn("belongs to", str(accepted.data))
+
+    def _tola_and_the_okafors(self):
+        """Tola keeps Lekki's books; the Okafors are filed under Ikeja and owe Lekki."""
+        from vs_finance.models import InvoiceLine
+        from vs_finance.receivables import post_invoice
+
+        okafor = self.customer(self.books, "COKAF", self.ikeja)
+        invoice = self.invoice(self.books, okafor, self.lekki)
+        InvoiceLine.objects.filter(invoice=invoice).update(
+            revenue_account=Account.objects.get(entity=self.books, code="4100"))
+        post_invoice(invoice)
+        n = next(_clerks)
+        tola = TenantAPIClient(user=self.grant(
+            self.user_for(self.tenant, f"tola-{n}@corona.test"), "payments.collection.create",
+            tenant=self.tenant, role_key=f"tola-{n}", branch=self.lekki))
+        return tola, invoice
+
+    def test_the_family_owing_the_invoice_may_be_named_from_the_invoices_branch(self):
+        """Tola names the Okafors beside their Lekki invoice and starts the checkout."""
+        from .providers import registry
+        from .providers.fake import FakeProvider
+
+        registry.register("PAYSTACK", FakeProvider(secret="test-secret"))
+        self.addCleanup(registry.unregister)
+        tola, invoice = self._tola_and_the_okafors()
+
+        for customer in ("COKAF", str(invoice.customer_id)):
+            with self.subTest(customer=customer):
+                accepted = self.post(tola, "collections/", {
+                    "amount": 5_000, "customer": customer, "invoice": invoice.pk})
+                self.assertEqual(accepted.status_code, 201, accepted.data)
+        self.assertEqual(
+            set(CollectionIntent.objects.filter(invoice=invoice)
+                .values_list("customer__code", flat=True)), {"COKAF"})
+
+    def test_another_branchs_family_is_unknown_unless_it_owes_the_named_invoice(self):
+        """Without the invoice, or beside one they do not owe, the Okafors do not exist to Tola."""
+        tola, invoice = self._tola_and_the_okafors()
+        self.customer(self.books, "CADE", self.ikeja)
+
+        for body in ({"customer": "COKAF"},
+                     {"customer": "CADE", "invoice": invoice.pk},
+                     {"customer": "CIKJP", "invoice": invoice.pk}):
+            with self.subTest(body=body):
+                refused = self.post(tola, "collections/", {"amount": 5_000, **body})
+                self.assertEqual(refused.status_code, 400, refused.data)
+                self.assertIn(f"No customer '{body['customer']}' in this entity.",
+                              str(refused.data))
+        self.assertFalse(CollectionIntent.objects.exists())
 
     def test_a_virtual_account_for_another_branchs_customer(self):
         refused = self.post(self.clerk("payments.virtual_account.create"),
@@ -339,6 +422,57 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
                 self.assertEqual(bursar.get(url).status_code, 200)
         own = f"/v1/payments/collections/{self.collections['COL-IKJ'].pk}/?entity={self.books.code}"
         self.assertEqual(clerk.get(own).status_code, 200)
+
+    def _okafor_collection(self):
+        """The Okafors, filed under Ikeja, paid a Lekki invoice online: Lekki's money."""
+        from django.utils import timezone
+
+        from .constants import CollectionStatus, PaymentAuditAction
+        from .models import PaymentEvent, WebhookEvent
+
+        okafor = self.customer(self.books, "COKAF", self.ikeja)
+        row = CollectionIntent.objects.create(
+            entity=self.books, provider="PAYSTACK", reference="COL-OKAF", amount=1_000,
+            customer=okafor, invoice=self.invoice(self.books, okafor, self.lekki),
+            status=CollectionStatus.SUCCEEDED, confirmed_at=timezone.now())
+        PaymentEvent.objects.create(
+            entity=self.books, action=PaymentAuditAction.COLLECTION_INITIATED,
+            reference="COL-OKAF")
+        WebhookEvent.objects.create(
+            provider="PAYSTACK", dedupe_key="wh-COL-OKAF", provider_reference="WH-COL-OKAF",
+            collection=row, status="FAILED")
+        return row
+
+    def test_a_collection_for_an_invoice_is_reached_by_the_invoices_branch(self):
+        """Tola keeps Lekki's books, so she sees and opens the Okafors' Lekki payment."""
+        okafor = self._okafor_collection()
+        tola = self.reader(branch=self.lekki)
+        detail = f"/v1/payments/collections/{okafor.pk}/?entity={self.books.code}"
+
+        self.assertEqual(tola.get(detail).status_code, 200)
+        for path, key in (("collections/", "reference"), ("movements/", "reference"),
+                          ("transactions/", "reference"),
+                          ("webhooks/?status=ALL", "provider_reference")):
+            with self.subTest(path=path):
+                self.assertIn("OKAF", " ".join(self.refs(tola, path, key)))
+        summary = self.get(tola, "collections/summary/")["data"]
+        self.assertEqual((summary["total"], summary["collected"]["kobo"]), (5, 5_000))
+
+    def test_a_collection_for_another_branchs_invoice_is_unknown_to_the_familys_branch(self):
+        """Ikeja files the Okafors, but the Lekki payment is not Ikeja's to see."""
+        okafor = self._okafor_collection()
+        clerk = self.reader(branch=self.ikeja)
+        detail = f"/v1/payments/collections/{okafor.pk}/?entity={self.books.code}"
+
+        self.assertEqual(clerk.get(detail).status_code, 404)
+        for path, key in (("collections/", "reference"), ("movements/", "reference"),
+                          ("transactions/", "reference"),
+                          ("webhooks/?status=ALL", "provider_reference")):
+            with self.subTest(path=path):
+                self.assertNotIn("OKAF", " ".join(self.refs(clerk, path, key)))
+        summary = self.get(clerk, "collections/summary/")["data"]
+        self.assertEqual((summary["total"], summary["collected"]["kobo"]), (3, 3_000))
+        self.assertEqual(self.reader(branch=None).get(detail).status_code, 200)
 
     def test_another_branchs_virtual_account_cannot_be_suspended(self):
         clerk = self.reader(branch=self.ikeja)

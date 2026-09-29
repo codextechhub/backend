@@ -44,6 +44,7 @@ from .constants import CollectionStatus, PayoutBatchStatus, PayoutStatus, Virtua
 from .exceptions import (
     DuplicateWebhookError,
     PaymentStateError,
+    PayoutApprovalRequiredError,
     ProviderError,
     ProviderNotConfiguredError,
     WebhookSignatureError,
@@ -249,21 +250,26 @@ class CollectionTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(inv.amount_paid, 0)
         self.assertEqual(customer_credit_balance(customer), 50000)  # held as credit
 
-    def test_collection_for_another_branchs_invoice_parks_as_credit(self):
-        """A receipt settles only its own branch's documents, and it still books.
-
-        The receipt takes the customer's branch (here school-wide) while the invoice
-        was raised at Lekki. Settling it would clear Lekki's receivable from another
-        branch's books, and refusing the booking would lose money the payer has
-        already sent, so it parks as customer credit.
-        """
+    def _okafor_at_ikeja(self):
+        """Books, an Ikeja-filed customer, and the school's Ikeja and Lekki branches."""
         from vs_rbac.tests.helpers import make_branch, make_school
 
         entity, customer, _ = self.build()
-        lekki = make_branch(
-            make_school(slug="pay-branches", name="Corona", status="ACTIVE"),
-            name="Lekki Branch",
-        )
+        school = make_school(slug="pay-branches", name="Corona", status="ACTIVE")
+        ikeja = make_branch(school, name="Ikeja Branch")
+        lekki = make_branch(school, name="Lekki Branch", is_main=False)
+        Customer.objects.filter(pk=customer.pk).update(branch=ikeja)
+        customer.refresh_from_db()
+        return entity, customer, ikeja, lekki
+
+    def test_collection_for_another_branchs_invoice_books_to_the_invoices_branch(self):
+        """Money paid against an invoice belongs to the branch that raised it.
+
+        The Okafor family is filed under Ikeja and pays a Lekki invoice online. The
+        receipt is Lekki's and clears the Lekki invoice at once, rather than landing
+        in Ikeja's books as credit that Lekki's invoice cannot reach.
+        """
+        entity, customer, _ikeja, lekki = self._okafor_at_ikeja()
         inv = self.make_posted_invoice(entity, customer, amount=50000)
         Invoice.objects.filter(pk=inv.pk).update(branch=lekki)
         inv.refresh_from_db()
@@ -275,10 +281,45 @@ class CollectionTests(_PaymentsFixtureMixin, TestCase):
 
         self.assertEqual(intent.status, CollectionStatus.SUCCEEDED)
         payment = Payment.objects.get(pk=intent.payment_id)
-        self.assertEqual((payment.status, payment.allocated_amount), ("POSTED", 0))
+        self.assertEqual((payment.status, payment.branch_id, payment.allocated_amount),
+                         ("POSTED", lekki.pk, 50000))
         inv.refresh_from_db()
-        self.assertEqual(inv.amount_paid, 0)
-        self.assertEqual(customer_credit_balance(customer), 50000)
+        self.assertEqual(inv.amount_paid, 50000)
+        self.assertEqual(customer_credit_balance(customer), 0)
+
+    def test_a_receipt_for_another_branchs_invoice_is_dated_on_that_branchs_day(self):
+        """The receipt's own branch dates it, not the family's.
+
+        With branch time zones, Ikeja and Lekki can be on different days at the
+        same instant, so the Okafors' receipt for a Lekki invoice must be dated on
+        Lekki's clock, the branch it belongs to, rather than on Ikeja's.
+        """
+        from unittest import mock
+
+        entity, customer, _ikeja, lekki = self._okafor_at_ikeja()
+        inv = self.make_posted_invoice(entity, customer, amount=50000)
+        Invoice.objects.filter(pk=inv.pk).update(branch=lekki)
+        inv.refresh_from_db()
+
+        intent = services.initiate_collection(
+            entity=entity, amount=50000, customer=customer, invoice=inv,
+        )
+        with mock.patch.object(
+            services, "_booking_date", wraps=services._booking_date,
+        ) as dated:
+            services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+
+        self.assertEqual(dated.call_args.kwargs["branch"], lekki.pk)
+
+    def test_collection_naming_no_invoice_books_to_the_customers_branch(self):
+        """A top-up names no invoice, so the family's own branch keeps the credit."""
+        entity, customer, ikeja, _lekki = self._okafor_at_ikeja()
+        intent = services.initiate_collection(entity=entity, amount=20000, customer=customer)
+        intent = services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+
+        payment = Payment.objects.get(pk=intent.payment_id)
+        self.assertEqual((payment.status, payment.branch_id), ("POSTED", ikeja.pk))
+        self.assertEqual(customer_credit_balance(customer), 20000)
 
     # Verify failed collection books nothing behavior.
     def test_failed_collection_books_nothing(self):
@@ -2516,6 +2557,61 @@ class PayoutBatchApprovalTests(TestCase):
 
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+
+    def _approved_by(self, batch, votes):
+        """Mark ``batch``'s instance approved with ``votes``, ``(actor, proxied_by)`` pairs.
+
+        The votes are written directly because the engine refuses a requester's
+        proxied vote as it is cast; the dispatch gate is the last check between an
+        approval and the provider and must hold on its own.
+        """
+        from vs_workflow.constants import (
+            WorkflowInstanceStatus,
+            WorkflowStageAction as ActionEnum,
+        )
+        from vs_workflow.models import WorkflowInstance, WorkflowStageAction
+
+        instance = self._instance_for(batch)
+        stage_instance = instance.stage_instances.order_by("pk").first()
+        for actor, proxied_by in votes:
+            WorkflowStageAction.objects.create(
+                stage_instance=stage_instance, actor=actor, proxied_by=proxied_by,
+                action=ActionEnum.APPROVED, attempt=stage_instance.attempt,
+            )
+        WorkflowInstance.all_objects.filter(pk=instance.pk).update(
+            status=WorkflowInstanceStatus.APPROVED)
+        instance.refresh_from_db()
+        return instance
+
+    def test_the_requester_approving_by_proxy_counts_as_nobody(self):
+        """Ada submits, then approves as Chioma and as Bola: that is Ada alone.
+
+        Two approval rows name two people, but one person made both at the
+        keyboard, and she raised the batch. It counts no approver and waits.
+        """
+        self._seed_tenant_ladder()
+        ada = self.requester
+        chioma = self._make_approver()
+        bola = self._make_senior_approver()
+        batch = self._draft_batch(90_000_000)
+        self._submit_for_approval(batch)
+        instance = self._approved_by(batch, [(chioma, ada), (bola, ada)])
+
+        with self.assertRaises(PayoutApprovalRequiredError) as refused:
+            services._validate_approved_instance(batch, instance)
+        self.assertIn("two distinct human approvers", str(refused.exception))
+        self.assertEqual(refused.exception.extra.get("distinct_approved_actors"), 0)
+
+    def test_two_real_people_approving_pass_the_two_approver_rule(self):
+        """Chioma and Bola each approve at their own keyboards: two approvers."""
+        self._seed_tenant_ladder()
+        chioma = self._make_approver()
+        bola = self._make_senior_approver()
+        batch = self._draft_batch(90_000_000)
+        self._submit_for_approval(batch)
+        instance = self._approved_by(batch, [(chioma, None), (bola, None)])
+
+        self.assertEqual(services._validate_approved_instance(batch, instance), instance)
 
     # --- 10. surviving a change in how approvers are resolved -------------- #
 

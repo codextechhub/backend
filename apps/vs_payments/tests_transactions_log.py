@@ -70,3 +70,36 @@ class TransactionsLogTests(_FinanceBranchFixture):
 
         opened = self.rows(reads_account_numbers=True)["REQ-1"]
         self.assertEqual(opened["message"], "Virtual account 9012345678 for CALL.")
+
+    def test_the_log_costs_the_same_for_a_long_page_as_a_short_one(self):
+        """Who acted, and who really did under a proxy, is read with the rows.
+
+        Each row names its actor and, under a proxy, the real person, and every
+        row names its books. Measured at two page lengths, so the property held is
+        that the cost does not grow per row, not a count that moves with the view.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        user = self.grant(self.user_for(self.tenant, "log-reader@corona.test"),
+                          "payments.report.view", tenant=self.tenant, role_key="log-reader")
+        client = TenantAPIClient(user=user)
+        url = f"/v1/payments/transactions/?entity={self.books.code}"
+
+        def cost_with(proxied_rows):
+            for n in range(PaymentEvent.objects.filter(proxied_by__isnull=False).count(),
+                           proxied_rows):
+                PaymentEvent.objects.create(
+                    entity=self.books, action=PaymentAuditAction.PAYOUT_INITIATED,
+                    reference=f"PAY-P{n}",
+                    actor_user=self.user_for(self.tenant, f"chioma-{n}@corona.test"),
+                    proxied_by=self.user_for(self.tenant, f"ada-{n}@corona.test"))
+            client.get(url)  # warm the permission and content-type caches
+            with CaptureQueriesContext(connection) as captured:
+                response = client.get(url)
+            self.assertEqual(response.status_code, 200, response.data)
+            self.assertEqual(len(response.data["data"]), proxied_rows + 2)
+            return len(captured.captured_queries)
+
+        short = cost_with(2)
+        self.assertEqual(cost_with(6), short)

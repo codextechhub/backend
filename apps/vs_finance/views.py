@@ -1095,6 +1095,8 @@ def _invoice_bucket(qs, bucket, tenant):
 
     What counts as overdue is judged on the day at each invoice's own branch
     (:func:`vs_config.clock.branch_day_q`), the school's for a shared one.
+    ``open`` is no tab: it is every posted invoice with money still owed, overdue
+    or not, which is what a payment picker offers.
     """
     from django.db.models import Q
     from .constants import DocumentStatus, InvoicePaymentStatus
@@ -1112,6 +1114,8 @@ def _invoice_bucket(qs, bucket, tenant):
         return posted.filter(payment_status=InvoicePaymentStatus.PARTIAL).filter(not_overdue)
     if bucket == "issued":
         return posted.filter(payment_status=InvoicePaymentStatus.UNPAID).filter(not_overdue)
+    if bucket == "open":
+        return posted.exclude(payment_status=InvoicePaymentStatus.PAID)
     return qs
 
 

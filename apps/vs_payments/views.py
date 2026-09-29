@@ -113,6 +113,31 @@ def _entity_obj(request, entity, model, ref, field):
     return obj  # Return the resolved object.
 
 
+def _collection_payer(request, entity, ref, invoice):
+    """The customer a collection names, within reach or as the named invoice's owner.
+
+    A collection for an invoice belongs to the invoice's branch
+    (:func:`vs_payments.services.collection_branch_id`), so the family it bills
+    need not be in the caller's reach. The Okafor family is filed under Ikeja and
+    owes a Lekki invoice: Tola, who keeps Lekki's books, may name them beside
+    that invoice. Any other family outside her branches, including one that does
+    not own the invoice, is refused exactly as one that does not exist.
+    """
+    try:
+        return _entity_obj(request, entity, Customer, ref, "customer")
+    except ValidationError:
+        if invoice is None:
+            raise
+        owner = Customer.objects.filter(entity=entity, pk=invoice.customer_id)
+        match = Q(code__iexact=str(ref))
+        if str(ref).isdigit():
+            match |= Q(pk=int(ref))
+        payer = owner.filter(match).first()
+        if payer is None:
+            raise
+        return payer
+
+
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 
 
@@ -194,7 +219,7 @@ class CollectionListCreateView(APIView):
     # Handle GET requests for this endpoint.
     def get(self, request):
         _, reach = _reach(request)
-        qs = reach.collections().select_related("customer", "payment")
+        qs = reach.collections().select_related("entity", "customer", "deposit_account", "payment")
         if (group := request.query_params.get("group")) in COLLECTION_GROUPS:
             qs = qs.filter(status__in=COLLECTION_GROUPS[group])
         elif (status_ := request.query_params.get("status")):
@@ -214,16 +239,13 @@ class CollectionListCreateView(APIView):
         if amount <= 0:  # Reject empty or negative collections.
             raise ValidationError({"amount": "A positive amount (in kobo) is required."})
         
-        customer = _entity_obj(request, entity, Customer, body.get("customer"), "customer")
         invoice = _entity_obj(request, entity, Invoice, body.get("invoice"), "invoice")
-        # The receipt this collects carries its customer's branch, the one named or
-        # else the invoice's (the customer the service books it to), so it lands in
-        # that branch's bank or a school-wide one.
-        payer = customer if customer is not None else getattr(invoice, "customer", None)
+        customer = _collection_payer(request, entity, body.get("customer"), invoice)
+        # Deposit into the branch the receipt is booked to, or a school-wide bank.
         deposit = _resolve_account(
             request, entity, body.get("deposit_account"), "deposit_account",
-            document_branch=getattr(payer, "branch_id", None), noun="payment request",
-            verb="Deposit it into")
+            document_branch=services.collection_branch_id(customer=customer, invoice=invoice),
+            noun="payment request", verb="Deposit it into")
 
         intent = services.initiate_collection(  # Hand off to the business service for PSP initiation.
             entity=entity, amount=amount, customer=customer, invoice=invoice,
@@ -342,7 +364,7 @@ class VirtualAccountListCreateView(APIView):
             "inactive": base.filter(status=VirtualAccountStatus.INACTIVE).count(),
             "providers": base.values("provider").distinct().count(),
         }
-        qs = base.select_related("customer", "deposit_account", "currency")
+        qs = base.select_related("entity", "customer", "deposit_account", "currency")
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_.upper())
         if (provider := request.query_params.get("provider")):
@@ -450,7 +472,7 @@ class PayoutListCreateView(APIView):
     # Handle GET requests for this endpoint.
     def get(self, request):
         _, reach = _reach(request)
-        qs = reach.payouts()
+        qs = reach.payouts().select_related("entity", "source_account")
         if (group := request.query_params.get("group")) in PAYOUT_GROUPS:
             qs = qs.filter(status__in=PAYOUT_GROUPS[group])
         elif (status_ := request.query_params.get("status")):
@@ -567,7 +589,7 @@ class PayoutBatchListCreateView(APIView):
     # Handle GET requests for this endpoint.
     def get(self, request):
         _, reach = _reach(request)
-        qs = reach.batches()
+        qs = reach.batches().select_related("entity")
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
         return _paginate(request, qs.order_by("-created_at", "-id"), PayoutBatchSummarySerializer, self)
@@ -936,7 +958,7 @@ class TransactionsLogView(APIView):
     # Handle GET requests for this endpoint.
     def get(self, request):
         _, reach = _reach(request)
-        qs = reach.events().select_related("actor_user")
+        qs = reach.events().select_related("entity", "actor_user", "proxied_by")
         if (action := request.query_params.get("action")):
             qs = qs.filter(action=action)
         if (provider := request.query_params.get("provider")):
