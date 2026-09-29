@@ -54,6 +54,8 @@ from django.utils import timezone
 from vs_config.clock import tenant_today
 from vs_tenants.context import get_current_audit_identity
 
+from schools.vs_academics.services.words import term_word
+
 from ..due_dates import policy_for, resolve_due_date
 from ..contracts import (
     SOURCE_TYPE_STUDENT,
@@ -781,8 +783,10 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
         if term_ref is not None:
             term = AcademicTerm.all_objects.filter(pk=term_ref).first()
             if term is None or term.session_id != session.pk:
+                word = term_word(session.tenant)
                 raise InvalidTermLinkError(
-                    f"Term {term_ref!r} is not a term of session {session.name!r}."
+                    f"{word.capitalize()} {term_ref!r} is not a {word} of "
+                    f"session {session.name!r}."
                 )
 
         link, _created = FeeStructureTermLink.objects.update_or_create(
@@ -824,8 +828,9 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
         )
         if link is None:
             raise TermNotLinkedError(
-                f"Fee structure {structure.code!r} is not linked to a term, so the "
-                f"FAL will not raise invoices nobody can attribute to a period."
+                f"Fee structure {structure.code!r} is not linked to a "
+                f"{term_word(structure.entity.tenant)}, so the FAL will not raise "
+                f"invoices nobody can attribute to a period."
             )
         if period is not None and (
             period.session_ref != link.session_id or period.term_ref != link.term_id

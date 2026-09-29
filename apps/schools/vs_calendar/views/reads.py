@@ -35,6 +35,8 @@ from django.db.models import Count, Q
 from rest_framework.views import APIView
 
 from core.response import success_response
+from schools.vs_academics.services.academic_rules import read_term_word
+from schools.vs_academics.services.words import word_for
 from vs_config.clock import tenant_today
 
 from ..constants import (
@@ -49,6 +51,7 @@ from ..constants import (
 from ..models import CalendarEvent, Room, TimetableSlot
 from ..serializers import CalendarEventSerializer
 from ..services.calendar import (
+    event_type_label,
     teaching_days,
     teaching_days_elapsed,
     term_of,
@@ -222,6 +225,7 @@ class OverviewView(CalendarViewMixin, APIView):
         if lens is not None:
             rooms = rooms.filter(branch=lens)
         rooms = rooms.count()
+        word = read_term_word(self.tenant)
 
         data = {
             "session": {
@@ -248,14 +252,14 @@ class OverviewView(CalendarViewMixin, APIView):
             "next_up": [
                 {
                     "id": e.pk, "name": e.name, "event_type": e.event_type,
-                    "type_label": e.get_event_type_display(),
+                    "type_label": event_type_label(e.event_type, word),
                     "start_date": e.start_date, "end_date": e.end_date,
                     "days_away": (e.start_date - today).days,
                 }
                 for e in upcoming
             ],
             "alerts": self._alerts(
-                session, terms, events, classes, timetabled_ids,
+                session, terms, events, classes, timetabled_ids, word=word,
             ),
         }
         if term is not None:
@@ -272,12 +276,15 @@ class OverviewView(CalendarViewMixin, APIView):
             }
         return success_response(data=data)
 
-    def _alerts(self, session, terms, events, classes, timetabled_ids):
+    def _alerts(self, session, terms, events, classes, timetabled_ids, *, word):
         out = []
         if not terms:
             out.append({
                 "code": ALERT_SESSION_HAS_NO_TERMS,
-                "detail": f"{session.name} has no terms defined.",
+                "detail": (
+                    f"{session.name} has no "
+                    f"{word_for(word, plural=True)} defined."
+                ),
                 "ids": [],
             })
 
@@ -324,7 +331,7 @@ class OverviewView(CalendarViewMixin, APIView):
                 "detail": (
                     f"{len(stray)} "
                     f"{'event is' if len(stray) == 1 else 'events are'} dated "
-                    f"outside every term. "
+                    f"outside every {word_for(word)}. "
                     f"{'It is' if len(stray) == 1 else 'They are'} still on the "
                     f"calendar."
                 ),

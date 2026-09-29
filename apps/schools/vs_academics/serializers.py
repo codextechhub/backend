@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from .constants import DEFAULT_ARMS_MAX, NAME_MAX_LENGTH, TERM_NAMES_MAX, TermWord
 from .models import (
     AcademicSession,
     AcademicTerm,
@@ -432,11 +433,16 @@ class SchoolClassWriteSerializer(serializers.ModelSerializer):
 
 
 class GenerateArmsSerializer(serializers.Serializer):
-    """One class per arm, for a level: JSS1 A, JSS1 B, JSS1 C."""
+    """One class per arm, for a level: JSS1 A, JSS1 B, JSS1 C.
+
+    ``arms`` left out means the school's default arms
+    (``academics.classes.default_arms``).
+    """
 
     level = serializers.IntegerField()
     arms = serializers.ListField(
-        child=serializers.CharField(max_length=30), allow_empty=False,
+        child=serializers.CharField(max_length=NAME_MAX_LENGTH), allow_empty=False,
+        required=False,
     )
     branch = serializers.IntegerField(required=False, allow_null=True)
 
@@ -524,3 +530,85 @@ class OfferingsWriteSerializer(serializers.Serializer):
     level_ids = serializers.ListField(
         child=serializers.IntegerField(), allow_empty=True,
     )
+
+
+# ── The school's academic structure settings ──────────────────────────────
+
+class _Raw(serializers.Field):
+    """A value passed through untouched, for ``validate`` to judge as a whole."""
+
+    def to_internal_value(self, data):
+        return data
+
+    def to_representation(self, value):
+        return value
+
+
+def _list_refusal(problem, *, unit, units, most, holder) -> str:
+    """The sentence for one ``name_list_problem`` answer about a list of *units*."""
+    cause, name = problem
+    return {
+        "empty": f"Name at least one {unit}.",
+        "too_many": f"{holder} can have at most {most} {units}.",
+        "blank": f"Every {unit} needs a name.",
+        "too_long": (
+            f"{name} is longer than {NAME_MAX_LENGTH} characters. Shorten it."
+        ),
+        "duplicate": f"{name} is listed twice. Give each {unit} a different name.",
+    }[cause]
+
+
+class AcademicRulesSerializer(serializers.Serializer):
+    """The school's academic structure settings, as the settings screen saves them.
+
+    All three are sent every time. Each refusal is keyed on its own field, as
+    a sentence, and the term names are refused in the word being saved: a
+    school switching to Semester is told about its semesters.
+    """
+
+    term_word = serializers.ChoiceField(
+        choices=TermWord.choices,
+        error_messages={
+            "invalid_choice": (
+                "Choose Term or Semester for what the school calls the parts "
+                "of its year."
+            ),
+            "required": "Say whether the school says Term or Semester.",
+            "null": "Say whether the school says Term or Semester.",
+        },
+    )
+    term_names = _Raw(required=False)
+    default_arms = _Raw(required=False)
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=200)
+
+    def validate(self, attrs):
+        from .services.academic_rules import name_list_problem
+        from .services.words import word_for
+
+        unit = word_for(attrs["term_word"])
+        units = word_for(attrs["term_word"], plural=True)
+        errors = {}
+
+        if "term_names" not in attrs:
+            errors["term_names"] = f"List the names of the school's {units}."
+        else:
+            problem = name_list_problem(attrs["term_names"], most=TERM_NAMES_MAX)
+            if problem:
+                errors["term_names"] = _list_refusal(
+                    problem, unit=unit, units=units, most=TERM_NAMES_MAX,
+                    holder="A year",
+                )
+
+        if "default_arms" not in attrs:
+            errors["default_arms"] = "List the arms a level's classes are generated with."
+        else:
+            problem = name_list_problem(attrs["default_arms"], most=DEFAULT_ARMS_MAX)
+            if problem:
+                errors["default_arms"] = _list_refusal(
+                    problem, unit="arm", units="arms", most=DEFAULT_ARMS_MAX,
+                    holder="The default list",
+                )
+
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs

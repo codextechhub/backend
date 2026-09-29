@@ -60,7 +60,7 @@ class PersonSerializer(serializers.Serializer):
 class CalendarEventSerializer(_Scoped):
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     scope_label = serializers.SerializerMethodField()
-    type_label = serializers.CharField(source="get_event_type_display", read_only=True)
+    type_label = serializers.SerializerMethodField()
     term = serializers.SerializerMethodField()
     audience = serializers.SerializerMethodField()
 
@@ -75,6 +75,14 @@ class CalendarEventSerializer(_Scoped):
 
     def get_scope_label(self, obj):
         return obj.branch.name if obj.branch_id else "School-wide"
+
+    def get_type_label(self, obj) -> str:
+        """The type's label in the school's word for a term."""
+        from .services.calendar import event_type_label, school_word
+
+        request = self.context.get("request")
+        tenant = getattr(request, "tenant", None) or obj.tenant
+        return event_type_label(obj.event_type, school_word(self.context, tenant))
 
     def get_term(self, obj):
         """The term the event falls in, or None meaning outside every term.

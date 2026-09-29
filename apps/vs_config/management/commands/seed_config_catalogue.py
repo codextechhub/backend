@@ -336,6 +336,27 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "BOOLEAN", True, {},
     ),
     (
+        "academics.terms.word", "Word For A Term",
+        "What the school calls the parts of its year, TERM or SEMESTER, in "
+        "every sentence it is shown. Empty means the word the school's term "
+        "structure implies. Changing it never renames a term.",
+        "CHOICE", None, {"choices": ["TERM", "SEMESTER"]},
+    ),
+    (
+        "academics.terms.names", "Term Names",
+        "The names a new academic year's terms are given, in order: one to "
+        "six, each at most 30 characters, none repeated. Empty means the names "
+        "the school's term structure implies.",
+        "JSON", None, {},
+    ),
+    (
+        "academics.classes.default_arms", "Default Class Arms",
+        "The arms a level's classes are generated with, in order: one to "
+        "twelve, each at most 30 characters, none repeated. A class is named "
+        "after its level and arm, such as JSS1 A.",
+        "JSON", ["A", "B", "C"], {},
+    ),
+    (
         "display.timezone", "Time Zone",
         "The IANA time zone this school keeps its calendar in, such as "
         "Africa/Lagos. It decides which day \"today\" is for due dates, "

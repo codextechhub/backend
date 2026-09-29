@@ -57,6 +57,8 @@ _EVENT_TYPES: dict[str, str] = {}
 for _code, _label in EventType.choices:
     _EVENT_TYPES[_code.lower()] = _code
     _EVENT_TYPES[_label.lower()] = _code
+#: The half-term break as a school that says Semester reads it.
+_EVENT_TYPES["mid-semester break"] = EventType.MIDTERM_BREAK.value
 
 EVENT_TYPE_LABELS = [label for _, label in EventType.choices]
 
@@ -540,14 +542,16 @@ def _calendar_warnings(row: ResolvedRow, *, tenant, session) -> list[RowIssue]:
     The same two things the events API warns about on a single write, so a
     school gets the same answer whether it types an entry or uploads it.
     """
+    from schools.vs_academics.services.words import term_word
+
     from .services.calendar import term_of
 
     out: list[RowIssue] = []
     if term_of(session, row.start_date) is None:
         out.append(RowIssue(
             "business_rule",
-            f"This falls outside every term in {session.name}. It will show on "
-            f"the calendar and be flagged in the events list.",
+            f"This falls outside every {term_word(tenant)} in {session.name}. "
+            f"It will show on the calendar and be flagged in the events list.",
             "start_date", str(row.start_date), severity="warning",
         ))
 

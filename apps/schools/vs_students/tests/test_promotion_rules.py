@@ -577,6 +577,116 @@ class SpreadWithinABranchTests(_PromotionRulesFixture):
         self.assertIn(rows[self.ikeja_pupil.pk]["to_class"], ("JSS2 A", "JSS2 C"))
 
 
+class ArmFallbackAtPromotionTests(_PromotionRulesFixture):
+    """Next year's JSS2 is Red, Blue and Green, so no arm of this year's JSS1 matches.
+
+    Three pupils each in JSS1 A (school-wide), JSS1 B (Lekki) and JSS1 C
+    (Ikeja), with next year's classes all school-wide. Keeping arms has no arm
+    to keep, so the nine are shared out as SPREAD shares them: by last name,
+    emptiest class first, ties by class name (Blue, Green, Red). Before, all
+    nine landed in whichever class came first.
+    """
+
+    SOURCES = {
+        "Adeyemi": "shared", "Dada": "shared", "Gbadamosi": "shared",
+        "Bassey": "lekki", "Ekpo": "lekki", "Haruna": "lekki",
+        "Chima": "ikeja", "Fashola": "ikeja", "Ibe": "ikeja",
+    }
+
+    def setUp(self):
+        self.pupils = {}
+        for last, source in self.SOURCES.items():
+            branch = self.ikeja if source == "ikeja" else self.lekki
+            pupil = self.student(first="Pupil", last=last, branch=branch)
+            self.place(pupil, {
+                "shared": self.shared_class, "lekki": self.lekki_class,
+                "ikeja": self.ikeja_class,
+            }[source])
+            self.pupils[last] = pupil
+
+    def to_classes(self, data):
+        rows = self.rows(data)
+        return {last: rows[p.pk]["to_class"] for last, p in self.pupils.items()}
+
+    def test_a_cohort_with_no_matching_arm_is_shared_evenly_and_the_run_matches(self):
+        for arm in ("Red", "Blue", "Green"):
+            self.next_class(arm)
+        data = self.preview()
+        self.assertEqual(data["rules"]["arms"], "SAME_ARM")
+        expected = {
+            "Adeyemi": "JSS2 Blue", "Bassey": "JSS2 Green", "Chima": "JSS2 Red",
+            "Dada": "JSS2 Blue", "Ekpo": "JSS2 Green", "Fashola": "JSS2 Red",
+            "Gbadamosi": "JSS2 Blue", "Haruna": "JSS2 Green", "Ibe": "JSS2 Red",
+        }
+        self.assertEqual(self.to_classes(data), expected)
+        self.assertEqual(self.preview(), data)
+
+        response = self.run_promotion()
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["data"]["promoted"], 9)
+        self.assertEqual(
+            {last: self.placement(p) for last, p in self.pupils.items()}, expected,
+        )
+
+    def test_the_level_map_says_why_each_class_was_shared_out(self):
+        for arm in ("Red", "Blue", "Green"):
+            self.next_class(arm)
+        by_source = {row["from"]: row for row in self.preview()["level_map"]}
+        jss1_a = by_source["JSS1 A"]
+        self.assertTrue(jss1_a["arm_fallback"])
+        self.assertEqual(
+            jss1_a["arm_note"],
+            "No JSS2 class has arm A, so these students are shared across "
+            "JSS2's classes.",
+        )
+        self.assertEqual(
+            [(e["name"], e["students"]) for e in jss1_a["to_classes"]],
+            [("JSS2 Blue", 3)],
+        )
+        self.assertEqual(by_source["JSS1 C"]["arm_note"], (
+            "No JSS2 class has arm C, so these students are shared across "
+            "JSS2's classes."
+        ))
+
+    def test_a_matching_arm_still_wins_and_the_rest_share_around_it(self):
+        """JSS1 A keeps its arm; B and C share A, Blue and Red, A already holding three."""
+        self.next_class("A")
+        self.next_class("Blue")
+        self.next_class("Red")
+        data = self.preview()
+        self.assertEqual(self.to_classes(data), {
+            "Adeyemi": "JSS2 A", "Dada": "JSS2 A", "Gbadamosi": "JSS2 A",
+            "Bassey": "JSS2 Blue", "Chima": "JSS2 Red", "Ekpo": "JSS2 Blue",
+            "Fashola": "JSS2 Red", "Haruna": "JSS2 Blue", "Ibe": "JSS2 Red",
+        })
+        by_source = {row["from"]: row for row in data["level_map"]}
+        self.assertFalse(by_source["JSS1 A"]["arm_fallback"])
+        self.assertIsNone(by_source["JSS1 A"]["arm_note"])
+        self.assertEqual(by_source["JSS1 A"]["to"], "JSS2 A")
+        self.assertTrue(by_source["JSS1 B"]["arm_fallback"])
+
+        response = self.run_promotion()
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(
+            {last: self.placement(p) for last, p in self.pupils.items()},
+            self.to_classes(data),
+        )
+
+    def test_every_arm_matching_leaves_the_map_without_a_note(self):
+        for arm in ("A", "B", "C"):
+            self.next_class(arm)
+        for row in self.preview()["level_map"]:
+            self.assertFalse(row["arm_fallback"], row["from"])
+            self.assertIsNone(row["arm_note"], row["from"])
+
+    def test_spreading_never_flags_a_fallback(self):
+        for arm in ("Red", "Blue", "Green"):
+            self.next_class(arm)
+        self.set_rules(arms="SPREAD")
+        for row in self.preview()["level_map"]:
+            self.assertFalse(row["arm_fallback"], row["from"])
+
+
 class PromotionCapacityRuleTests(_PromotionRulesFixture):
     """Next year's JSS2 A holds one seat, and two pupils are promoted into it."""
 

@@ -25,6 +25,7 @@ from ..exceptions import (
     TermSessionNotDraft,
 )
 from ..models import AcademicSession, AcademicTerm, SessionBranch, SessionStatus
+from .words import term_word
 
 
 def assert_writable(session):
@@ -127,7 +128,8 @@ def activate_session(session, tenant, actor=None):
         # Defence in depth: no route produces this, but a hand edit can, and
         # it would tell a school it is in a term it archived.
         raise SessionHasArchivedTerm(
-            "This session cannot be activated while it holds an archived term.",
+            f"This session cannot be activated while it holds an archived "
+            f"{term_word(tenant)}.",
             terms=archived_terms,
         )
 
@@ -274,8 +276,8 @@ def validate_terms(session, terms):
         seen_names[key] = seen_names.get(key, 0) + 1
         if seen_names[key] > 1:
             raise DuplicateTermName(
-                f"This year already has a term called {t['name']}. "
-                f"Give this one a different name.",
+                f"This year already has a {term_word(session.tenant)} called "
+                f"{t['name']}. Give this one a different name.",
                 term=t["name"], field="name",
             )
 
@@ -284,8 +286,8 @@ def validate_terms(session, terms):
         order = t["order_index"]
         if order in seen_orders:
             raise DuplicateTermOrder(
-                f"{seen_orders[order]} is already term {order} of this year. "
-                f"Give this one a different number.",
+                f"{seen_orders[order]} is already {term_word(session.tenant)} "
+                f"{order} of this year. Give this one a different number.",
                 term=t["name"], conflicts_with=seen_orders[order],
                 field="order_index",
             )
@@ -296,7 +298,8 @@ def validate_terms(session, terms):
     by_index = sorted(terms, key=lambda t: t["order_index"])
     if [t["name"] for t in by_index] != [t["name"] for t in by_date]:
         raise TermOrderConflict(
-            "The order these terms are numbered in disagrees with their dates.",
+            f"The order these {term_word(session.tenant, plural=True)} are "
+            f"numbered in disagrees with their dates.",
             by_number=[t["name"] for t in by_index],
             by_date=[t["name"] for t in by_date],
         )

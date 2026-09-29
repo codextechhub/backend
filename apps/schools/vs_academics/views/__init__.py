@@ -38,3 +38,4 @@ from .reads import (  # noqa: F401
     OverviewView,
     StructureTreeView,
 )
+from .settings import AcademicRulesView  # noqa: F401
