@@ -739,6 +739,47 @@ MUST SAY:
 - Needs Attention: unbranched tax lines block filing at a multi-branch school until
   the branch backfill runs.
 
+### D81. What a role means, a person's exceptions and who approves what need the caller's branch reach (ff23c757, d0c7f3ca, 2026-09-30)
+MODULES: M04 roles and permissions, M07 workflow and approval engine, M12 staff
+management, MRD.
+The D66 configure rule, extended to the three areas it never reached. Refusals
+are 403 `SHARED_RECORD_READ_ONLY` with a sentence and nothing written; reads are
+unchanged; a caller pinned to a one-branch school's only branch is whole-school.
+Roles (`vs_rbac.grant_reach`): a role's branch set is its reach (empty is
+school-wide). PATCH/PUT and DELETE /v1/rbac/tenants/{slug}/roles/{key}/, PATCH
+.../roles/{key}/field-access/ and POST .../role-change-requests/ need a caller
+covering every branch the role reaches ("Only a school-wide administrator can
+change what a role can do / see. Ask one to change it, or create a role for
+your branch."; a role reaching another branch: "This role reaches branches you
+do not work in, ..."). POST .../roles/ and any change of branch_ids need the
+new set in reach (empty: "Only a school-wide administrator can make a role
+reach every branch. Choose your own branch for it."). Grants are unchanged
+(already reach-checked) and restricted keys still go to the ladder.
+Exceptions: POST and DELETE .../users/{id}/permission-overrides/ and
+.../field-access-overrides/ judge the person by postings and reach together: a
+branch-bound caller may set one only on somebody posted in their branches whose
+roles reach nowhere else ("This person's access reaches beyond your branch,
+...").
+Workflow (/v1/workflow/): POST templates/publish/ takes an optional `branch`;
+left out it is the caller's own branch when they work in exactly one, else the
+school's (the publisher's home posting no longer decides). School-wide steps
+need a whole-school caller, a branch's need that branch; the same for POST
+templates/{id}/use-platform-version/. Approver groups: create (same default),
+PATCH, DELETE, POST and DELETE members; a branch-owned group binds every branch
+whose template or stage override names it, and the whole school once a
+school-wide template or a Dynamic Role does. Dynamic Roles: every write is
+whole-school. Stage overrides: judged by the branch of the stage's template.
+Delegations: PATCH, DELETE and revoke are the delegator's, or a template-update
+administrator's for somebody whose approvals stay in their branches; the
+delegate can no longer edit one.
+MUST SAY: M04 the role-reach, role-definition and exception rules beside the
+grant rule, each route's 403 and sentence, and that a branch-bound
+administrator reads school-wide roles and their field access read-only. M07 the
+publish `branch` field and its default, the group reach rule, the per-route
+403s, and the delegation owner rule. M12 that a staff profile's exceptions tab
+is read-only for a person reaching past the reader's branches. MRD: a
+branch-bound administrator shapes only their branch's roles and approvals.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
