@@ -580,7 +580,7 @@ from the server clock now read it as the code does.
 MUST SAY: that as-at days and subscription expiry follow the school's zone
 (reference D53's rule).
 
-### D75. A closed year stays closed, closes per branch, and reopens only with a reason (hash pending, 2026-09-29)
+### D75. A closed year stays closed, closes per branch, and reopens only with a reason (a18d8ab1, 2026-09-29)
 MODULES: M19 finance and accounting, M04 roles and permissions, MRD.
 From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF).
 MUST SAY:
