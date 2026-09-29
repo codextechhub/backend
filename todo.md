@@ -678,6 +678,25 @@ the server's UTC clock, and do not follow the school's date format or clock
 file name disagrees with the builder's preview between midnight and 1am
 Lagos).
 
+### D79. An online payment belongs to its invoice's branch; payout approvers are real people (merged a708dc9c, 2026-09-29)
+MODULES: M18 payments and collections, M17 billing and invoicing, M07 workflow and approval engine, M23 purchase orders delivery and AP.
+Commits 14caeaea, 9511a404, 5e31f8e4, 94a5fd7c, 210ba4ba, 8039aaff, 3393cfdd,
+b9e85696. A collection that names an invoice belongs to the invoice's branch
+(services.collection_branch_id): the deposit bank is checked against it (the
+same-branch 400), the receipt is booked to it, dated on its clock and settles
+the invoice at once; a collection naming no invoice keeps the family's branch.
+A collection is seen by the branch it belongs to. A checkout may name a family
+outside the caller's branches when the named invoice is in reach and belongs to
+that family; any other out-of-reach family is still "No customer '<ref>'". The
+invoice list takes bucket=open (every posted invoice not fully paid). The payout
+two-approver rule counts distinct real people, coalesce(proxied_by, actor),
+minus requester_ids(instance). The transactions log and a vendor payment's
+activity name the real actor under a proxy ("Ada Obi for Chioma Okafor"). The
+collections, virtual accounts, payouts and batches lists load their related
+rows in one query.
+MUST SAY: the collection branch rule and its visibility, the checkout family
+rule, bucket=open, the real-person approver count, and proxy attribution.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
