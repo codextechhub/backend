@@ -341,7 +341,11 @@ class StaffResendInvitationView(StaffViewMixin, APIView):
     than a silent success: an invitation that has been used is not an invitation
     any more, and telling a school one was resent when nothing was sent is worse
     than refusing. Refused too for a hire still awaiting approval
-    (``HIRE_AWAITING_APPROVAL``), which has no invitation until it is approved.
+    (``HIRE_AWAITING_APPROVAL``), which has no invitation until it is approved,
+    and for somebody imported during setup while the school is still being set
+    up (``INVITATION_HELD_FOR_GO_LIVE``). Once the school is live, a resend
+    sends that person's held invitation, which is how one left behind by the
+    go-live release is invited.
 
     The key moved with the create. Resending is the same act as inviting, aimed
     at the same account, so it needs the same key: leaving it on
@@ -360,11 +364,27 @@ class StaffResendInvitationView(StaffViewMixin, APIView):
         from vs_user.services.invitation import InvitationService
 
         from ..constants import EmploymentStatus
-        from ..exceptions import HireAwaitingApproval, InvitationAlreadyAccepted
+        from ..exceptions import (
+            HireAwaitingApproval,
+            InvitationAlreadyAccepted,
+            InvitationHeldForGoLive,
+        )
 
         staff = self.get_staff_for_write(pk)
         if staff.employment_status == EmploymentStatus.PENDING_APPROVAL:
             raise HireAwaitingApproval()
+        if staff.employment_status == EmploymentStatus.AWAITING_GO_LIVE:
+            if self.onboarding:
+                raise InvitationHeldForGoLive()
+            from ..services.setup_invitations import release
+
+            release(staff, actor=request.user)
+            return success_response(
+                message="Invitation sent.",
+                data=StaffDetailSerializer(
+                    self.get_staff(pk), context=self.serializer_context(),
+                ).data,
+            )
         if staff.user.status != User.Status.PENDING:
             raise InvitationAlreadyAccepted(
                 "This invitation has already been accepted, so there is nothing "
@@ -396,12 +416,18 @@ class StaffInvitationRevokeView(StaffViewMixin, APIView):
 
     A hire still awaiting approval has no invitation to revoke: the same call
     withdraws the hire, cancelling its approval and closing it as a refused
-    hire is closed.
+    hire is closed. Somebody imported during setup, whose invitation waits for
+    go-live, is closed the same way.
+
+    Open before go-live, because that is when a school loading its staff list
+    finds the person who should not be on it; left closed, the one way to stop
+    their invitation would be to go live and send it.
 
     docstring-name: Revoke a staff invitation
     """
 
     rbac_permission = PERM_TRANSITION
+    pending_tenant_surface = ("post",)
 
     def post(self, request, pk):
         from ..constants import EmploymentStatus
@@ -409,16 +435,18 @@ class StaffInvitationRevokeView(StaffViewMixin, APIView):
         staff = self.get_staff_for_write(pk)
         payload = RevokeInvitationSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
-        awaiting = staff.employment_status == EmploymentStatus.PENDING_APPROVAL
+        status_before = staff.employment_status
         invitations.revoke(
             staff, reason=payload.validated_data["reason"],
             actor=request.user, request=request,
         )
         return success_response(
-            message=(
-                "Hire withdrawn before it was approved. Nothing was sent to them."
-                if awaiting else "Invitation withdrawn. The link no longer works."
-            ),
+            message={
+                EmploymentStatus.PENDING_APPROVAL:
+                    "Hire withdrawn before it was approved. Nothing was sent to them.",
+                EmploymentStatus.AWAITING_GO_LIVE:
+                    "Invitation withdrawn before it was sent. Nothing was sent to them.",
+            }.get(status_before, "Invitation withdrawn. The link no longer works."),
             data=StaffDetailSerializer(
                 self.get_staff(pk), context=self.serializer_context(),
             ).data,

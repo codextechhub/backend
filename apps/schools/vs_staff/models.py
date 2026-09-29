@@ -170,10 +170,11 @@ class StaffProfile(_Owned):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="created_staff_profiles",
     )
-    #: Whether the invitation email goes out when a hire awaiting approval is
-    #: approved. False for a person imported with Send Invitation set to No,
-    #: whose invitation is then created and left unsent, as it would have been
-    #: without the approval.
+    #: Whether the invitation email goes out when a held invitation is
+    #: released: a hire awaiting approval is approved, or a school that
+    #: imported this person during setup goes live. False for a person imported
+    #: with Send Invitation set to No, whose invitation is then created and left
+    #: unsent, as it would have been had nothing held it.
     invite_on_approval = models.BooleanField(default=True)
 
     #: Read by ``vs_workflow.services.submission`` for a hire awaiting

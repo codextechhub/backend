@@ -120,10 +120,10 @@ def import_staff_row(import_batch, payload: dict, queued_by) -> ImportExecutionR
     """Add one member of staff to the uploading school.
 
     Takes its tenant from the batch and nowhere else, and the template carries
-    no school column, so a row cannot name a different school. The role column
-    is a role key inside THIS school, resolved against its own catalogue, so a
-    platform role key is not resolvable and a row cannot make somebody a CodeX
-    hire.
+    no school column, so a row cannot name a different school. There is no
+    role column either: everybody starts on the school's starting role, as on
+    the Add form, checked against the grant ceiling of whoever runs the
+    import.
 
     Interpretation lives in ``vs_staff.imports``, not here. Validation and
     execution are separate passes over the same file, and the way an import goes
@@ -142,7 +142,6 @@ def import_staff_row(import_batch, payload: dict, queued_by) -> ImportExecutionR
         employment_type  optional - Full-time / Part-time / Contract / Volunteer
         hire_date        optional - YYYY-MM-DD
         branch           optional - blank means across the whole school
-        role             required - a TenantRoleTemplate key at THIS school
         send_invitation  optional - Yes or No, blank means Yes
     """
     from schools.vs_staff.imports import create_staff_from_row, resolve_row
@@ -169,7 +168,9 @@ def import_staff_row(import_batch, payload: dict, queued_by) -> ImportExecutionR
     # happened. One message for both would tell a school it had emailed people
     # it deliberately held back.
     name = f"{row.first_name} {row.last_name}"
-    if profile.employment_status == "PENDING_APPROVAL":
+    if profile.employment_status == "AWAITING_GO_LIVE":
+        message = f"{name} added. Their invitation goes out when the school goes live."
+    elif profile.employment_status == "PENDING_APPROVAL":
         message = f"{name} added. Their invitation waits for the hire to be approved."
     elif row.send_invitation:
         message = f"{name} invited."
