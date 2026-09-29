@@ -657,14 +657,14 @@ def _book_receipt(intent, *, actor_user=None, paid_at=None):
         intent.entity, CASH_BANK_CODE, label="Cash & bank",
     )
 
-    received, dating = _booking_date(
-        intent.entity, paid_at, branch=intent.customer.branch_id,
-    )
+    # The receipt's branch dates it too, so it reads on the day it belongs to.
+    receipt_branch_id = collection_branch_id(customer=intent.customer, invoice=intent.invoice)
+    received, dating = _booking_date(intent.entity, paid_at, branch=receipt_branch_id)
     if dating:  # Keep the true paid day beside the receipt, however it was booked.
         intent.metadata = {**(intent.metadata or {}), **dating}
     payment = Payment.objects.create(
         entity=intent.entity, customer=intent.customer,
-        branch_id=collection_branch_id(customer=intent.customer, invoice=intent.invoice),
+        branch_id=receipt_branch_id,
         payment_date=received, currency=intent.currency,
         method=PaymentMethod.ONLINE, amount=intent.amount, deposit_account=deposit,
         reference=intent.reference,

@@ -287,6 +287,30 @@ class CollectionTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(inv.amount_paid, 50000)
         self.assertEqual(customer_credit_balance(customer), 0)
 
+    def test_a_receipt_for_another_branchs_invoice_is_dated_on_that_branchs_day(self):
+        """The receipt's own branch dates it, not the family's.
+
+        With branch time zones, Ikeja and Lekki can be on different days at the
+        same instant, so the Okafors' receipt for a Lekki invoice must be dated on
+        Lekki's clock, the branch it belongs to, rather than on Ikeja's.
+        """
+        from unittest import mock
+
+        entity, customer, _ikeja, lekki = self._okafor_at_ikeja()
+        inv = self.make_posted_invoice(entity, customer, amount=50000)
+        Invoice.objects.filter(pk=inv.pk).update(branch=lekki)
+        inv.refresh_from_db()
+
+        intent = services.initiate_collection(
+            entity=entity, amount=50000, customer=customer, invoice=inv,
+        )
+        with mock.patch.object(
+            services, "_booking_date", wraps=services._booking_date,
+        ) as dated:
+            services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+
+        self.assertEqual(dated.call_args.kwargs["branch"], lekki.pk)
+
     def test_collection_naming_no_invoice_books_to_the_customers_branch(self):
         """A top-up names no invoice, so the family's own branch keeps the credit."""
         entity, customer, ikeja, _lekki = self._okafor_at_ikeja()
