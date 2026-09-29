@@ -609,6 +609,12 @@ def _book_receipt(intent, *, actor_user=None, paid_at=None):
     instant, so a receipt booked late still lands on the day the payer paid
     whenever that day's period is open. The dating keys are merged into
     ``intent.metadata`` for the caller to save.
+
+    The receipt settles the collection's invoice only when that invoice already
+    exists on the receipt's date and belongs to the receipt's branch, which is the
+    customer's. Otherwise the money parks as customer credit: a receipt settles only
+    its own branch's documents (:func:`vs_finance.receivables._build_invoice_plan`),
+    and refusing the booking would lose a payment the provider has already taken.
     """
     from vs_finance.models import Payment
     from vs_finance.receivables import post_payment
@@ -640,13 +646,16 @@ def _book_receipt(intent, *, actor_user=None, paid_at=None):
         narration=intent.narration or f"Gateway collection {intent.reference}",
     )
 
-    # A payment against a future-dated invoice parks as customer credit. See
-    # the docstring.
-    settles_now = bool(intent.invoice_id) and intent.invoice.invoice_date <= received
+    # A receipt that cannot settle its invoice now parks as credit (see the docstring).
+    settles_now = (
+        bool(intent.invoice_id)
+        and intent.invoice.invoice_date <= received
+        and intent.invoice.branch_id == payment.branch_id
+    )
     if settles_now:  # Invoice-linked receipts should settle that invoice directly.
         post_payment(payment, actor_user=actor_user,
                      allocations=[(intent.invoice, intent.amount)])  # Allocate the full settled amount to the invoice.
-    else:  # Standalone or not-yet-raised invoice: never guess at invoice allocation.
+    else:  # Standalone, not-yet-raised or another branch's invoice: never guess.
         # Leave the funds as customer credit instead of auto-allocating them.
         post_payment(payment, actor_user=actor_user, auto_allocate=False)  # Park the money as credit instead.
 

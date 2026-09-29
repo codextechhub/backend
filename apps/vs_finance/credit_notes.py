@@ -76,8 +76,9 @@ def post_credit_note(note, *, actor_user=None, auto_allocate=False, allocations=
     """Price, validate and post a :class:`CreditNote`, raising its AR journal.
 
     For a CREDIT note, ``allocations`` (a list of ``(invoice, amount_kobo)``) - or
-    ``auto_allocate`` - applies the credit to open invoices oldest-first. DEBIT notes
-    increase the receivable and are never allocated.
+    ``auto_allocate`` - applies the credit to open invoices oldest-first, only ever
+    invoices of the note's own branch. DEBIT notes increase the receivable and are
+    never allocated.
     """
     try:  # Atomic worker performs posting and optional allocation.
         result = _post_credit_note_atomic(  # Post the note.
@@ -239,7 +240,7 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
                 description="Output tax reversal", line_no=line_no,  # Label and order.
             )
         plan = (_build_invoice_plan(  # Build allocation plan, bounded by the note's own date.
-            customer, allocations, as_of=note.note_date,
+            note, allocations, as_of=note.note_date,
             settlement=f"Credit note {note.document_number or note.pk}",
         ) if (allocations is not None or auto_allocate) else [])
         applied, created_rows, _latest = _apply_creditnote_subledger(note, plan, remaining=note.total)  # Apply credit to invoices.
@@ -330,7 +331,8 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
     Any unapplied portion of the note sits in the customer-credit liability (2140);
     applying it reclassifies it back to AR (``Dr customer-credit · Cr AR``) and
     settles the invoices. ``allocations`` is an optional ``[(invoice, amount)]`` plan;
-    without it, open invoices are settled oldest-first.
+    without it, open invoices are settled oldest-first. Either way only invoices of the
+    note's own branch are settled (see :func:`~vs_finance.receivables._build_invoice_plan`).
 
     An older note may be applied to a newer invoice - that is legitimate - but the
     reclassification is dated at the later of the two, never before the receivable it
@@ -353,7 +355,7 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
     if remaining <= 0:  # Nothing left to allocate.
         return []
 
-    plan = _build_invoice_plan(note.customer, allocations)  # Build explicit or oldest-first invoice plan.
+    plan = _build_invoice_plan(note, allocations)  # Explicit or oldest-first, in the note's branch.
     applied, created, latest = _apply_creditnote_subledger(note, plan, remaining=remaining)  # Apply credit to invoices.
     if applied <= 0:  # No invoice received value.
         return []

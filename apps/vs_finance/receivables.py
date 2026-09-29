@@ -30,7 +30,7 @@ from .constants import (
     InvoicePaymentStatus,
     JournalSource,
 )
-from .exceptions import FinanceError, PostingError
+from .exceptions import FinanceError, PostingError, SettlementBranchError
 from .posting import post_journal, resolve_period
 
 
@@ -250,7 +250,8 @@ def post_payment(payment, *, actor_user=None, auto_allocate=True, allocations=No
 
     ``allocations`` (a list of ``(invoice, amount_kobo)``) applies an explicit split;
     otherwise ``auto_allocate`` settles open invoices in ``strategy`` order
-    (``"oldest"`` by due date, or ``"largest"`` balance first).
+    (``"oldest"`` by due date, or ``"largest"`` balance first). Either way only
+    documents of the receipt's own branch are settled (see :func:`_build_invoice_plan`).
     """
     try:  # The atomic worker owns the ledger write and allocation updates.
         result = _post_payment_atomic(  # Post the receipt and optionally allocate it.
@@ -386,9 +387,20 @@ def customer_refund_available_balance(customer, *, exclude_refund_id=None, as_of
 ALLOCATION_STRATEGIES = ("oldest", "largest")
 
 
-def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_debit_notes=False,
+def _build_invoice_plan(source, allocations, *, strategy="oldest", include_debit_notes=False,
                         as_of=None, settlement="This settlement"):
     """An explicit ``[(target, amount)]`` plan, or open AR items in ``strategy`` order.
+
+    ``source`` is the document whose value settles the plan: a :class:`Payment` or a
+    CREDIT :class:`CreditNote`. Its customer names whose AR items are settled, and its
+    branch names which of them: only items of the source's own branch, or school-wide
+    items for a school-wide source. The settling journal is booked to the source's
+    branch while each item's receivable sits on the item's branch, so Ikeja's receipt
+    settling a Lekki invoice would clear Lekki's debt out of Ikeja's books. The
+    automatic plan draws only from those items; an explicit plan naming any other is
+    refused with :class:`SettlementBranchError` before anything is settled (see
+    :func:`_require_own_branch_targets`), because a caller who covers both branches
+    can name either.
 
     A *target* is an :class:`Invoice` or - when ``include_debit_notes`` is set - a posted
     DEBIT :class:`CreditNote`, which debits AR just like an invoice and is settled the
@@ -411,14 +423,13 @@ def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_deb
       would post something other than what was asked for. It raises instead, and
       says which date to use.
     """
-    from django.db.models import F
-
     from .chronology import accounting_date, describe, ensure_on_or_after
     from .constants import CreditNoteKind
     from .models import CreditNote, Invoice
 
     if allocations is not None:  # Explicit allocations always win over auto-allocation.
         plan = list(allocations)  # Normalize to a list so the caller can iterate safely.
+        _require_own_branch_targets(source, [target for target, _amount in plan])
         if as_of is not None:  # An explicitly named target must already exist on that date.
             for target, _amount in plan:
                 target_date = accounting_date(target)
@@ -432,21 +443,20 @@ def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_deb
                         f"document exists."
                     ),
                 )
-        return plan  # Explicit plan passed its date checks.
+        return plan  # Explicit plan passed its branch and date checks.
 
-    open_invoices = list(  # Load all open posted invoices for the customer.
-        Invoice.objects
-        .filter(customer=customer, status=DocumentStatus.POSTED)
-        .exclude(payment_status=InvoicePaymentStatus.PAID)
+    own = {"customer_id": source.customer_id, "branch_id": source.branch_id,
+           "status": DocumentStatus.POSTED}
+    open_invoices = list(  # Open posted invoices of the customer, in the source's branch.
+        Invoice.objects.filter(**own).exclude(payment_status=InvoicePaymentStatus.PAID)
     )
     if as_of is not None:  # Auto-allocation only settles what already exists.
         open_invoices = [inv for inv in open_invoices if inv.invoice_date <= as_of]
     # (target, balance_due, sort_date) - sort_date drives oldest-first across both types.
     items = [(inv, inv.balance_due, inv.due_date or inv.invoice_date) for inv in open_invoices]  # Invoice settlement candidates.
     if include_debit_notes:  # Optionally include posted debit notes in the settlement plan.
-        open_notes = list(  # Load open debit notes for the customer.
-            CreditNote.objects
-            .filter(customer=customer, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT)
+        open_notes = list(  # Open debit notes of the customer, in the source's branch.
+            CreditNote.objects.filter(kind=CreditNoteKind.DEBIT, **own)
             .exclude(settlement_status=InvoicePaymentStatus.PAID)
         )
         if as_of is not None:  # Same rule: a charge not yet raised cannot be settled.
@@ -458,6 +468,36 @@ def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_deb
     else:  # Default is oldest-first.
         items.sort(key=lambda t: (t[2], t[0].pk))  # Sort by document date, then pk.
     return [(target, balance) for target, balance, _date in items]  # Strip the sort date before returning.
+
+
+def _require_own_branch_targets(source, targets):
+    """Refuse a target named for ``source``'s value unless it is of the source's branch.
+
+    The rule :func:`_build_invoice_plan` applies to an automatic plan, applied to one a
+    person names. The message names both branches and the way out, for example "This
+    receipt belongs to Ikeja Branch and invoice INV-0002 belongs to Lekki Branch.
+    Apply it to an Ikeja Branch invoice."
+    """
+    from .models import CreditNote
+
+    noun = "credit note" if isinstance(source, CreditNote) else "receipt"
+    for target in targets:
+        if target.branch_id == source.branch_id:
+            continue
+        kind = "debit note" if isinstance(target, CreditNote) else "invoice"
+        number = target.document_number or f"the selected {kind}"
+        if source.branch_id is None:
+            raise SettlementBranchError(
+                f"This {noun} is school-wide and {kind} {number} belongs to "
+                f"{target.branch.name}. Apply it to a school-wide {kind}."
+            )
+        name = source.branch.name
+        article = "an" if name[:1].upper() in "AEIOU" else "a"
+        held = f"belongs to {target.branch.name}" if target.branch_id else "is school-wide"
+        raise SettlementBranchError(
+            f"This {noun} belongs to {name} and {kind} {number} {held}. "
+            f"Apply it to {article} {name} {kind}."
+        )
 
 
 # Support the apply payment subledger workflow.
@@ -665,7 +705,7 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
     # ``as_of`` the receipt's own date: cash received today cannot clear a bill raised
     # next week. Auto-allocation skips those, and the money falls through to 2140 as a
     # prepayment - which is what it is.
-    plan = (_build_invoice_plan(customer, allocations, strategy=strategy,  # Build the settlement plan from invoices.
+    plan = (_build_invoice_plan(payment, allocations, strategy=strategy,  # Build the settlement plan from invoices.
                                 include_debit_notes=True, as_of=payment.payment_date,
                                 settlement=f"Receipt {payment.document_number or payment.pk}")
             if (allocations is not None or auto_allocate) else [])  # Skip the plan when no allocation is requested.
@@ -728,7 +768,8 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
     Applying it to invoices reclassifies it back to AR (``Dr customer-credit · Cr AR``)
     and settles the invoices - no cash moves. ``allocations`` is an optional explicit
     ``[(invoice, amount)]`` plan; without it, open invoices are settled in ``strategy``
-    order (``"oldest"`` by due date, or ``"largest"`` balance first).
+    order (``"oldest"`` by due date, or ``"largest"`` balance first). Either way only
+    documents of the receipt's own branch are settled (see :func:`_build_invoice_plan`).
 
     Applying an older receipt to a newer invoice is ordinary and allowed - that is a
     prepayment finding its bill. What is *not* allowed is dating the reclassification
@@ -750,7 +791,7 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
     if remaining <= 0:  # Nothing left to allocate.
         return []
 
-    plan = _build_invoice_plan(payment.customer, allocations, strategy=strategy,  # Reuse the same allocation planner.
+    plan = _build_invoice_plan(payment, allocations, strategy=strategy,  # Reuse the same allocation planner.
                                include_debit_notes=True)
     applied, created, latest = _apply_payment_subledger(payment, plan, remaining=remaining)  # Apply stored credit to documents.
     if applied <= 0:  # No documents were eligible for allocation.
