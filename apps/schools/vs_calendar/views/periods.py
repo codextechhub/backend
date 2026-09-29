@@ -9,7 +9,6 @@ client to work out which apply - two clients would work it out differently.
 from __future__ import annotations
 
 from django.db import transaction
-from django.db.models import Q
 from rest_framework import generics
 from rest_framework.exceptions import ValidationError
 

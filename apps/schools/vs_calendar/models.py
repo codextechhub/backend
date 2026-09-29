@@ -462,9 +462,9 @@ class TimetableSlot(_Owned):
         related_name="timetable_slots",
     )
     #: Nullable because a school builds a grid over several sittings and fills
-    #: the subjects before it fills the people - and because duplicating another
-    #: class's week without its teachers is a supported path that must save.
-    #: The publish gate is what refuses an unstaffed grid, not the write.
+    #: the subjects before it fills the people, through the lesson form, the
+    #: grid save or a duplicate made without teachers. The publish gate is what
+    #: refuses an unstaffed grid, not the write.
     #: PROTECT, so a user holding slots cannot be deleted out from under them.
     teacher = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,

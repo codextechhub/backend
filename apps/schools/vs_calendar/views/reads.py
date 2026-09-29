@@ -31,7 +31,6 @@ from __future__ import annotations
 
 from datetime import date
 
-from django.db.models import Count, Q
 from rest_framework.views import APIView
 
 from core.response import success_response
@@ -49,7 +48,6 @@ from ..constants import (
     PERM_CALENDAR_VIEW,
 )
 from ..models import CalendarEvent, Room, TimetableSlot
-from ..serializers import CalendarEventSerializer
 from ..services.calendar import (
     event_type_label,
     teaching_days,

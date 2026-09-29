@@ -21,10 +21,11 @@ is a fact about the school's timetable, and the detail is a disclosure decision.
 
 **Two refusals, in this order.** Incompleteness first, then clashes, because a
 lesson with no teacher is the more actionable message and a school that sees it
-first fixes the right thing. Incompleteness is only reachable by duplicating
-another class's week without its teachers or rooms - nothing else can write a
-slot with a gap in it - which is why it is checked at the gate rather than at
-the write.
+first fixes the right thing. A lesson with no teacher or no room is an ordinary
+saved state: the lesson form, the grid save and a duplicate made without
+teachers or rooms all write one, because a school fills the subjects of a week
+before it fills the people and the places. That is why completeness is checked
+at the gate rather than at the write.
 
 **An exam timetable is not gated.** Its only impossible clash, a class sitting
 two papers at once, is refused at the write; the rest are things a school does
@@ -38,9 +39,8 @@ from django.utils import timezone
 from vs_rbac.scoping import WHOLE_TENANT
 
 from ..exceptions import TimetableHasClashes, TimetableIncomplete
-from ..models import DayOfWeek, ExamSlot, PublishState, TimetableSlot
+from ..models import DayOfWeek, PublishState, TimetableSlot
 from .clashes import grid_clashes
-from .scoping import can_see_branch
 from .timetable import timetable_for
 
 

@@ -16,10 +16,6 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from django.db.models import Q
-
-from ..models import CalendarEvent, CalendarEventAudience
-
 
 def term_of(session, on_date, terms=None):
     """The term covering *on_date*, or None. Compares dates, never archived_at."""
@@ -60,17 +56,6 @@ def school_word(context, tenant) -> str:
     if "term_word" not in context:
         context["term_word"] = read_term_word(tenant)
     return context["term_word"]
-
-
-def visible_events(tenant, session, *, visible_branches):
-    """Every event of the year the caller may see.
-
-    Inclusive: school-wide events plus the caller's own branches'.
-    """
-    from .scoping import scope_to_visible_branches
-
-    rows = CalendarEvent.objects.filter(tenant=tenant, session=session)
-    return rows
 
 
 def audience_labels(event, *, audience_rows=None):

@@ -14,7 +14,7 @@ reading for its documents and is right to.
 """
 from __future__ import annotations
 
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import ValidationError
 
 from schools.vs_academics.services.scoping import (  # noqa: F401  (re-exported)
     UNSET,

@@ -25,7 +25,6 @@ from .models import (
     Exam,
     ExamSlot,
     Period,
-    PublishState,
     Room,
     TimetableSlot,
 )
