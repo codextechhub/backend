@@ -933,7 +933,7 @@ class TransactionsLogView(APIView):
     # Handle GET requests for this endpoint.
     def get(self, request):
         _, reach = _reach(request)
-        qs = reach.events().select_related("actor_user")
+        qs = reach.events().select_related("entity", "actor_user", "proxied_by")
         if (action := request.query_params.get("action")):
             qs = qs.filter(action=action)
         if (provider := request.query_params.get("provider")):

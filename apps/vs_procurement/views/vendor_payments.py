@@ -197,14 +197,34 @@ def _activity_message(log):
     return log.message
 
 
+def _vendor_payment_activity(entity, payment_id):
+    """Finance-audit activity feed for one vendor payment, newest first, capped.
+
+    Messages are rendered from structured metadata by :func:`_activity_message`
+    rather than exposing the raw JSON field. Each row names who acted through
+    :func:`vs_finance.audit.activity_actor`, so an action taken under a proxy reads
+    "Ada Obi for Chioma Okafor" as it does on every other document drawer.
+    """
+    from vs_finance.audit import activity_actor
+    from vs_finance.models import FinanceAuditLog
+
+    return [{
+        "id": log.id, "action": log.action, "message": _activity_message(log),
+        "status": log.status,
+        **activity_actor(log),
+        "created_at": log.created_at,
+    } for log in FinanceAuditLog.objects.filter(
+        entity=entity, target_type="VendorPayment", target_id=str(payment_id),
+    ).select_related("actor", "effective_user").order_by("-created_at")[:20]]
+
+
 def _serialize_detail(payment):
     """Overlay workflow, posting, and audit context onto the canonical serializer.
 
     The overlay is read-only presentation data: it does not duplicate workflow or
-    ledger state on the payment model.  Audit metadata is rendered into safe,
-    human-readable activity rather than exposing the raw JSON field.
+    ledger state on the payment model. The activity block is
+    :func:`_vendor_payment_activity`.
     """
-    from vs_finance.models import FinanceAuditLog
     from vs_workflow.models import WorkflowInstance
 
     data = VendorPaymentSerializer(payment).data
@@ -216,17 +236,7 @@ def _serialize_detail(payment):
         "account_code": line.account.code, "account_name": line.account.name,
         "debit": line.debit, "credit": line.credit,
     } for line in payment.journal.lines.all()] if payment.journal_id else []
-    data["activity"] = [{
-        "id": log.id, "action": log.action, "message": _activity_message(log),
-        "status": log.status,
-        "actor_name": (
-            f"{getattr(log.actor, 'first_name', '')} {getattr(log.actor, 'last_name', '')}".strip()
-            or getattr(log.actor, "email", "System")
-        ) if log.actor_id else "System",
-        "created_at": log.created_at,
-    } for log in FinanceAuditLog.objects.filter(
-        entity=payment.entity, target_type="VendorPayment", target_id=str(payment.pk),
-    ).select_related("actor").order_by("-created_at")[:20]]
+    data["activity"] = _vendor_payment_activity(payment.entity, payment.pk)
     return data
 
 
