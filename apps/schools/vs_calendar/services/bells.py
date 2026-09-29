@@ -172,8 +172,11 @@ def _t(value) -> str:
 
 
 @transaction.atomic
-def copy_bell_schedule(tenant, *, source, target, visible):
+def copy_bell_schedule(tenant, *, source, target, visible, teaching_days):
     """Copy *source*'s periods into *target*, which must have none of its own.
+
+    Answers ``(created, skipped)``: the new periods, and the source periods
+    left out.
 
     Every period is copied as it stands: its branch, its day, its position,
     its times, its type and whether it is active. So a school whose Ikeja
@@ -181,6 +184,13 @@ def copy_bell_schedule(tenant, *, source, target, visible):
     again in the new year. Nothing is copied into a year that already has
     periods, because merging two schedules would have to decide which of two
     Period 1s wins.
+
+    A period set for a day that is not one of *teaching_days* (the school's
+    ``calendar.teaching_days``) is left out, because adding it by hand would be
+    refused: a school that stopped teaching Saturdays does not get last year's
+    Saturday periods back. An every-day period is always copied. When every
+    period the caller may copy would be left out, the copy is refused with the
+    reason rather than answering with nothing.
 
     *visible* is the caller's branch reach (``WHOLE_TENANT`` or a set of
     branch ids). A branch-bound caller copies only the periods at their own
@@ -214,6 +224,24 @@ def copy_bell_schedule(tenant, *, source, target, visible):
         where = " at your branch" if len(visible) == 1 else " at your branches"
 
     rows = list(rows.order_by("branch_id", "day_of_week", "order_index", "pk"))
+    skipped = [
+        row for row in rows
+        if row.day_of_week is not None and row.day_of_week not in teaching_days
+    ]
+    if rows and len(skipped) == len(rows):
+        which = (
+            "is not a teaching day" if len(_days(skipped)) == 1
+            else "are not teaching days"
+        )
+        raise NothingToCopy(
+            f"Every period{where} in {source.name} is set for "
+            f"{days_phrase(skipped)}, which {which}, so there is nothing to "
+            f"copy. Add {days_phrase(skipped)} to the teaching days in "
+            f"Settings, Calendar and timetables first, or build "
+            f"{target.name}'s bell schedule by hand.",
+            field="from_session",
+        )
+    rows = [row for row in rows if row not in skipped]
     if not rows:
         raise NothingToCopy(
             f"{source.name} has no periods{where} to copy."
@@ -245,4 +273,34 @@ def copy_bell_schedule(tenant, *, source, target, visible):
         Period.all_objects.filter(pk__in=[row.pk for row in created])
         .select_related("branch")
         .order_by("day_of_week", "start_time", "pk"),
+    ), skipped
+
+
+def _days(periods) -> list:
+    return sorted({row.day_of_week for row in periods})
+
+
+def days_phrase(periods) -> str:
+    """The weekdays *periods* are set for, as prose: "Saturday and Sunday"."""
+    from ..models import DayOfWeek
+
+    names = [DayOfWeek(day).label for day in _days(periods)]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+def skipped_sentence(skipped) -> str:
+    """Why periods were left out of a copy, or "" when none were.
+
+    "2 Saturday periods were left out because Saturday is not a teaching day."
+    """
+    if not skipped:
+        return ""
+    count, days = len(skipped), _days(skipped)
+    noun = "period was" if count == 1 else "periods were"
+    if len(days) == 1:
+        day = days_phrase(skipped)
+        return f"{count} {day} {noun} left out because {day} is not a teaching day."
+    return (
+        f"{count} {noun} left out because {days_phrase(skipped)} are not "
+        f"teaching days."
     )

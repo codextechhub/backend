@@ -672,6 +672,47 @@ class InvigilatorRoleTests(_EffectsBase):
         names = [row["name"] for row in self.listed(self.ikeja_admin)]
         self.assertEqual(names, ["Chioma Okafor", "Chukwuemeka Eze"])
 
+    def test_a_paper_kept_by_someone_who_lost_the_role_can_still_be_edited(self):
+        """Bola invigilated when bursars could; moving her paper's room is not re-judging her."""
+        self.configure(invigilator_roles=["teacher", "bursar"])
+        paper = self.paper(self.bursar).data["data"]
+        self.configure(invigilator_roles=["teacher"])
+
+        moved = self.patch(
+            self.admin, "calendar-exam-slot-detail", {"room": self.room_a2.pk},
+            exam_id=self.exam.pk, pk=paper["id"],
+        )
+        self.assertEqual(moved.status_code, 200, moved.data)
+        resent = self.patch(
+            self.admin, "calendar-exam-slot-detail",
+            {"room": self.room_a1.pk, "invigilator": self.bursar.pk},
+            exam_id=self.exam.pk, pk=paper["id"],
+        )
+        self.assertEqual(resent.status_code, 200, resent.data)
+        preview = self.post(self.admin, "calendar-exam-slot-preview", {
+            "school_class": self.jss1a.pk, "subject": self.maths.pk,
+            "exam_date": "2025-12-01", "sitting": "MORNING",
+            "room": self.room_a2.pk, "invigilator": self.bursar.pk,
+            "exclude": paper["id"],
+        }, exam_id=self.exam.pk)
+        self.assertIsNone(preview.data["data"]["refusal"])
+
+    def test_putting_them_on_a_paper_again_is_refused(self):
+        self.configure(invigilator_roles=["teacher", "bursar"])
+        paper = self.paper(self.bursar).data["data"]
+        self.configure(invigilator_roles=["teacher"])
+        swapped = self.patch(
+            self.admin, "calendar-exam-slot-detail", {"invigilator": self.eze.pk},
+            exam_id=self.exam.pk, pk=paper["id"],
+        )
+        self.assertEqual(swapped.status_code, 200, swapped.data)
+        back = self.patch(
+            self.admin, "calendar-exam-slot-detail", {"invigilator": self.bursar.pk},
+            exam_id=self.exam.pk, pk=paper["id"],
+        )
+        self.assertEqual(back.status_code, 422, back.data)
+        self.assertEqual(back.data["error"]["code"], "NOT_AN_INVIGILATOR")
+
     def test_the_picker_needs_the_exam_view_key(self):
         response = self.get(self.bursar, "calendar-exam-invigilators")
         self.assertEqual(response.status_code, 403, response.data)
@@ -792,6 +833,76 @@ class BellScheduleCopyTests(_EffectsBase):
             "2025/2026 has no periods at your branch to copy. The school's shared "
             "periods are copied by a school-wide administrator.",
         )
+
+    def saturday(self, **extra):
+        return Period.all_objects.create(
+            tenant=self.tenant, session=self.year, day_of_week=6, order_index=1,
+            label="Saturday Prep", period_type=PeriodType.LESSON,
+            start_time=dt.time(9, 0), end_time=dt.time(10, 0), **extra,
+        )
+
+    def test_a_period_on_a_day_no_longer_taught_is_left_out_and_named(self):
+        """Brightfield stopped Saturdays; last year's Saturday Prep stays behind."""
+        self.saturday()
+        response = self.copy()
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(
+            response.data["message"],
+            "5 periods copied from 2025/2026 into 2026/2027. 1 Saturday period "
+            "was left out because Saturday is not a teaching day.",
+        )
+        self.assertEqual(response.data["data"]["copied"], 5)
+        self.assertEqual(response.data["data"]["skipped"], [
+            {"name": "Saturday Prep", "day_of_week": 6, "day_label": "Saturday"},
+        ])
+        self.assertFalse(
+            Period.all_objects.filter(session=self.next_year, day_of_week=6).exists(),
+        )
+        # The every-day periods still came across.
+        self.assertTrue(
+            Period.all_objects.filter(
+                session=self.next_year, day_of_week__isnull=True, label="Period 1",
+            ).exists(),
+        )
+
+    def test_several_days_left_out_are_named_together(self):
+        self.saturday()
+        Period.all_objects.create(
+            tenant=self.tenant, session=self.year, day_of_week=7, order_index=1,
+            label="Sunday Study", period_type=PeriodType.LESSON,
+            start_time=dt.time(9, 0), end_time=dt.time(10, 0),
+        )
+        response = self.copy()
+        self.assertEqual(
+            response.data["message"],
+            "5 periods copied from 2025/2026 into 2026/2027. 2 periods were left "
+            "out because Saturday and Sunday are not teaching days.",
+        )
+
+    def test_a_saturday_school_copies_its_saturday_periods(self):
+        self.saturday()
+        self.configure(teaching_days=[1, 2, 3, 4, 5, 6])
+        response = self.copy()
+        self.assertEqual(response.data["data"]["copied"], 6)
+        self.assertEqual(response.data["data"]["skipped"], [])
+        self.assertEqual(
+            response.data["message"], "6 periods copied from 2025/2026 into 2026/2027.",
+        )
+
+    def test_nothing_but_periods_on_days_not_taught_is_refused_with_the_reason(self):
+        """Ikeja's only period of its own is a Saturday one."""
+        Period.all_objects.filter(pk=self.ikeja_p1.pk).update(day_of_week=6)
+        response = self.copy(user=self.ikeja_admin)
+        self.assertEqual(response.status_code, 422, response.data)
+        self.assertEqual(response.data["error"]["code"], "BELL_SCHEDULE_EMPTY")
+        self.assertEqual(
+            response.data["message"],
+            "Every period at your branch in 2025/2026 is set for Saturday, which "
+            "is not a teaching day, so there is nothing to copy. Add Saturday to "
+            "the teaching days in Settings, Calendar and timetables first, or "
+            "build 2026/2027's bell schedule by hand.",
+        )
+        self.assertFalse(Period.all_objects.filter(session=self.next_year).exists())
 
     def test_copying_needs_the_key_that_adds_a_period(self):
         response = self.copy(user=self.eze)

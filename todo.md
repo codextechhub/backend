@@ -1702,7 +1702,13 @@ docs/timetable-api-plan.md section 12.
 - POST /v1/academics/timetable/periods/copy/?session=<target> with
   {from_session}: copies every period of a year into an empty one (a button,
   never automatic); a branch-bound caller copies only their branches' periods.
-  409 BELL_SCHEDULE_NOT_EMPTY, 422 BELL_SCHEDULE_EMPTY.
+  A day-specific period on a day no longer taught is left out and listed:
+  {copied, skipped: [{name, day_of_week, day_label}], periods}, and the
+  message says so ("1 Saturday period was left out because Saturday is not a
+  teaching day."). 409 BELL_SCHEDULE_NOT_EMPTY, 422 BELL_SCHEDULE_EMPTY (also
+  when everything would be left out, saying why).
+- An exam paper's invigilator is judged only when set or changed, so a paper
+  kept by someone who has since lost the role can still be edited.
 - The publish answer carries warnings; the TIMETABLE_INCOMPLETE sentence says
   "no teacher" alone when rooms are not required.
 - A lesson on a day the school no longer teaches blocks publishing its class:
@@ -1715,7 +1721,8 @@ every refusal, the day columns and is_teaching_day, DAY_NOT_TAUGHT, the
 closes-school defaults and that stored events never change, the four-step
 publish gate (incomplete, day not taught, duty, clashes) and its warnings,
 the duty match modes and their codes, the
-invigilator rule and picker, and the bell schedule copy with its branch rule;
+invigilator rule (judged only when set or changed) and picker, and the bell
+schedule copy with its branch rule and what it leaves out;
 M06 the seven definitions and their defaults; M12 that teaching duties can
 gate the timetable; M10 the blank Closes School cell and the reworded refusal;
 M04 that invigilation follows the school's chosen roles. MRD: a school sets

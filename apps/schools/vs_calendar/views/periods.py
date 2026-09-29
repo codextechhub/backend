@@ -32,6 +32,7 @@ from ..services.bells import (
     provisional_order_index,
     periods_in_force,
     renumber_day,
+    skipped_sentence,
 )
 from ..services.scoping import (
     UNSET,
@@ -312,8 +313,13 @@ class BellScheduleCopyView(CalendarViewMixin, APIView):
     into a target with none there; the school's shared periods are refused to
     them as a shared row always is (see ``services.bells.copy_bell_schedule``).
 
-    Answers 201 with ``{"copied": n, "periods": [...]}``, the created periods in
-    the bell schedule's own shape, and one audit event.
+    A period set for a day the school no longer teaches is left out and
+    listed; an every-day period is always copied.
+
+    Answers 201 with ``{"copied": n, "skipped": [{name, day_of_week,
+    day_label}], "periods": [...]}``, the created periods in the bell
+    schedule's own shape, and one audit event. The message names what was left
+    out and why.
 
     docstring-name: Copy a bell schedule
     """
@@ -348,14 +354,16 @@ class BellScheduleCopyView(CalendarViewMixin, APIView):
                 ),
             })
 
-        created = copy_bell_schedule(
+        created, skipped = copy_bell_schedule(
             self.tenant, source=source, target=target, visible=self.visible,
+            teaching_days=read_teaching_days(self.tenant),
         )
         count = len(created)
-        message = (
+        message = " ".join(part for part in (
             f"{count} period{'' if count == 1 else 's'} copied from "
-            f"{source.name} into {target.name}."
-        )
+            f"{source.name} into {target.name}.",
+            skipped_sentence(skipped),
+        ) if part)
         emit_audit_event(
             module_key=AuditModuleKey.ACADEMICS,
             action_type=AuditActionType.CREATE,
@@ -368,6 +376,14 @@ class BellScheduleCopyView(CalendarViewMixin, APIView):
             message,
             {
                 "copied": count,
+                "skipped": [
+                    {
+                        "name": row.label,
+                        "day_of_week": row.day_of_week,
+                        "day_label": DayOfWeek(row.day_of_week).label,
+                    }
+                    for row in skipped
+                ],
                 "periods": PeriodSerializer(
                     created, many=True, context=self.get_serializer_context(),
                 ).data,

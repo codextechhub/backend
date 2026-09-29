@@ -264,7 +264,15 @@ class _ExamScoped(CalendarViewMixin):
             )
         return row
 
-    def _validate(self, exam, data, *, exclude_pk=None):
+    def _validate(self, exam, data, *, exclude_pk=None, stored_invigilator_id=None):
+        """Every rule a paper must satisfy before it is written.
+
+        The invigilator is judged only when it is being set: on a new paper,
+        or when an edit names someone other than *stored_invigilator_id*. A
+        person who has since lost their invigilating role stays on the papers
+        they already hold, and those papers can still be moved to another
+        room or sitting; putting them on a paper again is what is refused.
+        """
         event = exam.calendar_event
         if not (event.start_date <= data["exam_date"] <= event.end_date):
             raise ExamOutsideExamPeriod(
@@ -280,7 +288,9 @@ class _ExamScoped(CalendarViewMixin):
         # A paper is its class's: Ikeja schedules Ikeja's classes, even inside a
         # school-wide exam, and a shared class is read-only to a branch.
         assert_may_change(self.request.user, self.tenant, school_class)
-        assert_may_invigilate(self.tenant, data.get("invigilator"))
+        invigilator = data.get("invigilator")
+        if exclude_pk is None or getattr(invigilator, "pk", None) != stored_invigilator_id:
+            assert_may_invigilate(self.tenant, invigilator)
 
         room = data.get("room")
         if room is not None and event.branch_id and room.branch_id != event.branch_id:
@@ -429,8 +439,16 @@ class ExamSlotPreviewView(_ExamScoped, APIView):
         exclude = str(request.data.get("exclude") or "").strip()
         exclude_pk = int(exclude) if exclude.isdigit() else None
 
+        stored = None
+        if exclude_pk is not None:
+            stored = (
+                ExamSlot.objects.filter(tenant=self.tenant, exam=exam, pk=exclude_pk)
+                .values_list("invigilator_id", flat=True).first()
+            )
         try:
-            school_class = self._validate(exam, data, exclude_pk=exclude_pk)
+            school_class = self._validate(
+                exam, data, exclude_pk=exclude_pk, stored_invigilator_id=stored,
+            )
         except CalendarError as exc:
             # Only the module's OWN refusals are previewed. A DRF NotFound from
             # a class that does not exist is a bad request, not a draft the
@@ -512,7 +530,10 @@ class ExamSlotDetailView(_ExamScoped, generics.RetrieveUpdateDestroyAPIView):
                 data["invigilator"] if "invigilator" in data else row.invigilator
             ),
         }
-        school_class = self._validate(exam, merged, exclude_pk=row.pk)
+        school_class = self._validate(
+            exam, merged, exclude_pk=row.pk,
+            stored_invigilator_id=row.invigilator_id,
+        )
 
         row.school_class = school_class
         row.subject = merged["subject"]

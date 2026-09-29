@@ -750,6 +750,10 @@ Settings, Calendar and timetables."; an inactive account: "Bola Adeyemi's
 account is not active, so they cannot invigilate."; another school's person:
 "That person does not hold a role whose holders may invigilate at this
 school.". This replaces `NOT_A_TEACHING_USER` on the exam paper writes only.
+The invigilator is judged only when it is being set: on a new paper, or when
+an edit (or an edit's preview) names someone other than the paper's stored
+invigilator. A person who has since lost their role stays on the papers they
+hold, and those papers can still be moved or otherwise edited.
 
 `GET /v1/academics/exams/invigilators/` (key `academics.exam.view`) is the
 picker: `[{"id": 31, "name": "Chioma Okafor", "role_label": "Teacher"}]`,
@@ -764,7 +768,17 @@ or else the active year, exactly as for adding a period. A button; starting a
 year copies nothing. Body `{"from_session": <id>}`. Needs
 `academics.timetable.create`, the key that adds a period. Answers 201,
 "5 periods copied from 2025/2026 into 2026/2027.", with `{"copied": 5,
-"periods": [...]}`, each in the bell schedule's own shape, and one audit event.
+"skipped": [], "periods": [...]}`, each period in the bell schedule's own
+shape, and one audit event.
+
+A period set for a day the school no longer teaches is left out, because
+adding it by hand would be refused (`DAY_NOT_TAUGHT`); an every-day period is
+always copied. What was left out is listed in `skipped` as `{"name": "Saturday
+Prep", "day_of_week": 6, "day_label": "Saturday"}` and named in the message:
+"5 periods copied from 2025/2026 into 2026/2027. 1 Saturday period was left
+out because Saturday is not a teaching day." (several on one day: "2 Saturday
+periods were left out ..."; several days: "3 periods were left out because
+Saturday and Sunday are not teaching days.").
 
 Every period is copied as it stands: branch, day, position, times, type and
 whether it is active. Branch scoping: a school-wide caller copies every period
@@ -784,5 +798,10 @@ shared ones. Refusals:
   your branch, ...").
 - 422 `BELL_SCHEDULE_EMPTY`: "2025/2026 has no periods to copy." (branch-bound:
   "2025/2026 has no periods at your branch to copy. The school's shared periods
-  are copied by a school-wide administrator.").
+  are copied by a school-wide administrator."). When every period the caller
+  may copy would be left out: "Every period in 2025/2026 is set for Saturday,
+  which is not a teaching day, so there is nothing to copy. Add Saturday to the
+  teaching days in Settings, Calendar and timetables first, or build
+  2026/2027's bell schedule by hand." (branch-bound: "Every period at your
+  branch in 2025/2026 ...").
 - 403 for a branch-bound caller whose every branch has been withdrawn.
