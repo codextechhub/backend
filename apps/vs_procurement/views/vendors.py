@@ -44,6 +44,8 @@ from ..serializers import (
 
 
 from .base import (
+    _branch_q,
+    _branch_scope,
     _catalogue_or_404,
     _catalogue_visible,
     _ProcBase,
@@ -420,7 +422,12 @@ class VendorCategoryDetailView(_ProcBase):
 
 
 class VendorCategoryInsightsView(_ProcBase):
-    """Entity-wide category spend aggregates for the list and detail drawers."""
+    """Category spend aggregates for the list and detail drawers.
+
+    Spend is the bills the reader can open: a branch-bound reader's figures are
+    their own branches' bills, the same population their bill list and the spend
+    analysis report add up, and never the school's total.
+    """
 
     rbac_permission = "procurement.report.view"
 
@@ -436,7 +443,7 @@ class VendorCategoryInsightsView(_ProcBase):
             vendors__entity=entity,
             vendors__invoices__entity=entity,
             vendors__invoices__status=DocumentStatus.POSTED,
-        )
+        ) & _branch_q(request, entity, prefix="vendors__invoices__")
         rows = VendorCategory.objects.filter(entity=entity).annotate(
             # Invoice joins stay entity-safe through the category -> vendor FK chain.
             spend_mtd=Sum(
@@ -481,13 +488,13 @@ class VendorListCreateView(_ProcBase):
         qs = _catalogue_visible(
             request, Vendor.objects.filter(entity=entity),
         ).select_related("category").annotate(
-            # Only issued POs with at least one unreceived line remain open commitments.
+            # Open commitments: issued POs with an unreceived line, in the reader's branches.
             active_po_count=Count(
                 "purchase_orders",
                 filter=Q(
                     purchase_orders__status=DocumentStatus.APPROVED,
                     purchase_orders__lines__received_qty__lt=F("purchase_orders__lines__quantity"),
-                ),
+                ) & _branch_q(request, entity, prefix="purchase_orders__"),
                 distinct=True,
             ),
         )
@@ -575,16 +582,22 @@ class VendorListCreateView(_ProcBase):
 
 
 class VendorSummaryView(_ProcBase):
-    """Entity-wide vendor KPIs; spend remains behind the report permission."""
+    """Vendor KPIs for the reader; spend remains behind the report permission.
+
+    The counts are over the vendors the reader can see, and the year-to-date spend
+    over the bills they can open, so a branch-bound reader's spend is their own
+    branches' and not the school's.
+    """
 
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
-        """Return entity counts plus posted YTD spend in integer kobo."""
+        """Return vendor counts plus posted YTD spend in integer kobo."""
         entity = resolve_entity(request)
         vendors = _catalogue_visible(request, Vendor.objects.filter(entity=entity))
         year_start = tenant_today(entity.tenant).replace(month=1, day=1)
         spend = VendorInvoice.objects.filter(
+            _branch_q(request, entity),
             entity=entity, status=DocumentStatus.POSTED, invoice_date__gte=year_start,
         ).aggregate(total=Sum("total"))["total"] or 0
         terms = [PAYMENT_TERM_DAYS.get(value, 0) for value in vendors.values_list("payment_terms", flat=True)]
@@ -724,7 +737,12 @@ class VendorDetailView(_ProcBase):
 
 
 class VendorInsightsView(_ProcBase):
-    """Authoritative spend and operational performance for one entity-scoped vendor."""
+    """Authoritative spend and operational performance for one vendor.
+
+    Both figures come from the reports behind the analytics screens, under the same
+    branch scope those screens use, so a branch-bound reader's drawer shows what
+    their branches bought from and paid the vendor, not the school's total.
+    """
 
     # ``analytics`` rather than ``report``: per-vendor spend and performance is
     # the analytical tail, while the category and list insights beside it are
@@ -741,9 +759,18 @@ class VendorInsightsView(_ProcBase):
             "No such vendor in this entity.",
         )
         year_start = tenant_today(entity.tenant).replace(month=1, day=1)
-        # Scope both reports to this vendor so the drawer doesn't recompute the whole entity.
-        spend_row = next((row for row in spend_analysis(entity, start_date=year_start, vendor=vendor).by_vendor if row.key == vendor.code), None)
-        perf_row = next((row for row in vendor_performance(entity, start_date=year_start, vendor=vendor).rows if row.vendor_id == vendor.id), None)
+        scope = _branch_scope(request, entity)
+        # Both reports are limited to this vendor so the drawer does not recompute the entity.
+        spend_row = next((
+            row for row in spend_analysis(
+                entity, start_date=year_start, vendor=vendor, branch_scope=scope,
+            ).by_vendor if row.key == vendor.code
+        ), None)
+        perf_row = next((
+            row for row in vendor_performance(
+                entity, start_date=year_start, vendor=vendor, branch_scope=scope,
+            ).rows if row.vendor_id == vendor.id
+        ), None)
         return success_response("Vendor insights retrieved.", data={
             "spend_ytd": spend_row.gross if spend_row else 0,
             "invoice_count": spend_row.invoice_count if spend_row else 0,
