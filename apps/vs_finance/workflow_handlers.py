@@ -355,8 +355,8 @@ class RefundHandler(_FinancePostOnApprove):
         """Run the refund-posting guards without writing anything.
 
         Mirrors the guards in :func:`vs_finance.credit_notes._post_refund_atomic`
-        (positive amount, amount within the customer's available credit **as at the
-        refund's own date**, a resolvable deposit/bank account) with the same
+        (positive amount, amount within the credit of the refund's own branch **as at
+        the refund's own date**, a resolvable deposit/bank account) with the same
         ``PostingError`` messages - so the preflight and the eventual post agree - but
         never mutates. The DRAFT check is handled by the base ``validate_document``.
 
@@ -365,15 +365,19 @@ class RefundHandler(_FinancePostOnApprove):
         and then fail at the final step.
         """
         from .exceptions import PostingError
-        from .receivables import customer_refund_available_balance
+        from .receivables import customer_refund_available_balance, require_refund_branch_credit
 
         if document.amount <= 0:  # Refunds must pay out a positive amount.
             raise PostingError("A refund must have a positive amount to post.")
 
         available = customer_refund_available_balance(
             document.customer, exclude_refund_id=document.pk,
-            as_of=document.refund_date)  # Credit not reserved elsewhere, as at the refund date.
+            as_of=document.refund_date,
+            branch=document.branch_id)  # The refund's own branch's credit, as at its date.
         if document.amount > available:  # Cannot refund more than available credit.
+            require_refund_branch_credit(  # Name the branch that holds it, if another does.
+                document.customer, document.amount, document.branch_id,
+                as_of=document.refund_date, exclude_refund_id=document.pk)
             raise PostingError(
                 f"Refund of {format_naira(document.amount)} exceeds "
                 f"{document.customer.code}'s credit available on "

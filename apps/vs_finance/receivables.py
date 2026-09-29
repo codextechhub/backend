@@ -23,6 +23,7 @@ from django.db import transaction
 
 from .account_mappings import resolve_mapped_account
 from .audit import record, record_rejection
+from .chronology import ANY_BRANCH
 from .constants import (
     AccountMappingKey,
     DocumentStatus,
@@ -320,9 +321,9 @@ def customer_credit_balance(customer, *, as_of=None) -> int:
 
 
 def customer_refund_available_balances(
-    entity, customer_ids=None, *, exclude_refund_id=None, as_of=None,
+    entity, customer_ids=None, *, exclude_refund_id=None, as_of=None, branch=ANY_BRANCH,
 ) -> dict[int, int]:
-    """Return credit still available for a new refund request.
+    """Return credit still available for a new refund request, keyed by customer id.
 
     Three deductions sit between stored credit and refundable credit:
 
@@ -334,14 +335,56 @@ def customer_refund_available_balances(
       and again on post.
     * **``as_of``** - credit that does not yet exist on the refund's own accounting
       date cannot fund it. Callers must pass the refund date, not today.
+
+    ``branch`` measures one branch's credit, debit notes and reservations only (a
+    branch id, or ``None`` for school-wide), which is what a refund of that branch
+    can pay out. :data:`~vs_finance.chronology.ANY_BRANCH` reads every branch together.
     """
+    return _refund_available(
+        entity, customer_ids, exclude_refund_id=exclude_refund_id, as_of=as_of,
+        branch=branch, by_branch=False,
+    )
+
+
+def refundable_credit_by_branch(entity, customer_ids=None, *, as_of=None,
+                                scope=None) -> dict[tuple[int, int | None], int]:
+    """Refundable credit per ``(customer id, branch id)``, positive amounts only.
+
+    One refund pays out one branch's credit, so this is the figure a refund screen
+    offers: a family holding 30,000 at Ikeja and 20,000 at Lekki has two refundable
+    amounts, not one of 50,000. ``scope`` (a :class:`vs_rbac.scoping.BranchScope`)
+    keeps the branches a reader may refund from, and school-wide credit when the
+    scope is inclusive.
+    """
+    available = _refund_available(
+        entity, customer_ids, exclude_refund_id=None, as_of=as_of,
+        branch=ANY_BRANCH, by_branch=True,
+    )
+    ids = None if scope is None else scope.branch_ids
+    shared = scope is None or scope.include_shared
+    return {
+        key: amount for key, amount in available.items()
+        if amount > 0 and (ids is None or key[1] in ids or (key[1] is None and shared))
+    }
+
+
+def _refund_available(entity, customer_ids, *, exclude_refund_id, as_of, branch, by_branch):
+    """Refundable credit keyed by customer, or by ``(customer, branch)`` with ``by_branch``."""
     from django.db.models import F, Sum
     from django.db.models.functions import Coalesce
 
+    from .chronology import credit_lots
     from .constants import CreditNoteKind
     from .models import CreditNote, Refund
 
-    balances = customer_credit_balances(entity, customer_ids, as_of=as_of)
+    def key(customer_id, branch_id):
+        return (customer_id, branch_id) if by_branch else customer_id
+
+    credit: dict = defaultdict(int)
+    for customer_id, lots in credit_lots(
+            entity, customer_ids, as_of=as_of, branch=branch).items():
+        for lot in lots:
+            credit[key(customer_id, lot.branch_id)] += lot.remaining
 
     debit_notes = CreditNote.objects.filter(
         entity=entity, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT)
@@ -351,36 +394,83 @@ def customer_refund_available_balances(
         customer_ids = list(customer_ids)
         debit_notes = debit_notes.filter(customer_id__in=customer_ids)
         pending = pending.filter(customer_id__in=customer_ids)
+    if branch is not ANY_BRANCH:
+        debit_notes, pending = debit_notes.filter(branch_id=branch), pending.filter(branch_id=branch)
     if exclude_refund_id is not None:
         pending = pending.exclude(pk=exclude_refund_id)
 
-    owed = {
-        row["customer_id"]: int(row["amount"] or 0)
-        for row in debit_notes.values("customer_id").annotate(
-            amount=Coalesce(Sum(F("total") - F("amount_paid")), 0))
-    }
-    reserved = {
-        row["customer_id"]: int(row["amount"] or 0)
-        for row in pending.values("customer_id").annotate(amount=Coalesce(Sum("amount"), 0))
-    }
-    customer_keys = set(balances) | set(owed) | set(reserved)
+    owed: dict = defaultdict(int)
+    for row in debit_notes.values("customer_id", "branch_id").annotate(
+            amount=Coalesce(Sum(F("total") - F("amount_paid")), 0)):
+        owed[key(row["customer_id"], row["branch_id"])] += int(row["amount"] or 0)
+    reserved: dict = defaultdict(int)
+    for row in pending.values("customer_id", "branch_id").annotate(
+            amount=Coalesce(Sum("amount"), 0)):
+        reserved[key(row["customer_id"], row["branch_id"])] += int(row["amount"] or 0)
+
     return {
-        customer_id: max(
-            0,
-            balances.get(customer_id, 0)
-            - owed.get(customer_id, 0)
-            - reserved.get(customer_id, 0),
-        )
-        for customer_id in customer_keys
+        k: max(0, credit.get(k, 0) - owed.get(k, 0) - reserved.get(k, 0))
+        for k in set(credit) | set(owed) | set(reserved)
     }
 
 
-def customer_refund_available_balance(customer, *, exclude_refund_id=None, as_of=None) -> int:
-    """Credit available to one refund on its own date, after pending reservations."""
+def customer_refund_available_balance(customer, *, exclude_refund_id=None, as_of=None,
+                                      branch=ANY_BRANCH) -> int:
+    """Credit available to one refund on its own date, after pending reservations.
+
+    ``branch`` is the refund's own branch id (``None`` for school-wide); see
+    :func:`customer_refund_available_balances`.
+    """
     return customer_refund_available_balances(
         customer.entity, [customer.pk],
-        exclude_refund_id=exclude_refund_id, as_of=as_of,
+        exclude_refund_id=exclude_refund_id, as_of=as_of, branch=branch,
     ).get(customer.pk, 0)
+
+
+def require_refund_branch_credit(customer, amount, branch_id, *, as_of=None,
+                                 exclude_refund_id=None):
+    """Refuse a refund its own branch cannot fund while another branch holds the credit.
+
+    A refund pays out only the credit of its own branch (see
+    :func:`~vs_finance.chronology.credit_lots`). When that falls short but the
+    customer has refundable credit elsewhere, the ordinary "exceeds available credit"
+    message would read as a missing balance; this names both sides instead, for
+    example "This refund belongs to Ikeja Branch and OKAFOR's refundable credit of
+    ₦300.00 is held by Lekki Branch. Raise the refund for Lekki Branch."
+    Returns quietly when the own branch covers ``amount`` or no other branch holds
+    anything, so the caller's own shortfall message still applies.
+    """
+    from vs_tenants.models import Branch
+
+    from .money import format_naira
+
+    own = customer_refund_available_balance(
+        customer, exclude_refund_id=exclude_refund_id, as_of=as_of,
+        branch=branch_id,
+    )
+    if amount <= own:
+        return
+    elsewhere = {
+        branch: held for (_cid, branch), held in _refund_available(
+            customer.entity, [customer.pk], exclude_refund_id=exclude_refund_id,
+            as_of=as_of, branch=ANY_BRANCH, by_branch=True,
+        ).items()
+        if held > 0 and branch != branch_id
+    }
+    if not elsewhere:
+        return
+    names = dict(Branch.objects.filter(
+        pk__in=[b for b in (*elsewhere, branch_id) if b]).values_list("pk", "name"))
+    ordered = sorted(elsewhere, key=lambda b: (b is None, names.get(b, "")))
+    holders = " and ".join(names[b] if b else "the school as a whole" for b in ordered)
+    held = format_naira(sum(elsewhere.values()))
+    remedy = (f"Raise the refund for {names[ordered[0]]}." if ordered[0] is not None
+              else "Raise a school-wide refund.")
+    side = f"belongs to {names[branch_id]}" if branch_id is not None else "is school-wide"
+    raise SettlementBranchError(
+        f"This refund {side} and {customer.code}'s refundable credit of {held} is "
+        f"held by {holders}. {remedy}"
+    )
 
 
 #: Supported auto-allocation strategies for settling a receipt's cash.  # Keep strategy names explicit and small.
