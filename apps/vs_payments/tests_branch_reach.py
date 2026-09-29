@@ -70,11 +70,10 @@ class PaymentsNameOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         self.assertEqual(refused.status_code, 400, refused.data)
         self.assertIn(f"No invoice '{lekki_invoice.pk}' in this entity.", str(refused.data))
 
-    def test_a_payment_request_for_an_invoice_alone_deposits_into_the_invoices_branch(self):
-        """No customer named: the invoice's customer decides the branch, as it decides the receipt's."""
+    def _collections_ledgers(self):
+        """A bank ledger per branch, Ikeja's and Lekki's, keyed by branch tag."""
         from vs_finance.models import BankAccount
 
-        lekki_invoice = self.invoice(self.books, self.lekki_customer, self.lekki)
         cash_type = Account.objects.get(entity=self.books, code="1000").account_type
         ledgers = {}
         for tag, branch in (("IKJ", self.ikeja), ("LEK", self.lekki)):
@@ -83,26 +82,61 @@ class PaymentsNameOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
                 account_type=cash_type, is_postable=True)
             BankAccount.objects.create(entity=self.books, name=f"Collections {tag}",
                                        branch=branch, gl_account=ledgers[tag])
+        return ledgers
+
+    def _clerk_for_ikeja_and_lekki(self):
         n = next(_clerks)
         user = self.user_for(self.tenant, f"clerk-{n}@corona.test")
         for branch in (self.ikeja, self.lekki):
             self.grant(user, "payments.collection.create", tenant=self.tenant,
                        role_key=f"clerk-{n}-{branch.pk}", branch=branch)
-        okafor = TenantAPIClient(user=user)
+        return TenantAPIClient(user=user)
 
-        refused = self.post(okafor, "collections/", {
-            "amount": 5_000, "invoice": lekki_invoice.pk,
-            "deposit_account": ledgers["IKJ"].code,
+    def test_a_payment_request_for_an_invoice_deposits_into_the_invoices_branch(self):
+        """The invoice decides the branch, as it decides the receipt's, whoever is named.
+
+        The Okafor family is filed under Ikeja and owes a Lekki invoice. The money
+        is Lekki's, so it deposits into Lekki's bank whether the request names the
+        family or only the invoice, and Ikeja's bank is refused. A clerk covering
+        both branches is held to it, because the rule belongs to the money.
+        """
+        okafor = self.customer(self.books, "COKAF", self.ikeja)
+        lekki_invoice = self.invoice(self.books, okafor, self.lekki)
+        ledgers = self._collections_ledgers()
+        clerk = self._clerk_for_ikeja_and_lekki()
+
+        for named in ({"customer": "COKAF"}, {}):
+            with self.subTest(named=named):
+                refused = self.post(clerk, "collections/", {
+                    "amount": 5_000, "invoice": lekki_invoice.pk,
+                    "deposit_account": ledgers["IKJ"].code, **named,
+                })
+                self.assertEqual(refused.status_code, 400, refused.data)
+                self.assertIn("This payment request belongs to Lekki Branch. "
+                              "Deposit it into a Lekki Branch account or a school-wide one.",
+                              str(refused.data))
+                self.assertFalse(CollectionIntent.objects.filter(invoice=lekki_invoice).exists())
+
+                accepted = self.post(clerk, "collections/", {
+                    "amount": 5_000, "invoice": lekki_invoice.pk,
+                    "deposit_account": ledgers["LEK"].code, **named,
+                })
+                self.assertNotIn("belongs to", str(accepted.data))
+
+    def test_a_payment_request_naming_no_invoice_deposits_into_the_customers_branch(self):
+        """A top-up has no invoice, so the family's own branch takes the money."""
+        self.customer(self.books, "COKAF", self.ikeja)
+        ledgers = self._collections_ledgers()
+        clerk = self._clerk_for_ikeja_and_lekki()
+
+        refused = self.post(clerk, "collections/", {
+            "amount": 5_000, "customer": "COKAF", "deposit_account": ledgers["LEK"].code,
         })
         self.assertEqual(refused.status_code, 400, refused.data)
-        self.assertIn("This payment request belongs to Lekki Branch. "
-                      "Deposit it into a Lekki Branch account or a school-wide one.",
-                      str(refused.data))
-        self.assertFalse(CollectionIntent.objects.filter(invoice=lekki_invoice).exists())
+        self.assertIn("This payment request belongs to Ikeja Branch.", str(refused.data))
 
-        accepted = self.post(okafor, "collections/", {
-            "amount": 5_000, "invoice": lekki_invoice.pk,
-            "deposit_account": ledgers["LEK"].code,
+        accepted = self.post(clerk, "collections/", {
+            "amount": 5_000, "customer": "COKAF", "deposit_account": ledgers["IKJ"].code,
         })
         self.assertNotIn("belongs to", str(accepted.data))
 

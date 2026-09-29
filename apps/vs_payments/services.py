@@ -478,11 +478,12 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
     ``updated_at``, which is the recovery sweep's record of when it last asked.
     Neither answer downgrades a FAILED or ABANDONED row to pending.
 
-    A gateway receipt continues the customer's chain exactly as a counter
-    receipt does, so it carries the customer's branch. Without that the online
-    path, which is how most parents actually pay, leaves every receipt
-    school-wide while the invoice it settles sits in a branch, splitting one
-    family's ledger across two scopes.
+    A gateway receipt carries a branch exactly as a counter receipt does: its
+    invoice's, or its customer's when it names none
+    (:func:`collection_branch_id`). Without one the online path, which is how
+    most parents actually pay, leaves every receipt school-wide while the
+    invoice it settles sits in a branch, splitting one family's ledger across
+    two scopes.
 
     A receipt cannot settle an invoice that is not raised yet: crediting AR
     before the invoice debits it drives the control negative for the gap, and
@@ -601,6 +602,24 @@ def _booking_date(entity, paid_at):
     return booked_on, metadata
 
 
+def collection_branch_id(*, customer=None, invoice=None):
+    """The branch a collection's receipt belongs to: its invoice's, else its customer's.
+
+    Money paid against an invoice belongs to the branch that raised it, wherever the
+    family is filed. The Okafor family is filed under Ikeja and pays a Lekki invoice
+    online: the receipt is Lekki's, deposits into Lekki's bank or a school-wide one,
+    and clears the Lekki invoice. A collection naming no invoice (a top-up, a
+    virtual account deposit) belongs to the customer's branch. ``None`` is
+    school-wide.
+
+    The collection create route checks its deposit account against this branch and
+    :func:`_book_receipt` books the receipt to it, so the two cannot disagree.
+    """
+    if invoice is not None:
+        return invoice.branch_id
+    return getattr(customer, "branch_id", None)
+
+
 # Support the book receipt workflow.
 def _book_receipt(intent, *, actor_user=None, paid_at=None):
     """Create + post the ``vs_finance.Payment`` for a succeeded collection.
@@ -610,11 +629,10 @@ def _book_receipt(intent, *, actor_user=None, paid_at=None):
     whenever that day's period is open. The dating keys are merged into
     ``intent.metadata`` for the caller to save.
 
-    The receipt settles the collection's invoice only when that invoice already
-    exists on the receipt's date and belongs to the receipt's branch, which is the
-    customer's. Otherwise the money parks as customer credit: a receipt settles only
-    its own branch's documents (:func:`vs_finance.receivables._build_invoice_plan`),
-    and refusing the booking would lose a payment the provider has already taken.
+    The receipt carries :func:`collection_branch_id`: its invoice's branch, else
+    its customer's. It settles its invoice at once unless that invoice is dated
+    after the receipt, in which case the money parks as customer credit (see
+    :func:`_confirm_collection_atomic`).
     """
     from vs_finance.models import Payment
     from vs_finance.receivables import post_payment
@@ -638,24 +656,19 @@ def _book_receipt(intent, *, actor_user=None, paid_at=None):
         intent.metadata = {**(intent.metadata or {}), **dating}
     payment = Payment.objects.create(
         entity=intent.entity, customer=intent.customer,
-        # The customer's branch, so the receipt and its invoice share a scope.
-        branch=intent.customer.branch,
+        branch_id=collection_branch_id(customer=intent.customer, invoice=intent.invoice),
         payment_date=received, currency=intent.currency,
         method=PaymentMethod.ONLINE, amount=intent.amount, deposit_account=deposit,
         reference=intent.reference,
         narration=intent.narration or f"Gateway collection {intent.reference}",
     )
 
-    # A receipt that cannot settle its invoice now parks as credit (see the docstring).
-    settles_now = (
-        bool(intent.invoice_id)
-        and intent.invoice.invoice_date <= received
-        and intent.invoice.branch_id == payment.branch_id
-    )
+    # A receipt for a not-yet-raised invoice parks as credit (see the docstring).
+    settles_now = bool(intent.invoice_id) and intent.invoice.invoice_date <= received
     if settles_now:  # Invoice-linked receipts should settle that invoice directly.
         post_payment(payment, actor_user=actor_user,
                      allocations=[(intent.invoice, intent.amount)])  # Allocate the full settled amount to the invoice.
-    else:  # Standalone, not-yet-raised or another branch's invoice: never guess.
+    else:  # Standalone or not-yet-raised invoice: never guess.
         # Leave the funds as customer credit instead of auto-allocating them.
         post_payment(payment, actor_user=actor_user, auto_allocate=False)  # Park the money as credit instead.
 

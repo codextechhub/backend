@@ -249,21 +249,26 @@ class CollectionTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(inv.amount_paid, 0)
         self.assertEqual(customer_credit_balance(customer), 50000)  # held as credit
 
-    def test_collection_for_another_branchs_invoice_parks_as_credit(self):
-        """A receipt settles only its own branch's documents, and it still books.
-
-        The receipt takes the customer's branch (here school-wide) while the invoice
-        was raised at Lekki. Settling it would clear Lekki's receivable from another
-        branch's books, and refusing the booking would lose money the payer has
-        already sent, so it parks as customer credit.
-        """
+    def _okafor_at_ikeja(self):
+        """Books, an Ikeja-filed customer, and the school's Ikeja and Lekki branches."""
         from vs_rbac.tests.helpers import make_branch, make_school
 
         entity, customer, _ = self.build()
-        lekki = make_branch(
-            make_school(slug="pay-branches", name="Corona", status="ACTIVE"),
-            name="Lekki Branch",
-        )
+        school = make_school(slug="pay-branches", name="Corona", status="ACTIVE")
+        ikeja = make_branch(school, name="Ikeja Branch")
+        lekki = make_branch(school, name="Lekki Branch", is_main=False)
+        Customer.objects.filter(pk=customer.pk).update(branch=ikeja)
+        customer.refresh_from_db()
+        return entity, customer, ikeja, lekki
+
+    def test_collection_for_another_branchs_invoice_books_to_the_invoices_branch(self):
+        """Money paid against an invoice belongs to the branch that raised it.
+
+        The Okafor family is filed under Ikeja and pays a Lekki invoice online. The
+        receipt is Lekki's and clears the Lekki invoice at once, rather than landing
+        in Ikeja's books as credit that Lekki's invoice cannot reach.
+        """
+        entity, customer, _ikeja, lekki = self._okafor_at_ikeja()
         inv = self.make_posted_invoice(entity, customer, amount=50000)
         Invoice.objects.filter(pk=inv.pk).update(branch=lekki)
         inv.refresh_from_db()
@@ -275,10 +280,21 @@ class CollectionTests(_PaymentsFixtureMixin, TestCase):
 
         self.assertEqual(intent.status, CollectionStatus.SUCCEEDED)
         payment = Payment.objects.get(pk=intent.payment_id)
-        self.assertEqual((payment.status, payment.allocated_amount), ("POSTED", 0))
+        self.assertEqual((payment.status, payment.branch_id, payment.allocated_amount),
+                         ("POSTED", lekki.pk, 50000))
         inv.refresh_from_db()
-        self.assertEqual(inv.amount_paid, 0)
-        self.assertEqual(customer_credit_balance(customer), 50000)
+        self.assertEqual(inv.amount_paid, 50000)
+        self.assertEqual(customer_credit_balance(customer), 0)
+
+    def test_collection_naming_no_invoice_books_to_the_customers_branch(self):
+        """A top-up names no invoice, so the family's own branch keeps the credit."""
+        entity, customer, ikeja, _lekki = self._okafor_at_ikeja()
+        intent = services.initiate_collection(entity=entity, amount=20000, customer=customer)
+        intent = services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+
+        payment = Payment.objects.get(pk=intent.payment_id)
+        self.assertEqual((payment.status, payment.branch_id), ("POSTED", ikeja.pk))
+        self.assertEqual(customer_credit_balance(customer), 20000)
 
     # Verify failed collection books nothing behavior.
     def test_failed_collection_books_nothing(self):
