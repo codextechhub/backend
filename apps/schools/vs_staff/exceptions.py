@@ -217,3 +217,49 @@ class NotEligibleForPost(StaffError):
     error_code = "NOT_ELIGIBLE_FOR_POST"
     default_message = "This person cannot be appointed to that post."
     http_status = 422
+
+
+class StaffSettingNotRegistered(StaffError):
+    """A staff setting's configuration definition is missing.
+
+    Refused rather than storing nothing and answering success, which would
+    leave a school believing a rule was set that every later add ignores.
+    """
+
+    error_code = "STAFF_SETTING_NOT_REGISTERED"
+    default_message = (
+        "The staff settings are not registered on this platform yet. Run the "
+        "migrations and seed_config_catalogue."
+    )
+    http_status = 500
+
+
+class HireAwaitingApproval(StaffError):
+    """An invitation action aimed at a hire the school has not approved yet.
+
+    No invitation exists until the hire is approved, so there is nothing to
+    resend. Worded as waiting rather than as accepted, because the person has
+    not been told anything yet.
+    """
+
+    error_code = "HIRE_AWAITING_APPROVAL"
+    default_message = (
+        "This hire is waiting for approval, so no invitation has been sent yet. "
+        "It goes out when the hire is approved."
+    )
+    http_status = 422
+
+
+class NoWorkingDays(StaffError):
+    """Leave whose dates hold no day the school counts.
+
+    A request from Saturday to Sunday at a school that works Monday to Friday
+    takes nothing, and a zero-day request is a record of nothing.
+    """
+
+    error_code = "NO_WORKING_DAYS"
+    default_message = (
+        "Those dates fall only on days this school does not count for leave, so "
+        "there is no leave to take."
+    )
+    http_status = 422

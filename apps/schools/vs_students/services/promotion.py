@@ -17,10 +17,11 @@ because the screen prints the sentence.
 and each default is how every school promoted before it could choose:
 
 * a suspended pupil is an exception under HOLD, and a candidate under
-  PROMOTE, moved up with their year group and still suspended (the run never
-  changes a status except to graduate);
+  PROMOTE, moved up with their year group and still suspended;
 * a pupil who is confirmed but not placed (ENROLLED, holding a class in the
-  year being left) defaults to HOLD, or to PROMOTE where the school says so;
+  year being left) defaults to HOLD, or to PROMOTE where the school says so.
+  A run that places one of them, promoted or repeating, makes them ACTIVE, as
+  giving them a class by hand does;
 * SAME_ARM moves each arm up whole (JSS1 B to JSS2 B, or the first class at
   the level); SPREAD shares the pupils promoting into a level evenly across
   its classes (:func:`_spread`). A repeat keeps its arm either way;
@@ -606,6 +607,13 @@ def _apply_one(cand, *, to_session, actor):
     Re-running skips a student already placed in the target session, which is
     what makes a batch restartable after a partial failure without placing
     anybody twice.
+
+    Statuses change in two cases only. A graduating pupil becomes GRADUATED.
+    A pupil who is confirmed but not placed (ENROLLED) and is given a class,
+    promoted or repeating, becomes ACTIVE, exactly as a placement by hand
+    makes them (``placement.place``); leaving them ENROLLED would put a child
+    with a class on no register that lists active pupils. A suspended pupil
+    stays SUSPENDED: the suspension is theirs, not the promotion's.
     """
     from .status import transition
 
@@ -652,6 +660,11 @@ def _apply_one(cand, *, to_session, actor):
         effective_date=tenant_today(student.tenant),
         outcome=EnrolmentOutcome.CURRENT, assigned_by=actor,
     )
+    if student.status == StudentStatus.ENROLLED:
+        transition(
+            student, StudentStatus.ACTIVE, actor=actor, system=True,
+            reason=f"Placed in {target.name} by the end-of-year promotion.",
+        )
     return cand.outcome
 
 

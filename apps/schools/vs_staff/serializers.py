@@ -539,7 +539,7 @@ class LeaveSerializer(serializers.ModelSerializer):
         model = LeaveRequest
         fields = [
             "id", "staff_id", "staff_name", "leave_type", "leave_type_label",
-            "start_date", "end_date", "days", "note", "status",
+            "start_date", "end_date", "days", "over_allowance_by", "note", "status",
             "display_status", "decided_at", "requested_by", "created_at",
         ]
 
@@ -648,13 +648,45 @@ class StaffDetailSerializer(StaffListSerializer):
     #: acting. On the record only, never on a directory row: it costs two or
     #: three queries, and a page of twenty-five would pay that twenty-five times.
     organogram = serializers.SerializerMethodField()
+    #: The document types the school expects (Settings, Staff) that this
+    #: record holds none of, as ``{type, label}``. A flag, never a gate: nothing
+    #: is refused for a missing document. Read with the records group.
+    missing_documents = serializers.SerializerMethodField()
 
     class Meta(StaffListSerializer.Meta):
         fields = StaffListSerializer.Meta.fields + [
             "account", "first_name", "middle_name", "last_name",
             "date_of_birth", "phone", "gender",
             "photo_url", "posting_branches", "exit_date", "tenure", "lifecycle", "counts",
-            "created_by", "organogram",
+            "created_by", "organogram", "missing_documents",
+        ]
+
+    def _tenant(self):
+        return self.context.get("tenant") or getattr(
+            self.context.get("request"), "tenant", None,
+        )
+
+    def get_missing_documents(self, obj):
+        """Expected types with no document of that type on the record.
+
+        Null for a record read as at an earlier day: the rule is today's, and
+        measuring a past record against it answers a question nobody asked.
+        """
+        if self.context.get("as_at") is not None:
+            return None
+        required = self.context.get("_required_documents")
+        if required is None:
+            from .services.rules import required_documents
+
+            required = required_documents(self._tenant())
+            self.context["_required_documents"] = required
+        if not required:
+            return []
+        held = set(obj.documents.values_list("document_type", flat=True))
+        labels = dict(DocumentType.choices)
+        return [
+            {"type": code, "label": labels.get(code, code)}
+            for code in required if code not in held
         ]
 
     def get_organogram(self, obj):
@@ -710,12 +742,15 @@ class StaffDetailSerializer(StaffListSerializer):
     def get_lifecycle(self, obj):
         """Where this person sits on the ordinary path, or that they are off it.
 
-        Invited then Active is the whole of the ordinary path. The other four
+        Invited then Active is the whole of the ordinary path, preceded by
+        Awaiting approval for a hire the school has not approved yet. The other
         statuses are not later stages of it and must not be drawn as though they
         were: a strip that showed Terminated as step three would say a school
         expects everybody to get there.
         """
         path = [EmploymentStatus.INVITED, EmploymentStatus.ACTIVE]
+        if obj.employment_status == EmploymentStatus.PENDING_APPROVAL:
+            path = [EmploymentStatus.PENDING_APPROVAL, *path]
         if obj.employment_status in path:
             return {
                 "on_path": True,
@@ -792,9 +827,25 @@ class StaffDetailSerializer(StaffListSerializer):
         }
 
     def to_representation(self, instance):
+        """The shaped record, plus ``self_editable_fields`` on the reader's own.
+
+        The school's list of what staff may change about themselves, so the
+        edit drawer opens those boxes and no others without keeping its own
+        copy. Absent on anybody else's record.
+        """
         from .services.visibility import shape_record
 
         data = super().to_representation(instance)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user is not None and instance.user_id == getattr(user, "pk", None):
+            from .services.rules import self_editable_options, self_editable_fields
+
+            allowed = self_editable_fields(self._tenant())
+            data["self_editable_fields"] = [
+                option["value"] for option in self_editable_options()
+                if option["value"] in allowed
+            ]
         return shape_record(data, self._profile_access(instance))
 
 
@@ -831,15 +882,27 @@ class StaffUpdateSerializer(FieldAccessMixin, serializers.ModelSerializer):
     def _entry_for(self, name, entries):
         """A person's own self-editable details are theirs to write.
 
-        The owner rule of the read serializers, narrowed to
-        :data:`SELF_EDITABLE_FIELDS`: a teacher whose role has the phone switch
-        off may still correct her own number, and gains nothing else by being
-        the subject. Which fields a person may send about themselves at all is
-        the view's rule, not this one.
+        The owner rule of the read serializers, narrowed to the fields the
+        school lets staff edit about themselves: a teacher whose role has the
+        phone switch off may still correct her own number, and gains nothing
+        else by being the subject. Which fields a person may send about
+        themselves at all is the view's rule, not this one.
         """
-        if name in SELF_EDITABLE_FIELDS and self._edits_own_record():
+        if name in self._self_editable() and self._edits_own_record():
             return None
         return super()._entry_for(name, entries)
+
+    def _self_editable(self) -> frozenset:
+        cached = self.context.get("_self_editable")
+        if cached is None:
+            from .services.rules import self_editable_fields
+
+            tenant = self.context.get("tenant") or getattr(
+                self.context.get("request"), "tenant", None,
+            )
+            cached = self_editable_fields(tenant)
+            self.context["_self_editable"] = cached
+        return cached
 
     def _edits_own_record(self) -> bool:
         request = self.context.get("request")
@@ -852,24 +915,14 @@ class StaffUpdateSerializer(FieldAccessMixin, serializers.ModelSerializer):
         )
 
 
-#: What a person may change about themselves, and nothing else.
-#:
-#: Employment status, employment type, hire date, exit date, staff number, job
-#: title and posting are read-only to self at any permission level. A person
-#: editing their own hire date is editing their own tenure, and one editing
-#: their own job title is giving themselves a promotion the school did not.
-SELF_EDITABLE_FIELDS = frozenset({
-    "middle_name", "date_of_birth", "photo", "phone",
-})
-
-
 class StaffCreateSerializer(FieldAccessMixin, serializers.Serializer):
     """The Add screen, in one payload.
 
     Wraps ``UserCreateSerializer``'s fields rather than replacing them: the
     account half is validated by the platform's own serializer inside the view,
-    and what is declared here is the staff half plus the three child collections
-    the form carries.
+    and what is declared here is the staff half plus the qualifications and
+    teaching duties the form carries. There is no documents field: a file is
+    uploaded to the record once it exists.
 
     The address a new account signs in with is declared open on create, so a
     role that may add a member of staff can still send it; every other
@@ -910,7 +963,7 @@ class StaffCreateSerializer(FieldAccessMixin, serializers.Serializer):
     date_of_birth = serializers.DateField(required=False, allow_null=True, default=None)
     photo = serializers.ImageField(required=False, allow_null=True, default=None)
 
-    # The form's own child collections, written in the same transaction.
+    # Qualifications and teaching duties, written in the same transaction.
     qualifications = QualificationSerializer(many=True, required=False, default=list)
     subjects = serializers.ListField(
         child=serializers.IntegerField(), required=False, default=list,
@@ -984,6 +1037,211 @@ class ClassTeacherSerializer(serializers.Serializer):
     #: Null clears the designation, which is a real thing a school does when
     #: somebody leaves and nobody has taken the class yet.
     staff = serializers.IntegerField(required=False, allow_null=True)
+
+
+# =============================================================================
+# A school's own staff rules
+# =============================================================================
+
+
+class StaffNumberPolicySerializer(serializers.Serializer):
+    """The school's staff-number rule, or one branch's.
+
+    ``auto_issue`` may be left out, which keeps the value the school or branch
+    reads today, so a client that does not show it cannot switch it off by
+    saving.
+    """
+
+    required = serializers.BooleanField(error_messages={
+        "required": "Say whether every member of staff needs a staff number.",
+        "invalid": "Say whether every member of staff needs a staff number.",
+    })
+    pattern = serializers.CharField(
+        allow_blank=True, max_length=200, trim_whitespace=False,
+        error_messages={
+            "required": "Send the pattern, or an empty one for any shape.",
+            "max_length": "Keep the pattern under 200 characters.",
+        },
+    )
+    hint = serializers.CharField(
+        allow_blank=True, max_length=200,
+        error_messages={
+            "required": "Send the hint, or an empty one for none.",
+            "max_length": "Keep the hint under 200 characters.",
+        },
+    )
+    auto_issue = serializers.BooleanField(required=False, error_messages={
+        "invalid": "Say whether staff numbers are issued automatically.",
+    })
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=200)
+
+    def validate_pattern(self, value):
+        from .services.number_policy import compile_pattern
+
+        try:
+            compile_pattern(value)
+        except serializers.ValidationError as exc:
+            raise serializers.ValidationError(exc.detail["pattern"]) from exc
+        return value
+
+
+class LeaveRulesSerializer(serializers.Serializer):
+    """How a school counts and limits leave, as the settings screen saves it."""
+
+    allowances = serializers.DictField(
+        child=serializers.JSONField(allow_null=True), allow_empty=True,
+        error_messages={
+            "required": "Send the allowances, or an empty set for no limits.",
+            "not_a_dict": "Give the allowances as leave types and days.",
+        },
+    )
+    working_days = serializers.ListField(
+        child=serializers.JSONField(allow_null=True), allow_empty=True,
+        error_messages={
+            "required": "Say which days of the week count for leave.",
+            "not_a_list": "Give the working days as a list of weekdays.",
+        },
+    )
+    exclude_closures = serializers.BooleanField(error_messages={
+        "required": "Say whether days the school is closed count for leave.",
+        "invalid": "Say whether days the school is closed count for leave.",
+    })
+
+    def validate_allowances(self, value):
+        from .constants import LEAVE_ALLOWANCE_MAX
+
+        labels = dict(LeaveType.choices)
+        cleaned = {}
+        for code, days in value.items():
+            if code not in labels:
+                raise serializers.ValidationError(
+                    f"'{code}' is not a leave type this school records.",
+                )
+            if days is None:
+                cleaned[code] = None
+                continue
+            if (
+                isinstance(days, bool) or not isinstance(days, int)
+                or not 0 <= days <= LEAVE_ALLOWANCE_MAX
+            ):
+                raise serializers.ValidationError(
+                    f"Give {labels[code].lower()} leave as a whole number of days "
+                    f"from 0 to {LEAVE_ALLOWANCE_MAX}, or leave it empty for no limit.",
+                )
+            cleaned[code] = days
+        return cleaned
+
+    def validate_working_days(self, value):
+        if not value:
+            raise serializers.ValidationError(
+                "Choose at least one day of the week that counts for leave.",
+            )
+        for day in value:
+            if isinstance(day, bool) or not isinstance(day, int) or not 1 <= day <= 7:
+                raise serializers.ValidationError(
+                    "Give the working days as weekdays numbered 1 (Monday) to 7 "
+                    "(Sunday).",
+                )
+        return sorted(set(value))
+
+
+class StaffRulesSerializer(serializers.Serializer):
+    """The full set of a school's staff rules, as the settings screen saves it.
+
+    Every rule is sent every time, because the screen shows every rule; a
+    partial save would leave a rule the admin could see set to something they
+    did not choose. Each refusal is keyed on its own field and written as a
+    sentence. ``context`` carries the ``tenant`` and the ``request``, because
+    the starting role is checked against the school's roles and against what
+    the person saving may grant.
+    """
+
+    starting_role = serializers.CharField(max_length=120, error_messages={
+        "required": "Choose the role new staff start with.",
+        "blank": "Choose the role new staff start with.",
+    })
+    required_documents = serializers.ListField(
+        child=serializers.CharField(), allow_empty=True,
+        error_messages={
+            "required": "Send the required documents, or an empty list for none.",
+            "not_a_list": "Give the required documents as a list.",
+        },
+    )
+    self_editable_fields = serializers.ListField(
+        child=serializers.CharField(), allow_empty=True,
+        error_messages={
+            "required": "Send the fields staff may edit themselves, or an empty list for none.",
+            "not_a_list": "Give the fields staff may edit themselves as a list.",
+        },
+    )
+    hire_requires_approval = serializers.BooleanField(error_messages={
+        "required": "Say whether new staff wait for approval before they are invited.",
+        "invalid": "Say whether new staff wait for approval before they are invited.",
+    })
+    leave = LeaveRulesSerializer(error_messages={
+        "required": "Send the leave rules.",
+    })
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=200)
+
+    def validate_starting_role(self, value):
+        """An active role of this school that the person saving may hand out.
+
+        The restricted check applies only when the role changes: saving the
+        screen with the role it already has must not be refused to a settings
+        administrator who holds none of that role's restricted keys.
+        """
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_rbac.services import grant_needs_approval
+
+        from .services.rules import starting_role_key
+
+        tenant = self.context["tenant"]
+        role = TenantRoleTemplate.objects.filter(
+            tenant=tenant, status="ACTIVE", key=value.strip(),
+        ).first()
+        if role is None:
+            raise serializers.ValidationError(
+                "Choose one of this school's active roles for new staff to start with.",
+            )
+        request = self.context.get("request")
+        if (
+            role.key != starting_role_key(tenant)
+            and request is not None
+            and grant_needs_approval(request.user, role)
+        ):
+            raise serializers.ValidationError(
+                f"{role.name} carries restricted permissions you do not hold, so "
+                f"it cannot be the role every new member of staff starts with. "
+                f"Choose another, or ask an administrator who holds them.",
+            )
+        return role.key
+
+    def validate_required_documents(self, value):
+        known = set(DocumentType.values)
+        for code in value:
+            if code not in known:
+                raise serializers.ValidationError(
+                    f"'{code}' is not a document type this school can expect.",
+                )
+        return value
+
+    def validate_self_editable_fields(self, value):
+        from .services.rules import self_editable_locked, self_editable_options
+
+        allowed = {option["value"] for option in self_editable_options()}
+        locked = {option["value"]: option["label"] for option in self_editable_locked()}
+        for name in value:
+            if name in locked:
+                raise serializers.ValidationError(
+                    f"{locked[name]} is the school's to set, so staff can never "
+                    f"change it about themselves.",
+                )
+            if name not in allowed:
+                raise serializers.ValidationError(
+                    f"'{name}' is not a detail of a staff record that staff could "
+                    f"change about themselves.",
+                )
+        return value
 
 
 # =============================================================================

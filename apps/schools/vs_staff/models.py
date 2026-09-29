@@ -145,7 +145,8 @@ class StaffProfile(_Owned):
     employment_type = models.CharField(
         max_length=16, choices=EmploymentType.choices, blank=True, default="",
     )
-    #: Never derived, never written except through ``services.employment``.
+    #: Never derived. Written by ``services.employment`` and, for a hire the
+    #: school approves before inviting, by ``services.hire``.
     employment_status = models.CharField(
         max_length=16, choices=EmploymentStatus.choices,
         default=EmploymentStatus.INVITED,
@@ -169,6 +170,15 @@ class StaffProfile(_Owned):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="created_staff_profiles",
     )
+    #: Whether the invitation email goes out when a hire awaiting approval is
+    #: approved. False for a person imported with Send Invitation set to No,
+    #: whose invitation is then created and left unsent, as it would have been
+    #: without the approval.
+    invite_on_approval = models.BooleanField(default=True)
+
+    #: Read by ``vs_workflow.services.submission`` for a hire awaiting
+    #: approval. Not a column; the record itself is the document approved.
+    workflow_document_type = "schools.staff_hire"
 
     class Meta(_Owned.Meta):
         constraints = [
@@ -383,12 +393,17 @@ class LeaveRequest(_Owned):
     start_date = models.DateField()
     end_date = models.DateField()
     #: Stored rather than derived, and the one derived-looking value in this
-    #: module that is deliberately a column. Working days are not calendar days,
-    #: a school's teaching week is recorded nowhere, and a school that runs
-    #: Saturday classes and one that does not would get different answers from
-    #: one formula. The service defaults it to the inclusive calendar span and
-    #: lets the school correct it.
+    #: module that is deliberately a column: the school's working week and its
+    #: calendar change, and a request's count must stay what it was when it was
+    #: filed. The service counts the school's working days in the range, less
+    #: the days its calendar closes the school (``services/leave.py``), and a
+    #: caller of the API may send its own figure instead.
     days = models.PositiveSmallIntegerField()
+    #: Days past the leave type's allowance for the session this leave falls
+    #: in, counting what was already approved or waiting, as at filing or at
+    #: the last correction. 0 within the allowance and where there is none.
+    #: Filing over the allowance is allowed: this is what the approver weighs.
+    over_allowance_by = models.PositiveSmallIntegerField(default=0)
     note = models.TextField(blank=True, default="")
     status = models.CharField(
         max_length=12, choices=LeaveStatus.choices, default=LeaveStatus.PENDING,

@@ -135,7 +135,8 @@ class PromotionNotPlaced(models.TextChoices):
 
     Such a pupil is ENROLLED yet holds a class in the year being left. HOLD
     leaves them there for a person to decide; PROMOTE moves them up with the
-    class they hold, and their status stays as it is.
+    class they hold and makes them ACTIVE, as giving them a class by hand
+    does.
     """
 
     HOLD = "HOLD", "Hold them where they are"

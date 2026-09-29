@@ -17,6 +17,10 @@ to a post before they arrive; they never will, so the appointment ends today.
 invitation, and inventing one would tell somebody they had been un-hired by a
 school they had not yet joined.
 
+**A hire still awaiting approval has no invitation yet.** Revoking it calls the
+hire off instead: its approval is cancelled and the hire is closed exactly as a
+refused one is (``services.hire``), with the reason given here.
+
 FRD M12 v2.1, FR-020.
 """
 from __future__ import annotations
@@ -50,6 +54,10 @@ def revoke(staff, *, reason, actor, request=None):
         raise ReasonRequired(
             "Say why this invitation is being withdrawn.", field="reason",
         )
+    if staff.employment_status == EmploymentStatus.PENDING_APPROVAL:
+        from . import hire
+
+        return hire.withdraw(staff, reason=reason.strip(), actor=actor)
     if staff.user.status != User.Status.PENDING:
         raise InvitationAlreadyAccepted(
             "This invitation has already been accepted, so there is nothing to "

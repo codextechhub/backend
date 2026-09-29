@@ -201,6 +201,78 @@ class RowRefusalTests(_ImportFixture):
         self.assertEqual(validate_rows(batch), [])
 
 
+class ImportedRolesKeepTheAddRulesTests(_ImportFixture):
+    """A role column may not grant what the Add form would refuse.
+
+    Brightfield's Lekki head holds every staff key and no finance key. A file
+    naming Bursar for Funke, where Bursar carries the restricted right to post
+    journals, is refused on the row that names it, before anything is written,
+    and says where the role can be given instead. A school still onboarding
+    gives out School Admin and Branch Admin only, from a file as from the form.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        from vs_rbac.tests.helpers import make_permission, make_role, make_role_permission
+
+        cls.bursar = make_role(cls.school, name="Bursar", key="bursar")
+        make_role_permission(
+            cls.bursar, make_permission("finance.journal.post", is_restricted=True),
+        )
+
+    def issues_for(self, batch):
+        return [(i["code"], i["column_name"]) for i in validate_rows(batch)]
+
+    def test_a_restricted_role_the_uploader_does_not_hold_is_refused_on_its_row(self):
+        batch = self.batch(self.row(Role="bursar"))
+        batch.uploaded_by = self.lekki_head
+        batch.save(update_fields=["uploaded_by"])
+
+        issues = validate_rows(batch)
+
+        self.assertEqual(
+            [(i["code"], i["column_name"]) for i in issues],
+            [("restricted_role", "Role")],
+        )
+        self.assertIn("Bursar carries restricted permissions", issues[0]["message"])
+        self.assertIn("where it goes for approval", issues[0]["message"])
+
+    def test_the_executor_refuses_the_same_row_before_writing_anybody(self):
+        from schools.vs_staff.imports import resolve_row
+
+        row = resolve_row(
+            {"first_name": "Funke", "last_name": "Adeyemi",
+             "email": "funke@brightfield.test", "role": "bursar"},
+            tenant=self.tenant, actor=self.lekki_head,
+        )
+        self.assertFalse(row.ok)
+        self.assertIsNone(row.role)
+
+    def test_an_uploader_holding_every_restricted_key_may_name_the_role(self):
+        """The grant rule: whoever holds a restricted key may hand it on directly."""
+        from vs_rbac.tests.helpers import make_role_permission
+
+        make_role_permission(self.role, self.bursar.role_permissions.get().permission)
+
+        self.assertEqual(self.issues_for(self.batch(self.row(Role="bursar"))), [])
+
+    def test_a_school_still_onboarding_gives_out_only_the_two_admin_roles(self):
+        self.tenant.status = "PENDING"
+        self.tenant.save(update_fields=["status"])
+
+        teacher = validate_rows(self.batch(self.row()))
+        admin = validate_rows(self.batch(self.row(Role="school_admin")))
+
+        self.assertEqual(
+            [(i["code"], i["message"]) for i in teacher],
+            [("role_not_before_go_live",
+              "Until this school goes live, only School Admin and Branch Admin "
+              "can be given out.")],
+        )
+        self.assertEqual(admin, [])
+
+
 class AnImportedGrantFollowsItsRowTests(_ImportFixture):
     """What the branch column decides, beyond where the person is based.
 

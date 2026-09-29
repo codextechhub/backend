@@ -240,6 +240,7 @@ FIELD_GROUPS = {
     **dict.fromkeys(("middle_name", "date_of_birth", "gender"), GROUP_PERSONAL),
     "teaching_load": GROUP_TEACHING,
     "roles": GROUP_ROLES,
+    "missing_documents": GROUP_RECORDS,
 }
 
 #: Which group each entry of the record's ``counts`` block belongs to.

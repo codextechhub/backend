@@ -7,12 +7,24 @@ single key both files an absence and allows it. An administrator recording leave
 on somebody's behalf still submits it for approval, which is what stops a school
 having two kinds of leave with two different meanings.
 
-There is no balance, and there will not be one until somebody says where an
-entitlement comes from. A balance is an entitlement minus what has been taken,
-nothing anywhere records an entitlement, and Nigerian statutory leave is a floor
-rather than a schedule that schools vary by grade and by length of service. What
-this module reports is days taken, which is a count of approved rows and is
-therefore reliable.
+**The leave year is the academic session.** A request belongs to the session of
+the school that contains its start date (:func:`leave_session`), so allowances
+reset when a new session starts. A school sets an allowance per leave type per
+session in Settings, Staff; a type with none has no limit, which is where every
+type starts. A balance is then that allowance, what was approved, what is
+waiting, and what remains once both are counted (:func:`balances`).
+
+**Filing past an allowance is allowed.** The approver decides: a request carries
+``over_allowance_by``, the days it goes past the allowance counting what was
+already approved or waiting, worked out when it is filed and again when it is
+corrected, and shown to the approver on the approval card.
+
+**Days are working days.** A request counts the school's working weekdays in its
+range (Monday to Friday unless the school says otherwise) and, unless the school
+says otherwise, leaves out the days its calendar closes the school at the
+person's branch or school-wide (:func:`count_days`). A count is worked out when
+a request is filed or its dates are corrected; a count already stored is never
+recomputed, and a caller of the API may send its own.
 
 FRD M12 v2.1, FR-013.
 """
@@ -23,20 +35,190 @@ from django.utils import timezone
 
 from vs_config.clock import tenant_today
 
-from ..constants import LEAVE_LIVE_STATUSES, LeaveStatus
-from ..exceptions import InvalidDateRange, LeaveAlreadyDecided
+from ..constants import LEAVE_LIVE_STATUSES, LeaveStatus, LeaveType
+from ..exceptions import InvalidDateRange, LeaveAlreadyDecided, NoWorkingDays
 from . import audit
 
 
-def default_days(start_date, end_date) -> int:
-    """The inclusive calendar span, which the school may correct.
+def closure_dates(staff, start_date, end_date) -> set:
+    """The days in the range the school calendar closes the school for *staff*.
 
-    Working days are not calendar days, and nothing in this repository records
-    which days a school teaches. A school running Saturday classes and one that
-    does not would get different answers from any formula, so the service
-    supplies the obvious number and lets somebody who knows change it.
+    Closures at the person's main posting and school-wide ones. An event aimed
+    at particular classes or levels (Primary 4's speech day) closes the day for
+    those pupils, not for the staff, so only an event with no audience counts.
     """
-    return (end_date - start_date).days + 1
+    from django.db.models import Q
+
+    from schools.vs_calendar.models import CalendarEvent
+    from schools.vs_calendar.services.calendar import non_teaching_dates
+
+    reach = Q(branch__isnull=True)
+    if staff.branch_id:
+        reach |= Q(branch_id=staff.branch_id)
+    events = CalendarEvent.all_objects.filter(
+        reach, tenant_id=staff.tenant_id, closes_school=True,
+        start_date__lte=end_date, end_date__gte=start_date, audience__isnull=True,
+    ).distinct()
+    return non_teaching_dates(events)
+
+
+def count_days(staff, start_date, end_date, *, rules=None) -> int:
+    """The school's working days in the range, less its closures.
+
+    Working weekdays and whether closures are left out are the school's
+    (``services.rules.leave_rules``); Monday to Friday, closures left out,
+    where it has not chosen.
+    """
+    from datetime import timedelta
+
+    from .rules import leave_rules
+
+    rules = rules or leave_rules(staff.tenant)
+    closed = (
+        closure_dates(staff, start_date, end_date) if rules.exclude_closures else set()
+    )
+    total, day = 0, start_date
+    while day <= end_date:
+        if day.isoweekday() in rules.working_days and day not in closed:
+            total += 1
+        day += timedelta(days=1)
+    return total
+
+
+def _counted(staff, start_date, end_date, days, rules):
+    """*days* where the caller sent it, else the school's count, never zero."""
+    if days is not None:
+        return days
+    counted = count_days(staff, start_date, end_date, rules=rules)
+    if counted == 0:
+        raise NoWorkingDays(field="start_date")
+    return counted
+
+
+def leave_session(staff, on_date):
+    """The academic session a leave starting *on_date* belongs to, or None.
+
+    The session covering the date that applies to the person's main posting,
+    preferring one in progress or finished over a draft; for somebody posted
+    school-wide, a school-wide session first. None where no session covers the
+    date, and then no allowance applies.
+    """
+    from schools.vs_academics.models import AcademicSession, SessionStatus
+
+    candidates = list(
+        AcademicSession.all_objects.filter(
+            tenant_id=staff.tenant_id, start_date__lte=on_date, end_date__gte=on_date,
+        ).prefetch_related("branch_links"),
+    )
+
+    def fit(session):
+        branch_ids = {row.branch_id for row in session.branch_links.all()}
+        applies = not branch_ids or staff.branch_id in branch_ids
+        return (
+            not applies,
+            session.status == SessionStatus.DRAFT,
+            session.is_school_wide == bool(staff.branch_id),
+            -session.start_date.toordinal(),
+        )
+
+    applicable = sorted(candidates, key=fit)
+    return applicable[0] if applicable else None
+
+
+def _session_rows(staff, session, *, exclude_pk=None):
+    from ..models import LeaveRequest
+
+    rows = LeaveRequest.objects.filter(
+        tenant_id=staff.tenant_id, staff=staff,
+        status__in=tuple(LEAVE_LIVE_STATUSES),
+        start_date__gte=session.start_date, start_date__lte=session.end_date,
+    )
+    if exclude_pk is not None:
+        rows = rows.exclude(pk=exclude_pk)
+    return rows
+
+
+def over_allowance(staff, leave_type, start_date, days, *, exclude_pk=None, rules=None) -> int:
+    """Days past *leave_type*'s allowance this leave would take its session to.
+
+    Counts what is already approved or waiting in the same session, so two
+    requests that each fit alone but not together are both seen. 0 where the
+    type has no allowance or no session covers the start date.
+    """
+    from django.db.models import Sum
+
+    from .rules import leave_rules
+
+    rules = rules or leave_rules(staff.tenant)
+    allowance = rules.allowance_for(leave_type)
+    if allowance is None:
+        return 0
+    session = leave_session(staff, start_date)
+    if session is None:
+        return 0
+    used = (
+        _session_rows(staff, session, exclude_pk=exclude_pk)
+        .filter(leave_type=leave_type).aggregate(total=Sum("days"))["total"] or 0
+    )
+    return max(0, used + days - allowance)
+
+
+def balances(staff, session, *, rows=None, rules=None) -> list[dict]:
+    """Every leave type's allowance, taken, pending and remaining for *session*.
+
+    ``taken`` sums APPROVED requests and ``pending`` PENDING ones, among the
+    requests starting inside the session. ``remaining`` is the allowance less
+    both, so it says what could still be filed without going over; it goes
+    negative once the approver lets a request past the allowance, and it is
+    null for a type with no allowance. *rows* are the requests to count where
+    the caller already holds them (a record read as at an earlier day).
+    """
+    from .rules import leave_rules
+
+    rules = rules or leave_rules(staff.tenant)
+    if rows is None:
+        rows = _session_rows(staff, session)
+    taken = dict.fromkeys(LeaveType.values, 0)
+    pending = dict.fromkeys(LeaveType.values, 0)
+    for row in rows:
+        if not session.start_date <= row.start_date <= session.end_date:
+            continue
+        if row.status == LeaveStatus.APPROVED:
+            taken[row.leave_type] = taken.get(row.leave_type, 0) + row.days
+        elif row.status == LeaveStatus.PENDING:
+            pending[row.leave_type] = pending.get(row.leave_type, 0) + row.days
+    out = []
+    for code, label in LeaveType.choices:
+        allowance = rules.allowance_for(code)
+        out.append({
+            "leave_type": code,
+            "label": label,
+            "allowance": allowance,
+            "taken": taken[code],
+            "pending": pending[code],
+            "remaining": (
+                None if allowance is None else allowance - taken[code] - pending[code]
+            ),
+        })
+    return out
+
+
+def _over_warning(leave, rules):
+    """The filing's own warning where it goes past the allowance, or None."""
+    if not leave.over_allowance_by:
+        return None
+    allowance = rules.allowance_for(leave.leave_type)
+    over = leave.over_allowance_by
+    return {
+        "code": "OVER_ALLOWANCE",
+        "message": (
+            f"This goes {over} day{'s' if over != 1 else ''} past the "
+            f"{allowance} day{'s' if allowance != 1 else ''} of "
+            f"{leave.get_leave_type_display().lower()} leave allowed this "
+            f"session. It is filed, and the approver decides."
+        ),
+        "over_allowance_by": over,
+    }
 
 
 def overlapping(staff, start_date, end_date, *, exclude_pk=None):
@@ -66,7 +248,11 @@ def file_request(*, staff, leave_type, start_date, end_date, days=None, note="",
     Returns ``(leave, warnings)``. Overlapping leave **warns and does not
     refuse**: a school recording a sick day inside a booked annual leave is
     correcting a record, not making a mistake, and a refusal would send them to
-    cancel and re-enter.
+    cancel and re-enter. Leave past its allowance warns too (``OVER_ALLOWANCE``)
+    and is filed with ``over_allowance_by`` for the approver.
+
+    ``days`` left out is counted by :func:`count_days`; dates holding no day
+    the school counts are refused (``NO_WORKING_DAYS``).
     """
     from vs_workflow.services.submission import submit_for_approval
 
@@ -77,17 +263,23 @@ def file_request(*, staff, leave_type, start_date, end_date, days=None, note="",
             "Leave cannot end before it starts.", field="end_date",
         )
 
+    from .rules import leave_rules
+
+    rules = leave_rules(staff.tenant)
+    days = _counted(staff, start_date, end_date, days, rules)
     clashes = overlapping(staff, start_date, end_date)
     leave = LeaveRequest.objects.create(
         tenant=staff.tenant, staff=staff, leave_type=leave_type,
-        start_date=start_date, end_date=end_date,
-        days=days if days is not None else default_days(start_date, end_date),
+        start_date=start_date, end_date=end_date, days=days,
+        over_allowance_by=over_allowance(
+            staff, leave_type, start_date, days, rules=rules,
+        ),
         note=note or "", status=LeaveStatus.PENDING, requested_by=actor,
     )
     submit_for_approval(leave, actor)
     audit.emit_leave_recorded(leave, actor=actor)
 
-    warnings = []
+    warnings = [w for w in (_over_warning(leave, rules),) if w]
     if clashes:
         warnings.append({
             "code": "LEAVE_OVERLAP",
@@ -111,6 +303,10 @@ def correct(leave, *, leave_type=None, start_date=None, end_date=None, days=None
     Refused once it is approved or rejected, because a request whose dates
     change after approval is a different request, and editing it in place would
     leave an approval attached to something nobody approved.
+
+    New dates with no ``days`` are counted again by :func:`count_days`, and
+    ``over_allowance_by`` is worked out again for whatever the request now
+    says.
     """
     if leave.status != LeaveStatus.PENDING:
         raise LeaveAlreadyDecided(
@@ -129,15 +325,22 @@ def correct(leave, *, leave_type=None, start_date=None, end_date=None, days=None
         raise InvalidDateRange(
             "Leave cannot end before it starts.", field="end_date",
         )
+    from .rules import leave_rules
+
+    rules = leave_rules(leave.tenant)
     if days is not None:
         leave.days = days
     elif start_date is not None or end_date is not None:
-        leave.days = default_days(leave.start_date, leave.end_date)
+        leave.days = _counted(leave.staff, leave.start_date, leave.end_date, None, rules)
     if note is not None:
         leave.note = note
+    leave.over_allowance_by = over_allowance(
+        leave.staff, leave.leave_type, leave.start_date, leave.days,
+        exclude_pk=leave.pk, rules=rules,
+    )
     leave.save()
 
-    warnings = []
+    warnings = [w for w in (_over_warning(leave, rules),) if w]
     clashes = overlapping(
         leave.staff, leave.start_date, leave.end_date, exclude_pk=leave.pk,
     )
@@ -201,8 +404,8 @@ def cancel(leave, *, actor):
 def days_taken(staff, *, since=None, until=None):
     """Days taken per leave type, counted from approved requests.
 
-    Not a balance and never rendered as one. A count of rows is a fact; a
-    balance needs an entitlement, and nothing records one.
+    Across every session unless *since* or *until* narrows it. The balance for
+    one session, against the school's allowances, is :func:`balances`.
     """
     from django.db.models import Sum
 

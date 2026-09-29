@@ -3,7 +3,7 @@
 Returned beside the page rather than from a second endpoint, because a directory
 that needs two calls to draw its header shows the header late.
 
-Six counts, and they are not all the same kind of thing, which is why each is
+Seven counts, and they are not all the same kind of thing, which is why each is
 labelled rather than pooled. Total and "currently employed" differ the moment
 somebody resigns. The employment breakdown draws the bar. **Locked accounts is
 an account-status count sitting beside employment ones** and must be labelled as
@@ -22,7 +22,27 @@ from ..constants import OFF_ROLL_STATUSES, EmploymentStatus
 from .scoping import branch_dimension_applies
 
 
-def counts(queryset, tenant, *, by_branch=None):
+def lacking_documents(required):
+    """People holding no document of at least one of the *required* types.
+
+    A queryset filter over staff records, or None when nothing is required, so
+    a school that expects nothing pays for nothing.
+    """
+    from django.db.models import Exists, OuterRef
+
+    from ..models import StaffDocument
+
+    if not required:
+        return None
+    condition = Q()
+    for code in required:
+        condition |= ~Exists(
+            StaffDocument.all_objects.filter(staff=OuterRef("pk"), document_type=code),
+        )
+    return condition
+
+
+def counts(queryset, tenant, *, by_branch=None, lacking=None):
     """Everything the directory header shows, from three queries.
 
     ``queryset`` is the caller's already-scoped staff queryset, so every figure
@@ -92,6 +112,12 @@ def counts(queryset, tenant, *, by_branch=None):
         # An ACCOUNT count, deliberately beside the employment ones and named so
         # nobody reads a lockout as an employment state.
         "locked_accounts": aggregate["locked"] or 0,
+        # Null where the school expects no document or the reader may not
+        # read records; see ``lacking_documents``.
+        "missing_documents": (
+            countable.filter(lacking).values("pk").distinct().count()
+            if lacking is not None else None
+        ),
     }
     payload.update(_side_breakdown(countable, tenant, by_branch=by_branch))
     return payload

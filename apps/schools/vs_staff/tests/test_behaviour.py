@@ -13,6 +13,7 @@ from schools.vs_staff.constants import EmploymentStatus, TeachingPart
 from schools.vs_staff.models import StaffEmploymentEvent, StaffProfile, TeachingAssignment
 from schools.vs_staff.services import employment
 from vs_audit.models import AuditActionType, AuditEvent
+from vs_config.clock import tenant_today
 from vs_user.models import User
 
 from .base import StaffFixture
@@ -215,7 +216,7 @@ class TwoStatusesTests(StaffFixture):
         row = self.get(self.admin, "staff-detail", pk=self.eze.pk).data["data"]
         self.assertEqual(row["display_employment_status"], EmploymentStatus.ACTIVE)
 
-        today = dt.date.today()
+        today = tenant_today(self.tenant)
         leave = LeaveRequest.all_objects.create(
             tenant=self.tenant, staff=self.eze, leave_type="STUDY",
             start_date=today - dt.timedelta(days=2),
@@ -248,7 +249,7 @@ class TwoStatusesTests(StaffFixture):
         """
         from schools.vs_staff.models import LeaveRequest
 
-        today = dt.date.today()
+        today = tenant_today(self.tenant)
         for days in (3, 9):
             LeaveRequest.all_objects.create(
                 tenant=self.tenant, staff=self.eze, leave_type="SICK",
@@ -270,7 +271,7 @@ class TwoStatusesTests(StaffFixture):
         """
         from schools.vs_staff.models import LeaveRequest
 
-        today = dt.date.today()
+        today = tenant_today(self.tenant)
         LeaveRequest.all_objects.create(
             tenant=self.tenant, staff=self.eze, leave_type="STUDY",
             start_date=today, end_date=today + dt.timedelta(days=3),

@@ -67,6 +67,11 @@ PERM_OVERRIDES_VIEW = "school.user_overrides.view"
 PERM_CLASS_VIEW = "academics.classes.view"
 PERM_SUBJECT_VIEW = "academics.subject.view"
 
+#: Changing the school's own rules for its staff. The same key every school
+#: settings screen writes under; reading the rules needs only the register's
+#: view key, because the Add form and the leave form render from them.
+PERM_SETTINGS_UPDATE = "school.settings.update"
+
 
 class EmploymentStatus(models.TextChoices):
     """Does this person still work here.
@@ -78,6 +83,11 @@ class EmploymentStatus(models.TextChoices):
     standing in front of her class.
     """
 
+    #: Added at a school that approves each hire before inviting it. The
+    #: account exists and holds its starting role, and no invitation has been
+    #: sent. Only the approval decides where it goes next: Invited when it is
+    #: approved, Terminated when it is not (``hire_approval.py``).
+    PENDING_APPROVAL = "PENDING_APPROVAL", "Awaiting approval"
     INVITED = "INVITED", "Invited"
     ACTIVE = "ACTIVE", "Active"
     #: **Derived, never set.** Nobody moves a person here: a member of staff is
@@ -93,7 +103,8 @@ class EmploymentStatus(models.TextChoices):
 
 #: The only moves an administrator may make, read as {from: (to, ...)}.
 #:
-#: INVITED has no entry at all. It leaves only when the invited person uses
+#: PENDING_APPROVAL has no moves: only the hire's approval decides where it goes.
+#: INVITED has none either. It leaves only when the invited person uses
 #: their own link and sets a password, which is what promotes the account; an
 #: administrator doing it on their behalf would move the employment status while
 #: the account stayed PENDING, leaving somebody who reads Active on every screen
@@ -110,6 +121,7 @@ class EmploymentStatus(models.TextChoices):
 #: it. The migration that came with this change empties that case, so the escape
 #: is a belt rather than a path anybody walks.
 EMPLOYMENT_TRANSITIONS: dict[str, tuple[str, ...]] = {
+    EmploymentStatus.PENDING_APPROVAL: (),
     EmploymentStatus.INVITED: (),
     EmploymentStatus.ACTIVE: (
         EmploymentStatus.SUSPENDED,
@@ -270,7 +282,7 @@ class TeachingPart(models.TextChoices):
 
 
 # ── Workflow ───────────────────────────────────────────────────────────────
-#: The one approvable document type in this app.
+#: Leave requests: every absence is decided by this ladder.
 LEAVE_DOCUMENT_TYPE = "schools.leave_request"
 LEAVE_TEMPLATE_CODE = "leave-request"
 LEAVE_TEMPLATE_NAME = "Leave-request approval"
@@ -293,6 +305,69 @@ LEAVE_TEMPLATE_NAME = "Leave-request approval"
 #: filed request parks rather than being approved unseen, which is the
 #: seeded-blocked-not-seeded-open contract every other ladder here keeps.
 LEAVE_APPROVER_GROUP_CODE = "leave-approvers"
+
+#: New hires, at a school that approves each one before it is invited.
+#:
+#: The document is the staff record itself. Its approvers are a group, for the
+#: reason ``LEAVE_APPROVER_GROUP_CODE`` gives, created empty so a hire filed
+#: before anybody is nominated parks rather than being invited unseen.
+HIRE_DOCUMENT_TYPE = "schools.staff_hire"
+HIRE_TEMPLATE_CODE = "staff-hire"
+HIRE_TEMPLATE_NAME = "New staff approval"
+HIRE_APPROVER_GROUP_CODE = "hire-approvers"
+
+
+# ── A school's own staff rules ─────────────────────────────────────────────
+#: The ``vs_config`` definitions behind Settings, Staff. Declared by
+#: ``migrations/0009_staff_settings.py`` and by ``seed_config_catalogue`` with
+#: the same shape. Every default is the behaviour a school has before it
+#: chooses, so a school that saves nothing is treated exactly as before.
+CFG_NUMBER_REQUIRED = "staff.number.required"
+CFG_NUMBER_PATTERN = "staff.number.pattern"
+CFG_NUMBER_HINT = "staff.number.hint"
+CFG_NUMBER_AUTO_ISSUE = "staff.number.auto_issue"
+CFG_STARTING_ROLE = "staff.starting_role"
+CFG_REQUIRED_DOCUMENTS = "staff.documents.required"
+CFG_SELF_EDITABLE = "staff.self_editable_fields"
+CFG_HIRE_APPROVAL = "staff.hire.requires_approval"
+CFG_LEAVE_ALLOWANCES = "staff.leave.allowances"
+CFG_LEAVE_WORKING_DAYS = "staff.leave.working_days"
+CFG_LEAVE_EXCLUDE_CLOSURES = "staff.leave.exclude_closures"
+
+#: The four keys of the staff-number rule, which a branch may hold as a whole.
+NUMBER_POLICY_KEYS = (
+    CFG_NUMBER_REQUIRED, CFG_NUMBER_PATTERN, CFG_NUMBER_HINT, CFG_NUMBER_AUTO_ISSUE,
+)
+
+#: The role new staff start with where a school has not chosen one. Matched on
+#: the KEY, because the name is the school's to rename and the key is not.
+DEFAULT_STARTING_ROLE_KEY = "teacher"
+
+#: What a person may change about their own record where the school has not
+#: chosen: the four personal facts nobody else is better placed to correct.
+DEFAULT_SELF_EDITABLE = ("middle_name", "date_of_birth", "photo", "phone")
+
+#: Fields nobody may change about themselves, whatever the school chooses.
+#:
+#: The staff ID is also a sign-in identifier. The job title, the employment
+#: type, the hire and exit dates and the posting are the school's statements
+#: about the job: editing your own hire date is editing your own tenure, and
+#: editing your own job title is a promotion nobody gave. The email is changed
+#: on an endpoint of its own. The role and anything to do with pay are not
+#: fields of this record at all.
+SELF_EDIT_FLOOR = (
+    "staff_number", "job_title", "employment_type", "hire_date", "exit_date",
+    "email", "branch",
+)
+
+#: Labels for the floor's entries that are not registered fields.
+SELF_EDIT_FLOOR_LABELS = {"branch": "Posting"}
+
+#: Monday to Friday, as ISO weekdays (Monday is 1, Sunday is 7).
+DEFAULT_WORKING_DAYS = (1, 2, 3, 4, 5)
+
+#: The most days a leave allowance may be, per type, per session.
+LEAVE_ALLOWANCE_MAX = 366
 
 
 # ── Organogram ─────────────────────────────────────────────────────────────
@@ -331,6 +406,7 @@ ORG_UNIT_CODE_PREFIX: dict[str, str] = {
 #: two exit statuses are here as a belt, because leaving closes the appointment
 #: in the same transaction and no open appointment of theirs should remain.
 NON_HOLDING_STATUSES = frozenset({
+    EmploymentStatus.PENDING_APPROVAL,
     EmploymentStatus.INVITED,
     EmploymentStatus.RESIGNED,
     EmploymentStatus.TERMINATED,

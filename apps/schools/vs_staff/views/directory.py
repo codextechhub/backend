@@ -21,13 +21,12 @@ from core.search import search as core_search
 from ..constants import PERM_CREATE, PERM_UPDATE, PERM_VIEW, EmploymentStatus
 from ..exceptions import FieldNotSelfEditable
 from ..serializers import (
-    SELF_EDITABLE_FIELDS,
     StaffCreateSerializer,
     StaffDetailSerializer,
     StaffListSerializer,
     StaffUpdateSerializer,
 )
-from ..services import creation, posting, roles
+from ..services import creation, hire, number_policy, posting, roles
 from ..services.directory import counts
 from ..services.scoping import guard_postings, is_self
 from ..services.visibility import GROUP_CONTACT, PROFILE_FULL
@@ -43,14 +42,8 @@ SEARCH_FIELDS = (
     "staff_number",
 )
 
-#: The only roles a school may hand out before it goes live.
-#:
-#: Onboarding has one administrator in it, so there is nobody to review what
-#: they grant. A bursar invited as Payout Approver during onboarding holds that
-#: grant the moment the school goes live, and no second pair of eyes ever saw
-#: it. Matched on the role KEY rather than the name, because the name is the
-#: school's to rename and the key is not.
-ONBOARDING_ROLE_KEYS = ("school_admin", "branch_admin")
+#: The only roles a school may hand out before it goes live; see ``services.roles``.
+ONBOARDING_ROLE_KEYS = roles.ONBOARDING_ROLE_KEYS
 
 
 class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
@@ -58,6 +51,13 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
 
     Takes no tenant identifier: the school is ``request.tenant``'s, so there is
     nothing to tamper with and no way to list another school's people.
+
+    Filters: ``search``, ``employment_status`` (including ``PENDING_APPROVAL``
+    for hires awaiting approval and the derived ``ON_LEAVE``),
+    ``account_status``, ``role``, ``branch``, ``teaching`` and
+    ``missing_documents=true``, the people lacking a document type the school
+    expects. The last needs a records key, as does the ``missing_documents``
+    count beside the page, which is null without one.
 
     docstring-name: My school's staff
     """
@@ -133,6 +133,9 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
             else:
                 branch = posting.resolve_posting(self.tenant, value)
                 queryset = queryset.filter(branch=branch)
+        if params.get("missing_documents") == "true":
+            lacking = self._lacking_documents()
+            queryset = queryset.filter(lacking) if lacking is not None else queryset.none()
         if (value := params.get("teaching")) in ("true", "false"):
             wants = value == "true"
             queryset = (
@@ -156,7 +159,10 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
         page = self.paginate_queryset(queryset)
         serializer = self.get_serializer(page, many=True)
         response = self.get_paginated_response(serializer.data)
-        response.data["counts"] = counts(queryset, self.tenant, by_branch=self.multi_branch)
+        response.data["counts"] = counts(
+            queryset, self.tenant, by_branch=self.multi_branch,
+            lacking=self._lacking_documents(),
+        )
         invitable = list(self._invitable_roles().prefetch_related("additional_branches"))
         response.data["role_options"] = [
             {"value": role.key, "label": role.name, "branch_ids": role.branch_ids}
@@ -166,23 +172,52 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
         response.data["multi_branch"] = self.multi_branch
         return response
 
+    def _lacking_documents(self):
+        """The missing-documents condition, for a reader who may read records.
+
+        None where the school expects no document or the reader holds no
+        records key: whether somebody's certificates are on file is part of the
+        records the directory key alone does not open.
+        """
+        if not hasattr(self, "_lacking"):
+            from vs_rbac.permissions import has_permission
+
+            from ..constants import PERM_RECORDS_VIEW
+            from ..services.directory import lacking_documents
+
+            self._lacking = None
+            if has_permission(self.request.user, PERM_RECORDS_VIEW, tenant=self.tenant):
+                self._lacking = lacking_documents(self._directory_rules()[1])
+        return self._lacking
+
+    def _directory_rules(self):
+        """The starting role key and the required documents, read once per request."""
+        if not hasattr(self, "_rules_read"):
+            from ..services.rules import directory_rules
+
+            self._rules_read = directory_rules(self.tenant)
+        return self._rules_read
+
     def _starting_role_option(self, invitable):
         """The role the Add form grants without asking, or ``None`` to ask.
 
         ``None`` while the school is onboarding, where the form asks which of
         the two administrator roles to give. At a live school it names the
-        starting role, in the school's own words for it, read from the active
-        roles already loaded for ``role_options``. A school that has retired
-        that role still gets the answer, so the form stays the same and the
-        create explains what to restore.
+        school's starting role (Settings, Staff), in the school's own words for
+        it, read from the active roles already loaded for ``role_options``. A
+        school that has retired that role still gets the answer, named from the
+        catalogue where it can be, so the form stays the same and the create
+        explains what to restore.
         """
         if self.onboarding:
             return None
-        role = next((r for r in invitable if r.key == roles.STARTING_ROLE_KEY), None)
-        return {
-            "value": roles.STARTING_ROLE_KEY,
-            "label": role.name if role else "Teacher",
-        }
+        from vs_rbac.models import TenantRoleTemplate
+
+        key = self._directory_rules()[0]
+        role = next((r for r in invitable if r.key == key), None)
+        if role is None:
+            role = TenantRoleTemplate.objects.filter(tenant=self.tenant, key=key).first()
+        return {"value": key, "label": role.name if role else key}
 
     def _invitable_roles(self):
         """The roles this school may give out right now.
@@ -210,10 +245,20 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
         The account, the invitation and the grant are made by
         ``UserCreationService``, which the live endpoint already called: a second
         creation path would be a second set of rules about who may be created
-        where. What this adds is the staff record and the three child
-        collections the design's form carries, written in the same transaction,
-        so a person whose third qualification is refused is not left existing
-        with two.
+        where. What this adds is the staff record, the qualifications and the
+        teaching duties the form carries, written in the same transaction, so a
+        person whose third qualification is refused is not left existing with
+        two. Documents are uploaded to the record afterwards, on its own
+        endpoint.
+
+        Three of the school's staff rules apply here. The staff number is
+        checked against the rule for the new person's posting, and issued
+        where the rule issues numbers and none was typed. The role is the
+        school's starting role. And where the school approves each hire, the
+        account and the record are written without an invitation, the record
+        reads Awaiting approval, and it is submitted to the New staff approval
+        ladder, whose decision sends the invitation or closes the hire. The
+        response's ``awaiting_approval`` says which happened.
         """
         from vs_user.serializers import UserCreateSerializer
         from vs_user.services.user import UserCreationService
@@ -231,6 +276,10 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
             request.user, self.tenant, [requested] if requested else [],
             default_when_unset=True,
         )), None)
+        staff_number = number_policy.settle_number(
+            self.tenant, data.get("staff_number", ""), branch=branch,
+        )
+        held = hire.needs_approval(self.tenant)
 
         account = UserCreateSerializer(
             data={
@@ -260,15 +309,13 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
             account.validated_data, request.user, request=request,
             role_branch=reach,
         )
-        # ``create_pending`` defaults to PENDING_APPROVAL, which is the platform
-        # hiring workflow's state and not a school's: a school approves nobody,
-        # so an account parked there would be an invitation that never goes out
-        # and a person nobody can chase. ``finalize_invitation`` moves it to
-        # PENDING and dispatches the email, which is the state FR-001 promises.
-        UserCreationService.finalize_invitation(user=user, requested_by=request.user)
+        # Left at PENDING_APPROVAL only where the school approves each hire.
+        if not held:
+            UserCreationService.finalize_invitation(user=user, requested_by=request.user)
         profile = creation.create_profile(
             tenant=self.tenant, user=user, actor=request.user,
-            staff_number=data.get("staff_number", ""),
+            employment_status=EmploymentStatus.PENDING_APPROVAL if held else None,
+            staff_number=staff_number,
             job_title=data.get("job_title", ""),
             employment_type=data.get("employment_type", ""),
             hire_date=data.get("hire_date"), branch=branch,
@@ -279,12 +326,17 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
             profile, data.get("qualifications"), actor=request.user,
         )
         self._attach_teaching(profile, data, request.user)
+        if held:
+            hire.submit(profile, actor=request.user)
 
+        body = StaffDetailSerializer(profile, context=self.serializer_context()).data
+        body["awaiting_approval"] = held
         return success_response(
-            message="Invitation sent.",
-            data=StaffDetailSerializer(
-                profile, context=self.serializer_context(),
-            ).data,
+            message=(
+                "Added. Their invitation is waiting for the hire to be approved."
+                if held else "Invitation sent."
+            ),
+            data=body,
             status=status.HTTP_201_CREATED,
         )
 
@@ -317,7 +369,9 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
                     "added."
                 ),
             })
-        role = roles.starting_role(self.tenant, requested=data.get("role"))
+        role = roles.starting_role(
+            self.tenant, requested=data.get("role"), actor=self.request.user,
+        )
         return role, posting.resolve_reach(self.tenant, None)
 
     def _attach_teaching(self, profile, data, actor):
@@ -351,10 +405,17 @@ class StaffDetailView(StaffViewMixin, APIView):
     Two audiences and two payloads. An administrator holding
     ``school.teachers.update`` may change everything here except the employment
     status, which moves only through the lifecycle, and the email, which is a
-    different key. A person may change a whitelist of personal facts about
-    themselves and nothing else: editing your own hire date is editing your own
-    tenure, and editing your own job title is a promotion the school did not
-    give you.
+    different key. A person may change the details the school lets staff edit
+    about themselves (Settings, Staff) and nothing else, and some details are
+    never theirs to change whatever the school chooses: editing your own hire
+    date is editing your own tenure, and editing your own job title is a
+    promotion the school did not give you. The person's own record carries
+    ``self_editable_fields`` so the edit drawer knows which boxes to open.
+
+    A staff number sent in a PATCH is checked against the staff-number rule
+    for the person's posting (the new one, where the same PATCH moves them).
+    Sending back the number already stored is not a change and is not checked,
+    so a record numbered before a rule existed can still be saved.
 
     Reading is wider than changing. Anybody who works at the school opens
     anybody else's record there, at any branch, and reads as much of it as the
@@ -451,7 +512,9 @@ class StaffDetailView(StaffViewMixin, APIView):
         # that reading makes a single-administrator school unable to fix its own
         # record, and the document is the half that moves.
         if is_self(request.user, staff) and not self._holds_update_key():
-            forbidden = sorted(set(data) - SELF_EDITABLE_FIELDS)
+            from ..services.rules import self_editable_fields
+
+            forbidden = sorted(set(data) - self_editable_fields(self.tenant))
             if forbidden:
                 # 422 with the fields named rather than a bare 403, so the form
                 # can show it where the reader has to change it.
@@ -467,20 +530,22 @@ class StaffDetailView(StaffViewMixin, APIView):
             if field in data:
                 user_fields[field] = data.pop(field)
 
+        governing_branch = staff.branch
         if "branch" in data:
             branch = posting.resolve_posting(self.tenant, data.pop("branch"))
             guard_postings(request.user, self.tenant, [branch] if branch else [])
             posting.set_posting(staff, branch, actor=request.user)
+            governing_branch = branch
 
         if "staff_number" in data:
-            from ..services.numbers import staff_number_taken
-
+            # An echo of the stored number is not a change and is not re-checked.
             data["staff_number"] = (data["staff_number"] or "").strip()
-            if staff_number_taken(self.tenant, data["staff_number"], exclude_pk=staff.pk):
-                from rest_framework.exceptions import ValidationError
-
-                raise ValidationError(
-                    {"staff_number": "Somebody at this school already has that staff ID."},
+            if data["staff_number"].lower() == (staff.staff_number or "").lower():
+                data.pop("staff_number")
+            else:
+                data["staff_number"] = number_policy.settle_number(
+                    self.tenant, data["staff_number"], branch=governing_branch,
+                    exclude_pk=staff.pk, issue=False,
                 )
 
         for field, value in data.items():
