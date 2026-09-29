@@ -1094,6 +1094,8 @@ def _invoice_bucket(qs, bucket, today):
     """Filter invoices to a derived status bucket (the design's status tabs).
 
     ``today`` is the entity's own day, which decides what counts as overdue.
+    ``open`` is no tab: it is every posted invoice with money still owed, overdue
+    or not, which is what a payment picker offers.
     """
     from django.db.models import Q
     from .constants import DocumentStatus, InvoicePaymentStatus
@@ -1110,6 +1112,8 @@ def _invoice_bucket(qs, bucket, today):
         return posted.filter(payment_status=InvoicePaymentStatus.PARTIAL).filter(not_overdue)
     if bucket == "issued":
         return posted.filter(payment_status=InvoicePaymentStatus.UNPAID).filter(not_overdue)
+    if bucket == "open":
+        return posted.exclude(payment_status=InvoicePaymentStatus.PAID)
     return qs
 
 
