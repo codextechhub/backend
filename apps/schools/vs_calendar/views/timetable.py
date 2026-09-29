@@ -1,8 +1,10 @@
 """Class timetables, the teacher's derived view of them, and publication.
 
-The grid read is one document, not a page: at most five days by a dozen periods
-however large the school is, so paginating it would make a client reassemble a
-grid it asked for whole.
+The grid read is one document, not a page: at most seven days by a dozen
+periods however large the school is, so paginating it would make a client
+reassemble a grid it asked for whole. Its day columns are the school's teaching
+days (``calendar.teaching_days``) in the order its week starts
+(``calendar.week_starts_on``); see ``CalendarRules.grid_days``.
 
 **A clash never refuses a write.** It is recorded, persisted and returned in
 ``warnings`` beside the row that was written. The refusal happens once, at
@@ -36,10 +38,14 @@ from ..models import (
     TimetableSlot,
 )
 from ..serializers import TimetableSlotSerializer, TimetableSlotWriteSerializer
+from ..constants import CFG_TEACHER_DUTY_MATCH, CFG_TEACHING_DAYS, CFG_WEEK_STARTS_ON
 from ..services.bells import periods_in_force
+from ..services.calendar_rules import read_calendar_rules
 from ..services.clashes import grid_clashes, slot_warnings
+from ..services.duties import duty_warnings
 from ..services.scoping import assert_may_change, row_branch_ids, scope_to_visible_branches
 from ..services.timetable import (
+    SLOT_RULE_KEYS,
     require_bell_schedule,
     timetable_for,
     touch_timetable,
@@ -47,13 +53,22 @@ from ..services.timetable import (
 )
 from .base import CalendarViewMixin
 
-#: Monday to Friday. A school teaching Saturdays stores day 6 happily - the
-#: column accepts 1 to 7 - and this is only which days a grid renders by
-#: default, which is a presentation choice rather than a data one.
-GRID_DAYS = [
-    DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY,
-    DayOfWeek.THURSDAY, DayOfWeek.FRIDAY,
-]
+#: What a grid read needs: its day columns, their order, and whether a lesson
+#: without a teaching duty is worth a warning.
+GRID_RULE_KEYS = (CFG_TEACHING_DAYS, CFG_WEEK_STARTS_ON, CFG_TEACHER_DUTY_MATCH)
+
+
+def lesson_warnings(tenant, session, slots, *, visible, rules):
+    """Every warning a set of lessons carries: its clashes, then its duty mismatches.
+
+    *slots* are saved or unsaved lessons of one class; *rules* holds
+    ``timetable.teacher_duty_match``.
+    """
+    out = []
+    for slot in slots:
+        out.extend(slot_warnings(slot, visible=visible))
+    out.extend(duty_warnings(tenant, session, slots, mode=rules.teacher_duty_match))
+    return out
 
 
 def _visible_classes(view):
@@ -190,9 +205,14 @@ def _classes_with_clashes(tenant, session):
 class ClassTimetableDetailView(CalendarViewMixin, APIView):
     """GET, PUT /v1/academics/timetable/classes/<class_id>/
 
-    GET returns the whole grid. PUT replaces it in one transaction and writes
-    one audit event, not one per cell: replacing a grid is one change a school
-    made.
+    GET returns the whole grid: one day per teaching day of the school, in the
+    order its week starts, plus any day the class still holds a lesson on,
+    flagged ``is_teaching_day: false`` so it can be moved or removed (it
+    blocks publishing until it is). Its
+    ``warnings`` are the grid's clashes and, under the school's WARN or REFUSE,
+    its ``TEACHER_HAS_NO_DUTY`` lessons. PUT replaces it in one transaction
+    and writes one audit event, not one per cell: replacing a grid is one
+    change a school made.
 
     docstring-name: Class timetable
     """
@@ -224,7 +244,7 @@ class ClassTimetableDetailView(CalendarViewMixin, APIView):
             (s.day_of_week, s.period_id): s
             for s in TimetableSlot.objects.filter(
                 session=session, school_class=school_class,
-            ).select_related("period", "subject", "teacher", "room")
+            ).select_related("period", "subject", "teacher", "room", "school_class")
         }
         period_rows = list(
             Period.objects.filter(
@@ -232,9 +252,10 @@ class ClassTimetableDetailView(CalendarViewMixin, APIView):
             ).select_related("branch"),
         )
 
+        rules = read_calendar_rules(self.tenant, GRID_RULE_KEYS)
         days = []
         filled = total = 0
-        for day in GRID_DAYS:
+        for day in rules.grid_days(held={key[0] for key in slots}):
             in_force = periods_in_force(
                 self.tenant, session, day_of_week=day, branch=branch,
                 queryset=period_rows,
@@ -268,11 +289,15 @@ class ClassTimetableDetailView(CalendarViewMixin, APIView):
             days.append({
                 "day_of_week": int(day),
                 "day_label": DayOfWeek(day).label,
+                "is_teaching_day": day in rules.teaching_days,
                 "cells": cells,
             })
 
         warnings = grid_clashes(
             self.tenant, session, school_class, visible=self.visible,
+        ) + duty_warnings(
+            self.tenant, session, list(slots.values()),
+            mode=rules.teacher_duty_match,
         )
         record = timetable_for(self.tenant, session, school_class)
         data = {
@@ -304,6 +329,7 @@ class ClassTimetableDetailView(CalendarViewMixin, APIView):
         writer = TimetableSlotWriteSerializer(data=rows, many=True)
         writer.is_valid(raise_exception=True)
 
+        rules = read_calendar_rules(self.tenant, SLOT_RULE_KEYS)
         TimetableSlot.objects.filter(session=session, school_class=school_class).delete()
         created = []
         for entry in writer.validated_data:
@@ -313,6 +339,7 @@ class ClassTimetableDetailView(CalendarViewMixin, APIView):
                 self.tenant, session, school_class=school_class,
                 day_of_week=entry["day_of_week"], period=period,
                 subject=entry["subject"], teacher=entry.get("teacher"), room=room,
+                rules=rules,
             )
             created.append(TimetableSlot(
                 tenant=self.tenant, session=session, school_class=school_class,
@@ -336,6 +363,14 @@ class ClassTimetableDetailView(CalendarViewMixin, APIView):
         )
         warnings = grid_clashes(
             self.tenant, session, school_class, visible=self.visible,
+        ) + duty_warnings(
+            self.tenant, session,
+            list(
+                TimetableSlot.objects.filter(
+                    session=session, school_class=school_class,
+                ).select_related("teacher", "subject", "school_class"),
+            ),
+            mode=rules.teacher_duty_match,
         )
         return success_response(
             f"{school_class.name}'s timetable saved.",
@@ -397,11 +432,12 @@ class SlotListCreateView(CalendarViewMixin, generics.ListCreateAPIView):
         if period.tenant_id != self.tenant.id or period.session_id != session.pk:
             raise NotFound("No such period in this year.")
 
+        rules = read_calendar_rules(self.tenant, SLOT_RULE_KEYS)
         validate_slot(
             self.tenant, session, school_class=school_class,
             day_of_week=data["day_of_week"], period=period,
             subject=data["subject"], teacher=data.get("teacher"),
-            room=data.get("room"),
+            room=data.get("room"), rules=rules,
         )
         row = TimetableSlot.objects.create(
             tenant=self.tenant, session=session, school_class=school_class,
@@ -428,10 +464,11 @@ class SlotListCreateView(CalendarViewMixin, generics.ListCreateAPIView):
         payload = TimetableSlotSerializer(
             row, context=self.get_serializer_context(),
         ).data
-        # The clash is announced and the write stands. Both cells go red and
-        # publishing is what refuses.
+        # Announced, and the write stands.
         payload["warnings"] = [
-            w.as_dict() for w in slot_warnings(row, visible=self.visible)
+            w.as_dict() for w in lesson_warnings(
+                self.tenant, session, [row], visible=self.visible, rules=rules,
+            )
         ]
         return success_response(
             f"{data['subject'].name} saved.", payload, status=201,
@@ -441,7 +478,10 @@ class SlotListCreateView(CalendarViewMixin, generics.ListCreateAPIView):
 class SlotPreviewView(CalendarViewMixin, APIView):
     """POST /v1/academics/timetable/slots/preview/
 
-    The clashes a slot WOULD have, without writing it.
+    The clashes a slot WOULD have, without writing it, and the
+    ``TEACHER_HAS_NO_DUTY`` warning when its teacher holds no teaching duty for
+    it under the school's WARN or REFUSE (with no slot id, since there is no
+    slot).
 
     **Why this exists rather than the client working it out.** The lesson form
     asks for a teacher and a room, and the moment both are chosen the school can
@@ -506,6 +546,12 @@ class SlotPreviewView(CalendarViewMixin, APIView):
             ]
 
         warnings = slot_warnings(draft, visible=self.visible, queryset=queryset)
+        warnings += duty_warnings(
+            self.tenant, session, [draft],
+            mode=read_calendar_rules(
+                self.tenant, (CFG_TEACHER_DUTY_MATCH,),
+            ).teacher_duty_match,
+        )
         return success_response(data={
             "warnings": [w.as_dict() for w in warnings],
         })
@@ -550,10 +596,11 @@ class SlotDetailView(CalendarViewMixin, generics.RetrieveUpdateDestroyAPIView):
         subject = data.get("subject", row.subject)
         day = data.get("day_of_week", row.day_of_week)
 
+        rules = read_calendar_rules(self.tenant, SLOT_RULE_KEYS)
         validate_slot(
             self.tenant, row.session, school_class=row.school_class,
             day_of_week=day, period=period, subject=subject,
-            teacher=teacher, room=room, exclude_pk=row.pk,
+            teacher=teacher, room=room, exclude_pk=row.pk, rules=rules,
         )
         row.day_of_week, row.period = day, period
         row.subject, row.teacher, row.room = subject, teacher, room
@@ -574,7 +621,10 @@ class SlotDetailView(CalendarViewMixin, generics.RetrieveUpdateDestroyAPIView):
             row, context=self.get_serializer_context(),
         ).data
         payload["warnings"] = [
-            w.as_dict() for w in slot_warnings(row, visible=self.visible)
+            w.as_dict() for w in lesson_warnings(
+                self.tenant, row.session, [row], visible=self.visible,
+                rules=rules,
+            )
         ]
         return success_response(f"{subject.name} saved.", payload)
 

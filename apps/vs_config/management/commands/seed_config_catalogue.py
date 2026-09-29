@@ -357,6 +357,57 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "JSON", ["A", "B", "C"], {},
     ),
     (
+        "calendar.teaching_days", "Teaching Days",
+        "The weekdays the school teaches, as ISO numbers (Monday is 1, Sunday "
+        "is 7), at least one. They are the day columns of every timetable, "
+        "the days a period or a lesson may be placed on, and the days the "
+        "calendar counts as taught.",
+        "JSON", [1, 2, 3, 4, 5], {},
+    ),
+    (
+        "calendar.week_starts_on", "Week Starts On",
+        "The day the school's week starts on: 1 for Monday, 7 for Sunday. "
+        "Calendars and timetables start their week on it.",
+        "CHOICE", 1, {"choices": [1, 7]},
+    ),
+    (
+        "calendar.closes_school_by_type", "Entries That Close The School",
+        "For each kind of calendar entry, whether an entry of that kind closes "
+        "the school when it is created without saying. An existing entry "
+        "never changes.",
+        "JSON",
+        {
+            "HOLIDAY": True, "MIDTERM_BREAK": True, "EXAM_PERIOD": False,
+            "SCHOOL_EVENT": False, "PTA": False, "SPORTS": False,
+        },
+        {},
+    ),
+    (
+        "timetable.room_required_to_publish", "Lessons Need A Room To Publish",
+        "Whether every lesson needs a room before a class timetable can be "
+        "published. A lesson always needs a teacher.",
+        "BOOLEAN", True, {},
+    ),
+    (
+        "timetable.teacher_duty_match", "Teacher Must Hold The Teaching Duty",
+        "What happens to a lesson whose teacher has no teaching duty for its "
+        "class and subject: OFF allows it, WARN saves it with a warning, "
+        "REFUSE refuses it and blocks publishing while one remains.",
+        "CHOICE", "OFF", {"choices": ["OFF", "WARN", "REFUSE"]},
+    ),
+    (
+        "exams.invigilator_roles", "Roles That May Invigilate",
+        "The keys of the school's roles whose active holders may invigilate "
+        "an exam paper.",
+        "JSON", ["teacher"], {},
+    ),
+    (
+        "timetable.default_period_minutes", "Default Period Length",
+        "The minutes a new period lasts unless its end time is changed, 10 to "
+        "240. Empty means no default.",
+        "INTEGER", None, {"min": 10, "max": 240},
+    ),
+    (
         "display.timezone", "Time Zone",
         "The IANA time zone this school keeps its calendar in, such as "
         "Africa/Lagos. It decides which day \"today\" is for due dates, "

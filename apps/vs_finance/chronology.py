@@ -146,10 +146,16 @@ class CreditLot:
     date: _date          # Accounting date the credit came into existence.
     number: str          # Document number, for messages and audit metadata.
     remaining: int       # Kobo of this lot still sitting in 2140.
+    branch_id: int | None = None  # Branch that holds the credit; None is school-wide.
+
+
+#: Passed as ``branch`` to read a customer's credit in every branch at once.
+ANY_BRANCH = object()
 
 
 # Load a customer's credit as dated, drainable lots.
-def credit_lots(entity, customer_ids=None, *, as_of=None) -> dict[int, list[CreditLot]]:
+def credit_lots(entity, customer_ids=None, *, as_of=None, scope=None,
+                branch=ANY_BRANCH) -> dict[int, list[CreditLot]]:
     """Customer credit as FIFO-ordered :class:`CreditLot` parcels, keyed by customer id.
 
     A lot is included only when its own accounting date is on or before ``as_of``
@@ -159,6 +165,17 @@ def credit_lots(entity, customer_ids=None, *, as_of=None) -> dict[int, list[Cred
 
     Lots with nothing left are dropped: callers want spendable credit, and keeping
     zero rows would make every FIFO walk scan exhausted receipts forever.
+
+    ``scope`` (a :class:`vs_rbac.scoping.BranchScope`) keeps only the receipts and
+    credit notes in a reader's branches, so a screen showing one branch's documents
+    shows the credit those documents hold and not another branch's. ``None`` reads
+    the whole entity.
+
+    ``branch`` keeps only the credit held by one branch (a branch id, or ``None`` for
+    school-wide credit). A refund pays out the credit of its own branch and no other,
+    because its journal is booked to that branch: Ikeja paying back money that Lekki
+    received would leave Lekki's books still owing it. :data:`ANY_BRANCH` reads every
+    branch's credit together.
     """
     from .models import CreditNote, Payment
 
@@ -169,6 +186,10 @@ def credit_lots(entity, customer_ids=None, *, as_of=None) -> dict[int, list[Cred
         customer_ids = list(customer_ids)
         payments = payments.filter(customer_id__in=customer_ids)
         notes = notes.filter(customer_id__in=customer_ids)
+    if scope is not None:  # Only the reader's branches.
+        payments, notes = scope.filter(payments), scope.filter(notes)
+    if branch is not ANY_BRANCH:  # Only the credit this one branch holds.
+        payments, notes = payments.filter(branch_id=branch), notes.filter(branch_id=branch)
     if as_of is not None:  # Only credit that exists by the cutoff may be spent.
         payments = payments.filter(payment_date__lte=as_of)
         notes = notes.filter(note_date__lte=as_of)
@@ -179,18 +200,20 @@ def credit_lots(entity, customer_ids=None, *, as_of=None) -> dict[int, list[Cred
             kind="RECEIPT", document_id=row["id"], customer_id=row["customer_id"],
             date=row["payment_date"], number=row["document_number"] or "",
             remaining=int(row["amount"]) - int(row["allocated_amount"]) - int(row["refunded_amount"]),
+            branch_id=row["branch_id"],
         )
         for row in payments.values(
-            "id", "customer_id", "payment_date", "document_number",
+            "id", "customer_id", "branch_id", "payment_date", "document_number",
             "amount", "allocated_amount", "refunded_amount")
     ] + [  # Credit notes: value beyond what it settled is credit.
         CreditLot(
             kind="CREDIT_NOTE", document_id=row["id"], customer_id=row["customer_id"],
             date=row["note_date"], number=row["document_number"] or "",
             remaining=int(row["total"]) - int(row["allocated_amount"]) - int(row["refunded_amount"]),
+            branch_id=row["branch_id"],
         )
         for row in notes.values(
-            "id", "customer_id", "note_date", "document_number",
+            "id", "customer_id", "branch_id", "note_date", "document_number",
             "total", "allocated_amount", "refunded_amount")
     ]
     for lot in rows:  # Bucket the spendable lots per customer.

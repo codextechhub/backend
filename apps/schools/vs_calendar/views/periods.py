@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from django.db import transaction
 from rest_framework import generics
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.views import APIView
 
 from core.response import success_response
 from vs_audit.models import AuditActionType, AuditModuleKey
@@ -26,10 +27,12 @@ from ..models import DayOfWeek, Period
 from ..serializers import PeriodSerializer, PeriodWriteSerializer
 from ..services.bells import (
     assert_no_overlap,
+    copy_bell_schedule,
     day_has_own_schedule,
     provisional_order_index,
     periods_in_force,
     renumber_day,
+    skipped_sentence,
 )
 from ..services.scoping import (
     UNSET,
@@ -37,6 +40,8 @@ from ..services.scoping import (
     raised_branch,
     scope_to_visible_branches,
 )
+from ..services.calendar_rules import read_teaching_days
+from ..services.timetable import assert_day_taught
 from .base import CalendarViewMixin
 
 
@@ -67,6 +72,10 @@ class PeriodListCreateView(_PeriodBase, generics.ListCreateAPIView):
     ``?day=`` narrows to the periods actually in force on that weekday, which
     is not the same as filtering on the column: a day with no rows of its own
     runs the everyday schedule, and a day with rows of its own runs only those.
+
+    A period set for one day must be set for one of the school's teaching days
+    (``calendar.teaching_days``), or it is refused with ``DAY_NOT_TAUGHT``. A
+    period with no day runs on every teaching day.
 
     docstring-name: Bell schedule
     """
@@ -147,6 +156,7 @@ class PeriodListCreateView(_PeriodBase, generics.ListCreateAPIView):
         session = self.session_required
         branch = self._write_branch(data)
         day = data.get("day_of_week")
+        assert_day_taught(day, read_teaching_days(self.tenant), what="period")
 
         assert_no_overlap(
             self.tenant, session, branch=branch, day_of_week=day,
@@ -213,6 +223,8 @@ class PeriodDetailView(_PeriodBase, generics.RetrieveUpdateDestroyAPIView):
 
         branch = self._write_branch(data) if "branch" in data else row.branch
         day = data["day_of_week"] if "day_of_week" in data else row.day_of_week
+        if "day_of_week" in data and day != row.day_of_week:
+            assert_day_taught(day, read_teaching_days(self.tenant), what="period")
         start = data.get("start_time", row.start_time)
         end = data.get("end_time", row.end_time)
 
@@ -282,3 +294,99 @@ class PeriodDetailView(_PeriodBase, generics.RetrieveUpdateDestroyAPIView):
             summary=f"{label} deleted.",
         )
         return success_response(f"{label} deleted.")
+
+
+class BellScheduleCopyView(CalendarViewMixin, APIView):
+    """POST /v1/academics/timetable/periods/copy/?session=<target>
+
+    Copy another year's bell schedule into this one, which must have no periods
+    of its own yet. Body: ``{"from_session": <id>}``. The target is the year
+    the request is about, ``?session=`` or else the active one, exactly as for
+    adding a period, and like every write here it must be a year that may
+    still be written to. A button, never a side effect of starting a year: a
+    school that changes its bell times in the new year starts from a blank
+    schedule instead.
+
+    Needs the key that adds a period. A school-wide caller copies every period,
+    branch-specific and day-specific ones included, into a target with none at
+    all. A branch-bound caller copies only the periods at their own branches,
+    into a target with none there; the school's shared periods are refused to
+    them as a shared row always is (see ``services.bells.copy_bell_schedule``).
+
+    A period set for a day the school no longer teaches is left out and
+    listed; an every-day period is always copied.
+
+    Answers 201 with ``{"copied": n, "skipped": [{name, day_of_week,
+    day_label}], "periods": [...]}``, the created periods in the bell
+    schedule's own shape, and one audit event. The message names what was left
+    out and why.
+
+    docstring-name: Copy a bell schedule
+    """
+
+    rbac_permission = PERM_TIMETABLE_CREATE
+    pagination_class = None
+
+    @transaction.atomic
+    def post(self, request):
+        from schools.vs_academics.models import AcademicSession
+
+        target = self.session_required
+        raw = request.data.get("from_session") if hasattr(request.data, "get") else None
+        if raw in (None, ""):
+            raise ValidationError({
+                "from_session": "Say which year to copy the bell schedule from.",
+            })
+        if not str(raw).strip().isdigit():
+            raise ValidationError({
+                "from_session": "Give the year to copy from by its id.",
+            })
+        source = AcademicSession.objects.filter(
+            tenant=self.tenant, pk=int(str(raw).strip()),
+        ).first()
+        if source is None:
+            raise NotFound("No such session at this school.")
+        if source.pk == target.pk:
+            raise ValidationError({
+                "from_session": (
+                    "A year's bell schedule cannot be copied into itself. "
+                    "Choose an earlier year."
+                ),
+            })
+
+        created, skipped = copy_bell_schedule(
+            self.tenant, source=source, target=target, visible=self.visible,
+            teaching_days=read_teaching_days(self.tenant),
+        )
+        count = len(created)
+        message = " ".join(part for part in (
+            f"{count} period{'' if count == 1 else 's'} copied from "
+            f"{source.name} into {target.name}.",
+            skipped_sentence(skipped),
+        ) if part)
+        emit_audit_event(
+            module_key=AuditModuleKey.ACADEMICS,
+            action_type=AuditActionType.CREATE,
+            entity_type="AcademicSession", entity_id=str(target.pk),
+            entity_label=target.name,
+            tenant=self.tenant, actor_user=request.user,
+            summary=f"Bell schedule: {message}",
+        )
+        return success_response(
+            message,
+            {
+                "copied": count,
+                "skipped": [
+                    {
+                        "name": row.label,
+                        "day_of_week": row.day_of_week,
+                        "day_label": DayOfWeek(row.day_of_week).label,
+                    }
+                    for row in skipped
+                ],
+                "periods": PeriodSerializer(
+                    created, many=True, context=self.get_serializer_context(),
+                ).data,
+            },
+            status=201,
+        )

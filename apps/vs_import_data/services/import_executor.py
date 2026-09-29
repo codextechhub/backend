@@ -665,7 +665,8 @@ def import_calendar_events_row(import_batch, payload: dict, queued_by) -> Import
         start_date      required - YYYY-MM-DD
         end_date        required - same as start for a one-day entry
         branch          optional - branch name; blank means the whole school
-        closes_school   optional - yes/no, default no
+        closes_school   optional - yes/no; blank takes the school's answer
+                        for the entry's type
         description     optional
         applies_to      optional - "Primary 4; JSS1", semicolon separated
     """

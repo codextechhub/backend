@@ -1660,6 +1660,76 @@ MUST SAY:
   calendar warning goes only to finance.period.create holders who reach the whole
   tenant (M19, M08).
 
+### D74. Settings, Calendar and timetables: teaching days, the week start, what closes the school, the publish gate, teaching duties, invigilators, and copying a bell schedule (f12a685d, 60712298, 2026-09-29)
+MODULES: M14 academic calendar and timetables, M06 configuration and
+capability, M12 staff management (teaching duties), M10 bulk data import (the
+calendar template's Closes School column), M04 roles and permissions (who may
+invigilate), MRD. Check M13 only if it describes the bell schedule as carried
+into a new year.
+Seven school settings (vs_calendar 0002, seed_config_catalogue), read by any
+signed-in member of the school with no key, written under
+school.settings.update and a school-wide caller (else 403
+SHARED_RECORD_READ_ONLY, "Only a school-wide administrator can change the
+school's calendar and timetable settings.", nothing written), 400s keyed on
+the field in sentences, audited with an optional reason. Full contract in
+docs/timetable-api-plan.md section 12.
+- GET, PUT /v1/academics/calendar/rules/: {teaching_days, week_starts_on,
+  closes_school_by_type, event_types, room_required_to_publish,
+  teacher_duty_match, teacher_duty_match_options, invigilator_roles,
+  invigilator_role_options, default_period_minutes}. "Calendar and timetable
+  settings saved."
+- calendar.teaching_days, ISO weekdays, default Monday to Friday, one set for
+  the whole school and separate from staff.leave.working_days. The class and
+  teacher grids draw these days (plus any day still holding a lesson, flagged
+  is_teaching_day false) in the order calendar.week_starts_on (1 or 7) sets;
+  a lesson or a period on another day is 422 DAY_NOT_TAUGHT; the overview's
+  teaching-day counts use them.
+- BEHAVIOUR CHANGE: an event created or imported without closes_school takes
+  calendar.closes_school_by_type; defaults HOLIDAY and MIDTERM_BREAK true,
+  EXAM_PERIOD, SCHOOL_EVENT, PTA and SPORTS false. Previously every such entry
+  was open. Stored events never change.
+- timetable.room_required_to_publish (default true): false lets a lesson with
+  no room publish; a teacher is always required.
+- timetable.teacher_duty_match OFF (default) | WARN | REFUSE against vs_staff
+  teaching duties: WARN saves with a TEACHER_HAS_NO_DUTY warning and publishes
+  listing them; REFUSE is 422 NO_TEACHING_DUTY on save and duplicate, and 409
+  TIMETABLE_TEACHER_HAS_NO_DUTY at publish.
+- exams.invigilator_roles (default ["teacher"]) decides who may invigilate
+  (422 NOT_AN_INVIGILATOR replaces NOT_A_TEACHING_USER on exam papers); GET
+  /v1/academics/exams/invigilators/ is the picker, narrowed to the caller's
+  branches.
+- timetable.default_period_minutes, 10 to 240 or null, exposed only.
+- POST /v1/academics/timetable/periods/copy/?session=<target> with
+  {from_session}: copies every period of a year into an empty one (a button,
+  never automatic); a branch-bound caller copies only their branches' periods.
+  A day-specific period on a day no longer taught is left out and listed:
+  {copied, skipped: [{name, day_of_week, day_label}], periods}, and the
+  message says so ("1 Saturday period was left out because Saturday is not a
+  teaching day."). 409 BELL_SCHEDULE_NOT_EMPTY, 422 BELL_SCHEDULE_EMPTY (also
+  when everything would be left out, saying why).
+- An exam paper's invigilator is judged only when set or changed, so a paper
+  kept by someone who has since lost the role can still be edited.
+- The publish answer carries warnings; the TIMETABLE_INCOMPLETE sentence says
+  "no teacher" alone when rooms are not required.
+- A lesson on a day the school no longer teaches blocks publishing its class:
+  409 TIMETABLE_LESSON_ON_DAY_NOT_TAUGHT ("JSS1 A has 1 lesson on Saturday,
+  which is not a teaching day. Move or remove it on the timetable, and publish
+  again."), detail {school_class, days, items, slot_ids}, checked after
+  incompleteness and before the duty check. Exam timetables are unaffected.
+MUST SAY: M14 the seven settings and the route, its read and write rules,
+every refusal, the day columns and is_teaching_day, DAY_NOT_TAUGHT, the
+closes-school defaults and that stored events never change, the four-step
+publish gate (incomplete, day not taught, duty, clashes) and its warnings,
+the duty match modes and their codes, the
+invigilator rule (judged only when set or changed) and picker, and the bell
+schedule copy with its branch rule and what it leaves out;
+M06 the seven definitions and their defaults; M12 that teaching duties can
+gate the timetable; M10 the blank Closes School cell and the reworded refusal;
+M04 that invigilation follows the school's chosen roles. MRD: a school sets
+its own teaching days and week start, which entries close it, what publishing
+needs, whether teachers must hold the duty, who invigilates, and copies a bell
+schedule into a new year.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

@@ -35,6 +35,7 @@ from .constants import (
     InvoicePaymentStatus,
     JournalSource,
 )
+from .chronology import ANY_BRANCH
 from .exceptions import FinanceError, PostingError
 from .money import format_naira
 from .posting import post_journal, resolve_period
@@ -76,8 +77,9 @@ def post_credit_note(note, *, actor_user=None, auto_allocate=False, allocations=
     """Price, validate and post a :class:`CreditNote`, raising its AR journal.
 
     For a CREDIT note, ``allocations`` (a list of ``(invoice, amount_kobo)``) - or
-    ``auto_allocate`` - applies the credit to open invoices oldest-first. DEBIT notes
-    increase the receivable and are never allocated.
+    ``auto_allocate`` - applies the credit to open invoices oldest-first, only ever
+    invoices of the note's own branch. DEBIT notes increase the receivable and are
+    never allocated.
     """
     try:  # Atomic worker performs posting and optional allocation.
         result = _post_credit_note_atomic(  # Post the note.
@@ -239,7 +241,7 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
                 description="Output tax reversal", line_no=line_no,  # Label and order.
             )
         plan = (_build_invoice_plan(  # Build allocation plan, bounded by the note's own date.
-            customer, allocations, as_of=note.note_date,
+            note, allocations, as_of=note.note_date,
             settlement=f"Credit note {note.document_number or note.pk}",
         ) if (allocations is not None or auto_allocate) else [])
         applied, created_rows, _latest = _apply_creditnote_subledger(note, plan, remaining=note.total)  # Apply credit to invoices.
@@ -330,7 +332,8 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
     Any unapplied portion of the note sits in the customer-credit liability (2140);
     applying it reclassifies it back to AR (``Dr customer-credit · Cr AR``) and
     settles the invoices. ``allocations`` is an optional ``[(invoice, amount)]`` plan;
-    without it, open invoices are settled oldest-first.
+    without it, open invoices are settled oldest-first. Either way only invoices of the
+    note's own branch are settled (see :func:`~vs_finance.receivables._build_invoice_plan`).
 
     An older note may be applied to a newer invoice - that is legitimate - but the
     reclassification is dated at the later of the two, never before the receivable it
@@ -353,7 +356,7 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
     if remaining <= 0:  # Nothing left to allocate.
         return []
 
-    plan = _build_invoice_plan(note.customer, allocations)  # Build explicit or oldest-first invoice plan.
+    plan = _build_invoice_plan(note, allocations)  # Explicit or oldest-first, in the note's branch.
     applied, created, latest = _apply_creditnote_subledger(note, plan, remaining=remaining)  # Apply credit to invoices.
     if applied <= 0:  # No invoice received value.
         return []
@@ -401,17 +404,18 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
 
 
 # Find the earliest date a customer's credit could cover an amount.
-def _earliest_credit_date(customer, amount, *, exclude_refund_id=None):
+def _earliest_credit_date(customer, amount, *, exclude_refund_id=None, branch=ANY_BRANCH):
     """The first accounting date on which ``amount`` of credit exists, or ``None``.
 
     Purely for the error message on a backdated refund: telling the user *which* date
     would work turns a flat rejection into a one-click correction. Walks the customer's
     credit lots oldest-first and returns the date of the lot that tips the running
-    total over the requested amount.
+    total over the requested amount. ``branch`` is the refund's own branch id, whose
+    credit is the only credit it may draw.
     """
     from .chronology import credit_lots
 
-    lots = credit_lots(customer.entity, [customer.pk]).get(customer.pk, [])
+    lots = credit_lots(customer.entity, [customer.pk], branch=branch).get(customer.pk, [])
     running = 0  # Credit accumulated as the timeline advances.
     for lot in lots:  # Lots already arrive oldest-first.
         running += lot.remaining  # Add this parcel to the running credit.
@@ -430,13 +434,19 @@ def _attribute_refund_to_lots(refund, customer, *, as_of):
     originating receipt still reports its cash as unapplied and available - which is
     exactly how the same money could be allocated or refunded twice.
 
+    Only lots of the refund's own branch are drawn: the payout journal is booked to
+    that branch, so draining another branch's receipt would leave that branch's
+    liability standing while this one's is overdrawn.
+
     Returns the created allocation rows. Raises :class:`PostingError` if the lots
     cannot cover the amount, which means an availability guard upstream was wrong.
     """
     from .chronology import credit_lots, plan_credit_draw
     from .models import CreditNote, Payment, RefundAllocation
 
-    lots = credit_lots(refund.entity, [customer.pk], as_of=as_of).get(customer.pk, [])
+    lots = credit_lots(
+        refund.entity, [customer.pk], as_of=as_of, branch=refund.branch_id,
+    ).get(customer.pk, [])
     plan = plan_credit_draw(lots, refund.amount)  # Choose the parcels to drain, oldest first.
     drawn = sum(taken for _lot, taken in plan)  # Total the plan actually covers.
     if drawn < refund.amount:  # Availability guard and lot arithmetic must agree.
@@ -509,16 +519,22 @@ def _post_refund_atomic(refund, *, actor_user=None):
     # Availability is measured **on the refund's own accounting date**, not today.
     # Credit that only arrives later has not happened yet as far as this payout is
     # concerned, and paying it out would drive the 2140 liability negative for the gap.
-    from .receivables import customer_refund_available_balance
+    # Only the refund's own branch's credit can fund it.
+    from .receivables import customer_refund_available_balance, require_refund_branch_credit
     available = customer_refund_available_balance(
-        customer, exclude_refund_id=refund.pk,
-        as_of=refund.refund_date)  # Unreserved refundable credit as at the refund date.
+        customer, exclude_refund_id=refund.pk, as_of=refund.refund_date,
+        branch=refund.branch_id)  # Unreserved refundable credit as at the refund date.
     if refund.amount > available:  # Refund cannot exceed stored customer credit.
+        require_refund_branch_credit(  # Name the branch that holds it, if another does.
+            customer, refund.amount, refund.branch_id,
+            as_of=refund.refund_date, exclude_refund_id=refund.pk)
         later = customer_refund_available_balance(
-            customer, exclude_refund_id=refund.pk)  # Same figure with no date cutoff.
+            customer, exclude_refund_id=refund.pk,
+            branch=refund.branch_id)  # Same figure with no date cutoff.
         hint = ""
         if later > available:  # The shortfall is purely a dating problem - say so.
-            first = _earliest_credit_date(customer, refund.amount, exclude_refund_id=refund.pk)
+            first = _earliest_credit_date(
+                customer, refund.amount, exclude_refund_id=refund.pk, branch=refund.branch_id)
             hint = (
                 f" {format_naira(later)} is available today, but not as at "
                 f"{refund.refund_date}"

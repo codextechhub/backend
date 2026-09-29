@@ -5,7 +5,7 @@ from .views.actions import (
     ClassTimetableDuplicateView,
     ClassTimetablePublishView,
 )
-from .views.periods import PeriodDetailView, PeriodListCreateView
+from .views.periods import BellScheduleCopyView, PeriodDetailView, PeriodListCreateView
 from .views.rooms import RoomDetailView, RoomListCreateView
 from .views.teachers import TeacherListView, TeacherTimetableView
 from .views.timetable import (
@@ -21,6 +21,7 @@ urlpatterns = [
     path("rooms/<int:pk>/", RoomDetailView.as_view(), name="calendar-room-detail"),
 
     path("periods/", PeriodListCreateView.as_view(), name="calendar-period-list"),
+    path("periods/copy/", BellScheduleCopyView.as_view(), name="calendar-period-copy"),
     path("periods/<int:pk>/", PeriodDetailView.as_view(), name="calendar-period-detail"),
 
     path("classes/", ClassTimetableListView.as_view(), name="calendar-class-list"),

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from ..constants import DEFAULT_TEACHING_DAYS
+
 
 def term_of(session, on_date, terms=None):
     """The term covering *on_date*, or None. Compares dates, never archived_at."""
@@ -132,31 +134,27 @@ def non_teaching_dates(events, *, school_class=None):
     return out
 
 
-def teaching_days(term, events, *, school_class=None, weekend=(6, 7)):
-    """How many days of *term* are actually taught, and how many have passed.
+def teaching_days(term, events, *, school_class=None, days=DEFAULT_TEACHING_DAYS):
+    """How many days of *term* are actually taught.
 
-    A weekday that is not closed. Saturday and Sunday are excluded by default
-    rather than by a stored calendar, because nothing in the platform records
-    which days a school opens; a school teaching Saturdays passes its own set.
+    A date is taught when its weekday is one of *days*, the school's teaching
+    days (``calendar.teaching_days``, ISO weekdays), and no event closes it.
+    The default is Monday to Friday, which is also the setting's default.
     """
-    closed = non_teaching_dates(events, school_class=school_class)
-    total = 0
-    day = term.start_date
-    while day <= term.end_date:
-        if day.isoweekday() not in weekend and day not in closed:
-            total += 1
-        day += timedelta(days=1)
-    return total
+    return teaching_days_elapsed(
+        term, events, term.end_date, school_class=school_class, days=days,
+    )
 
 
 def teaching_days_elapsed(term, events, on_date, *, school_class=None,
-                          weekend=(6, 7)):
+                          days=DEFAULT_TEACHING_DAYS):
+    """How many days of *term* up to and including *on_date* are taught, by the same rule."""
     closed = non_teaching_dates(events, school_class=school_class)
     count = 0
     day = term.start_date
     last = min(on_date, term.end_date)
     while day <= last:
-        if day.isoweekday() not in weekend and day not in closed:
+        if day.isoweekday() in days and day not in closed:
             count += 1
         day += timedelta(days=1)
     return count

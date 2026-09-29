@@ -54,6 +54,7 @@ from ..services.calendar import (
     teaching_days_elapsed,
     term_of,
 )
+from ..services.calendar_rules import read_teaching_days
 from ..services.scoping import (
     lens_branch,
     narrow_to_lens,
@@ -261,16 +262,18 @@ class OverviewView(CalendarViewMixin, APIView):
             ),
         }
         if term is not None:
+            taught = read_teaching_days(self.tenant)
             total_days = (term.end_date - term.start_date).days + 1
             elapsed = max(0, min(total_days, (today - term.start_date).days + 1))
             data["term"] = {
                 **_term_payload(term),
                 "days_elapsed": elapsed,
                 "days_total": total_days,
-                # The half the closed-days flag exists for. Narrowed by
-                # audience per class elsewhere; school-wide here.
-                "teaching_days_elapsed": teaching_days_elapsed(term, events, today),
-                "teaching_days_total": teaching_days(term, events),
+                # The school's teaching days less every closed date; school-wide.
+                "teaching_days_elapsed": teaching_days_elapsed(
+                    term, events, today, days=taught,
+                ),
+                "teaching_days_total": teaching_days(term, events, days=taught),
             }
         return success_response(data=data)
 

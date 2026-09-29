@@ -30,9 +30,12 @@ from django.db import transaction
 
 from schools.vs_academics.exceptions import BranchScopeConflict
 
+from ..constants import CFG_TEACHER_DUTY_MATCH, CFG_TEACHING_DAYS, DutyMatch
 from ..exceptions import (
     CellAlreadyFilled,
+    DayNotTaught,
     NoBellSchedule,
+    NoTeachingDuty,
     RoomBranchConflict,
     SlotPeriodNotTeaching,
     SlotPeriodWrongDay,
@@ -46,11 +49,41 @@ from ..models import (
     PublishState,
     TimetableSlot,
 )
+from .calendar_rules import read_calendar_rules
+from .duties import assert_teacher_has_duty, duty_warnings
 from .teachers import assert_is_teacher
+
+#: The settings a lesson write reads: which days are taught, and what a
+#: teacher with no teaching duty for the lesson means.
+SLOT_RULE_KEYS = (CFG_TEACHING_DAYS, CFG_TEACHER_DUTY_MATCH)
+
+
+def assert_day_taught(day_of_week, teaching_days, *, what="lesson"):
+    """Refuse a *what* placed on a weekday the school does not teach.
+
+    Every grid is drawn on the school's teaching days, so a row on another day
+    is not a place a school means to put anything. A row already there from
+    before the day stopped being taught is drawn, flagged, and blocks
+    publishing (``services.publishing``).
+    """
+    if day_of_week is None or day_of_week in teaching_days:
+        return
+    day = DayOfWeek(day_of_week).label
+    verb = "scheduled on" if what == "lesson" else "set for"
+    raise DayNotTaught(
+        f"{day} is not one of the school's teaching days, so no {what} can be "
+        f"{verb} it. Add {day} to the teaching days in Settings, Calendar and "
+        f"timetables first.",
+        field="day_of_week", day_of_week=day_of_week,
+    )
 
 
 def assert_period_usable(period, *, day_of_week):
-    """A lesson goes in a teaching period, on a day that period runs."""
+    """A lesson goes in a teaching period, on a day that period runs.
+
+    A period with no day runs on every teaching day; which days those are is
+    checked by ``assert_day_taught`` before this.
+    """
     if period.period_type != PeriodType.LESSON:
         raise SlotPeriodNotTeaching(
             f"{period.label} is a {period.get_period_type_display().lower()}, "
@@ -111,8 +144,15 @@ def assert_branches_agree(*, school_class, period, room, session, exclude_pk=Non
 
 
 def validate_slot(tenant, session, *, school_class, day_of_week, period,
-                  subject, teacher, room, exclude_pk=None):
-    """Every rule a slot must satisfy before it is written."""
+                  subject, teacher, room, exclude_pk=None, rules=None):
+    """Every rule a slot must satisfy before it is written.
+
+    *rules* is the school's ``CalendarRules`` holding at least
+    ``SLOT_RULE_KEYS``; a grid save reads it once and passes it for every
+    lesson, and a single write leaves it to be read here.
+    """
+    if rules is None:
+        rules = read_calendar_rules(tenant, SLOT_RULE_KEYS)
     # Belt and braces on ownership. TenantAwareManager scopes the related
     # fields eagerly, so a foreign row should never resolve - but the manager
     # is bypassed by all_objects and by related traversal, and a slot pointing
@@ -123,8 +163,13 @@ def validate_slot(tenant, session, *, school_class, day_of_week, period,
     if room is not None:
         _assert_owned(tenant, room, "room")
 
+    assert_day_taught(day_of_week, rules.teaching_days)
     assert_period_usable(period, day_of_week=day_of_week)
     assert_is_teacher(tenant, teacher)
+    assert_teacher_has_duty(
+        tenant, session, school_class=school_class, subject=subject,
+        teacher=teacher, mode=rules.teacher_duty_match,
+    )
     assert_branches_agree(
         school_class=school_class, period=period, room=room, session=session,
         exclude_pk=exclude_pk,
@@ -199,7 +244,8 @@ def touch_timetable(tenant, session, school_class, *, actor=None):
 
 @transaction.atomic
 def duplicate_grid(tenant, session, *, source_class, target_class, actor,
-                   keep_teachers=True, keep_rooms=True, preview=False):
+                   keep_teachers=True, keep_rooms=True, preview=False,
+                   rules=None):
     """Copy one class's week into another's.
 
     **Replaces rather than merges**, and marks the target a draft. A half-copied
@@ -210,10 +256,21 @@ def duplicate_grid(tenant, session, *, source_class, target_class, actor,
     reported**, not silently dropped: a branch can run its own periods, so a
     Lekki Period 6 has no home in an Ikeja week that ends at Period 5.
 
+    A source lesson on a day the school no longer teaches is skipped and
+    reported the same way, because the target's grid would never draw it.
+
     Copying without teachers or rooms is allowed and produces slots with gaps in
     them, as the lesson form and the grid save may too. The publish gate checks
     completeness separately from clashes for that reason.
+
+    A copied teacher is judged against the target class's teaching duties,
+    under the school's ``timetable.teacher_duty_match``: the summary carries a
+    ``TEACHER_HAS_NO_DUTY`` warning per such lesson under WARN, and under
+    REFUSE the copy is refused (the preview still answers, with the warnings,
+    so the school can see why).
     """
+    if rules is None:
+        rules = read_calendar_rules(tenant, SLOT_RULE_KEYS)
     source_rows = list(
         TimetableSlot.objects.filter(session=session, school_class=source_class)
         .select_related("period", "subject", "teacher", "room"),
@@ -228,10 +285,24 @@ def duplicate_grid(tenant, session, *, source_class, target_class, actor,
             or target_branch is None
             or period.branch_id == target_branch
         )
-        if not runs_here:
+        if not runs_here or row.day_of_week not in rules.teaching_days:
             skipped.append(row)
             continue
         usable.append(row)
+
+    drafts = [
+        TimetableSlot(
+            tenant=tenant, session=session, school_class=target_class,
+            day_of_week=row.day_of_week, period=row.period, subject=row.subject,
+            teacher=row.teacher if keep_teachers else None,
+            room=row.room if keep_rooms else None,
+            created_by=actor,
+        )
+        for row in usable
+    ]
+    no_duty = duty_warnings(
+        tenant, session, drafts, mode=rules.teacher_duty_match,
+    )
 
     summary = {
         "source_class": source_class.name,
@@ -264,21 +335,22 @@ def duplicate_grid(tenant, session, *, source_class, target_class, actor,
             }
             for row in skipped
         ],
+        "warnings": [warning.as_dict() for warning in no_duty],
     }
     if preview:
         return summary
+    if no_duty and rules.teacher_duty_match == DutyMatch.REFUSE:
+        count = len(no_duty)
+        raise NoTeachingDuty(
+            f"{count} copied {'lesson has' if count == 1 else 'lessons have'} "
+            f"a teacher with no teaching duty for {target_class.name}. Copy "
+            f"without teachers, or give them the duties in Teaching duties "
+            f"first.",
+            items=[warning.detail for warning in no_duty],
+        )
 
     TimetableSlot.objects.filter(session=session, school_class=target_class).delete()
-    TimetableSlot.objects.bulk_create([
-        TimetableSlot(
-            tenant=tenant, session=session, school_class=target_class,
-            day_of_week=row.day_of_week, period=row.period, subject=row.subject,
-            teacher=row.teacher if keep_teachers else None,
-            room=row.room if keep_rooms else None,
-            created_by=actor,
-        )
-        for row in usable
-    ])
+    TimetableSlot.objects.bulk_create(drafts)
 
     record = timetable_for(tenant, session, target_class, create=True, actor=actor)
     if record.status != PublishState.DRAFT:

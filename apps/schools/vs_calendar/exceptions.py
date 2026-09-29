@@ -110,6 +110,33 @@ class SlotPeriodWrongDay(CalendarError):
     http_status = 422
 
 
+class DayNotTaught(CalendarError):
+    """A lesson or a period placed on a weekday the school does not teach.
+
+    The school's teaching days (``calendar.teaching_days``) are the columns
+    every grid draws, so a row on another day would be stored and never
+    shown, while still counting in clashes and at the publish gate.
+    """
+
+    error_code = "DAY_NOT_TAUGHT"
+    default_message = "The school does not teach on that day."
+    http_status = 422
+
+
+class NoTeachingDuty(CalendarError):
+    """A lesson's teacher holds no teaching duty for its class and subject.
+
+    Raised only while the school's ``timetable.teacher_duty_match`` is REFUSE.
+    """
+
+    error_code = "NO_TEACHING_DUTY"
+    default_message = (
+        "That teacher has no teaching duty for this class and subject. Give "
+        "them the duty in Teaching duties first."
+    )
+    http_status = 422
+
+
 class NotATeachingUser(CalendarError):
     """Not a teacher at this school.
 
@@ -174,6 +201,26 @@ class RoomInUse(CalendarError):
     http_status = 409
 
 
+class BellScheduleNotEmpty(CalendarError):
+    """A bell schedule is copied only into a year that has none of its own.
+
+    Merging two schedules would have to decide which of two Period 1s wins,
+    and every answer is a rule a school would have to be taught.
+    """
+
+    error_code = "BELL_SCHEDULE_NOT_EMPTY"
+    default_message = (
+        "This year already has periods, so nothing was copied into it."
+    )
+    http_status = 409
+
+
+class NothingToCopy(CalendarError):
+    error_code = "BELL_SCHEDULE_EMPTY"
+    default_message = "That year has no periods to copy."
+    http_status = 422
+
+
 class NoBellSchedule(CalendarError):
     error_code = "NO_BELL_SCHEDULE"
     default_message = (
@@ -201,6 +248,37 @@ class TimetableIncomplete(CalendarError):
     http_status = 409
 
 
+class TimetableLessonOnDayNotTaught(CalendarError):
+    """Lessons on a weekday the school no longer teaches.
+
+    Such a lesson was saved while the day was taught. The grids still draw it,
+    flagged, so it can be moved or removed; a published timetable must not
+    carry a lesson on a day the school is shut.
+    """
+
+    error_code = "TIMETABLE_LESSON_ON_DAY_NOT_TAUGHT"
+    default_message = (
+        "Some lessons are on a day that is not a teaching day. Move or remove "
+        "them on the timetable, and publish again."
+    )
+    http_status = 409
+
+
+class TimetableHasDutyGaps(CalendarError):
+    """Lessons whose teacher has no teaching duty for them, under REFUSE.
+
+    Checked at the gate as well as at the save, because a duty withdrawn after
+    the lesson was saved leaves exactly such a lesson behind.
+    """
+
+    error_code = "TIMETABLE_TEACHER_HAS_NO_DUTY"
+    default_message = (
+        "Some lessons have a teacher with no teaching duty for them. Give the "
+        "duties in Teaching duties, or change the teachers, and publish again."
+    )
+    http_status = 409
+
+
 class TimetableHasClashes(CalendarError):
     error_code = "TIMETABLE_HAS_CLASHES"
     default_message = (
@@ -210,6 +288,35 @@ class TimetableHasClashes(CalendarError):
 
 
 # ── Exams ──────────────────────────────────────────────────────────────────
+
+class NotAnInvigilator(CalendarError):
+    """The person holds no role whose holders may invigilate at this school.
+
+    Which roles those are is the school's ``exams.invigilator_roles``.
+    """
+
+    error_code = "NOT_AN_INVIGILATOR"
+    default_message = (
+        "That person does not hold a role whose holders may invigilate at this "
+        "school."
+    )
+    http_status = 422
+
+
+class CalendarSettingNotRegistered(CalendarError):
+    """A calendar and timetable setting's configuration definition is missing.
+
+    Refused rather than stored nowhere: answering success would leave a school
+    believing it teaches on Saturdays while every grid kept five columns.
+    """
+
+    error_code = "CALENDAR_SETTING_NOT_REGISTERED"
+    default_message = (
+        "The calendar and timetable settings are not registered on this "
+        "platform yet. Run the migrations and seed_config_catalogue."
+    )
+    http_status = 500
+
 
 class ExamEventNotExamPeriod(CalendarError):
     error_code = "EXAM_EVENT_NOT_EXAM_PERIOD"
