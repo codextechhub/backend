@@ -43,34 +43,74 @@ class _PeriodLike(Protocol):
         ...
 
 
-# Guard posting period availability.
-def ensure_period_open(
-    period: _PeriodLike,
-    *,
-    allow_restricted: bool = False,
-    allow_closed: bool = False,
-) -> None:
-    """Raise :class:`PeriodClosedError` if ``period`` cannot accept a posting.
+#: Fiscal-year statuses that seal every period of the year, whatever the month says.
+_SEALED_YEAR_STATUSES = (PeriodStatus.CLOSED, PeriodStatus.LOCKED)
 
-    Args:
-        period: Any object with a ``status`` string drawn from
-            :class:`~vs_finance.constants.PeriodStatus`.
-        allow_restricted: When ``True``, soft-closed periods are permitted - used by
-            privileged close-process auto-postings (depreciation, accruals). Ordinary
-            postings pass ``False`` and are blocked from soft-closed periods too.
-        allow_closed: A narrower year-end-close escape hatch. When ``True`` a CLOSED
-            period may accept the formal closing journal; LOCKED periods remain
-            immutable. No ordinary or month-end posting should set this flag.
 
-    A missing period (``None``) is treated as a hard error: nothing posts without a
-    period.
+def sealed_fiscal_year(period, *, fresh: bool = True):
+    """Return ``(label, status)`` of ``period``'s fiscal year when it is sealed, else ``None``.
+
+    A closed year has had its result rolled into Retained Earnings. A posting into
+    any of its months, even one that reads OPEN or SOFT_CLOSED, would land outside
+    that result for good, so the year's status is part of the posting guard.
+
+    ``fresh`` reads the year's status from the database rather than from a
+    related instance the caller may have loaded before the year closed. The
+    non-raising sibling passes ``False`` and uses a loaded relation when there is
+    one, so a screen listing every period asks once. The enforcing guard does not
+    use this at all: it reads under a lock (:func:`read_key_shared`). Objects with
+    no ``fiscal_year_id`` (the guard is duck-typed) have no year.
     """
-    if period is None:  # Nothing should post without a resolved accounting period.
-        raise PeriodClosedError(period_label="<none>", status="missing")
+    from .models import FiscalPeriod, FiscalYear
 
-    status = getattr(period, "status", None)  # Read status defensively from period-like object.
-    label = str(period)  # Human-readable period label for errors.
+    year_id = getattr(period, "fiscal_year_id", None)
+    if year_id is None:
+        return None
+    if not fresh and isinstance(period, FiscalPeriod) and FiscalPeriod.fiscal_year.is_cached(period):
+        year = period.fiscal_year
+        state = (year.year, year.status)
+    else:
+        state = FiscalYear.objects.filter(pk=year_id).values_list("year", "status").first()
+    if state is None or state[1] not in _SEALED_YEAR_STATUSES:
+        return None
+    return f"FY{state[0]}", str(state[1])
 
+
+def read_key_shared(model, pk, fields):
+    """Read ``fields`` of one row, holding a FOR KEY SHARE lock on it until commit.
+
+    The posting guard reads a period's and a fiscal year's status this way, inside
+    the posting transaction, so a posting in flight and a close of that month or
+    year serialise. The close takes FOR UPDATE on the same row, which conflicts
+    with KEY SHARE, so it waits for every posting already past the guard and every
+    later posting waits for it and then reads the status it committed.
+
+    KEY SHARE is the weakest lock that does this. Postings take it on the same
+    rows and never wait for each other, and it does not conflict with an ordinary
+    UPDATE of the row either, so a closer that already holds FOR UPDATE can still
+    change the status it locked. Django has no queryset API for it, hence the SQL.
+    On a database other than PostgreSQL the row is read without a lock.
+
+    Returns the values as a tuple in ``fields`` order, or ``None`` when no row has
+    that primary key.
+    """
+    from django.db import connections, router
+
+    connection = connections[router.db_for_write(model)]
+    quote = connection.ops.quote_name
+    columns = ", ".join(quote(model._meta.get_field(name).column) for name in fields)
+    lock = " FOR KEY SHARE" if connection.vendor == "postgresql" else ""
+    sql = (
+        f"SELECT {columns} FROM {quote(model._meta.db_table)} "
+        f"WHERE {quote(model._meta.pk.column)} = %s{lock}"
+    )
+    with connection.cursor() as cursor:
+        cursor.execute(sql, [pk])
+        return cursor.fetchone()
+
+
+def _refuse_period_status(label, status, *, allow_restricted, allow_closed):
+    """Raise :class:`PeriodClosedError` unless a month in ``status`` takes the posting."""
     if status == PeriodStatus.LOCKED:  # A statutory lock is irreversible, even at year end.
         raise PeriodClosedError(period_label=label, status=str(status))
 
@@ -83,8 +123,74 @@ def ensure_period_open(
         raise PeriodClosedError(period_label=label, status=str(status))
 
     if status != PeriodStatus.OPEN and status not in PERIOD_POSTING_RESTRICTED:  # Anything unknown must fail closed.
-        # Unknown / unset status - fail closed rather than guess.  # Prevent silent posting into invalid state.
         raise PeriodClosedError(period_label=label, status=str(status or "unknown"))
+
+
+# Guard posting period availability.
+def ensure_period_open(
+    period: _PeriodLike,
+    *,
+    allow_restricted: bool = False,
+    allow_closed: bool = False,
+) -> None:
+    """Raise :class:`PeriodClosedError` if ``period`` cannot accept a posting.
+
+    A period of a CLOSED or LOCKED fiscal year refuses every posting, whatever its
+    own status and whatever the flags say. The year-end closing journal is no
+    exception to this: :func:`vs_finance.close.close_fiscal_year` posts it while the
+    year is still OPEN and seals the year afterwards, and
+    :func:`vs_finance.close.reopen_fiscal_year` sets the year OPEN before it
+    reverses that journal.
+
+    For a saved :class:`~vs_finance.models.FiscalPeriod` the year's and the month's
+    statuses are read from the database under a KEY SHARE lock
+    (:func:`read_key_shared`), year first and month second, the order the year
+    close takes its own locks in. Called inside the posting transaction, as
+    :func:`post_journal` does, the locks hold until commit, so a close cannot slip
+    between this check and the posting it guards. The status on the object passed
+    in is checked as well, so a caller holding a stricter view is not overruled.
+
+    Args:
+        period: Any object with a ``status`` string drawn from
+            :class:`~vs_finance.constants.PeriodStatus`.
+        allow_restricted: When ``True``, soft-closed periods are permitted - used by
+            privileged close-process auto-postings (depreciation, accruals). Ordinary
+            postings pass ``False`` and are blocked from soft-closed periods too.
+        allow_closed: A narrower year-end-close escape hatch. When ``True`` a CLOSED
+            period may accept the formal closing journal, or its reversal when the
+            year is reopened; LOCKED periods remain immutable. No ordinary or
+            month-end posting should set this flag.
+
+    A missing period (``None``) is treated as a hard error: nothing posts without a
+    period.
+    """
+    from .models import FiscalPeriod, FiscalYear
+
+    if period is None:  # Nothing should post without a resolved accounting period.
+        raise PeriodClosedError(period_label="<none>", status="missing")
+
+    status = getattr(period, "status", None)  # Read status defensively from period-like object.
+    label = str(period)  # Human-readable period label for errors.
+
+    year_id = getattr(period, "fiscal_year_id", None)
+    if year_id is not None:  # Year first: the order the year close locks in.
+        year = read_key_shared(FiscalYear, year_id, ("year", "status"))
+        if year is not None and year[1] in _SEALED_YEAR_STATUSES:
+            raise PeriodClosedError(
+                period_label=label, status=str(year[1]), fiscal_year_label=f"FY{year[0]}",
+            )
+
+    _refuse_period_status(
+        label, status, allow_restricted=allow_restricted, allow_closed=allow_closed,
+    )
+
+    if isinstance(period, FiscalPeriod) and period.pk is not None:
+        stored = read_key_shared(FiscalPeriod, period.pk, ("status",))
+        if stored is not None and stored[0] != status:  # Committed status wins over a stale copy.
+            _refuse_period_status(
+                f"{period.name} [{stored[0]}]", stored[0],
+                allow_restricted=allow_restricted, allow_closed=allow_closed,
+            )
 
 
 # Non-raising period posting test.
@@ -100,6 +206,8 @@ def _period_accepts_posting(
     selection) can *test* a period and pick an alternative rather than fail.
     """
     if period is None:  # Missing period cannot accept postings.
+        return False
+    if sealed_fiscal_year(period, fresh=False) is not None:  # A closed year takes nothing.
         return False
     status = getattr(period, "status", None)  # Read status defensively.
     if status == PeriodStatus.LOCKED:  # A locked period never accepts another entry.
@@ -124,7 +232,8 @@ def posting_window(entity, *, today=None) -> dict:
     lists the rest, so a picker can say *why* a date is unavailable rather than just
     greying it out. SOFT_CLOSED counts as blocked here: only privileged close-process
     postings may use it (``allow_restricted``), and this window describes what an
-    ordinary user may pick.
+    ordinary user may pick. Every month of a CLOSED or LOCKED fiscal year is blocked
+    too, whatever its own status, as the guard refuses it.
 
     ``default_date`` is the date a new document should open on: today when today is
     postable, else the nearest open day in either direction - backward to the most
@@ -139,6 +248,7 @@ def posting_window(entity, *, today=None) -> dict:
     periods = list(
         FiscalPeriod.objects
         .filter(entity=entity)
+        .select_related("fiscal_year")
         .order_by("start_date", "period_no")
     )
 
@@ -525,11 +635,19 @@ def _journal_document_owner(entry):
     it would put the voided document's whole effect back into the ledger while the
     document still read voided. A manual journal has no owner, so neither does its
     reversal, and both stay reversible on their own.
+
+    A year-end closing journal belongs to the fiscal year it closes
+    (``closes_fiscal_year``), and so, through ``reverses``, does the reversal that
+    reopening the year posts. Reversing either by hand would move a whole year's
+    result in or out of Retained Earnings while the year's status said otherwise.
     """
     from django.core.exceptions import ObjectDoesNotExist
 
     if entry.reverses_id is not None:
         return _journal_document_owner(entry.reverses)
+
+    if getattr(entry, "closes_fiscal_year_id", None) is not None:
+        return entry.closes_fiscal_year
 
     for relation in entry._meta.related_objects:
         if "journal" not in relation.field.name:
@@ -592,7 +710,8 @@ def journal_reversal_action(entry):
 
     The reversal a void posted names its document as ``SOURCE_DOCUMENT_ACTION``
     rather than offering the void again: the document is already void, and the
-    screen offers no button for that kind.
+    screen offers no button for that kind. A year-end closing journal, and the
+    reversal that reopening its year posts, name their ``FiscalYear`` the same way.
     """
     owner = _journal_document_owner(entry)
     if owner is None:
@@ -605,7 +724,7 @@ def journal_reversal_action(entry):
         return {
             "kind": "SOURCE_DOCUMENT_ACTION",
             "document_type": model_name,
-            "document_number": getattr(owner, "document_number", "") or str(owner.pk),
+            "document_number": _owner_label(owner),
         }
 
     document_type, _ = config
@@ -613,17 +732,29 @@ def journal_reversal_action(entry):
         "kind": "VOID_DOCUMENT",
         "document_type": document_type,
         "document_id": owner.pk,
-        "document_number": getattr(owner, "document_number", "") or str(owner.pk),
+        "document_number": _owner_label(owner),
     }
+
+
+def _owner_label(owner):
+    """The name a person knows ``owner`` by: its document number, or ``FY2026`` for a year."""
+    if type(owner).__name__ == "FiscalYear":
+        return f"FY{owner.year}"
+    return getattr(owner, "document_number", "") or str(owner.pk)
 
 
 def _document_void_instruction(owner):
     model_name = type(owner).__name__
-    label = getattr(owner, "document_number", "") or str(owner.pk)
+    label = _owner_label(owner)
     config = _DOCUMENT_VOID_ROUTES.get(model_name)
     if config:
         _, route = config
         remedy = f"Use POST /finance/{route.format(pk=owner.pk)} from the document screen instead."
+    elif model_name == "FiscalYear":
+        remedy = (
+            f"Reopen fiscal year {label} instead (POST /finance/fiscal-years/{owner.pk}/reopen/ "
+            f"with a reason), which reverses its closing journals inside the year."
+        )
     else:
         remedy = f"Use the {model_name} document-level void/reversal service instead."
     return model_name, label, remedy
@@ -632,7 +763,7 @@ def _document_void_instruction(owner):
 @transaction.atomic
 # Reverse a posted journal.
 def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool = False,
-                    document_owner=None):
+                    allow_closed: bool = False, document_owner=None):
     """Reverse a posted journal by raising a mirror-image entry that nets it to zero.
 
     The original is left untouched on the record (marked REVERSED) and a new journal -
@@ -641,6 +772,10 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
 
     The reversing entry posts into ``date``'s period (defaults to the original's
     period). Returns the new reversing entry.
+
+    ``allow_closed`` passes the year-end escape hatch through to the posting guard.
+    Only :func:`vs_finance.close.reopen_fiscal_year` sets it, to reverse a closing
+    journal on its own date in a month that is normally CLOSED by then.
     """
     from .models import JournalEntry, JournalLine
 
@@ -688,7 +823,9 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
         remedy=f"Date the reversal {entry.date} or later.",
     )
     period = resolve_period(entry.entity, reversal_date)  # Resolve period for selected reversal date.
-    if date is None and not _period_accepts_posting(period, allow_restricted=allow_restricted):  # Original period may now be closed.
+    if date is None and not _period_accepts_posting(  # Original period may now be closed.
+        period, allow_restricted=allow_restricted, allow_closed=allow_closed,
+    ):
         reversal_date = tenant_today(entry.entity.tenant)
         # Falling forward to today must not turn a future-dated source into a
         # backdated reversal.  Re-run chronology after changing the date; the
@@ -727,7 +864,10 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
             line_no=line.line_no,  # Preserve line order.
         )
 
-    post_journal(reversal, actor_user=actor_user, allow_restricted=allow_restricted)  # Post mirror journal.
+    post_journal(  # Post mirror journal.
+        reversal, actor_user=actor_user, allow_restricted=allow_restricted,
+        allow_closed=allow_closed,
+    )
 
     entry.status = DocumentStatus.REVERSED  # Mark original as reversed.
     entry.save(update_fields=["status", "updated_at"])

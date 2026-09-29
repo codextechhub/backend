@@ -532,6 +532,88 @@ its own teaching days and week start, which entries close it, what publishing
 needs, whether teachers must hold the duty, who invigilates, and copies a bell
 schedule into a new year.
 
+### D75. The final payments pass: settlement, approvals and payouts stay in their branch (merged 3247d41e, 2026-09-29)
+MODULES: M18 payments and collections, M23 purchase orders delivery and AP, M07 workflow and approval engine, M19 finance and accounting.
+Commits c7c21174, f4698b2a, d32ae8f4, 4fcf2c2f, 6c4c9e5c, b5bc2446, ddf0b59d,
+db9dc6f8. The FAL posts a vendor payment through the procurement post's checks
+(post_payment_for_caller), with no oldest-first fallback when a payment has no
+plan. Automatic settlement and applying an advance pick only bills of the
+payment's own branch; an explicit cross-branch application is 400
+SETTLEMENT_BRANCH naming both branches. A payout batch hidden from an approver by
+PaymentsReach is absent from their inbox and counts and answers 404 on every
+action (handler hook hidden_document_ids, exclude_hidden_documents). The
+transactions log returns named scalar metadata fields only and hides a virtual
+account number from a reader whose role hides it. A payment request naming only
+an invoice deposits into the invoice's customer's branch. Reconciliation and the
+movements feed read a WHT payout at the amount sent (payout_sent_amount), and
+movements rows gain gross_amount and wht_amount. A gateway payout books to the
+branch of the bank it was paid from, journal included.
+MUST SAY: each rule and its answer, the new movement fields, and the approval
+inbox narrowing; M07 the hidden_document_ids hook.
+
+### D76. A customer's record, a vendor's spend, settlement and refunds stay in the reader's branches (merged e6562b39, 2026-09-29)
+MODULES: M17 billing and invoicing, M19 finance and accounting, M20 adjustments and concessions, M21 vendor management, M18 payments and collections.
+Commits 185d01af, f53ec1fd, 41991dea, 96ff14ef, d96ba81c, ad64f7df, 30a550fa.
+A customer's detail, list balances, header cards and statement show only the
+documents of the reader's branches (anything sent to the customer still reads
+the whole account). Vendor year-to-date spend, category cards, insights and the
+open-order count sum only the reader's branches. A receipt or credit note
+settles only documents of its own branch (400 SETTLEMENT_BRANCH otherwise); an
+online payment that cannot settle across branches is kept as credit. A refund
+pays out only its own branch's credit, takes an optional `branch` on create and
+batch lines, and the availability screen lists one row per customer per branch
+(branch_id, branch_name); a branch-bound bursar neither sees nor pays out
+unbranched credit, a whole-school user does. A refund batch may name one family
+once per branch.
+MUST SAY: each narrowing and its readers, the settlement and refund rules with
+their refusals, the new refund fields and rows.
+
+### D77. A school's as-at day and its subscription expiry follow its own clock (merged b9ff459d, 2026-09-29)
+MODULES: M05 audit and activity logging (record history), M01 school and branch management, M12 staff management, M11 student management.
+Commits d9fe9d1b, caade5ff, ce70f396. `?as_at=` is resolved in the school's own
+zone (AsAt carries it; vs_config.clock.tenant_zone): the end of the chosen day,
+"today", the future-date refusal and every "history starts" date are the
+school's, not Lagos's, for staff, student, guardian and user records. A
+subscription's expiry is judged on the school's clock, so a school keeps its
+product until the end of its own last paid day. The tests that read "today"
+from the server clock now read it as the code does.
+MUST SAY: that as-at days and subscription expiry follow the school's zone
+(reference D53's rule).
+
+### D75. A closed year stays closed, closes per branch, and reopens only with a reason (a18d8ab1, 2026-09-29)
+MODULES: M19 finance and accounting, M04 roles and permissions, MRD.
+From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF).
+MUST SAY:
+- The posting guard reads the fiscal year as well as the month: nothing posts into
+  a CLOSED or LOCKED year, including privileged runs. A month of a closed year
+  cannot be reopened ("reopen the fiscal year first").
+- The year-end close is worked out per branch and closed together as one act: one
+  closing journal per branch (JournalEntry.closes_fiscal_year, related name
+  closing_journals; migration vs_finance 0033 back-fills earlier closes). At a
+  one-branch tenant unbranched lines close on the only branch; at a multi-branch
+  tenant the close is refused while income or expense entries have no branch,
+  naming the count. A tenant that owns no branch (CodeX today) closes as one
+  journal. The year close hard-closes every soft-closed month. The response adds
+  closing_journals; closing_journal stays as the first. Helper:
+  vs_finance.branch_ledger.branches_in_year.
+- A closing journal belongs to its year and cannot be reversed by hand. POST
+  /finance/fiscal-years/<id>/reopen/ with a reason (key finance.fiscalyear.reopen,
+  CRITICAL, whole-tenant caller) reverses every closing journal inside the year and
+  reopens it, audited FISCAL_YEAR_REOPENED; a LOCKED year cannot be reopened.
+- Forcing a period or year close needs finance.period.force_close (CRITICAL) and a
+  reason; reopening a period needs a reason. Forced closes record the checks they
+  overrode.
+- Year-close checks: a registry beside the period-close one. Registered: unposted
+  depreciation dated in the year blocks the close unless forced. The depreciation
+  run skips charges dated in a closed year, reports them as skipped_charges, and
+  carries on.
+- Postings and closes serialise: postings take FOR KEY SHARE on the year and month,
+  closes and reopens take FOR UPDATE (year before month), so postings never wait
+  for each other.
+- Needs Attention: the closing journal still sits in the final month; a separate
+  closing period is decided and is next (the full-year income statement reads zero
+  until then).
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

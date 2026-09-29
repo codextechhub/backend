@@ -44,9 +44,28 @@ class PeriodClosedError(PostingError):
     http_status = 409  # Closed period is a conflict, not a validation error.
 
     # Initialize this object with its required state.
-    def __init__(self, period_label, status, **kwargs):
+    def __init__(self, period_label, status, *, fiscal_year_label=None, **kwargs):
+        """``fiscal_year_label`` names the year when the year, not the month, refuses.
+
+        A month can read OPEN inside a CLOSED or LOCKED year. Telling the caller to
+        re-open the month would send them to a screen that cannot help, so the
+        message names the year and says to reopen it instead.
+        """
         self.period_label = period_label  # Store the period label for diagnostics.
         self.status = status  # Store the period status for diagnostics.
+        if fiscal_year_label is not None:
+            reopen = (
+                "A LOCKED year is permanently sealed; post into a period of an open year."
+                if status == "LOCKED"
+                else "Reopen the fiscal year first, or post into a period of an open year."
+            )
+            super().__init__(
+                f"Cannot post into period '{period_label}': fiscal year "
+                f"{fiscal_year_label} is '{status}'. {reopen}",
+                period_label=period_label, status=status,
+                fiscal_year=fiscal_year_label, **kwargs,
+            )
+            return
         # "missing" means no period covers the date at all. The old advice ("choose
         # another date") is impossible when the real cause is that nobody created
         # next year's calendar, because then no date works, so name that cause and

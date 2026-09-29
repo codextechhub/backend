@@ -582,6 +582,7 @@ class FinanceAuditAction(models.TextChoices):
     PERIOD_LOCKED = "PERIOD_LOCKED", "Period locked"
     FISCAL_YEAR_OPENED = "FISCAL_YEAR_OPENED", "Fiscal year opened"
     FISCAL_YEAR_CLOSED = "FISCAL_YEAR_CLOSED", "Fiscal year closed"
+    FISCAL_YEAR_REOPENED = "FISCAL_YEAR_REOPENED", "Fiscal year re-opened"
     FISCAL_CALENDAR_WARNED = (
         "FISCAL_CALENDAR_WARNED", "Finance staff warned the fiscal calendar is running out"
     )

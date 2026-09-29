@@ -33,7 +33,47 @@ from .constants import (
     PPE_ACCOUNT_CODE,
 )
 from .exceptions import DepreciationError, FinanceError
-from .posting import post_journal, resolve_period
+from .posting import post_journal, resolve_period, sealed_fiscal_year
+
+#: Why a depreciation run left a due charge unposted.
+SKIPPED_CLOSED_YEAR = "dated in a closed year"
+
+
+class PostedDepreciation(list):
+    """The schedule rows a per-asset run posted, plus the charges it left behind.
+
+    A plain list of the rows posted, so a caller counting or iterating them reads
+    it as before. ``skipped`` lists each due charge the run could not post because
+    its date falls in a CLOSED or LOCKED fiscal year (:func:`_skipped_charge`).
+    """
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.skipped = []
+
+
+def _closed_year_label(period, cache):
+    """``FY2026`` when ``period`` belongs to a closed or locked year, else ``None``."""
+    if period is None:
+        return None
+    if period.pk not in cache:
+        sealed = sealed_fiscal_year(period)
+        cache[period.pk] = sealed[0] if sealed else None
+    return cache[period.pk]
+
+
+def _skipped_charge(row, year_label):
+    """How a run reports a charge it left unposted in a closed year."""
+    return {
+        "asset_id": row.asset_id,
+        "asset": row.asset.name,
+        "asset_number": row.asset.document_number,
+        "seq": row.seq,
+        "date": row.depreciation_date.isoformat(),
+        "amount": row.amount,
+        "fiscal_year": year_label,
+        "reason": SKIPPED_CLOSED_YEAR,
+    }
 
 
 # Advance a date by whole months.
@@ -229,7 +269,16 @@ def post_depreciation(asset, *, up_to_date, actor_user=None, allow_restricted=Fa
     Each row raises ``Dr depreciation expense, Cr accumulated depreciation`` and updates
     the asset's running ``accumulated_depreciation``; the asset flips to
     ``FULLY_DEPRECIATED`` once the last row posts. ``allow_restricted`` lets the
-    period-close process post into a soft-closed period. Returns the rows posted.
+    period-close process post into a soft-closed period.
+
+    A charge dated in a CLOSED or LOCKED fiscal year cannot post, and stopping
+    there would leave every later month of the asset undepreciated too. The run
+    leaves that charge unposted, reports it as dated in a closed year, and carries
+    on with the later rows. Reopening the year and running again posts it. The
+    year close refuses while such a charge is due
+    (:func:`depreciation_posted_for_year`), so this arises only after a forced close.
+
+    Returns a :class:`PostedDepreciation`: the rows posted, with ``skipped``.
     """
     try:  # Atomic worker posts due schedule rows.
         return _post_depreciation_atomic(  # Post depreciation for one asset.
@@ -260,7 +309,8 @@ def _post_depreciation_atomic(asset, *, up_to_date, actor_user=None, allow_restr
         asset.schedule.filter(is_posted=False, depreciation_date__lte=up_to_date)
         .order_by("seq")
     )
-    posted = []  # Non-zero rows posted with journals.
+    posted = PostedDepreciation()  # Non-zero rows posted with journals.
+    closed_years: dict = {}  # period pk -> closed year label, or None.
     for row in due:  # Process each due schedule row.
         if row.amount <= 0:  # Zero rows need no journal.
             row.is_posted = True  # Mark schedule row complete.
@@ -268,6 +318,10 @@ def _post_depreciation_atomic(asset, *, up_to_date, actor_user=None, allow_restr
             row.save(update_fields=["is_posted", "posted_at", "updated_at"])
             continue
         period = resolve_period(asset.entity, row.depreciation_date)  # Find depreciation period.
+        year_label = _closed_year_label(period, closed_years)
+        if year_label:  # Leave it for a reopened year; carry on with later rows.
+            posted.skipped.append(_skipped_charge(row, year_label))
+            continue
         entry = JournalEntry.objects.create(
             entity=asset.entity, branch=asset.branch,  # Scope entity and optional branch.
             date=row.depreciation_date, period=period, source=JournalSource.CLOSING,  # Closing-source depreciation entry.
@@ -294,14 +348,19 @@ def _post_depreciation_atomic(asset, *, up_to_date, actor_user=None, allow_restr
         asset.asset_status = AssetStatus.FULLY_DEPRECIATED  # Mark asset fully depreciated.
     asset.save(update_fields=["accumulated_depreciation", "asset_status", "updated_at"])
 
-    if posted:  # Only audit when a non-zero journal was posted.
+    if posted or posted.skipped:  # Audit when anything was posted or left behind.
         record(  # Audit successful depreciation.
             entity=asset.entity, action=FinanceAuditAction.DEPRECIATION_POSTED,  # Audit action.
             actor_user=actor_user, target=asset,  # Actor and asset context.
-            message=f"Posted {len(posted)} depreciation charge(s) for {asset.name}.",  # Human-readable audit message.
+            message=(
+                f"Posted {len(posted)} depreciation charge(s) for {asset.name}"
+                + (f"; skipped {len(posted.skipped)} {SKIPPED_CLOSED_YEAR}."
+                   if posted.skipped else ".")
+            ),
             charges=len(posted),  # Count of posted charges.
             total=sum(r.amount for r in posted),  # Total depreciation posted.
             accumulated=asset.accumulated_depreciation,  # New accumulated depreciation balance.
+            skipped=posted.skipped,
         )
     return posted  # Return non-zero schedule rows posted.
 
@@ -328,12 +387,21 @@ def preview_period_depreciation(entity, *, up_to_date):
     """Summarise depreciation due up to ``up_to_date``, grouped by expense/accum account.
 
     The Run-depreciation preview: one compound journal will Dr each expense account and
-    Cr each accumulated-depreciation account by the totals here.
+    Cr each accumulated-depreciation account by the totals here. Charges dated in a
+    closed fiscal year are listed under ``skipped`` rather than totalled, as the run
+    leaves them unposted.
     """
     expense, accum = {}, {}  # Group debit and credit totals by account object.
     asset_ids, total = set(), 0  # Track affected assets and total due amount.
+    skipped, closed_years = [], {}
     for row in _due_depreciation(entity, up_to_date):  # Walk due schedule rows.
         if row.amount <= 0:  # Zero rows do not affect preview journal totals.
+            continue
+        year_label = _closed_year_label(
+            resolve_period(entity, row.depreciation_date), closed_years,
+        )
+        if year_label:
+            skipped.append(_skipped_charge(row, year_label))
             continue
         _, accum_acct, expense_acct = _asset_accounts(row.asset)  # Resolve posting accounts.
         expense[expense_acct] = expense.get(expense_acct, 0) + row.amount
@@ -343,7 +411,7 @@ def preview_period_depreciation(entity, *, up_to_date):
     debits = [{"account": a.code, "name": a.name, "amount": v} for a, v in expense.items()]  # Shape debit preview rows.
     credits = [{"account": a.code, "name": a.name, "amount": v} for a, v in accum.items()]  # Shape credit preview rows.
     return {"debits": debits, "credits": credits, "total": total,  # Return compound journal preview.
-            "asset_count": len(asset_ids)}  # Include affected asset count.
+            "asset_count": len(asset_ids), "skipped": skipped}  # Affected assets; charges left behind.
 
 
 # Public wrapper for compound depreciation run.
@@ -357,6 +425,11 @@ def run_period_depreciation(entity, *, up_to_date, actor_user=None):
     :class:`PeriodClosedError` and it propagates: the operator re-opens that period (via
     the period-reopen endpoint) and re-runs. Records a durable rejection audit on any
     :class:`FinanceError`.
+
+    A charge dated in a CLOSED or LOCKED fiscal year is different: its month cannot be
+    reopened without reopening the year, and refusing the whole run over it would
+    stop every other asset's depreciation too. The run leaves it unposted, lists it
+    under ``skipped`` as dated in a closed year, and posts the rest.
     """
     try:  # Atomic worker performs all period-grouped postings.
         return _run_period_depreciation_atomic(entity, up_to_date=up_to_date, actor_user=actor_user)  # Run depreciation.
@@ -378,6 +451,8 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
     if not charges:  # Nothing to post.
         raise DepreciationError("No depreciation is due up to that date.")
 
+    skipped, skipped_ids, closed_years = [], set(), {}
+
     # Group the charge rows by the fiscal period their depreciation_date falls in, so
     # each period is posted with its own compound journal dated within that period.  # Prevent cross-period postings.
     period_cache: dict = {}  # Cache period by depreciation date.
@@ -393,10 +468,24 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
                     f"fiscal year before running depreciation.",
                 )
             period_cache[row.depreciation_date] = period  # Cache resolved period.
+        year_label = _closed_year_label(period, closed_years)
+        if year_label:  # Leave it for a reopened year; post the rest.
+            skipped.append(_skipped_charge(row, year_label))
+            skipped_ids.add(row.pk)
+            continue
         bucket = groups.setdefault(period, {"rows": [], "latest_date": row.depreciation_date})  # Get period bucket.
         bucket["rows"].append(row)  # Add charge row to period bucket.
         if row.depreciation_date > bucket["latest_date"]:  # Keep latest charge date for journal date.
             bucket["latest_date"] = row.depreciation_date  # Update journal date.
+
+    if not groups:  # Every charge is in a closed year.
+        years = sorted({item["fiscal_year"] for item in skipped})
+        raise DepreciationError(
+            f"All {len(skipped)} depreciation charge(s) due up to {up_to_date} are "
+            f"{SKIPPED_CLOSED_YEAR} ({', '.join(years)}); reopen that year to post them.",
+            skipped=skipped,
+        )
+    charges = [r for r in charges if r.pk not in skipped_ids]
 
     row_to_journal: dict = {}  # Map schedule row id to posted journal.
     journal_ids: list[int] = []  # Posted depreciation journal ids in chronological order.
@@ -431,6 +520,8 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
     # Mark every due row posted (zero-amount rows too) and roll up per asset.  # Keep schedule state in sync.
     by_asset: dict = {}  # Accumulated depreciation amount by asset object.
     for row in rows:  # Update all due rows, including zero rows.
+        if row.pk in skipped_ids:  # Left for a reopened year.
+            continue
         row.is_posted = True  # Mark schedule row complete.
         row.journal = row_to_journal.get(row.pk)
         row.posted_at = timezone.now()
@@ -451,10 +542,80 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
                 f"in {len(journal_ids)} period(s).",  # Include period count.
         journal_id=journal_ids[0], journal_ids=journal_ids, charges=len(charges),  # Journal and charge metadata.
         total=total, assets=len(by_asset), period_count=len(journal_ids),  # Aggregate metadata.
+        skipped=skipped,
     )
     return {"journal_id": journal_ids[0], "journal_ids": journal_ids,  # Return primary and all journal ids.
             "period_count": len(journal_ids), "total": total,  # Return period count and total.
-            "charge_count": len(charges), "asset_count": len(by_asset)}  # Return row and asset counts.
+            "charge_count": len(charges), "asset_count": len(by_asset),  # Return row and asset counts.
+            "skipped": skipped}  # Charges dated in a closed year, left unposted.
+
+
+#: How many assets, and dates per asset, the year-close check names before summarising.
+_CHECK_ASSET_LIMIT = 5
+_CHECK_DATE_LIMIT = 4
+
+
+def depreciation_posted_for_year(entity, fiscal_year):
+    """Blocking year-close check: every depreciation charge dated in the year has posted.
+
+    Once the year closes, a charge dated inside it can never post (the posting guard
+    refuses a closed year), so the asset's accumulated depreciation and the year's
+    expense would stay short for good. The check names each asset and the dates of
+    its unposted charges, and says to run depreciation first. Registered with the
+    year close from ``VsFinanceConfig.ready``
+    (:func:`vs_finance.close.register_year_close_check`); a forced close with a
+    reason may still go ahead, and the depreciation run then reports those charges
+    as dated in a closed year.
+
+    Only ACTIVE assets are read: a disposed asset's remaining schedule is never
+    posted by design, and a zero charge posts no journal. Returns ``None`` for an
+    entity with no fixed assets, so the close screen carries no empty check.
+    """
+    from .close import ChecklistItem
+    from .models import DepreciationSchedule, FixedAsset
+
+    if not FixedAsset.objects.filter(entity=entity).exists():
+        return None
+
+    rows = (
+        DepreciationSchedule.objects
+        .filter(
+            asset__entity=entity, asset__asset_status=AssetStatus.ACTIVE,
+            is_posted=False, amount__gt=0,
+            depreciation_date__gte=fiscal_year.start_date,
+            depreciation_date__lte=fiscal_year.end_date,
+        )
+        .order_by("asset__name", "asset_id", "seq")
+        .values_list("asset_id", "asset__name", "asset__document_number", "depreciation_date")
+    )
+    by_asset: dict = {}
+    count = 0
+    for asset_id, name, number, date in rows:
+        label = f"{name} ({number})" if number else name
+        by_asset.setdefault((asset_id, label), []).append(date)
+        count += 1
+
+    if not count:
+        return ChecklistItem(
+            name="depreciation_posted_for_year", passed=True,
+            detail=f"Every depreciation charge dated in FY{fiscal_year.year} is posted.",
+        )
+
+    parts = []
+    for (_, label), dates in list(by_asset.items())[:_CHECK_ASSET_LIMIT]:
+        shown = ", ".join(d.isoformat() for d in dates[:_CHECK_DATE_LIMIT])
+        extra = len(dates) - _CHECK_DATE_LIMIT
+        parts.append(f"{label}: {shown}" + (f" and {extra} more" if extra > 0 else ""))
+    more_assets = len(by_asset) - _CHECK_ASSET_LIMIT
+    if more_assets > 0:
+        parts.append(f"and {more_assets} more asset(s)")
+    return ChecklistItem(
+        name="depreciation_posted_for_year", passed=False,
+        detail=(
+            f"{count} depreciation charge(s) dated in FY{fiscal_year.year} are not posted "
+            f"({'; '.join(parts)}). Run depreciation up to {fiscal_year.end_date} first."
+        ),
+    )
 
 
 # Handle the dispose asset workflow.

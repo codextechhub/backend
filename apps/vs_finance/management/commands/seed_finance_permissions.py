@@ -35,9 +35,13 @@ FINANCE_RESOURCES = [
     ("currency",     "currencies",             [("view", "NORMAL"), ("create", "NORMAL")]),
     ("fxrate",       "FX rates",               [("view", "NORMAL"), ("create", "NORMAL")]),
     ("taxcode",      "tax codes",              [("view", "NORMAL"), ("create", "NORMAL")]),
+    # ``force_close`` closes a period, or a year, over its own checks; it is not
+    # the ordinary close with a flag, so it does not ride on ``close``.
     ("period",       "accounting periods",     [("view", "NORMAL"), ("create", "SENSITIVE"),
-                                                ("close", "CRITICAL"),
+                                                ("close", "CRITICAL"), ("force_close", "CRITICAL"),
                                                 ("reopen", "CRITICAL"), ("lock", "CRITICAL")]),
+    # Reopening a closed year takes its whole result back out of Retained Earnings.
+    ("fiscalyear",   "fiscal years",           [("reopen", "CRITICAL")]),
     ("journal",      "journal entries",        [("view", "NORMAL"), ("post", "CRITICAL"), ("reverse", "CRITICAL"),
                                                 # ``submit`` hands a draft to the approval engine.
                                                 # No approver keys. Who may approve is decided by the

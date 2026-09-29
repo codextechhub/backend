@@ -161,3 +161,46 @@ def ledger_balances(entity, scope=None):
     if scope is None or not scope.is_narrowed:
         return AccountBalance.objects.filter(account__entity=entity)
     return BranchLedger(entity, scope)
+
+
+@dataclass(frozen=True)
+class YearBranches:
+    """Which branches a fiscal year's ledger lines belong to.
+
+    ``branch_ids`` lists every branch that has an entry in the year, in id order.
+    ``unbranched_entries`` counts the entries in the year that carry no branch at
+    all; it is ``0`` when every entry has one.
+    """
+
+    branch_ids: tuple
+    unbranched_entries: int
+
+    @property
+    def has_unbranched(self) -> bool:
+        return self.unbranched_entries > 0
+
+
+def branches_in_year(entity, fiscal_year, *, account_types=None) -> YearBranches:
+    """The branches whose journals appear in ``fiscal_year``, and how many entries have none.
+
+    Reads the same ledger every money reader uses (:func:`ledger_lines`), so a
+    reversed entry and its reversal both count. ``account_types`` narrows to lines
+    on accounts of those :class:`~vs_finance.constants.AccountType` values, for a
+    caller that cares only about, say, income and expense.
+
+    An entry with no branch is counted rather than dropped. How a caller treats one
+    is its own decision: the year-end close files it under the tenant's only
+    branch where there is exactly one, and refuses to guess where there are several.
+    """
+    lines = ledger_lines(entity).filter(entry__period__fiscal_year=fiscal_year)
+    if account_types:
+        lines = lines.filter(account__account_type__in=list(account_types))
+    branch_ids = tuple(sorted(set(
+        lines.filter(entry__branch__isnull=False)
+        .values_list("entry__branch_id", flat=True).distinct()
+    )))
+    unbranched = (
+        lines.filter(entry__branch__isnull=True)
+        .values("entry_id").distinct().count()
+    )
+    return YearBranches(branch_ids=branch_ids, unbranched_entries=unbranched)
