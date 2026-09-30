@@ -321,7 +321,8 @@ def correct(leave, *, leave_type=None, start_date=None, end_date=None, days=None
 
     New dates with no ``days`` are counted again by :func:`count_days`, and
     ``over_allowance_by`` is worked out again for whatever the request now
-    says.
+    says. The active workflow card follows the correction so an approver votes
+    on the dates and reason currently filed, with the change attributed in audit.
     """
     if leave.status != LeaveStatus.PENDING:
         raise LeaveAlreadyDecided(
@@ -354,6 +355,23 @@ def correct(leave, *, leave_type=None, start_date=None, end_date=None, days=None
         exclude_pk=leave.pk, rules=rules,
     )
     leave.save()
+    audit.emit_leave_updated(leave, actor=actor)
+
+    from vs_workflow.handlers import get_handler
+    from vs_workflow.models import WorkflowInstance
+    from vs_workflow.presentation import validate_document_details
+
+    instance = WorkflowInstance.all_objects.filter(
+        tenant=leave.tenant, document_type=leave.workflow_document_type,
+        document_object_id=str(leave.pk), status="IN_PROGRESS",
+    ).order_by("-created_at").first()
+    if instance is not None:
+        handler = get_handler(leave.workflow_document_type)
+        instance.document_summary = handler.get_document_summary(leave) or {}
+        instance.document_details = validate_document_details(
+            handler.get_document_details(leave) or {},
+        )
+        instance.save(update_fields=["document_summary", "document_details", "updated_at"])
 
     clashes = overlapping(
         leave.staff, leave.start_date, leave.end_date, exclude_pk=leave.pk,

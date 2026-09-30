@@ -64,6 +64,10 @@ jobs:
         working-directory: apps
         run: python manage.py spectacular --file /dev/null
 
+      # The full suite, one worker per core: about 8 minutes where one process
+      # takes about 30. tblib (requirements.txt) is what lets a failing test in
+      # a worker be reported by name. Timings (--slowest) need a single
+      # process, so find slow tests locally.
       - name: Run test suite
         working-directory: apps
-        run: python manage.py test --noinput
+        run: python manage.py test --noinput --parallel auto

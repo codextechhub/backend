@@ -33,7 +33,9 @@ from .constants import (
     InvoicePaymentStatus,
     JournalSource,
 )
-from .exceptions import FinanceError, PostingError, SettlementBranchError
+from .exceptions import (
+    FinanceError, PostingError, SettlementBranchError, SettlementTargetError,
+)
 from .posting import post_journal, resolve_period
 
 
@@ -196,7 +198,53 @@ def _post_invoice_atomic(invoice, *, actor_user=None):
         message=f"Posted invoice for {customer.code} ({invoice.total} kobo).",
         journal_id=entry.pk, total=invoice.total, tax=invoice.tax_total,
     )
+    apply_customer_credit(invoice, actor_user=actor_user)  # Credit already held pays the new bill.
     return invoice  # Return the posted invoice.
+
+
+def apply_customer_credit(invoice, *, actor_user=None) -> int:
+    """Settle a newly posted invoice from the customer's unapplied credit.
+
+    Money a customer already holds as credit (a payment made before the bill, an
+    overpayment, an unapplied credit note, a credit transfer) pays each new bill of
+    theirs as it posts, oldest credit first, so Mr Chukwu, who paid N420,000 in
+    August, is not shown as owing N420,000 when September's bill is raised. Only
+    credit of the invoice's own branch is used (the settlement rule of
+    :func:`_build_invoice_plan`), and each lot is applied through
+    :func:`allocate_payment` / :func:`~vs_finance.credit_notes.allocate_credit_note`,
+    so the reclassification journal, its date (the later of credit and bill) and its
+    audit row are exactly those of a bursar pressing *allocate*.
+
+    The entity's ``auto_apply_customer_credit`` setting turns this off, for books
+    that hold money on account on purpose. Returns the kobo applied.
+    """
+    from .chronology import credit_lots
+    from .document_settings import resolve_finance_document_settings
+    from .models import CreditNote, Payment
+
+    if invoice.status != DocumentStatus.POSTED or invoice.balance_due <= 0:
+        return 0
+    if not resolve_finance_document_settings(invoice.entity).auto_apply_customer_credit:
+        return 0
+    lots = credit_lots(
+        invoice.entity, [invoice.customer_id], branch=invoice.branch_id,
+    ).get(invoice.customer_id, [])
+    applied = 0
+    for lot in lots:
+        if invoice.balance_due <= 0:  # The bill is paid.
+            break
+        take = min(lot.remaining, invoice.balance_due)
+        if lot.kind == "RECEIPT":
+            source = Payment.objects.get(pk=lot.document_id)
+            rows = allocate_payment(source, allocations=[(invoice, take)], actor_user=actor_user)
+        else:
+            from .credit_notes import allocate_credit_note
+
+            source = CreditNote.objects.get(pk=lot.document_id)
+            rows = allocate_credit_note(source, allocations=[(invoice, take)], actor_user=actor_user)
+        applied += sum(int(row.amount) for row in rows)
+        invoice.refresh_from_db()
+    return applied
 
 
 # Handle the post opening balance workflow.
@@ -294,8 +342,9 @@ def customer_credit_balances(entity, customer_ids=None, *, as_of=None,
 
     Credit is the sum of the customer's :class:`~vs_finance.chronology.CreditLot`
     parcels - unapplied receipts and unapplied CREDIT notes, each already net of what
-    has been refunded back out of it. Open invoices do not consume stored credit
-    automatically; only an explicit allocation moves value out of 2140.
+    has been refunded back out of it or transferred to another customer. Value leaves
+    2140 by an allocation: one a person makes, or the one
+    :func:`apply_customer_credit` makes when a new invoice posts.
 
     ``as_of`` restricts the sum to credit that **existed on that accounting date**:
     a receipt dated later has not happened yet as far as that date is concerned and
@@ -526,9 +575,9 @@ def _build_invoice_plan(source, allocations, *, strategy="oldest", include_debit
     to the source's branch while each item's receivable sits on the item's branch, so Ikeja's receipt
     settling a Lekki invoice would clear Lekki's debt out of Ikeja's books. The
     automatic plan draws only from those items; an explicit plan naming any other is
-    refused with :class:`SettlementBranchError` before anything is settled (see
-    :func:`_require_own_branch_targets`), because a caller who covers both branches
-    can name either.
+    refused before anything is settled (see :func:`_require_settlable_targets`),
+    because a caller who covers both branches can name either. The same check refuses
+    a target that is not posted or belongs to another customer.
 
     A *target* is an :class:`Invoice` or - when ``include_debit_notes`` is set - a posted
     DEBIT :class:`CreditNote`, which debits AR just like an invoice and is settled the
@@ -557,7 +606,7 @@ def _build_invoice_plan(source, allocations, *, strategy="oldest", include_debit
 
     if allocations is not None:  # Explicit allocations always win over auto-allocation.
         plan = list(allocations)  # Normalize to a list so the caller can iterate safely.
-        _require_own_branch_targets(source, [target for target, _amount in plan])
+        _require_settlable_targets(source, [target for target, _amount in plan])
         if as_of is not None:  # An explicitly named target must already exist on that date.
             for target, _amount in plan:
                 target_date = accounting_date(target)
@@ -602,20 +651,62 @@ def _build_invoice_plan(source, allocations, *, strategy="oldest", include_debit
     return [(target, balance) for target, balance, _date in items]  # Strip the sort date before returning.
 
 
-def _require_own_branch_targets(source, targets):
-    """Refuse a target named for ``source``'s value unless it is of the source's branch.
+def _require_settlable_targets(source, targets):
+    """Refuse any target ``source``'s value may not settle, before anything is settled.
 
-    The rule :func:`_build_invoice_plan` applies to an automatic plan, applied to one a
-    person names. The message names both sides and the way out, for example "This
-    receipt belongs to Ikeja Branch and invoice INV-0002 belongs to Lekki Branch.
-    Apply it to an Ikeja Branch invoice."
+    The one place every settlement target is judged, for an automatic plan and one a
+    person names alike, and again after the targets are locked (a bill voided while
+    a receipt was being keyed is caught there). A target must be:
+
+    * **posted**. A draft owes nothing yet, and a voided invoice keeps its full
+      balance: cash applied to it would credit AR for a debt that no longer exists
+      and vanish from the customer's credit. For example "Invoice INV-0412 has been
+      voided, so nothing can be settled against it. Leave the money as customer
+      credit, or apply it to the invoice that replaced it."
+    * **the source's own customer's**. Mrs Eze's transfer applied to the Bello
+      family's bill would mark the Bellos paid with money that is not theirs. Money
+      moves between customers only through an approved customer credit transfer
+      (:class:`~vs_finance.models.CustomerCreditTransfer`).
+    * **an invoice, when the source is a credit note**. A credit note's sub-ledger
+      points at invoices only; a debit note is settled by receipts.
+    * **of the source's own branch** (:func:`vs_rbac.scoping.same_transaction_branch`),
+      for example "This receipt belongs to Ikeja Branch and invoice INV-0002 belongs
+      to Lekki Branch. Apply it to an Ikeja Branch invoice."
     """
     from vs_rbac.scoping import same_transaction_branch
 
     from .models import CreditNote
 
-    noun = "credit note" if isinstance(source, CreditNote) else "receipt"
+    source_is_note = isinstance(source, CreditNote)
+    noun = "credit note" if source_is_note else "receipt"
     for target in targets:
+        kind = "debit note" if isinstance(target, CreditNote) else "invoice"
+        number = target.document_number or f"the selected {kind}"
+        if source_is_note and isinstance(target, CreditNote):
+            raise SettlementTargetError(
+                f"Debit note {number} is settled by a receipt; a credit note settles "
+                f"invoices only.",
+            )
+        if target.status != DocumentStatus.POSTED:
+            if target.status == DocumentStatus.REVERSED:
+                raise SettlementTargetError(
+                    f"{kind.capitalize()} {number} has been voided, so nothing can be "
+                    f"settled against it. Leave the money as customer credit, or apply it "
+                    f"to the {kind} that replaced it.",
+                )
+            raise SettlementTargetError(
+                f"{kind.capitalize()} {number} is '{target.status}'; only a posted {kind} "
+                f"can be settled.",
+            )
+        if target.customer_id != source.customer_id:
+            owner = type(source.customer).objects.filter(
+                pk=target.customer_id).values_list("code", flat=True).first()
+            raise SettlementTargetError(
+                f"{kind.capitalize()} {number} belongs to {owner}, not to "
+                f"{source.customer.code}, whose {noun} this is. Apply it to one of "
+                f"{source.customer.code}'s own documents, or raise a customer credit "
+                f"transfer to move the credit to {owner}.",
+            )
         if same_transaction_branch(source.entity.tenant_id, source.branch_id, target.branch_id):
             continue
         kind = "debit note" if isinstance(target, CreditNote) else "invoice"
@@ -657,10 +748,15 @@ def lock_settlement_targets(plan):
     while the Paystack webhook for the same invoice is being confirmed is two
     concurrent settlements of one document, and both paths reach here.
 
-    The lock is taken here rather than in each plan builder because this is the
-    one function that performs the write, so every caller is covered however its
-    plan was built - the auto-allocation queryset, an explicit ``allocations``
-    list from a request body, and the gateway booking path alike.
+    The lock is taken here rather than in each plan builder, and every settlement
+    writer comes through it: receipts (:func:`_apply_payment_subledger`), credit
+    notes (:func:`~vs_finance.credit_notes._apply_creditnote_subledger`),
+    concessions and write-offs (which lock their one invoice the same way), and the
+    payables mirrors. However its plan was built - the auto-allocation queryset, an
+    explicit ``allocations`` list from a request body, the gateway booking path -
+    the write reads a locked balance. The database backs this with check
+    constraints, so a writer that misses the lock fails rather than settling a bill
+    beyond its total.
 
     Ordering is the other half. Locks are taken model by model in a fixed order
     and by ascending primary key within each model, so two receipts that settle
@@ -692,7 +788,7 @@ def lock_settlement_targets(plan):
         by_key.setdefault((type(target), pk), []).append(target)
 
     for model in sorted(ids_by_model, key=lambda m: m._meta.label):
-        for row in (model.objects.select_for_update()
+        for row in (model.objects.select_for_update(of=("self",))
                     .filter(pk__in=sorted(ids_by_model[model]))
                     .order_by("pk")):
             for target in by_key.get((model, row.pk), ()):
@@ -723,6 +819,7 @@ def _apply_payment_subledger(payment, plan, *, remaining):
     applied, created = 0, []  # Track total applied cash and created allocation rows.
     latest = None  # Newest accounting date this run actually settled.
     plan = lock_settlement_targets(plan)  # Nobody else may move these balances now.
+    _require_settlable_targets(payment, [target for target, _amount in plan])
     for target, requested in plan:  # Walk the settlement plan in order.
         if remaining <= 0:  # Stop once all cash has been consumed.
             break  # Exit the current loop.

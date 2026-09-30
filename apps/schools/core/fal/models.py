@@ -36,9 +36,12 @@ class FeeStructureTermLink(models.Model):
     """Which academic term a fee structure bills for.
 
     One structure bills one term, so the link is a ``OneToOneField`` and
-    re-linking updates in place rather than accumulating history. A structure
-    linked to a session but no term is legitimate: a school with a single annual
-    fee bills the session as a whole.
+    re-linking updates in place. That is safe for the bills already raised: a fee
+    run stamps each invoice with the period it was raised for
+    (``Invoice.billing_period``, :func:`period_key`), and every period report reads
+    that stamp, so re-linking "JSS1 Tuition" from First Term to Second Term moves
+    only the runs still to come. A structure linked to a session but no term is
+    legitimate: a school with a single annual fee bills the session as a whole.
 
     Tenant integrity is enforced by the service that writes this
     (``FeeTermBridgePort.link_term`` compares ``fee_structure.entity.tenant``
@@ -82,6 +85,29 @@ class FeeStructureTermLink(models.Model):
     def label(self) -> str:
         """The period an invoice row names: ``First Term 2026/2027``, or the year alone."""
         return period_name(self.session, self.term if self.term_id else None)
+
+    @property
+    def period_key(self) -> str:
+        """The billing period key a run of this structure stamps on its invoices."""
+        return period_key(self.session_id, self.term_id)
+
+
+def period_key(session_id, term_id=None) -> str:
+    """The opaque billing period key finance stores on an invoice: ``S12`` or ``S12-T31``.
+
+    Opaque on purpose: the engine compares it and never reads it. A session-wide
+    key is a prefix of none of its terms' keys by value, so a query for the whole
+    session asks for both shapes (:func:`session_period_q`).
+    """
+    return f"S{session_id}" if term_id is None else f"S{session_id}-T{term_id}"
+
+
+def session_period_q(session_id, prefix=""):
+    """Invoices billed for a session: the session-wide fee and every term of it."""
+    from django.db.models import Q
+
+    field = f"{prefix}billing_period"
+    return Q(**{field: period_key(session_id)}) | Q(**{f"{field}__startswith": f"S{session_id}-T"})
 
 
 def period_name(session, term=None) -> str:

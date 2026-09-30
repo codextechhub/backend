@@ -328,6 +328,21 @@ class StudentCustomerPort(ABC):
         """Return the student's Customer if one exists, else ``AVAILABLE``/None.
         Never creates."""
 
+    @abstractmethod
+    def set_customer_active(
+        self, student_ref: StudentRef, *, active: bool, reason: str = "",
+        actor_ref=None,
+    ) -> FinanceResult[int]:
+        """Deactivate (``active=False``) or reactivate the child's AR accounts.
+
+        Called when a child leaves the roll (withdrawn, transferred, graduated) and
+        when a withdrawn child is readmitted. An inactive account is billed by no
+        fee run and no "bill all active" selection, and keeps its debt, documents
+        and place in debtor lists, so a family that leaves owing money is still
+        shown owing it. Only accounts in the child's own school are touched.
+        Idempotent; returns how many accounts changed state.
+        """
+
 
 # =========================================================================== #
 # Component 4 - School-scoped RBAC for finance

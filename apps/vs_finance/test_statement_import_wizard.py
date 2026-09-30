@@ -45,19 +45,32 @@ HEADERS = (
 
 
 class BankStatementImportWizardTests(_Phase4FixtureMixin, TestCase):
-    def setUp(self):
-        self.user = make_vision_user(
+    """The bank statement import wizard, driven over HTTP by a platform admin.
+
+    The admin, the import catalogue and the books are built once per class. The
+    mixin's builders are instance methods, so ``setUpTestData`` calls them on a
+    throwaway instance.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.user = make_vision_user(
             email="statement-import@test.com",
             super_admin=True,
         )
-        self.client = TenantAPIClient(user=self.user)
         call_command(
             "seed_import",
             dataset_type=DatasetTypeChoices.BANK_STATEMENTS,
             verbosity=0,
         )
-        self.entity, _, _ = self.build_books()
-        self.bank = self.make_bank(self.entity)
+        builder = cls()
+        cls.entity, _, _ = builder.build_books()
+        cls.bank = builder.make_bank(cls.entity)
+
+    def setUp(self):
+        super().setUp()
+        self.client = TenantAPIClient(user=self.user)
 
     def _file(self, body: str, name="statement.csv"):
         return SimpleUploadedFile(

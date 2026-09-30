@@ -12,11 +12,12 @@ from vs_rbac.tests.helpers import (
 
 
 class AdditionalBranchGuardTests(TestCase):
-    def setUp(self):
-        self.school = make_school(slug="posting-guard", name="Posting Guard")
-        self.branch = make_branch(self.school)
-        self.other = make_school(slug="posting-guard-other", name="Other School")
-        self.foreign = make_branch(self.other)
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="posting-guard", name="Posting Guard")
+        cls.branch = make_branch(cls.school)
+        cls.other = make_school(slug="posting-guard-other", name="Other School")
+        cls.foreign = make_branch(cls.other)
 
     def test_platform_account_cannot_hold_an_additional_branch(self):
         person = make_vision_user(email="posting-guard-platform@test.com")

@@ -6,9 +6,10 @@ structures** that mass-generate invoices. This is the sales/billing side of the
 ledger - money owed *to* the entity and the cash that clears it.
 
 Routes covered (mounted at `/v1/finance/`): `customers/`, `customers/<pk>/`,
-`customers/<pk>/receipt/`, `invoices/`, `invoices/summary/`, `invoices/<pk>/`,
-`invoices/<pk>/pay/`, `invoices/<pk>/remind/`, `payments/`, `payments/<pk>/`,
-`payments/<pk>/allocate/`, `fee-structures/…`.
+`customers/<pk>/receipt/`, `customers/opening/`, `invoices/`, `invoices/summary/`,
+`invoices/<pk>/`, `invoices/<pk>/pay/`, `invoices/<pk>/remind/`, `payments/`,
+`payments/<pk>/`, `payments/<pk>/allocate/`, `fee-structures/…`,
+`fee-structures/<pk>/items/<item>/assignments/`.
 
 > **Adjacent slices** (not here): credit notes, refunds, write-offs, concessions →
 > `finance_ar_adjustments`; installment plans → `finance_payment_plans`; reminders
@@ -30,6 +31,12 @@ Routes covered (mounted at `/v1/finance/`): `customers/`, `customers/<pk>/`,
   debit AR the same way); overflow becomes customer credit.
 
 **This does NOT:**
+- **Settle another customer's bill, or a bill that is not posted.** Every
+  settlement target (receipt, stored credit, credit note, concession, gateway
+  confirmation) must be a posted document of the paying customer and of the
+  paying document's branch (`_require_settlable_targets`). Money moves between
+  customers only by an approved customer credit transfer (`finance_ar_adjustments`).
+- **Bill a customer twice for one fee structure and period** (§6, fee runs).
 - **Let AR carry a credit balance.** Overpayments are split at source into a
   **customer-credit liability** (`2140`), never left as a negative receivable
   (§6).
@@ -42,13 +49,14 @@ Routes covered (mounted at `/v1/finance/`): `customers/`, `customers/<pk>/`,
 
 | Model | File | Key fields | Notes |
 |---|---|---|---|
-| `Customer` | `models/ar.py:31` | `code`, `name`, billing\_*, `receivable_account`, `opening_balance`, `source_type`/`source_id` (loose strings, **not** FKs), `is_active` | `unique(entity, code)` |
-| `Invoice` | `models/ar.py:85` | `customer`, `invoice_date`, `due_date`, `source`, `subtotal`/`tax_total`/`total`, `amount_paid`, `amount_credited`, `status`, `payment_status`, `journal` | **two status axes** (below) |
+| `Customer` | `models/ar.py` | `code`, `name`, billing\_*, `receivable_account`, `opening_balance`, `source_type`/`source_id` (loose strings, **not** FKs), `is_active` | `unique(entity, code)`; `unique(entity, source_type, source_id)` where a source is set |
+| `Invoice` | `models/ar.py` | `customer`, `invoice_date`, `due_date`, `source`, `subtotal`/`tax_total`/`total`, `amount_paid`, `amount_credited`, `status`, `payment_status`, `journal`, `billing_key`, `billing_period`, `billing_period_label` | **two status axes** (below); check constraints keep `0 <= amount_paid + amount_credited <= total`; `billing_key` unique per customer among live invoices |
 | `InvoiceLine` | `models/ar.py:176` | `revenue_account`, `quantity`, `unit_price`, `tax_code`, `net_amount`, `tax_amount`, `cost_center`, `dimensions` | net/tax stored, not re-derived |
-| `Payment` | `models/ar.py:219` | `customer`, `payment_date`, `method`, `amount`, `allocated_amount`, `deposit_account`, `journal` | receipt |
+| `Payment` | `models/ar.py` | `customer`, `payment_date`, `method`, `amount`, `allocated_amount`, `refunded_amount`, `transferred_amount`, `deposit_account`, `journal` | receipt; `allocated + refunded + transferred <= amount` is a check constraint; method `CREDIT_TRANSFER` marks a credit-transfer receipt |
 | `PaymentAllocation` | `models/ar.py:268` | `payment`, `invoice`, `amount` | the receipt↔invoice link |
 | `DebitNoteAllocation` | `models/adjustments.py:182` | `payment`, `note`, `amount` | the receipt↔DEBIT-note link (bumps `CreditNote.amount_paid`) |
-| `FeeStructure` / `FeeItem` | `models/ar.py:302`/`:364` | billing catalogue → invoices | `applies_to` gates AR generation |
+| `FeeStructure` / `FeeItem` | `models/ar.py` | billing catalogue → invoices | `applies_to` gates AR generation; `FeeItem.is_optional` bills only assigned customers |
+| `FeeItemAssignment` | `models/ar.py` | `item`, `customer` | who takes an optional item; `unique(item, customer)` |
 
 - **Money is kobo.** `total = subtotal + tax_total`; `settled = amount_paid +
   amount_credited`; `balance_due = total − settled` (`models/ar.py:140`,`:147`).
@@ -64,7 +72,9 @@ All require `?entity=<id|code>`. Gate: `IsAuthenticatedAndActive & HasRBACPermis
 | Method + path | permission key | what it does | request body | response |
 |---|---|---|---|---|
 | `GET /customers/` | `finance.customer.view` | List + computed `balance`/`account_status` (**paginated**). Query: `search`, `is_active` | - | paginated `CustomerSerializer` + balance |
-| `POST /customers/` | `finance.customer.create` | Create. AR control **defaults to `1200`**; if `opening_balance>0`, posts an **opening invoice** (§6), backdatable via `opening_date` | `code`, `name`, `receivable_account?`, billing\_*?, `opening_balance?`, `opening_date?`, `source_type?/source_id?` | `201` `CustomerSerializer` |
+| `POST /customers/` | `finance.customer.create` | Create. AR control **defaults to the receivable mapping** and must be a non-cash asset; a source record already held by another customer is refused; if `opening_balance>0`, posts an **opening invoice** (§6), backdatable via `opening_date` | `code`, `name`, `receivable_account?`, billing\_*?, `opening_balance?`, `opening_date?`, `source_type?/source_id?` | `201` `CustomerSerializer` |
+| `PATCH /customers/<pk>/` | `finance.customer.update` | Edit, audited (`CUSTOMER_UPDATED` with before/after). `source_type`/`source_id` and `receivable_account` are fixed once the customer has posted documents (422); `opening_balance` never changes after create (400); `is_active:false` deactivates (§4) | editable fields | `CustomerSerializer` |
+| `POST /customers/opening/` | `finance.customer.import_opening` | Carry in unpaid bills from before go-live, one opening invoice per bill (§6), all or nothing, at most 500 rows | `invoices:[{customer, invoice_date, due_date?, amount, reference?, period_label?, narration?, branch?}]` | `201` invoices |
 | `GET /customers/<pk>/` | `finance.customer.view` | Customer detail + ledger | - | detail |
 | `POST /customers/<pk>/receipt/` | `finance.payment.create` | Record a receipt, auto-allocate | `amount`, `payment_date`, `deposit_account`, `method?`, `auto_allocate?`, `allocation_strategy?` (`oldest`\|`largest`) | `201` `{allocated, unallocated}` |
 | `GET /invoices/` | `finance.invoice.view` | List. Query: `status`, `payment_status`, `bucket` (draft/issued/partial/paid/overdue), `search`, `customer` | - | paginated `InvoiceSerializer` |
@@ -77,7 +87,8 @@ All require `?entity=<id|code>`. Gate: `IsAuthenticatedAndActive & HasRBACPermis
 | `GET /payments/<pk>/` | `finance.payment.view` | Receipt + allocations + open-invoice **and open-debit-note** candidates + GL | - | detail |
 | `POST /payments/<pk>/allocate/` | `finance.payment.allocate` | Apply stored customer credit to open AR items | `allocations:[{invoice\|debit_note, amount}]` **or** `auto_allocate:true` (+ `allocation_strategy?`) | `PaymentSerializer` |
 | `GET/POST /fee-structures/…` | `finance.feestructure.view`/`.create` | Billing catalogue CRUD | - | `FeeStructureSerializer` |
-| `POST /fee-structures/<pk>/generate/` | `finance.feestructure.generate` | One **posted** invoice per customer | `customers:[…]` or `all_active:true`, `invoice_date?`, `due_date?` | `201` invoices |
+| `POST /fee-structures/<pk>/generate/` | `finance.feestructure.generate` | One **posted** invoice per customer; skips a customer already billed from the structure, and an inactive one (`all_active` never selects them) | `customers:[…]` or `all_active:true`, `invoice_date?`, `due_date?` | `201` invoices |
+| `GET/POST/DELETE /fee-structures/<pk>/items/<item>/assignments/` | `finance.feestructure.view`/`.edit` | Who takes one optional item; a required item takes no assignments (400) | `customers:[…]` | assigned customers |
 
 > **Field note:** invoice/receipt creation reads `unit_price`×`quantity` and
 > `amount` (kobo) - there is no separate `amount` on invoice *lines*. A line's
@@ -90,9 +101,20 @@ settled over time as receipts allocate (`payment_status` walks
 `UNPAID→PARTIAL→PAID`). Created via `POST /invoices/` (posts unless `post=false`)
 or `fee-structures/<pk>/generate/` (always posts).
 
+As an invoice posts, any unapplied credit the customer holds in the invoice's
+branch pays it, oldest credit first (`apply_customer_credit`, §6), unless the
+entity's `auto_apply_customer_credit` document setting is off.
+
 **Payment/receipt:** `DRAFT` → `POSTED` (`post_payment`: books cash, settles
 invoices, parks overflow as credit). A posted receipt with leftover credit can be
-applied later via `allocate/` (`allocate_payment`).
+applied later via `allocate/` (`allocate_payment`), and pays the customer's next
+bill as it posts.
+
+**Customer:** active, or deactivated (`vs_finance.customers.set_customer_active`,
+audited). A deactivated customer is billed by no fee run and no `all_active`
+selection; their documents, balance and debtor-list entry stay as they are. The
+owner layer deactivates a child's account when the child leaves the roll and
+reactivates it on readmission.
 
 ## 5. Calculations
 
@@ -149,14 +171,48 @@ Dr  customer credit (2140)         applied
 Cr  receivable (AR control)        applied
 ```
 
-**Opening balance** - `post_opening_balance` (`receivables.py:188`) raises a posted
+**Opening balance** - `post_opening_balance` (`receivables.py`) raises a posted
 opening invoice (`source=OPENING`) when a customer is created with
 `opening_balance>0`, so the figure shows in both the GL and the (invoice-derived)
-outstanding:
+outstanding. The offset is the opening-balance equity mapping (retained earnings),
+never revenue:
 ```
-Dr  receivable (AR control 1200)   opening_balance
-Cr  operating revenue (4100)       opening_balance
+Dr  receivable (AR control)        opening_balance
+Cr  retained earnings              opening_balance
 ```
+
+**Opening import** - `import_opening_customer_invoices`
+(`opening_balances.py`) carries in one opening invoice per unpaid bill, dated as
+the original and due when it fell due (its invoice date when none is given), in
+its customer's branch, so ageing is true from day one. Each posts an `OPENING`
+journal, dated on the invoice date when a period covers it and on the first day
+of the books otherwise, with the same `Dr AR / Cr retained earnings` as the supplier
+side's opening bills. A bill dated on or after the day the books went live
+(`opening_balances.books_went_live`, shared with procurement) is refused.
+
+**Applying credit to a new invoice** - `apply_customer_credit` (`receivables.py`)
+runs as every invoice posts: each of the customer's credit lots in the invoice's
+branch, oldest first, is applied through `allocate_payment` /
+`allocate_credit_note`, so the journal (`Dr 2140 / Cr AR`, dated at the later of
+credit and bill) and audit row are those of a manual allocation.
+
+**Settlement guards** - every settlement writer locks its targets in a fixed order
+(`lock_settlement_targets`, `select_for_update(of=("self",))` by model then pk) and
+judges them after locking (`_require_settlable_targets`): posted, the paying
+customer's, the paying document's branch, and an invoice when a credit note pays.
+Concessions and write-offs lock their invoice and their own row, so a double click
+posts once. The database refuses settlement beyond an invoice's total and a
+receipt or credit note spending more than it holds. A gateway confirmation for an
+invoice that was voided, or belongs to another customer, parks the money as credit
+and records `RECEIPT_PARKED_AS_CREDIT` for the bursar.
+
+**Fee runs** - `generate_invoices` (`fees.py`) locks the fee structure for the run,
+so two runs queue. Each invoice carries `billing_key` (`FEE:<code>`, plus
+`@<period>` when the owner layer names a billing period) and the period's key and
+label; a customer holding a live invoice with the same key is skipped, and the
+database's unique key refuses a second one outright. Without a period a structure
+bills a customer once; with one, once per period. The period stamp is fixed once
+the invoice posts (`Invoice.save` refuses a change), and period reports read it.
 
 **Auto-allocation order** - `_build_invoice_plan` (`receivables.py:272`) settles
 either `oldest` (document date, default) or `largest` (biggest balance) first, across
@@ -186,6 +242,14 @@ the receipt shows `allocation_status:"PARTIAL"` (`unallocated_amount` 12500).
 
 ## 8. Gotchas / known limitations
 
+- **Credit pays new bills by default.** An entity that holds money on account on
+  purpose turns `auto_apply_customer_credit` off in its document settings; credit
+  then waits for a manual allocation, and dunning still does not chase what it
+  covers.
+- **A customer's source record and receivable account are fixed once money has
+  moved.** Open a new customer for a different record; correct a balance with a
+  credit or debit note.
+
 - **`opening_balance` posting is atomic with customer-create** - if no open period
   covers today (or `4100` is missing), the opening invoice fails and the whole
   customer create rolls back with a clear error. Intended (loud > silent), but
@@ -211,10 +275,12 @@ supports `oldest`|`largest`; receipts settle DEBIT notes (2026-07-05)._
 
 ## 9. Permissions & tenant isolation
 
-- Verbs are split by action: `finance.customer.{view,create,update}`,
+- Verbs are split by action: `finance.customer.{view,create,update,import_opening}`,
   `finance.invoice.{view,create}`, `finance.payment.{view,create,allocate}`,
-  `finance.feestructure.{view,create,generate}`; `remind/` uses
-  `finance.dunning.send`.
+  `finance.feestructure.{view,create,edit,generate}`; `remind/` uses
+  `finance.dunning.send`. The document settings `auto_apply_customer_credit` and
+  `concession_second_person_threshold` are written only by a whole-tenant caller
+  (`finance.settings.update`).
 - Every view resolves the entity first then `filter(entity=…, pk=…)`
   (e.g. `views_ar.py:1159`, `:494`), so another tenant's invoice/payment id → 404.
   `_resolve_customer`/`_resolve_account` are entity-scoped → no cross-tenant
@@ -228,8 +294,11 @@ supports `oldest`|`largest`; receipts settle DEBIT notes (2026-07-05)._
 | File | Responsibility |
 |---|---|
 | `models/ar.py` | `Customer`, `Invoice`, `InvoiceLine`, `Payment`, `PaymentAllocation`, `FeeStructure`/`FeeItem` |
-| `receivables.py` | pricing (`compute_line_net`/`compute_tax`/`price_invoice`), `post_invoice`, `post_payment`, `allocate_payment` |
-| `fees.py` | `generate_invoices` (fee structure → posted invoices) |
+| `receivables.py` | pricing (`compute_line_net`/`compute_tax`/`price_invoice`), `post_invoice`, `apply_customer_credit`, `post_payment`, `allocate_payment`, the settlement guards |
+| `fees.py` | `generate_invoices` (fee structure → posted invoices), billing keys |
+| `customers.py` | customer edits (fixed fields, audit), deactivation |
+| `opening_balances.py` | `books_went_live`, opening customer invoices and their import |
+| `collected.py` | the one definition of billed and collected, shared with the owner layer |
 | `views.py` | `InvoiceListCreateView`, `InvoiceSummaryView`, `InvoiceDetailView` |
 | `views_ar.py` | customer/receipt/payment/allocate/pay/remind/fee-structure views |
 | `serializers.py` | `InvoiceSerializer`, `CustomerSerializer`, `PaymentSerializer`, `FeeStructureSerializer` |
@@ -245,6 +314,13 @@ Added with the §8 fixes (in `FinanceAPITests`): opening-balance posts the
 `Dr 1200 / Cr 4100` opening invoice and surfaces in the paginated customer list;
 largest-first receipt clears the bigger invoice first; an unknown
 `allocation_strategy` → 400.
+
+`tests_ar_guards.py` covers the receivables guards: settlement targets and
+constraints, credit transfers, credit applied to new bills, dunning cover, credit
+notes naming a bill, fee-run idempotency, optional items and period stamps,
+deactivation, cumulative approval and the second person, the customer master record,
+opening imports, the collections definition, gateway parking and payroll share
+journals.
 
 Worth asserting if not already:
 - **403** per verb; **cross-tenant** invoice/payment/customer id → 404.

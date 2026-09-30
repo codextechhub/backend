@@ -49,21 +49,23 @@ def _reset(user, *, hours=1, used=False):
 class PasswordResetListTests(TestCase):
     """A CX operator reading the pending resets across the platform."""
 
-    def setUp(self):
-        self.codex = codex_tenant()
-        self.operator = make_vision_user(
+    @classmethod
+    def setUpTestData(cls):
+        cls.codex = codex_tenant()
+        cls.operator = make_vision_user(
             email="reset.operator@codex.test", super_admin=True,
         )
-        self.cx_colleague = make_vision_user(email="reset.colleague@codex.test")
+        cls.cx_colleague = make_vision_user(email="reset.colleague@codex.test")
 
-        self.school = make_school(slug="reset-academy", name="Reset Academy")
-        self.principal = make_school_admin(
-            make_branch(self.school),
+        cls.school = make_school(slug="reset-academy", name="Reset Academy")
+        cls.principal = make_school_admin(
+            make_branch(cls.school),
             email="principal@reset-academy.test",
             first_name="Ada",
             last_name="Okeye",
         )
 
+    def setUp(self):
         self.client = TenantAPIClient(self.operator, "codex")
 
     def _get(self, **params):

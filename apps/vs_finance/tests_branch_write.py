@@ -47,26 +47,34 @@ class _WriteFixture(_FinanceBranchFixture):
         "finance.payrollrun.create", "finance.payrollrun.view",
     )
 
-    def writer(self, tenant, email, role_key, *, branches=()):
-        """A caller who may create, pinned to zero, one or several branches.
+    @classmethod
+    def write_user(cls, tenant, email, role_key, *, branches=()):
+        """A user who may create, pinned to zero, one or several branches.
 
         Several branches means several grants: an assignment carries one branch,
         so "covers Ikeja and Lekki" is two rows and not one. That is the shape the
         ambiguous case actually arrives in, so the tests build it that way rather
         than by stubbing the resolver.
         """
-        from core.test_utils import TenantAPIClient
-
-        user = self.user_for(tenant, email)
+        user = cls.user_for(tenant, email)
         if not branches:
-            self.grant(user, *self.WRITE_KEYS, tenant=tenant, role_key=role_key)
+            cls.grant(user, *cls.WRITE_KEYS, tenant=tenant, role_key=role_key)
         else:
             for index, branch in enumerate(branches):
-                self.grant(
-                    user, *self.WRITE_KEYS, tenant=tenant,
+                cls.grant(
+                    user, *cls.WRITE_KEYS, tenant=tenant,
                     role_key=f"{role_key}-{index}", branch=branch,
                 )
-        return TenantAPIClient(user=user)
+        return user
+
+    @classmethod
+    def writer(cls, tenant, email, role_key, *, branches=()):
+        """An API client for :meth:`write_user`."""
+        from core.test_utils import TenantAPIClient
+
+        return TenantAPIClient(
+            user=cls.write_user(tenant, email, role_key, branches=branches),
+        )
 
     def post(self, client, path, entity, body):
         return client.post(
@@ -287,15 +295,23 @@ class SharedWhenAmbiguousTests(_WriteFixture):
     is a payroll run: one covering every branch's staff is a whole-school caller's.
     """
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.both_user = cls.write_user(
+            cls.tenant, "amb-both@fin.test", "amb-both",
+            branches=[cls.ikeja, cls.lekki],
+        )
+        cls.ikeja_only_user = cls.write_user(
+            cls.tenant, "amb-ikeja@fin.test", "amb-ikeja", branches=[cls.ikeja],
+        )
+
     def setUp(self):
+        from core.test_utils import TenantAPIClient
+
         super().setUp()
-        self.both = self.writer(
-            self.tenant, "amb-both@fin.test", "amb-both",
-            branches=[self.ikeja, self.lekki],
-        )
-        self.ikeja_only = self.writer(
-            self.tenant, "amb-ikeja@fin.test", "amb-ikeja", branches=[self.ikeja],
-        )
+        self.both = TenantAPIClient(user=self.both_user)
+        self.ikeja_only = TenantAPIClient(user=self.ikeja_only_user)
 
     def test_a_fee_template_from_a_two_branch_bursar_is_published_school_wide(self):
         response = self.post(
@@ -378,15 +394,23 @@ class SharedWhenAmbiguousTests(_WriteFixture):
 class InheritedBranchTests(_WriteFixture):
     """Rows that continue a chain take the source's branch and nothing else."""
 
-    def setUp(self):
-        super().setUp()
-        self.cust_ikeja = self.customer(self.books, "INHI", self.ikeja)
-        self.cust_lekki = self.customer(self.books, "INHL", self.lekki)
-        self.cust_shared = self.customer(self.books, "INHS", None)
-        self.ikeja_only = self.writer(
-            self.tenant, "inh-ikeja@fin.test", "inh-ikeja", branches=[self.ikeja],
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.cust_ikeja = cls.customer(cls.books, "INHI", cls.ikeja)
+        cls.cust_lekki = cls.customer(cls.books, "INHL", cls.lekki)
+        cls.cust_shared = cls.customer(cls.books, "INHS", None)
+        cls.ikeja_only_user = cls.write_user(
+            cls.tenant, "inh-ikeja@fin.test", "inh-ikeja", branches=[cls.ikeja],
         )
-        self.hq = self.writer(self.tenant, "inh-hq@fin.test", "inh-hq")
+        cls.hq_user = cls.write_user(cls.tenant, "inh-hq@fin.test", "inh-hq")
+
+    def setUp(self):
+        from core.test_utils import TenantAPIClient
+
+        super().setUp()
+        self.ikeja_only = TenantAPIClient(user=self.ikeja_only_user)
+        self.hq = TenantAPIClient(user=self.hq_user)
 
     def receipt_body(self, **extra):
         return {

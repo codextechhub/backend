@@ -49,7 +49,7 @@ from django.db.models import (
     Value,
     When,
 )
-from django.db.models.functions import TruncMonth
+from django.db.models.functions import Coalesce, TruncMonth
 from django.utils import timezone
 from vs_config.clock import branch_today
 from vs_tenants.context import get_current_audit_identity
@@ -725,6 +725,27 @@ class DjangoStudentCustomerAdapter(StudentCustomerPort):
             return _available(None)
         return _available(_customer_handle(existing, student_ref))
 
+    @envelope
+    def set_customer_active(self, student_ref, *, active, reason="", actor_ref=None):
+        """Deactivate or reactivate every AR account of this child in their own school.
+
+        Read from the roll's tenant, so a stray account another school opened under
+        the same loose reference is never touched. Returns how many accounts changed.
+        """
+        from vs_finance.customers import set_customer_active
+
+        row = _student_row(student_ref)
+        customers = _customers_for_student(student_ref)
+        if row is not None:
+            customers = customers.filter(entity__tenant_id=row["tenant_id"])
+        actor = _user(actor_ref) if actor_ref is not None else None
+        changed = 0
+        for customer in customers.order_by("pk"):
+            if customer.is_active != bool(active):
+                set_customer_active(customer, bool(active), actor_user=actor, reason=reason)
+                changed += 1
+        return _available(changed)
+
 
 # --------------------------------------------------------------------------- #
 # Component 2 - Fee structure <-> term bridge
@@ -815,7 +836,7 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
         the kind of honest-looking answer that costs an afternoon.
         """
         from vs_finance import fees
-        from vs_finance.models import Customer, Invoice
+        from vs_finance.models import Customer
 
         from ..models import FeeStructureTermLink
 
@@ -858,15 +879,10 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
                     customer = Customer.objects.get(pk=handle.customer_ref)
                 pairs.append((ref, customer))
 
-            reference = f"FEE:{structure.code}"
-            already = set(
-                Invoice.objects.filter(
-                    entity=structure.entity,
-                    reference=reference,
-                    status="POSTED",
-                    customer_id__in=[c.pk for _, c in pairs],
-                ).values_list("customer_id", flat=True)
-            )
+            # Billed already for this period, or a child who has left.
+            already = fees.already_billed_customer_ids(
+                structure, [c.pk for _, c in pairs], link.period_key,
+            ) | {c.pk for _ref, c in pairs if not c.is_active}
             skipped = tuple(ref for ref, c in pairs if c.pk in already)
             billable = tuple(ref for ref, c in pairs if c.pk not in already)
             to_bill = [c for _ref, c in pairs if c.pk not in already]
@@ -895,6 +911,7 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
             invoices = fees.generate_invoices(
                 structure, to_bill, actor_user=effective_user,
                 invoice_date=invoice_date, due_date=due_date,
+                billing_period=link.period_key, billing_period_label=link.label,
             ) if to_bill else []
 
             return InvoiceGenerationResult(
@@ -1057,26 +1074,21 @@ def _labelled(page, tenant_id):
     ))
 
 
-def _period_references(entity, period: Optional[Period]):
-    """The invoice ``reference`` values that belong to a period, or ``None``.
+def _period_q(period: Optional[Period]):
+    """The invoices a period covers, from the period each fee run stamped, or ``None``.
 
-    ``None`` means "no period was asked for, do not narrow". An empty tuple means
-    "this period has no fee structures", which narrows to nothing - a reachable
-    but empty scope, and legitimately zero.
+    ``None`` means "no period was asked for, do not narrow". The stamp
+    (``Invoice.billing_period``) is fixed when the invoice posts, so which term a
+    bill reports under never depends on how its fee structure is linked today. A
+    session asked for without a term covers the session-wide fees and every term's.
     """
     if period is None:
         return None
-    from ..models import FeeStructureTermLink
+    from ..models import period_key, session_period_q
 
-    links = FeeStructureTermLink.objects.filter(
-        session_id=period.session_ref, fee_structure__entity=entity,
-    )
     if period.term_ref is not None:
-        links = links.filter(term_id=period.term_ref)
-    return tuple(
-        f"FEE:{code}"
-        for code in links.values_list("fee_structure__code", flat=True)
-    )
+        return Q(billing_period=period_key(period.session_ref, period.term_ref))
+    return session_period_q(period.session_ref)
 
 
 def _invoice_qs(entity, branch_ref=None, period=None):
@@ -1085,43 +1097,25 @@ def _invoice_qs(entity, branch_ref=None, period=None):
     qs = Invoice.objects.filter(entity=entity, status="POSTED")
     if branch_ref is not None:
         qs = qs.filter(branch_id=branch_ref)
-    references = _period_references(entity, period)
-    if references is not None:
-        qs = qs.filter(reference__in=references)
+    covered = _period_q(period)
+    if covered is not None:
+        qs = qs.filter(covered)
     return qs
 
 
-def _payment_qs(entity, branch_ref=None, period=None):
+def _payment_qs(entity, branch_ref=None):
+    """Receipts that brought money in (a credit transfer moves credit already held)."""
+    from vs_finance.collected import received_money_q
     from vs_finance.models import Payment
 
-    qs = Payment.objects.filter(entity=entity, status="POSTED")
+    qs = Payment.objects.filter(received_money_q(), entity=entity, status="POSTED")
     if branch_ref is not None:
         qs = qs.filter(branch_id=branch_ref)
-    references = _period_references(entity, period)
-    if references is not None:
-        # A receipt has no term of its own; it belongs to a period through the
-        # invoices it settled. An unallocated receipt therefore counts towards no
-        # period, which is the honest answer rather than the convenient one.
-        qs = qs.filter(allocations__invoice__reference__in=references).distinct()
     return qs
-
-
-def _term_labels(entity):
-    """``FEE:<code>`` -> human period label, in one query."""
-    from ..models import FeeStructureTermLink
-
-    labels = {}
-    links = (
-        FeeStructureTermLink.objects
-        .filter(fee_structure__entity=entity)
-        .select_related("session", "term", "fee_structure")
-    )
-    for link in links:
-        labels[f"FEE:{link.fee_structure.code}"] = link.label
-    return labels
 
 
 def _ageing_bucket(due_date, today):
+    """The bucket a bill falls in by the date it fell due (its invoice date if none)."""
     if due_date is None or due_date >= today:
         return AgeingBucket.CURRENT
     days = (today - due_date).days
@@ -1138,17 +1132,17 @@ def _ageing_case(today):
     the database to subtract dates: date arithmetic is the part of SQL that
     differs most between backends, and this needs none of it.
     """
+    due = Coalesce("due_date", "invoice_date")
     return Case(
-        When(Q(due_date__isnull=True) | Q(due_date__gte=today),
-             then=Value(AgeingBucket.CURRENT.value)),
-        When(due_date__lt=today - datetime.timedelta(days=90),
+        When(Q(aged_from__gte=today), then=Value(AgeingBucket.CURRENT.value)),
+        When(aged_from__lt=today - datetime.timedelta(days=90),
              then=Value(AgeingBucket.DAYS_90_PLUS.value)),
-        When(due_date__lt=today - datetime.timedelta(days=60),
+        When(aged_from__lt=today - datetime.timedelta(days=60),
              then=Value(AgeingBucket.DAYS_61_90.value)),
-        When(due_date__lt=today - datetime.timedelta(days=30),
+        When(aged_from__lt=today - datetime.timedelta(days=30),
              then=Value(AgeingBucket.DAYS_31_60.value)),
         default=Value(AgeingBucket.DAYS_1_30.value),
-    )
+    ), due
 
 
 _PAYMENT_METHODS = {
@@ -1161,11 +1155,11 @@ _PAYMENT_METHODS = {
 }
 
 
-def _invoice_view(invoice, labels):
+def _invoice_view(invoice):
     return InvoiceView(
         invoice_ref=invoice.pk,
         student_ref=invoice.customer.source_id,
-        term_label=labels.get(invoice.reference, ""),
+        term_label=invoice.billing_period_label,
         lines=tuple(
             InvoiceLine(description=line.description, amount=line.net_amount + line.tax_amount)
             for line in invoice.lines.all()
@@ -1187,8 +1181,19 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
     # ----- headline KPIs --------------------------------------------------- #
     @envelope
     def collections(self, school_ref, branch_ref=None, period=None):
+        """Money in: for a period, what was applied to its bills; else every receipt.
+
+        For a period this is finance's own definition (:mod:`vs_finance.collected`),
+        the one the finance dashboard reads: a receipt paying two terms counts in
+        each for the part it paid there, and money left as credit counts in no term.
+        """
+        from vs_finance.collected import billed_and_collected
+
         entity = self._entity_of(school_ref)
-        total = _payment_qs(entity, branch_ref, period).aggregate(t=Sum("amount"))["t"] or 0
+        if period is not None:
+            _billed, total = billed_and_collected(_invoice_qs(entity, branch_ref, period))
+        else:
+            total = _payment_qs(entity, branch_ref).aggregate(t=Sum("amount"))["t"] or 0
         return _available(KpiValue(value=total, unit=Unit.KOBO, label="Collections"))
 
     @envelope
@@ -1203,15 +1208,14 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
 
     @envelope
     def collection_rate(self, school_ref, branch_ref=None, period=None):
+        from vs_finance.collected import billed_and_collected, collection_rate_bps
+
         entity = self._entity_of(school_ref)
-        agg = _invoice_qs(entity, branch_ref, period).aggregate(
-            billed=Sum("total"), paid=Sum("amount_paid"),
-        )
-        billed = agg["billed"] or 0
-        paid = agg["paid"] or 0
-        # Integer basis points: a school that has billed nothing has collected
-        # 100% of nothing, and reporting that as 0% would read as a crisis.
-        rate = BPS if billed == 0 else (paid * BPS) // billed
+        # Finance's own definition: billed is net of scholarships, discounts and
+        # credit notes. A school that has billed nothing has collected 100% of
+        # nothing, and reporting that as 0% would read as a crisis.
+        billed, paid = billed_and_collected(_invoice_qs(entity, branch_ref, period))
+        rate = collection_rate_bps(billed, paid)
         return _available(KpiValue(
             value=rate, unit=Unit.RATIO, scale=BPS, label="Collection rate",
         ))
@@ -1248,10 +1252,11 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
     def ar_ageing(self, school_ref, branch_ref=None, period=None):
         entity = self._entity_of(school_ref)
         today = branch_today(entity.tenant, branch_ref)
+        bucket, aged_from = _ageing_case(today)
         rows = (
             _invoice_qs(entity, branch_ref, period)
             .annotate(bal=_BALANCE).filter(bal__gt=0)
-            .annotate(bucket=_ageing_case(today))
+            .annotate(aged_from=aged_from).annotate(bucket=bucket)
             .values("bucket")
             .annotate(total=Sum("bal"), debtors=Count("customer_id", distinct=True))
         )
@@ -1282,18 +1287,15 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
             # "Fee liability" is about fees, not about every receivable the school
             # has ever raised, so an unscoped call still narrows to fee invoices.
             qs = qs.filter(reference__startswith="FEE:")
-        agg = qs.aggregate(
-            billed=Sum("total"), paid=Sum("amount_paid"), credited=Sum("amount_credited"),
-        )
-        billed = agg["billed"] or 0
-        paid = agg["paid"] or 0
-        credited = agg["credited"] or 0
+        from vs_finance.collected import billed_and_collected
+
+        billed, paid = billed_and_collected(qs)
         return _available(FeeLiability(
             school_ref=school_ref,
             period=period,
             total_billed=billed,
             total_collected=paid,
-            total_outstanding=billed - paid - credited,
+            total_outstanding=billed - paid,
         ))
 
     # ----- detail lists ---------------------------------------------------- #
@@ -1309,7 +1311,8 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
                 "customer_id", "customer__name", "customer__source_id",
                 "customer__branch_id",
             )
-            .annotate(outstanding=Sum("bal"), oldest_due=Min("due_date"))
+            .annotate(outstanding=Sum("bal"),
+                      oldest_due=Min(Coalesce("due_date", "invoice_date")))
             .order_by("-outstanding")
         )
 
@@ -1328,7 +1331,6 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
     @envelope
     def fee_invoices(self, school_ref, branch_ref=None, filters=(), page=1, page_size=20):
         entity = self._entity_of(school_ref)
-        labels = _term_labels(entity)
         qs = (
             _invoice_qs(entity, branch_ref)
             .filter(_filter_q("fee_invoices", filters))
@@ -1342,7 +1344,7 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
                 student_ref=invoice.customer.source_id or "",
                 student_name=invoice.customer.name,
                 class_label="",   # filled below, once the page is known
-                term_label=labels.get(invoice.reference, ""),
+                term_label=invoice.billing_period_label,
                 amount_due=invoice.total,
                 amount_paid=invoice.amount_paid,
                 balance=invoice.balance_due,
@@ -1392,8 +1394,6 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
                 total_paid=0, invoices=(),
             ))
         _one_tenant(customers, "This student's AR accounts")
-        entity = customers[0].entity
-        labels = _term_labels(entity)
         invoices = list(
             Invoice.objects
             .filter(customer__in=customers, status="POSTED")
@@ -1408,7 +1408,7 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
             balance=billed - paid - credited,
             total_billed=billed,
             total_paid=paid,
-            invoices=tuple(_invoice_view(inv, labels) for inv in invoices),
+            invoices=tuple(_invoice_view(inv) for inv in invoices),
         ))
 
     @envelope
@@ -1419,7 +1419,6 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
         if not customers:
             return _available(())
         _one_tenant(customers, "This student's AR accounts")
-        labels = _term_labels(customers[0].entity)
         qs = (
             Invoice.objects
             .filter(customer__in=customers, status="POSTED")
@@ -1428,7 +1427,7 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
         )
         if not include_history:
             qs = qs.annotate(bal=_BALANCE).filter(bal__gt=0)
-        return _available(tuple(_invoice_view(inv, labels) for inv in qs))
+        return _available(tuple(_invoice_view(inv) for inv in qs))
 
     @envelope
     def combined_balance(self, student_refs):

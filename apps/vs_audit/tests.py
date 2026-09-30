@@ -516,35 +516,38 @@ class AuditExportFileFixture:
     the case that decides whether one school's export is reachable from another.
     """
 
-    def build(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         call_command("seed_actions", verbosity=0)
         call_command("seed_platform_permissions", verbosity=0)
 
-        self.tenant = Tenant.objects.get(slug="codex")
-        self.other_tenant = Tenant.objects.create(
+        cls.tenant = Tenant.objects.get(slug="codex")
+        cls.other_tenant = Tenant.objects.create(
             name="Bright Star School",
             slug="bright-star",
             kind=Tenant.Kind.ORGANIZATION,
             status=Tenant.Status.ACTIVE,
         )
 
-        self.officer = self._user(
+        cls.officer = cls._user(
             "audit.officer@example.test", role="audit_officer",
             keys=["platform.audit.export", "platform.audit.view"],
         )
-        self.stranger = self._user("stranger@example.test", role="no_audit", keys=[])
-        self.outsider = self._user(
+        cls.stranger = cls._user("stranger@example.test", role="no_audit", keys=[])
+        cls.outsider = cls._user(
             "outsider@example.test", role="audit_officer",
             keys=["platform.audit.export", "platform.audit.view"],
-            tenant=self.other_tenant,
+            tenant=cls.other_tenant,
         )
 
-    def _user(self, email, *, role, keys, tenant=None):
+    @classmethod
+    def _user(cls, email, *, role, keys, tenant=None):
         from vs_rbac.models import (
             Permission, TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
         )
 
-        tenant = tenant or self.tenant
+        tenant = tenant or cls.tenant
         user = User.objects.create_user(
             email=email, password="Str0ng!pass123", status="ACTIVE", first_name=email.split("@")[0], last_name="Tester",
             tenant=tenant,
@@ -602,7 +605,7 @@ class EventExplorerTenantFilterEndpointTests(AuditExportFileFixture, TestCase):
     """
 
     def setUp(self):
-        self.build()
+        clear_request_context()
         self.make_events(2)
         AuditEvent.objects.filter(entity_type="PurchaseOrder").update(
             tenant=self.other_tenant,
@@ -667,7 +670,7 @@ class AuditExportStorageTests(AuditExportFileFixture, TestCase):
     """The export writes a file to storage and records its name, not its body."""
 
     def setUp(self):
-        self.build()
+        clear_request_context()
         self.client = TenantAPIClient(self.officer)
 
     def _create_export(self, client=None, payload=None):
@@ -788,7 +791,7 @@ class AuditExportAuthorisationTests(AuditExportFileFixture, TestCase):
     """Who may take the trail out of the building."""
 
     def setUp(self):
-        self.build()
+        clear_request_context()
         self.make_events(5)
         self.officer_client = TenantAPIClient(self.officer)
         created = self.officer_client.post(
@@ -836,7 +839,7 @@ class AuditExportFailureStateTests(AuditExportFileFixture, TestCase):
     """A job that cannot finish must say so, not sit at RUNNING for ever."""
 
     def setUp(self):
-        self.build()
+        clear_request_context()
         self.client = TenantAPIClient(self.officer)
 
     @override_settings(MEDIA_DB_MAX_BYTES=2000)
@@ -920,43 +923,46 @@ class AuditTenantIsolationFixture:
       and therefore readable by nobody but platform staff.
     """
 
-    def build(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         call_command("seed_actions", verbosity=0)
         call_command("seed_platform_permissions", verbosity=0)
         # Events below are written outside any request, so the ambient tenant
         # must not survive from an earlier test and stamp itself on them.
         clear_request_context()
 
-        self.platform = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
-        self.bright_star = Tenant.objects.create(
+        cls.platform = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+        cls.bright_star = Tenant.objects.create(
             name="Bright Star School", slug="bright-star",
             kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
         )
-        self.greenfield = Tenant.objects.create(
+        cls.greenfield = Tenant.objects.create(
             name="Greenfield School", slug="greenfield",
             kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
         )
 
-        self.reviewer = self._officer("cx.reviewer@example.test", self.platform)
-        self.bright_officer = self._officer("bright.officer@example.test", self.bright_star)
-        self.green_officer = self._officer("green.officer@example.test", self.greenfield)
+        cls.reviewer = cls._officer("cx.reviewer@example.test", cls.platform)
+        cls.bright_officer = cls._officer("bright.officer@example.test", cls.bright_star)
+        cls.green_officer = cls._officer("green.officer@example.test", cls.greenfield)
 
-        self.bright_current = self._event("PO-BRIGHT-1", tenant=self.bright_star)
-        self.bright_legacy = self._event("PO-BRIGHT-2", owner=self.bright_star)
-        self.green_current = self._event(
-            "PO-GREEN-1", tenant=self.greenfield, severity=AuditSeverity.CRITICAL,
+        cls.bright_current = cls._event("PO-BRIGHT-1", tenant=cls.bright_star)
+        cls.bright_legacy = cls._event("PO-BRIGHT-2", owner=cls.bright_star)
+        cls.green_current = cls._event(
+            "PO-GREEN-1", tenant=cls.greenfield, severity=AuditSeverity.CRITICAL,
         )
-        self.green_legacy = self._event(
-            "PO-GREEN-2", owner=self.greenfield, severity=AuditSeverity.CRITICAL,
+        cls.green_legacy = cls._event(
+            "PO-GREEN-2", owner=cls.greenfield, severity=AuditSeverity.CRITICAL,
         )
-        self.unattributed = self._event("PO-ANON")
+        cls.unattributed = cls._event("PO-ANON")
 
     OWN_ROWS = {"PO-BRIGHT-1", "PO-BRIGHT-2"}
     OTHER_ROWS = {"PO-GREEN-1", "PO-GREEN-2"}
     EVERY_ROW = OWN_ROWS | OTHER_ROWS | {"PO-ANON"}
     FILTER = {"entity_type": "PurchaseOrder"}
 
-    def _officer(self, email, tenant):
+    @classmethod
+    def _officer(cls, email, tenant):
         from vs_rbac.models import (
             Permission, TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
         )
@@ -980,7 +986,8 @@ class AuditTenantIsolationFixture:
         )
         return user
 
-    def _event(self, entity_id, *, tenant=None, owner=None, severity=AuditSeverity.WARNING):
+    @classmethod
+    def _event(cls, entity_id, *, tenant=None, owner=None, severity=AuditSeverity.WARNING):
         """Write one procurement event, through the real emitter so a trail exists."""
         event = emit_audit_event(
             module_key=AuditModuleKey.PROCUREMENT,
@@ -994,7 +1001,8 @@ class AuditTenantIsolationFixture:
             summary=f"Approval failed on purchase order {entity_id}",
             metadata={"tenant_id": str(owner.pk)} if owner is not None else {},
         )
-        self.assertIsNotNone(event, f"{entity_id} was swallowed by emit_audit_event")
+        if event is None:
+            raise AssertionError(f"{entity_id} was swallowed by emit_audit_event")
         return event
 
     @staticmethod
@@ -1012,7 +1020,7 @@ class AuditEventTenantIsolationTests(AuditTenantIsolationFixture, TestCase):
     """Bright Star's audit officer may read Bright Star's trail and no other."""
 
     def setUp(self):
-        self.build()
+        clear_request_context()
         self.bright = TenantAPIClient(self.bright_officer)
         self.green = TenantAPIClient(self.green_officer)
         self.cx = TenantAPIClient(self.reviewer)
@@ -1095,7 +1103,7 @@ class AuditEventDetailTenantIsolationTests(AuditTenantIsolationFixture, TestCase
     """Knowing an event's id is not authority to read it."""
 
     def setUp(self):
-        self.build()
+        clear_request_context()
         self.bright = TenantAPIClient(self.bright_officer)
 
     def test_another_tenants_event_is_a_404_even_with_its_id(self):
@@ -1126,7 +1134,7 @@ class EntityAuditTrailTenantIsolationTests(AuditTenantIsolationFixture, TestCase
     """The entity catalogue is the enumerable route, so it is bounded too."""
 
     def setUp(self):
-        self.build()
+        clear_request_context()
         self.bright = TenantAPIClient(self.bright_officer)
 
     def test_the_catalogue_lists_only_entities_the_caller_can_read(self):
@@ -1163,7 +1171,7 @@ class AuditDashboardTenantIsolationTests(AuditTenantIsolationFixture, TestCase):
     """A count is a disclosure: the dashboard answers to the same boundary."""
 
     def setUp(self):
-        self.build()
+        clear_request_context()
 
     def _kpis(self, user):
         response = TenantAPIClient(user).get("/v1/audit/dashboard-summary/")
@@ -1201,7 +1209,7 @@ class AuditDashboardClockTests(AuditTenantIsolationFixture, TestCase):
     def setUp(self):
         import datetime as dt
 
-        self.build()
+        clear_request_context()
         two_days_ago = timezone.now() - dt.timedelta(days=2)
         self.instant = two_days_ago.astimezone(dt.timezone.utc).replace(
             hour=23, minute=30, second=0, microsecond=0,
@@ -1227,7 +1235,7 @@ class AuditExportTenantIsolationTests(AuditTenantIsolationFixture, TestCase):
     """The copy that leaves the building carries no more than the screen showed."""
 
     def setUp(self):
-        self.build()
+        clear_request_context()
         self.bright = TenantAPIClient(self.bright_officer)
 
     def _export(self, client):
@@ -1288,7 +1296,7 @@ class ExportCentreDatasetScopeTests(AuditTenantIsolationFixture, TestCase):
     """
 
     def setUp(self):
-        self.build()
+        clear_request_context()
         # Codex owns rows in both shapes too. It is a tenant like any other as
         # far as the boundary is concerned; only the *console* widens for it.
         self.cx_current = self._event("PO-CX-1", tenant=self.platform)
@@ -1387,26 +1395,29 @@ class EntityTrailCounterFixture(AuditTenantIsolationFixture):
 
     SHARED = ("Permission", "finance.invoice.view")
 
-    def build_shared_trail(self):
-        self.bright_seen = [self._registry_event(self.bright_star) for _ in range(2)]
-        self.green_seen = [self._registry_event(self.greenfield) for _ in range(3)]
+    @classmethod
+    def build_shared_trail(cls):
+        cls.bright_seen = [cls._registry_event(cls.bright_star) for _ in range(2)]
+        cls.green_seen = [cls._registry_event(cls.greenfield) for _ in range(3)]
         # Written before anyone recorded an owner - in nobody's count but the
         # platform's, which is the same rule the events themselves follow.
-        self.nobodys = self._registry_event(None)
+        cls.nobodys = cls._registry_event(None)
 
-    def _registry_event(self, owner):
+    @classmethod
+    def _registry_event(cls, owner):
         event = emit_audit_event(
             module_key=AuditModuleKey.RBAC,
             action_type=AuditActionType.UPDATE,
             severity=AuditSeverity.INFO,
             status=AuditStatus.SUCCESS,
             tenant=owner,
-            entity_type=self.SHARED[0],
-            entity_id=self.SHARED[1],
+            entity_type=cls.SHARED[0],
+            entity_id=cls.SHARED[1],
             entity_label="View invoices",
             summary="Permission granted to a role",
         )
-        self.assertIsNotNone(event)
+        if event is None:
+            raise AssertionError("the shared-trail event was swallowed")
         return event
 
     def trail_row(self, response):
@@ -1419,9 +1430,13 @@ class EntityTrailCounterFixture(AuditTenantIsolationFixture):
 class EntityTrailCounterTests(EntityTrailCounterFixture, TestCase):
     """A tenant is told the size of the trail it can actually open."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.build_shared_trail()
+
     def setUp(self):
-        self.build()
-        self.build_shared_trail()
+        clear_request_context()
         self.bright = TenantAPIClient(self.bright_officer)
         self.cx = TenantAPIClient(self.reviewer)
 
@@ -1509,9 +1524,13 @@ class EntityTrailCounterTests(EntityTrailCounterFixture, TestCase):
 class EntityTrailCounterQueryCostTests(EntityTrailCounterFixture, TestCase):
     """The counters are a page-level query, not a per-row one."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.build_shared_trail()
+
     def setUp(self):
-        self.build()
-        self.build_shared_trail()
+        clear_request_context()
 
     def _request(self, user):
         from types import SimpleNamespace
@@ -1603,9 +1622,13 @@ class RetiredTrailRollupTests(EntityTrailCounterFixture, TestCase):
     standing.
     """
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.build_shared_trail()
+
     def setUp(self):
-        self.build()
-        self.build_shared_trail()
+        clear_request_context()
         self.cx = TenantAPIClient(self.reviewer)
         self.bright = TenantAPIClient(self.bright_officer)
 
@@ -1751,7 +1774,7 @@ class EntityTrailOrderingTests(EntityTrailCounterFixture, TestCase):
     """
 
     def setUp(self):
-        self.build()
+        clear_request_context()
         self.cx = TenantAPIClient(self.reviewer)
         self.bright = TenantAPIClient(self.bright_officer)
 

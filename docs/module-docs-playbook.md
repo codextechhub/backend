@@ -594,10 +594,11 @@ can trace endpoints → calculations → output shapes without reading the code 
   whenever fixes share `constants.py` or the migrations directory (parallel agents
   collide on migration numbering).
 - **QA on return** (non-negotiable): `git status --short` must match the brief;
-  review risky hunks line-by-line; run the full suite YOURSELF (don't trust the
-  agent's line); check `makemigrations --check --dry-run` and re-run seeds. Defects
-  go back to the same agent via SendMessage with a precise correction. Only then
-  sync docs and commit.
+  review risky hunks line-by-line; run the affected apps' tests YOURSELF (don't
+  trust the agent's line), escalating to the full suite only at the checkpoints
+  in CLAUDE.md "Testing strategy"; check `makemigrations --check --dry-run` and
+  re-run seeds. Defects go back to the same agent via SendMessage with a precise
+  correction. Only then sync docs and commit.
 - Bulk/token-heavy chores (computer use, mass analysis) may go to cheaper models.
 
 ## Conventions that bit us (learn once)

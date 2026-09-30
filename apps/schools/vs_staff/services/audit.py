@@ -164,6 +164,18 @@ def emit_leave_recorded(leave, actor=None):
     )
 
 
+def emit_leave_updated(leave, actor=None):
+    """Record who corrected a pending request without exposing its note in audit metadata."""
+    emit_audit_event(
+        module_key=MODULE, action_type=AuditActionType.UPDATE,
+        entity_type="LeaveRequest", entity_id=str(leave.pk),
+        entity_label=_name(leave.staff), actor_user=actor, tenant=leave.tenant,
+        severity=AuditSeverity.CRITICAL,
+        summary="Leave request updated.",
+        metadata={"staff_id": leave.staff_id},
+    )
+
+
 def emit_leave_decided(leave, actor=None):
     """Separate from the filing, because they are different acts by different people.
 

@@ -100,6 +100,61 @@ def _stage_for(stages, days_overdue: int):
     return match  # Return highest qualifying stage or None.
 
 
+def _not_to_chase(entity, invoices, *, as_of) -> set:
+    """Ids of overdue invoices a reminder would wrongly chase.
+
+    Two kinds, and neither is a debt the customer is late with:
+
+    * **Paid for by credit.** A customer holding unapplied credit in the invoice's
+      own branch (an early payment the books have not yet applied, say, because the
+      entity keeps credit on account) is not chased for what that credit covers.
+      Credit is walked oldest invoice first, so it covers whole invoices and the
+      one it cannot cover is still chased.
+    * **On a payment plan that is on time.** Mrs Eze agreed three instalments and
+      has paid two on time: while no instalment of an active plan on the invoice is
+      overdue, the invoice is not chased. Once one is, it is.
+    """
+    from collections import defaultdict
+
+    from vs_rbac.scoping import only_branch_id
+
+    from .chronology import credit_lots
+    from .constants import InstallmentStatus, PaymentPlanStatus
+    from .models import PaymentPlan, PaymentPlanInstallment
+
+    skip: set = set()
+    if not invoices:
+        return skip
+    ids = [invoice.pk for invoice in invoices]
+    live_plans = PaymentPlan.objects.filter(invoice_id__in=ids, plan_status=PaymentPlanStatus.ACTIVE)
+    on_plan = set(live_plans.values_list("invoice_id", flat=True))
+    behind = set(
+        PaymentPlanInstallment.objects.filter(plan__in=live_plans, due_date__lt=as_of)
+        .exclude(status=InstallmentStatus.PAID).values_list("plan__invoice_id", flat=True)
+    )
+    skip |= on_plan - behind
+
+    only = only_branch_id(entity.tenant_id)
+
+    def branch_of(branch_id):
+        return only if branch_id is None and only is not None else branch_id
+
+    credit: dict = defaultdict(int)
+    customer_ids = {invoice.customer_id for invoice in invoices}
+    for customer_id, lots in credit_lots(entity, customer_ids, as_of=as_of).items():
+        for lot in lots:
+            credit[(customer_id, branch_of(lot.branch_id))] += lot.remaining
+    for invoice in sorted(invoices, key=lambda i: (i.due_date or i.invoice_date, i.pk)):
+        if invoice.pk in skip:
+            continue
+        key = (invoice.customer_id, branch_of(invoice.branch_id))
+        owed = getattr(invoice, "dunning_balance", invoice.balance_due)
+        if credit[key] >= owed:
+            credit[key] -= owed
+            skip.add(invoice.pk)
+    return skip
+
+
 @transaction.atomic
 # Generate overdue invoice reminders.
 def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_user=None,
@@ -118,7 +173,9 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
     backlog climbs L1 → L2 → L3 over successive runs rather than jumping straight to the
     final notice - and at most one new notice is raised per invoice **per run date**
     (``as_of``), making same-day re-runs idempotent. Notices on invoices that have since
-    been settled are flipped to RESOLVED. Returns the list of newly created notices.
+    been settled are flipped to RESOLVED. An invoice the customer's unapplied credit
+    covers, or one on an active payment plan with no instalment overdue, is not chased
+    (:func:`_not_to_chase`). Returns the list of newly created notices.
     """
     from collections import defaultdict
     from .models import DunningNotice
@@ -152,6 +209,8 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
             continue
         invoice.dunning_balance = balance  # Carry the as-at balance onto the notice.
         invoice_list.append(invoice)
+    leave_alone = _not_to_chase(entity, invoice_list, as_of=as_of)
+    invoice_list = [invoice for invoice in invoice_list if invoice.pk not in leave_alone]
 
     # Resolve any outstanding reminders whose invoice is now fully settled.  # Keeps notice lifecycle current.
     _resolve_settled(entity, actor_user=actor_user, as_of=as_of)  # Mark settled invoice notices resolved.

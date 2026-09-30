@@ -32,7 +32,8 @@ def _call(command, **options):
 
 
 class SeedTaskPermissionsTests(TestCase):
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         codex = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
         for key, name in (
             ("xvs_super_admin", "XVS Super Admin"),
@@ -109,7 +110,8 @@ class SeedTaskPermissionsTests(TestCase):
 class SeedPermissionRegistryOwnershipTests(TestCase):
     """The platform seeder exposes only the permission-registry read key."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         _call("seed_actions")
         _call("seed_platform_permissions")
 

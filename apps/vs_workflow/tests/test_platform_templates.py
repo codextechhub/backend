@@ -90,19 +90,20 @@ def _stages(role_key="approver"):
 
 class PlatformTemplateTests(TestCase):
 
-    def setUp(self):
-        self.codex = codex_tenant()
-        self.platform_admin = make_vision_user(email=f"plat-{next(_counter)}@codex.com")
-        _grant(self.platform_admin, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_VIEW], self.codex)
+    @classmethod
+    def setUpTestData(cls):
+        cls.codex = codex_tenant()
+        cls.platform_admin = make_vision_user(email=f"plat-{next(_counter)}@codex.com")
+        _grant(cls.platform_admin, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_VIEW], cls.codex)
 
-        self.school = make_school(slug=f"tpl-school-{next(_counter)}", name="Tpl School")
-        self.branch = make_branch(self.school)
-        self.tenant = self.school.tenant
-        self.tenant_admin = make_school_admin(self.branch, email=f"tadm-{next(_counter)}@test.com")
-        _grant(self.tenant_admin, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_VIEW])
+        cls.school = make_school(slug=f"tpl-school-{next(_counter)}", name="Tpl School")
+        cls.branch = make_branch(cls.school)
+        cls.tenant = cls.school.tenant
+        cls.tenant_admin = make_school_admin(cls.branch, email=f"tadm-{next(_counter)}@test.com")
+        _grant(cls.tenant_admin, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_VIEW])
         # The role every stage in these tests names, in both publishing tenants.
-        make_role(self.tenant, name="Approver", key="approver")
-        make_role(self.codex, name="Approver", key="approver")
+        make_role(cls.tenant, name="Approver", key="approver")
+        make_role(cls.codex, name="Approver", key="approver")
 
     def _publish(self, user, tenant, *, scope=None, name="Spend Approval",
                  code="standard", role_key="approver"):
@@ -240,25 +241,26 @@ class PlatformOversightTests(TestCase):
     a platform actor must not reach an arbitrary template through it.
     """
 
-    def setUp(self):
-        self.codex = codex_tenant()
-        self.platform_admin = make_vision_user(email=f"ovr-{next(_counter)}@codex.com")
-        _grant(self.platform_admin, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_VIEW], self.codex)
-        make_role(self.codex, name="Approver", key="approver")
+    @classmethod
+    def setUpTestData(cls):
+        cls.codex = codex_tenant()
+        cls.platform_admin = make_vision_user(email=f"ovr-{next(_counter)}@codex.com")
+        _grant(cls.platform_admin, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_VIEW], cls.codex)
+        make_role(cls.codex, name="Approver", key="approver")
 
-        self.school = make_school(slug=f"ovr-school-{next(_counter)}", name="Ovr School")
-        self.branch = make_branch(self.school)
-        self.tenant = self.school.tenant
-        self.tenant_admin = make_school_admin(self.branch, email=f"ovr-adm-{next(_counter)}@t.com")
-        _grant(self.tenant_admin, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_VIEW])
-        make_role(self.tenant, name="Approver", key="approver")
-        make_role(self.tenant, name="Second", key="second")
+        cls.school = make_school(slug=f"ovr-school-{next(_counter)}", name="Ovr School")
+        cls.branch = make_branch(cls.school)
+        cls.tenant = cls.school.tenant
+        cls.tenant_admin = make_school_admin(cls.branch, email=f"ovr-adm-{next(_counter)}@t.com")
+        _grant(cls.tenant_admin, [PERM_TEMPLATE_UPDATE, PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_VIEW])
+        make_role(cls.tenant, name="Approver", key="approver")
+        make_role(cls.tenant, name="Second", key="second")
 
         payload = {"document_type": "probe.request", "code": "standard",
                    "name": "Shared", "stages": _stages(), "scope": "PLATFORM"}
-        _call(PUBLISH, "post", self.platform_admin, self.codex, payload)
-        self.shared = WorkflowTemplate.all_objects.get(tenant__isnull=True,
-                                                       document_type="probe.request")
+        _call(PUBLISH, "post", cls.platform_admin, cls.codex, payload)
+        cls.shared = WorkflowTemplate.all_objects.get(tenant__isnull=True,
+                                                      document_type="probe.request")
 
     def _adjust(self, stages=None, name="Ours"):
         _call(PUBLISH, "post", self.tenant_admin, self.tenant,

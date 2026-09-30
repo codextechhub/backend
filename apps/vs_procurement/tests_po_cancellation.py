@@ -50,50 +50,56 @@ ORDERED = datetime.date(2026, 1, 5)
 class PurchaseOrderCancellationTests(TestCase):
     """One school, two branches, and an order standing at one of them."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         seed_currencies()
-        self.school = make_school(slug="po-cancel", name="Cancel Group")
-        self.tenant = self.school.tenant
-        self.lekki = make_branch(self.school, name="Lekki Branch")
-        self.ikeja = make_branch(self.school, name="Ikeja Branch", is_main=False)
+        cls.school = make_school(slug="po-cancel", name="Cancel Group")
+        cls.tenant = cls.school.tenant
+        cls.lekki = make_branch(cls.school, name="Lekki Branch")
+        cls.ikeja = make_branch(cls.school, name="Ikeja Branch", is_main=False)
 
-        self.entity = LedgerEntity.objects.create(
+        cls.entity = LedgerEntity.objects.create(
             name="Cancel Books", code="POCANC", kind=LedgerEntity.Kind.TENANT,
-            tenant=self.tenant,
+            tenant=cls.tenant,
         )
-        seed_chart_of_accounts(self.entity)
+        seed_chart_of_accounts(cls.entity)
         year = FiscalYear.objects.create(
-            entity=self.entity, year=2026,
+            entity=cls.entity, year=2026,
             start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
         )
         FiscalPeriod.objects.create(
-            entity=self.entity, fiscal_year=year, period_no=1, name="Jan 2026",
+            entity=cls.entity, fiscal_year=year, period_no=1, name="Jan 2026",
             start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
         )
-        self.vendor = Vendor.objects.create(
-            entity=self.entity, code="ACME", name="Acme Supplies",
-            payable_account=self.acc("2100"),
+        cls.vendor = Vendor.objects.create(
+            entity=cls.entity, code="ACME", name="Acme Supplies",
+            payable_account=cls.acc("2100"),
         )
-        self.order = self.issued_order()
+        cls.order = cls.issued_order()
+
+    def setUp(self):
         self.buyer = self.client_for("lekki-buyer@test.com", branch=self.lekki)
         self.other_branch = self.client_for("ikeja-buyer@test.com", branch=self.ikeja)
 
     # -- fixture ------------------------------------------------------------- #
 
-    def acc(self, code):
-        return Account.objects.get(entity=self.entity, code=code)
+    @classmethod
+    def acc(cls, code):
+        return Account.objects.get(entity=cls.entity, code=code)
 
-    def issued_order(self, *, branch=None):
+    @classmethod
+    def issued_order(cls, *, branch=None):
         """An approved order at a branch, as one looks after it reaches its vendor."""
         order = PurchaseOrder.objects.create(
-            entity=self.entity, vendor=self.vendor, order_date=ORDERED,
-            branch=branch or self.lekki,
+            entity=cls.entity, vendor=cls.vendor, order_date=ORDERED,
+            branch=branch or cls.lekki,
             status=DocumentStatus.APPROVED,
             approval_state=ProcApprovalState.APPROVED,
         )
         PurchaseOrderLine.objects.create(
             purchase_order=order, description="Chair", line_no=1,
-            expense_account=self.acc("5300"), quantity=2, unit_price=100_000,
+            expense_account=cls.acc("5300"), quantity=2, unit_price=100_000,
         )
         price_po(order)
         order.refresh_from_db()

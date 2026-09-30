@@ -25,49 +25,50 @@ from vs_user.views.organogram import PositionAssignmentViewSet
 
 
 class OrganogramAccessTests(TestCase):
-    def setUp(self):
-        self.viewer = make_vision_user(email="ordinary.organogram@codex.test")
-        self.manager = make_vision_user(
+    @classmethod
+    def setUpTestData(cls):
+        cls.viewer = make_vision_user(email="ordinary.organogram@codex.test")
+        cls.manager = make_vision_user(
             email="manager.organogram@codex.test",
             first_name="Ada",
             last_name="Lovelace",
         )
-        self.node = OrgNode.objects.create(
+        cls.node = OrgNode.objects.create(
             name="Organogram Access", code="ORG-ACCESS", kind=OrgNode.Kind.DIVISION,
         )
-        self.manager_position = Position.objects.create(
-            title="Access Director", code="ACCESS-DIR", org_node=self.node,
+        cls.manager_position = Position.objects.create(
+            title="Access Director", code="ACCESS-DIR", org_node=cls.node,
         )
-        self.viewer_position = Position.objects.create(
-            title="Access Analyst", code="ACCESS-AN", org_node=self.node,
-            reports_to=self.manager_position,
-        )
-        PositionAssignment.objects.create(
-            user=self.manager, position=self.manager_position, is_primary=True,
+        cls.viewer_position = Position.objects.create(
+            title="Access Analyst", code="ACCESS-AN", org_node=cls.node,
+            reports_to=cls.manager_position,
         )
         PositionAssignment.objects.create(
-            user=self.viewer, position=self.viewer_position,
+            user=cls.manager, position=cls.manager_position, is_primary=True,
+        )
+        PositionAssignment.objects.create(
+            user=cls.viewer, position=cls.viewer_position,
             is_primary=True, is_acting=True,
         )
         MatrixReport.objects.create(
-            position=self.viewer_position,
-            reports_to=self.manager_position,
+            position=cls.viewer_position,
+            reports_to=cls.manager_position,
             relationship_label="Project",
         )
-        self.profile = PlatformStaffProfile.objects.create(
-            user=self.manager,
+        cls.profile = PlatformStaffProfile.objects.create(
+            user=cls.manager,
             employee_id="CX-ORG-1",
             job_title="Access Director",
-            position=self.manager_position,
+            position=cls.manager_position,
             personal_email="private@example.test",
             nok_name="Private Relative",
             bank_name="Private Bank",
         )
-        self.viewer_profile = PlatformStaffProfile.objects.create(
-            user=self.viewer,
+        cls.viewer_profile = PlatformStaffProfile.objects.create(
+            user=cls.viewer,
             employee_id="CX-ORG-2",
             job_title="Access Analyst",
-            position=self.viewer_position,
+            position=cls.viewer_position,
             personal_email="owner-private@example.test",
             nok_name="Owner Relative",
             bank_name="Owner Bank",
@@ -77,6 +78,8 @@ class OrganogramAccessTests(TestCase):
         # field is open to everybody by design. Installed, and with no role
         # turning them on, the registry default applies and they start closed.
         install_declared_fields("platform.staff_profile")
+
+    def setUp(self):
         self.client = APIClient()
         self.client.force_authenticate(user=self.viewer)
 
@@ -315,42 +318,41 @@ class OrganogramTenantIsolationTests(TestCase):
     the gate and the queryset to account separately.
     """
 
-    def setUp(self):
-        self.client = APIClient()
-
+    @classmethod
+    def setUpTestData(cls):
         # The CX chart.
-        self.node = OrgNode.objects.create(
+        cls.node = OrgNode.objects.create(
             name="Isolation Division", code="ISO-DV", kind=OrgNode.Kind.DIVISION,
         )
-        self.cx_position = Position.objects.create(
-            title="Isolation Director", code="ISO-DIR", org_node=self.node,
+        cls.cx_position = Position.objects.create(
+            title="Isolation Director", code="ISO-DIR", org_node=cls.node,
         )
-        self.cx_staff = make_vision_user(
+        cls.cx_staff = make_vision_user(
             email="cx.isolation@codex.test", first_name="Chidera", last_name="Okoro",
         )
-        self.cx_assignment = PositionAssignment.objects.create(
-            user=self.cx_staff, position=self.cx_position, is_primary=True,
+        cls.cx_assignment = PositionAssignment.objects.create(
+            user=cls.cx_staff, position=cls.cx_position, is_primary=True,
         )
 
         # Bright Star: one branch, the common shape.
-        self.bright_star = make_school(slug="bright-star-iso", name="Bright Star School")
-        self.bright_star_main = make_branch(self.bright_star)
-        self.amaka = make_school_admin(
-            self.bright_star_main, email="amaka@brightstar.test",
+        cls.bright_star = make_school(slug="bright-star-iso", name="Bright Star School")
+        cls.bright_star_main = make_branch(cls.bright_star)
+        cls.amaka = make_school_admin(
+            cls.bright_star_main, email="amaka@brightstar.test",
         )
 
         # Greenfield: three branches, so nothing here can be true only of a
         # school that happens to have one site.
-        self.greenfield = make_school(slug="greenfield-iso", name="Greenfield School")
-        self.greenfield_main = make_branch(self.greenfield)
-        self.greenfield_lekki = make_branch(
-            self.greenfield, name="Lekki", is_main=False,
+        cls.greenfield = make_school(slug="greenfield-iso", name="Greenfield School")
+        cls.greenfield_main = make_branch(cls.greenfield)
+        cls.greenfield_lekki = make_branch(
+            cls.greenfield, name="Lekki", is_main=False,
         )
-        self.greenfield_ikeja = make_branch(
-            self.greenfield, name="Ikeja", is_main=False,
+        cls.greenfield_ikeja = make_branch(
+            cls.greenfield, name="Ikeja", is_main=False,
         )
-        self.tunde = make_school_admin(
-            self.greenfield_ikeja, email="tunde@greenfield.test",
+        cls.tunde = make_school_admin(
+            cls.greenfield_ikeja, email="tunde@greenfield.test",
         )
 
         # Rows that the model forbids and that therefore cannot arrive through
@@ -358,12 +360,15 @@ class OrganogramTenantIsolationTests(TestCase):
         # so does OrganogramService. They are written straight to the table on
         # purpose - without them the tenant clause would pass by having nothing
         # to exclude, which proves nothing about whether it is applied.
-        self.bright_star_row = PositionAssignment.objects.create(
-            user=self.amaka, position=self.cx_position, is_primary=True,
+        cls.bright_star_row = PositionAssignment.objects.create(
+            user=cls.amaka, position=cls.cx_position, is_primary=True,
         )
-        self.greenfield_row = PositionAssignment.objects.create(
-            user=self.tunde, position=self.cx_position, is_primary=False,
+        cls.greenfield_row = PositionAssignment.objects.create(
+            user=cls.tunde, position=cls.cx_position, is_primary=False,
         )
+
+    def setUp(self):
+        self.client = APIClient()
 
     # ── the queryset ─────────────────────────────────────────────────────────
 

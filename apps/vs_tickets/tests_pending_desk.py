@@ -28,35 +28,38 @@ TICKETS = "/v1/support/tickets/"
 
 
 class PendingSchoolSupportDeskTests(TicketFixtureMixin, TestCase):
-    def setUp(self):
-        self.build_users()
-        Tenant.objects.filter(pk=self.school_a.tenant_id).update(
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        Tenant.objects.filter(pk=cls.school_a.tenant_id).update(
             status=Tenant.Status.PENDING,
         )
         _grant(
-            self.school_a,
-            self.peer,
+            cls.school_a,
+            cls.peer,
             (TicketPermission.TRIAGE, TicketPermission.TRANSITION,
              TicketPermission.ESCALATE, TicketPermission.COMMENT),
             role_name="Alpha Triage",
         )
         # Re-read so the cached tenant carries the PENDING status.
-        self.requester = User.objects.get(pk=self.requester.pk)
-        self.peer = User.objects.get(pk=self.peer.pk)
-        self.assertEqual(self.requester.tenant.status, Tenant.Status.PENDING)
+        cls.requester = User.objects.get(pk=cls.requester.pk)
+        cls.peer = User.objects.get(pk=cls.peer.pk)
 
-        self.ticket = Ticket.objects.create(
+        cls.ticket = Ticket.objects.create(
             title="The branch step will not complete",
             description="Saving the second branch spins forever.",
-            requester=self.requester,
-            tenant=self.school_a.tenant,
+            requester=cls.requester,
+            tenant=cls.school_a.tenant,
         )
-        self.beta_ticket = Ticket.objects.create(
+        cls.beta_ticket = Ticket.objects.create(
             title="Beta's own problem",
             description="Nothing Alpha should read.",
-            requester=self.outsider,
-            tenant=self.school_b.tenant,
+            requester=cls.outsider,
+            tenant=cls.school_b.tenant,
         )
+
+    def setUp(self):
+        self.assertEqual(self.requester.tenant.status, Tenant.Status.PENDING)
 
     def _as(self, user):
         client = APIClient()

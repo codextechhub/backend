@@ -2,8 +2,10 @@
 
 Registered as ``FINANCE_BILLING_PERIOD_PROVIDER`` (see
 :mod:`vs_finance.billing_periods`). For a school's books it answers with the term
-the school is in, and the invoices raised from the fee structures linked to that
-term (``FEE:<code>`` references, the same rule the FAL's read port uses). Books
+the school is in, and the invoices a fee run stamped with that term's billing
+period (:func:`~schools.core.fal.models.period_key`, the same rule the FAL's read
+port uses). The stamp is fixed when the invoice posts, so re-linking a fee
+structure later never moves a bill from one term to another. Books
 that are not a school's get ``None``.
 
 Between terms the answer is the term that last started: in the holiday after
@@ -29,7 +31,7 @@ def current_term(entity, as_of):
     from schools.vs_academics.models import AcademicTerm
     from schools.vs_academics.services.words import term_word
 
-    from .models import FeeStructureTermLink, period_name
+    from .models import period_key, period_name
 
     tenant = getattr(entity, "tenant", None)
     if tenant is None or tenant.kind != Tenant.Kind.SCHOOL:
@@ -45,14 +47,11 @@ def current_term(entity, as_of):
     )
     if term is None:
         return None
-    codes = FeeStructureTermLink.objects.filter(
-        term=term, fee_structure__entity=entity,
-    ).values_list("fee_structure__code", flat=True)
     return BillingPeriod(
         key="term",
         label=f"This {term_word(tenant)}",
         name=period_name(term.session, term),
         start=term.start_date,
         end=term.end_date,
-        invoices=Q(reference__in=[f"FEE:{code}" for code in codes]),
+        invoices=Q(billing_period=period_key(term.session_id, term.pk)),
     )

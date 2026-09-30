@@ -34,11 +34,15 @@ LINES = (BillLine(description="Exercise books", quantity=100, unit_price=25_000)
 
 
 class _ProcFixture(FALFixture):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        # Both schools: the single-branch one raises and submits here too.
+        cls.publish_default_ladders(cls.corona, cls.greenfield)
+
     def setUp(self):
         super().setUp()
         self.port = DjangoProcurementActionAdapter()
-        # Both schools: the single-branch one raises and submits here too.
-        self.publish_default_ladders(self.corona, self.greenfield)
 
     @staticmethod
     def publish_default_ladders(*schools):

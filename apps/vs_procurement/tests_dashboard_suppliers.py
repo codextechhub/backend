@@ -21,16 +21,17 @@ from .tests_dashboard_overview import AS_OF, _OverviewFixture
 
 
 class _SuppliersFixture(_OverviewFixture):
-    def setUp(self):
-        super().setUp()
-        PurchaseOrder.objects.filter(pk=self.desks.pk).update(expected_date=datetime.date(2026, 1, 6))
-        PurchaseOrder.objects.filter(pk=self.chairs.pk).update(expected_date=datetime.date(2026, 1, 10))
-        GoodsReceivedNoteLine.objects.filter(grn__purchase_order=self.chairs).update(rejected_qty=1)
-        self.direct = self.make_bill(self.multi.entity, self.multi.vendor, [("5300", 1, 6_000, None, None)])
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        PurchaseOrder.objects.filter(pk=cls.desks.pk).update(expected_date=datetime.date(2026, 1, 6))
+        PurchaseOrder.objects.filter(pk=cls.chairs.pk).update(expected_date=datetime.date(2026, 1, 10))
+        GoodsReceivedNoteLine.objects.filter(grn__purchase_order=cls.chairs).update(rejected_qty=1)
+        cls.direct = cls.make_bill(cls.multi.entity, cls.multi.vendor, [("5300", 1, 6_000, None, None)])
         from .payables import post_vendor_invoice, price_vendor_invoice
 
-        price_vendor_invoice(self.direct)
-        post_vendor_invoice(self.direct)
+        price_vendor_invoice(cls.direct)
+        post_vendor_invoice(cls.direct)
 
     def view(self, reader=None, branch=None, window="month"):
         from vs_finance.dashboard import EVERY_BLOCK

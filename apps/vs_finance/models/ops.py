@@ -228,6 +228,22 @@ class FinanceDocumentSettings(TimeStampedModel):
             "drawn as the target on the collection curve."
         ),
     )
+    auto_apply_customer_credit = models.BooleanField(
+        default=True,
+        help_text=(
+            "Apply a customer's unapplied credit (advance payments, overpayments, "
+            "credit notes) to every new invoice of theirs as it posts, oldest credit "
+            "first. Off, credit waits until somebody allocates it."
+        ),
+    )
+    concession_second_person_threshold = models.PositiveBigIntegerField(
+        default=1_000_000,
+        help_text=(
+            "Kobo above which a concession, counted with the other reductions of the "
+            "same bill and billing period, must be posted by somebody other than the "
+            "person who raised it."
+        ),
+    )
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="finance_document_settings_updates", null=True, blank=True,

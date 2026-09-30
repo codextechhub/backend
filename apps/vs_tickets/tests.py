@@ -90,44 +90,56 @@ def _grant(school, user, keys, role_name="Ticket User"):
 
 
 class TicketFixtureMixin:
-    def build_users(self):
-        self.school_a = _school("alpha", "Alpha School")
-        self.branch_a = _branch(self.school_a, "Main")
-        self.school_b = _school("beta", "Beta School")
-        self.branch_b = _branch(self.school_b, "Main")
-        self.requester = _user(
+    """Two schools, their requesters and two CodeX support staff.
+
+    Built once per class in ``setUpTestData``: every test rolls back to this
+    state and receives its own deep copy of the objects, so a grant or a ticket
+    made inside one test never reaches another.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.build_users()
+
+    @classmethod
+    def build_users(cls):
+        cls.school_a = _school("alpha", "Alpha School")
+        cls.branch_a = _branch(cls.school_a, "Main")
+        cls.school_b = _school("beta", "Beta School")
+        cls.branch_b = _branch(cls.school_b, "Main")
+        cls.requester = _user(
             "requester@alpha.test", "Rita", "Requester",
-            school=self.school_a, branch=self.branch_a,
+            school=cls.school_a, branch=cls.branch_a,
         )
-        self.peer = _user(
+        cls.peer = _user(
             "peer@alpha.test", "Paul", "Peer",
-            school=self.school_a, branch=self.branch_a,
+            school=cls.school_a, branch=cls.branch_a,
         )
-        self.norole = _user(
+        cls.norole = _user(
             "norole@alpha.test", "Nora", "Norole",
-            school=self.school_a, branch=self.branch_a,
+            school=cls.school_a, branch=cls.branch_a,
         )
-        self.outsider = _user(
+        cls.outsider = _user(
             "outsider@beta.test", "Bola", "Outsider",
-            school=self.school_b, branch=self.branch_b,
+            school=cls.school_b, branch=cls.branch_b,
         )
-        self.support = _user(
+        cls.support = _user(
             "support@cx.test", "Ada", "Support",
         )
-        self.other_support = _user(
+        cls.other_support = _user(
             "tier2@cx.test", "Tolu", "Tier",
         )
-        _grant(self.school_a, self.requester, REQUESTER_KEYS, role_name="Alpha Requester")
-        _grant(self.school_a, self.peer, REQUESTER_KEYS, role_name="Alpha Peer")
-        _grant(self.school_b, self.outsider, REQUESTER_KEYS, role_name="Beta Requester")
-        # Support authority is an RBAC grant on the platform tenant now, not a
-        # Support status comes from the ticket triage permission.
+        _grant(cls.school_a, cls.requester, REQUESTER_KEYS, role_name="Alpha Requester")
+        _grant(cls.school_a, cls.peer, REQUESTER_KEYS, role_name="Alpha Peer")
+        _grant(cls.school_b, cls.outsider, REQUESTER_KEYS, role_name="Beta Requester")
+        # Support authority: the triage grant on the platform tenant.
         _grant(
-            self.support.tenant, self.support,
+            cls.support.tenant, cls.support,
             (TicketPermission.TRIAGE, TicketPermission.TRANSITION, TicketPermission.ESCALATE), role_name="CX Support",
         )
         _grant(
-            self.other_support.tenant, self.other_support,
+            cls.other_support.tenant, cls.other_support,
             (TicketPermission.TRIAGE, TicketPermission.TRANSITION, TicketPermission.ESCALATE), role_name="CX Support Tier 2",
         )
 
@@ -157,7 +169,6 @@ class TicketFixtureMixin:
 
 class GuideAnalyticsTests(TicketFixtureMixin, TestCase):
     def setUp(self):
-        self.build_users()
         self.client = APIClient()
         self.client.force_authenticate(self.requester)
 
@@ -317,9 +328,6 @@ class GuideAnalyticsTests(TicketFixtureMixin, TestCase):
 
 
 class TicketServiceTests(TicketFixtureMixin, TestCase):
-    def setUp(self):
-        self.build_users()
-
     def test_create_ticket_scopes_to_requester_school_and_audits(self):
         ticket = ticket_svc.create_ticket(
             actor=self.requester,
@@ -858,11 +866,14 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
 
 
 class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
-    def setUp(self):
-        self.build_users()
-        self.ticket = ticket_svc.create_ticket(
-            actor=self.requester, title="Broken export", description="x", category="BUG", priority="HIGH",
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ticket = ticket_svc.create_ticket(
+            actor=cls.requester, title="Broken export", description="x", category="BUG", priority="HIGH",
         )
+
+    def setUp(self):
         self.client_api = APIClient()
 
     def test_cross_tenant_retrieve_is_hidden_as_404(self):
@@ -1217,11 +1228,15 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
 
 
 class TicketPermissionSeedTests(TestCase):
-    def test_seed_ticket_permissions_registers_and_attaches_school_defaults(self):
+    """What ``seed_ticket_permissions`` registers, seeded once for the class."""
+
+    @classmethod
+    def setUpTestData(cls):
         call_command("seed_actions", verbosity=0)
         call_command("seed_prebuilt_role_templates", verbosity=0)
         call_command("seed_ticket_permissions", verbosity=0)
 
+    def test_seed_ticket_permissions_registers_and_attaches_school_defaults(self):
         self.assertTrue(Permission.objects.filter(key="tickets.ticket.view").exists())
         self.assertTrue(Permission.objects.filter(key="tickets.comment.post").exists())
         # Creation is keyless by design - the key must not exist.
@@ -1238,10 +1253,6 @@ class TicketPermissionSeedTests(TestCase):
         """Assigning is the desk choosing which of its own people works a
         ticket. A school's say is escalation, so a roles screen that listed
         this key would offer a choice that changes nothing."""
-        call_command("seed_actions", verbosity=0)
-        call_command("seed_prebuilt_role_templates", verbosity=0)
-        call_command("seed_ticket_permissions", verbosity=0)
-
         assign = Permission.objects.get(key="tickets.ticket.assign")
         self.assertEqual(assign.scope, "PLATFORM")
         self.assertFalse(

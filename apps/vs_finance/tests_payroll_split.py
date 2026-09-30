@@ -33,21 +33,28 @@ class _SplitFixture(_FinanceBranchFixture):
         "finance.payrollrun.pay",
     )
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ada = cls.salary(cls.books, "Ada Obi", cls.ikeja, gross=50_000, paye=3_000, pension=2_000)
+        cls.bola = cls.salary(cls.books, "Bola Lawal", cls.lekki, gross=80_000, paye=5_000, pension=3_000)
+        cls.ikeja_bank = cls.bank(cls.books, "Ikeja Operations", cls.ikeja, "71")
+        cls.lekki_bank = cls.bank(cls.books, "Lekki Operations", cls.lekki, "72")
+        cls.bello_user = cls.user_holding(cls.tenant, "split-hq@corona.test")
+
     def setUp(self):
         super().setUp()
-        self.ada = self.salary(self.books, "Ada Obi", self.ikeja, gross=50_000, paye=3_000, pension=2_000)
-        self.bola = self.salary(self.books, "Bola Lawal", self.lekki, gross=80_000, paye=5_000, pension=3_000)
-        self.ikeja_bank = self.bank(self.books, "Ikeja Operations", self.ikeja, "71")
-        self.lekki_bank = self.bank(self.books, "Lekki Operations", self.lekki, "72")
-        self.bello = self.client_for(self.tenant, "split-hq@corona.test")
+        self.bello = TenantAPIClient(user=self.bello_user)
 
-    def salary(self, entity, name, branch, *, gross, paye=0, pension=0, employee=None):
+    @classmethod
+    def salary(cls, entity, name, branch, *, gross, paye=0, pension=0, employee=None):
         return EmployeeSalary.objects.create(
             entity=entity, name=name, branch=branch, employee=employee,
             gross_amount=gross, paye_amount=paye, pension_amount=pension,
         )
 
-    def bank(self, entity, name, branch, tag):
+    @classmethod
+    def bank(cls, entity, name, branch, tag):
         gl = Account.objects.create(
             entity=entity, code=f"11{tag}", name=f"Cash {tag}",
             account_type=Account.objects.get(entity=entity, code="1000").account_type,
@@ -55,12 +62,15 @@ class _SplitFixture(_FinanceBranchFixture):
         )
         return BankAccount.objects.create(entity=entity, name=name, branch=branch, gl_account=gl)
 
-    def client_for(self, tenant, email, branch=None):
-        user = self.grant(
-            self.user_for(tenant, email), *self.KEYS, tenant=tenant,
+    @classmethod
+    def user_holding(cls, tenant, email, branch=None):
+        return cls.grant(
+            cls.user_for(tenant, email), *cls.KEYS, tenant=tenant,
             role_key=f"role-{email}", branch=branch,
         )
-        return TenantAPIClient(user=user)
+
+    def client_for(self, tenant, email, branch=None):
+        return TenantAPIClient(user=self.user_holding(tenant, email, branch=branch))
 
     def generate(self, client=None, books=None):
         books = books or self.books

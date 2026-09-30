@@ -89,34 +89,36 @@ def _school(name, slug):
 class AccountActionTenantScopeTests(TestCase):
     """One matrix over every account action that resolves a user by id."""
 
-    def setUp(self):
-        self.bright_star = _school("Bright Star School", "bright-star")
-        self.greenfield = _school("Greenfield Academy", "greenfield")
-        self.codex = platform_tenant()
+    @classmethod
+    def setUpTestData(cls):
+        cls.bright_star = _school("Bright Star School", "bright-star")
+        cls.greenfield = _school("Greenfield Academy", "greenfield")
+        cls.codex = platform_tenant()
 
         # Bright Star runs two sites; Greenfield runs one. A single-branch test
         # proves nothing about a multi-branch one, so both are here.
-        self.ikeja = self._main_branch(self.bright_star)
-        self.lekki = make_branch(self.bright_star, name="Lekki", is_main=False)
-        self.greenfield_main = self._main_branch(self.greenfield)
+        cls.ikeja = cls._main_branch(cls.bright_star)
+        cls.lekki = make_branch(cls.bright_star, name="Lekki", is_main=False)
+        cls.greenfield_main = cls._main_branch(cls.greenfield)
 
         # A school-wide administrator: no branch posting, whole-tenant grant.
         # ``a4916e9`` made the null branch the normal shape for a school user,
         # and it is what "administers the whole school" means, so she must reach
         # Ikeja and Lekki alike - and no further.
-        self.amaka = self._user("amaka@bright-star.test", self.bright_star.tenant)
-        self.grant(self.amaka, self.bright_star.tenant)
+        cls.amaka = cls._user("amaka@bright-star.test", cls.bright_star.tenant)
+        cls.grant(cls.amaka, cls.bright_star.tenant)
 
         # Greenfield's own administrator, so the boundary is tested from the
         # one-branch side as well as the two-branch side.
-        self.folake = self._user("folake@greenfield.test", self.greenfield.tenant)
-        self.grant(self.folake, self.greenfield.tenant)
+        cls.folake = cls._user("folake@greenfield.test", cls.greenfield.tenant)
+        cls.grant(cls.folake, cls.greenfield.tenant)
 
         # A Codex operator holding the same keys on the platform tenant. Not a
         # super admin - the bypass would prove nothing about the queryset.
-        self.operator = self._user("operator@codex.test", self.codex)
-        self.grant(self.operator, self.codex)
+        cls.operator = cls._user("operator@codex.test", cls.codex)
+        cls.grant(cls.operator, cls.codex)
 
+    def setUp(self):
         self.client = TenantAPIClient(self.amaka)
 
     # -- fixtures ---------------------------------------------------------

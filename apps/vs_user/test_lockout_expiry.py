@@ -61,22 +61,35 @@ WINDOW_MINUTES = 15
 class _Fixture(TestCase):
     """One school, one teacher with a password, and the clock."""
 
-    def setUp(self):
-        self.school = make_school(slug="brightfield", name="Brightfield Schools")
-        self.tenant = self.school.tenant
-        self.branch = make_branch(self.school, name="Main Branch", is_main=True)
-        self.okafor = self.person("okafor@brightfield.test", "Ngozi", "Okafor")
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="brightfield", name="Brightfield Schools")
+        cls.tenant = cls.school.tenant
+        cls.branch = make_branch(cls.school, name="Main Branch", is_main=True)
+        cls.okafor = cls.person("okafor@brightfield.test", "Ngozi", "Okafor")
 
     # ── people ────────────────────────────────────────────────────────────
 
-    def person(self, email, first="Test", last="Person", *,
+    @classmethod
+    def person(cls, email, first="Test", last="Person", *,
                status=User.Status.ACTIVE, branch=True, password=PW):
         """An account. ``password=None`` leaves it unusable, as an invitation does."""
         return User.objects.create_user(
             email=email, password=password, status=status,
             first_name=first, last_name=last,
-            tenant=self.tenant, branch=self.branch if branch else None,
+            tenant=cls.tenant, branch=cls.branch if branch else None,
         )
+
+    @classmethod
+    def _create_administrator(cls):
+        """Amaka, who may suspend and unlock, with school-wide reach."""
+        admin = cls.person("amaka@brightfield.test", "Amaka", "Obi", branch=False)
+        role = make_role(cls.tenant, name="Administrator")
+        for key in ("platform.team.view", "platform.team.suspend",
+                    "platform.team.reactivate"):
+            make_role_permission(role, make_permission(key))
+        make_assignment(cls.tenant, admin, role)
+        return admin
 
     def administrator(self):
         """Somebody who may suspend and unlock, with school-wide reach.
@@ -85,13 +98,7 @@ class _Fixture(TestCase):
         be a second account rather than a second fixture.
         """
         if getattr(self, "_admin", None) is None:
-            admin = self.person("amaka@brightfield.test", "Amaka", "Obi", branch=False)
-            role = make_role(self.tenant, name="Administrator")
-            for key in ("platform.team.view", "platform.team.suspend",
-                        "platform.team.reactivate"):
-                make_role_permission(role, make_permission(key))
-            make_assignment(self.tenant, admin, role)
-            self._admin = admin
+            self._admin = self._create_administrator()
         return self._admin
 
     # ── signing in ────────────────────────────────────────────────────────
@@ -291,8 +298,12 @@ class ALockoutDoesNotEndALiveSessionTests(_Fixture):
 class AnAdministratorStillDecidesTests(_Fixture):
     """Deliberate lock and deliberate release, and neither confused with the other."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls._admin = cls._create_administrator()
+
     def setUp(self):
-        super().setUp()
         self.client = TenantAPIClient(self.administrator())
 
     def test_an_administrator_can_still_close_an_account(self):

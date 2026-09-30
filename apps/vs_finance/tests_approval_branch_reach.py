@@ -24,22 +24,23 @@ GROUP = "journal-approvers"
 
 class JournalApprovalsFollowTheJournalsBranchTests(_FinanceBranchFixture):
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_workflow.constants import GroupMemberKind
         from vs_workflow.models import WorkflowApproverGroupMember
         from vs_workflow.services.groups import ensure_approver_group
         from vs_workflow.services.submission import submit_for_approval
         from vs_workflow.services.templates import publish_template
 
-        super().setUp()
-        group, _ = ensure_approver_group(self.tenant, GROUP, description="Journal approvers.")
-        self.bello = self.approver("bello@corona.test", self.ikeja)
-        self.tola = self.approver("tola@corona.test", self.lekki)
-        self.eze = self.approver("eze@corona.test", None)
-        for user in (self.bello, self.tola, self.eze):
+        super().setUpTestData()
+        group, _ = ensure_approver_group(cls.tenant, GROUP, description="Journal approvers.")
+        cls.bello = cls.approver("bello@corona.test", cls.ikeja)
+        cls.tola = cls.approver("tola@corona.test", cls.lekki)
+        cls.eze = cls.approver("eze@corona.test", None)
+        for user in (cls.bello, cls.tola, cls.eze):
             WorkflowApproverGroupMember.objects.create(group=group, kind=GroupMemberKind.USER, user=user)
         publish_template(
-            tenant=self.tenant, branch=None, document_type="finance.journal", code="standard",
+            tenant=cls.tenant, branch=None, document_type="finance.journal", code="standard",
             name="Journal approval",
             stages_payload=[{
                 "code": "check", "label": "Check", "kind": "APPROVAL", "order": 1,
@@ -48,23 +49,25 @@ class JournalApprovalsFollowTheJournalsBranchTests(_FinanceBranchFixture):
                 "on_rejection": "RETURN_TO_REQUESTER", "skip_if_no_approvers": False,
             }],
         )
-        clerk = self.user_for(self.tenant, "clerk@corona.test")
-        self.journals = {name: self.draft(branch) for name, branch in (
-            ("ikeja", self.ikeja), ("lekki", self.lekki), ("unbranched", None))}
-        self.instances = {
+        clerk = cls.user_for(cls.tenant, "clerk@corona.test")
+        cls.journals = {name: cls.draft(branch) for name, branch in (
+            ("ikeja", cls.ikeja), ("lekki", cls.lekki), ("unbranched", None))}
+        cls.instances = {
             name: submit_for_approval(entry, requested_by=clerk)
-            for name, entry in self.journals.items()
+            for name, entry in cls.journals.items()
         }
 
-    def approver(self, email, branch):
-        return self.grant(self.user_for(self.tenant, email), "finance.journal.view",
-                          tenant=self.tenant, role_key=f"role-{email}", branch=branch)
+    @classmethod
+    def approver(cls, email, branch):
+        return cls.grant(cls.user_for(cls.tenant, email), "finance.journal.view",
+                         tenant=cls.tenant, role_key=f"role-{email}", branch=branch)
 
-    def draft(self, branch):
+    @classmethod
+    def draft(cls, branch):
         from vs_finance.posting import create_direct_entry
 
         return create_direct_entry(
-            self.books, lines=[("1100", 10_000, 0), ("3100", 0, 10_000)], date=JAN_10,
+            cls.books, lines=[("1100", 10_000, 0), ("3100", 0, 10_000)], date=JAN_10,
             narration="Capital injection", branch=branch,
         )
 

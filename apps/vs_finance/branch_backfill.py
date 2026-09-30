@@ -256,6 +256,11 @@ _TARGETS = (
     ),
     Target("vs_finance.Concession", (via("the invoice", "invoice", INVOICE), customer()), order=30),
     Target("vs_finance.PaymentPlan", (via("the invoice", "invoice", INVOICE), customer()), order=30),
+    Target(
+        "vs_finance.CustomerCreditTransfer",
+        (via("the receipt it gave", "receipt", PAYMENT), customer("from_customer")),
+        order=30,
+    ),
     Target("vs_finance.DunningNotice", (via("the invoice", "invoice", INVOICE), customer()), order=30),
     Target(
         "vs_finance.Refund",

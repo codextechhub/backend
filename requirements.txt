@@ -15,3 +15,6 @@ drf-spectacular==0.29.0
 python-decouple==3.8
 user-agents==2.2.0
 shortuuid==1.0.13
+# Test runs only: lets a --parallel worker send a failing test's traceback back
+# to the parent, which otherwise stops the whole run with "cannot pickle".
+tblib==3.2.2

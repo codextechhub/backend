@@ -26,22 +26,27 @@ EXISTING_TRAIL_KEYS = {
 class _ProxyFixture(_DirectPostFixture):
     """Bright Star with Chioma the bursar and Ada, a colleague proxying her."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from django.contrib.auth import get_user_model
         from vs_admin_console.models import ImpersonationSession
+
+        super().setUpTestData()
+        cls.bursar.first_name, cls.bursar.last_name = "Chioma", "Okafor"
+        cls.bursar.save(update_fields=["first_name", "last_name"])
+        cls.ada = get_user_model().objects.create_user(
+            email="ada-proxy@test.com", password="pw", status="ACTIVE",
+            first_name="Ada", last_name="Obi", tenant=cls.tenant, branch=cls.bursar.branch,
+        )
+        cls.session = ImpersonationSession.objects.create(
+            staff_user=cls.ada, tenant=cls.tenant, target_user=cls.bursar,
+            justification="Covering the bursar's desk.",
+        )
+
+    def setUp(self):
         from vs_user.tokens import CodeXRefreshToken
 
         super().setUp()
-        self.bursar.first_name, self.bursar.last_name = "Chioma", "Okafor"
-        self.bursar.save(update_fields=["first_name", "last_name"])
-        self.ada = get_user_model().objects.create_user(
-            email="ada-proxy@test.com", password="pw", status="ACTIVE",
-            first_name="Ada", last_name="Obi", tenant=self.tenant, branch=self.bursar.branch,
-        )
-        self.session = ImpersonationSession.objects.create(
-            staff_user=self.ada, tenant=self.tenant, target_user=self.bursar,
-            justification="Covering the bursar's desk.",
-        )
         self.proxy_client = TenantAPIClient(user=self.ada, tenant_slug=self.tenant.slug)
         self.proxy_client.credentials(
             HTTP_AUTHORIZATION=f"Bearer {CodeXRefreshToken.for_user(self.ada).access_token}",

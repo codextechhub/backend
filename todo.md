@@ -132,6 +132,48 @@ MUST SAY:
 - Needs Attention: transfers between branches and paying petty cash back to the
   bank have no document yet; FinPro lacks the new screens and journal actions.
 
+### D86. Receipts settle only what they may, credit applies itself, fee runs bill once, and leavers stop being billed (58c30eb0, 2026-09-30)
+MODULES: M17 billing and invoicing, M18 payments and collections, M20 adjustments
+and concessions, M19 finance and accounting, M11 student management (the
+withdrawal hook), M25 dashboards and analytics, M04 roles and permissions, MRD.
+From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF).
+MUST SAY:
+- Settlement (M17, M18). One place refuses every bad target beside the branch
+  rule: a voided, cancelled or draft invoice, and another customer's invoice.
+  Every invoice settled is locked in pk order, and database constraints keep
+  balances and allocations within the invoice total.
+- Customer credit transfers (M20). Credit moves between customers (siblings) only
+  by a CustomerCreditTransfer approved through its own workflow route and audited;
+  a receipt never settles another customer's bill.
+- Credit applies itself (M17). Unapplied customer credit settles every new invoice
+  on posting, oldest first, within the branch rule; a per-entity setting turns it
+  off. Dunning does not chase an invoice covered by credit or by a payment-plan
+  instalment not yet due. A credit note settles the bill it names first; any
+  remainder becomes credit.
+- Fee runs (M17). A billing key per customer, fee structure and billing period is
+  unique, so a repeated run bills nobody twice; optional items bill only assigned
+  customers; an invoice's billing period cannot change after posting (FAL stamps
+  billing periods; migration fal 0003 and vs_finance 0041 stamp existing bills).
+- Leavers (M11, M17). A customer can be deactivated: it leaves fee runs and "bill
+  all active" and stays in debtor lists. Withdrawal or graduation deactivates the
+  pupil's finance customer through the FAL.
+- Concession limits (M20). Approval steps read the cumulative sum per invoice and
+  per customer per billing period; any concession above a per-entity amount
+  (default N10,000) needs a second person.
+- Customer records (M17). A customer's source link and receivable account are fixed
+  once it has posted activity.
+- One definition of billed and collected (vs_finance.collected) serves the finance
+  dashboard, receivables tab and the owner dashboards (M25).
+- Customer opening balances (M17): one opening invoice per unpaid bill, dated as
+  the original, carrying its branch, refused on or after go-live, bulk import (key
+  finance.customer.import_opening).
+- A hand reversal of a payroll branch share's journal is refused naming its
+  payroll run and cancel route (M19).
+- Migrations: vs_finance 0040, 0041; fal 0003. New keys finance.credittransfer.*,
+  finance.customer.import_opening.
+- Needs Attention: deferred fee income, the bad-debt provision, caution deposits and
+  sponsor payers are the next stage; FinPro lacks the new screens.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

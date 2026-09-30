@@ -57,25 +57,30 @@ class ResolveWhtTests(TestCase):
 class VendorPaymentWhtAPITests(_P2PFixtureMixin, TestCase):
     """The manual vendor payment draft applies the supplier's WHT code."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from django.contrib.auth import get_user_model
-        from core.test_utils import TenantAPIClient
 
-        self.entity, _, self.vendor, vat, wht_code = self.build_p2p()
-        self.vendor.default_wht_tax_code = wht_code
-        self.vendor.save(update_fields=["default_wht_tax_code", "updated_at"])
-        bill = self.make_bill(self.entity, self.vendor, [("5300", 1, 1_000_000, vat, None)])
+        super().setUpTestData()
+        cls.entity, _, cls.vendor, vat, wht_code = cls._p2p_books
+        cls.vendor.default_wht_tax_code = wht_code
+        cls.vendor.save(update_fields=["default_wht_tax_code", "updated_at"])
+        bill = cls.make_bill(cls.entity, cls.vendor, [("5300", 1, 1_000_000, vat, None)])
         post_vendor_invoice(bill)
         bill.refresh_from_db()
-        self.bill = bill  # 1,000,000 of work and 75,000 of VAT.
-        self.bank = BankAccount.objects.create(
-            entity=self.entity, gl_account=self.acc(self.entity, "1100"), name="Operating Bank",
+        cls.bill = bill  # 1,000,000 of work and 75,000 of VAT.
+        cls.bank = BankAccount.objects.create(
+            entity=cls.entity, gl_account=cls.acc(cls.entity, "1100"), name="Operating Bank",
         )
-        user = get_user_model().objects.create_user(
-            email="wht-clerk@test.com", password="pw", tenant=self.entity.tenant,
+        cls.clerk = get_user_model().objects.create_user(
+            email="wht-clerk@test.com", password="pw", tenant=cls.entity.tenant,
             status="ACTIVE", first_name="Wht", last_name="Clerk",
         )
-        self.client = TenantAPIClient(user=user)
+
+    def setUp(self):
+        from core.test_utils import TenantAPIClient
+
+        self.client = TenantAPIClient(user=self.clerk)
 
     def _body(self, amount, **extra):
         return {

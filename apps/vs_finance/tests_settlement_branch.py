@@ -34,30 +34,31 @@ INVOICE = 100_000
 
 
 class _SettlementFixture(_FinanceBranchFixture):
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_finance.receivables import post_invoice
 
-        super().setUp()
-        e = self.books
-        self.income = Account.objects.get(entity=e, code="4100")
-        self.bank = Account.objects.get(entity=e, code="1100")
+        super().setUpTestData()
+        e = cls.books
+        cls.income = Account.objects.get(entity=e, code="4100")
+        cls.bank = Account.objects.get(entity=e, code="1100")
 
         def posted_invoice(branch, day):
-            invoice = self.invoice(e, self.family, branch)
+            invoice = cls.invoice(e, cls.family, branch)
             Invoice.objects.filter(pk=invoice.pk).update(
                 invoice_date=datetime.date(2026, 1, day),
                 due_date=datetime.date(2026, 1, day + 10),
             )
-            InvoiceLine.objects.filter(invoice=invoice).update(revenue_account=self.income)
+            InvoiceLine.objects.filter(invoice=invoice).update(revenue_account=cls.income)
             invoice.refresh_from_db()
             post_invoice(invoice)
             invoice.refresh_from_db()
             return invoice
 
-        self.family = self.customer(e, "OKAFOR", None)
-        self.lekki_invoice = posted_invoice(self.lekki, 3)
-        self.school_invoice = posted_invoice(None, 4)
-        self.ikeja_invoice = posted_invoice(self.ikeja, 5)
+        cls.family = cls.customer(e, "OKAFOR", None)
+        cls.lekki_invoice = posted_invoice(cls.lekki, 3)
+        cls.school_invoice = posted_invoice(None, 4)
+        cls.ikeja_invoice = posted_invoice(cls.ikeja, 5)
 
     def receipt(self, branch, amount=60_000, *, allocations=None, auto=True):
         from vs_finance.receivables import post_payment

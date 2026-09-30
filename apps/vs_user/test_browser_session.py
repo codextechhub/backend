@@ -47,9 +47,12 @@ class BrowserSessionContractTests(TestCase):
     password = "Str0ng!pass123"
     origin = "http://localhost:5173"
 
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = make_cx_user(password=cls.password)
+
     def setUp(self):
         cache.clear()
-        self.user = make_cx_user(password=self.password)
 
     def _login(self, client, *, origin=None):
         return client.post(

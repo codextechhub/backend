@@ -358,10 +358,20 @@ class BranchNarrowingAuditTests(SimpleTestCase):
 
 
 class EveryBranchCarryingLookupIsAccountedForTests(SimpleTestCase):
-    """The audit over the real source, against the two registries."""
+    """The audit over the real source, against the two registries.
+
+    The walk reads every module under the apps directory and depends on
+    nothing but the source, so it runs once for the class and each test reads
+    the same answer.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.found = frozenset(audit_tree())
 
     def test_no_unaccounted_lookup_exists(self):
-        found = audit_tree()
+        found = self.found
         accounted = set(SETTLED_ELSEWHERE) | set(UNNARROWED)
         new = sorted(found - accounted)
 
@@ -377,7 +387,7 @@ class EveryBranchCarryingLookupIsAccountedForTests(SimpleTestCase):
 
     def test_no_entry_outlives_the_lookup_it_describes(self):
         """A registry nobody prunes stops describing the code and starts hiding it."""
-        found = audit_tree()
+        found = self.found
         accounted = set(SETTLED_ELSEWHERE) | set(UNNARROWED)
         stale = sorted(accounted - found)
 
@@ -392,4 +402,4 @@ class EveryBranchCarryingLookupIsAccountedForTests(SimpleTestCase):
         The commonest way for that to happen is APPS_ROOT pointing somewhere
         with no source under it, which no other assertion here would notice.
         """
-        self.assertGreater(len(audit_tree()), 0)
+        self.assertGreater(len(self.found), 0)

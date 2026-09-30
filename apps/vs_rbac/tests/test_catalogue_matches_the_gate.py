@@ -34,7 +34,6 @@ from vs_user.tokens import CodeXRefreshToken
 from ..models import Permission, PermissionScope
 from ..plan_gate import plan_refusal
 from .helpers import (
-    assert_school_created,
     make_assignment,
     make_role,
     make_role_permission,
@@ -44,6 +43,13 @@ from .helpers import (
 
 
 class CatalogueMatchesTheGateTests(TestCase):
+    """One school on each plan, created through the real onboarding endpoint.
+
+    The three schools are built once for the class: every test only reads
+    their catalogue and asks the gate about their keys, so a school per test
+    would cost a full onboarding each time and prove nothing more.
+    """
+
     @classmethod
     def setUpTestData(cls):
         for command in (
@@ -60,20 +66,22 @@ class CatalogueMatchesTheGateTests(TestCase):
         cls.operator = make_vision_user(
             email="catalogue@codexng.test", super_admin=True,
         )
-
-    def setUp(self):
-        self.client = APIClient()
-        self.client.force_authenticate(user=self.operator)
         set_value(
             definition=ConfigurationDefinition.objects.get(
                 key="platform.entitlements.enforce"
             ),
-            value=True, actor=self.operator, tenant=None, branch=None,
+            value=True, actor=cls.operator, tenant=None, branch=None,
             reason="The catalogue must agree with the gate that is running.",
         )
+        cls.basic = cls._school("catalogue-basic", "basic")
+        cls.standard = cls._school("catalogue-standard", "standard")
+        cls.premium = cls._school("catalogue-premium", "premium")
 
-    def _school(self, slug, plan_code):
-        response = self.client.post(
+    @classmethod
+    def _school(cls, slug, plan_code):
+        client = APIClient()
+        client.force_authenticate(user=cls.operator)
+        response = client.post(
             reverse("school-create"),
             {
                 "name": "Bright Star Academy", "slug": slug,
@@ -93,7 +101,8 @@ class CatalogueMatchesTheGateTests(TestCase):
             },
             format="json",
         )
-        assert_school_created(self, response)
+        if response.status_code != 202 or response.data["data"]["status"] != "SUCCEEDED":
+            raise AssertionError(f"Creating {slug} failed: {response.data}")
         return School.objects.get(slug=slug)
 
     def _reader(self, school):
@@ -149,8 +158,7 @@ class CatalogueMatchesTheGateTests(TestCase):
         )
 
     def test_a_basic_school_is_offered_nothing_its_plan_refuses(self):
-        school = self._school("catalogue-basic", "basic")
-        offered = self._offered_but_refused(school)
+        offered = self._offered_but_refused(self.basic)
         self.assertEqual(
             offered, [],
             f"{len(offered)} keys are offered to a Basic school and refused "
@@ -158,16 +166,14 @@ class CatalogueMatchesTheGateTests(TestCase):
         )
 
     def test_a_standard_school_is_offered_nothing_its_plan_refuses(self):
-        school = self._school("catalogue-standard", "standard")
-        self.assertEqual(self._offered_but_refused(school), [])
+        self.assertEqual(self._offered_but_refused(self.standard), [])
 
     def test_a_premium_school_is_offered_nothing_its_plan_refuses(self):
-        school = self._school("catalogue-premium", "premium")
-        self.assertEqual(self._offered_but_refused(school), [])
+        self.assertEqual(self._offered_but_refused(self.premium), [])
 
     def test_a_deeper_plan_is_offered_strictly_more(self):
-        basic = self._catalogue(self._school("catalogue-cmp-basic", "basic"))
-        premium = self._catalogue(self._school("catalogue-cmp-premium", "premium"))
+        basic = self._catalogue(self.basic)
+        premium = self._catalogue(self.premium)
         basic_keys = {k for k, row in basic.items() if row["available"]}
         premium_keys = {k for k, row in premium.items() if row["available"]}
         self.assertTrue(
@@ -178,7 +184,7 @@ class CatalogueMatchesTheGateTests(TestCase):
     def test_core_permissions_stay_offered_to_the_shallowest_plan(self):
         # The failure that would matter more than the one being fixed: a
         # catalogue that hides what a school has paid for.
-        entries = self._catalogue(self._school("catalogue-core", "basic"))
+        entries = self._catalogue(self.basic)
         for key in (
             "finance.invoice.create",
             "finance.payment.create",
@@ -198,7 +204,7 @@ class CatalogueMatchesTheGateTests(TestCase):
         dimmed box says none of it: a school administrator composing a role is
         not shopping, and Core, Plus and Advanced are our words, not theirs.
         """
-        entries = self._catalogue(self._school("catalogue-why", "basic"))
+        entries = self._catalogue(self.basic)
         row = entries["finance.feestructure.generate"]
         self.assertFalse(row["available"])
         self.assertEqual(row["band"], "finance_plus")
@@ -207,19 +213,19 @@ class CatalogueMatchesTheGateTests(TestCase):
         self.assertNotIn("Plus", row["unavailable_reason"])
 
     def test_an_available_entry_carries_no_reason(self):
-        entries = self._catalogue(self._school("catalogue-noreason", "basic"))
+        entries = self._catalogue(self.basic)
         row = entries["finance.invoice.create"]
         self.assertTrue(row["available"])
         self.assertIsNone(row["unavailable_reason"])
 
     def test_a_core_key_still_names_its_band(self):
         # The drawer can group by depth whether or not a thing is reachable.
-        entries = self._catalogue(self._school("catalogue-band", "basic"))
+        entries = self._catalogue(self.basic)
         self.assertEqual(entries["finance.invoice.create"]["band"], "finance_core")
         self.assertEqual(entries["finance.invoice.create"]["depth_label"], "Core")
 
     def test_a_key_that_belongs_to_no_plan_is_core_for_everybody(self):
-        entries = self._catalogue(self._school("catalogue-free", "basic"))
+        entries = self._catalogue(self.basic)
         row = entries["school.branches.view"]
         self.assertTrue(row["available"])
         self.assertIsNone(row["band"])

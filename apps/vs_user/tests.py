@@ -30,24 +30,25 @@ from vs_user.services.auth import LoginService
 class PlatformUserCreationTests(TestCase):
     """CX hires receive staff IDs and failed workflow setup is atomic."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
         from vs_user.models import OrgNode, Position
 
-        self.tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
-        self.actor = make_cx_user(email="creator@codex.test")
-        self.actor.first_name = "Sole"
-        self.actor.last_name = "Admin"
-        self.actor.save(update_fields=["first_name", "last_name", "updated_at"])
-        self.super_role = TenantRoleTemplate.objects.create(
-            tenant=self.tenant, key="xvs_super_admin", name="XVS Super Admin",
+        cls.tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
+        cls.actor = make_cx_user(email="creator@codex.test")
+        cls.actor.first_name = "Sole"
+        cls.actor.last_name = "Admin"
+        cls.actor.save(update_fields=["first_name", "last_name", "updated_at"])
+        cls.super_role = TenantRoleTemplate.objects.create(
+            tenant=cls.tenant, key="xvs_super_admin", name="XVS Super Admin",
         )
-        self.hire_role = TenantRoleTemplate.objects.create(
-            tenant=self.tenant, key="xvs_platform_admin", name="Platform Admin",
+        cls.hire_role = TenantRoleTemplate.objects.create(
+            tenant=cls.tenant, key="xvs_platform_admin", name="Platform Admin",
         )
         TenantUserRoleAssignment.objects.create(
-            tenant=self.tenant, user=self.actor, role=self.super_role,
+            tenant=cls.tenant, user=cls.actor, role=cls.super_role,
             assignment_status="ACTIVE",
         )
         division = OrgNode.objects.create(
@@ -61,7 +62,7 @@ class PlatformUserCreationTests(TestCase):
             name="Platform", code="PLATFORM", kind=OrgNode.Kind.TEAM,
             parent=department,
         )
-        self.position = Position.objects.create(
+        cls.position = Position.objects.create(
             title="Platform Engineer", code="PLATFORM-ENG", org_node=team,
         )
 
@@ -416,24 +417,27 @@ class EmailQueuedOnlyAfterCommitTests(TestCase):
 class UserListScopeTests(TestCase):
     """Platform user lists keep CX and tenant-bound accounts separate."""
 
-    def setUp(self):
-        from rest_framework.request import Request
-        from rest_framework.test import APIRequestFactory
-        from vs_user.views.accounts import UserAccountViewSet
-
-        self.cx_user = make_cx_user(email="scope-cx@codex.test")
+    @classmethod
+    def setUpTestData(cls):
+        cls.cx_user = make_cx_user(email="scope-cx@codex.test")
         school = make_school(name="Scope School", slug="scope-school")
-        self.school_user = make_school_admin(school, email="scope-admin@school.test")
+        cls.school_user = make_school_admin(school, email="scope-admin@school.test")
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         role = TenantRoleTemplate.objects.create(
             tenant=school.tenant, key="school-administrator", name="School Administrator",
         )
         TenantUserRoleAssignment.objects.create(
             tenant=school.tenant,
-            user=self.school_user,
+            user=cls.school_user,
             role=role,
             assignment_status="ACTIVE",
         )
+
+    def setUp(self):
+        from rest_framework.request import Request
+        from rest_framework.test import APIRequestFactory
+        from vs_user.views.accounts import UserAccountViewSet
+
         self.request_class = Request
         self.request_factory = APIRequestFactory()
         self.view_class = UserAccountViewSet
@@ -644,11 +648,12 @@ def make_school_admin(school, email="admin@caleb.test", password="Str0ng!pass123
 class MyPositionAssignmentsTests(TestCase):
     """Self-service history never exposes another staff member's assignments."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_user.models import OrgNode, Position, PositionAssignment
 
-        self.user = make_cx_user(email="my-history@codex.test")
-        self.other = make_cx_user(email="other-history@codex.test")
+        cls.user = make_cx_user(email="my-history@codex.test")
+        cls.other = make_cx_user(email="other-history@codex.test")
         division = OrgNode.objects.create(
             name="History Division", code="HISTORY", kind=OrgNode.Kind.DIVISION,
         )
@@ -658,12 +663,14 @@ class MyPositionAssignmentsTests(TestCase):
         other_position = Position.objects.create(
             title="Other Position", code="OTHER-POS", org_node=division,
         )
-        self.own_assignment = PositionAssignment.objects.create(
-            user=self.user, position=own_position,
+        cls.own_assignment = PositionAssignment.objects.create(
+            user=cls.user, position=own_position,
         )
-        self.other_assignment = PositionAssignment.objects.create(
-            user=self.other, position=other_position,
+        cls.other_assignment = PositionAssignment.objects.create(
+            user=cls.other, position=other_position,
         )
+
+    def setUp(self):
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 
@@ -690,10 +697,11 @@ class OrganogramTreeTests(TestCase):
     """build_tree nests active seats and never drops a subtree whose parent seat
     is inactive/removed (which would blank the chart)."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_user.models import OrgNode
 
-        self.division = OrgNode.objects.create(
+        cls.division = OrgNode.objects.create(
             name="Eng", code="ENG", kind=OrgNode.Kind.DIVISION,
         )
 
@@ -728,10 +736,11 @@ class OrganogramTreeTests(TestCase):
 class OrgNodeSerializerUniquenessTests(TestCase):
     """Org-node names are unique among siblings, not across hierarchy tiers."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_user.models import OrgNode
 
-        self.division = OrgNode.objects.create(
+        cls.division = OrgNode.objects.create(
             name="Operations", code="OPS", kind=OrgNode.Kind.DIVISION,
         )
 
@@ -788,18 +797,19 @@ class OrganogramListQueryTests(TestCase):
     per seat (holders/vacancy/open-seats) made the Manage page hang over a
     high-latency DB. The query count must stay bounded as seats grow."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
         from vs_user.models import OrgNode, Position, PositionAssignment
 
         tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
-        self.actor = make_cx_user(email="org-viewer@codex.test")
+        cls.actor = make_cx_user(email="org-viewer@codex.test")
         super_role = TenantRoleTemplate.objects.create(
             tenant=tenant, key="xvs_super_admin", name="Super",
         )
         TenantUserRoleAssignment.objects.create(
-            tenant=tenant, user=self.actor, role=super_role, assignment_status="ACTIVE",
+            tenant=tenant, user=cls.actor, role=super_role, assignment_status="ACTIVE",
         )
 
         division = OrgNode.objects.create(
@@ -814,6 +824,7 @@ class OrganogramListQueryTests(TestCase):
             holder = make_cx_user(email=f"holder{i}@codex.test")
             PositionAssignment.objects.create(user=holder, position=pos)
 
+    def setUp(self):
         self.client = APIClient()
         self.client.force_authenticate(user=self.actor)
 
@@ -874,35 +885,37 @@ class OrgNodeDeleteProtectionTests(TestCase):
     ahead of the generic handler.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
         from vs_user.models import OrgNode, Position
 
         tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
-        self.actor = make_cx_user(email="org-deleter@codex.test")
+        cls.actor = make_cx_user(email="org-deleter@codex.test")
         role = TenantRoleTemplate.objects.create(
             tenant=tenant, key="xvs_super_admin", name="Super",
         )
         TenantUserRoleAssignment.objects.create(
-            tenant=tenant, user=self.actor, role=role, assignment_status="ACTIVE",
+            tenant=tenant, user=cls.actor, role=role, assignment_status="ACTIVE",
         )
 
-        self.division = OrgNode.objects.create(
+        cls.division = OrgNode.objects.create(
             name="Technology", code="TECH", kind=OrgNode.Kind.DIVISION,
         )
-        self.department = OrgNode.objects.create(
+        cls.department = OrgNode.objects.create(
             name="Engineering", code="ENGR", kind=OrgNode.Kind.DEPARTMENT,
-            parent=self.division,
+            parent=cls.division,
         )
-        self.team = OrgNode.objects.create(
+        cls.team = OrgNode.objects.create(
             name="Backend", code="BACKEND", kind=OrgNode.Kind.TEAM,
-            parent=self.department,
+            parent=cls.department,
         )
-        self.seat = Position.objects.create(
-            title="Backend Engineer", code="BE-ENG", org_node=self.team,
+        cls.seat = Position.objects.create(
+            title="Backend Engineer", code="BE-ENG", org_node=cls.team,
         )
 
+    def setUp(self):
         self.client = APIClient()
         self.client.force_authenticate(user=self.actor)
 
@@ -952,9 +965,10 @@ class OrgNodeDeleteProtectionTests(TestCase):
 class LoginLockoutOracleTests(TestCase):
     """B13 - wrong-password attempts must never reveal the locked state."""
 
-    def setUp(self):
-        self.password = "Str0ng!pass123"
-        self.user = make_cx_user(password=self.password)
+    @classmethod
+    def setUpTestData(cls):
+        cls.password = "Str0ng!pass123"
+        cls.user = make_cx_user(password=cls.password)
 
     def _lock(self):
         lockout, _ = AccountLockout.objects.get_or_create(user=self.user)
@@ -1014,15 +1028,18 @@ class FailedAttemptAuditTests(TestCase):
 class SessionScopedLogoutTests(TestCase):
     """B10/B11 - multi-device session integrity."""
 
+    @classmethod
+    def setUpTestData(cls):
+        cls.password = "Str0ng!pass123"
+        cls.user = make_cx_user(password=cls.password)
+        cls.device_a = LoginService.login(
+            cls.user.email, cls.password, tenant=cls.user.tenant.slug,
+        )
+        cls.device_b = LoginService.login(
+            cls.user.email, cls.password, tenant=cls.user.tenant.slug,
+        )
+
     def setUp(self):
-        self.password = "Str0ng!pass123"
-        self.user = make_cx_user(password=self.password)
-        self.device_a = LoginService.login(
-            self.user.email, self.password, tenant=self.user.tenant.slug,
-        )
-        self.device_b = LoginService.login(
-            self.user.email, self.password, tenant=self.user.tenant.slug,
-        )
         self.assertEqual(
             LoginSession.objects.filter(user=self.user, is_active=True).count(), 2
         )
@@ -1064,16 +1081,19 @@ class SessionScopedLogoutTests(TestCase):
 class SelfServiceSecurityScopeTests(TestCase):
     """The My Security endpoints expose and revoke only the caller's records."""
 
+    @classmethod
+    def setUpTestData(cls):
+        cls.password = "Str0ng!pass123"
+        cls.user = make_cx_user(email="my-security@codex.test", password=cls.password)
+        cls.other = make_cx_user(email="other-security@codex.test", password=cls.password)
+        cls.own_login = LoginService.login(
+            cls.user.email, cls.password, tenant=cls.user.tenant.slug,
+        )
+        cls.other_login = LoginService.login(
+            cls.other.email, cls.password, tenant=cls.other.tenant.slug,
+        )
+
     def setUp(self):
-        self.password = "Str0ng!pass123"
-        self.user = make_cx_user(email="my-security@codex.test", password=self.password)
-        self.other = make_cx_user(email="other-security@codex.test", password=self.password)
-        self.own_login = LoginService.login(
-            self.user.email, self.password, tenant=self.user.tenant.slug,
-        )
-        self.other_login = LoginService.login(
-            self.other.email, self.password, tenant=self.other.tenant.slug,
-        )
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 
@@ -1185,11 +1205,15 @@ class SchoolBrandingPayloadTests(TestCase):
     sidesteps the login rate-throttle. ``/me`` is hit over HTTP.
     """
 
+    @classmethod
+    def setUpTestData(cls):
+        cls.password = "Str0ng!pass123"
+        cls.school = make_school()
+        cls.admin = make_school_admin(cls.school, password=cls.password)
+
     def setUp(self):
         from django.test import RequestFactory
-        self.password = "Str0ng!pass123"
-        self.school = make_school()
-        self.admin = make_school_admin(self.school, password=self.password)
+
         self.factory = RequestFactory()
 
     def _login(self, user, password):
@@ -1295,13 +1319,16 @@ class EmailFailureResilienceTests(TestCase):
 
     RESET_URL = "/v1/user/auth/password/reset/request/"
 
-    def setUp(self):
-        from apps.celery import app as celery_app
+    @classmethod
+    def setUpTestData(cls):
         from vs_notifications.services.seed import seed_notification_templates
 
         # The event registry arrives with the database (vs_notifications 0008).
         # The DB templates do not, so the engine has nothing to render without this.
         seed_notification_templates()
+
+    def setUp(self):
+        from apps.celery import app as celery_app
 
         self.celery_app = celery_app
         self._old_eager = celery_app.conf.task_always_eager
@@ -1421,7 +1448,8 @@ class InvitationEngineDispatchTests(TestCase):
     tracking on success, and the per-message From (from_name) parity.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         # Event types come from vs_notifications 0008; only the templates need seeding.
         from vs_notifications.services.seed import seed_notification_templates
 
@@ -1724,31 +1752,34 @@ class DraftUserTests(TestCase):
     """Save-as-draft parks a DRAFT CX hire; submit promotes it into the normal
     approval flow. (Bulk upload lives in the vs_import_data framework.)"""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
         from vs_user.models import OrgNode, Position
 
-        self.tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
-        self.actor = make_cx_user(email="bulk.creator@codex.test")
-        self.hire_role = TenantRoleTemplate.objects.create(
-            tenant=self.tenant, key="xvs_platform_admin", name="Platform Admin",
+        cls.tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
+        cls.actor = make_cx_user(email="bulk.creator@codex.test")
+        cls.hire_role = TenantRoleTemplate.objects.create(
+            tenant=cls.tenant, key="xvs_platform_admin", name="Platform Admin",
         )
         # Super-admin assignment gives the actor the RBAC bypass used by the
         # sibling platform-user tests.
-        self.super_role = TenantRoleTemplate.objects.create(
-            tenant=self.tenant, key="xvs_super_admin", name="XVS Super Admin",
+        cls.super_role = TenantRoleTemplate.objects.create(
+            tenant=cls.tenant, key="xvs_super_admin", name="XVS Super Admin",
         )
         TenantUserRoleAssignment.objects.create(
-            tenant=self.tenant, user=self.actor, role=self.super_role,
+            tenant=cls.tenant, user=cls.actor, role=cls.super_role,
             assignment_status="ACTIVE",
         )
         node = OrgNode.objects.create(
             name="Draft Operations", code="DRAFT-OPS", kind=OrgNode.Kind.DIVISION,
         )
-        self.position = Position.objects.create(
+        cls.position = Position.objects.create(
             title="Operations Analyst", code="OPS-ANALYST", org_node=node,
         )
+
+    def setUp(self):
         self.client = APIClient()
         self.client.force_authenticate(user=self.actor)
 
@@ -1826,20 +1857,21 @@ class CXUsersImportHandlerTests(TestCase):
     """The vs_import_data cx_users handler creates CX staff through the NORMAL
     flow (PENDING_APPROVAL + workflow), never as drafts; its template is seeded."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.models import TenantRoleTemplate
         from vs_tenants.models import Tenant
         from vs_user.models import OrgNode, Position
 
-        self.tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
-        self.actor = make_cx_user(email="importer@codex.test")
-        self.hire_role = TenantRoleTemplate.objects.create(
-            tenant=self.tenant, key="xvs_platform_admin", name="Platform Admin",
+        cls.tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
+        cls.actor = make_cx_user(email="importer@codex.test")
+        cls.hire_role = TenantRoleTemplate.objects.create(
+            tenant=cls.tenant, key="xvs_platform_admin", name="Platform Admin",
         )
         node = OrgNode.objects.create(
             name="Import Division", code="IMPORT", kind=OrgNode.Kind.DIVISION,
         )
-        self.position = Position.objects.create(
+        cls.position = Position.objects.create(
             title="Import Analyst", code="IMPORT-ANALYST", org_node=node,
         )
 
@@ -1920,11 +1952,14 @@ class QueueSummaryTests(TestCase):
     read 1 no matter how many rows the table showed.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_tenants.models import Tenant
 
-        self.tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
-        self.actor = make_cx_user(email="queue-owner@codex.test")
+        cls.tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
+        cls.actor = make_cx_user(email="queue-owner@codex.test")
+
+    def setUp(self):
         self.client = APIClient()
         self.client.force_authenticate(user=self.actor)
 
@@ -1996,33 +2031,35 @@ class UserBranchAssignmentTests(TestCase):
     against whichever shape can actually express it.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.tests.helpers import make_branch, make_school
 
-        self.branched = make_school(slug="branched-academy", name="Branched Academy")
-        self.lekki = make_branch(self.branched, name="Lekki Branch", is_main=True)
-        self.yaba = make_branch(self.branched, name="Yaba Branch", is_main=False)
+        cls.branched = make_school(slug="branched-academy", name="Branched Academy")
+        cls.lekki = make_branch(cls.branched, name="Lekki Branch", is_main=True)
+        cls.yaba = make_branch(cls.branched, name="Yaba Branch", is_main=False)
 
         # A second tenant that owns a branch of its own. Its branch is the
         # cross-tenant probe: it exists, so "not found" cannot be explained away
         # by the id simply being unused.
-        self.rival = make_school(slug="rival-college", name="Rival College")
-        self.rival_branch = make_branch(self.rival, name="Rival Main", is_main=True)
+        cls.rival = make_school(slug="rival-college", name="Rival College")
+        cls.rival_branch = make_branch(cls.rival, name="Rival Main", is_main=True)
 
         # A branch-optional school: no branches at all, ever.
-        self.branchless = make_school(slug="solo-centre", name="Solo Learning Centre")
+        cls.branchless = make_school(slug="solo-centre", name="Solo Learning Centre")
 
-        self.actor = User.objects.create_user(
+        cls.actor = User.objects.create_user(
             email="head@branched.test", password="Str0ng!pass123",
             status="ACTIVE",
-            first_name="Head", last_name="Teacher", tenant=self.branched.tenant,
+            first_name="Head", last_name="Teacher", tenant=cls.branched.tenant,
         )
-        self._grant(self.actor, "platform.team.create", tenant=self.branched.tenant)
-        self._grant(self.actor, "platform.team.view", tenant=self.branched.tenant)
+        cls._grant(cls.actor, "platform.team.create", tenant=cls.branched.tenant)
+        cls._grant(cls.actor, "platform.team.view", tenant=cls.branched.tenant)
 
-        self.role = self._role(self.branched.tenant, "school-staff")
-        self.branchless_role = self._role(self.branchless.tenant, "solo-staff")
+        cls.role = cls._role(cls.branched.tenant, "school-staff")
+        cls.branchless_role = cls._role(cls.branchless.tenant, "solo-staff")
 
+    def setUp(self):
         self.client = APIClient()
         self.client.force_authenticate(user=self.actor)
 
@@ -2329,15 +2366,16 @@ class UserBranchTenantGuardTests(TestCase):
     through the create endpoint.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.tests.helpers import make_branch, make_school
 
-        self.branched = make_school(slug="guard-branched", name="Guard Branched")
-        self.lekki = make_branch(self.branched, name="Lekki", is_main=True)
-        self.rival = make_school(slug="guard-rival", name="Guard Rival")
-        self.rival_branch = make_branch(self.rival, name="Rival Main", is_main=True)
+        cls.branched = make_school(slug="guard-branched", name="Guard Branched")
+        cls.lekki = make_branch(cls.branched, name="Lekki", is_main=True)
+        cls.rival = make_school(slug="guard-rival", name="Guard Rival")
+        cls.rival_branch = make_branch(cls.rival, name="Rival Main", is_main=True)
         # Branch-optional shape.
-        self.branchless = make_school(slug="guard-solo", name="Guard Solo")
+        cls.branchless = make_school(slug="guard-solo", name="Guard Solo")
 
     def test_a_branch_bound_user_inherits_the_branchs_own_tenant(self):
         user = User.objects.create_user(
@@ -2399,12 +2437,13 @@ class AuthContextParityTests(TestCase):
     they were a school until the next page reload.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.tests.helpers import make_branch, make_school, make_school_admin
 
-        self.school = make_school(slug="parity-school", name="Parity School")
-        self.branch = make_branch(self.school)
-        self.user = make_school_admin(self.branch, email="parity-admin@test.com")
+        cls.school = make_school(slug="parity-school", name="Parity School")
+        cls.branch = make_branch(cls.school)
+        cls.user = make_school_admin(cls.branch, email="parity-admin@test.com")
 
     def _me_tenant(self):
         from rest_framework.test import APIRequestFactory, force_authenticate
@@ -2473,36 +2512,39 @@ class TenantDisplayBlockTests(TestCase):
     alike, or every date on her screens is written the platform's way.
     """
 
-    def setUp(self):
-        from django.test import RequestFactory
-
+    @classmethod
+    def setUpTestData(cls):
         from vs_config.clock import TIME_ZONE_KEY
         from vs_config.display import CLOCK_KEY, DATE_FORMAT_KEY
         from vs_config.models import ConfigurationDefinition
         from vs_config.services.resolution import set_value
         from vs_rbac.tests.helpers import make_branch, make_school, make_staff_user
 
-        self.password = "Str0ng!pass123"
-        self.school = make_school(slug="bright-star-display", name="Bright Star")
-        self.ikeja = make_branch(self.school, name="Ikeja Branch")
-        self.lekki = make_branch(self.school, name="Lekki Branch", is_main=False)
-        self.teacher = make_staff_user(
-            self.ikeja, email="teacher@bright-display.test", password=self.password,
+        cls.password = "Str0ng!pass123"
+        cls.school = make_school(slug="bright-star-display", name="Bright Star")
+        cls.ikeja = make_branch(cls.school, name="Ikeja Branch")
+        cls.lekki = make_branch(cls.school, name="Lekki Branch", is_main=False)
+        cls.teacher = make_staff_user(
+            cls.ikeja, email="teacher@bright-display.test", password=cls.password,
         )
-        tenant = self.school.tenant
+        tenant = cls.school.tenant
         for key, value, scope in (
             (DATE_FORMAT_KEY, "DD_MM_YYYY", {"tenant": tenant}),
             (CLOCK_KEY, "H24", {"tenant": tenant}),
-            (TIME_ZONE_KEY, "Africa/Nairobi", {"branch": self.lekki}),
+            (TIME_ZONE_KEY, "Africa/Nairobi", {"branch": cls.lekki}),
         ):
             set_value(
                 definition=ConfigurationDefinition.objects.get(key=key),
                 value=value, actor=None, **scope,
             )
-        self.expected = {
+        cls.expected = {
             "time_zone": "Africa/Lagos", "date_format": "DD_MM_YYYY", "clock": "H24",
-            "branch_zones": {str(self.lekki.pk): "Africa/Nairobi"},
+            "branch_zones": {str(cls.lekki.pk): "Africa/Nairobi"},
         }
+
+    def setUp(self):
+        from django.test import RequestFactory
+
         self.factory = RequestFactory()
 
     def test_the_login_response_carries_the_display_block(self):
@@ -2548,16 +2590,19 @@ class SignInTenantScopeTests(TestCase):
     is refused, and the refusal says nothing about where the account really is.
     """
 
+    @classmethod
+    def setUpTestData(cls):
+        cls.password = "Str0ng!pass123"
+        cls.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        cls.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+        cls.ada = make_school_admin(
+            cls.bright_star, email="ada.okoye@example.test", password=cls.password,
+        )
+        cls.cx = make_cx_user(email="ops@codex.test", password=cls.password)
+
     def setUp(self):
         from django.test import RequestFactory
 
-        self.password = "Str0ng!pass123"
-        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
-        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
-        self.ada = make_school_admin(
-            self.bright_star, email="ada.okoye@example.test", password=self.password,
-        )
-        self.cx = make_cx_user(email="ops@codex.test", password=self.password)
         self.factory = RequestFactory()
 
     def _login(self, email, password, tenant=None):
@@ -2718,14 +2763,17 @@ class SignInTenantScopeTests(TestCase):
 class SignInTenantRequiredSwitchTests(TestCase):
     """Phase 3 flips one constant; nothing else about the services changes."""
 
+    @classmethod
+    def setUpTestData(cls):
+        cls.password = "Str0ng!pass123"
+        cls.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        cls.ada = make_school_admin(
+            cls.bright_star, email="ada.okoye@example.test", password=cls.password,
+        )
+
     def setUp(self):
         from django.test import RequestFactory
 
-        self.password = "Str0ng!pass123"
-        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
-        self.ada = make_school_admin(
-            self.bright_star, email="ada.okoye@example.test", password=self.password,
-        )
         self.factory = RequestFactory()
 
     def _login(self, tenant=None):
@@ -2769,12 +2817,13 @@ class SignInTenantRequiredSwitchTests(TestCase):
 class PasswordResetTenantScopeTests(TestCase):
     """A reset asked for at one tenant must never rewrite another tenant's account."""
 
-    def setUp(self):
-        self.password = "Str0ng!pass123"
-        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
-        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
-        self.ada = make_school_admin(
-            self.bright_star, email="ada.okoye@example.test", password=self.password,
+    @classmethod
+    def setUpTestData(cls):
+        cls.password = "Str0ng!pass123"
+        cls.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        cls.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+        cls.ada = make_school_admin(
+            cls.bright_star, email="ada.okoye@example.test", password=cls.password,
         )
 
     def _request(self, tenant=None):
@@ -2837,13 +2886,16 @@ class BarcodePreviewPrivacyTests(TestCase):
 
     URL = "/v1/user/auth/special_login/preview/"
 
+    @classmethod
+    def setUpTestData(cls):
+        cls.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        cls.ada = make_school_admin(cls.bright_star, email="ada.okoye@example.test")
+        cls.cx = make_cx_user(email="ops@codex.test")
+
     def setUp(self):
         from django.core.cache import cache
 
         cache.clear()
-        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
-        self.ada = make_school_admin(self.bright_star, email="ada.okoye@example.test")
-        self.cx = make_cx_user(email="ops@codex.test")
         self.client = APIClient()
 
     def _get(self, card_id=None):
@@ -2978,16 +3030,19 @@ class CardLoginRateLimitTests(TestCase):
 class CardLoginRotationEndpointTests(TestCase):
     """Only authorized platform staff can replace another staff member's card key."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.tests.helpers import (
             make_assignment, make_permission, make_role, make_role_permission,
         )
 
-        self.actor = make_cx_user(email="card.admin@codex.test")
-        self.target = make_cx_user(email="card.holder@codex.test")
-        role = make_role(self.actor.tenant, name="Card administrator")
+        cls.actor = make_cx_user(email="card.admin@codex.test")
+        cls.target = make_cx_user(email="card.holder@codex.test")
+        role = make_role(cls.actor.tenant, name="Card administrator")
         make_role_permission(role, make_permission("platform.team.update"))
-        make_assignment(self.actor.tenant, self.actor, role)
+        make_assignment(cls.actor.tenant, cls.actor, role)
+
+    def setUp(self):
         self.client = APIClient()
         self.client.force_authenticate(user=self.actor)
         self.url = f"/v1/user/users/{self.target.id}/card-login/rotate/"
@@ -3033,11 +3088,12 @@ class EmailCaseNormalizationTests(TestCase):
     beside it while every lookup asked for ``iexact`` and took ``.first()``.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_tenants.models import Tenant
 
-        self.platform = Tenant.objects.get(slug="codex", kind="PLATFORM")
-        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        cls.platform = Tenant.objects.get(slug="codex", kind="PLATFORM")
+        cls.bright_star = make_school(name="Bright Star School", slug="bright-star")
 
     def _stored(self, pk):
         """The value the database holds, never the one the instance remembers."""
@@ -3190,7 +3246,8 @@ class EmailCaseCreationChecksAgreeTests(TestCase):
     duplicate the other path refused.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         make_cx_user(email="ada.okoye@example.test")
 
     def test_platform_user_create_refuses_a_case_variant(self):
@@ -3281,14 +3338,17 @@ class EmailCaseRepairMigrationTests(TestCase):
 
     MIGRATION = "vs_user.migrations.0006_normalize_user_email_case"
 
+    @classmethod
+    def setUpTestData(cls):
+        cls.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        cls.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+
     def setUp(self):
         from django.db import connection
         from importlib import import_module
 
         self.connection = connection
         self.migration = import_module(self.MIGRATION)
-        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
-        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
 
         with connection.cursor() as cursor:
             cursor.execute(
@@ -3431,9 +3491,10 @@ class EmailUniquePerTenantTests(TestCase):
     that somebody, somewhere on the platform, held that address.
     """
 
-    def setUp(self):
-        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
-        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+    @classmethod
+    def setUpTestData(cls):
+        cls.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        cls.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
 
     def _plant(self, school, email, **extra):
         """Create straight through save(), skipping full_clean()."""
@@ -3567,11 +3628,12 @@ class CrossTenantEmailGuardTests(TestCase):
     red the moment the constant moved.
     """
 
-    def setUp(self):
-        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
-        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
-        self.ada = make_school_admin(
-            self.bright_star, email="ada.okoye@example.test",
+    @classmethod
+    def setUpTestData(cls):
+        cls.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        cls.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+        cls.ada = make_school_admin(
+            cls.bright_star, email="ada.okoye@example.test",
         )
 
     def _second_copy(self):
@@ -3687,22 +3749,25 @@ class PerTenantEmailSignInTests(TestCase):
     send their tenant.
     """
 
+    @classmethod
+    def setUpTestData(cls):
+        cls.bright_star_password = "Br1ghtStar!pass"
+        cls.greenfield_password = "Gr33nfield!pass"
+        cls.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        cls.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+        with _tenant_required():
+            cls.at_bright_star = make_school_admin(
+                cls.bright_star, email="ada.okoye@example.test",
+                password=cls.bright_star_password,
+            )
+            cls.at_greenfield = make_school_admin(
+                cls.greenfield, email="ada.okoye@example.test",
+                password=cls.greenfield_password,
+            )
+
     def setUp(self):
         from django.test import RequestFactory
 
-        self.bright_star_password = "Br1ghtStar!pass"
-        self.greenfield_password = "Gr33nfield!pass"
-        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
-        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
-        with _tenant_required():
-            self.at_bright_star = make_school_admin(
-                self.bright_star, email="ada.okoye@example.test",
-                password=self.bright_star_password,
-            )
-            self.at_greenfield = make_school_admin(
-                self.greenfield, email="ada.okoye@example.test",
-                password=self.greenfield_password,
-            )
         self.factory = RequestFactory()
 
     def _login(self, password, tenant=None):
@@ -3764,14 +3829,17 @@ class EmailPerTenantMigrationTests(TestCase):
 
     MIGRATION = "vs_user.migrations.0007_user_email_unique_per_tenant"
 
+    @classmethod
+    def setUpTestData(cls):
+        cls.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        cls.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+
     def setUp(self):
         from django.db import connection
         from importlib import import_module
 
         self.connection = connection
         self.migration = import_module(self.MIGRATION)
-        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
-        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
 
     def _drop(self, name):
         with self.connection.cursor() as cursor:
@@ -3945,11 +4013,12 @@ class ScopedEmailLookupTests(TestCase):
     Star account). These tests hold both halves for every production path.
     """
 
-    def setUp(self):
-        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
-        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
-        self.ada = make_school_admin(
-            self.bright_star, email="ada.okoye@example.test",
+    @classmethod
+    def setUpTestData(cls):
+        cls.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        cls.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+        cls.ada = make_school_admin(
+            cls.bright_star, email="ada.okoye@example.test",
         )
 
     # ── the helper every path shares ─────────────────────────────────────────
@@ -4208,15 +4277,16 @@ class ScopedEmailLookupTests(TestCase):
 class ScopedEmailLookupCommandTests(TestCase):
     """``delete_user`` and ``create_superuser`` must refuse, not pick a row."""
 
-    def setUp(self):
-        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
-        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+    @classmethod
+    def setUpTestData(cls):
+        cls.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        cls.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
         with _tenant_required():
-            self.at_bright_star = make_school_admin(
-                self.bright_star, email="ada.okoye@example.test",
+            cls.at_bright_star = make_school_admin(
+                cls.bright_star, email="ada.okoye@example.test",
             )
-            self.at_greenfield = make_school_admin(
-                self.greenfield, email="ada.okoye@example.test",
+            cls.at_greenfield = make_school_admin(
+                cls.greenfield, email="ada.okoye@example.test",
             )
 
     def test_delete_user_refuses_an_address_held_at_two_tenants(self):
@@ -4337,13 +4407,14 @@ class ScopedEmailLookupCommandTests(TestCase):
 class ScopedEmailLookupSchoolCreateTests(TestCase):
     """A new school's admin address may already be in use at another school."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         _seed_prebuilt_admin_roles()
-        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
-        self.ada = make_school_admin(
-            self.bright_star, email="ada.okoye@example.test",
+        cls.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        cls.ada = make_school_admin(
+            cls.bright_star, email="ada.okoye@example.test",
         )
-        self.actor = make_cx_user(email="onboarding@codex.test")
+        cls.actor = make_cx_user(email="onboarding@codex.test")
 
     def _payload(self, slug="greenfield"):
         return {
@@ -4412,12 +4483,13 @@ class SchoolAuditEventsCarryTheTenantTests(TestCase):
     is written, looks complete, and simply cannot be filtered by customer.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from types import SimpleNamespace
 
         _seed_prebuilt_admin_roles()
-        self.actor = make_cx_user(email="onboarding@codex.test")
-        self.request = SimpleNamespace(user=self.actor, tenant=self.actor.tenant)
+        cls.actor = make_cx_user(email="onboarding@codex.test")
+        cls.request = SimpleNamespace(user=cls.actor, tenant=cls.actor.tenant)
 
     def _events(self, module_key):
         from vs_audit.models import AuditEvent
@@ -4537,19 +4609,25 @@ class IdentityAuditEventsCarryTheTenantTests(TestCase):
     unattributable to Bright Star no matter what the Explorer offers.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_tenants.context import clear_request_context
         from vs_tenants.models import Tenant
 
         clear_request_context()
-        self.bright_star = Tenant.objects.create(
+        cls.bright_star = Tenant.objects.create(
             name="Bright Star School", slug="bright-star",
             kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
         )
-        self.bola = User.objects.create_user(
+        cls.bola = User.objects.create_user(
             email="bola@bright-star.test", password="Str0ng!pass123",
-            first_name="Bola", last_name="Adeniyi", status="ACTIVE", tenant=self.bright_star,
+            first_name="Bola", last_name="Adeniyi", status="ACTIVE", tenant=cls.bright_star,
         )
+
+    def setUp(self):
+        from vs_tenants.context import clear_request_context
+
+        clear_request_context()
 
     def test_a_failed_sign_in_is_filed_under_the_tenant_it_happened_at(self):
         from vs_audit.models import AuditActionType, AuditEvent
@@ -4588,27 +4666,31 @@ class ParentAtTwoSchoolsEndToEndTests(TestCase):
     each time. Neither school can see the other.
     """
 
-    def setUp(self):
-        from django.test import RequestFactory
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.models import TenantRoleTemplate
 
         _seed_prebuilt_admin_roles()
-        self.factory = RequestFactory()
-        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
-        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
-        self.bright_star_branch = _main_branch(self.bright_star)
-        self.greenfield_branch = _main_branch(self.greenfield)
-        for tenant in (self.bright_star.tenant, self.greenfield.tenant):
+        cls.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        cls.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+        cls.bright_star_branch = _main_branch(cls.bright_star)
+        cls.greenfield_branch = _main_branch(cls.greenfield)
+        for tenant in (cls.bright_star.tenant, cls.greenfield.tenant):
             TenantRoleTemplate.objects.get_or_create(
                 tenant=tenant, key="parent",
                 defaults={"name": "Parent", "status": "ACTIVE"},
             )
-        self.bright_star_head = make_school_admin(
-            self.bright_star, email="head@bright-star.test",
+        cls.bright_star_head = make_school_admin(
+            cls.bright_star, email="head@bright-star.test",
         )
-        self.greenfield_head = make_school_admin(
-            self.greenfield, email="head@greenfield.test",
+        cls.greenfield_head = make_school_admin(
+            cls.greenfield, email="head@greenfield.test",
         )
+
+    def setUp(self):
+        from django.test import RequestFactory
+
+        self.factory = RequestFactory()
 
     def _create_parent(self, actor, branch, password):
         """Create Ada through UserCreateSerializer + UserCreationService."""
@@ -4963,11 +5045,12 @@ class BranchRuleAgreementTests(TestCase):
     - say the same thing, from both sides.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.tests.helpers import make_branch, make_school
 
-        self.school = make_school(slug="agree-school", name="Agree School")
-        self.branch = make_branch(self.school, name="Main", is_main=True)
+        cls.school = make_school(slug="agree-school", name="Agree School")
+        cls.branch = make_branch(cls.school, name="Main", is_main=True)
 
     def test_a_tenant_user_with_no_branch_passes_full_clean(self):
         user = User(
@@ -5034,11 +5117,12 @@ class PersonaConfersNoAuthorityTests(TestCase):
     authority anywhere, it shows up here.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.tests.helpers import make_branch, make_school
 
-        self.school = make_school(slug="inert-school", name="Inert School")
-        self.branch = make_branch(self.school, name="Main", is_main=True)
+        cls.school = make_school(slug="inert-school", name="Inert School")
+        cls.branch = make_branch(cls.school, name="Main", is_main=True)
 
     def _user(self, email, **kwargs):
         return User.objects.create_user(
@@ -5162,25 +5246,28 @@ class AuthEventTenantIsolationTests(TestCase):
 
     KEY = "platform.audit.view"
 
-    def setUp(self):
-        from core.test_utils import TenantAPIClient
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.tests.helpers import platform_tenant
 
-        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
-        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
-        self.codex = platform_tenant()
+        cls.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        cls.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+        cls.codex = platform_tenant()
 
         # Bright Star's audit officer, and a parent who holds nothing.
-        self.officer = self._user("officer@bright-star.test", self.bright_star.tenant)
-        self.parent = self._user("parent@bright-star.test", self.bright_star.tenant)
-        self.grant(self.officer, self.bright_star.tenant)
+        cls.officer = cls._user("officer@bright-star.test", cls.bright_star.tenant)
+        cls.parent = cls._user("parent@bright-star.test", cls.bright_star.tenant)
+        cls.grant(cls.officer, cls.bright_star.tenant)
 
         # Codex's audit officer, on the platform tenant, holding the same key.
-        self.cx_officer = self._user("officer@codex.test", self.codex)
-        self.grant(self.cx_officer, self.codex)
+        cls.cx_officer = cls._user("officer@codex.test", cls.codex)
+        cls.grant(cls.cx_officer, cls.codex)
 
-        self.own = self._event(self.bright_star.tenant, "ada@bright-star.test")
-        self.other = self._event(self.greenfield.tenant, "tunde@greenfield.test")
+        cls.own = cls._event(cls.bright_star.tenant, "ada@bright-star.test")
+        cls.other = cls._event(cls.greenfield.tenant, "tunde@greenfield.test")
+
+    def setUp(self):
+        from core.test_utils import TenantAPIClient
 
         self.client = TenantAPIClient(self.officer)
 

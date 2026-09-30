@@ -88,13 +88,16 @@ logger at ERROR; nothing surfaces in the response.
 
 ```bash
 cd apps
-../cx/bin/python manage.py test --settings=apps.settings.local            # everything
-../cx/bin/python manage.py test vs_finance --settings=apps.settings.local # one app
+../cx/bin/python manage.py test vs_finance.tests_ledger_lock --settings=apps.settings.local  # one module
+../cx/bin/python manage.py test vs_finance --settings=apps.settings.local                   # one app
+../cx/bin/python manage.py test --settings=apps.settings.local                              # everything
 ```
 
-Note: parts of `vs_rbac/tests/test_views.py`, `test_models.py` and
-`test_validators.py` predate several model refactors and are being repaired -
-see `todo.md`.
+Run the smallest set that covers the change and escalate from there; the whole
+suite is for checkpoints (see "Testing strategy" in `CLAUDE.md`). The test
+database is cloned from a cached, migrated template, so a run starts in seconds
+after the first; `--fresh-db` migrates from scratch, and `--slowest 20` lists
+where the time went.
 
 ## Tenancy model
 

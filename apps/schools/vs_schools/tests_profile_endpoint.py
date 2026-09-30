@@ -33,8 +33,8 @@ from .models import School, SchoolStatus
 from .serializers import SchoolProfileSerializer
 
 
-class SchoolProfileEndpointTests(TestCase):
-    """A school reading and editing its own profile, live or not."""
+class _SchoolProfileFixture(TestCase):
+    """A school, its administrators and the calls that reach its own profile."""
 
     @classmethod
     def setUpTestData(cls):
@@ -96,6 +96,10 @@ class SchoolProfileEndpointTests(TestCase):
             f"{self.url}?tenant={tenant_slug or self.tenant.slug}",
             payload, format="json",
         )
+
+
+class SchoolProfileEndpointTests(_SchoolProfileFixture):
+    """A school reading and editing its own profile, live or not."""
 
     # ── The gap this endpoint closes ─────────────────────────────────────────
 
@@ -345,10 +349,10 @@ ONE_PIXEL_PNG = base64.b64decode(
 )
 
 
-class SchoolLogoEndpointTests(SchoolProfileEndpointTests):
+class SchoolLogoEndpointTests(_SchoolProfileFixture):
     """``/v1/i/me/profile/logo/`` - setting and clearing the school's own logo.
 
-    Inherits the fixture above rather than rebuilding it: the logo is part of
+    Shares the profile fixture rather than rebuilding it: the logo is part of
     the same profile, gated on the same key, and reached by the same school.
     """
 

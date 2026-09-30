@@ -183,9 +183,11 @@ class ProvisionedBooksCarryNoLadderTests(TestCase):
 class _SubmitFixture(_P2PFixtureMixin, TestCase):
     """One entity, one of each approvable document, and a client that can submit."""
 
-    def setUp(self):
-        self.entity, _period, self.vendor, _vat, _wht = self.build_p2p()
-        self.bursar = get_user_model().objects.create_user(
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.entity, _period, cls.vendor, _vat, _wht = cls._p2p_books
+        cls.bursar = get_user_model().objects.create_user(
             tenant=_platform_tenant(), email="bursar@confirm.test",
             status="ACTIVE", first_name="B", last_name="Ursar",
         )
@@ -282,13 +284,14 @@ class _SubmitFixture(_P2PFixtureMixin, TestCase):
 class UnconfiguredSubmitIsRefusedThenConfirmableTests(_SubmitFixture):
     """The school has a route of its own and has put no steps in it yet."""
 
-    def setUp(self):
-        super().setUp()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         from vs_procurement.approvals import ensure_tenant_approval_templates
 
         # Exactly what provisioning leaves behind: a route per type, no steps.
         ensure_tenant_approval_templates(
-            self.entity.tenant, with_default_stages=False)
+            cls.entity.tenant, with_default_stages=False)
 
     def test_every_submit_endpoint_refuses_with_a_code_a_client_can_act_on(self):
         """409 and a named code, so the client can offer the confirmation.
@@ -365,11 +368,12 @@ class ConfirmationNeverBypassesARealLadderTests(_SubmitFixture):
     approved instance.
     """
 
-    def setUp(self):
-        super().setUp()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         from vs_procurement.approvals import ensure_tenant_approval_templates
 
-        ensure_tenant_approval_templates(self.entity.tenant)
+        ensure_tenant_approval_templates(cls.entity.tenant)
 
     @staticmethod
     def _appoint(user, group_code, *, tenant):

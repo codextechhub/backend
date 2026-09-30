@@ -71,9 +71,10 @@ class PermissionModelTests(TestCase):
 
 
 class PermissionDependencyModelTests(TestCase):
-    def setUp(self):
-        self.view = make_permission("finance.invoice.view")
-        self.approve = make_permission("finance.invoice.approve")
+    @classmethod
+    def setUpTestData(cls):
+        cls.view = make_permission("finance.invoice.view")
+        cls.approve = make_permission("finance.invoice.approve")
 
     def test_create_dependency(self):
         dep = make_dependency("finance.invoice.approve", "finance.invoice.view")
@@ -152,9 +153,10 @@ class RestrictedGrantCleanupMigrationTests(TestCase):
 # TenantRoleTemplate
 # =============================================================================
 class TenantRoleTemplateModelTests(TestCase):
-    def setUp(self):
-        self.school = make_school()
-        self.tenant = self.school.tenant
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school()
+        cls.tenant = cls.school.tenant
 
     def test_create_role(self):
         role = make_role(self.school, name="Teacher")
@@ -187,10 +189,11 @@ class TenantRoleTemplateModelTests(TestCase):
 
 
 class TenantRolePermissionModelTests(TestCase):
-    def setUp(self):
-        self.school = make_school()
-        self.role = make_role(self.school)
-        self.perm = make_permission("finance.invoice.view")
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school()
+        cls.role = make_role(cls.school)
+        cls.perm = make_permission("finance.invoice.view")
 
     def test_create_role_permission(self):
         rp = make_role_permission(self.role, self.perm)
@@ -212,12 +215,13 @@ class TenantRolePermissionModelTests(TestCase):
 # TenantUserRoleAssignment
 # =============================================================================
 class TenantUserRoleAssignmentModelTests(TestCase):
-    def setUp(self):
-        self.school = make_school()
-        self.branch = make_branch(self.school)
-        self.admin = make_school_admin(self.branch)
-        self.user = make_staff_user(self.branch, email="staff1@test.com")
-        self.role = make_role(self.school)
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school()
+        cls.branch = make_branch(cls.school)
+        cls.admin = make_school_admin(cls.branch)
+        cls.user = make_staff_user(cls.branch, email="staff1@test.com")
+        cls.role = make_role(cls.school)
 
     def test_create_assignment(self):
         a = make_assignment(self.school, self.user, self.role)
@@ -260,12 +264,13 @@ class TenantUserRoleAssignmentModelTests(TestCase):
 # TenantRoleChangeRequest
 # =============================================================================
 class TenantRoleChangeRequestModelTests(TestCase):
-    def setUp(self):
-        self.school = make_school()
-        self.branch = make_branch(self.school)
-        self.admin = make_school_admin(self.branch)
-        self.reviewer = make_vision_user()
-        self.role = make_role(self.school)
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school()
+        cls.branch = make_branch(cls.school)
+        cls.admin = make_school_admin(cls.branch)
+        cls.reviewer = make_vision_user()
+        cls.role = make_role(cls.school)
 
     def test_create_request(self):
         rcr = make_role_change_request(self.school, self.admin, self.role)
@@ -321,13 +326,14 @@ class TenantRoleChangeRequestModelTests(TestCase):
 
 
 class TenantRoleChangeDeltaItemModelTests(TestCase):
-    def setUp(self):
-        self.school = make_school()
-        self.branch = make_branch(self.school)
-        self.admin = make_school_admin(self.branch)
-        self.role = make_role(self.school)
-        self.perm = make_permission("finance.invoice.view")
-        self.rcr = make_role_change_request(self.school, self.admin, self.role)
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school()
+        cls.branch = make_branch(cls.school)
+        cls.admin = make_school_admin(cls.branch)
+        cls.role = make_role(cls.school)
+        cls.perm = make_permission("finance.invoice.view")
+        cls.rcr = make_role_change_request(cls.school, cls.admin, cls.role)
 
     def test_create_delta_item(self):
         item = TenantRoleChangeDeltaItem.objects.create(

@@ -42,11 +42,19 @@ def _run_school_seed(**kwargs):
 
 
 class SeedSchoolPermissionsKeyTests(TestCase):
-    def setUp(self):
+    """What one run of the seed writes, read back by each test.
+
+    The seed runs once for the class, against a database holding only the
+    actions and prebuilt roles it depends on, so every key read here was
+    created by that run. Tests that re-run it do so themselves.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
         _seed_actions_and_roles()
+        _run_school_seed()
 
     def test_creates_school_and_academics_keys(self):
-        _run_school_seed()
         # A representative spread across both modules and several verbs.
         for key in (
             "school.dashboard.view",
@@ -102,7 +110,6 @@ class SeedSchoolPermissionsKeyTests(TestCase):
           reads and corrects them is a switch on the role, set on the Field
           Access screen and not by ticking a permission.
         """
-        _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
             94,
@@ -110,7 +117,6 @@ class SeedSchoolPermissionsKeyTests(TestCase):
 
     def test_field_access_view_is_open_and_update_is_restricted(self):
         # Viewing switches opens nothing; changing one opens a field at once.
-        _run_school_seed()
         view = Permission.objects.get(key="school.field_access.view")
         update = Permission.objects.get(key="school.field_access.update")
         for perm in (view, update):
@@ -120,7 +126,6 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         self.assertTrue(update.is_restricted)
 
     def test_impersonation_keys_are_critical_and_restricted(self):
-        _run_school_seed()
         for key in (
             "school.impersonation.start",
             "school.impersonation.end",
@@ -133,7 +138,6 @@ class SeedSchoolPermissionsKeyTests(TestCase):
     def test_override_keys_are_critical_and_restricted(self):
         # `.view` is as restricted as the write keys: without it a user must not be
         # able to learn that permission exceptions exist on their account.
-        _run_school_seed()
         for key in (
             "school.user_overrides.view",
             "school.user_overrides.create",
@@ -144,7 +148,6 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             self.assertTrue(perm.is_restricted, key)
 
     def test_sensitivity_levels_applied(self):
-        _run_school_seed()
         self.assertEqual(
             Permission.objects.get(key="school.students.transition").sensitivity_level,
             "SENSITIVE",
@@ -155,7 +158,6 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         )
 
     def test_idempotent(self):
-        _run_school_seed()
         before = Permission.objects.filter(module_id__in=["school", "academics"]).count()
         out = _run_school_seed()
         after = Permission.objects.filter(module_id__in=["school", "academics"]).count()
@@ -170,7 +172,6 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         ``sync_field_registry`` refuses a field declaration whose resource is
         missing.
         """
-        _run_school_seed()
         resource = PermissionResource.objects.get(
             module_id="school", name="guardians",
         )
@@ -186,7 +187,6 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         The key keeps its ``teachers`` slug because school-fe checks it by
         name; the readable name is what the screens show.
         """
-        _run_school_seed()
         self.assertEqual(
             PermissionResource.objects.get(
                 module_id="school", name="teachers",
@@ -196,7 +196,6 @@ class SeedSchoolPermissionsKeyTests(TestCase):
 
     def test_a_blank_label_on_an_existing_resource_is_filled_in(self):
         """A resource created before labels existed gains one on the next run."""
-        _run_school_seed()
         PermissionResource.objects.filter(
             module_id="school", name="teachers",
         ).update(label="")
@@ -210,7 +209,8 @@ class SeedSchoolPermissionsKeyTests(TestCase):
 
 
 class SeedSchoolPrebuiltDefaultsTests(TestCase):
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         _seed_actions_and_roles()
         _run_school_seed()
 
@@ -369,20 +369,23 @@ class SeedSchoolBackfillTests(TestCase):
     (key=<prebuilt.key> or key=<prebuilt.key>-<branch pk>).
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         _seed_actions_and_roles()
-        self.school = School.objects.create(
+        cls.school = School.objects.create(
             name="Backfill Academy", slug="backfill", status="ACTIVE"
         )
-        self.prebuilt = PrebuiltRoleTemplate.objects.get(key="school_admin")
+        cls.prebuilt = PrebuiltRoleTemplate.objects.get(key="school_admin")
         # Native lineage: a system role provisioned straight into the tenant
         # tables with the prebuilt key.
-        self.role = TenantRoleTemplate.objects.create(
-            tenant=self.school.tenant,
+        cls.role = TenantRoleTemplate.objects.create(
+            tenant=cls.school.tenant,
             key="school_admin",
             name="School Admin",
             is_system_role=True,
         )
+
+    def setUp(self):
         # No permissions attached to it yet.
         self.assertEqual(
             TenantRolePermission.objects.filter(role=self.role).count(), 0
@@ -471,31 +474,32 @@ class SeedSchoolBackfillTests(TestCase):
 class SchoolAdminEffectivePermissionsTests(TestCase):
     """End-to-end: a user with an active school_admin assignment resolves grants."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         _seed_actions_and_roles()
-        self.school = School.objects.create(
+        cls.school = School.objects.create(
             name="Effective High", slug="effective", status="ACTIVE"
         )
-        self.role = TenantRoleTemplate.objects.create(
-            tenant=self.school.tenant,
+        cls.role = TenantRoleTemplate.objects.create(
+            tenant=cls.school.tenant,
             key="school_admin",
             name="School Admin",
             is_system_role=True,
         )
         _run_school_seed()
 
-        self.user = User.objects.create_user(
+        cls.user = User.objects.create_user(
             email="head@effective.test",
             password="Str0ng!pass123",
             status="ACTIVE",
             first_name="Head",
             last_name="Teacher",
-            tenant=self.school.tenant,
+            tenant=cls.school.tenant,
         )
         TenantUserRoleAssignment.objects.create(
-            tenant=self.school.tenant,
-            user=self.user,
-            role=self.role,
+            tenant=cls.school.tenant,
+            user=cls.user,
+            role=cls.role,
             assignment_status="ACTIVE",
         )
 

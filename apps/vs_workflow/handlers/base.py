@@ -48,6 +48,16 @@ class BaseWorkflowHandler:
     #: requester's. Ignored unless ``allows_requester_self_approval`` is True.
     self_approval_only_when_alone: bool = False
 
+    def approval_conflict_ids(self, instance):
+        """User ids excluded from deciding this document, or None for submitters.
+
+        Most documents separate the submitter from the approver. A document
+        raised for another person may instead make that subject the conflict;
+        its handler owns the distinction. This exclusion also applies to
+        delegates, so delegation cannot bypass the document's own rule.
+        """
+        return None
+
     #: The fields of this document type a Dynamic Role condition may test,
     #: beyond those every document has - its amount and branch, and the person
     #: who raised it. Each is a :class:`~vs_workflow.conditions.fields.ConditionField`
@@ -90,9 +100,9 @@ class BaseWorkflowHandler:
         """Curated, display-only snapshot of the business document for approval UIs.
 
         The engine does not know the shape of any document, so each module
-        describes its own. Snapshotted onto the WorkflowInstance at submission
-        time, so the approval screen shows what was submitted even if the source
-        document later changes.
+        describes its own. Snapshotted onto the WorkflowInstance at submission.
+        A module that permits pending corrections refreshes that snapshot when
+        it changes the source, so an approver sees the request they decide.
 
         Convention (all keys optional):
             {
@@ -111,8 +121,8 @@ class BaseWorkflowHandler:
 
         The result is a versioned collection of semantic presentation blocks;
         :mod:`vs_workflow.presentation` defines and validates the contract. It
-        is snapshotted at submission so an approver always inspects the same
-        facts that were filed, even if the source document later changes.
+        is snapshotted at submission. A module that permits pending corrections
+        refreshes it with the current facts before an approver decides.
 
         Details extend the summary rather than restating it. A handler keeps
         request identity and headline facts in ``get_document_summary``, then
@@ -127,8 +137,8 @@ class BaseWorkflowHandler:
     def get_source_document_link(self, document: Any) -> Optional[str]:
         """Return the current console route for the source record, when one exists.
 
-        Summary fields are an immutable submission snapshot, but navigation is
-        live application metadata. Resolving the link again on detail reads lets
+        Summary fields are stored with the workflow, but navigation is live
+        application metadata. Resolving the link again on detail reads lets
         route repairs and entity scope apply to approvals created in the past.
         """
         summary = self.get_document_summary(document)

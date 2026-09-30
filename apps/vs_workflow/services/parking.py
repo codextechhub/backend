@@ -146,10 +146,10 @@ class ResolutionCache:
     expensive part - "who holds this role in this scope for this tenant/branch" -
     is memoised on ``(source, role key, scope, tenant, branch)``.
 
-    ``resolve_approvers`` excludes the requester and then expands delegations *from the
-    surviving holders*, so an empty holder set after removing the requester provably
-    yields no approvers: a sole approver who is also the requester means parked. That
-    lets the memo answer the common case outright and skip the live resolution entirely.
+    ``resolve_approvers`` excludes the document's conflict identities and then
+    expands delegations from the surviving holders. For ordinary documents the
+    conflict is the submitter; leave excludes the person taking leave. An empty
+    holder set after that exclusion needs no live resolution.
 
     The memo is **opt-in per source, not opt-out**, and that direction matters. Two
     sources can be answered from a memoised lookup - a ROLE stage carrying a key, and a
@@ -250,7 +250,11 @@ class ResolutionCache:
         so the caller can skip taking a row lock for it entirely.
         """
         holders = self._holder_ids(stage, instance)
-        return holders is None or bool(holders - {instance.requested_by_id})
+        if holders is None:
+            return True
+        if approvers_service.requester_may_self_approve(instance):
+            return bool(holders)
+        return bool(holders - approvers_service.approval_conflict_ids(instance))
 
     def resolve(self, stage, instance) -> list:
         """Return the eligible approvers the engine would resolve for this stage now."""

@@ -33,6 +33,28 @@ def _reverse(entry, owner, *, actor_user, date):
     )
 
 
+def _refuse_if_transferred(source, label):
+    """Refuse to void a credit lot that funded a posted customer credit transfer.
+
+    The transfer moved that credit to another customer, whose bills it may already
+    have paid. Voiding the source first would leave the destination holding credit
+    nothing in the books explains, so the transfer is voided first.
+    """
+    from .models import CustomerCreditTransferDraw
+
+    lookup = {"payment": source} if label == "receipt" else {"note": source}
+    draw = (
+        CustomerCreditTransferDraw.objects.select_for_update()
+        .filter(transfer__status=DocumentStatus.POSTED, **lookup)
+        .select_related("transfer").order_by("transfer_id").first()
+    )
+    if draw is not None:
+        raise PostingError(
+            f"{label.capitalize()} {source.document_number} funded posted credit transfer "
+            f"{draw.transfer.document_number}; void that transfer first.",
+        )
+
+
 def _run_with_rejection(document, action, worker, *, actor_user, date):
     try:
         return worker(document, actor_user=actor_user, date=date)
@@ -119,10 +141,17 @@ def void_payment(payment, *, actor_user=None, date=None):
 
 
 @transaction.atomic
-def _void_payment_atomic(payment, *, actor_user=None, date=None):
+def _void_payment_atomic(payment, *, actor_user=None, date=None, transfer=None):
+    """Void a receipt, unwinding every settlement it made and every journal it raised.
+
+    A credit-transfer receipt is voided only through its transfer (``transfer``),
+    which also gives the credit back to the source customer; voiding the receipt on
+    its own would destroy that credit.
+    """
     from .installments import refresh_plans_for_invoice
     from .models import (
         CreditNote,
+        CustomerCreditTransfer,
         DebitNoteAllocation,
         Invoice,
         Payment,
@@ -132,6 +161,14 @@ def _void_payment_atomic(payment, *, actor_user=None, date=None):
 
     payment = Payment.objects.select_for_update(of=("self",)).get(pk=payment.pk)
     _guard_posted(payment, "receipt")
+    owner = CustomerCreditTransfer.objects.filter(receipt=payment).first()
+    if owner is not None and (transfer is None or transfer.pk != owner.pk):
+        raise PostingError(
+            f"Receipt {payment.document_number} carries credit transfer "
+            f"{owner.document_number}; void the transfer instead, which returns the "
+            f"credit to {owner.from_customer.code}.",
+        )
+    _refuse_if_transferred(payment, "receipt")
 
     posted_refunds = RefundAllocation.objects.select_for_update().filter(
         payment=payment, refund__status=DocumentStatus.POSTED,
@@ -232,6 +269,7 @@ def _void_credit_note_atomic(note, *, actor_user=None, date=None):
         invoices = {}
         allocation_journals = []
     else:
+        _refuse_if_transferred(note, "credit note")
         refund_source = (
             RefundAllocation.objects.select_for_update()
             .filter(note=note, refund__status=DocumentStatus.POSTED)

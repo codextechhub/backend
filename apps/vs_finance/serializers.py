@@ -29,6 +29,7 @@ from .models import (
     CreditNoteLine,
     Currency,
     Customer,
+    CustomerCreditTransfer,
     Dimension,
     DepreciationSchedule,
     DunningNotice,
@@ -515,7 +516,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "invoice_date", "due_date", "status", "payment_status",
             "subtotal", "tax_total", "total", "total_naira",
             "amount_paid", "amount_credited", "settled_amount", "balance_due",
-            "reference", "narration",
+            "reference", "narration", "billing_period", "billing_period_label",
         ]
 
     def get_total_naira(self, obj) -> str:
@@ -582,7 +583,7 @@ class CreditNoteSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
             "customer_name", "invoice_id", "invoice_number", "note_date", "status",
             "subtotal", "tax_total", "total", "total_naira",
             "allocated_amount", "unallocated_amount", "refunded_amount",
-            "credit_remaining", "reason", "reference", "lines",
+            "transferred_amount", "credit_remaining", "reason", "reference", "lines",
             "approval_required",
         ]
 
@@ -601,6 +602,31 @@ class RefundSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
             "id", "document_number", "customer_id", "customer_code", "customer_name",
             "refund_date", "method", "status", "amount", "amount_naira",
             "bank_account_id", "reference", "narration", "approval_required",
+        ]
+
+    def get_amount_naira(self, obj) -> str:
+        return format_naira(obj.amount)
+
+
+class CustomerCreditTransferSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
+    """Read shape for a customer credit transfer and the receipt it gave its destination."""
+
+    from_customer_code = serializers.CharField(source="from_customer.code", read_only=True)
+    from_customer_name = serializers.CharField(source="from_customer.name", read_only=True)
+    to_customer_code = serializers.CharField(source="to_customer.code", read_only=True)
+    to_customer_name = serializers.CharField(source="to_customer.name", read_only=True)
+    receipt_number = serializers.CharField(
+        source="receipt.document_number", read_only=True, default=None)
+    amount_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CustomerCreditTransfer
+        fields = [
+            "id", "document_number", "status", "branch_id",
+            "from_customer_id", "from_customer_code", "from_customer_name",
+            "to_customer_id", "to_customer_code", "to_customer_name",
+            "transfer_date", "amount", "amount_naira", "reason",
+            "receipt_id", "receipt_number", "approval_required",
         ]
 
     def get_amount_naira(self, obj) -> str:
@@ -643,7 +669,7 @@ class PaymentSerializer(serializers.ModelSerializer):
         fields = [
             "id", "document_number", "customer_id", "customer_code", "customer_name",
             "payment_date", "method", "amount", "amount_naira", "allocated_amount",
-            "unallocated_amount", "refunded_amount", "credit_remaining",
+            "unallocated_amount", "refunded_amount", "transferred_amount", "credit_remaining",
             "allocation_status", "deposit_account_code",
             "deposit_account_name", "reference", "narration", "journal_id", "status",
         ]

@@ -59,12 +59,14 @@ from vs_procurement.tests import _P2PFixtureMixin, _platform_tenant
 class ProcurementApprovalReversalTests(_P2PFixtureMixin, TestCase):
     """One refusal case and, where it exists, one still-reversible case per type."""
 
-    def setUp(self):
-        self.entity, _period, self.vendor, _vat, _wht = self.build_p2p()
-        ensure_tenant_approval_templates(self.entity.tenant)
-        self.requester = self._user("requester@reversal.test")
-        self.approver = self._user("approver@reversal.test")
-        self.admin = self._user("admin@reversal.test")
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.entity, _period, cls.vendor, _vat, _wht = cls._p2p_books
+        ensure_tenant_approval_templates(cls.entity.tenant)
+        cls.requester = cls._user("requester@reversal.test")
+        cls.approver = cls._user("approver@reversal.test")
+        cls.admin = cls._user("admin@reversal.test")
 
     # -- people and documents ------------------------------------------------ #
 

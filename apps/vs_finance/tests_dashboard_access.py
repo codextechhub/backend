@@ -23,18 +23,20 @@ LEDGER_KPIS = ("cash_position", "payables", "net_income_ytd")
 class FinanceDashboardAccessTests(_FinanceBranchFixture):
     """Who may open the dashboard, and which blocks each reader receives."""
 
-    def setUp(self):
-        super().setUp()
-        e = self.books
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        e = cls.books
         # Each invoice is one line of 100,000 kobo, posted for real so the dated
         # aging the dashboard reads counts it. Lekki carries three.
-        self.posted(self.invoice(e, self.customer(e, "CIKJ", self.ikeja), self.ikeja))
-        lekki = self.customer(e, "CLEK", self.lekki)
+        cls.posted(cls.invoice(e, cls.customer(e, "CIKJ", cls.ikeja), cls.ikeja))
+        lekki = cls.customer(e, "CLEK", cls.lekki)
         for _ in range(3):
-            self.posted(self.invoice(e, lekki, self.lekki))
-        self.posted(self.invoice(e, self.customer(e, "CALL", None), None))
+            cls.posted(cls.invoice(e, lekki, cls.lekki))
+        cls.posted(cls.invoice(e, cls.customer(e, "CALL", None), None))
 
-    def posted(self, invoice):
+    @classmethod
+    def posted(cls, invoice):
         """Post ``invoice`` through the real service, journal and all.
 
         The fixture's line books to the 4000 heading, which cannot take a posting,

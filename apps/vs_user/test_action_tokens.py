@@ -27,11 +27,12 @@ NEW_PASSWORD = "An0ther!pass99"
 class ActionTokenIsolationTests(TestCase):
     """Every emailed token authorizes one row in one credential family."""
 
-    def setUp(self):
-        self.school = make_school(slug="token-school", name="Token School")
-        self.branch = make_branch(self.school, name="Main", is_main=True)
-        self.user = make_school_admin(
-            self.branch,
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="token-school", name="Token School")
+        cls.branch = make_branch(cls.school, name="Main", is_main=True)
+        cls.user = make_school_admin(
+            cls.branch,
             email="ada@token-school.test",
             password="Str0ng!pass123",
         )

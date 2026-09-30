@@ -91,27 +91,28 @@ def _demote(key):
 class PlatformScopeEscalationTests(TestCase):
     """A school admin in tenant A tries to give a colleague platform reach."""
 
-    def setUp(self):
-        self.school = make_school(slug="probe-school", name="Riverbank School")
-        self.branch = make_branch(self.school)
-        self.tenant = self.school.tenant
-        self.slug = self.tenant.slug
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="probe-school", name="Riverbank School")
+        cls.branch = make_branch(cls.school)
+        cls.tenant = cls.school.tenant
+        cls.slug = cls.tenant.slug
 
-        self.attacker = make_school_admin(self.branch, email="probe-admin@test.com")
+        cls.attacker = make_school_admin(cls.branch, email="probe-admin@test.com")
         _grant(
-            self.attacker,
+            cls.attacker,
             [OVERRIDE_CREATE_KEY, ROLE_CREATE_KEY, ROLE_ASSIGN_KEY],
         )
-        self.colleague = make_staff_user(self.branch, email="probe-colleague@test.com")
-        self.platform_key = make_permission(PLATFORM_TARGET_KEY)
-        self.tenant_key = make_permission(TENANT_TARGET_KEY)
+        cls.colleague = make_staff_user(cls.branch, email="probe-colleague@test.com")
+        cls.platform_key = make_permission(PLATFORM_TARGET_KEY)
+        cls.tenant_key = make_permission(TENANT_TARGET_KEY)
 
         # Another customer on the platform. The schools register is Codex's
         # own list of every school it sells to, and SchoolListView serves
         # School.objects.all() behind platform.schools.view - the boundary is
         # the key alone, as schools/vs_schools/export_datasets.py says out loud.
-        self.rival = make_school(slug="rival-college", name="Rival College")
-        make_branch(self.rival)
+        cls.rival = make_school(slug="rival-college", name="Rival College")
+        make_branch(cls.rival)
 
     def _override_url(self):
         return reverse(
@@ -317,12 +318,13 @@ class PlatformScopeEscalationTests(TestCase):
 class PlatformImpersonationNamespaceTests(TestCase):
     """The impersonation split is a second, independent guard - keep it proven."""
 
-    def setUp(self):
-        self.school = make_school(slug="imp-school", name="Lakeside School")
-        self.branch = make_branch(self.school)
-        self.tenant = self.school.tenant
-        self.actor = make_school_admin(self.branch, email="imp-actor@test.com")
-        _grant(self.actor, ["school.impersonation.start"])
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="imp-school", name="Lakeside School")
+        cls.branch = make_branch(cls.school)
+        cls.tenant = cls.school.tenant
+        cls.actor = make_school_admin(cls.branch, email="imp-actor@test.com")
+        _grant(cls.actor, ["school.impersonation.start"])
 
     def test_a_school_actor_is_gated_on_the_school_namespace(self):
         """Even holding every platform impersonation key would change nothing.

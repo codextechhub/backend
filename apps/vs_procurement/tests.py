@@ -134,20 +134,47 @@ def _platform_tenant():
 
 
 class _P2PFixtureMixin:
-    """Builds an entity (seeded chart + open period), a vendor and tax codes."""
+    """Builds an entity (seeded chart + open period), a vendor and tax codes.
+
+    Seeding a chart of accounts is the expensive part of every test here, so on a
+    ``TestCase`` the books are built once per class in ``setUpTestData`` and
+    ``build_p2p`` hands each test its own copy of them: the savepoint around every
+    test rolls back whatever that test wrote. A ``TransactionTestCase`` never runs
+    ``setUpTestData``, so there ``build_p2p`` builds fresh books on each call.
+
+    A class that never calls ``build_p2p`` sets ``share_p2p_books = False``, so it
+    is not handed a second set of books it did not ask for.
+    """
+
+    #: Whether ``setUpTestData`` builds the ``build_p2p`` books once for the class.
+    share_p2p_books = True
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        if cls.share_p2p_books:
+            cls._p2p_books = cls._create_p2p_books()
 
     def build_p2p(self):
+        """Return ``(entity, period, vendor, input_vat, wht)`` for this test."""
+        books = getattr(self, "_p2p_books", None)
+        if books is None:
+            return self._create_p2p_books()
+        return books
+
+    @classmethod
+    def _create_p2p_books(cls):
         seed_currencies()
         entity = LedgerEntity.objects.create(
             name="Test Books", code="TBOOK", kind=LedgerEntity.Kind.TENANT,
         )
         seed_chart_of_accounts(entity)
-        # Non-PO bills are refused by default now: a bill with no order has nothing to
+        # Non-PO bills are refused by default: a bill with no order has nothing to
         # three-way match against. Most fixtures here bill without a PO because the
         # subject under test is AP, reporting or branch scope rather than the match, so
         # the opt-in is made explicit here instead of riding on what the default
         # happens to be. Tests that exercise the policy itself set their own row.
-        self.allow_non_po_bills(entity)
+        cls.allow_non_po_bills(entity)
         # Every real entity gets a default stock location, either from migration 0028
         # or from the first one an administrator creates. The fixture mirrors that, so
         # stock tests exercise the same shape production has rather than an entity with
@@ -166,17 +193,17 @@ class _P2PFixtureMixin:
         )
         vendor = Vendor.objects.create(
             entity=entity, code="ACME", name="Acme Supplies",
-            payable_account=self.acc(entity, "2100"),
-            default_expense_account=self.acc(entity, "5300"),
+            payable_account=cls.acc(entity, "2100"),
+            default_expense_account=cls.acc(entity, "5300"),
             kyc_status="VERIFIED",
         )
         input_vat = TaxCode.objects.create(
             entity=entity, code="VAT-IN", name="Input VAT 7.5%", rate_bps=750,
-            paid_account=self.acc(entity, "1300"),
+            paid_account=cls.acc(entity, "1300"),
         )
         wht = TaxCode.objects.create(
             entity=entity, code="WHT-5", name="WHT 5%", rate_bps=500,
-            collected_account=self.acc(entity, "2300"),
+            collected_account=cls.acc(entity, "2300"),
         )
         return entity, period, vendor, input_vat, wht
 
@@ -207,7 +234,8 @@ class _P2PFixtureMixin:
 
     # --- builders ---------------------------------------------------------- #
 
-    def make_po(self, entity, vendor, lines):
+    @classmethod
+    def make_po(cls, entity, vendor, lines):
         """lines: [(expense_code, qty, unit_price_kobo, tax_code|None)]."""
         po = PurchaseOrder.objects.create(
             entity=entity, vendor=vendor, order_date=datetime.date(2026, 1, 5),
@@ -216,14 +244,15 @@ class _P2PFixtureMixin:
         for i, (code, qty, price, tax) in enumerate(lines, start=1):
             PurchaseOrderLine.objects.create(
                 purchase_order=po, description=f"item {i}",
-                expense_account=self.acc(entity, code), quantity=qty,
+                expense_account=cls.acc(entity, code), quantity=qty,
                 unit_price=price, tax_code=tax, line_no=i,
             )
         from vs_procurement.purchasing import price_po
         price_po(po)
         return po
 
-    def make_grn(self, entity, vendor, po, accepts):
+    @classmethod
+    def make_grn(cls, entity, vendor, po, accepts):
         """accepts: [(po_line, accepted_qty)] - unit price taken from the PO line."""
         grn = GoodsReceivedNote.objects.create(
             entity=entity, vendor=vendor, purchase_order=po,
@@ -236,7 +265,8 @@ class _P2PFixtureMixin:
             )
         return grn
 
-    def _seed_stock(self, item, *, on_hand_qty, stock_value, location=None):
+    @classmethod
+    def _seed_stock(cls, item, *, on_hand_qty, stock_value, location=None):
         """Put an item into a known state without going through the ledger.
 
         Writing the item's totals alone does not describe a reachable state: the
@@ -257,7 +287,8 @@ class _P2PFixtureMixin:
         item.refresh_from_db()
         return item
 
-    def make_bill(self, entity, vendor, lines, *, po=None, date=datetime.date(2026, 1, 10)):
+    @classmethod
+    def make_bill(cls, entity, vendor, lines, *, po=None, date=datetime.date(2026, 1, 10)):
         """lines: [(expense_code, qty, unit_price, tax_code|None, po_line|None)]."""
         vi = VendorInvoice.objects.create(
             entity=entity, vendor=vendor, purchase_order=po,
@@ -270,7 +301,7 @@ class _P2PFixtureMixin:
         for i, (code, qty, price, tax, po_line) in enumerate(lines, start=1):
             VendorInvoiceLine.objects.create(
                 vendor_invoice=vi, po_line=po_line,
-                expense_account=self.acc(entity, code), quantity=qty,
+                expense_account=cls.acc(entity, code), quantity=qty,
                 unit_price=price, tax_code=tax, line_no=i,
             )
         return vi
@@ -10499,33 +10530,38 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
     error, and a null branch on every document.
     """
 
+    share_p2p_books = False
+
     # -- fixtures ------------------------------------------------------------ #
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.tests.helpers import make_branch, make_school
 
+        super().setUpTestData()
         seed_currencies()
-        self.multi_school = make_school(
+        cls.multi_school = make_school(
             slug="branch-multi", name="Multi Branch Group", status="ACTIVE",
         )
-        self.lekki = make_branch(self.multi_school, name="Lekki Branch")
-        self.ikeja = make_branch(self.multi_school, name="Ikeja Branch", is_main=False)
-        self.multi = self.build_books("MULTIBK", self.multi_school.tenant)
+        cls.lekki = make_branch(cls.multi_school, name="Lekki Branch")
+        cls.ikeja = make_branch(cls.multi_school, name="Ikeja Branch", is_main=False)
+        cls.multi = cls.build_books("MULTIBK", cls.multi_school.tenant)
 
         # A tenant with no branches at all - the branch-optional shape.
-        self.flat_school = make_school(
+        cls.flat_school = make_school(
             slug="branch-flat", name="Single Site School", status="ACTIVE",
         )
-        self.flat = self.build_books("FLATBK", self.flat_school.tenant)
+        cls.flat = cls.build_books("FLATBK", cls.flat_school.tenant)
 
         # A third tenant, used only to prove branch ids cannot cross tenants.
-        self.foreign_school = make_school(
+        cls.foreign_school = make_school(
             slug="branch-foreign", name="Foreign School", status="ACTIVE",
         )
-        self.foreign_branch = make_branch(self.foreign_school, name="Foreign Branch")
-        self.foreign = self.build_books("FORGNBK", self.foreign_school.tenant)
+        cls.foreign_branch = make_branch(cls.foreign_school, name="Foreign Branch")
+        cls.foreign = cls.build_books("FORGNBK", cls.foreign_school.tenant)
 
-    def build_books(self, code, tenant):
+    @classmethod
+    def build_books(cls, code, tenant):
         """An entity with a seeded chart, an open period, and a payable vendor."""
         entity = LedgerEntity.objects.create(
             name=f"{code} Books", code=code, kind=LedgerEntity.Kind.TENANT, tenant=tenant,
@@ -10541,11 +10577,11 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         )
         vendor = Vendor.objects.create(
             entity=entity, code="ACME", name="Acme Supplies",
-            payable_account=self.acc(entity, "2100"),
-            default_expense_account=self.acc(entity, "5300"),
+            payable_account=cls.acc(entity, "2100"),
+            default_expense_account=cls.acc(entity, "5300"),
             kyc_status="VERIFIED",
         )
-        self.allow_non_po_bills(entity)
+        cls.allow_non_po_bills(entity)
         return types.SimpleNamespace(entity=entity, vendor=vendor)
 
     def client_for(self, tenant, email, *, branch=None):
@@ -11081,40 +11117,50 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
 # --------------------------------------------------------------------------- #
 
 class _BranchTenantsFixture(_P2PFixtureMixin):
-    """Two differently shaped tenants, used by every Round 3 test class.
+    """Two differently shaped tenants, used by the branch and tenant test classes.
 
     ``multi`` has two branches, ``flat`` has none at all, and ``foreign`` exists only
     to prove nothing crosses a tenant boundary. A single-shape fixture would prove
     nothing about tenancy, so every behaviour below is asserted on both shapes.
+
+    The three tenants and their books are built once per class in
+    ``setUpTestData``. The row and people builders are classmethods, so a subclass
+    can build its own class fixture with them; API clients carry a token and are
+    made per test in ``setUp``.
     """
 
-    def setUp(self):
+    share_p2p_books = False
+
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.tests.helpers import make_branch, make_school
 
+        super().setUpTestData()
         seed_currencies()
-        self.multi_school = make_school(
+        cls.multi_school = make_school(
             slug="r3-multi", name="Multi Branch Group", status="ACTIVE",
         )
-        self.lekki = make_branch(self.multi_school, name="Lekki Branch")
-        self.ikeja = make_branch(self.multi_school, name="Ikeja Branch", is_main=False)
-        self.multi_tenant = self.multi_school.tenant
-        self.multi = self.build_books("R3MULTI", self.multi_tenant)
+        cls.lekki = make_branch(cls.multi_school, name="Lekki Branch")
+        cls.ikeja = make_branch(cls.multi_school, name="Ikeja Branch", is_main=False)
+        cls.multi_tenant = cls.multi_school.tenant
+        cls.multi = cls.build_books("R3MULTI", cls.multi_tenant)
 
-        self.flat_school = make_school(
+        cls.flat_school = make_school(
             slug="r3-flat", name="Single Site School", status="ACTIVE",
         )
-        self.flat_tenant = self.flat_school.tenant
-        self.flat = self.build_books("R3FLAT", self.flat_tenant)
+        cls.flat_tenant = cls.flat_school.tenant
+        cls.flat = cls.build_books("R3FLAT", cls.flat_tenant)
 
-        self.foreign_school = make_school(
+        cls.foreign_school = make_school(
             slug="r3-foreign", name="Foreign School", status="ACTIVE",
         )
-        self.foreign_tenant = self.foreign_school.tenant
-        self.foreign = self.build_books("R3FORGN", self.foreign_tenant)
+        cls.foreign_tenant = cls.foreign_school.tenant
+        cls.foreign = cls.build_books("R3FORGN", cls.foreign_tenant)
 
     # -- fixture builders ---------------------------------------------------- #
 
-    def build_books(self, code, tenant):
+    @classmethod
+    def build_books(cls, code, tenant):
         """An entity with a seeded chart, an open period, and a payable vendor."""
         entity = LedgerEntity.objects.create(
             name=f"{code} Books", code=code, kind=LedgerEntity.Kind.TENANT, tenant=tenant,
@@ -11130,14 +11176,15 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
         )
         vendor = Vendor.objects.create(
             entity=entity, code="ACME", name="Acme Supplies",
-            payable_account=self.acc(entity, "2100"),
-            default_expense_account=self.acc(entity, "5300"),
+            payable_account=cls.acc(entity, "2100"),
+            default_expense_account=cls.acc(entity, "5300"),
             kyc_status="VERIFIED",
         )
-        self.allow_non_po_bills(entity)
+        cls.allow_non_po_bills(entity)
         return types.SimpleNamespace(entity=entity, vendor=vendor)
 
-    def user_for(self, tenant, email, *, branch=None, first_name="Branch"):
+    @classmethod
+    def user_for(cls, tenant, email, *, branch=None, first_name="Branch"):
         """A user who is (or is not) bound to a branch of their own tenant."""
         from django.contrib.auth import get_user_model
 
@@ -11150,9 +11197,13 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
 
     def client_for(self, tenant, email, *, branch=None):
         """A real-JWT client for a user who is (or is not) bound to a branch."""
+        return self.client_as(self.user_for(tenant, email, branch=branch))
+
+    @staticmethod
+    def client_as(user):
+        """A real-JWT client for ``user``, who stays reachable as ``test_user``."""
         from core.test_utils import TenantAPIClient
 
-        user = self.user_for(tenant, email, branch=branch)
         client = TenantAPIClient(user=user)
         client.test_user = user
         return client
@@ -11238,7 +11289,8 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
 
     # -- document builders --------------------------------------------------- #
 
-    def requisition(self, books, *, branch=None, requester=None, unit_price=10_000):
+    @classmethod
+    def requisition(cls, books, *, branch=None, requester=None, unit_price=10_000):
         req = PurchaseRequisition.objects.create(
             entity=books.entity, branch=branch, request_date=datetime.date(2026, 1, 3),
             requested_by=requester, title="Chairs",
@@ -11246,12 +11298,13 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
         PurchaseRequisitionLine.objects.create(
             requisition=req, line_no=1, description="Chair", quantity=1,
             estimated_unit_price=unit_price,
-            expense_account=self.acc(books.entity, "5300"),
+            expense_account=cls.acc(books.entity, "5300"),
         )
         req.recompute_total(save=True)
         return req
 
-    def purchase_order(self, books, *, branch=None, status=DocumentStatus.DRAFT):
+    @classmethod
+    def purchase_order(cls, books, *, branch=None, status=DocumentStatus.DRAFT):
         from vs_procurement.purchasing import price_po
 
         po = PurchaseOrder.objects.create(
@@ -11260,30 +11313,33 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
         )
         PurchaseOrderLine.objects.create(
             purchase_order=po, line_no=1, description="Chair",
-            expense_account=self.acc(books.entity, "5300"),
+            expense_account=cls.acc(books.entity, "5300"),
             quantity=1, unit_price=10_000,
         )
         price_po(po)
         return po
 
-    def goods_receipt(self, books, *, branch=None):
+    @classmethod
+    def goods_receipt(cls, books, *, branch=None):
         return GoodsReceivedNote.objects.create(
             entity=books.entity, vendor=books.vendor, branch=branch,
             received_date=datetime.date(2026, 1, 8),
         )
 
-    def vendor_invoice(self, books, *, branch=None):
+    @classmethod
+    def vendor_invoice(cls, books, *, branch=None):
         invoice = VendorInvoice.objects.create(
             entity=books.entity, vendor=books.vendor, branch=branch,
             invoice_date=datetime.date(2026, 1, 10), due_date=datetime.date(2026, 1, 20),
         )
         VendorInvoiceLine.objects.create(
             vendor_invoice=invoice, line_no=1, description="Chair",
-            expense_account=self.acc(books.entity, "5300"), quantity=1, unit_price=10_000,
+            expense_account=cls.acc(books.entity, "5300"), quantity=1, unit_price=10_000,
         )
         return invoice
 
-    def vendor_payment(self, books, *, branch=None):
+    @classmethod
+    def vendor_payment(cls, books, *, branch=None):
         return VendorPayment.objects.create(
             entity=books.entity, vendor=books.vendor, branch=branch,
             payment_date=datetime.date(2026, 1, 20), gross_amount=10_000,
@@ -11670,32 +11726,33 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
     #: The role the seeded manager stage names; see WF_DEFAULT_MANAGER_GROUP.
     MANAGER_ROLE = "procurement-approver"
 
-    def setUp(self):
-        super().setUp()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         from vs_procurement.approvals import ensure_tenant_approval_templates
 
-        ensure_tenant_approval_templates(self.multi_tenant)
-        ensure_tenant_approval_templates(self.flat_tenant)
+        ensure_tenant_approval_templates(cls.multi_tenant)
+        ensure_tenant_approval_templates(cls.flat_tenant)
 
-        self.lekki_approver = self.user_for(
-            self.multi_tenant, "lekki-approver@t.com", branch=self.lekki, first_name="Lekki",
+        cls.lekki_approver = cls.user_for(
+            cls.multi_tenant, "lekki-approver@t.com", branch=cls.lekki, first_name="Lekki",
         )
-        self.ikeja_approver = self.user_for(
-            self.multi_tenant, "ikeja-approver@t.com", branch=self.ikeja, first_name="Ikeja",
+        cls.ikeja_approver = cls.user_for(
+            cls.multi_tenant, "ikeja-approver@t.com", branch=cls.ikeja, first_name="Ikeja",
         )
-        self.tenant_wide_approver = self.user_for(
-            self.multi_tenant, "hq-approver@t.com", first_name="Head",
+        cls.tenant_wide_approver = cls.user_for(
+            cls.multi_tenant, "hq-approver@t.com", first_name="Head",
         )
         # All three hold the *same* role the seeded stage names; only the branch on
         # the assignment differs, which is what routing is being tested on.
-        self.appoint(self.lekki_approver, self.MANAGER_ROLE,
-                     tenant=self.multi_tenant, branch=self.lekki)
-        self.appoint(self.ikeja_approver, self.MANAGER_ROLE,
-                     tenant=self.multi_tenant, branch=self.ikeja)
-        self.appoint(self.tenant_wide_approver, self.MANAGER_ROLE,
-                     tenant=self.multi_tenant)
+        cls.appoint(cls.lekki_approver, cls.MANAGER_ROLE,
+                    tenant=cls.multi_tenant, branch=cls.lekki)
+        cls.appoint(cls.ikeja_approver, cls.MANAGER_ROLE,
+                    tenant=cls.multi_tenant, branch=cls.ikeja)
+        cls.appoint(cls.tenant_wide_approver, cls.MANAGER_ROLE,
+                    tenant=cls.multi_tenant)
 
-        self.requester = self.user_for(self.multi_tenant, "r3-routing-requester@t.com")
+        cls.requester = cls.user_for(cls.multi_tenant, "r3-routing-requester@t.com")
 
     def eligible_ids(self, instance):
         """The frozen approver snapshot the engine wrote when the stage activated."""
@@ -11943,19 +12000,20 @@ class ParkedAndOverrideFilterBranchScopeTests(_BranchTenantsFixture, TestCase):
     OVERRIDE_KEY = "procurement.approval.override"
     VIEW_KEY = "procurement.requisition.view"
 
-    def setUp(self):
-        super().setUp()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         from vs_procurement.approvals import ensure_tenant_approval_templates
 
-        ensure_tenant_approval_templates(self.multi_tenant)
-        ensure_tenant_approval_templates(self.flat_tenant)
+        ensure_tenant_approval_templates(cls.multi_tenant)
+        ensure_tenant_approval_templates(cls.flat_tenant)
         # Nobody is ever appointed to the approving role, so everything submitted
         # here parks and stays parked: the repair pass the list runs has nothing
         # it could staff.
-        self.requester = self.user_for(self.multi_tenant, "parkfilter-req@t.com")
-        self.breaker = self.user_for(self.multi_tenant, "parkfilter-breaker@t.com")
-        self.grant(self.breaker, self.OVERRIDE_KEY, tenant=self.multi_tenant,
-                   role_key="parkfilter-breakglass")
+        cls.requester = cls.user_for(cls.multi_tenant, "parkfilter-req@t.com")
+        cls.breaker = cls.user_for(cls.multi_tenant, "parkfilter-breaker@t.com")
+        cls.grant(cls.breaker, cls.OVERRIDE_KEY, tenant=cls.multi_tenant,
+                  role_key="parkfilter-breakglass")
 
     # -- fixtures ------------------------------------------------------------ #
 
@@ -12156,16 +12214,17 @@ class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
     #: The role the seeded manager stage names; see WF_DEFAULT_MANAGER_GROUP.
     MANAGER_ROLE = "procurement-approver"
 
-    def setUp(self):
-        super().setUp()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         from vs_procurement.approvals import ensure_tenant_approval_templates
 
-        ensure_tenant_approval_templates(self.multi_tenant)
-        self.lekki_approver = self.user_for(
-            self.multi_tenant, "cover-lekki@t.com", branch=self.lekki, first_name="Lekki",
+        ensure_tenant_approval_templates(cls.multi_tenant)
+        cls.lekki_approver = cls.user_for(
+            cls.multi_tenant, "cover-lekki@t.com", branch=cls.lekki, first_name="Lekki",
         )
-        self.appoint(self.lekki_approver, self.MANAGER_ROLE,
-                     tenant=self.multi_tenant, branch=self.lekki)
+        cls.appoint(cls.lekki_approver, cls.MANAGER_ROLE,
+                    tenant=cls.multi_tenant, branch=cls.lekki)
 
     def coverage(self, tenant=None, **kwargs):
         from vs_procurement.approval_coverage import approval_coverage
@@ -12345,16 +12404,20 @@ class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
 class ProcurementBranchTotalsTests(_BranchTenantsFixture, TestCase):
     """KPI headers count exactly the rows the caller's own list returns."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        # 100,000 kobo at Lekki, 700,000 at Ikeja, 30,000 for the entity as a whole.
+        cls.lekki_req = cls.requisition(cls.multi, branch=cls.lekki, unit_price=100_000)
+        cls.ikeja_req = cls.requisition(cls.multi, branch=cls.ikeja, unit_price=700_000)
+        cls.entity_req = cls.requisition(cls.multi, unit_price=30_000)
+
     def setUp(self):
         super().setUp()
         self.lekki_client = self.client_for(
             self.multi_tenant, "totals-lekki@t.com", branch=self.lekki,
         )
         self.hq_client = self.client_for(self.multi_tenant, "totals-hq@t.com")
-        # 100,000 kobo at Lekki, 700,000 at Ikeja, 30,000 for the entity as a whole.
-        self.lekki_req = self.requisition(self.multi, branch=self.lekki, unit_price=100_000)
-        self.ikeja_req = self.requisition(self.multi, branch=self.ikeja, unit_price=700_000)
-        self.entity_req = self.requisition(self.multi, unit_price=30_000)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_requisition_summary_matches_the_callers_visible_rows(self, _permission):
@@ -12468,6 +12531,17 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
     actually open, on a multi-branch tenant and on a tenant with no branches at all.
     """
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        # Three sub-scopes inside one entity, with distinct amounts so a leak is a wrong
+        # number rather than a coincidence. The entity-level chain stands in for
+        # historical rows raised before the branch column existed, which no backfill
+        # could place, so its branch is genuinely null.
+        cls.lekki_books = cls.posted_scope(cls.multi, branch=cls.lekki, base=500_000)
+        cls.ikeja_books = cls.posted_scope(cls.multi, branch=cls.ikeja, base=300_000)
+        cls.legacy_books = cls.posted_scope(cls.multi, branch=None, base=200_000)
+
     def setUp(self):
         super().setUp()
         self.lekki_client = self.client_for(
@@ -12477,17 +12551,11 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
             self.multi_tenant, "rpt-ikeja@t.com", branch=self.ikeja,
         )
         self.hq_client = self.client_for(self.multi_tenant, "rpt-hq@t.com")
-        # Three sub-scopes inside one entity, with distinct amounts so a leak is a wrong
-        # number rather than a coincidence. The entity-level chain stands in for the
-        # historical rows Round 2 could not backfill: raised before the branch column
-        # existed, so its branch is genuinely null.
-        self.lekki_books = self.posted_scope(self.multi, branch=self.lekki, base=500_000)
-        self.ikeja_books = self.posted_scope(self.multi, branch=self.ikeja, base=300_000)
-        self.legacy_books = self.posted_scope(self.multi, branch=None, base=200_000)
 
     # -- fixture builders ---------------------------------------------------- #
 
-    def posted_scope(self, books, *, branch, base):
+    @classmethod
+    def posted_scope(cls, books, *, branch, base):
         """One branch sub-scope's posted evidence, shaped to feed every report.
 
         Two live orders: a *billed* one (receipt cleared by a still-unpaid bill, which is
@@ -12496,14 +12564,15 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
         cleared receipt nets to zero and drops out). Both stay open so the reports have
         something to report.
         """
-        billed = self.posted_order(books, branch=branch, unit=base, bill=True)
-        unbilled = self.posted_order(books, branch=branch, unit=base // 2, bill=False)
+        billed = cls.posted_order(books, branch=branch, unit=base, bill=True)
+        unbilled = cls.posted_order(books, branch=branch, unit=base // 2, bill=False)
         return types.SimpleNamespace(
             branch=branch, billed=billed, unbilled=unbilled,
             billed_amount=base, open_receipt_amount=base // 2,
         )
 
-    def posted_order(self, books, *, branch, unit, bill,
+    @classmethod
+    def posted_order(cls, books, *, branch, unit, bill,
                      order=datetime.date(2026, 1, 5),
                      expected=datetime.date(2026, 1, 9),
                      received=datetime.date(2026, 1, 8),
@@ -12524,7 +12593,7 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
         )
         PurchaseRequisitionLine.objects.create(
             requisition=requisition, line_no=1, description="Chair", quantity=1,
-            estimated_unit_price=unit, expense_account=self.acc(entity, "5300"),
+            estimated_unit_price=unit, expense_account=cls.acc(entity, "5300"),
         )
         requisition.recompute_total(save=True)
 
@@ -12534,7 +12603,7 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
         )
         po_line = PurchaseOrderLine.objects.create(
             purchase_order=po, line_no=1, description="Chair",
-            expense_account=self.acc(entity, "5300"), quantity=1, unit_price=unit,
+            expense_account=cls.acc(entity, "5300"), quantity=1, unit_price=unit,
         )
         price_po(po)
 
@@ -12557,7 +12626,7 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
             )
             VendorInvoiceLine.objects.create(
                 vendor_invoice=invoice, po_line=po_line,
-                expense_account=self.acc(entity, "5300"),
+                expense_account=cls.acc(entity, "5300"),
                 quantity=1, unit_price=unit, line_no=1,
             )
             post_vendor_invoice(invoice)
@@ -13841,14 +13910,15 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
 
     PO_VIEW = "procurement.purchase_order.view"
 
-    def setUp(self):
-        super().setUp()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         from vs_rbac.tests.helpers import make_branch
 
         # A third branch nobody in these tests is ever granted. Two branches can
         # only show that a narrowing happened; the third shows it stopped in the
         # right place.
-        self.yaba = make_branch(self.multi_school, name="Yaba Branch", is_main=False)
+        cls.yaba = make_branch(cls.multi_school, name="Yaba Branch", is_main=False)
 
     @staticmethod
     def as_client(user):
@@ -14208,37 +14278,42 @@ class ProcurementCatalogueReadingTests(_BranchTenantsFixture, TestCase):
     store not yet given a branch is not on a branch storekeeper's screen.
     """
 
-    def setUp(self):
-        super().setUp()
-        entity = self.multi.entity
-        self.shared_vendor = self.multi.vendor          # the seeded one, no branch
-        self.lekki_vendor = Vendor.objects.create(
-            entity=entity, code="LEKSTAT", name="Lekki Stationers", branch=self.lekki,
-            payable_account=self.acc(entity, "2100"),
-            default_expense_account=self.acc(entity, "5300"),
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        entity = cls.multi.entity
+        cls.shared_vendor = cls.multi.vendor          # the seeded one, no branch
+        cls.lekki_vendor = Vendor.objects.create(
+            entity=entity, code="LEKSTAT", name="Lekki Stationers", branch=cls.lekki,
+            payable_account=cls.acc(entity, "2100"),
+            default_expense_account=cls.acc(entity, "5300"),
             kyc_status="VERIFIED",
         )
-        self.central_store = StockLocation.objects.create(
+        cls.central_store = StockLocation.objects.create(
             entity=entity, code="CENTRAL", name="Central Store", is_default=True,
         )
-        self.lekki_store = StockLocation.objects.create(
-            entity=entity, code="LEKSTORE", name="Lekki Store", branch=self.lekki,
+        cls.lekki_store = StockLocation.objects.create(
+            entity=entity, code="LEKSTORE", name="Lekki Store", branch=cls.lekki,
         )
-        self.ikeja_store = StockLocation.objects.create(
-            entity=entity, code="IKJSTORE", name="Ikeja Store", branch=self.ikeja,
+        cls.ikeja_store = StockLocation.objects.create(
+            entity=entity, code="IKJSTORE", name="Ikeja Store", branch=cls.ikeja,
         )
 
-        self.client = self.client_for(
-            self.multi_tenant, "ikeja-store@t.com", branch=self.ikeja,
+        cls.storekeeper = cls.user_for(
+            cls.multi_tenant, "ikeja-store@t.com", branch=cls.ikeja,
         )
         for key in ("procurement.vendor.view", "procurement.vendor.update",
                     "procurement.stock.view", "procurement.stock.create",
                     "procurement.stock.update",
                     "procurement.analytics.view"):
-            self.grant(
-                self.client.test_user, key, tenant=self.multi_tenant,
-                role_key="ikeja-store-role", branch=self.ikeja,
+            cls.grant(
+                cls.storekeeper, key, tenant=cls.multi_tenant,
+                role_key="ikeja-store-role", branch=cls.ikeja,
             )
+
+    def setUp(self):
+        super().setUp()
+        self.client = self.client_as(self.storekeeper)
 
     def call(self, path, method="get", body=None):
         url = f"/v1/procurement/{path}?entity={self.multi.entity.code}"

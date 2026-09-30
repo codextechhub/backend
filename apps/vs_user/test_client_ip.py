@@ -22,13 +22,16 @@ CLOUDFLARE = ("HTTP_CF_CONNECTING_IP", "HTTP_TRUE_CLIENT_IP")
 
 
 class LoginClientAddressTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(name="Bright Star School", slug="bright-star")
+        cls.ada = make_school_admin(
+            cls.school, email="ada.okoye@example.test", password=PASSWORD,
+        )
+
     def setUp(self):
         cache.clear()
         self.addCleanup(cache.clear)
-        self.school = make_school(name="Bright Star School", slug="bright-star")
-        self.ada = make_school_admin(
-            self.school, email="ada.okoye@example.test", password=PASSWORD,
-        )
         self.client = APIClient()
 
     def _login(self, password, **meta):

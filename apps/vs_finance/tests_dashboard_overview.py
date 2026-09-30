@@ -26,37 +26,42 @@ from .tests_branch_scope import _FinanceBranchFixture
 
 
 class _OverviewFixture(_FinanceBranchFixture):
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from schools.core.fal.models import FeeStructureTermLink
         from schools.vs_academics.models import AcademicSession, AcademicTerm
         from vs_finance.models import FeeStructure
 
-        super().setUp()
-        e = self.books
-        self.period = FiscalPeriod.objects.get(entity=e, period_no=1)
+        super().setUpTestData()
+        e = cls.books
+        cls.period = FiscalPeriod.objects.get(entity=e, period_no=1)
         session = AcademicSession.all_objects.create(
-            tenant=self.tenant, name="2025/2026", status="ACTIVE",
+            tenant=cls.tenant, name="2025/2026", status="ACTIVE",
             start_date=datetime.date(2025, 9, 1), end_date=datetime.date(2026, 7, 31),
         )
         term = AcademicTerm.all_objects.create(
-            tenant=self.tenant, session=session, name="First Term", order_index=1,
+            tenant=cls.tenant, session=session, name="First Term", order_index=1,
             start_date=datetime.date(2026, 1, 5), end_date=datetime.date(2026, 3, 31),
         )
         structure = FeeStructure.objects.create(entity=e, code="T1", name="First Term fees")
-        FeeStructureTermLink.objects.create(fee_structure=structure, session=session, term=term)
+        link = FeeStructureTermLink.objects.create(fee_structure=structure, session=session, term=term)
+        cls.term_key = link.period_key
 
-        self.tunde = self.customer(e, "CIKJ", self.ikeja)
-        self.aisha = self.customer(e, "CLEK", self.lekki)
-        self.term_invoice = self.posted(self.invoice(e, self.tunde, self.ikeja), reference="FEE:T1")
-        self.arrears = self.posted(self.invoice(e, self.aisha, self.lekki), reference="ARREARS-2025T3")
-        self.pay(self.tunde, self.ikeja, self.term_invoice, 60_000, "BANK_TRANSFER")
-        self.pay(self.aisha, self.lekki, self.arrears, 40_000, "CASH")
+        cls.tunde = cls.customer(e, "CIKJ", cls.ikeja)
+        cls.aisha = cls.customer(e, "CLEK", cls.lekki)
+        cls.term_invoice = cls.posted(cls.invoice(e, cls.tunde, cls.ikeja), reference="FEE:T1")
+        cls.arrears = cls.posted(cls.invoice(e, cls.aisha, cls.lekki), reference="ARREARS-2025T3")
+        cls.pay(cls.tunde, cls.ikeja, cls.term_invoice, 60_000, "BANK_TRANSFER")
+        cls.pay(cls.aisha, cls.lekki, cls.arrears, 40_000, "CASH")
 
-    def posted(self, invoice, *, reference):
+    @classmethod
+    def posted(cls, invoice, *, reference):
         from vs_finance.receivables import post_invoice
 
         invoice.reference = reference
-        invoice.save(update_fields=["reference"])
+        # A fee run stamps the billing period its bills belong to; the term reads it.
+        invoice.billing_period = cls.term_key if reference == "FEE:T1" else ""
+        invoice.save(update_fields=["reference", "billing_period"])
         InvoiceLine.objects.filter(invoice=invoice).update(
             revenue_account=Account.objects.get(entity=invoice.entity, code="4100"),
         )
@@ -64,13 +69,14 @@ class _OverviewFixture(_FinanceBranchFixture):
         invoice.refresh_from_db()
         return invoice
 
-    def pay(self, customer, branch, invoice, amount, method):
+    @classmethod
+    def pay(cls, customer, branch, invoice, amount, method):
         from vs_finance.receivables import post_payment
 
         payment = Payment.objects.create(
-            entity=self.books, customer=customer, branch=branch, method=method,
+            entity=cls.books, customer=customer, branch=branch, method=method,
             payment_date=datetime.date(2026, 1, 15), amount=amount,
-            deposit_account=Account.objects.get(entity=self.books, code="1100"),
+            deposit_account=Account.objects.get(entity=cls.books, code="1100"),
         )
         post_payment(payment, allocations=[(invoice, amount)])
         return payment

@@ -139,8 +139,8 @@ class CreditLot:
     """A posted receipt or credit note, and how much of it is still unspent credit.
 
     ``remaining`` is what is left in the customer-credit liability for this document:
-    its value less what has been allocated to invoices and less what has already been
-    refunded out. ``date`` is the lot's own accounting date - the date from which its
+    its value less what has been allocated to invoices, refunded out, or transferred
+    to another customer. ``date`` is the lot's own accounting date - the date from which its
     credit exists at all, and the whole point of modelling credit as lots.
     """
 
@@ -206,22 +206,24 @@ def credit_lots(entity, customer_ids=None, *, as_of=None, scope=None,
         CreditLot(
             kind="RECEIPT", document_id=row["id"], customer_id=row["customer_id"],
             date=row["payment_date"], number=row["document_number"] or "",
-            remaining=int(row["amount"]) - int(row["allocated_amount"]) - int(row["refunded_amount"]),
+            remaining=(int(row["amount"]) - int(row["allocated_amount"])
+                       - int(row["refunded_amount"]) - int(row["transferred_amount"])),
             branch_id=row["branch_id"],
         )
         for row in payments.values(
             "id", "customer_id", "branch_id", "payment_date", "document_number",
-            "amount", "allocated_amount", "refunded_amount")
+            "amount", "allocated_amount", "refunded_amount", "transferred_amount")
     ] + [  # Credit notes: value beyond what it settled is credit.
         CreditLot(
             kind="CREDIT_NOTE", document_id=row["id"], customer_id=row["customer_id"],
             date=row["note_date"], number=row["document_number"] or "",
-            remaining=int(row["total"]) - int(row["allocated_amount"]) - int(row["refunded_amount"]),
+            remaining=(int(row["total"]) - int(row["allocated_amount"])
+                       - int(row["refunded_amount"]) - int(row["transferred_amount"])),
             branch_id=row["branch_id"],
         )
         for row in notes.values(
             "id", "customer_id", "branch_id", "note_date", "document_number",
-            "total", "allocated_amount", "refunded_amount")
+            "total", "allocated_amount", "refunded_amount", "transferred_amount")
     ]
     for lot in rows:  # Bucket the spendable lots per customer.
         if lot.remaining > 0:  # Exhausted lots are not credit.

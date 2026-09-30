@@ -73,22 +73,23 @@ def _pair(access, field):
 class _Fields(TestCase):
     """A school, one person in it, and one field of every kind."""
 
-    def setUp(self):
-        self.school = make_school(slug="fe-bright-star", name="Bright Star School")
-        self.ikeja = make_branch(self.school, name="Ikeja Branch")
-        self.tenant = self.school.tenant
-        self.name = make_field_definition("fetest.vendor.name", "Name")
-        self.bank = make_field_definition(
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="fe-bright-star", name="Bright Star School")
+        cls.ikeja = make_branch(cls.school, name="Ikeja Branch")
+        cls.tenant = cls.school.tenant
+        cls.name = make_field_definition("fetest.vendor.name", "Name")
+        cls.bank = make_field_definition(
             "fetest.vendor.bank_account_number", "Bank account number", sensitive=True,
         )
-        self.total = make_field_definition(
+        cls.total = make_field_definition(
             "fetest.vendor.total_spend", "Total spend", writable=False,
         )
-        self.payroll = make_field_definition(
+        cls.payroll = make_field_definition(
             "fetest.staff.bank_name", "Bank name",
             sensitive=True, scope=PermissionScope.PLATFORM,
         )
-        self.user = make_staff_user(self.ikeja, email="fe-user@test.com")
+        cls.user = make_staff_user(cls.ikeja, email="fe-user@test.com")
 
     def _role(self, tenant=None, **kwargs):
         return make_role(tenant or self.tenant, name=f"FE Role {next(_counter)}", **kwargs)
@@ -359,9 +360,10 @@ class RoleFieldAccessGuardTests(_Fields):
 
 
 class PrebuiltRoleFieldAccessGuardTests(_Fields):
-    def setUp(self):
-        super().setUp()
-        self.prebuilt = PrebuiltRoleTemplate.objects.create(
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.prebuilt = PrebuiltRoleTemplate.objects.create(
             key="fe_guard_prebuilt", name="FE Guard", scope="institution",
         )
 
@@ -440,36 +442,37 @@ class UserFieldAccessOverrideGuardTests(_Fields):
 class ProvisioningCopiesFieldDefaultsTests(TestCase):
     """A role created from a prebuilt template starts with Codex's field switches."""
 
-    def setUp(self):
-        self.school = make_school(slug="fe-provision", name="Provisioning School")
-        make_branch(self.school)
-        self.prebuilt = PrebuiltRoleTemplate.objects.create(
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="fe-provision", name="Provisioning School")
+        make_branch(cls.school)
+        cls.prebuilt = PrebuiltRoleTemplate.objects.create(
             key="fe_storekeeper", name="FE Storekeeper", scope="institution",
         )
-        self.name = make_field_definition("feprov.vendor.name", "Name")
-        self.bank = make_field_definition(
+        cls.name = make_field_definition("feprov.vendor.name", "Name")
+        cls.bank = make_field_definition(
             "feprov.vendor.bank_account_number", "Bank account number", sensitive=True,
         )
-        self.retired = make_field_definition("feprov.vendor.fax", "Fax")
-        self.reclassified = make_field_definition("feprov.vendor.tax_id", "Tax ID")
-        self.frozen = make_field_definition("feprov.vendor.rating", "Rating")
+        cls.retired = make_field_definition("feprov.vendor.fax", "Fax")
+        cls.reclassified = make_field_definition("feprov.vendor.tax_id", "Tax ID")
+        cls.frozen = make_field_definition("feprov.vendor.rating", "Rating")
 
         for field, read, write in (
-            (self.name, True, False),
-            (self.bank, True, True),
-            (self.retired, True, True),
-            (self.reclassified, True, False),
-            (self.frozen, True, True),
+            (cls.name, True, False),
+            (cls.bank, True, True),
+            (cls.retired, True, True),
+            (cls.reclassified, True, False),
+            (cls.frozen, True, True),
         ):
             PrebuiltRoleFieldAccess.objects.create(
-                prebuilt_role=self.prebuilt, field=field, can_read=read, can_write=write,
+                prebuilt_role=cls.prebuilt, field=field, can_read=read, can_write=write,
             )
         # Changes made to the registry after the defaults were written.
-        FieldDefinition.objects.filter(key=self.retired.key).update(is_active=False)
-        FieldDefinition.objects.filter(key=self.reclassified.key).update(
+        FieldDefinition.objects.filter(key=cls.retired.key).update(is_active=False)
+        FieldDefinition.objects.filter(key=cls.reclassified.key).update(
             scope=PermissionScope.PLATFORM,
         )
-        FieldDefinition.objects.filter(key=self.frozen.key).update(writable=False)
+        FieldDefinition.objects.filter(key=cls.frozen.key).update(writable=False)
 
     def _switches(self, role):
         return {

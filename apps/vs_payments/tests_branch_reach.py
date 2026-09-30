@@ -22,13 +22,22 @@ from vs_finance.models import Account
 from vs_finance.tests_branch_scope import _FinanceBranchFixture
 
 from .models import CollectionIntent, PayoutBatch, VirtualAccount
+from .providers import registry
+from .providers.fake import FakeProvider
 
 _clerks = itertools.count(1)
+
+
+def _fake_the_provider(test):
+    """Open checkouts against the in-memory provider, never the real Paystack API."""
+    registry.register("PAYSTACK", FakeProvider(secret="test-secret"))
+    test.addCleanup(registry.unregister, "PAYSTACK")
 
 
 class PaymentsNameOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
     def setUp(self):
         super().setUp()
+        _fake_the_provider(self)
         e = self.books
         self.ikeja_customer = self.customer(e, "CIKJP", self.ikeja)
         self.lekki_customer = self.customer(e, "CLEKP", self.lekki)
@@ -64,6 +73,7 @@ class PaymentsNameOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         self.assertIn("No customer 'CALLP' in this entity.", str(shared.data))
         accepted = self.post(client, "collections/", {"amount": 5_000, "customer": "CIKJP"})
         self.assertNotIn("No customer", str(accepted.data))
+        self.assertIn(accepted.status_code, (200, 201), accepted.data)
 
     def test_a_payment_request_against_another_branchs_invoice(self):
         lekki_invoice = self.invoice(self.books, self.lekki_customer, self.lekki)
@@ -142,6 +152,7 @@ class PaymentsNameOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
             "amount": 5_000, "customer": "COKAF", "deposit_account": ledgers["IKJ"].code,
         })
         self.assertNotIn("belongs to", str(accepted.data))
+        self.assertIn(accepted.status_code, (200, 201), accepted.data)
 
     def _tola_and_the_okafors(self):
         """Tola keeps Lekki's books; the Okafors are filed under Ikeja and owe Lekki."""
@@ -161,11 +172,6 @@ class PaymentsNameOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
 
     def test_the_family_owing_the_invoice_may_be_named_from_the_invoices_branch(self):
         """Tola names the Okafors beside their Lekki invoice and starts the checkout."""
-        from .providers import registry
-        from .providers.fake import FakeProvider
-
-        registry.register("PAYSTACK", FakeProvider(secret="test-secret"))
-        self.addCleanup(registry.unregister)
         tola, invoice = self._tola_and_the_okafors()
 
         for customer in ("COKAF", str(invoice.customer_id)):
@@ -239,6 +245,7 @@ class SharedFamilyTopUpNamesABranchTests(_FinanceBranchFixture):
 
     def setUp(self):
         super().setUp()
+        _fake_the_provider(self)
         self.ikeja_customer = self.customer(self.books, "CIKJP", self.ikeja)
         self.shared_customer = self.customer(self.books, "CALLP", None)
 
@@ -265,6 +272,7 @@ class SharedFamilyTopUpNamesABranchTests(_FinanceBranchFixture):
             "amount": 5_000, "customer": "CALLP", "deposit_account": ledgers["LEK"].code})
         self.assertNotIn("decides whose money", str(accepted.data))
         self.assertNotIn("belongs to", str(accepted.data))
+        self.assertIn(accepted.status_code, (200, 201), accepted.data)
 
     def test_the_receipt_takes_the_deposit_accounts_branch(self):
         from .services import collection_branch_id
@@ -311,7 +319,9 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         "payments.webhook.view", "payments.webhook.replay",
     )
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        """Build every screen's rows once; each test rolls back to them."""
         from django.utils import timezone
 
         from vs_finance.models import BankAccount, BankStatementLine
@@ -319,13 +329,14 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         from .constants import CollectionStatus, PaymentAuditAction, PayoutStatus
         from .models import PaymentEvent, PayoutInstruction, WebhookEvent
 
-        super().setUp()
-        e = self.books
+        super().setUpTestData()
+        e = cls.books
+        vendor = PaymentsNameOnlyWhatTheClerkReachesTests.vendor
         now = timezone.now()
-        ikeja_c = self.customer(e, "CIKJ", self.ikeja)
-        lekki_c = self.customer(e, "CLEK", self.lekki)
-        shared_c = self.customer(e, "CALL", None)
-        lekki_invoice = self.invoice(e, shared_c, self.lekki)
+        ikeja_c = cls.customer(e, "CIKJ", cls.ikeja)
+        lekki_c = cls.customer(e, "CLEK", cls.lekki)
+        shared_c = cls.customer(e, "CALL", None)
+        lekki_invoice = cls.invoice(e, shared_c, cls.lekki)
 
         def collection(ref, customer, invoice=None):
             return CollectionIntent.objects.create(
@@ -333,14 +344,14 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
                 customer=customer, invoice=invoice, status=CollectionStatus.SUCCEEDED,
                 confirmed_at=now)
 
-        self.collections = {
+        cls.collections = {
             "COL-IKJ": collection("COL-IKJ", ikeja_c),
             "COL-LEK": collection("COL-LEK", lekki_c),
             "COL-ALL": collection("COL-ALL", shared_c),
             "COL-LEKINV": collection("COL-LEKINV", shared_c, lekki_invoice),
             "COL-NONE": collection("COL-NONE", None),
         }
-        self.vas = {
+        cls.vas = {
             code: VirtualAccount.objects.create(
                 entity=e, provider="PAYSTACK", customer=customer,
                 account_number=f"90{n}", provider_reference=f"VA-{code}")
@@ -348,10 +359,10 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
                 (("IKJ", ikeja_c), ("LEK", lekki_c), ("ALL", shared_c)))
         }
         vendors = {
-            "IKJ": self.vendor("VIKJ", self.ikeja), "LEK": self.vendor("VLEK", self.lekki),
-            "ALL": self.vendor("VALL", None),
+            "IKJ": vendor(cls, "VIKJ", cls.ikeja), "LEK": vendor(cls, "VLEK", cls.lekki),
+            "ALL": vendor(cls, "VALL", None),
         }
-        self.batches = {
+        cls.batches = {
             code: PayoutBatch.objects.create(entity=e, provider="PAYSTACK", reference=code)
             for code in ("BAT-IKJ", "BAT-MIXED", "BAT-ALL")
         }
@@ -361,17 +372,17 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
                 entity=e, provider="PAYSTACK", reference=ref, amount=2_000,
                 beneficiary_name=vendor.name, beneficiary_account_number="0123456789",
                 vendor_source_type="vs_procurement.Vendor", vendor_source_id=str(vendor.pk),
-                batch=self.batches[batch], status=PayoutStatus.PAID, confirmed_at=now)
+                batch=cls.batches[batch], status=PayoutStatus.PAID, confirmed_at=now)
 
         payout("PAY-IKJ", vendors["IKJ"], "BAT-IKJ")
         payout("PAY-LEK", vendors["LEK"], "BAT-MIXED")
         payout("PAY-ALL", vendors["ALL"], "BAT-MIXED")
         payout("PAY-ALL2", vendors["ALL"], "BAT-ALL")
 
-        for ref in (*self.collections, "PAY-IKJ", "PAY-LEK", "PAY-ALL", *self.batches):
+        for ref in (*cls.collections, "PAY-IKJ", "PAY-LEK", "PAY-ALL", *cls.batches):
             PaymentEvent.objects.create(
                 entity=e, action=PaymentAuditAction.COLLECTION_INITIATED, reference=ref)
-        for code, va in self.vas.items():
+        for code, va in cls.vas.items():
             PaymentEvent.objects.create(
                 entity=e, action=PaymentAuditAction.VIRTUAL_ACCOUNT_CREATED,
                 reference=f"REQ-{code}", metadata={"virtual_account_id": va.pk})
@@ -381,10 +392,10 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         for ref in ("COL-IKJ", "COL-LEK"):
             WebhookEvent.objects.create(
                 provider="PAYSTACK", dedupe_key=f"wh-{ref}", provider_reference=f"WH-{ref}",
-                collection=self.collections[ref], status="FAILED")
+                collection=cls.collections[ref], status="FAILED")
 
         cash_type = Account.objects.get(entity=e, code="1000").account_type
-        for n, (tag, branch) in enumerate((("IKJ", self.ikeja), ("LEK", self.lekki),
+        for n, (tag, branch) in enumerate((("IKJ", cls.ikeja), ("LEK", cls.lekki),
                                            ("ALL", None))):
             gl = Account.objects.create(entity=e, code=f"116{n}", name=f"Cash {tag}",
                                         account_type=cash_type, is_postable=True)

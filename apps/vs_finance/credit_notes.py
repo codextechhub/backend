@@ -78,10 +78,16 @@ def price_credit_note(note) -> None:
 def post_credit_note(note, *, actor_user=None, auto_allocate=False, allocations=None):
     """Price, validate and post a :class:`CreditNote`, raising its AR journal.
 
-    For a CREDIT note, ``allocations`` (a list of ``(invoice, amount_kobo)``) - or
-    ``auto_allocate`` - applies the credit to open invoices oldest-first, only ever
-    invoices of the note's own branch. DEBIT notes increase the receivable and are
-    never allocated.
+    For a CREDIT note that names an invoice, that invoice is settled first, up to its
+    balance, and whatever is left becomes customer credit (which then pays the
+    customer's next bill as it posts, see
+    :func:`~vs_finance.receivables.apply_customer_credit`). Greenfield's N80,000
+    correction of Kemi Ade's INV-0450 clears INV-0450, whether it was posted directly
+    or approved first, rather than her oldest First Term arrear. ``allocations`` (a
+    list of ``(invoice, amount_kobo)``) settles further invoices after the named one;
+    for a note naming none, ``allocations`` or ``auto_allocate`` applies it to open
+    invoices oldest-first. Only invoices of the note's own branch and customer are
+    ever settled. DEBIT notes increase the receivable and are never allocated.
     """
     try:  # Atomic worker performs posting and optional allocation.
         result = _post_credit_note_atomic(  # Post the note.
@@ -148,6 +154,8 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
     """
     from .models import JournalEntry, JournalLine
 
+    type(note).objects.select_for_update(of=("self",)).get(pk=note.pk)  # Lock, then re-read.
+    note.refresh_from_db()
     if note.status != DocumentStatus.DRAFT:  # Only draft notes can post.
         raise PostingError(
             f"Credit note {note.document_number or note.pk} is '{note.status}', "
@@ -242,6 +250,8 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
                 entry=entry, account=tax_objs[acc_id], debit=amount, credit=0,  # Dr output tax.
                 description="Output tax reversal", line_no=line_no,  # Label and order.
             )
+        if note.invoice_id is not None:  # The bill the note corrects is settled first.
+            allocations = [(note.invoice, note.total), *(allocations or [])]
         plan = (_build_invoice_plan(  # Build allocation plan, bounded by the note's own date.
             note, allocations, as_of=note.note_date,
             settlement=f"Credit note {note.document_number or note.pk}",
@@ -295,12 +305,21 @@ def _apply_creditnote_subledger(note, plan, *, remaining):
     One row per settlement event, never a running total: two tranches against the same
     invoice credit AR on two dates, and a merged row could not carry both.
 
+    Every invoice is locked and judged by the settlement rules
+    (:func:`~vs_finance.receivables.lock_settlement_targets`,
+    :func:`~vs_finance.receivables._require_settlable_targets`) before its balance is
+    read, so a receipt landing on the same bill at the same moment cannot clear it
+    twice.
+
     Returns ``(applied_total, created_rows, latest_invoice_date)``; the caller needs
     that last date to book its reclassification on or after the invoice it clears."""
     from .models import CreditNoteAllocation
+    from .receivables import _require_settlable_targets, lock_settlement_targets
 
     applied, created = 0, []  # Track total applied and touched allocation rows.
     latest = None  # Newest invoice date this run actually settled.
+    plan = lock_settlement_targets(plan)  # Nobody else may move these balances now.
+    _require_settlable_targets(note, [invoice for invoice, _amount in plan])
     for invoice, requested in plan:  # Walk requested allocation plan.
         if remaining <= 0:  # Stop when note value is exhausted.
             break  # Exit the current loop.
@@ -630,8 +649,16 @@ def write_off_invoice(invoice, *, amount=None, write_off_account=None,
 # Support the write off invoice atomic workflow.
 def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
                               write_off_date=None, narration="", actor_user=None):  # Transactional bad-debt write-off.
-    from .models import JournalEntry, JournalLine
+    """Write off under a lock on the invoice, so its balance is read once and held.
 
+    A write-off and a receipt landing on the same bill at the same moment would
+    otherwise each read the full balance and together settle it twice.
+    """
+    from .accounts import require_account_kind
+    from .models import Invoice, JournalEntry, JournalLine
+
+    Invoice.objects.select_for_update(of=("self",)).get(pk=invoice.pk)  # Lock, then re-read.
+    invoice.refresh_from_db()
     if invoice.status != DocumentStatus.POSTED:  # Only posted invoices have AR balances.
         raise PostingError(
             f"Invoice {invoice.document_number or invoice.pk} is '{invoice.status}'; "
@@ -658,6 +685,7 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
     expense = write_off_account or resolve_mapped_account(  # Use explicit write-off account or default.
         invoice.entity, AccountMappingKey.BAD_DEBT_EXPENSE, label="bad-debt expense",  # Resolve bad-debt expense account.
     )
+    require_account_kind(expense, "write_off", entity=invoice.entity)  # Bad debt is an expense.
     when = write_off_date or invoice.invoice_date  # Default write-off date to invoice date.
     # A debt cannot be conceded before it is owed: writing off on a date earlier than
     # the invoice credits AR before the invoice ever debited it.
@@ -720,22 +748,26 @@ def post_write_off_request(wor, *, actor_user=None):
     propagates unchanged (it records its own durable rejection audit); on the approval
     path that rollback leaves the request non-POSTED for a retry. Returns the request.
     """
-    if wor.status not in (DocumentStatus.DRAFT, DocumentStatus.APPROVED):  # Request must be direct-postable or workflow-approved.
-        raise PostingError(
-            f"Write-off {wor.document_number or wor.pk} is '{wor.status}'; "
-            f"only a draft or approved write-off request can be posted.",
+    with transaction.atomic():
+        # Locked and re-read, so a double click cannot post one request twice.
+        locked = type(wor).objects.select_for_update(of=("self",)).get(pk=wor.pk)
+        if locked.status not in (DocumentStatus.DRAFT, DocumentStatus.APPROVED):  # Request must be direct-postable or workflow-approved.
+            raise PostingError(
+                f"Write-off {locked.document_number or locked.pk} is '{locked.status}'; "
+                f"only a draft or approved write-off request can be posted.",
+            )
+
+        entry = write_off_invoice(  # Delegate GL/accounting work to invoice write-off service.
+            locked.invoice,  # Target invoice.
+            amount=locked.amount or None,  # Optional request amount.
+            write_off_account=locked.write_off_account,  # Optional write-off account.
+            write_off_date=locked.write_off_date,  # Optional write-off date.
+            narration=locked.narration,  # Request narration.
+            actor_user=actor_user,  # Posting actor.
         )
 
-    entry = write_off_invoice(  # Delegate GL/accounting work to invoice write-off service.
-        wor.invoice,  # Target invoice.
-        amount=wor.amount or None,  # Optional request amount.
-        write_off_account=wor.write_off_account,  # Optional write-off account.
-        write_off_date=wor.write_off_date,  # Optional write-off date.
-        narration=wor.narration,  # Request narration.
-        actor_user=actor_user,  # Posting actor.
-    )
-
-    wor.journal = entry  # Link request to write-off journal.
-    wor.status = DocumentStatus.POSTED  # Mark request posted.
-    wor.save(update_fields=["journal", "status", "updated_at"])
+        locked.journal = entry  # Link request to write-off journal.
+        locked.status = DocumentStatus.POSTED  # Mark request posted.
+        locked.save(update_fields=["journal", "status", "updated_at"])
+    wor.journal, wor.status = locked.journal, locked.status
     return wor  # Return posted request.

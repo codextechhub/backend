@@ -440,6 +440,8 @@ class CustomerListCreateView(_FinanceBase):
                 entity, AccountMappingKey.ACCOUNTS_RECEIVABLE,
                 label="receivable account",
             )
+        from .accounts import require_account_kind
+        require_account_kind(receivable, "receivable", entity=entity)
         opening_balance = _money(body.get("opening_balance", 0), "opening_balance")
         from .document_settings import resolve_finance_document_settings
         policy = resolve_finance_document_settings(entity)
@@ -465,6 +467,8 @@ class CustomerListCreateView(_FinanceBase):
             source_id=str(body.get("source_id", "")),
             is_active=bool(body.get("is_active", True)),
         )
+        from .customers import require_unique_source
+        require_unique_source(customer)  # One account per source record.
         # Seat any opening balance as a posted opening invoice (Dr AR / Cr Retained
         # Earnings) so it shows in the customer's outstanding and the GL. Inside this
         # atomic block, so a posting failure (e.g. no open period) rolls the whole
@@ -663,30 +667,44 @@ class CustomerDetailView(_FinanceBase):
     @transaction.atomic
     # Handle PATCH requests for this endpoint.
     def patch(self, request, pk):
+        """Edit a customer through :func:`vs_finance.customers.update_customer`.
+
+        The source reference and the receivable account are fixed once the customer
+        has posted documents, and every change is audited. The opening balance is
+        fixed at creation: it was posted then as an opening invoice, so a changed
+        figure here would disagree with the ledger. Older debts are carried in by
+        the opening import, and a posted balance is corrected with a credit or
+        debit note. ``is_active`` false deactivates the customer, which stops fee
+        runs billing them and leaves their debt where it is.
+        """
+        from .customers import update_customer
+
         entity = resolve_entity(request)
         customer = _resolve_customer(request, entity, pk)
         body = request.data or {}
-        for field in ("name", "billing_email", "billing_phone", "billing_address",
-                      "source_type", "source_id"):
-            if field in body:
-                setattr(customer, field, body[field])
+        if "opening_balance" in body and _money(
+                body.get("opening_balance"), "opening_balance") != customer.opening_balance:
+            raise ValidationError({
+                "opening_balance": "An opening balance is posted when the customer is "
+                                   "created and cannot be changed afterwards. Carry older "
+                                   "bills in with the opening import, or correct the "
+                                   "balance with a credit or debit note.",
+            })
+        changes = {
+            field: body[field]
+            for field in ("name", "billing_email", "billing_phone", "billing_address",
+                          "source_type", "source_id")
+            if field in body
+        }
+        if "source_id" in changes:
+            changes["source_id"] = str(changes["source_id"] or "")
         if "receivable_account" in body:
-            customer.receivable_account = _resolve_account(
-                request, entity, body.get("receivable_account"), "receivable_account", required=True)
-        if "opening_balance" in body:
-            opening_balance = _money(body.get("opening_balance"), "opening_balance")
-            from .document_settings import resolve_finance_document_settings
-            if (
-                opening_balance
-                and not resolve_finance_document_settings(entity).allow_customer_opening_balances
-            ):
-                raise ValidationError({
-                    "opening_balance": "Opening balances are disabled by this entity's Finance document policy.",
-                })
-            customer.opening_balance = opening_balance
+            changes["receivable_account_id"] = _resolve_account(
+                request, entity, body.get("receivable_account"), "receivable_account",
+                required=True).pk
         if "is_active" in body:
-            customer.is_active = bool(body.get("is_active"))
-        customer.save()
+            changes["is_active"] = bool(body.get("is_active"))
+        update_customer(customer, changes, actor_user=request.user)
         return success_response(
             f"Customer {customer.code} updated.", data=CustomerSerializer(customer).data,
         )
@@ -836,23 +854,24 @@ class PaymentListView(_FinanceBase):
                 Q(document_number__icontains=search) | Q(customer__name__icontains=search)
                 | Q(customer__code__icontains=search) | Q(reference__icontains=search))
 
-        # allocation_status is derived from allocated_amount/refunded_amount vs amount;
-        # express it as a DB filter so paging counts are correct, never
-        # post-slice in Python. Mirror PaymentSerializer.get_allocation_status
-        # - refunded is checked before unallocated, or refunded cash would be counted
+        # allocation_status is derived from allocated_amount and what left as refund or
+        # transfer vs amount; express it as a DB filter so paging counts are correct,
+        # never post-slice in Python. Mirror PaymentSerializer.get_allocation_status
+        # - refunded is checked before unallocated, or cash that left would be counted
         # as still available.
+        qs = qs.annotate(gone=F("refunded_amount") + F("transferred_amount"))
         status_f = request.query_params.get("status")
         if status_f == "ALLOCATED":
             qs = qs.filter(allocated_amount__gte=F("amount"))
         elif status_f == "REFUNDED":
             qs = qs.filter(allocated_amount__lt=F("amount"),
-                           refunded_amount__gte=F("amount") - F("allocated_amount"))
+                           gone__gte=F("amount") - F("allocated_amount"))
         elif status_f == "UNALLOCATED":
             qs = qs.filter(allocated_amount__lte=0,
-                           refunded_amount__lt=F("amount") - F("allocated_amount"))
+                           gone__lt=F("amount") - F("allocated_amount"))
         elif status_f == "PARTIAL":
             qs = qs.filter(allocated_amount__gt=0, allocated_amount__lt=F("amount"),
-                           refunded_amount__lt=F("amount") - F("allocated_amount"))
+                           gone__lt=F("amount") - F("allocated_amount"))
         return _paginate(request, qs.order_by("-payment_date", "-id"), PaymentSerializer, self)
 
 
@@ -897,13 +916,18 @@ class PaymentSummaryView(_FinanceBase):
         # advertises credit the customer does not have. ``credit_remaining``
         # nets the refunds off, and ``refunded`` sits beside it so the
         # difference is visible rather than mysterious.
-        unspent = F("amount") - F("allocated_amount") - F("refunded_amount")
+        from .collected import received_money_q
+
+        qs = qs.annotate(gone=F("refunded_amount") + F("transferred_amount"))
+        unspent = F("amount") - F("allocated_amount") - F("gone")
         fully_refunded = Q(allocated_amount__lt=F("amount"),
-                           refunded_amount__gte=F("amount") - F("allocated_amount"))
+                           gone__gte=F("amount") - F("allocated_amount"))
+        # A credit-transfer receipt brought no money in, so it is not takings.
+        takings = received_money_q()
         agg = qs.aggregate(
             count=Count("id"),
-            today=Coalesce(Sum("amount", filter=Q(payment_date=today)), 0),
-            week=Coalesce(Sum("amount", filter=Q(payment_date__gte=week_start)), 0),
+            today=Coalesce(Sum("amount", filter=takings & Q(payment_date=today)), 0),
+            week=Coalesce(Sum("amount", filter=takings & Q(payment_date__gte=week_start)), 0),
             unallocated=Coalesce(Sum(unspent), 0),
             refunded=Coalesce(Sum("refunded_amount"), 0),
             allocated_c=Count("id", filter=Q(allocated_amount__gte=F("amount"))),
@@ -1540,6 +1564,11 @@ class CreditNoteListCreateView(_FinanceBase):
         lines = _require_lines(body)
         customer = _resolve_customer(request, entity, body.get("customer"))
         invoice = _resolve_invoice(request, entity, body.get("invoice"), required=False)
+        if invoice is not None and invoice.customer_id != customer.pk:
+            raise ValidationError({
+                "invoice": f"Invoice {invoice.document_number} belongs to another customer "
+                           f"than {customer.code}.",
+            })
         note = CreditNote.objects.create(
             entity=entity,
             customer=customer,
@@ -1613,9 +1642,11 @@ class CreditNoteDetailView(_CreditNoteActionBase):
 class CreditNotePostView(_CreditNoteActionBase):
     """POST /finance/credit-notes/<id>/post/ - post a draft credit/debit note to the GL.
 
-    Body ``{allocations:[{invoice, amount}]}`` for an explicit split, or
-    ``{auto_allocate:true}`` (the default when no allocations are given) to apply a
-    CREDIT note oldest-first against the customer's open invoices. A debit note raises
+    A CREDIT note that names an invoice settles that invoice first and leaves any
+    remainder as customer credit; ``allocations`` then settles further invoices. For
+    a note naming none, body ``{allocations:[{invoice, amount}]}`` gives an explicit
+    split, or ``{auto_allocate:true}`` (the default when no allocations are given)
+    applies it oldest-first against the customer's open invoices. A debit note raises
     the receivable; a credit note reduces it and settles/credits the invoices.
 
     docstring-name: Post a credit note
@@ -3018,6 +3049,11 @@ class ConcessionListCreateView(_FinanceBase):
         body = request.data or {}
         customer = _resolve_customer(request, entity, body.get("customer"))
         invoice = _resolve_invoice(request, entity, body.get("invoice"))
+        if invoice.customer_id != customer.pk:
+            raise ValidationError({
+                "invoice": f"Invoice {invoice.document_number} belongs to another customer "
+                           f"than {customer.code}.",
+            })
         concession = Concession.objects.create(
             entity=entity,
             customer=customer,
@@ -3776,4 +3812,316 @@ class DunningNoticeCancelView(_DunningNoticeActionBase):
         return success_response(
             f"Dunning notice {notice.document_number} cancelled.",
             data=DunningNoticeSerializer(notice).data,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Customer credit transfers                                                   #
+# --------------------------------------------------------------------------- #
+
+class CustomerCreditTransferListCreateView(_FinanceBase):
+    """GET (list) / POST (create draft) customer credit transfers.
+
+    A receipt settles only its own customer's bills. Moving one customer's unapplied
+    credit to another (a family asking for Tunde's overpayment to pay his sister's
+    fees) is a transfer: raised here as a draft, submitted for approval, and posted
+    only when a second person approves it. There is no direct post.
+
+    POST body: ``{from_customer, to_customer, amount (kobo), transfer_date, reason?,
+    branch?}``. The transfer takes the source customer's branch, or, for a customer
+    every branch shares, the branch the caller names or works in; both customers
+    must be filed under that branch or shared.
+
+    docstring-name: Customer credit transfers
+    """
+
+    @property
+    def rbac_permission(self):
+        return "finance.credittransfer.create" if self.request.method == "POST" \
+            else "finance.credittransfer.view"
+
+    def get(self, request):
+        from .models import CustomerCreditTransfer
+        from .serializers import CustomerCreditTransferSerializer
+
+        entity = resolve_entity(request)
+        qs = CustomerCreditTransfer.objects.filter(
+            transaction_branch_q(request), entity=entity,
+        ).select_related(
+            "from_customer", "to_customer", "receipt", "entity__tenant", "branch")
+        if (status_val := request.query_params.get("status")):
+            qs = qs.filter(status=status_val)
+        if (customer := request.query_params.get("customer")):
+            who = _resolve_customer(request, entity, customer)
+            qs = qs.filter(Q(from_customer=who) | Q(to_customer=who))
+        return _paginate(request, qs.order_by("-transfer_date", "-id"),
+                         CustomerCreditTransferSerializer, self)
+
+    @transaction.atomic
+    def post(self, request):
+        from .credit_transfers import check_transfer
+        from .models import CustomerCreditTransfer
+        from .serializers import CustomerCreditTransferSerializer
+
+        entity = resolve_entity(request)
+        body = request.data or {}
+        source = _resolve_customer(request, entity, body.get("from_customer"), "from_customer")
+        destination = _resolve_customer(request, entity, body.get("to_customer"), "to_customer")
+        if source.pk == destination.pk:
+            raise ValidationError({"to_customer": "Choose a different customer to receive the credit."})
+        amount = _money(body.get("amount"), "amount")
+        if amount <= 0:
+            raise ValidationError({"amount": "A positive amount is required."})
+        transfer = CustomerCreditTransfer.objects.create(
+            entity=entity, from_customer=source, to_customer=destination,
+            branch_id=_customer_document_branch_id(request, entity, body, source),
+            transfer_date=_date(body.get("transfer_date"), "transfer_date", required=True),
+            amount=amount, reason=str(body.get("reason", "") or "")[:255],
+            created_by=request.user,
+        )
+        check_transfer(transfer)  # Refuse now what could never post.
+        return success_response(
+            f"Credit transfer {transfer.document_number} created.",
+            data=CustomerCreditTransferSerializer(transfer).data, status=201,
+        )
+
+
+class _CreditTransferActionBase(_FinanceBase):
+    def _transfer(self, request, pk):
+        from .models import CustomerCreditTransfer
+
+        entity = resolve_entity(request)
+        transfer = CustomerCreditTransfer.objects.filter(
+            transaction_branch_q(request), entity=entity, pk=pk).first()
+        if transfer is None:
+            raise NotFound("Credit transfer not found for this entity.")
+        return entity, transfer
+
+
+class CustomerCreditTransferDetailView(_CreditTransferActionBase):
+    """GET /finance/credit-transfers/<id>/ - one customer credit transfer.
+
+    docstring-name: Customer credit transfers
+    """
+
+    rbac_permission = "finance.credittransfer.view"
+
+    def get(self, request, pk):
+        from .serializers import CustomerCreditTransferSerializer
+
+        _, transfer = self._transfer(request, pk)
+        return success_response(
+            "Credit transfer retrieved.", data=CustomerCreditTransferSerializer(transfer).data,
+        )
+
+
+class CustomerCreditTransferSubmitView(_CreditTransferActionBase):
+    """POST /finance/credit-transfers/<id>/submit/ - send a draft transfer for approval.
+
+    The handler checks the source still holds the credit before the transfer joins a
+    queue, and the posting service checks again under lock when it is approved.
+
+    docstring-name: Submit a customer credit transfer for approval
+    """
+
+    rbac_permission = "finance.credittransfer.submit"
+
+    @transaction.atomic
+    def post(self, request, pk):
+        from vs_workflow.services import release as release_svc
+        from vs_workflow.services.submission import submit_for_approval
+
+        from .serializers import CustomerCreditTransferSerializer
+
+        _, transfer = self._transfer(request, pk)
+        instance = submit_for_approval(transfer, requested_by=request.user)
+        transfer.refresh_from_db()
+        return success_response(
+            f"Credit transfer {transfer.document_number} submitted for approval.",
+            data=CustomerCreditTransferSerializer(transfer).data
+            | {"approval": release_svc.approval_block(instance)},
+        )
+
+
+class CustomerCreditTransferVoidView(_CreditTransferActionBase):
+    """POST /finance/credit-transfers/<id>/void/ - void a posted transfer.
+
+    Voids the destination's credit-transfer receipt (reopening any bill it paid) and
+    gives the credit back to the source.
+
+    docstring-name: Void a customer credit transfer
+    """
+
+    rbac_permission = "finance.credittransfer.reverse"
+
+    def post(self, request, pk):
+        from .credit_transfers import void_customer_credit_transfer
+        from .serializers import CustomerCreditTransferSerializer
+
+        _, transfer = self._transfer(request, pk)
+        void_customer_credit_transfer(
+            transfer, actor_user=request.user, date=_reversal_date(request.data),
+        )
+        transfer.refresh_from_db()
+        return success_response(
+            f"Credit transfer {transfer.document_number} voided.",
+            data=CustomerCreditTransferSerializer(transfer).data,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Optional fee items: who takes them                                          #
+# --------------------------------------------------------------------------- #
+
+class FeeItemAssignmentView(_FinanceBase):
+    """Who takes one optional fee item (a bus route, a boarding place).
+
+    GET lists the customers assigned. POST ``{customers:[code|id, ...]}`` assigns
+    them; DELETE with the same body removes them. A fee run bills an optional item
+    only to its assigned customers, so a structure carrying "School bus (optional)"
+    bills the bus to the families who take it and to nobody else. Required items
+    are billed to everybody a run bills and take no assignments.
+
+    docstring-name: Optional fee item assignments
+    """
+
+    @property
+    def rbac_permission(self):
+        return "finance.feestructure.view" if self.request.method == "GET" \
+            else "finance.feestructure.edit"
+
+    def _item(self, request, pk, item_pk):
+        entity = resolve_entity(request)
+        structure = _resolve_fee_structure(request, entity, pk)
+        item = FeeItem.objects.filter(structure=structure, pk=item_pk).first()
+        if item is None:
+            raise NotFound("No fee item matches that id on this fee structure.")
+        return entity, item
+
+    def _customers(self, request, entity):
+        refs = (request.data or {}).get("customers") or []
+        if not isinstance(refs, list) or not refs:
+            raise ValidationError({"customers": "Name at least one customer."})
+        return [_resolve_customer(request, entity, ref, "customers") for ref in refs]
+
+    def _payload(self, item):
+        from .models import FeeItemAssignment
+
+        rows = FeeItemAssignment.objects.filter(item=item).select_related("customer")
+        return {
+            "item_id": item.pk, "description": item.description,
+            "is_optional": item.is_optional,
+            "customers": [
+                {"id": row.customer_id, "code": row.customer.code, "name": row.customer.name}
+                for row in rows.order_by("customer__code")
+            ],
+        }
+
+    def get(self, request, pk, item_pk):
+        _, item = self._item(request, pk, item_pk)
+        return success_response("Fee item assignments retrieved.", data=self._payload(item))
+
+    @transaction.atomic
+    def post(self, request, pk, item_pk):
+        from .models import FeeItemAssignment
+
+        entity, item = self._item(request, pk, item_pk)
+        if not item.is_optional:
+            raise ValidationError({
+                "item": "This fee item is required, so every billed customer pays it; "
+                        "only an optional item is assigned.",
+            })
+        for customer in self._customers(request, entity):
+            FeeItemAssignment.objects.get_or_create(
+                item=item, customer=customer, defaults={"created_by": request.user})
+        return success_response("Customers assigned.", data=self._payload(item))
+
+    @transaction.atomic
+    def delete(self, request, pk, item_pk):
+        from .models import FeeItemAssignment
+
+        entity, item = self._item(request, pk, item_pk)
+        customers = self._customers(request, entity)
+        FeeItemAssignment.objects.filter(item=item, customer__in=customers).delete()
+        return success_response("Customers unassigned.", data=self._payload(item))
+
+
+# --------------------------------------------------------------------------- #
+# Customer opening balances                                                   #
+# --------------------------------------------------------------------------- #
+
+#: Rows one opening import may carry; a larger file is split by the caller.
+CUSTOMER_OPENING_IMPORT_LIMIT = 500
+
+
+class CustomerOpeningInvoiceImportView(_FinanceBase):
+    """POST - carry in the customer bills still unpaid when the books began.
+
+    Body ``{"invoices": [{customer, invoice_date, due_date?, amount, reference?,
+    period_label?, narration?, branch?}]}``: one row per unpaid bill, dated when it
+    was raised, so it ages as the original did. ``amount`` is the kobo still owed.
+    Each row takes its customer's branch, or, for a customer every branch shares,
+    the branch the caller names or works in. The import is all or nothing, and a
+    refused row is named by its position.
+
+    Each bill posts ``Dr AR, Cr retained earnings`` (the same opening-balance equity
+    mapping opening supplier bills use), with no approval route; the dedicated key is
+    the control. A bill dated on or after the day the books went live is refused,
+    because it is ordinary business.
+
+    docstring-name: Import opening customer invoices
+    """
+
+    rbac_permission = "finance.customer.import_opening"
+
+    def post(self, request):
+        from .document_settings import resolve_finance_document_settings
+        from .exceptions import FinanceError
+        from .opening_balances import import_opening_customer_invoices
+
+        entity = resolve_entity(request)
+        if not resolve_finance_document_settings(entity).allow_customer_opening_balances:
+            raise ValidationError({
+                "invoices": "Opening balances are disabled by this entity's Finance document policy.",
+            })
+        raw = (request.data or {}).get("invoices")
+        if not isinstance(raw, list) or not raw:
+            raise ValidationError({"invoices": "Send at least one opening invoice."})
+        if len(raw) > CUSTOMER_OPENING_IMPORT_LIMIT:
+            raise ValidationError({
+                "invoices": f"Send at most {CUSTOMER_OPENING_IMPORT_LIMIT} invoices in one import.",
+            })
+        rows = []
+        for index, item in enumerate(raw):
+            if not isinstance(item, dict):
+                raise ValidationError({"invoices": {index: "Each invoice is an object."}})
+            try:
+                invoice_date = _date(item.get("invoice_date"), "invoice_date", required=True)
+                due_date = _date(item.get("due_date"), "due_date")
+                if due_date is not None and due_date < invoice_date:
+                    raise ValidationError({"due_date": "A bill cannot fall due before it was raised."})
+                amount = _money(item.get("amount"), "amount")
+                if amount <= 0:
+                    raise ValidationError({"amount": "The amount still owed must be positive."})
+                customer = _resolve_customer(request, entity, item.get("customer"))
+                branch_id = _customer_document_branch_id(request, entity, item, customer)
+                rows.append({
+                    "customer": customer,
+                    "branch_id": branch_id,
+                    "invoice_date": invoice_date, "due_date": due_date or invoice_date,
+                    "reference": str(item.get("reference", "") or "")[:64],
+                    "billing_period_label": str(item.get("period_label", "") or "")[:128],
+                    "narration": str(item.get("narration", "") or "")[:255],
+                    "amount": amount,
+                })
+            except ValidationError as exc:
+                raise ValidationError({"invoices": {index: exc.detail}})
+        try:
+            invoices = import_opening_customer_invoices(entity, rows, actor_user=request.user)
+        except FinanceError as exc:
+            raise ValidationError({"invoices": exc.message})
+        prefetch_related_objects(invoices, "customer", "branch")
+        return success_response(
+            f"{len(invoices)} opening invoice(s) carried in.",
+            data=InvoiceSerializer(invoices, many=True).data, status=201,
         )

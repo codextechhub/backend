@@ -317,32 +317,51 @@ def post_concession(concession, *, actor_user=None):
 # Transactional concession posting implementation.
 def _post_concession_atomic(concession, *, actor_user=None):
     """Post a draft concession: raise its journal and mark it POSTED.
-    
-    Steps:
-      1. **Guard.** Only a DRAFT concession posts, and the amount must be positive and 
-      not exceed the invoice's outstanding balance.
-      2. **Post the journal** (``Dr discounts & allowances, Cr AR control``) to clear 
-      that much of the invoice.
-      3. **Finalise.** Link the journal, flip status to POSTED, update the invoice's 
-      ``amount_credited`` and refresh any active payment plan. 
-      4. Write a CONCESSION_POSTED audit record. Returns the updated ``concession``. 
-      Raises ``PostingError`` on any guard failure; ``post_concession`` wraps this 
-      to record a rejection on ``FinanceError``.
-    """
-    from .models import JournalEntry, JournalLine, PaymentPlan
 
+    Steps:
+      1. **Lock.** The concession and its invoice are locked and re-read, so a double
+         click cannot post one concession twice, and a receipt landing on the same
+         bill cannot read the same balance.
+      2. **Guard.** Only a DRAFT concession posts; its invoice must be posted and the
+         concession's own customer's; the amount must be positive and within the
+         invoice's outstanding balance; the allowance account must be revenue or
+         expense; and above the entity's second-person threshold the person who
+         raised it may not post it (:func:`vs_finance.approvals.require_second_person`).
+      3. **Post the journal** (``Dr discounts & allowances, Cr AR control``) to clear
+         that much of the invoice.
+      4. **Finalise.** Link the journal, flip status to POSTED, update the invoice's
+         ``amount_credited`` and refresh any live payment plan, then write a
+         CONCESSION_POSTED audit record. Returns the updated ``concession``.
+
+    Raises ``PostingError`` on any guard failure; ``post_concession`` wraps this to
+    record a rejection on ``FinanceError``.
+    """
+    from .accounts import require_account_kind
+    from .approvals import require_second_person
+    from .models import Invoice, JournalEntry, JournalLine
+
+    type(concession).objects.select_for_update(of=("self",)).get(pk=concession.pk)  # Lock, then re-read.
+    concession.refresh_from_db()
     if concession.status != DocumentStatus.DRAFT:  # Only draft concessions can post.
         raise PostingError(
             f"Concession {concession.document_number or concession.pk} is "
             f"'{concession.status}'; only a draft concession can be posted.",
         )
 
-    invoice = concession.invoice  # Invoice receiving the concession credit.
+    invoice = Invoice.objects.select_for_update(of=("self",)).get(pk=concession.invoice_id)
     if invoice.status != DocumentStatus.POSTED:  # Only posted invoices have AR to reduce.
         raise PostingError(
             f"Invoice {invoice.document_number or invoice.pk} is '{invoice.status}'; "
             f"a concession can only reduce a posted invoice.",
         )
+    if invoice.customer_id != concession.customer_id:  # A concession reduces its own customer's bill.
+        from .exceptions import SettlementTargetError
+
+        raise SettlementTargetError(
+            f"Invoice {invoice.document_number or invoice.pk} belongs to another customer "
+            f"than {concession.customer.code}, who this concession is for.",
+        )
+    require_second_person(concession, actor_user)
 
     # A discount cannot predate the charge it discounts: conceding before the invoice
     # date credits AR before the invoice debited it, leaving the control negative.
@@ -376,6 +395,7 @@ def _post_concession_atomic(concession, *, actor_user=None):
     allowance = concession.allowance_account or resolve_account(  # Use explicit allowance account or default.
         concession.entity, DISCOUNTS_ALLOWED_CODE, label="discounts & allowances",  # Resolve default allowance account.
     )
+    require_account_kind(allowance, "allowance", entity=concession.entity)  # Contra-revenue or expense.
     period = resolve_period(concession.entity, concession.concession_date)  # Resolve concession period.
     label = concession.get_kind_display()  # Human concession kind label.
     entry = JournalEntry.objects.create(
@@ -412,9 +432,6 @@ def _post_concession_atomic(concession, *, actor_user=None):
         balance_after=invoice.balance_due,  # Remaining invoice balance.
     )
 
-    # A concession settles part of the invoice - keep any active plan in step.  # Payment plans mirror settlement.
-    for plan in PaymentPlan.objects.filter(
-        invoice=invoice, plan_status=PaymentPlanStatus.ACTIVE,  # Active invoice-backed plans.
-    ):
-        refresh_plan_progress(plan, actor_user=actor_user)  # Recompute installment progress.
+    # A concession settles part of the invoice - keep any live plan in step.
+    refresh_plans_for_invoice(invoice, actor_user=actor_user)
     return concession  # Return posted concession.

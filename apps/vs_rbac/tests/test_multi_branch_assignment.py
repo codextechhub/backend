@@ -47,42 +47,43 @@ class _AssignmentAPIFixture(TestCase):
     shape most likely to be broken by a careless ``filter(branch=value)``.
     """
 
-    def setUp(self):
-        self.school = make_school(slug="eze-multi", name="Multi Branch College")
-        self.tenant = self.school.tenant
-        self.hq = make_branch(self.tenant, name="Head Office", is_main=True)
-        self.ikeja = make_branch(self.tenant, name="Ikeja", is_main=False)
-        self.lekki = make_branch(self.tenant, name="Lekki", is_main=False)
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="eze-multi", name="Multi Branch College")
+        cls.tenant = cls.school.tenant
+        cls.hq = make_branch(cls.tenant, name="Head Office", is_main=True)
+        cls.ikeja = make_branch(cls.tenant, name="Ikeja", is_main=False)
+        cls.lekki = make_branch(cls.tenant, name="Lekki", is_main=False)
 
-        self.admin = make_school_admin(self.hq, email="registrar@eze-multi.test")
-        _grant(self.admin, ROLE_KEYS)
+        cls.admin = make_school_admin(cls.hq, email="registrar@eze-multi.test")
+        _grant(cls.admin, ROLE_KEYS)
 
-        self.eze = make_staff_user(self.ikeja, email="eze@eze-multi.test")
+        cls.eze = make_staff_user(cls.ikeja, email="eze@eze-multi.test")
         # A colleague with no home posting. ``User.branch`` is now consulted
         # only for somebody whose grants say nothing at all, so a whole-tenant
         # grant answers WHOLE_TENANT either way - but this person having no home
         # posting keeps every assertion below about the grants and nothing else,
         # which is what the assignment API tests are here to pin.
-        self.roamer = make_staff_user(
-            None, email="roamer@eze-multi.test", tenant=self.tenant,
+        cls.roamer = make_staff_user(
+            None, email="roamer@eze-multi.test", tenant=cls.tenant,
         )
-        self.permission = make_permission(TEACHING_KEY)
-        self.role = make_role(self.tenant, name="Teacher")
-        make_role_permission(self.role, self.permission, granted=True)
+        cls.permission = make_permission(TEACHING_KEY)
+        cls.role = make_role(cls.tenant, name="Teacher")
+        make_role_permission(cls.role, cls.permission, granted=True)
 
         # The single-branch shape, with its own administrator and its own role.
-        self.solo_school = make_school(slug="eze-solo", name="Single Site Academy")
-        self.solo_tenant = self.solo_school.tenant
-        self.solo_branch = make_branch(self.solo_tenant, name="Main", is_main=True)
-        self.solo_admin = make_school_admin(
-            self.solo_branch, email="registrar@eze-solo.test",
+        cls.solo_school = make_school(slug="eze-solo", name="Single Site Academy")
+        cls.solo_tenant = cls.solo_school.tenant
+        cls.solo_branch = make_branch(cls.solo_tenant, name="Main", is_main=True)
+        cls.solo_admin = make_school_admin(
+            cls.solo_branch, email="registrar@eze-solo.test",
         )
-        _grant(self.solo_admin, ROLE_KEYS)
-        self.solo_staff = make_staff_user(
-            self.solo_branch, email="teacher@eze-solo.test",
+        _grant(cls.solo_admin, ROLE_KEYS)
+        cls.solo_staff = make_staff_user(
+            cls.solo_branch, email="teacher@eze-solo.test",
         )
-        self.solo_role = make_role(self.solo_tenant, name="Teacher")
-        make_role_permission(self.solo_role, self.permission, granted=True)
+        cls.solo_role = make_role(cls.solo_tenant, name="Teacher")
+        make_role_permission(cls.solo_role, cls.permission, granted=True)
 
     # -- URLs -------------------------------------------------------------- #
     def _list_url(self, slug=None, **params):
@@ -294,13 +295,14 @@ class SameRoleAtTwoBranchesTests(_AssignmentAPIFixture):
 class RevokingOneOfTwoGrantsTests(_AssignmentAPIFixture):
     """Mr Eze stops teaching at Lekki. He still teaches at Ikeja."""
 
-    def setUp(self):
-        super().setUp()
-        self.at_ikeja = make_assignment(
-            self.tenant, self.eze, self.role, branch=self.ikeja,
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.at_ikeja = make_assignment(
+            cls.tenant, cls.eze, cls.role, branch=cls.ikeja,
         )
-        self.at_lekki = make_assignment(
-            self.tenant, self.eze, self.role, branch=self.lekki,
+        cls.at_lekki = make_assignment(
+            cls.tenant, cls.eze, cls.role, branch=cls.lekki,
         )
 
     def test_revoking_lekki_leaves_ikeja_in_force(self):
@@ -356,10 +358,11 @@ class RevokingOneOfTwoGrantsTests(_AssignmentAPIFixture):
 class MovingAGrantBetweenBranchesTests(_AssignmentAPIFixture):
     """PATCH moves a grant from one site to another - unless the target is taken."""
 
-    def setUp(self):
-        super().setUp()
-        self.at_ikeja = make_assignment(
-            self.tenant, self.eze, self.role, branch=self.ikeja,
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.at_ikeja = make_assignment(
+            cls.tenant, cls.eze, cls.role, branch=cls.ikeja,
         )
 
     def test_a_grant_moves_to_a_free_branch(self):
@@ -430,12 +433,13 @@ class MovingAGrantBetweenBranchesTests(_AssignmentAPIFixture):
 class ReplacingARoleAtOneBranchTests(_AssignmentAPIFixture):
     """The replace endpoint swaps a role and keeps the grant's branch."""
 
-    def setUp(self):
-        super().setUp()
-        self.senior = make_role(self.tenant, name="Senior Teacher")
-        make_role_permission(self.senior, self.permission, granted=True)
-        self.at_ikeja = make_assignment(
-            self.tenant, self.eze, self.role, branch=self.ikeja,
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.senior = make_role(cls.tenant, name="Senior Teacher")
+        make_role_permission(cls.senior, cls.permission, granted=True)
+        cls.at_ikeja = make_assignment(
+            cls.tenant, cls.eze, cls.role, branch=cls.ikeja,
         )
 
     def _replace(self, assignment, role):

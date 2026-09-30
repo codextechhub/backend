@@ -139,6 +139,7 @@ RESOURCE_BANDS = {
     ("finance", "refund"): PLUS,
     ("finance", "writeoff"): PLUS,
     ("finance", "concession"): PLUS,
+    ("finance", "credittransfer"): PLUS,
     ("finance", "paymentplan"): PLUS,
     ("finance", "dunning"): PLUS,
     ("finance", "bankaccount"): PLUS,
@@ -203,6 +204,8 @@ ACTION_BANDS = {
     # Sending a customer their whole account position. Emailing one invoice
     # stays Core: a school that cannot send an invoice cannot collect a fee.
     ("finance", "customer", "email_statement"): PLUS,
+    # Carrying in pre-go-live debts is an onboarding act of the receivables product.
+    ("finance", "customer", "import_opening"): PLUS,
     ("finance", "invoice", "writeoff"): PLUS,
 
     # Promoting the whole roll, which no longer rides on the key that moves one

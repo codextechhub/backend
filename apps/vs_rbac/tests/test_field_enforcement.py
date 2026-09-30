@@ -129,28 +129,32 @@ class _Enforcement(TestCase):
     row, so it is closed by default. ``note`` is not registered at all.
     """
 
-    def setUp(self):
-        SAVED.clear()
-        self.school = make_school(slug="fenf-bright-star", name="Bright Star School")
-        self.branch = make_branch(self.school, name="Ikeja Branch")
-        self.tenant = self.school.tenant
-        self.name = make_field_definition("fenf.vendor.name", "Name")
-        self.phone = make_field_definition("fenf.vendor.phone", "Phone")
-        self.bank = make_field_definition(
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="fenf-bright-star", name="Bright Star School")
+        cls.branch = make_branch(cls.school, name="Ikeja Branch")
+        cls.tenant = cls.school.tenant
+        cls.name = make_field_definition("fenf.vendor.name", "Name")
+        cls.phone = make_field_definition("fenf.vendor.phone", "Phone")
+        cls.bank = make_field_definition(
             "fenf.vendor.bank_account_number", "Bank account number", sensitive=True,
         )
-        self.opened_on = make_field_definition(
+        cls.opened_on = make_field_definition(
             "fenf.vendor.opened_on", "Opened on", open_on_create=True,
         )
-        self.user = make_staff_user(self.branch, email="fenf-user@test.com")
-        self.role = make_role(self.tenant, name="Storekeeper", key="fenf_storekeeper")
-        make_assignment(self.tenant, self.user, self.role, branch=None)
-        self._switch(self.phone, read=True, write=False)
-        self._switch(self.opened_on, read=True, write=False)
+        cls.user = make_staff_user(cls.branch, email="fenf-user@test.com")
+        cls.role = make_role(cls.tenant, name="Storekeeper", key="fenf_storekeeper")
+        make_assignment(cls.tenant, cls.user, cls.role, branch=None)
+        cls._switch(cls.phone, read=True, write=False)
+        cls._switch(cls.opened_on, read=True, write=False)
 
-    def _switch(self, field, *, read, write):
+    def setUp(self):
+        SAVED.clear()
+
+    @classmethod
+    def _switch(cls, field, *, read, write):
         return RoleFieldAccess.objects.create(
-            role=self.role, field=field, can_read=read, can_write=write,
+            role=cls.role, field=field, can_read=read, can_write=write,
         )
 
     def _request(self, user=None):
@@ -309,13 +313,14 @@ class EchoedValueTests(_Enforcement):
 class OwnerRuleTests(_Enforcement):
     """A person's own record, which their roles never close to them."""
 
-    def setUp(self):
-        super().setUp()
-        self.bank_name = make_field_definition(
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.bank_name = make_field_definition(
             "fenf.staff.bank_name", "Bank name", sensitive=True,
         )
-        self.own = SimpleNamespace(user_id=self.user.pk, bank_name="First Bank")
-        self.other = SimpleNamespace(user_id=self.user.pk + 1000, bank_name="GTBank")
+        cls.own = SimpleNamespace(user_id=cls.user.pk, bank_name="First Bank")
+        cls.other = SimpleNamespace(user_id=cls.user.pk + 1000, bank_name="GTBank")
 
     def test_the_owner_reads_their_own_closed_field(self):
         data = _StaffSerializer(self.own, context=self._context()).data
@@ -341,8 +346,9 @@ class OwnerRuleTests(_Enforcement):
 
 
 class NestedSerializerTests(_Enforcement):
-    def setUp(self):
-        super().setUp()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         make_field_definition("fenf.invoice.reference", "Reference")
         make_field_definition(
             "fenf.invoice.secret_margin", "Margin", sensitive=True,
@@ -572,9 +578,10 @@ class HiddenButOpenOnCreateTests(_Enforcement):
     only correcting it later needs the switch.
     """
 
-    def setUp(self):
-        super().setUp()
-        RoleFieldAccess.objects.filter(role=self.role, field=self.opened_on).update(
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        RoleFieldAccess.objects.filter(role=cls.role, field=cls.opened_on).update(
             can_read=False, can_write=False,
         )
 

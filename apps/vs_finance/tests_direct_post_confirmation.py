@@ -32,31 +32,38 @@ from .tests import _school_finance_requester
 
 
 class _DirectPostFixture(TestCase):
-    """A school with open books and a bursar holding every finance key."""
+    """A school with open books and a bursar holding every finance key.
 
-    def setUp(self):
+    The permission seed, the school and its books are built once per class.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
         from schools.vs_schools.models import School
 
         call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
         seed_currencies()
-        self.school = School.objects.create(
+        cls.school = School.objects.create(
             name="Bright Star School", slug="bright-star-direct", code="BSDIR", status="ACTIVE")
-        self.tenant = self.school.tenant
-        self.entity = LedgerEntity.objects.create(
+        cls.tenant = cls.school.tenant
+        cls.entity = LedgerEntity.objects.create(
             name="Bright Star Books", code="BSDBK", kind=LedgerEntity.Kind.TENANT,
-            tenant=self.tenant,
+            tenant=cls.tenant,
         )
-        seed_chart_of_accounts(self.entity)
+        seed_chart_of_accounts(cls.entity)
         year = FiscalYear.objects.create(
-            entity=self.entity, year=2026,
+            entity=cls.entity, year=2026,
             start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
         )
-        self.period = FiscalPeriod.objects.create(
-            entity=self.entity, fiscal_year=year, period_no=1, name="Jan 2026",
+        cls.period = FiscalPeriod.objects.create(
+            entity=cls.entity, fiscal_year=year, period_no=1, name="Jan 2026",
             start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
             status=PeriodStatus.OPEN,
         )
-        self.bursar = _school_finance_requester(self.school, "bursar-direct@test.com")
+        cls.bursar = _school_finance_requester(cls.school, "bursar-direct@test.com")
+
+    def setUp(self):
+        super().setUp()
         self.client = TenantAPIClient(user=self.bursar)
 
     def publish_route(self, document_type, *, staged):

@@ -107,6 +107,16 @@ DOCUMENT_SETTING_CONSUMERS = {
         "vs_finance.views_ar",
         "Allows or rejects non-zero customer opening balances.",
     ),
+    "auto_apply_customer_credit": _consumer(
+        "Customer credit",
+        "vs_finance.receivables.apply_customer_credit",
+        "Applies a customer's unapplied credit to each new invoice of theirs as it posts.",
+    ),
+    "concession_second_person_threshold": _consumer(
+        "Concessions",
+        "vs_finance.installments",
+        "Above this running total a concession must be posted by somebody other than its author.",
+    ),
     "term_collection_target_pct": _consumer(
         "Finance dashboard: receivables",
         "vs_finance.dashboard_receivables",

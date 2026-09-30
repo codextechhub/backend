@@ -55,31 +55,32 @@ def _sent_recipients(send):
 
 
 class TicketRecipientsHoldingAKeyThroughAGroupTests(TicketFixtureMixin, TestCase):
-    def setUp(self):
-        self.build_users()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
 
         # Ngozi works the CodeX desk. Her triage key is in the Support Desk
         # group, not on her role.
-        self.group_agent = _user("desk-group@cx.test", "Ngozi", "Desk")
+        cls.group_agent = _user("desk-group@cx.test", "Ngozi", "Desk")
         _grant_through_group(
-            self.group_agent.tenant,
-            self.group_agent,
+            cls.group_agent.tenant,
+            cls.group_agent,
             TicketPermission.TRIAGE,
             group_name="Support Desk",
             role_name="CX Desk Agent",
         )
 
         # Ola is on the platform tenant and works no queue at all.
-        self.no_key = _user("observer@cx.test", "Ola", "Observer")
+        cls.no_key = _user("observer@cx.test", "Ola", "Observer")
 
         # Bisi triages Alpha School's own tickets, her key held the same way.
-        self.school_group_triager = _user(
+        cls.school_group_triager = _user(
             "triage-group@alpha.test", "Bisi", "Triage",
-            school=self.school_a, branch=self.branch_a,
+            school=cls.school_a, branch=cls.branch_a,
         )
         _grant_through_group(
-            self.school_a.tenant,
-            self.school_group_triager,
+            cls.school_a.tenant,
+            cls.school_group_triager,
             TicketPermission.TRIAGE,
             group_name="School Support Desk",
             role_name="Alpha Desk Agent",

@@ -52,6 +52,7 @@ APPROVAL_TYPES = {
     "finance.refund": ("refund", "refunds"),
     "finance.concession": ("concession", "concessions"),
     "finance.credit_note": ("credit or debit note", "credit or debit notes"),
+    "finance.customer_credit_transfer": ("customer credit transfer", "customer credit transfers"),
     "finance.expense_claim": ("expense claim", "expense claims"),
     "finance.journal": ("journal", "journals"),
     "finance.bank_transaction": ("bank transaction", "bank transactions"),
@@ -66,6 +67,7 @@ METHOD_LABELS = {
     "CASH": "Cash",
     "CHEQUE": "Cheque",
     "OTHER": "Other",
+    "CREDIT_TRANSFER": "Customer credit transfer",
 }
 
 
@@ -180,28 +182,34 @@ def _window_receipts(entity, window: Window, scope):
         ), "payment__")
         return allocations.values(method=F("payment__method"), branch_ref=F("payment__branch_id")) \
             .annotate(amount=Sum("amount"), receipts=Count("payment_id", distinct=True))
+    from .collected import received_money_q
+
     qs = scope.filter(Payment.objects.filter(
-        entity=entity, status=DocumentStatus.POSTED,
+        received_money_q(), entity=entity, status=DocumentStatus.POSTED,
         payment_date__gte=window.start, payment_date__lte=window.end,
     ))
     return qs.values("method", branch_ref=F("branch_id")).annotate(amount=Sum("amount"), receipts=Count("id"))
 
 
 def collections(entity, window: Window, *, scope=UNNARROWED, billed_ok=True, collected_ok=True) -> dict:
-    """Billed and collected in the window, and the share collected."""
+    """Billed and collected in the window, and the share collected.
+
+    Billed, and a billing period's collected, are :mod:`vs_finance.collected`'s
+    definitions, the ones the owner layer's dashboards read too. A calendar window
+    collects by date instead: the money received in it.
+    """
+    from .collected import billed_and_collected
+
     billed = None
     invoice_count = None
+    window_invoices = _window_invoices(entity, window, scope)
     if billed_ok:
-        agg = _window_invoices(entity, window, scope).aggregate(
-            billed=Sum(F("total") - F("amount_credited")), n=Count("id"),
-        )
-        billed, invoice_count = int(agg["billed"] or 0), agg["n"]
+        billed, _collected = billed_and_collected(window_invoices)
+        invoice_count = window_invoices.count()
     collected = None
     if collected_ok:
         if window.invoices is not None:
-            collected = int(
-                _window_invoices(entity, window, scope).aggregate(s=Sum("amount_paid"))["s"] or 0
-            )
+            _billed, collected = billed_and_collected(window_invoices)
         else:
             collected = sum(int(r["amount"] or 0) for r in _window_receipts(entity, window, scope))
     return {

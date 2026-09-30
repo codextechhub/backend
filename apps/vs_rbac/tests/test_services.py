@@ -35,29 +35,30 @@ from .helpers import (
 
 
 class SetRoleAccessTests(TestCase):
-    def setUp(self):
-        self.school = make_school()
-        self.branch = make_branch(self.school)
-        self.actor = make_school_admin(self.branch)
-        self.role = make_role(self.school, name="Accounts Officer")
-        self.view_permission = make_permission("finance.invoice.view")
-        self.update_permission = make_permission("finance.invoice.update")
-        self.report_permission = make_permission("finance.report.view")
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school()
+        cls.branch = make_branch(cls.school)
+        cls.actor = make_school_admin(cls.branch)
+        cls.role = make_role(cls.school, name="Accounts Officer")
+        cls.view_permission = make_permission("finance.invoice.view")
+        cls.update_permission = make_permission("finance.invoice.update")
+        cls.report_permission = make_permission("finance.report.view")
         make_role_permission(
-            self.role, self.view_permission, granted_by=self.actor,
+            cls.role, cls.view_permission, granted_by=cls.actor,
         )
-        self.denied_permission = make_permission("payments.payout.approve")
+        cls.denied_permission = make_permission("payments.payout.approve")
         TenantRolePermission.objects.create(
-            role=self.role,
-            permission=self.denied_permission,
+            role=cls.role,
+            permission=cls.denied_permission,
             granted=False,
-            granted_by=self.actor,
+            granted_by=cls.actor,
         )
-        self.group = PermissionGroup.objects.create(
+        cls.group = PermissionGroup.objects.create(
             name="Finance Reporting", scope=PermissionScope.TENANT,
         )
         GroupPermission.objects.create(
-            group=self.group, permission=self.report_permission,
+            group=cls.group, permission=cls.report_permission,
         )
 
     def _granted(self):
@@ -266,18 +267,19 @@ class SetRoleAccessTests(TestCase):
 
 
 class ApplySchoolTenantRoleChangeRequestTests(TestCase):
-    def setUp(self):
-        self.school = make_school()
-        self.branch = make_branch(self.school)
-        self.admin = make_school_admin(self.branch)
-        self.reviewer = make_vision_user()
-        self.role = make_role(self.school)
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school()
+        cls.branch = make_branch(cls.school)
+        cls.admin = make_school_admin(cls.branch)
+        cls.reviewer = make_vision_user()
+        cls.role = make_role(cls.school)
 
-        self.perm_view = make_permission("finance.invoice.view")
-        self.perm_approve = make_permission("finance.invoice.approve")
-        self.perm_export = make_permission("finance.invoice.export")
+        cls.perm_view = make_permission("finance.invoice.view")
+        cls.perm_approve = make_permission("finance.invoice.approve")
+        cls.perm_export = make_permission("finance.invoice.export")
 
-        make_role_permission(self.role, self.perm_view)
+        make_role_permission(cls.role, cls.perm_view)
 
     def _granted(self):
         return set(
@@ -436,14 +438,15 @@ class ApplySchoolTenantRoleChangeRequestTests(TestCase):
 
 
 class ApplyPlatformTenantRoleChangeRequestTests(TestCase):
-    def setUp(self):
-        self.user = make_vision_user()
-        self.reviewer = make_vision_user(email="reviewer@test.com")
-        self.role = make_platform_role()
-        self.perm_view = make_permission("system.config.view")
-        self.perm_edit = make_permission("system.config.edit")
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = make_vision_user()
+        cls.reviewer = make_vision_user(email="reviewer@test.com")
+        cls.role = make_platform_role()
+        cls.perm_view = make_permission("system.config.view")
+        cls.perm_edit = make_permission("system.config.edit")
 
-        make_platform_role_permission(self.role, self.perm_view)
+        make_platform_role_permission(cls.role, cls.perm_view)
 
     def _granted(self):
         return set(

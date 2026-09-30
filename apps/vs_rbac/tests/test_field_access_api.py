@@ -80,37 +80,38 @@ def _with_tenant(url, slug):
 class _FieldAccessApi(TestCase):
     """Bright Star School: an administrator, a Storekeeper role and a storekeeper."""
 
-    def setUp(self):
-        self.school = make_school(slug="fa-bright-star", name="Bright Star School")
-        self.branch = make_branch(self.school, name="Ikeja Branch")
-        self.tenant = self.school.tenant
-        self.slug = self.tenant.slug
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="fa-bright-star", name="Bright Star School")
+        cls.branch = make_branch(cls.school, name="Ikeja Branch")
+        cls.tenant = cls.school.tenant
+        cls.slug = cls.tenant.slug
 
-        self.name = make_field_definition("faapi.vendor.name", "Name", group="Vendor")
-        self.phone = make_field_definition(
+        cls.name = make_field_definition("faapi.vendor.name", "Name", group="Vendor")
+        cls.phone = make_field_definition(
             "faapi.vendor.phone", "Phone", group="Contact", sensitive=True,
         )
-        self.bank = make_field_definition(
+        cls.bank = make_field_definition(
             "faapi.vendor.bank_account_number", "Bank account number",
             group="Banking", sensitive=True,
         )
-        self.total = make_field_definition(
+        cls.total = make_field_definition(
             "faapi.vendor.total_spend", "Total spend",
             group="Vendor", sort_order=1, writable=False,
         )
-        self.platform_field = make_field_definition(
+        cls.platform_field = make_field_definition(
             "faapi.staff.bank_name", "Bank name",
             sensitive=True, scope=PermissionScope.PLATFORM,
         )
 
-        self.admin = make_school_admin(self.branch, email="fa-admin@test.com")
-        self.admin_role = _grant(
-            self.admin,
+        cls.admin = make_school_admin(cls.branch, email="fa-admin@test.com")
+        cls.admin_role = _grant(
+            cls.admin,
             [VIEW, UPDATE, EXCEPTION_VIEW, EXCEPTION_CREATE, EXCEPTION_DELETE],
         )
-        self.storekeeper = make_role(self.tenant, name="Storekeeper", key="storekeeper")
-        self.target = make_staff_user(self.branch, email="fa-target@test.com")
-        make_assignment(self.tenant, self.target, self.storekeeper)
+        cls.storekeeper = make_role(cls.tenant, name="Storekeeper", key="storekeeper")
+        cls.target = make_staff_user(cls.branch, email="fa-target@test.com")
+        make_assignment(cls.tenant, cls.target, cls.storekeeper)
 
     # -- role switches ------------------------------------------------------
     def _role_url(self, key="storekeeper", slug=None):
@@ -169,12 +170,13 @@ class _FieldAccessApi(TestCase):
 # Security
 # =============================================================================
 class CrossTenantIsolationTests(_FieldAccessApi):
-    def setUp(self):
-        super().setUp()
-        self.other = make_school(slug="fa-greenfield", name="Greenfield School")
-        self.other_branch = make_branch(self.other, name="Greenfield Main")
-        self.other_role = make_role(self.other.tenant, name="Bursar", key="greenfield-bursar")
-        self.other_user = make_staff_user(self.other_branch, email="fa-greenfield@test.com")
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.other = make_school(slug="fa-greenfield", name="Greenfield School")
+        cls.other_branch = make_branch(cls.other, name="Greenfield Main")
+        cls.other_role = make_role(cls.other.tenant, name="Bursar", key="greenfield-bursar")
+        cls.other_user = make_staff_user(cls.other_branch, email="fa-greenfield@test.com")
 
     def test_another_schools_role_key_reads_as_no_role(self):
         theirs = self._get(key="greenfield-bursar")

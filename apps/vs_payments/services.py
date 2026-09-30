@@ -654,6 +654,33 @@ def deposit_branch_id(deposit_account):
 
 
 # Support the book receipt workflow.
+def _unsettlable_reason(intent):
+    """Why a confirmed collection may not settle the invoice it was started for, or ``None``.
+
+    Mr Adeyemi opens the pay link for INV-0412 and pays; ten minutes earlier the
+    bursar voided INV-0412 and raised INV-0450. Settling the voided bill would credit
+    receivables for a debt that no longer exists and hide his money. So the invoice
+    is locked (a void takes the same lock, so none can land after this check) and
+    the receipt settles it only while it is posted and its own customer's.
+    Otherwise the money is kept as the customer's credit, which pays their next
+    bill as it posts, and the reason is recorded for the bursar. (A bill dated
+    after the money arrived is a prepayment and parks as credit too, but that is
+    ordinary and needs nobody's attention.)
+    """
+    from vs_finance.constants import DocumentStatus
+    from vs_finance.models import Invoice
+
+    if not intent.invoice_id:
+        return None
+    invoice = Invoice.objects.select_for_update(of=("self",)).get(pk=intent.invoice_id)
+    intent.invoice = invoice
+    if invoice.status != DocumentStatus.POSTED:
+        return f"the invoice is '{invoice.status}', so it can no longer be paid."
+    if invoice.customer_id != intent.customer_id:
+        return "the invoice belongs to another customer than the one who paid."
+    return None
+
+
 def _book_receipt(intent, *, actor_user=None, paid_at=None):
     """Create + post the ``vs_finance.Payment`` for a succeeded collection.
 
@@ -699,14 +726,30 @@ def _book_receipt(intent, *, actor_user=None, paid_at=None):
         narration=intent.narration or f"Gateway collection {intent.reference}",
     )
 
-    # A receipt for a not-yet-raised invoice parks as credit (see the docstring).
-    settles_now = bool(intent.invoice_id) and intent.invoice.invoice_date <= received
-    if settles_now:  # Invoice-linked receipts should settle that invoice directly.
+    # A receipt for an invoice it may not settle parks as credit (see the docstring).
+    parked_because = _unsettlable_reason(intent)
+    settles_now = (bool(intent.invoice_id) and parked_because is None
+                   and intent.invoice.invoice_date <= received)
+    if settles_now:  # Settle the invoice the payer chose.
         post_payment(payment, actor_user=actor_user,
                      allocations=[(intent.invoice, intent.amount)])  # Allocate the full settled amount to the invoice.
-    else:  # Standalone or not-yet-raised invoice: never guess.
+    else:  # Standalone, or an invoice it may not settle: never guess.
         # Leave the funds as customer credit instead of auto-allocating them.
         post_payment(payment, actor_user=actor_user, auto_allocate=False)  # Park the money as credit instead.
+        if parked_because is not None:  # Tell the bursar why the money did not settle the bill.
+            from vs_finance.audit import record
+            from vs_finance.constants import FinanceAuditAction
+
+            record(
+                entity=intent.entity, action=FinanceAuditAction.RECEIPT_PARKED_AS_CREDIT,
+                actor_user=actor_user, target=payment,
+                message=(
+                    f"Receipt {payment.document_number} for invoice "
+                    f"{intent.invoice.document_number} was kept as customer credit: "
+                    f"{parked_because}"
+                ),
+                invoice=intent.invoice.document_number, reason=parked_because,
+            )
 
     intent.payment = payment  # Link the payment back to the gateway record.
 

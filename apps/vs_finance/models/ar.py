@@ -6,6 +6,7 @@ from django.conf import settings
 from django.db import models, transaction
 
 from ..constants import (
+    RECEIPT_METHOD_CHOICES,
     DocType,
     FeeAppliesTo,
     InvoicePaymentStatus,
@@ -63,18 +64,32 @@ class Customer(TimeStampedModel):
         null=True, blank=True,
         help_text="AR control account this customer's balance rolls into.",
     )
-    opening_balance = MoneyField(help_text="Opening AR balance in kobo (informational; not auto-posted).")
+    opening_balance = MoneyField(
+        help_text="Opening AR balance in kobo, posted once as an opening invoice when the "
+                  "customer is created. Fixed afterwards: a correction is a credit or "
+                  "debit note.",
+    )
     source_type = models.CharField(
         max_length=64, blank=True, default="",
         help_text="Loose reference to the originating domain record's model, as 'app_label.Model'.",
     )
     source_id = models.CharField(max_length=64, blank=True, default="")
-    is_active = models.BooleanField(default=True)
+    is_active = models.BooleanField(
+        default=True,
+        help_text="An inactive customer is billed by no fee run and by no 'bill all active' "
+                  "selection, and keeps its debt, its documents and its place in debtor lists.",
+    )
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
                 fields=["entity", "code"], name="uniq_finance_customer_entity_code",
+            ),
+            # One account per source record in one set of books.
+            models.UniqueConstraint(
+                fields=["entity", "source_type", "source_id"],
+                condition=~models.Q(source_id=""),
+                name="uniq_finance_customer_entity_source",
             ),
         ]
         indexes = [
@@ -121,6 +136,18 @@ class Invoice(FinanceDocument):
     Two status axes: the inherited document ``status`` tracks the ledger lifecycle
     (DRAFT→POSTED→CANCELLED), while ``payment_status`` tracks cash settled, derived
     from ``amount_paid`` vs ``total`` as payments allocate.
+
+    ``billing_key`` names what a fee run billed (a fee structure, and the billing
+    period when the owner layer bills by one) and is unique per customer among live
+    invoices, so a second run of the same structure for the same period cannot bill
+    the same customer twice, however the two runs interleave. ``billing_period`` and
+    ``billing_period_label`` are the period the owner layer said the invoice belongs
+    to when it was raised; they are fixed once the invoice posts, so which period a
+    bill reports under never depends on how a fee structure is linked today.
+
+    The database refuses settlement beyond the total and negative settlement, so a
+    settlement path that misses its lock fails the request instead of clearing a
+    bill twice.
     """
 
     DOC_TYPE = DocType.INVOICE
@@ -167,13 +194,67 @@ class Invoice(FinanceDocument):
         ),
     )
 
+    billing_key = models.CharField(
+        max_length=128, blank=True, default="",
+        help_text="What a fee run billed: 'FEE:<structure code>', with '@<period>' when "
+                  "the run named a billing period. Unique per customer among live invoices.",
+    )
+    billing_period = models.CharField(
+        max_length=64, blank=True, default="",
+        help_text="Opaque key of the billing period the owner layer placed this invoice "
+                  "in. Fixed once posted.",
+    )
+    billing_period_label = models.CharField(
+        max_length=128, blank=True, default="",
+        help_text="The billing period's name as it read when the invoice was raised.",
+    )
+
+    #: Fields a posted invoice keeps for life.
+    FIXED_ONCE_POSTED = ("billing_key", "billing_period", "billing_period_label")
+
     class Meta(FinanceDocument.Meta):
         indexes = [
             models.Index(fields=["entity", "status"]),
             models.Index(fields=["entity", "payment_status"]),
             models.Index(fields=["customer"]),
             models.Index(fields=["entity", "invoice_date"]),
+            models.Index(fields=["entity", "billing_period"]),
         ]
+        constraints = [
+            *FinanceDocument.Meta.constraints,
+            models.UniqueConstraint(
+                fields=["entity", "customer", "billing_key"],
+                condition=~models.Q(billing_key="") & ~models.Q(status__in=["REVERSED", "CANCELLED"]),
+                name="uniq_finance_invoice_billing_key",
+            ),
+            models.CheckConstraint(
+                check=models.Q(amount_paid__gte=0) & models.Q(amount_credited__gte=0),
+                name="ck_finance_invoice_settled_non_negative",
+            ),
+            models.CheckConstraint(
+                check=models.Q(total__gte=models.F("amount_paid") + models.F("amount_credited")),
+                name="ck_finance_invoice_settled_within_total",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        """Refuse a change to the billing period of an invoice that has posted."""
+        update_fields = kwargs.get("update_fields")
+        touches = update_fields is None or bool(set(update_fields) & set(self.FIXED_ONCE_POSTED))
+        if self.pk and touches:
+            stored = (
+                type(self).objects.filter(pk=self.pk)
+                .exclude(status="DRAFT")
+                .values(*self.FIXED_ONCE_POSTED).first()
+            )
+            if stored and any(stored[f] != getattr(self, f) for f in self.FIXED_ONCE_POSTED):
+                from ..exceptions import PostingError
+
+                raise PostingError(
+                    f"Invoice {self.document_number or self.pk} has posted, so the billing "
+                    f"period it belongs to cannot be changed.",
+                )
+        return super().save(*args, **kwargs)
 
     @property
     def settled_amount(self) -> int:
@@ -273,13 +354,18 @@ class Payment(FinanceDocument):
         null=True, blank=True,
     )
     method = models.CharField(
-        max_length=16, choices=PaymentMethod.choices, default=PaymentMethod.BANK_TRANSFER,
+        max_length=16, choices=RECEIPT_METHOD_CHOICES, default=PaymentMethod.BANK_TRANSFER,
     )
     amount = MoneyField(help_text="Total received, in kobo.")
     allocated_amount = MoneyField(help_text="Portion allocated to invoices, in kobo.")
     refunded_amount = MoneyField(
         help_text="Portion of this receipt's unapplied cash already paid back out as a "
                   "customer refund, in kobo. Maintained by RefundAllocation.",
+    )
+    transferred_amount = MoneyField(
+        help_text="Portion of this receipt's unapplied cash moved to another customer by "
+                  "an approved credit transfer, in kobo. Maintained by "
+                  "CustomerCreditTransferDraw.",
     )
     deposit_account = models.ForeignKey(
         Account, on_delete=models.PROTECT, related_name="customer_payments",
@@ -299,6 +385,23 @@ class Payment(FinanceDocument):
             models.Index(fields=["customer"]),
             models.Index(fields=["entity", "payment_date"]),
         ]
+        constraints = [
+            *FinanceDocument.Meta.constraints,
+            models.CheckConstraint(
+                check=(
+                    models.Q(allocated_amount__gte=0) & models.Q(refunded_amount__gte=0)
+                    & models.Q(transferred_amount__gte=0)
+                ),
+                name="ck_finance_payment_spent_non_negative",
+            ),
+            models.CheckConstraint(
+                check=models.Q(amount__gte=(
+                    models.F("allocated_amount") + models.F("refunded_amount")
+                    + models.F("transferred_amount")
+                )),
+                name="ck_finance_payment_spent_within_amount",
+            ),
+        ]
 
     @property
     def unallocated_amount(self) -> int:
@@ -317,10 +420,11 @@ class Payment(FinanceDocument):
         """Cash from this receipt still sitting in the customer-credit liability (2140).
 
         The spendable figure: unapplied cash less whatever has since been refunded
-        out of it. This is what may be allocated to an invoice or refunded again, and
-        what screens must show as available credit.
+        out of it or transferred to another customer. This is what may be allocated
+        to an invoice or refunded again, and what screens must show as available
+        credit.
         """
-        return self.amount - self.allocated_amount - self.refunded_amount
+        return self.amount - self.allocated_amount - self.refunded_amount - self.transferred_amount
 
 
 class PaymentAllocation(TimeStampedModel):
@@ -497,8 +601,8 @@ class FeeItem(TimeStampedModel):
     )
     is_optional = models.BooleanField(
         default=False,
-        help_text="An opt-in charge (vs a required line). Informational for now - "
-                  "generation bills every line.")
+        help_text="An opt-in charge: billed only to the customers assigned to it "
+                  "(FeeItemAssignment). A required line bills every customer the run bills.")
     line_no = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
@@ -507,3 +611,35 @@ class FeeItem(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.description}: {self.amount}"
+
+
+class FeeItemAssignment(TimeStampedModel):
+    """A customer who takes an optional :class:`FeeItem`.
+
+    An optional charge (a bus route, a boarding place, a club) is billed only to
+    the customers holding a row here; a fee run leaves it off everybody else's
+    invoice. Required items need no rows: every customer a run bills pays them.
+    """
+
+    item = models.ForeignKey(
+        FeeItem, on_delete=models.CASCADE, related_name="assignments",
+    )
+    customer = models.ForeignKey(
+        Customer, on_delete=models.CASCADE, related_name="fee_item_assignments",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_fee_item_assignments", null=True, blank=True,
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["item", "customer"], name="uniq_finance_feeitem_assignment",
+            ),
+        ]
+        indexes = [models.Index(fields=["customer"])]
+        ordering = ["item", "customer"]
+
+    def __str__(self) -> str:
+        return f"{self.item_id} -> {self.customer_id}"

@@ -147,16 +147,17 @@ class _Converted(TestCase):
 
     branch_names = ("Main Branch",)
 
-    def setUp(self):
-        self.fields = declare_converted_fields()
-        self.permissions = declare_converted_permissions()
-        self.school = make_school(slug="fc-bright-star", name="Bright Star School")
-        self.tenant = self.school.tenant
-        self.branches = [
-            make_branch(self.school, name=name, is_main=index == 0)
-            for index, name in enumerate(self.branch_names)
+    @classmethod
+    def setUpTestData(cls):
+        cls.fields = declare_converted_fields()
+        cls.permissions = declare_converted_permissions()
+        cls.school = make_school(slug="fc-bright-star", name="Bright Star School")
+        cls.tenant = cls.school.tenant
+        cls.branches = [
+            make_branch(cls.school, name=name, is_main=index == 0)
+            for index, name in enumerate(cls.branch_names)
         ]
-        self.user = make_staff_user(self.branches[0], email="fc-user@test.com")
+        cls.user = make_staff_user(cls.branches[0], email="fc-user@test.com")
 
     def permission(self, key):
         """The permission row for *key*, minted on demand for an unrelated key."""
@@ -327,13 +328,14 @@ class MultiBranchConversionTests(SingleBranchConversionTests):
 class PrebuiltRoleConversionTests(_Converted):
     """Codex's defaults, and the school created after the conversion."""
 
-    def setUp(self):
-        super().setUp()
-        self.prebuilt = PrebuiltRoleTemplate.objects.create(
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.prebuilt = PrebuiltRoleTemplate.objects.create(
             key="fc-bursar", name="FC Bursar", scope="institution", is_active=True,
         )
         PrebuiltRolePermission.objects.create(
-            prebuilt_role=self.prebuilt, permission=self.permissions[VENDOR_KEY],
+            prebuilt_role=cls.prebuilt, permission=cls.permissions[VENDOR_KEY],
         )
 
     def test_a_prebuilt_default_becomes_a_prebuilt_switch(self):
@@ -371,9 +373,13 @@ class PrebuiltRoleConversionTests(_Converted):
 class OverrideConversionTests(_Converted):
     """A personal permission exception becomes a personal field exception."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.author = make_staff_user(cls.branches[0], email="fc-author@test.com")
+
     def setUp(self):
         super().setUp()
-        self.author = make_staff_user(self.branches[0], email="fc-author@test.com")
         self.expiry = timezone.now() + timedelta(days=14)
 
     def _override(self, key, mode, reason="Covering bursar duties 14-28 Sept"):
