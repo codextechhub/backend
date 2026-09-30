@@ -739,7 +739,7 @@ MUST SAY:
 - Needs Attention: unbranched tax lines block filing at a multi-branch school until
   the branch backfill runs.
 
-### D81. What a role means, a person's exceptions and who approves what need the caller's branch reach (ff23c757, d0c7f3ca, 2026-09-30)
+### D81. What a role means, a person's exceptions and who approves what need the caller's branch reach (ff23c757, d0c7f3ca, c17b0fff, 2026-09-30)
 MODULES: M04 roles and permissions, M07 workflow and approval engine, M12 staff
 management, MRD.
 The D66 configure rule, extended to the three areas it never reached. Refusals
@@ -772,9 +772,19 @@ whole-school. Stage overrides: judged by the branch of the stage's template.
 Delegations: PATCH, DELETE and revoke are the delegator's, or a template-update
 administrator's for somebody whose approvals stay in their branches; the
 delegate can no longer edit one.
+Screens read the answers rather than re-deriving reach (reach only; keys and
+the self-ban stay the screen's): `can_edit` on every role in GET roles/, on
+role detail and on `data.role` of GET/PATCH roles/{key}/field-access/;
+`can_change_exceptions` at the top of the GET users/{id}/field-access-overrides/
+and .../permission-overrides/ envelopes (as_at too) and beside `overrides` in
+GET /v1/i/me/staff/{id}/roles/. A branch-bound caller cannot read the
+exceptions of somebody posted only to other branches: 404 on every verb of
+those routes, and the staff roles payload leaves `overrides` out; a person
+posted at their branch or school-wide stays readable.
 MUST SAY: M04 the role-reach, role-definition and exception rules beside the
 grant rule, each route's 403 and sentence, and that a branch-bound
-administrator reads school-wide roles and their field access read-only. M07 the
+administrator reads school-wide roles and their field access read-only, the
+`can_edit` and `can_change_exceptions` fields, and the exception read rule. M07 the
 publish `branch` field and its default, the group reach rule, the per-route
 403s, and the delegation owner rule. M12 that a staff profile's exceptions tab
 is read-only for a person reaching past the reader's branches. MRD: a
