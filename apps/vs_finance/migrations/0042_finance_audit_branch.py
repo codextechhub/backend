@@ -92,7 +92,7 @@ def block_every_update(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("vs_finance", "0039_payroll_journal_per_branch"),
+        ("vs_finance", "0041_ar_guards_data"),
         ("vs_tenants", "0010_remove_branch__type"),
     ]
 
