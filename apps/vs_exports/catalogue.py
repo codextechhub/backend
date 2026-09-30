@@ -43,7 +43,7 @@ from decimal import Decimal
 from django.db.models import Q
 
 from vs_config.clock import tenant_today
-from vs_config.display import format_date, format_datetime
+from vs_config.display import format_date, format_datetime, format_time
 
 from .constants import DatasetScope, ExportFormat, ValuesMode
 
@@ -56,6 +56,7 @@ from .constants import DatasetScope, ExportFormat, ValuesMode
 KIND_TEXT = "text"
 KIND_DATE = "date"
 KIND_DATETIME = "datetime"
+KIND_TIME = "time"         # a wall time with no date: a bell, an exam slot
 KIND_MONEY = "money"       # stored in kobo (integer), like the rest of the platform
 KIND_NUMBER = "number"
 KIND_CHOICE = "choice"     # stored as a code, displayed as its label
@@ -73,8 +74,9 @@ def render_value(kind: str, value, mode: str, *, choices: dict | None = None, te
     A people-mode date is written in *tenant*'s date format, and a people-mode
     date and time on its clock, in its zone (:mod:`vs_config.display`): a file is
     the whole school's, so it reads the school's zone rather than any one
-    branch's. ``system`` mode never varies with the school: an importer is
-    written once, against ISO dates and UTC times.
+    branch's. A wall time is already the school's and is only reworded for its
+    clock ("8:00 am" or "08:00"). ``system`` mode never varies with the school:
+    an importer is written once, against ISO dates, UTC times and ``HH:MM:SS``.
     """
     people = mode == ValuesMode.PEOPLE
     if value is None or value == "":
@@ -91,6 +93,11 @@ def render_value(kind: str, value, mode: str, *, choices: dict | None = None, te
                 format_datetime(value, tenant) if people
                 else value.strftime("%Y-%m-%dT%H:%M:%S")
             )
+        return str(value)
+
+    if kind == KIND_TIME:
+        if isinstance(value, datetime.time):
+            return format_time(value, tenant) if people else value.strftime("%H:%M:%S")
         return str(value)
 
     if kind == KIND_MONEY:

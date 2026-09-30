@@ -33,6 +33,7 @@ from vs_exports.catalogue import (
     KIND_DATETIME,
     KIND_NUMBER,
     KIND_TEXT,
+    KIND_TIME,
     Dataset,
     DatasetScope,
     Field,
@@ -191,8 +192,8 @@ def register_datasets():
         fields=(
             Field("label", "Period", "Period", KIND_TEXT, locked=True),
             Field("order_index", "Order", "Period", KIND_NUMBER),
-            Field("start_time", "Starts", "Period", KIND_TEXT),
-            Field("end_time", "Ends", "Period", KIND_TEXT),
+            Field("start_time", "Starts", "Period", KIND_TIME),
+            Field("end_time", "Ends", "Period", KIND_TIME),
             Field("period_type", "Type", "Period", KIND_CHOICE, choices=_PERIOD_TYPES),
             Field("day_of_week", "Applies on", "Period", KIND_NUMBER),
             _SCOPE_FIELD,
@@ -227,7 +228,7 @@ def register_datasets():
             Field("school_class__name", "Class", "Lesson", KIND_TEXT, locked=True),
             Field("day_of_week", "Day", "Lesson", KIND_NUMBER),
             Field("period__label", "Period", "Lesson", KIND_TEXT),
-            Field("period__start_time", "Starts", "Lesson", KIND_TEXT),
+            Field("period__start_time", "Starts", "Lesson", KIND_TIME),
             Field("subject__name", "Subject", "Lesson", KIND_TEXT),
             # Display names, never the address: an exported timetable is the
             # version that gets emailed around.
@@ -266,8 +267,8 @@ def register_datasets():
             Field("sitting", "Sitting", "Paper", KIND_CHOICE, choices=_SITTINGS),
             Field("school_class__name", "Class", "Paper", KIND_TEXT),
             Field("subject__name", "Subject", "Paper", KIND_TEXT),
-            Field("start_time", "Starts", "Paper", KIND_TEXT),
-            Field("end_time", "Ends", "Paper", KIND_TEXT),
+            Field("start_time", "Starts", "Paper", KIND_TIME),
+            Field("end_time", "Ends", "Paper", KIND_TIME),
             Field("room__name", "Room", "Place", KIND_TEXT),
             Field("room__branch__name", "Branch", "Place", KIND_TEXT),
             Field("invigilator__first_name", "Invigilator first name", "People", KIND_TEXT),

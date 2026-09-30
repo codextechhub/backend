@@ -17,7 +17,7 @@ from vs_config.models import ConfigurationDefinition
 from vs_config.services.resolution import set_value
 from vs_tenants.models import Tenant
 
-from .catalogue import KIND_DATE, KIND_DATETIME, render_value
+from .catalogue import KIND_DATE, KIND_DATETIME, KIND_TIME, render_value
 from .constants import DownloadRefusal, Recurrence, ValuesMode
 from .models import ExportDefinition, ExportFile, ExportRun, ExportSchedule
 from .scheduling import describe
@@ -59,6 +59,12 @@ class ExportDatesFollowTheSchoolTests(TestCase):
             render_value(KIND_DATETIME, LATE_EVENING_UTC, ValuesMode.SYSTEM, tenant=self.school),
             "2026-03-14T23:30:00",
         )
+
+    def test_a_wall_time_is_on_the_schools_clock_for_people_only(self):
+        bell = datetime.time(8, 5)
+        self.assertEqual(render_value(KIND_TIME, bell, ValuesMode.PEOPLE, tenant=self.school), "08:05")
+        self.assertEqual(render_value(KIND_TIME, bell, ValuesMode.SYSTEM, tenant=self.school), "08:05:00")
+        self.assertEqual(render_value(KIND_TIME, bell, ValuesMode.PEOPLE, tenant=None), "8:05 am")
 
     def test_a_download_is_named_for_the_day_at_the_school(self):
         definition = ExportDefinition(tenant=self.school, file_name_pattern="invoices-{date}")
