@@ -418,3 +418,74 @@ class OneBranchSchoolBankTests(_FinanceBranchFixture):
 
         self.assertNotIn("No bank account", str(response.data))
         self.assertNotIn("Pay it from", str(response.data))
+
+
+class StatementImportBatchesFollowTheirAccountTests(BankAccountNamedInAPostingTests):
+    """A bank-statement import is read by its bank account's branch, exclusively.
+
+    Ikeja's bursar sees the statement imported into Ikeja's account, and neither
+    Lekki's nor the one imported into the GTBank account nobody has given a
+    branch. A student roll uploaded for the whole school stays visible to her: an
+    ordinary import with no branch is still the school's.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from vs_import_data.models import ImportBatch
+
+        self.uploader = self.user_for(self.tenant, "uploader@corona.test")
+        self.batches = {
+            name: self.statement_batch(bank) for name, bank in (
+                ("ikeja", self.ikeja_bank), ("lekki", self.lekki_bank), ("shared", self.shared_bank),
+            )
+        }
+        self.roll = ImportBatch.all_objects.create(
+            tenant=self.tenant, branch=None, uploaded_by=self.uploader,
+            dataset_type="students", file="imports/roll.csv",
+        )
+
+    def statement_batch(self, bank):
+        from vs_finance.models import BankStatementImportContext
+        from vs_import_data.models import ImportBatch
+
+        batch = ImportBatch.all_objects.create(
+            tenant=self.tenant, branch=bank.branch, uploaded_by=self.uploader,
+            dataset_type="bank_statements", file=f"imports/{bank.pk}.csv",
+        )
+        BankStatementImportContext.objects.create(
+            import_batch=batch, bank_account=bank, statement_date=JAN,
+            opening_balance=0, closing_balance=0, source_file_hash=f"{bank.pk:064d}",
+        )
+        return batch
+
+    def visible(self, user):
+        from types import SimpleNamespace
+
+        from vs_import_data.models import ImportBatch
+        from vs_import_data.scoping import batch_branch_q
+
+        request = SimpleNamespace(user=user)
+        return set(ImportBatch.all_objects.filter(
+            batch_branch_q(request), tenant=self.tenant).values_list("pk", flat=True))
+
+    def test_a_branch_bursar_reads_only_her_accounts_statement_imports(self):
+        ikeja = self.grant(self.user_for(self.tenant, "imp-ikeja@corona.test"),
+                           "finance.bankaccount.import", tenant=self.tenant,
+                           role_key="imp-ikeja", branch=self.ikeja)
+
+        self.assertEqual(self.visible(ikeja), {self.batches["ikeja"].pk, self.roll.pk})
+
+    def test_a_statement_follows_its_account_once_the_account_is_placed(self):
+        ikeja = self.grant(self.user_for(self.tenant, "imp-placed@corona.test"),
+                           "finance.bankaccount.import", tenant=self.tenant,
+                           role_key="imp-placed", branch=self.ikeja)
+        BankAccount.objects.filter(pk=self.shared_bank.pk).update(branch=self.ikeja)
+
+        self.assertIn(self.batches["shared"].pk, self.visible(ikeja))
+
+    def test_a_whole_school_bursar_reads_every_import(self):
+        head = self.grant(self.user_for(self.tenant, "imp-head@corona.test"),
+                          "finance.bankaccount.import", tenant=self.tenant, role_key="imp-head")
+
+        self.assertEqual(
+            self.visible(head), {b.pk for b in self.batches.values()} | {self.roll.pk})

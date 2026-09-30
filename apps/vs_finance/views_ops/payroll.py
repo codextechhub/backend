@@ -11,7 +11,7 @@ from core.response import success_response
 from rest_framework.exceptions import ValidationError
 
 from django.db.models import Count
-from vs_rbac.scoping import branch_q, transaction_branch_q
+from vs_rbac.scoping import transaction_branch_q
 from vs_rbac.scoping import caller_may_use_branch
 from vs_rbac.scoping import resolve_branch as _resolve_branch
 
@@ -42,37 +42,13 @@ from .base import (
     _resolve_bank_account,
     _resolve_cost_center,
     _resolve_currency,
+    _transaction_branch,
 )
 from vs_rbac.scoping import only_branch_id, transaction_branch_scope
 
 # --------------------------------------------------------------------------- #
 # Payroll                                                                     #
 # --------------------------------------------------------------------------- #
-
-
-# Support the branch rule workflow.
-def _branch_rule(entity) -> dict:
-    """How :func:`_raised_branch` should treat a caller entitled to several branches.
-
-    The one thing the payroll screens read the school's ``payroll.scope`` setting
-    for, and the reason it is a helper rather than a literal at each call site: the
-    two payroll write paths must not be able to drift apart on it.
-
-    Under **CENTRAL** the answer is ``shared_when_ambiguous=True``, which is
-    precisely what payroll did before per-branch runs existed. A run covers
-    everybody the school employs, so a payroll officer covering Ikeja and Lekki who
-    names no site meant "the school", and asking her to pick would be asking her to
-    narrow a run that is not narrowed. Nothing about a central school's payroll
-    changes.
-
-    Under **PER_BRANCH** the answer is the ordinary finance rule: ask her. The two
-    runs pay different people, only she knows which one she is raising, and
-    guessing "the school" would raise a run that pays Yaba's staff as well - which
-    is the one thing she is not entitled to do.
-    """
-    from ..payroll import is_per_branch
-
-    return {"shared_when_ambiguous": not is_per_branch(entity)}
 
 
 UNASSIGNED_REFS = ("unassigned", "none", "null")
@@ -389,22 +365,26 @@ class PayrollRunCancelView(_PayrollActionBase):
 # Employee salary roster                                                      #
 # --------------------------------------------------------------------------- #
 
+def _salary_rows(request, entity):
+    """The salary rows the caller may read: her own branches' staff only.
+
+    A salary follows its employee's branch, read exclusively like every money
+    record (:func:`vs_rbac.scoping.transaction_branch_q`). Mrs Bello keeps Lekki's
+    payroll, so she sees Lekki's teachers' pay and never an Ikeja teacher's, nor
+    the pay of somebody nobody has given a branch yet: that row could be anyone's,
+    and placing it is the whole-school bursar's job, who sees every row.
+    """
+    return EmployeeSalary.objects.filter(transaction_branch_q(request), entity=entity)
+
+
 # Support the resolve salary workflow.
 def _resolve_salary(request, entity, pk):
     """One roster row the caller is entitled to, or 404.
 
-    Narrowed rather than merely entity-scoped. Without this an Ikeja payroll
-    officer could rewrite a Lekki teacher's gross pay by guessing a primary key,
-    which is the write-side half of the hole ``654e7af`` closed on the read side -
-    and pay is the most sensitive column finance has.
-
-    Inclusive, like every other finance read: an unassigned row is visible to
-    everybody, because somebody has to be able to assign it, and until it is
-    assigned no branch owns it.
+    Narrowed rather than merely entity-scoped, and exclusively, like the list:
+    the same rule as :func:`_salary_rows`, for a read and a write alike.
     """
-    sal = EmployeeSalary.objects.filter(
-        branch_q(request, include_shared=True), entity=entity, pk=pk,
-    ).first()
+    sal = _salary_rows(request, entity).filter(pk=pk).first()
     if sal is None:
         raise NotFound("Employee salary not found for this entity.")
     return sal
@@ -457,6 +437,14 @@ def _resolve_structure(entity, raw, *, required=False):
 class EmployeeSalaryListCreateView(_FinanceBase):
     """GET (list) / POST (add) employee salaries - the roster a run is generated from.
 
+    Rows are read by the employee's branch, exclusively (:func:`_salary_rows`).
+    A new row names its branch as a transaction does
+    (:func:`vs_rbac.scoping.raised_transaction_branch`): a pinned officer's hire
+    is hers, a whole-school bursar at a school with several branches names one,
+    and a school with one branch files it there without asking. A row with no
+    branch at a school with several stops the payroll run it is on from posting,
+    so none is created.
+
     docstring-name: Employee salaries
     """
 
@@ -469,16 +457,8 @@ class EmployeeSalaryListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        # ``include_shared=True``: reading the roster is inclusive even though
-        # *running* it is exclusive, and the split is deliberate. Somebody has to
-        # be able to see an unassigned row in order to assign it, and while it is
-        # unassigned no branch owns it; but a branch run must not pay it, because
-        # every branch's run would. Seeing a person costs nothing. Paying them
-        # three times costs three salaries.
         qs = (
-            EmployeeSalary.objects.filter(
-                branch_q(request, include_shared=True), entity=entity,
-            )
+            _salary_rows(request, entity)
             .select_related("cost_center", "structure", "branch")
             .prefetch_related("structure__components")
         )
@@ -510,13 +490,8 @@ class EmployeeSalaryListCreateView(_FinanceBase):
             raise ValidationError({"name": "An employee name is required."})
         sal = EmployeeSalary.objects.create(
             entity=entity, name=name, employee=employee,
-            # A pinned officer's new hire is hers; an unpinned bursar's is
-            # unassigned until somebody says otherwise, which is what every row on
-            # every roster is today. ``_branch_rule`` decides only the officer who
-            # covers two branches and names neither: asked under PER_BRANCH,
-            # because a row filed unassigned there is a person no run pays, and
-            # left alone under CENTRAL, where nothing turns on the answer.
-            branch=_raised_branch(request, entity, body, **_branch_rule(entity)),
+            # Every new hire names a branch; see the view's docstring.
+            branch=_transaction_branch(request, entity, body),
             structure=_resolve_structure(entity, body.get("structure")),
             gross_amount=_money(body.get("gross_amount", 0), "gross_amount"),
             paye_amount=_money(body.get("paye_amount", 0), "paye_amount"),
@@ -532,7 +507,15 @@ class EmployeeSalaryListCreateView(_FinanceBase):
 
 # Group endpoint behavior for Employee Salary Detail View.
 class EmployeeSalaryDetailView(_FinanceBase):
-    """PATCH / DELETE one employee salary. docstring-name: Employee salaries"""
+    """PATCH / DELETE one employee salary.
+
+    ``branch`` places or moves a person under the same rule a new row is filed
+    by: a pinned officer's own branch, or any of the school's for a whole-school
+    bursar, and a 403 for anybody else's. Nobody can move a person back to no
+    branch at a school with several.
+
+    docstring-name: Employee salaries
+    """
 
     @property
     # Handle the rbac permission workflow.
@@ -563,14 +546,8 @@ class EmployeeSalaryDetailView(_FinanceBase):
         if "name" in body:
             sal.name = str(body["name"]).strip()
         if "branch" in body:
-            # Assigning people to branches is the work a school does *before* it
-            # switches to per-branch payroll, so this has to be editable rather
-            # than write-once. Reusing ``_raised_branch`` keeps it under the same
-            # rule as every other branch a caller names: her own branch or, if she
-            # is unpinned, any of the school's, and a 403 for anyone else's. A
-            # pinned officer cannot push somebody back to unassigned, because
-            # ``_raised_branch`` reads a blank from her as "mine".
-            sal.branch = _raised_branch(request, entity, body, **_branch_rule(entity))
+            # Placing and moving people is editable; see the view's docstring.
+            sal.branch = _transaction_branch(request, entity, body)
         if "structure" in body:
             sal.structure = _resolve_structure(entity, body.get("structure"))
         for field in ("gross_amount", "paye_amount", "pension_amount"):

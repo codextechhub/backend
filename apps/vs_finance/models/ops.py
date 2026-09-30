@@ -1295,17 +1295,18 @@ class EmployeeSalary(TimeStampedModel):
     posts on its own; :func:`vs_finance.payroll.generate_run_from_roster` copies the
     active rows into a draft :class:`PayrollRun`.
 
-    ``branch`` is what lets a school run payroll **per branch** instead of centrally.
-    It is the roster row, not the run, that decides who a branch run covers, and a
-    branch run reads it **exclusively** - the one place in finance that does. See
-    :func:`vs_finance.payroll.roster_for` for the argument.
+    ``branch`` is the branch the employee works in. It decides who a branch run
+    covers (:func:`vs_finance.payroll.roster_for`), which branch's journal a
+    central run books the pay to, and who may read the row: the roster is read
+    exclusively, like every money record, so a branch officer sees her own
+    branch's staff only.
 
-    Null does **not** mean "shared across the school" here, unlike everywhere else
-    in this codebase. Head office is a branch in this product, so there is no such
-    person as an employee who belongs to no site: a null branch is an *unassigned*
-    row, a data gap rather than a meaning. It stays null for every school running
-    payroll centrally, which is all of them until one deliberately opts in, and
-    opting in is refused while any active row is still unassigned.
+    Null does **not** mean "shared across the school". Head office is a branch
+    in this product, so there is no such person as an employee who belongs to no
+    site: a null branch is an *unassigned* row, a data gap rather than a meaning.
+    New rows always name a branch; an unassigned one stops a run it is on from
+    posting at a school with several branches, and blocks the switch to
+    per-branch payroll.
     """
 
     entity = models.ForeignKey(

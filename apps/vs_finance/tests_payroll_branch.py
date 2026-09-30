@@ -192,7 +192,7 @@ class CentralPayrollIsUnchangedTests(_PayrollFixture):
         self.assertEqual(second.status_code, 201, second.data)
         self.assertEqual(PayrollRun.objects.filter(entity=self.books).count(), 2)
 
-    def test_the_roster_screen_still_shows_everybody_to_a_pinned_officer(self):
+    def test_the_roster_screen_shows_a_pinned_officer_nobody_unassigned(self):
         bello = self.officer(
             self.tenant, "central-roster@fin.test", "c-roster", branches=[self.ikeja],
         )
@@ -202,12 +202,9 @@ class CentralPayrollIsUnchangedTests(_PayrollFixture):
         )
 
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(
-            [row["name"] for row in response.data["data"]],
-            ["Ada Obi", "Bola Lawal", "Chidi Eze"],
-        )
+        self.assertEqual(response.data["data"], [])
 
-    def test_adding_an_employee_still_needs_no_branch(self):
+    def test_adding_an_employee_names_a_branch(self):
         hq = self.officer(self.tenant, "central-add@fin.test", "c-add")
 
         response = hq.post(
@@ -215,9 +212,30 @@ class CentralPayrollIsUnchangedTests(_PayrollFixture):
             {"name": "Dele Ade", "gross_amount": 40_000_00}, format="json",
         )
 
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertFalse(EmployeeSalary.objects.filter(entity=self.books, name="Dele Ade").exists())
+
+        named = hq.post(
+            f"/v1/finance/employee-salaries/?entity={self.books.code}",
+            {"name": "Dele Ade", "gross_amount": 40_000_00, "branch": self.yaba.pk}, format="json",
+        )
+        self.assertEqual(named.status_code, 201, named.data)
+        self.assertEqual(
+            EmployeeSalary.objects.get(entity=self.books, name="Dele Ade").branch_id, self.yaba.pk,
+        )
+
+    def test_a_single_branch_school_files_a_new_employee_without_asking(self):
+        solo = self.officer(self.solo_tenant, "central-solo-add@fin.test", "c-solo-add")
+
+        response = solo.post(
+            f"/v1/finance/employee-salaries/?entity={self.solo_books.code}",
+            {"name": "Solo Hire", "gross_amount": 40_000_00}, format="json",
+        )
+
         self.assertEqual(response.status_code, 201, response.data)
-        self.assertIsNone(
-            EmployeeSalary.objects.get(entity=self.books, name="Dele Ade").branch_id,
+        self.assertEqual(
+            EmployeeSalary.objects.get(entity=self.solo_books, name="Solo Hire").branch_id,
+            self.solo_main.pk,
         )
 
     def test_a_single_branch_school_runs_centrally_too(self):
@@ -672,16 +690,31 @@ class RosterScopingTests(_PayrollFixture):
             self.tenant, "rs-ikeja@fin.test", "rs-ikeja", branches=[self.ikeja],
         )
 
-    def test_a_pinned_officer_reads_her_own_rows_and_the_unassigned_ones(self):
-        """Inclusive on read, exclusive on pay - somebody has to assign that row."""
+    def test_a_pinned_officer_reads_her_own_rows_only(self):
+        """A salary follows its employee's branch; an unassigned one is not hers."""
         response = self.bello.get(
             f"/v1/finance/employee-salaries/?entity={self.books.code}",
         )
 
         self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual([row["name"] for row in response.data["data"]], ["Ikeja Teacher"])
+
+    def test_a_pinned_officer_cannot_reach_an_unassigned_row(self):
+        response = self.bello.patch(
+            f"/v1/finance/employee-salaries/{self.loose_row.pk}/"
+            f"?entity={self.books.code}",
+            {"gross_amount": 1}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 404, response.data)
+
+    def test_a_whole_school_officer_reads_every_row(self):
+        hq = self.officer(self.tenant, "rs-hq-all@fin.test", "rs-hq-all")
+        response = hq.get(f"/v1/finance/employee-salaries/?entity={self.books.code}")
+
         self.assertEqual(
             [row["name"] for row in response.data["data"]],
-            ["Ikeja Teacher", "Unassigned Person"],
+            ["Ikeja Teacher", "Lekki Teacher", "Unassigned Person"],
         )
 
     def test_a_pinned_officer_cannot_rewrite_another_branchs_pay(self):

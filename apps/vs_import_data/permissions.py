@@ -1,11 +1,9 @@
 from collections.abc import Iterable
 
 from vs_rbac.permissions import HasRBACPermission, has_permission
-# ``include_shared=True`` throughout: a batch with no branch was uploaded for
-# the school as a whole and stays reachable from every branch.
-from vs_rbac.scoping import branch_q
 
 from .constants import ImportPermission
+from .scoping import batch_branch_q
 
 #: ``dataset_type`` -> the owning module's own import key.
 #:
@@ -151,7 +149,7 @@ class HasImportBatchRBACPermission(HasRBACPermission):
         from .models import ImportBatch
 
         batch = ImportBatch.all_objects.filter(
-            branch_q(request, include_shared=True), pk=batch_id, tenant=tenant,
+            batch_branch_q(request), pk=batch_id, tenant=tenant,
         ).first()
         if batch is None:
             return False
@@ -168,7 +166,7 @@ class HasImportBatchRBACPermission(HasRBACPermission):
         # batch row alone does not prove which set of books it touches.
         if batch.dataset_type == "bank_statements":
             return ImportBatch.all_objects.filter(
-                branch_q(request, include_shared=True),
+                batch_branch_q(request),
                 pk=batch_id, tenant=tenant,
                 bank_statement_context__bank_account__entity__tenant=tenant,
             ).exists()
