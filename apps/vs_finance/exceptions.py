@@ -298,8 +298,8 @@ class PeriodCloseError(FinanceError):
 class SettlementBranchError(PostingError):
     """A document named for settlement belongs to another branch than the money settling it.
 
-    A receipt or credit note settles only documents of its own branch, or
-    school-wide documents when it is school-wide itself. A 400: the request named
+    A receipt or credit note settles only documents of its own branch
+    (:func:`vs_rbac.scoping.same_transaction_branch`). A 400: the request named
     the wrong document, and naming one of the settling document's own branch fixes it.
     """
 

@@ -547,20 +547,30 @@ def _require_note_branch_bills(note, bills) -> None:
 
     The reclassification that settles it is booked to the note's branch, so Ikeja's
     credit applied to a Lekki bill would clear Lekki's liability out of Ikeja's books.
+    Compared by :func:`vs_rbac.scoping.same_transaction_branch`, as a vendor
+    payment's advance is (:func:`vs_procurement.payables._require_own_branch_bills`):
+    at a school with one branch a bill not yet given a branch is that branch's, and
+    at a school with several an unbranched note or bill matches only another
+    unbranched one, never a branch's.
     """
+    from vs_rbac.scoping import same_transaction_branch
+
     for bill in bills:
-        if bill.branch_id == note.branch_id:
+        if same_transaction_branch(note.entity.tenant_id, note.branch_id, bill.branch_id):
             continue
         number = bill.document_number or "the selected bill"
+        held = (f"belongs to {bill.branch.name}" if bill.branch_id
+                else "has not been given a branch")
         if note.branch_id is None:
             raise SettlementBranchError(
-                f"This vendor credit is school-wide and bill {number} belongs to "
-                f"{bill.branch.name}. Apply it to a school-wide bill.",
+                f"This vendor credit has not been given a branch and bill {number} "
+                f"{held}, so it cannot settle it.",
             )
-        held = f"belongs to {bill.branch.name}" if bill.branch_id else "is school-wide"
+        name = note.branch.name
+        article = "an" if name[:1].upper() in "AEIOU" else "a"
         raise SettlementBranchError(
-            f"This vendor credit belongs to {note.branch.name} and bill {number} {held}. "
-            f"Apply it to a {note.branch.name} bill.",
+            f"This vendor credit belongs to {name} and bill {number} {held}. "
+            f"Apply it to {article} {name} bill.",
         )
 
 
@@ -602,9 +612,12 @@ def allocate_vendor_credit_note(note, *, allocations=None, actor_user=None, bill
         _require_note_branch_bills(note, [bill for bill, _ in allocations])
         plan = [(bill, int(amount)) for bill, amount in allocations]
     else:
+        from vs_rbac.scoping import transaction_branch_match_q
+
         candidates = VendorInvoice.objects.filter(
+            transaction_branch_match_q(note.entity.tenant_id, note.branch_id),
             entity_id=note.entity_id, vendor_id=note.vendor_id,
-            branch_id=note.branch_id, status=DocumentStatus.POSTED,
+            status=DocumentStatus.POSTED,
         ).exclude(payment_status=InvoicePaymentStatus.PAID)
         if bill_scope is not None:
             candidates = candidates.filter(bill_scope)
