@@ -644,8 +644,8 @@ class DepreciationAcrossAClosedYearTests(_YearFixture):
         message = caught.exception.message
         self.assertIn("11 depreciation charge(s) dated in FY2026 are not posted", message)
         self.assertIn("Generator", message)
-        self.assertIn("2026-02-01, 2026-03-01, 2026-04-01, 2026-05-01 and 7 more", message)
-        self.assertIn("Run depreciation up to 2026-12-31 first", message)
+        self.assertIn("1 Feb 2026, 1 Mar 2026, 1 Apr 2026, 1 May 2026 and 7 more", message)
+        self.assertIn("Run depreciation up to 31 Dec 2026 first", message)
         self.assertEqual(caught.exception.failures, ["depreciation_posted_for_year"])
         self.assertEqual(self.year().status, PeriodStatus.OPEN)
 

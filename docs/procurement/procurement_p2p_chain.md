@@ -35,12 +35,16 @@ API currently restricts physical counts to whole units (`views/receiving.py:65-7
 | `PurchaseOrderLine` | source requisition line, expense account, quantity/unit price, net/tax, service-owned received/invoiced quantities, cost center | Cascades with PO; account/source/cost center protected; PO and expense indexes (`models.py:963-1005`) |
 | `GoodsReceivedNote` | vendor, optional PO, received date/by, reference/narration, accepted ex-tax `total_value`, journal, DRAFT/POSTED status | Entity-protected document; vendor/PO/journal protected; entity/status, vendor, entity/date indexes (`models.py:1030-1064`) |
 | `GoodsReceivedNoteLine` | optional PO line/stock item, expense account, accepted/rejected/expected quantities, unit price/value, cost center | Cascades with GRN; source/account/stock/cost-center references protected (`models.py:1075-1119`) |
-| `VendorInvoice` | vendor, optional PO, invoice/due dates, vendor reference, subtotal/tax/total, amount paid, match/payment/approval states, journal | Entity-protected document; vendor/PO/journal protected; non-blank vendor reference is case-insensitively unique per entity/vendor in the database; entity/status, entity/payment state, vendor, entity/date indexes (`models.py:1129-1198`) |
+| `VendorInvoice` | vendor, optional PO, invoice/due dates, vendor reference, subtotal/tax/total, amount paid, amount credited, `is_opening`, match/payment/approval states, journal | Entity-protected document; vendor/PO/journal protected; non-blank vendor reference is case-insensitively unique per entity/vendor in the database; entity/status, entity/payment state, vendor, entity/date indexes (`models.py:1129-1198`) |
 | `VendorInvoiceLine` | optional PO/GRN line, expense/tax, quantity/unit price, net/tax, cost center | Cascades with invoice; source/account/tax/cost-center references protected (`models.py:1228-1270`) |
 | `VendorPayment` | vendor/date/method, approval state, gross/WHT/net/allocated kobo, payment account, WHT tax code, journal | Entity-protected document; database checks require positive gross and WHT/allocation within gross; entity/status, entity/approval, vendor, entity/date indexes (`models.py:1285-1354`) |
 | `VendorPaymentAllocation` | payment, vendor invoice, gross amount applied | Payment cascades; invoice protected; unique `(payment, vendor_invoice)` and non-negative amount (`models.py:1363-1398`) |
 | `VendorInvoiceAttachment` | file, original_name, content_type, size, caption, uploaded_by | Evidence only, no GL effect. Cascades with its bill; uploader `SET_NULL`; indexed by invoice (`models.py`) |
 | `VendorPaymentAttachment` | same shape, parented on `VendorPayment` | Evidence only. Cascades with its payment; uploader `SET_NULL`; indexed by payment (`models.py`) |
+| `VendorCreditNote` | vendor, the one bill it credits, note date, vendor reference, reason, subtotal/tax/total, `allocated_amount`, workflow `approval_state`, journal | Carries its bill's vendor, currency and branch; `allocated_amount` stays within `total` by database check (`models.py`) |
+| `VendorCreditNoteLine` | the bill line it credits, quantity (zero for a value-only allowance), net, tax | Cascades with the note; bill line protected (`models.py`) |
+| `VendorCreditNoteAllocation` / `VendorCreditAllocationJournal` | a slice of a note applied to a bill with its effective date; the journal of each later application | Immutable settlement events, as for payments (`models.py`) |
+| `GoodsReturn` / `GoodsReturnLine` | the receipt it returns against, return date, reason, value; per receipt line the quantity and value sent back | Carries its receipt's vendor and branch; each posted return advances `GoodsReceivedNoteLine.returned_qty` (`models.py`) |
 
 PO, invoice, and payment approval are overlays owned by `vs_workflow`; ledger `status`
 remains independently authoritative (`models.py:918-922,1170-1178,1308-1316`). A posted
@@ -76,6 +80,17 @@ standard paginated `{pagination, data}` envelope (`views/base.py:281-298`).
 | `GET /vendor-invoices/<pk>/attachments/` | `procurement.vendor_invoice.view` | List the supplier's own bill files | - | `{attachments:[…]}` (`views/attachments.py`) |
 | `POST /vendor-invoices/<pk>/attachments/` | `procurement.vendor_invoice.attach` | Attach the supplier's invoice PDF/photo. Allowed in **any** document status, posted included | multipart `file`, `caption?` | `201` attachment row |
 | `DELETE /vendor-invoices/<pk>/attachments/<attachment_id>/` | `procurement.vendor_invoice.attach` | Remove one attachment | - | `{attachments:[…]}` |
+| `POST /vendor-invoices/<pk>/void/` | `procurement.vendor_invoice.reverse` | Void a posted bill nothing has been paid or credited against | `date?` | Voided (REVERSED) invoice; 409 when paid or credited |
+| `POST /vendor-invoices/opening/` | `procurement.vendor_invoice.import_opening` | Carry in the supplier bills unpaid when the books began, all or nothing | `bills[]`: `vendor`, `invoice_date`, `due_date?`, `vendor_reference?`, `amount`, `branch?`, `narration?` (at most 500) | `201` array of posted opening bills |
+| `POST /goods-receipts/<pk>/reverse/` | `procurement.goods_receipt.reverse` | Return goods on a posted receipt to the vendor, whole or by line | `reason`, `return_date?`, `lines[]?`: `grn_line`, `quantity` | `{goods_return, goods_receipt}` |
+| `GET /vendor-credit-notes/` | `procurement.vendor_credit_note.view` | List credit notes in reach | Query `status`, `vendor`, `vendor_invoice` | Paginated note headers |
+| `POST /vendor-credit-notes/` | `procurement.vendor_credit_note.create` | Draft a credit note against one posted bill | `vendor_invoice`, `note_date`, `reason`, `vendor_reference?`, and exactly one of `full: true`, `amount` (gross kobo) or `lines[]`: `invoice_line`, `quantity?`, `net_amount?` | `201` note with lines |
+| `GET /vendor-credit-notes/<pk>/` | `procurement.vendor_credit_note.view` | Read a note with its lines and applications | - | Note detail |
+| `PATCH /vendor-credit-notes/<pk>/` | `procurement.vendor_credit_note.update` | Edit an unsubmitted or rejected draft | `note_date?`, `reason?`, `vendor_reference?`, and optionally one credit instruction as on POST | Updated note |
+| `POST /vendor-credit-notes/<pk>/submit/` | `procurement.vendor_credit_note.submit` | Submit to the `procurement.vendor_credit_note` approval route | `confirm_without_approval?`, `reason?` | Workflow id/status, approval state, document |
+| `POST /vendor-credit-notes/<pk>/post/` | `procurement.vendor_credit_note.post` | Post an approved note | - | Posted note |
+| `POST /vendor-credit-notes/<pk>/allocate/` | `procurement.vendor_credit_note.allocate` | Apply leftover vendor credit to later bills of the note's branch | `allocations[]`: `vendor_invoice`, `amount`, or `auto_allocate: true` | Note with applications |
+| `POST /vendor-credit-notes/<pk>/void/` | `procurement.vendor_credit_note.reverse` | Void a posted note and every application of its credit | `date?` | Voided note |
 | `GET /vendor-payments/` | `procurement.vendor_payment.view` | List/search payment instructions | Query `status`, `approval_state`, `search` | Paginated payment headers with allocations (`views/vendor_payments.py:165-185`; `serializers.py:1071-1130`) |
 | `POST /vendor-payments/` | `procurement.vendor_payment.create` | Create a gated DRAFT allocation plan; server derives money | `vendor`, `bank_account`, `payment_date`, `method?`, `wht_amount?`, `wht_tax_code?`, `reference?`, `narration?`; `allocations[]`: `vendor_invoice`, `amount` | `201` payment detail + workflow/posting/activity overlays (`views/vendor_payments.py:187-214`) |
 | `GET /vendor-payments/eligible-invoices/` | `procurement.vendor_payment.view` | Return at most 100 posted open bills, oldest due first | Query `vendor?` | Array of invoice settlement snapshots (`views/vendor_payments.py:217-239`) |
@@ -102,14 +117,20 @@ DRAFT + NOT_SUBMITTED ─submit─▶ DRAFT + PENDING approval
        └─workflow withdraw───────┘└─workflow reject─▶ DRAFT + REJECTED approval
 
 Goods receipt:
-DRAFT ─post─▶ POSTED
+DRAFT ─post─▶ POSTED ─return (whole or by line)─▶ POSTED with returned_qty
 
 Vendor invoice:
 DRAFT ─match─▶ DRAFT + AUTO_MATCHED / PRICE_VARIANCE /
                        UNDER_RECEIVED / OVER_BILLED
       └─submit─▶ PENDING approval ─approve─▶ APPROVED overlay
                                              └─post─▶ POSTED
-POSTED settlement overlay: UNPAID ─allocation─▶ PARTIAL ─allocation─▶ PAID
+POSTED settlement overlay: UNPAID ─allocation or credit─▶ PARTIAL ─▶ PAID
+POSTED ─void (nothing paid or credited)─▶ REVERSED
+Opening bill: created and posted in one step (no match, no approval route)
+
+Vendor credit note:
+DRAFT ─submit─▶ PENDING approval ─approve─▶ APPROVED overlay ─post─▶ POSTED
+POSTED ─allocate─▶ POSTED (vendor credit applied) ─void─▶ REVERSED
 
 Vendor payment:
 DRAFT ─submit─▶ PENDING approval ─approve─▶ APPROVED overlay ─post─▶ POSTED
@@ -149,8 +170,14 @@ and invoice targets before checking approval and balances (`payables.py:355-442`
   basis`. Positive PPV is an unfavorable debit, negative PPV a favorable credit, to
   seeded expense account `5160 Purchase Price Variance`. Direct bills with neither
   source have no PPV (`payables.py:205-245`; `seed.py:54-57,98-112`).
-- Invoice balance: `balance_due = total − amount_paid`; payment state is UNPAID at zero,
-  PAID at `amount_paid >= total`, otherwise PARTIAL (`models.py:1193-1225`).
+- Invoice balance: `balance_due = total − amount_paid − amount_credited`; payment state
+  counts cash and credit alike: UNPAID at zero settled, PAID when
+  `amount_paid + amount_credited >= total`, otherwise PARTIAL (`models.py`).
+- Credit note lines: a quantity alone is valued at the bill line's unit price; the tax
+  credited is the bill line's own tax in proportion to the net credited
+  (`round_half_up(line.tax × net ÷ line.net)`), so a full credit reverses exactly the tax
+  booked. An `amount` credit is spread across the lines in proportion to what each has
+  left, then split into net and tax the same way (`corrections.py`).
 - Payment values: `gross = Σ requested allocation amounts`; `net = gross − WHT`;
   `unallocated = gross − allocated` (`views/vendor_payments.py:187-211`;
   `models.py:1356-1360`). Example: gross `1,075,000` − WHT `50,000` = bank outflow
@@ -236,6 +263,72 @@ invoice's `amount_paid`/payment state, and stores `allocated_amount`; allocation
 no second journal (`payables.py:355-500,503-595`). Reversal uses finance's reversing
 journal and subtracts historical allocations from invoice settlement totals while
 retaining the allocation rows as history (`payables.py:598-637`).
+
+### Corrections
+
+A posted bill or receipt is never edited; a further document undoes what was wrong, and
+each keeps the AP sub-ledger and the AP control moving together so the AP reconciliation
+at the close keeps passing (`corrections.py`).
+
+**Vendor credit note.** One posted bill, approved like the bill. Each credited line is
+undone the way the bill booked it:
+
+```text
+Dr vendor.payable_account             what the bill still owes (capped at balance due)
+Dr 1240 Vendor advances               the rest, when the bill is already paid
+    Cr 2150 GR/IR clearing            receipt/PO basis of units credited by quantity
+    Cr/Dr 5160 PPV                    net credited less that basis; all of a value-only credit
+    Cr line expense account           non-PO lines
+    Cr tax_code.paid_account          input tax reversed
+```
+
+A credit by quantity lowers the PO line's `invoiced_qty`. Credit left in 1240 belongs to
+the bill's branch and is applied to a later bill of that branch with
+`Dr AP, Cr 1240`, dated the later of the note and the bill. Voiding a note reverses its
+journal and every application, gives the bills back their balances and the PO its
+invoiced quantity; it is refused when the credited units have since been returned.
+
+**Bill void.** Only while nothing has been paid or credited against the bill. The journal
+is reversed, the PO's `invoiced_qty` goes back, draft bills on the same PO lines are
+re-matched, and the bill reads REVERSED. A paid or part-paid bill is corrected with a
+credit note.
+
+**Goods return.** A receipt is reversed by returning its goods, whole or by line, at the
+receipt's own price:
+
+```text
+Dr 2150 GR/IR clearing                returned value
+    Cr inventory or line expense      returned value
+```
+
+Stock leaves the store it arrived in at that cost, `received_qty` on the PO line and
+`returned_qty` on the receipt line move, and draft bills are re-matched. Only unbilled
+goods can go: a billed quantity is credited on the bill first. A receipt returned in full
+no longer counts as arrived, so its order can then be cancelled. GR/IR aging and its
+drill-downs read receipts net of returns and bills net of quantity credits.
+
+**Opening bill.** One per supplier bill still unpaid when the books began, dated when the
+supplier raised it so it ages as the original did:
+
+```text
+Dr retained earnings (RETAINED_EARNINGS mapping)   amount owed
+    Cr vendor.payable_account                       amount owed
+```
+
+It is flagged `is_opening`, has no match and no approval route, carries its branch, and
+is paid, credited, voided and reported like any bill. Its journal is dated on the invoice
+date when a period covers it, else on the first day of the books. It is refused when
+dated on or after the day the books went live (the first posted journal that is not an
+opening balance); before any such journal, any date is accepted and the audit row says
+the date was not checked. Spend analysis and vendor performance leave opening bills out
+and read every bill net of its posted credit notes.
+
+**Hand-journal lock.** AP, GR/IR, vendor advances, inventory, each vendor's payable
+account and each stock item's inventory account are kept by these documents. A direct
+entry or any journal with source `MANUAL` or `OPENING` naming one is refused with
+`CONTROL_ACCOUNT_LOCKED`, and the message names the document to use instead
+(`vs_finance/control_accounts.py`; procurement's accounts are registered by
+`control_accounts.py`).
 
 ## 7. Worked example
 
@@ -410,7 +503,10 @@ activity, but not raw audit metadata (`serializers.py:740-1130`;
 | `attachments.py` | Attachment add/remove/serialize for both documents, cap under row lock |
 | `core/uploads.py` | Shared first-line upload validation (extension, size, magic bytes) |
 | `purchasing.py` | PO creation/pricing/approval and GRN accounting/quantity effects |
-| `payables.py` | Invoice pricing/matching/posting and payment posting/allocation/reversal |
+| `payables.py` | Invoice pricing/matching/posting, payment posting/allocation/reversal, opening bills |
+| `corrections.py` | Vendor credit notes, bill voids and goods returns |
+| `views/corrections.py` | Credit note, void, receipt reversal and opening-bill import endpoints |
+| `control_accounts.py` | Vendor payable and inventory accounts contributed to the hand-journal lock |
 | `reports.py` | AP/GR/IR read models; GR/IR detail uses the invoice-posting clearing basis |
 | `approvals.py` / `workflow_handlers.py` | Threshold workflows and terminal document effects |
 | `serializers.py` | Public P2P response shapes and display-state overlays |
@@ -437,6 +533,10 @@ plans, partial settlement and held vendors; AP reconciliation; and the full PR-t
 chain (`tests.py:830-2072,2997-3056`). Purchase-order console and workflow tests cover response
 data, filters/KPIs, permission gates, entity isolation, workflow routing, and terminal
 approval effects (`tests.py:5049-5616`).
+
+Corrections are covered in `tests_ap_corrections.py`, opening bills and spend net of
+credit notes in `tests_opening_bills.py`, and the hand-journal lock in
+`vs_finance/tests_ledger_lock.py`.
 
 The remaining open §8 implementation item is stock-item receipt input, intentionally
 deferred to the inventory slice. Empty-list envelope assertions exist broadly in the

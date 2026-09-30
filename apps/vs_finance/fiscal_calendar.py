@@ -29,6 +29,7 @@ from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
 from vs_config.clock import tenant_today, tenant_zone
+from vs_config.display import format_date
 
 from .constants import FinanceAuditAction
 
@@ -86,24 +87,28 @@ def _refuse_gaps(entity, fiscal_year) -> None:
     from .models import FiscalYear
 
     others = FiscalYear.objects.filter(entity=entity).exclude(pk=fiscal_year.pk)
+
+    def day(value):
+        return format_date(value, entity.tenant)
+
     previous = others.filter(end_date__lt=fiscal_year.start_date).order_by("-end_date").first()
     if previous is not None and previous.end_date + _ONE_DAY != fiscal_year.start_date:
         raise ValidationError({
             "fiscal_calendar": (
-                f"FY{fiscal_year.year} would start on {fiscal_year.start_date}, leaving "
-                f"{previous.end_date + _ONE_DAY} to {fiscal_year.start_date - _ONE_DAY} "
-                f"uncovered after FY{previous.year} ends on {previous.end_date}. Nothing "
+                f"FY{fiscal_year.year} would start on {day(fiscal_year.start_date)}, leaving "
+                f"{day(previous.end_date + _ONE_DAY)} to {day(fiscal_year.start_date - _ONE_DAY)} "
+                f"uncovered after FY{previous.year} ends on {day(previous.end_date)}. Nothing "
                 f"could be posted in that stretch. Start the year on "
-                f"{previous.end_date + _ONE_DAY}."
+                f"{day(previous.end_date + _ONE_DAY)}."
             ),
         })
     following = others.filter(start_date__gt=fiscal_year.end_date).order_by("start_date").first()
     if following is not None and fiscal_year.end_date + _ONE_DAY != following.start_date:
         raise ValidationError({
             "fiscal_calendar": (
-                f"FY{fiscal_year.year} would end on {fiscal_year.end_date}, leaving "
-                f"{fiscal_year.end_date + _ONE_DAY} to {following.start_date - _ONE_DAY} "
-                f"uncovered before FY{following.year} starts on {following.start_date}. "
+                f"FY{fiscal_year.year} would end on {day(fiscal_year.end_date)}, leaving "
+                f"{day(fiscal_year.end_date + _ONE_DAY)} to {day(following.start_date - _ONE_DAY)} "
+                f"uncovered before FY{following.year} starts on {day(following.start_date)}. "
                 f"Nothing could be posted in that stretch."
             ),
         })
@@ -157,7 +162,8 @@ def open_fiscal_year(entity, *, year, start_month, start_day, frequency,
         raise ValidationError({
             "fiscal_calendar": (
                 f"FY{year} overlaps FY{overlap.year} "
-                f"({overlap.start_date} to {overlap.end_date})."
+                f"({format_date(overlap.start_date, entity.tenant)} to "
+                f"{format_date(overlap.end_date, entity.tenant)})."
             ),
         })
     _refuse_gaps(entity, fiscal_year)
@@ -169,7 +175,8 @@ def open_fiscal_year(entity, *, year, start_month, start_day, frequency,
         target=fiscal_year,
         target_type="FiscalYear",
         message=(
-            f"Opened FY{year} ({fiscal_year.start_date} to {fiscal_year.end_date})"
+            f"Opened FY{year} ({format_date(fiscal_year.start_date, entity.tenant)} to "
+            f"{format_date(fiscal_year.end_date, entity.tenant)})"
             f"{' automatically' if automatic else ''}."
         ),
         after={
@@ -313,8 +320,8 @@ def _warning_due(entity, runway, *, today) -> bool:
     return (today - last_day).days >= interval
 
 
-def _situation(runway) -> str:
-    """The sentence that says what is wrong with the calendar."""
+def _situation(runway, tenant) -> str:
+    """The sentence that says what is wrong with the calendar, in *tenant*'s date format."""
     breaks = runway["first_uncovered_date"]
     if runway["calendar_end"] is None:
         return "No fiscal year has been opened, so nothing can be posted."
@@ -325,20 +332,20 @@ def _situation(runway) -> str:
         )
         if gap is None:  # Today falls before the first period.
             return (
-                f"No fiscal period covers {breaks.isoformat()}, so nothing dated "
+                f"No fiscal period covers {format_date(breaks, tenant)}, so nothing dated "
                 f"today can be posted."
             )
         return (
-            f"No fiscal period covers {breaks.isoformat()} to {gap['end'].isoformat()}, "
-            f"so nothing dated in that stretch can be posted."
+            f"No fiscal period covers {format_date(breaks, tenant)} to "
+            f"{format_date(gap['end'], tenant)}, so nothing dated in that stretch can be posted."
         )
     if runway["days_remaining"] is not None and runway["days_remaining"] < 0:
         return (
-            f"The fiscal calendar ended on {runway['calendar_end'].isoformat()}, so "
+            f"The fiscal calendar ended on {format_date(runway['calendar_end'], tenant)}, so "
             f"nothing dated after it can be posted."
         )
     return (
-        f"The fiscal calendar ends on {runway['calendar_end'].isoformat()}, and "
+        f"The fiscal calendar ends on {format_date(runway['calendar_end'], tenant)}, and "
         f"nothing dated after it can be posted until the next year is opened."
     )
 
@@ -417,12 +424,10 @@ def _warn(entity, runway, *, settings, failure, today) -> bool:
             context={
                 "entity_name": entity.name,
                 "entity_code": entity.code,
-                "first_uncovered_date": runway["first_uncovered_date"].isoformat(),
-                "calendar_end": (
-                    runway["calendar_end"].isoformat() if runway["calendar_end"] else ""
-                ),
+                "first_uncovered_date": format_date(runway["first_uncovered_date"], entity.tenant),
+                "calendar_end": format_date(runway["calendar_end"], entity.tenant),
                 "days_remaining": days_remaining if days_remaining is not None else "",
-                "situation": _situation(runway),
+                "situation": _situation(runway, entity.tenant),
                 "action": _action(runway, settings=settings, failure=failure),
             },
             recipients=recipients,
@@ -440,7 +445,7 @@ def _warn(entity, runway, *, settings, failure, today) -> bool:
         target_id=str(entity.pk),
         message=(
             f"Warned {len(recipients)} finance user(s) that postings stop on "
-            f"{runway['first_uncovered_date'].isoformat()}."
+            f"{format_date(runway['first_uncovered_date'], entity.tenant)}."
         ),
         first_uncovered_date=runway["first_uncovered_date"].isoformat(),
         days_remaining=days_remaining,

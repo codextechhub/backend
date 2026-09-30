@@ -234,13 +234,35 @@ class TenantRoleGroupAttachmentSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class TenantRoleTemplateListSerializer(serializers.ModelSerializer):
+class _RoleCanEditMixin:
+    """``can_edit``: whether the reader's branch reach lets them change this role.
+
+    The rule every role write enforces (:func:`vs_rbac.grant_reach.caller_may_define`):
+    a school-wide role is a whole-school reader's to change, a branch role a
+    reader's who covers its branches. It says nothing about permission keys,
+    which a screen already checks, so a reader holding no update key may still
+    see ``true``.
+    """
+
+    def get_can_edit(self, obj) -> bool:
+        from ..grant_reach import caller_may_define
+
+        request = self.context.get("request")
+        caller = getattr(request, "user", None)
+        if caller is None or not getattr(caller, "is_authenticated", False):
+            return False
+        tenant = self.context.get("tenant") or obj.tenant
+        return caller_may_define(caller, tenant, obj)
+
+
+class TenantRoleTemplateListSerializer(_RoleCanEditMixin, serializers.ModelSerializer):
     """Lightweight serializer for role list screens."""
 
     tenant = serializers.SlugRelatedField(slug_field="slug", read_only=True)
     assigned_users_count = serializers.IntegerField(read_only=True)
     permissions_count = serializers.IntegerField(read_only=True)
     branch_ids = serializers.ListField(child=serializers.IntegerField(), read_only=True)
+    can_edit = serializers.SerializerMethodField()
 
     class Meta:
         model = TenantRoleTemplate
@@ -257,6 +279,7 @@ class TenantRoleTemplateListSerializer(serializers.ModelSerializer):
             "version",
             "assigned_users_count",
             "permissions_count",
+            "can_edit",
             "created_by",
             "created_at",
             "updated_at",
@@ -265,6 +288,7 @@ class TenantRoleTemplateListSerializer(serializers.ModelSerializer):
 
 
 class TenantRoleTemplateDetailSerializer(
+    _RoleCanEditMixin,
     TenantScopedSerializerMixin,
     PermissionKeyListValidationMixin,
     serializers.ModelSerializer,
@@ -306,6 +330,7 @@ class TenantRoleTemplateDetailSerializer(
     assigned_users_count = serializers.SerializerMethodField()
     permissions_count = serializers.SerializerMethodField()
     has_assignment_history = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
 
     #: Whether the reader holds this role themselves, so a screen that changes
     #: it knows to refresh the reader's own access afterwards. Computed here
@@ -362,6 +387,7 @@ class TenantRoleTemplateDetailSerializer(
             "assigned_users_count",
             "permissions_count",
             "has_assignment_history",
+            "can_edit",
             "created_at",
             "updated_at",
         ]
@@ -373,6 +399,7 @@ class TenantRoleTemplateDetailSerializer(
             "assigned_users_count",
             "permissions_count",
             "has_assignment_history",
+            "can_edit",
             "is_system_role",
             "version",
             "created_by",
@@ -450,6 +477,7 @@ class TenantRoleTemplateDetailSerializer(
         if "branch" in attrs and "branch_ids" not in attrs:
             branch = attrs.pop("branch")
             attrs["branch_ids"] = [branch.pk] if branch is not None else []
+        self._reject_outside_reach(attrs, tenant)
         name = attrs.get("name") or getattr(self.instance, "name", None)
         if name:
             qs = TenantRoleTemplate.objects.filter(tenant=tenant, name__iexact=name)
@@ -484,6 +512,27 @@ class TenantRoleTemplateDetailSerializer(
                 })
             attrs["reason"] = reason
         return attrs
+
+    def _reject_outside_reach(self, attrs, tenant):
+        """Refuse a role change that binds branches the caller does not cover (403).
+
+        Judged twice on an edit: the role as it stands, because every holder
+        of it is affected, and the branch set it is being given, so a role
+        cannot be widened past the caller's branches either. A new role is
+        judged by the set it is created with, empty meaning school-wide. See
+        :mod:`vs_rbac.grant_reach`.
+        """
+        from ..grant_reach import assert_caller_may_define, assert_caller_may_reach
+
+        caller = getattr(self.context.get("request"), "user", None)
+        if caller is None or not getattr(caller, "is_authenticated", False):
+            return
+        if self.instance is not None:
+            assert_caller_may_define(caller, tenant, self.instance)
+            if "branch_ids" in attrs:
+                assert_caller_may_reach(caller, tenant, attrs["branch_ids"])
+            return
+        assert_caller_may_reach(caller, tenant, attrs.get("branch_ids", []))
 
     def _reject_last_way_in(self, attrs, tenant):
         """Refuse the change that would leave a tenant with no way back in.
@@ -1244,6 +1293,12 @@ class TenantRoleChangeRequestSerializer(
         # an absent one on this route too.
         if target_role is not None and target_role.tenant_id != tenant.pk:
             raise serializers.ValidationError({"target_role": ROLE_NOT_FOUND})
+        # Asking to change a role is changing it, once approved.
+        caller = getattr(self.context.get("request"), "user", None)
+        if target_role is not None and caller is not None:
+            from ..grant_reach import assert_caller_may_define
+
+            assert_caller_may_define(caller, tenant, target_role)
         if not attrs.get("delta_items"):
             raise serializers.ValidationError(
                 {"delta_items": "At least one delta item is required."}

@@ -34,6 +34,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from vs_config.clock import branch_day_q
+from vs_config.display import format_date_range
 
 from ..constants import LEAVE_LIVE_STATUSES, LeaveStatus, LeaveType
 from ..exceptions import InvalidDateRange, LeaveAlreadyDecided, NoWorkingDays
@@ -221,6 +222,28 @@ def _over_warning(leave, rules):
     }
 
 
+def _overlap_warning(clashes, tenant):
+    """The warning naming each clashing request, or None when nothing clashes.
+
+    Each clash is its type and its span, the span in the school's own date
+    format ("Annual 27 - 31 Oct 2025", or "Annual 27/10/2025 - 31/10/2025").
+    """
+    if not clashes:
+        return None
+    return {
+        "code": "LEAVE_OVERLAP",
+        "message": (
+            "This overlaps leave already recorded for this person: "
+            + ", ".join(
+                f"{row.get_leave_type_display()} "
+                f"{format_date_range(row.start_date, row.end_date, tenant)}"
+                for row in clashes
+            )
+        ),
+        "leave_ids": [row.pk for row in clashes],
+    }
+
+
 def overlapping(staff, start_date, end_date, *, exclude_pk=None):
     """This person's live requests that clash with these dates.
 
@@ -279,19 +302,11 @@ def file_request(*, staff, leave_type, start_date, end_date, days=None, note="",
     submit_for_approval(leave, actor)
     audit.emit_leave_recorded(leave, actor=actor)
 
-    warnings = [w for w in (_over_warning(leave, rules),) if w]
-    if clashes:
-        warnings.append({
-            "code": "LEAVE_OVERLAP",
-            "message": (
-                "This overlaps leave already recorded for this person: "
-                + ", ".join(
-                    f"{row.get_leave_type_display()} {row.start_date} to {row.end_date}"
-                    for row in clashes
-                )
-            ),
-            "leave_ids": [row.pk for row in clashes],
-        })
+    warnings = [
+        w for w in (
+            _over_warning(leave, rules), _overlap_warning(clashes, staff.tenant),
+        ) if w
+    ]
     return leave, warnings
 
 
@@ -340,22 +355,14 @@ def correct(leave, *, leave_type=None, start_date=None, end_date=None, days=None
     )
     leave.save()
 
-    warnings = [w for w in (_over_warning(leave, rules),) if w]
     clashes = overlapping(
         leave.staff, leave.start_date, leave.end_date, exclude_pk=leave.pk,
     )
-    if clashes:
-        warnings.append({
-            "code": "LEAVE_OVERLAP",
-            "message": (
-                "This overlaps leave already recorded for this person: "
-                + ", ".join(
-                    f"{row.get_leave_type_display()} {row.start_date} to {row.end_date}"
-                    for row in clashes
-                )
-            ),
-            "leave_ids": [row.pk for row in clashes],
-        })
+    warnings = [
+        w for w in (
+            _over_warning(leave, rules), _overlap_warning(clashes, leave.tenant),
+        ) if w
+    ]
     return leave, warnings
 
 

@@ -20,6 +20,8 @@ import datetime
 from django.db import transaction
 from django.utils import timezone
 
+from vs_config.display import format_date
+
 from .accounts import resolve_account
 from .audit import record, record_rejection
 from .constants import (
@@ -466,8 +468,8 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
             if period is None:  # Missing fiscal period is a configuration error.
                 # Fail closed with a typed error rather than grouping under None.  # Avoid later AttributeError/invalid post.
                 raise DepreciationError(
-                    f"No fiscal period covers {row.depreciation_date}; create the "
-                    f"fiscal year before running depreciation.",
+                    f"No fiscal period covers {format_date(row.depreciation_date, entity.tenant)}; "
+                    f"create the fiscal year before running depreciation.",
                 )
             period_cache[row.depreciation_date] = period  # Cache resolved period.
         year_label = _closed_year_label(period, closed_years)
@@ -484,7 +486,8 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
     if not groups:  # Every charge is in a closed year.
         years = sorted({item["fiscal_year"] for item in skipped})
         raise DepreciationError(
-            f"All {len(skipped)} depreciation charge(s) due up to {up_to_date} are "
+            f"All {len(skipped)} depreciation charge(s) due up to "
+            f"{format_date(up_to_date, entity.tenant)} are "
             f"{SKIPPED_CLOSED_YEAR} ({', '.join(years)}); reopen that year to post them.",
             skipped=skipped,
         )
@@ -608,7 +611,7 @@ def depreciation_posted_for_year(entity, fiscal_year):
 
     parts = []
     for (_, label), dates in list(by_asset.items())[:_CHECK_ASSET_LIMIT]:
-        shown = ", ".join(d.isoformat() for d in dates[:_CHECK_DATE_LIMIT])
+        shown = ", ".join(format_date(d, entity.tenant) for d in dates[:_CHECK_DATE_LIMIT])
         extra = len(dates) - _CHECK_DATE_LIMIT
         parts.append(f"{label}: {shown}" + (f" and {extra} more" if extra > 0 else ""))
     more_assets = len(by_asset) - _CHECK_ASSET_LIMIT
@@ -618,7 +621,8 @@ def depreciation_posted_for_year(entity, fiscal_year):
         name="depreciation_posted_for_year", passed=False,
         detail=(
             f"{count} depreciation charge(s) dated in FY{fiscal_year.year} are not posted "
-            f"({'; '.join(parts)}). Run depreciation up to {fiscal_year.end_date} first."
+            f"({'; '.join(parts)}). Run depreciation up to "
+            f"{format_date(fiscal_year.end_date, entity.tenant)} first."
         ),
     )
 
@@ -662,7 +666,8 @@ def _dispose_asset_atomic(asset, *, disposal_date, proceeds=0, bank_account=None
     if unposted_due:  # Disposal requires depreciation to be current through disposal date.
         raise DepreciationError(
             f"Asset {asset.document_number or asset.pk} has {unposted_due} unposted "
-            f"depreciation charge(s) due on or before {disposal_date}; post depreciation "
+            f"depreciation charge(s) due on or before "
+            f"{format_date(disposal_date, asset.entity.tenant)}; post depreciation "
             f"up to the disposal date before disposing.",
         )
     proceeds = int(proceeds or 0)  # Normalize proceeds to integer kobo.

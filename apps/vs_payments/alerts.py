@@ -32,6 +32,8 @@ from collections import Counter
 from django.db.models import Q
 from django.utils import timezone
 
+from vs_config.display import format_date
+
 from .constants import WebhookStatus
 
 logger = logging.getLogger("vs_payments.alerts")
@@ -135,7 +137,9 @@ def unbooked_digest():
 
     One message per entity, not per event. Returns a
     ``{"entities": N, "events": N, "notified": N}`` summary; every entity is wrapped
-    so one bad tenant cannot abort the sweep.
+    so one bad tenant cannot abort the sweep. The oldest event is dated on the
+    tenant's calendar and in its date format (:mod:`vs_config.display`), since
+    the message is read by its staff.
     """
     from vs_finance.models import LedgerEntity
 
@@ -179,7 +183,7 @@ def unbooked_digest():
                     "total_amount": total,
                     "total_amount_naira": _naira(total),
                     "reason": _leading_reason(events),
-                    "oldest": min(e.created_at for e in events).date().isoformat(),
+                    "oldest": format_date(min(e.created_at for e in events), entity.tenant),
                 },
                 recipients=_recipients(entity.tenant, DIGEST_PERMISSION, "SCHOOL"),
                 tenant=entity.tenant,

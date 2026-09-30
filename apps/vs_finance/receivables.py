@@ -21,6 +21,8 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
 
+from vs_config.display import format_date
+
 from .account_mappings import resolve_mapped_account
 from .audit import record, record_rejection
 from .chronology import ANY_BRANCH
@@ -564,10 +566,11 @@ def _build_invoice_plan(source, allocations, *, strategy="oldest", include_debit
                     source=describe(target, "the document being settled"),
                     source_date=target_date,
                     remedy=(
-                        f"Either date it {target_date} or later, or leave the money "
-                        f"unallocated as customer credit and apply it once that "
-                        f"document exists."
+                        f"Either date it {format_date(target_date, source.entity.tenant)} "
+                        f"or later, or leave the money unallocated as customer credit and "
+                        f"apply it once that document exists."
                     ),
+                    tenant=source.entity.tenant,
                 )
         return plan  # Explicit plan passed its branch and date checks.
 

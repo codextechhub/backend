@@ -3,11 +3,11 @@
 Two things arrive with a tenant's chart of accounts: the tenant's own spend-approval
 routes, and somewhere to put stock.
 
-Spend approval is opt-in by template: a requisition, purchase order, vendor invoice or
-vendor payment resolves the template published for its scope, through the engine's
-branch to tenant to platform cascade. A tenant holding no template of its own resolves
-to the shared platform row, which means one shared row would decide how every tenant's
-spend is approved.
+Spend approval is opt-in by template: a requisition, purchase order, vendor invoice,
+vendor payment or vendor credit note resolves the template published for its scope,
+through the engine's branch to tenant to platform cascade. A tenant holding no template
+of its own resolves to the shared platform row, which means one shared row would decide
+how every tenant's spend is approved.
 
 Registering here, against finance's entity provisioning, is what gives each tenant its
 own route from the moment its books exist. Finance never imports this module; the app

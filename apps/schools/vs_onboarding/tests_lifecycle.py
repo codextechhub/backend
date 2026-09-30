@@ -13,8 +13,10 @@ the row that must not be touched exists for its stillness to mean anything.
 """
 from __future__ import annotations
 
+import datetime
 from io import StringIO
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from django.core.management import call_command
 from django.test import TestCase
@@ -49,6 +51,7 @@ from .constants import (
 )
 from .models import GoLiveRequest, OnboardingProgress
 from .services.lifecycle import (
+    _whole_days_between,
     expire_stale_onboarding,
     reinstate_school,
     run_sweep,
@@ -479,7 +482,7 @@ class ExpiryWarningTests(TestCase):
         self.assertEqual(context["school_name"], "Warned School")
         self.assertEqual(context["days_remaining"], ONBOARDING_EXPIRY_WARNING_DAYS)
         self.assertTrue(context["expires_on"])
-        self.assertRegex(context["expires_on_display"], r"^\d{2} [A-Z][a-z]{2} \d{4}$")
+        self.assertRegex(context["expires_on_display"], r"^\d{1,2} [A-Z][a-z]{2} \d{4}$")
 
     def test_dry_run_neither_stamps_nor_sends(self):
         with patch("schools.vs_onboarding.services.effects._send") as send:
@@ -622,15 +625,19 @@ class StateExpiryPayloadTests(TestCase):
         context = send.call_args.args[1]
         expiry = self.state()
 
-        self.assertEqual(
-            context["expires_on"],
-            timezone.localtime(expiry["expires_at"]).date().isoformat(),
-        )
-        self.assertEqual(
-            context["expires_on_display"],
-            timezone.localtime(expiry["expires_at"]).strftime("%d %b %Y"),
-        )
+        # The day at the school, which keeps the default Lagos zone.
+        lagos = expiry["expires_at"].astimezone(ZoneInfo("Africa/Lagos"))
+        self.assertEqual(context["expires_on"], lagos.date().isoformat())
+        self.assertEqual(context["expires_on_display"], f"{lagos.day} {lagos:%b %Y}")
         self.assertEqual(context["days_remaining"], expiry["days_remaining"])
+
+    def test_days_remaining_are_counted_on_the_schools_calendar(self):
+        """23:30 UTC is already tomorrow in Lagos, so the count is Lagos's."""
+        utc = datetime.timezone.utc
+        warned = datetime.datetime(2026, 3, 14, 22, 30, tzinfo=utc)  # 23:30 on the 14th
+        expires = datetime.datetime(2026, 3, 20, 23, 30, tzinfo=utc)  # 00:30 on the 21st
+        self.assertEqual(_whole_days_between(expires, warned, ZoneInfo("Africa/Lagos")), 7)
+        self.assertEqual(_whole_days_between(expires, warned, ZoneInfo("UTC")), 6)
 
     def test_a_live_school_has_no_expiry_rather_than_a_stale_one(self):
         """Going live must not leave a countdown behind on the screen."""

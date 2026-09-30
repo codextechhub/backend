@@ -50,7 +50,9 @@ PROCUREMENT_RESOURCES = [
     ("category",       "vendor categories",     [("view", "NORMAL"), ("create", "NORMAL"), ("update", "SENSITIVE")]),
     ("contract",       "vendor contracts",      [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"),
                                                  ("activate", "SENSITIVE"), ("renew", "SENSITIVE"), ("terminate", "SENSITIVE")]),
-    ("goods_receipt",  "goods-received notes",  [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("post", "CRITICAL")]),
+    # ``reverse`` sends goods on a posted receipt back to the vendor.
+    ("goods_receipt",  "goods-received notes",  [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("post", "CRITICAL"),
+                                                 ("reverse", "CRITICAL")]),
     ("purchase_order", "purchase orders",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("submit", "SENSITIVE"),
                                                    ("email_vendor", "SENSITIVE")]),
     ("quotation",      "vendor quotations",     [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("submit", "SENSITIVE"), ("award", "SENSITIVE")]),
@@ -69,9 +71,16 @@ PROCUREMENT_RESOURCES = [
                                                  ("create", "SENSITIVE"), ("update", "SENSITIVE"),
                                                  ("verify", "SENSITIVE")]),
     ("vendor_assessment", "vendor assessments",  [("create", "SENSITIVE")]),
+    # ``reverse`` voids a posted bill nothing has been paid or credited against;
+    # ``import_opening`` carries in the supplier bills unpaid when the books began.
     ("vendor_invoice", "vendor invoices",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("submit", "SENSITIVE"),
                                                  ("match", "SENSITIVE"), ("post", "CRITICAL"), ("override_variance", "CRITICAL"),
-                                                 ("attach", "NORMAL")]),
+                                                 ("attach", "NORMAL"), ("reverse", "CRITICAL"),
+                                                 ("import_opening", "CRITICAL")]),
+    # Banded and weighted like the bill it corrects; ``reverse`` voids a posted note.
+    ("vendor_credit_note", "vendor credit notes", [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"),
+                                                   ("submit", "SENSITIVE"), ("post", "CRITICAL"),
+                                                   ("allocate", "SENSITIVE"), ("reverse", "CRITICAL")]),
     ("vendor_payment", "vendor payments",       [("view", "NORMAL"), ("create", "CRITICAL"), ("update", "CRITICAL"),
                                                  ("submit", "CRITICAL"), ("post", "CRITICAL"), ("cancel", "CRITICAL"),
                                                  ("reverse", "CRITICAL"),

@@ -58,6 +58,7 @@ from .posting import post_journal, resolve_period, reverse_journal
 from .receivables import post_invoice
 from .seed import seed_chart_of_accounts, seed_currencies, seed_fiscal_year
 from .tax_filing import (
+    ANY_SHARE,
     file_filing,
     pay_filing,
     prepare_filing,
@@ -113,11 +114,15 @@ class _ReturnsFixture(TestCase):
 
     # -- rows ----------------------------------------------------------------- #
 
-    def post(self, books, branch, date, pairs):
-        """Post ``pairs`` of ``(code, debit, credit)`` on ``date`` for ``branch``."""
+    def post(self, books, branch, date, pairs, *, source="MANUAL"):
+        """Post ``pairs`` of ``(code, debit, credit)`` on ``date`` for ``branch``.
+
+        ``source`` names the document the journal stands in for: a ``MANUAL``
+        journal may not touch a tax account or a bank ledger.
+        """
         entry = JournalEntry.objects.create(
             entity=books, branch=branch, date=date,
-            period=resolve_period(books, date), narration="test",
+            period=resolve_period(books, date), narration="test", source=source,
         )
         for line_no, (code, debit, credit) in enumerate(pairs, start=1):
             JournalLine.objects.create(
@@ -130,20 +135,24 @@ class _ReturnsFixture(TestCase):
     def sale(self, books, branch, date, vat):
         """A sale whose output VAT is ``vat``: Dr cash, Cr revenue, Cr 2200."""
         net = vat * 40 // 3
-        return self.post(books, branch, date, [("1100", net + vat, 0), ("4100", 0, net), ("2200", 0, vat)])
+        return self.post(books, branch, date, [("1100", net + vat, 0), ("4100", 0, net), ("2200", 0, vat)],
+                         source="SALES")
 
     def purchase(self, books, branch, date, vat):
         """A purchase carrying ``vat`` of input VAT: Dr expense, Dr 1300, Cr cash."""
         net = vat * 40 // 3
-        return self.post(books, branch, date, [("5300", net, 0), ("1300", vat, 0), ("1100", 0, net + vat)])
+        return self.post(books, branch, date, [("5300", net, 0), ("1300", vat, 0), ("1100", 0, net + vat)],
+                         source="PURCHASE")
 
     def payroll(self, books, branch, date, paye):
         """A payroll accrual parking ``paye`` in PAYE Payable."""
-        return self.post(books, branch, date, [("5200", paye, 0), ("2310", 0, paye)])
+        return self.post(books, branch, date, [("5200", paye, 0), ("2310", 0, paye)],
+                         source="PAYROLL")
 
     def withholding(self, books, branch, date, wht):
         """A vendor payment withholding ``wht``."""
-        return self.post(books, branch, date, [("5300", wht, 0), ("2300", 0, wht)])
+        return self.post(books, branch, date, [("5300", wht, 0), ("2300", 0, wht)],
+                         source="PURCHASE")
 
     def obligation(self, books, code):
         return TaxObligation.objects.get(entity=books, code=code)
@@ -217,6 +226,9 @@ class LateLineTests(_ReturnsFixture):
         self.assertEqual(april.late_items, [{
             "month": "2026-03", "label": "from March", "gross": 7_500,
             "recoverable": 0, "net": 7_500, "line_count": 1,
+            "branches": {str(self.main.pk): {
+                "gross": 7_500, "recoverable": 0, "net": 7_500, "line_count": 1,
+            }},
         }])
 
         file_filing(april, filed_date=d(5, 5))
@@ -330,17 +342,116 @@ class BranchShareTests(_ReturnsFixture):
             pay_filing(filing, bank_account=self.ikeja_bank, pay_date=d(7, 21), branch=self.lekki)
         self.assertEqual(filing.amount_paid, 0)
 
-    def test_a_tenant_wide_account_pays_every_share_as_its_own_journal(self):
+    def test_a_tenant_wide_account_pays_no_share_at_two_branches(self):
         filing = self.june_vat()
         file_filing(filing, filed_date=d(7, 5))
 
-        pay_filing(filing, bank_account=self.lagoon_bank, pay_date=d(7, 21))
+        for branch in (ANY_SHARE, self.ikeja, self.lekki):
+            with self.subTest(branch=getattr(branch, "name", "unnamed")), \
+                    self.assertRaises(TaxFilingError):
+                pay_filing(filing, bank_account=self.lagoon_bank, pay_date=d(7, 21), branch=branch)
+
+        self.assertEqual(filing.amount_paid, 0)
+        self.assertFalse(filing.remittances.exists())
+
+    def test_the_only_unpaid_share_is_still_paid_only_from_its_own_branchs_bank(self):
+        filing = self.june_vat()
+        file_filing(filing, filed_date=d(7, 5))
+        pay_filing(filing, bank_account=self.ikeja_bank, pay_date=d(7, 21))
+
+        with self.assertRaises(TaxFilingError):
+            pay_filing(filing, bank_account=self.ikeja_bank, pay_date=d(7, 22))
+        self.assertEqual(filing.shares.get(branch=self.lekki).amount_paid, 0)
+
+        pay_filing(filing, bank_account=self.lekki_bank, pay_date=d(7, 22))
+        self.assertEqual(filing.filing_status, TaxFilingStatus.PAID)
+
+    def test_a_share_outside_the_callers_reach_is_refused(self):
+        filing = self.june_vat()
+        file_filing(filing, filed_date=d(7, 5))
+
+        with self.assertRaises(TaxFilingError):
+            pay_filing(filing, bank_account=self.ikeja_bank, pay_date=d(7, 21),
+                       reach=frozenset({self.lekki.pk}))
+        pay_filing(filing, bank_account=self.lekki_bank, pay_date=d(7, 21),
+                   reach=frozenset({self.lekki.pk}))
+
+        self.assertEqual(list(filing.remittances.values_list("branch_id", flat=True)),
+                         [self.lekki.pk])
+
+    def test_an_unbranched_account_pays_for_the_only_branch_at_one_branch(self):
+        books = self.harbour_books
+        access = _bank(books, "1154", "Harbour Access", None)
+        self.withholding(books, self.main, d(6, 10), 50_000)
+        june = self.prepare(books, "WHT", 6)
+        file_filing(june, filed_date=d(7, 5))
+
+        pay_filing(june, bank_account=access, pay_date=d(7, 10))
+
+        self.assertEqual(june.filing_status, TaxFilingStatus.PAID)
+        self.assertEqual(june.remittances.get().journal.branch_id, self.main.pk)
+
+
+class NarrowedReadTests(_ReturnsFixture):
+    """A branch-bound reader sees the return narrowed to their branches' shares."""
+
+    def test_the_return_shows_only_the_readers_shares_and_their_totals(self):
+        from .serializers import TaxFilingSerializer
+
+        books = self.lagoon_books
+        self.sale(books, self.ikeja, d(5, 10), 30_000)
+        self.sale(books, self.lekki, d(5, 20), 12_000)
+        self.prepare(books, "VAT", 5)
+        self.sale(books, self.ikeja, d(6, 10), 60_000)
+        self.sale(books, self.lekki, d(6, 11), 40_000)
+        self.purchase(books, self.lekki, d(6, 12), 10_000)
+        filing = self.prepare(books, "VAT", 6)
+        file_filing(filing, filed_date=d(7, 5))
+        pay_filing(filing, bank_account=self.ikeja_bank, pay_date=d(7, 21))
+
+        whole = TaxFilingSerializer(filing, context={"branch_ids": None}).data
+        lekki = TaxFilingSerializer(filing, context={"branch_ids": frozenset({self.lekki.pk})}).data
+
+        self.assertEqual(len(whole["branch_breakdown"]), 2)
+        self.assertEqual(whole["amount_due"], 90_000 + 42_000)
+        self.assertEqual([s["branch_id"] for s in lekki["branch_breakdown"]], [self.lekki.pk])
+        self.assertEqual(
+            (lekki["gross_liability"], lekki["recoverable_amount"], lekki["amount_due"],
+             lekki["amount_paid"], lekki["balance_due"], lekki["payment_status"]),
+            (52_000, 10_000, 42_000, 0, 42_000, "UNPAID"),
+        )
+        self.assertEqual(lekki["remittances"], [])
+        self.assertEqual(
+            [(i["label"], i["gross"], i["line_count"]) for i in lekki["late_items"]],
+            [("from May", 12_000, 1)],
+        )
+        self.assertEqual(lekki["late_line_count"], 1)
+
+
+class NoBranchBooksTests(_Phase4FixtureMixin, TestCase):
+    """Books whose tenant owns no branch pay as one share from any of their accounts."""
+
+    def test_books_without_branches_pay_their_one_share(self):
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        self.post_wht(entity, periods[0])
+        filing = prepare_filing(TaxObligation.objects.get(entity=entity, code="WHT"),
+                                period_start=d(1, 1), period_end=d(1, 31))
+        file_filing(filing, filed_date=d(2, 5))
+
+        pay_filing(filing, bank_account=bank, pay_date=d(2, 10))
 
         self.assertEqual(filing.filing_status, TaxFilingStatus.PAID)
-        self.assertEqual(
-            sorted(filing.remittances.values_list("branch_id", "amount")),
-            sorted([(self.ikeja.pk, 60_000), (self.lekki.pk, 30_000)]),
-        )
+        self.assertIsNone(filing.remittances.get().journal.branch_id)
+
+    def post_wht(self, entity, period):
+        entry = JournalEntry.objects.create(entity=entity, date=d(1, 12), period=period,
+                                            narration="Vendor withholding", source="PURCHASE")
+        for line_no, (code, debit, credit) in enumerate(
+                (("5300", 50_000, 0), ("2300", 0, 50_000)), start=1):
+            JournalLine.objects.create(entry=entry, account=Account.objects.get(entity=entity, code=code),
+                                       debit=debit, credit=credit, line_no=line_no)
+        post_journal(entry)
 
 
 class UnbranchedLineTests(_ReturnsFixture):

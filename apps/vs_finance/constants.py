@@ -90,6 +90,8 @@ class DocType(models.TextChoices):
     FIXED_ASSET = "FA", "Fixed Asset"
     TAX_FILING = "TX", "Tax Filing / Remittance"
     BUDGET = "BG", "Budget"
+    BANK_TRANSACTION = "BT", "Bank Transaction"
+    BANK_TRANSFER = "BX", "Transfer Between Own Accounts"
 
 # Define Account Type values.
 class AccountType(models.TextChoices):
@@ -353,6 +355,16 @@ class PaymentMethod(models.TextChoices):
 # Banking, expenses, payroll, budget, fixed assets, period close     #          
 # --------------------------------------------------------------------------- #
 
+class BankTransactionDirection(models.TextChoices):
+    """Which way money moves on a :class:`~vs_finance.models.BankTransaction`.
+
+    IN  -> money arrives in the bank account (Dr bank, Cr the counter-account).
+    OUT -> money leaves it (Dr the counter-account, Cr bank).
+    """
+    IN = "IN", "Money in"
+    OUT = "OUT", "Money out"
+
+
 # Define Bank Line Status values.
 class BankLineStatus(models.TextChoices):
     """Reconciliation state of an imported bank-statement line.
@@ -553,6 +565,13 @@ class FinanceAuditAction(models.TextChoices):
     VENDOR_PAYMENT_POSTED = "VENDOR_PAYMENT_POSTED", "Vendor payment posted"
     VENDOR_PAYMENT_POST_REJECTED = "VENDOR_PAYMENT_POST_REJECTED", "Vendor payment posting rejected"
     VENDOR_PAYMENT_ALLOCATED = "VENDOR_PAYMENT_ALLOCATED", "Vendor payment allocated"
+    VENDOR_INVOICE_VOIDED = "VENDOR_INVOICE_VOIDED", "Vendor invoice voided"
+    VENDOR_CREDIT_NOTE_APPROVED = "VENDOR_CREDIT_NOTE_APPROVED", "Vendor credit note approved (workflow)"
+    VENDOR_CREDIT_NOTE_POSTED = "VENDOR_CREDIT_NOTE_POSTED", "Vendor credit note posted"
+    VENDOR_CREDIT_NOTE_ALLOCATED = "VENDOR_CREDIT_NOTE_ALLOCATED", "Vendor credit note allocated"
+    VENDOR_CREDIT_NOTE_VOIDED = "VENDOR_CREDIT_NOTE_VOIDED", "Vendor credit note voided"
+    GOODS_RETURNED = "GOODS_RETURNED", "Goods returned to vendor"
+    VENDOR_OPENING_BILL_POSTED = "VENDOR_OPENING_BILL_POSTED", "Vendor opening bill posted"
     STOCK_RECEIVED = "STOCK_RECEIVED", "Stock received (perpetual inventory)"
     STOCK_ISSUED = "STOCK_ISSUED", "Stock issued"
     STOCK_ISSUE_REJECTED = "STOCK_ISSUE_REJECTED", "Stock issue rejected"
@@ -562,6 +581,10 @@ class FinanceAuditAction(models.TextChoices):
     BANK_STATEMENT_CORRECTED = "BANK_STATEMENT_CORRECTED", "Bank statement corrected"
     BANK_RECONCILED = "BANK_RECONCILED", "Bank statement reconciled"
     BANK_CHARGE_POSTED = "BANK_CHARGE_POSTED", "Bank charge posted"
+    BANK_TRANSACTION_POSTED = "BANK_TRANSACTION_POSTED", "Bank transaction posted"
+    BANK_TRANSACTION_VOIDED = "BANK_TRANSACTION_VOIDED", "Bank transaction voided"
+    BANK_TRANSFER_POSTED = "BANK_TRANSFER_POSTED", "Transfer between own accounts posted"
+    BANK_TRANSFER_VOIDED = "BANK_TRANSFER_VOIDED", "Transfer between own accounts voided"
     EXPENSE_CLAIM_POSTED = "EXPENSE_CLAIM_POSTED", "Expense claim posted"
     EXPENSE_CLAIM_POST_REJECTED = "EXPENSE_CLAIM_POST_REJECTED", "Expense claim posting rejected"
     EXPENSE_CLAIM_SETTLED = "EXPENSE_CLAIM_SETTLED", "Expense claim settled"

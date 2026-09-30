@@ -41,6 +41,10 @@ class VsProcurementConfig(AppConfig):
         from .close_checks import register as register_close_checks
 
         register_close_checks()
+        # Keep hand-typed journals off vendor payable and inventory accounts.
+        from .control_accounts import register as register_control_accounts
+
+        register_control_accounts()
         # Publish this tenant's spend-approval ladders when its books are created,
         # so the gate is on from onboarding rather than from a remembered command.
         from vs_finance.provisioning import register_entity_provisioner

@@ -17,6 +17,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from vs_config.display import format_date
 from vs_finance.audit import record
 from vs_finance.constants import DocumentStatus, FinanceAuditAction, FinanceAuditStatus
 from vs_finance.documents import _issuer_block
@@ -217,6 +218,20 @@ def _money(po, value):
     return f"{code} {amount:,.{minor_unit}f}"
 
 
+def _order_dates(po) -> tuple[str, str]:
+    """The order date and the expected date as the vendor reads them.
+
+    Written in the buying tenant's date format (:mod:`vs_config.display`), so
+    the PDF and the email body say the same thing its own screens do. Both are
+    calendar dates, which no zone shifts. A missing expected date reads
+    "Not specified".
+    """
+    tenant = po.entity.tenant
+    ordered = format_date(po.order_date, tenant)
+    expected = format_date(po.expected_date, tenant) or "Not specified"
+    return ordered, expected
+
+
 def _pdf_bytes(po: PurchaseOrder, delivery: PurchaseOrderVendorDelivery) -> bytes:
     issuer = _issuer_block(po.entity, branch=po.branch)
     styles = getSampleStyleSheet()
@@ -246,15 +261,14 @@ def _pdf_bytes(po: PurchaseOrder, delivery: PurchaseOrderVendorDelivery) -> byte
     ]))
     story.extend([header, Spacer(1, 8 * mm)])
     vendor = po.vendor
+    ordered, expected = _order_dates(po)
     meta = Table([
         [Paragraph("<b>Vendor</b>", styles["Small"]), Paragraph("<b>Order details</b>", styles["Small"])],
         [Paragraph(
             f"{escape(vendor.name)}<br/>{escape(vendor.address or '')}<br/>{escape(vendor.email or '')}",
             styles["Small"],
         ), Paragraph(
-            f"Order date: {po.order_date:%d %b %Y}<br/>"
-            f"Expected date: {po.expected_date:%d %b %Y}" if po.expected_date else
-            f"Order date: {po.order_date:%d %b %Y}<br/>Expected date: Not specified",
+            f"Order date: {escape(ordered)}<br/>Expected date: {escape(expected)}",
             styles["Small"],
         )],
     ], colWidths=[81 * mm, 81 * mm])
@@ -325,12 +339,13 @@ def _pdf_bytes(po: PurchaseOrder, delivery: PurchaseOrderVendorDelivery) -> byte
 def _context(po, delivery):
     issuer = _issuer_block(po.entity, branch=po.branch)
     buyer = delivery.requested_by
+    ordered, expected = _order_dates(po)
     return {
         "vendor_name": po.vendor.name,
         "issuer_name": issuer.get("name") or po.entity.name,
         "po_number": po.document_number,
-        "order_date": po.order_date.strftime("%d %b %Y"),
-        "expected_date": po.expected_date.strftime("%d %b %Y") if po.expected_date else "Not specified",
+        "order_date": ordered,
+        "expected_date": expected,
         "delivery_address": po.delivery_address or "Not specified",
         "payment_terms": po.payment_terms or "Not specified",
         "total": _money(po, po.total),

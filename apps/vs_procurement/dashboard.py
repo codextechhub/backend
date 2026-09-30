@@ -35,6 +35,7 @@ from .constants import (
     ProcApprovalState,
     WF_DOCTYPE_PURCHASE_ORDER,
     WF_DOCTYPE_REQUISITION,
+    WF_DOCTYPE_VENDOR_CREDIT_NOTE,
     WF_DOCTYPE_VENDOR_INVOICE,
     WF_DOCTYPE_VENDOR_PAYMENT,
 )
@@ -42,6 +43,7 @@ from .models import (
     PurchaseOrder,
     PurchaseRequisition,
     Vendor,
+    VendorCreditNote,
     VendorInvoice,
     VendorPayment,
 )
@@ -229,7 +231,7 @@ def _pipeline(entity, start, end, as_of, reader, branch_scope, branch_filter) ->
             VendorInvoice.objects.filter(entity=entity, status=DocumentStatus.POSTED).filter(branch_filter)
             .exclude(payment_status=InvoicePaymentStatus.PAID)
         )
-        agg = open_bills.aggregate(n=Count("id"), amount=Sum(F("total") - F("amount_paid")),
+        agg = open_bills.aggregate(n=Count("id"), amount=Sum(F("total") - F("amount_paid") - F("amount_credited")),
                                    late=Count("id", filter=Q(due_date__lt=as_of)))
         stages["bills"] = {"count": agg["n"], "amount": _money(agg["amount"]), "flag": agg["late"]}
     if reader.can("procurement.vendor_payment.view"):
@@ -262,7 +264,7 @@ def _exceptions(entity, as_of, reader, branch_scope, branch_filter) -> list:
             out.append({"key": "price_variance", "count": agg["n"], "amount": _money(agg["amount"]),
                         "detail": first.vendor.name})
         held = bills.filter(status=DocumentStatus.POSTED, vendor__on_hold=True)
-        agg = held.aggregate(n=Count("id"), amount=Sum(F("total") - F("amount_paid")))
+        agg = held.aggregate(n=Count("id"), amount=Sum(F("total") - F("amount_paid") - F("amount_credited")))
         if agg["n"]:
             out.append({"key": "vendor_on_hold", "count": agg["n"], "amount": _money(agg["amount"]),
                         "detail": held.select_related("vendor").first().vendor.name})
@@ -384,6 +386,7 @@ def _pending_approvals(entity, user, branch_filter) -> list:
         WF_DOCTYPE_PURCHASE_ORDER: PurchaseOrder,
         WF_DOCTYPE_VENDOR_INVOICE: VendorInvoice,
         WF_DOCTYPE_VENDOR_PAYMENT: VendorPayment,
+        WF_DOCTYPE_VENDOR_CREDIT_NOTE: VendorCreditNote,
     }
     ids_by_type: dict[str, set[int]] = {key: set() for key in models}
     usable = []
@@ -572,8 +575,8 @@ def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = No
             entity=entity, status=DocumentStatus.POSTED, due_date__lt=as_of,
         ).filter(branch_filter).exclude(payment_status=InvoicePaymentStatus.PAID).aggregate(
             count=Count("id"),
-            # Outstanding balance is invoice total less all allocations already paid.
-            amount=Sum(F("total") - F("amount_paid")),
+            # Outstanding balance is invoice total less cash paid and credit applied.
+            amount=Sum(F("total") - F("amount_paid") - F("amount_credited")),
             oldest=Min("due_date"),
         )
         overdue_kpi = {

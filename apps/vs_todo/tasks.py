@@ -15,7 +15,8 @@ from __future__ import annotations
 import logging
 
 from celery import shared_task
-from django.utils import timezone
+
+from vs_config.display import format_date, format_datetime
 
 logger = logging.getLogger("vs_todo.tasks")
 
@@ -24,8 +25,9 @@ def _first_name(user) -> str:
     return user.full_name.split(" ")[0] if user.full_name else ""
 
 
-def _fmt_dt(dt) -> str:
-    return timezone.localtime(dt).strftime("%d %b %Y, %H:%M") if dt else "-"
+def _fmt_dt(dt, tenant) -> str:
+    """An instant on *tenant*'s clock, in its date format ("-" for none)."""
+    return format_datetime(dt, tenant) or "-"
 
 
 @shared_task(bind=True, name="vs_todo.send_completion_review_request")
@@ -51,7 +53,9 @@ def send_completion_review_request(self, task_id: int, completed_at: str = ""):
     from .services.hierarchy import TodoHierarchy
 
     try:
-        task = Task.objects.select_related("assignee", "assigned_by").get(pk=task_id)
+        task = Task.objects.select_related(
+            "assignee__tenant", "assigned_by",
+        ).get(pk=task_id)
     except Task.DoesNotExist:
         return {"skipped": "task-deleted"}
 
@@ -75,8 +79,8 @@ def send_completion_review_request(self, task_id: int, completed_at: str = ""):
         "task_metric":      task.metric or "-",
         "task_target":      task.target or "-",
         "task_priority":    task.get_priority_display(),
-        "task_deadline":    task.deadline.strftime("%d %b %Y"),
-        "task_completed":   _fmt_dt(task.completed_at),
+        "task_deadline":    format_date(task.deadline, assignee.tenant),
+        "task_completed":   _fmt_dt(task.completed_at, assignee.tenant),
         "task_department":  task.department or "",
     }
 

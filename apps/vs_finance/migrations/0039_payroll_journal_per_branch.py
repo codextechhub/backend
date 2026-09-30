@@ -8,7 +8,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("vs_finance", "0035_tax_returns_declare_source_lines"),
+        ("vs_finance", "0038_bank_transfers"),
         ("vs_tenants", "0010_remove_branch__type"),
     ]
 

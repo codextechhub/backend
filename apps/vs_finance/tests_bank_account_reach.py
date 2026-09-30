@@ -270,17 +270,23 @@ class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
         )
 
     def test_a_tax_payment(self):
-        """A filing with no branch is outside her reach, so she may not pay it at all.
+        """A return whose only share is Yaba's is outside her reach, so she may not pay it.
 
-        Covering two of three branches is not the whole school, so the refusal
-        comes before any bank is looked at (see ``tests_shared_write_reach``).
+        She covers Ikeja and Lekki. The school's return names no branch and its
+        only share is Yaba's, so whichever account she names, her Ikeja one, her
+        Lekki one or the school-wide one, the return is not found for her.
         """
-        from vs_finance.models import TaxFiling, TaxObligation
+        from vs_finance.models import TaxFiling, TaxFilingShare, TaxObligation
 
         filing = TaxFiling.objects.create(
             entity=self.books,
             obligation=TaxObligation.objects.filter(entity=self.books).first(),
             period_start=datetime.date(2026, 1, 1), period_end=datetime.date(2026, 1, 31),
+            filing_status="FILED", filed_at=datetime.date(2026, 1, 5),
+            gross_liability=50_000, amount_due=50_000,
+        )
+        TaxFilingShare.objects.create(
+            filing=filing, branch=self.yaba, gross_liability=50_000, amount_due=50_000,
         )
         client = self.bursar("finance.tax.pay")
         for bank in (self.ikeja_bank, self.lekki_bank, self.shared_bank):

@@ -56,9 +56,12 @@ from .constants import (
     VendorRisk,
     WF_DOCTYPE_PURCHASE_ORDER,
     WF_DOCTYPE_REQUISITION,
+    WF_DOCTYPE_VENDOR_CREDIT_NOTE,
     WF_DOCTYPE_VENDOR_INVOICE,
     WF_DOCTYPE_VENDOR_PAYMENT,
     WhtSource,
+    GOODS_RETURN_DOC_TYPE,
+    VENDOR_CREDIT_NOTE_DOC_TYPE,
 )
 
 
@@ -1639,6 +1642,11 @@ class GoodsReceivedNoteLine(TimeStampedModel):
     )
     unit_price = MoneyField(help_text="Price per unit, in kobo (from the PO).")
     value_amount = MoneyField(help_text="accepted_qty × unit_price, in kobo.")
+    # Service-owned, like the PO counters: only a posted goods return advances it.
+    returned_qty = models.DecimalField(
+        max_digits=14, decimal_places=4, default=0,
+        help_text="Accepted quantity sent back to the vendor by posted goods returns.",
+    )
     cost_center = models.ForeignKey(
         "vs_finance.CostCenter", on_delete=models.PROTECT, related_name="grn_lines",
         null=True, blank=True,
@@ -1686,6 +1694,10 @@ class VendorInvoice(FinanceDocument):
     vendor_reference = models.CharField(
         max_length=64, blank=True, default="", help_text="The vendor's own invoice number.",
     )
+    is_opening = models.BooleanField(
+        default=False,
+        help_text="An unpaid bill carried in from before these books began (opening balance).",
+    )
     creation_idempotency_key = models.CharField(
         max_length=128, blank=True, default="", editable=False,
         help_text="Client retry key used to return the original invoice instead of creating another.",
@@ -1700,6 +1712,9 @@ class VendorInvoice(FinanceDocument):
     tax_total = MoneyField(help_text="Total tax, in kobo.")
     total = MoneyField(help_text="subtotal + tax_total, in kobo.")
     amount_paid = MoneyField(help_text="Cash allocated to this bill, in kobo.")
+    amount_credited = MoneyField(
+        help_text="Vendor credit notes applied to this bill, in kobo.",
+    )
     # Settlement fields are allocation-owned denormalizations, not editable payment
     # instructions. Posting/reversal services advance them from durable allocations.
     payment_status = models.CharField(
@@ -1743,8 +1758,8 @@ class VendorInvoice(FinanceDocument):
 
     @property
     def balance_due(self) -> int:
-        # Outstanding AP is invoice gross less all payment allocations recorded against it.
-        return self.total - self.amount_paid
+        """What is still owed: the gross less cash paid and vendor credit applied."""
+        return self.total - self.amount_paid - self.amount_credited
 
     def recompute_totals(self, *, save: bool = True) -> None:
         """Roll invoice line net/tax values into the authoritative gross payable."""
@@ -1759,15 +1774,18 @@ class VendorInvoice(FinanceDocument):
             self.save(update_fields=["subtotal", "tax_total", "total", "updated_at"])
 
     def refresh_payment_status(self, *, save: bool = True) -> None:
-        """Refresh the settlement label from allocation-owned ``amount_paid``.
+        """Refresh the settlement label from ``amount_paid`` and ``amount_credited``.
 
-        Posting status remains independent: an invoice can be POSTED in the ledger while
-        its AP settlement lifecycle is UNPAID, PARTIAL, or PAID.
+        Cash and vendor credit settle a bill alike, as a credit note settles a sales
+        invoice on the AR side, so a bill the vendor has credited in full reads PAID
+        and leaves every "open bills" list. Posting status remains independent: an
+        invoice can be POSTED in the ledger while its AP settlement lifecycle is
+        UNPAID, PARTIAL, or PAID.
         """
-        # Payment status is derived from allocated cash versus gross invoice value, including overpayment as paid.
-        if self.amount_paid <= 0:
+        settled = self.amount_paid + self.amount_credited
+        if settled <= 0:
             status = InvoicePaymentStatus.UNPAID
-        elif self.amount_paid >= self.total:
+        elif settled >= self.total:
             status = InvoicePaymentStatus.PAID
         else:
             status = InvoicePaymentStatus.PARTIAL
@@ -2261,3 +2279,242 @@ class ApprovalOverride(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.document_type} {self.document_object_id} released by {self.overridden_by_id}"
+
+
+# --------------------------------------------------------------------------- #
+# Payables corrections: vendor credit notes and goods returns                 #
+# --------------------------------------------------------------------------- #
+
+class VendorCreditNote(FinanceDocument):
+    """A vendor's credit against one posted bill: the AP mirror of a sales credit note.
+
+    It corrects a bill that was keyed wrong, priced wrong or billed for goods that went
+    back, without editing the bill. Its lines name the bill lines they reverse, so the
+    journal (:func:`vs_procurement.corrections.post_vendor_credit_note`) undoes exactly
+    what the bill booked: GR/IR at the receipt basis, the purchase price variance, a
+    non-PO bill's expense and the input tax, against ``Dr AP``.
+
+    Whatever the bill still owes is settled first. A bill already paid cannot be
+    settled again, so the rest is money the vendor owes back: it is booked to the
+    vendor-advance asset (1240), exactly as a payment made ahead of a bill is, and
+    :func:`~vs_procurement.corrections.allocate_vendor_credit_note` applies it to a
+    later bill of the same branch.
+
+    The note always carries its bill's branch, because the settlement and the credit
+    it leaves behind belong to the branch that owed the bill.
+    """
+
+    DOC_TYPE = VENDOR_CREDIT_NOTE_DOC_TYPE
+    #: vs_workflow integration - see vs_procurement.workflow_handlers / .approvals.
+    workflow_document_type = WF_DOCTYPE_VENDOR_CREDIT_NOTE
+    workflow_amount_field = "total"
+
+    vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="credit_notes")
+    vendor_invoice = models.ForeignKey(
+        VendorInvoice, on_delete=models.PROTECT, related_name="credit_notes",
+    )
+    note_date = models.DateField()
+    currency = models.ForeignKey(
+        "vs_finance.Currency", on_delete=models.PROTECT, related_name="vendor_credit_notes",
+        null=True, blank=True,
+    )
+    vendor_reference = models.CharField(
+        max_length=64, blank=True, default="",
+        help_text="The vendor's own credit memo number.",
+    )
+    reason = models.CharField(max_length=255)
+    subtotal = MoneyField(help_text="Net of tax, in kobo.")
+    tax_total = MoneyField(help_text="Input tax reversed, in kobo.")
+    total = MoneyField(help_text="subtotal + tax_total, in kobo.")
+    # Service-owned: posting and allocation advance it; a void returns it to zero.
+    allocated_amount = MoneyField(help_text="Credit applied to bills, in kobo.")
+    approval_state = models.CharField(
+        max_length=16, choices=ProcApprovalState.choices,
+        default=ProcApprovalState.NOT_SUBMITTED,
+        help_text="Approval state driven by vs_workflow (overlay; not the ledger status).",
+    )
+    journal = models.ForeignKey(
+        "vs_finance.JournalEntry", on_delete=models.PROTECT,
+        related_name="vendor_credit_notes", null=True, blank=True,
+    )
+
+    class Meta(FinanceDocument.Meta):
+        constraints = FinanceDocument.Meta.constraints + [
+            models.CheckConstraint(
+                check=models.Q(allocated_amount__gte=0)
+                & models.Q(allocated_amount__lte=models.F("total")),
+                name="ck_proc_vcn_alloc_within_total",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["vendor"]),
+            models.Index(fields=["vendor_invoice"]),
+            models.Index(fields=["entity", "note_date"]),
+        ]
+
+    @property
+    def advance_remaining(self) -> int:
+        """Kobo of this note still sitting in the vendor-advance asset (1240)."""
+        return self.total - self.allocated_amount
+
+    def recompute_totals(self, *, save: bool = True) -> None:
+        """Roll the lines' net and tax into the note's totals."""
+        agg = self.lines.aggregate(net=models.Sum("net_amount"), tax=models.Sum("tax_amount"))
+        self.subtotal = agg["net"] or 0
+        self.tax_total = agg["tax"] or 0
+        self.total = self.subtotal + self.tax_total
+        if save:
+            self.save(update_fields=["subtotal", "tax_total", "total", "updated_at"])
+
+
+class VendorCreditNoteLine(TimeStampedModel):
+    """One credited slice of one bill line.
+
+    ``quantity`` is the number of units credited, which is what a credit for goods
+    sent back carries: it lowers the PO line's invoiced quantity so the three-way
+    match sees the bill shrink. A credit with no quantity is a price allowance, which
+    moves value only. ``net_amount`` and ``tax_amount`` are what the journal reverses;
+    the tax is the bill line's own tax in proportion to the net credited, so a full
+    credit reverses the tax exactly.
+    """
+
+    credit_note = models.ForeignKey(
+        VendorCreditNote, on_delete=models.CASCADE, related_name="lines",
+    )
+    invoice_line = models.ForeignKey(
+        VendorInvoiceLine, on_delete=models.PROTECT, related_name="credit_note_lines",
+    )
+    description = models.CharField(max_length=255, blank=True, default="")
+    quantity = models.DecimalField(
+        max_digits=14, decimal_places=4, default=0,
+        help_text="Units credited; zero for a price allowance that moves value only.",
+    )
+    net_amount = MoneyField(help_text="Net credited, in kobo.")
+    tax_amount = MoneyField(help_text="Input tax reversed, in kobo.")
+    line_no = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["credit_note", "line_no", "id"]
+        indexes = [models.Index(fields=["invoice_line"])]
+
+    def __str__(self) -> str:
+        return f"{self.credit_note_id}: {self.net_amount}+{self.tax_amount}"
+
+
+class VendorCreditNoteAllocation(TimeStampedModel):
+    """A slice of a vendor credit note applied to a bill.
+
+    The credit-note twin of :class:`VendorPaymentAllocation`, and an immutable event
+    for the same reason: the note settles its own bill on its own date and may settle
+    a later bill on another, and one accumulating row could honestly carry only one of
+    those dates.
+    """
+
+    note = models.ForeignKey(
+        VendorCreditNote, on_delete=models.PROTECT, related_name="allocations",
+    )
+    vendor_invoice = models.ForeignKey(
+        VendorInvoice, on_delete=models.PROTECT, related_name="credit_allocations",
+    )
+    amount = MoneyField(help_text="Credit applied to this bill, in kobo.")
+    effective_date = models.DateField(
+        help_text="Accounting date of the journal that debited AP for this settlement.",
+    )
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(amount__gt=0), name="ck_proc_vcn_alloc_positive",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["vendor_invoice"]),
+            models.Index(fields=["note"]),
+        ]
+        ordering = ["note", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.note_id}→{self.vendor_invoice_id}: {self.amount}"
+
+
+class VendorCreditAllocationJournal(TimeStampedModel):
+    """Durable link from a later draw on a note's vendor credit to its journal.
+
+    The note's own journal settles its bill. Applying what was left over to a later
+    bill raises a reclassification (Dr AP, Cr vendor advances) that the note owns but
+    that is not ``VendorCreditNote.journal``; this row is what lets a void of the note
+    unwind it. The twin of :class:`VendorAdvanceAllocationJournal`.
+    """
+
+    note = models.ForeignKey(
+        VendorCreditNote, on_delete=models.PROTECT, related_name="allocation_journals",
+    )
+    journal = models.OneToOneField(
+        "vs_finance.JournalEntry", on_delete=models.PROTECT,
+        related_name="vendor_credit_allocation",
+    )
+    amount = MoneyField(help_text="Vendor credit reclassified to AP, in kobo.")
+
+    class Meta:
+        ordering = ["journal_id", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.note_id}→J{self.journal_id}: {self.amount}"
+
+
+class GoodsReturn(FinanceDocument):
+    """Goods sent back to the vendor against a posted receipt.
+
+    A receipt is never edited or un-posted: what arrived did arrive. A return is the
+    further document that takes some or all of it back out, by line, and its journal
+    is the receipt's run backwards at the receipt's own price, ``Dr GR/IR,
+    Cr inventory/expense``, with the stock leaving at the cost it came in at. It
+    carries its receipt's branch.
+
+    Only goods not yet billed can go back this way. A billed quantity is first
+    credited on the bill (:class:`VendorCreditNote` with a quantity), which is what
+    releases it; returning it first would leave GR/IR cleared by a bill for goods the
+    school no longer holds.
+    """
+
+    DOC_TYPE = GOODS_RETURN_DOC_TYPE
+
+    vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="goods_returns")
+    grn = models.ForeignKey(
+        GoodsReceivedNote, on_delete=models.PROTECT, related_name="returns",
+    )
+    return_date = models.DateField()
+    reason = models.CharField(max_length=255)
+    total_value = MoneyField(help_text="Value taken back out of GR/IR (ex-tax), in kobo.")
+    journal = models.ForeignKey(
+        "vs_finance.JournalEntry", on_delete=models.PROTECT, related_name="goods_returns",
+        null=True, blank=True,
+    )
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "return_date"]),
+            models.Index(fields=["grn"]),
+        ]
+
+
+class GoodsReturnLine(TimeStampedModel):
+    """One returned receipt line: how many units went back, at the receipt price."""
+
+    goods_return = models.ForeignKey(
+        GoodsReturn, on_delete=models.CASCADE, related_name="lines",
+    )
+    grn_line = models.ForeignKey(
+        GoodsReceivedNoteLine, on_delete=models.PROTECT, related_name="return_lines",
+    )
+    quantity = models.DecimalField(max_digits=14, decimal_places=4)
+    value_amount = MoneyField(help_text="quantity × receipt unit price, in kobo.")
+    line_no = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["goods_return", "line_no", "id"]
+        indexes = [models.Index(fields=["grn_line"])]
+
+    def __str__(self) -> str:
+        return f"{self.grn_line_id}: -{self.quantity}"

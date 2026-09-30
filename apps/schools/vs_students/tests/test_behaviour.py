@@ -38,6 +38,7 @@ from schools.vs_students.models import (
     StudentGuardian,
     StudentStatusLog,
 )
+from vs_config.clock import branch_today
 
 from .base import StudentsFixture
 
@@ -590,6 +591,7 @@ class PlacementTests(StudentsFixture):
             ClassEnrolment.all_objects.create(
                 tenant=self.tenant, student=self.row,
                 school_class=self.lekki_class, session=self.year, is_active=True,
+                effective_date=branch_today(self.tenant, self.row.branch_id),
             )
 
     def test_the_year_on_a_row_is_the_classs_and_cannot_be_passed_in(self):

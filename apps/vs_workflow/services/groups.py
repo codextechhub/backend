@@ -56,3 +56,41 @@ def ensure_approver_group(tenant, code: str, *, name: str = "", description: str
 def group_display_name(code: str) -> str:
     """``payout-approvers`` -> ``Payout Approvers``."""
     return code.replace("-", " ").replace("_", " ").title()
+
+
+def group_branch_ids(group) -> set:
+    """The branches whose approvals *group*'s membership decides; empty means every branch.
+
+    A group's own ``branch`` records who owns it, not where it approves:
+    resolution never reads it, and a template may name any of its tenant's
+    groups. So a group owned by one branch reaches that branch and the branch
+    of every template with a stage, or a stage override, pointing at it. It
+    reaches the whole tenant as soon as one of those templates is tenant-wide
+    or shared, or a Dynamic Role (which serves every branch) sends to it.
+
+        Bright Star's Ikeja administrator creates "Ikeja Approvers". The
+        school-wide administrator later names it on the school's purchase
+        ladder. From then on a member added from Ikeja approves Lekki's
+        purchases too, so the group is the school-wide administrator's to
+        change.
+
+    Read by :func:`vs_rbac.scoping.caller_may_change` before a group or its
+    membership is changed.
+    """
+    from django.db.models import Q
+
+    from vs_workflow.models import WorkflowDynamicRoleRule, WorkflowTemplate
+
+    if group.branch_id is None:
+        return set()
+    if WorkflowDynamicRoleRule.objects.filter(group=group).exists():
+        return set()
+    branches = set(
+        WorkflowTemplate.all_objects.filter(
+            Q(stages__approver_group=group, stages__retired_at__isnull=True)
+            | Q(stages__tenant_overrides__approver_group=group)
+        ).values_list("branch_id", flat=True).distinct()
+    )
+    if None in branches:
+        return set()
+    return branches | {group.branch_id}

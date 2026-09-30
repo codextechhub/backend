@@ -224,9 +224,12 @@ month-first date format on purpose: 03/04/2026 would mean two different days
 to two readers.
 
 Every signed-in member receives the effective values in the login and `/me`
-tenant block (section 5.4), with no settings key. Server-rendered documents
-(invoices, receipts, PDFs, emails, exports) do not read the format or the clock
-yet.
+tenant block (section 5.4), with no settings key. Everything the server prints
+for people (invoices, receipts, PDFs, emails, notifications, export files,
+approval cards, refusal sentences) writes its dates in the school's format and
+its times on the school's clock and zone, or the branch's zone for a thing that
+belongs to a branch that keeps its own, through `vs_config.display`
+(`docs/config/config_tenant_clock.md` section 5).
 
 Live schools only, for all three values and for a branch's zone alike, like the
 rest of this slice. A school being onboarded has no settings screen, and it

@@ -26,7 +26,7 @@ from schools.vs_staff.models import (
 )
 from schools.vs_staff.services import employment
 from schools.vs_staff.services.organogram import StaffOrganogramService
-from vs_config.clock import tenant_today
+from vs_config.clock import branch_today, tenant_today
 from vs_rbac.models import PermissionScope
 from vs_rbac.tests.helpers import (
     make_assignment,
@@ -112,6 +112,7 @@ class OrganogramFixture(StaffFixture):
         )
         cls.solo_appointment = StaffPositionAssignment.all_objects.create(
             tenant=cls.solo.tenant, staff=cls.solo_staff, position=cls.solo_post,
+            start_date=branch_today(cls.solo.tenant, cls.solo_staff.branch_id),
         )
 
     def appoint(self, staff, position, **kwargs):
@@ -492,6 +493,7 @@ class ChartInvariantTests(OrganogramFixture):
         gone = self.make_staff("gone@brightfield.test", "Tunde", "Bello", branch=self.ikeja)
         StaffPositionAssignment.all_objects.create(
             tenant=self.tenant, staff=gone, position=self.ikeja_teacher_post,
+            start_date=branch_today(self.tenant, gone.branch_id),
         )
         type(gone).all_objects.filter(pk=gone.pk).update(
             employment_status=EmploymentStatus.TERMINATED,
@@ -642,6 +644,7 @@ class QueryCostTests(OrganogramFixture):
             )
             StaffPositionAssignment.all_objects.create(
                 tenant=self.tenant, staff=person, position=post,
+                start_date=branch_today(self.tenant, person.branch_id),
             )
 
     def _cost(self, name):

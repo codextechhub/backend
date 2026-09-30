@@ -11,6 +11,7 @@ from io import StringIO
 from datetime import timedelta
 from unittest import mock
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.management import call_command
@@ -1650,11 +1651,11 @@ class InvitationEngineDispatchTests(TestCase):
         self.assertEqual(notif.subject, "Reset your password for Bright Star School")
         self.assertIn("Account: pwreset@bright-star.test", notif.body)
         self.assertIn("Workspace: Bright Star School", notif.body)
+        # The school's own clock in its own format, zone named: not the server's UTC.
+        lagos = reset_request.expires_at.astimezone(ZoneInfo("Africa/Lagos"))
         self.assertIn(
-            "Link expires: "
-            + timezone.localtime(reset_request.expires_at).strftime(
-                "%d %b %Y, %H:%M %Z"
-            ),
+            f"Link expires: {lagos.day} {lagos:%b %Y}, {lagos.hour % 12 or 12}:{lagos:%M} "
+            f"{'pm' if lagos.hour >= 12 else 'am'} WAT",
             notif.body,
         )
         self.assertIn("Your current password remains unchanged", notif.body)

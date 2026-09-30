@@ -109,14 +109,24 @@ class BackdatedPostingError(PostingError):
     default_message = "This date is before the transaction it depends on."  # Default causality message.
     http_status = 409  # An impossible ordering is a conflict, not a field validation error.
 
-    # Initialize this object with its required state.
-    def __init__(self, *, subject, subject_date, source, source_date, remedy="", **kwargs):
+    def __init__(self, *, subject, subject_date, source, source_date, remedy="",
+                 tenant=None, **kwargs):
+        """The sentence writes both dates in *tenant*'s date format.
+
+        ``None`` falls back to the tenant the request speaks for, and then to
+        the platform's format. The structured ``subject_date`` and
+        ``source_date`` stay ISO for a client to read.
+        """
+        from vs_config.display import format_date
+        from vs_tenants.context import get_current_tenant
+
+        tenant = tenant if tenant is not None else get_current_tenant()
         self.subject_date = subject_date  # Store the dependent document's date.
         self.source_date = source_date  # Store the date the depended-on value exists from.
         message = (
-            f"{subject} is dated {subject_date}, but {source} only exists from "
-            f"{source_date}. Nothing can be settled, refunded or written off before "
-            f"the value it draws on exists."
+            f"{subject} is dated {format_date(subject_date, tenant)}, but {source} only "
+            f"exists from {format_date(source_date, tenant)}. Nothing can be settled, "
+            f"refunded or written off before the value it draws on exists."
         )
         if remedy:  # Append the caller's concrete way out when supplied.
             message = f"{message} {remedy}"

@@ -218,6 +218,9 @@ class WorkflowTemplatePublishSerializer(serializers.Serializer):
     # default) writes the caller's own version.
     scope               = serializers.ChoiceField(
         choices=["TENANT", "PLATFORM"], required=False, default="TENANT")
+    # The branch a TENANT template is for; see WorkflowTemplateViewSet.publish
+    # for what leaving it out means. Resolved inside the tenant by the view.
+    branch              = serializers.IntegerField(required=False, allow_null=True, min_value=1)
     document_type       = serializers.CharField(max_length=100)
     code                = serializers.SlugField(max_length=100)
     name                = serializers.CharField(max_length=200)
@@ -443,11 +446,15 @@ class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
         The snapshot is built when the document is submitted and kept as it
         was; what a given approver may see of it is decided here, so two
         approvers of the same batch can be shown different columns without the
-        stored document differing.
+        stored document differing. Its dates are stored ISO and written in the
+        tenant's display format as they are read.
         """
-        from vs_workflow.presentation import for_reader
+        from vs_workflow.presentation import details_dates_for_reader, for_reader
 
-        return for_reader(obj.document_details, self.context.get("request"))
+        return details_dates_for_reader(
+            for_reader(obj.document_details, self.context.get("request")),
+            getattr(obj, "tenant", None), branch=getattr(obj, "branch_id", None),
+        )
 
     def _document_summary(self, obj):
         """Return the object's summary, built at most once per object.
@@ -467,11 +474,19 @@ class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
         return summary
 
     def _build_document_summary(self, obj):
-        """Merge the submission snapshot with the source record's live link."""
+        """Merge the submission snapshot with the source record's live link.
+
+        The snapshot's dates are stored ISO and written in the tenant's display
+        format here, as it is read.
+        """
         from vs_workflow.exceptions import UnknownDocumentTypeError
         from vs_workflow.handlers import get_handler
+        from vs_workflow.presentation import summary_for_reader
 
-        summary = dict(obj.document_summary or {})
+        summary = summary_for_reader(
+            obj.document_summary, getattr(obj, "tenant", None),
+            branch=getattr(obj, "branch_id", None),
+        )
         document = obj.document
         if document is None:
             return summary

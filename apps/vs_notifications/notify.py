@@ -2,6 +2,7 @@
 
 Usage:
 
+  from vs_config.display import format_date
   from vs_notifications.notify import send_notification, UnregisteredRecipient
 
   send_notification(
@@ -9,12 +10,18 @@ Usage:
       context={
           "customer_name":  customer.name,
           "invoice_number": invoice.number,
-          "due_date":       invoice.due_date.strftime("%d %b %Y"),
+          "due_date":       format_date(invoice.due_date, tenant),
           "school_name":    school.name,
       },
       recipients=[guardian_user],
       school=school,
   )
+
+A template prints its context as given, so a date or a time reaches it already
+written, through vs_config.display (format_date, format_datetime, format_time),
+in the tenant's date format, on its clock and in its zone (the branch's, for
+a thing that belongs to one). Never pass an ISO string or strftime output for
+a person to read.
 
 For inviting users who have no account yet, pass unregistered_recipients:
 

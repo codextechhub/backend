@@ -29,6 +29,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from vs_config.clock import tenant_today
+from vs_config.display import format_date
 
 from .audit import record
 from .constants import (
@@ -255,7 +256,7 @@ def _invoice_context(invoice, delivery) -> dict:
         "invoice_number": invoice.document_number,
         "invoice_amount": _naira(invoice.total),
         "amount_outstanding": _naira(invoice.balance_due),
-        "due_date": invoice.due_date.isoformat() if invoice.due_date else "-",
+        "due_date": format_date(invoice.due_date, invoice.entity.tenant) or "-",
         "school_name": _issuer_name(invoice.entity),
         "issuer_name": _issuer_name(invoice.entity),
         # The public pay page for this invoice: not a checkout URL, and not the
@@ -273,7 +274,7 @@ def _receipt_context(payment, delivery) -> dict:
         "customer_name": payment.customer.name,
         "invoice_number": allocation.invoice.document_number if allocation is not None else "",
         "amount_paid": _naira(payment.amount),
-        "payment_date": payment.payment_date.isoformat() if payment.payment_date else "-",
+        "payment_date": format_date(payment.payment_date, payment.entity.tenant) or "-",
         "receipt_number": payment.document_number,
         "school_name": _issuer_name(payment.entity),
         "issuer_name": _issuer_name(payment.entity),
@@ -288,12 +289,13 @@ def _statement_context(customer, delivery, scope=None) -> dict:
     statement = customer_statement(
         customer, start_date=delivery.period_start, end_date=delivery.period_end, scope=scope,
     )
+    tenant = customer.entity.tenant
     return {
         "customer_name": customer.name,
         "issuer_name": _issuer_name(customer.entity),
         "school_name": _issuer_name(customer.entity),
-        "period_start": str(statement.start_date) if statement.start_date else "inception",
-        "period_end": str(statement.end_date),
+        "period_start": format_date(statement.start_date, tenant) or "inception",
+        "period_end": format_date(statement.end_date, tenant),
         "opening_balance": format_naira(statement.opening_balance),
         "closing_balance": format_naira(statement.closing_balance),
         "total_charges": format_naira(statement.total_debits),

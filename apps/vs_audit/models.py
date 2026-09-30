@@ -163,6 +163,8 @@ class AuditActionType(models.TextChoices):
     EXPORT_RUN_OMITTED_FIELDS = "EXPORT_RUN_OMITTED_FIELDS", "Export Omitted Fields (export.run.omitted_fields)"
     EXPORT_FILE_DOWNLOADED = "EXPORT_FILE_DOWNLOADED", "Export File Downloaded (export.file.downloaded)"
     EXPORT_FILE_DOWNLOAD_REFUSED = "EXPORT_FILE_DOWNLOAD_REFUSED", "Export Download Refused (export.file.download_refused)"
+    EXPORT_FILE_VIEWED = "EXPORT_FILE_VIEWED", "Export File Viewed (export.file.viewed)"
+    EXPORT_FILE_VIEW_REFUSED = "EXPORT_FILE_VIEW_REFUSED", "Export View Refused (export.file.view_refused)"
     EXPORT_FILE_EXPIRED = "EXPORT_FILE_EXPIRED", "Export File Expired (export.file.expired)"
     EXPORT_ADMIN_VIEWED_ACTIVITY = "EXPORT_ADMIN_VIEWED_ACTIVITY", "Export Activity Viewed (export.admin.viewed_activity)"
 

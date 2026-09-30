@@ -27,6 +27,7 @@ from .constants import (
     WF_DEFAULT_TEMPLATE_CODE,
     WF_DOCTYPE_PURCHASE_ORDER,
     WF_DOCTYPE_REQUISITION,
+    WF_DOCTYPE_VENDOR_CREDIT_NOTE,
     WF_DOCTYPE_VENDOR_INVOICE,
     WF_DOCTYPE_VENDOR_PAYMENT,
 )
@@ -344,8 +345,8 @@ class VendorInvoiceApprovalHandler(_ProcApprovalHandler):
         """Refuse once the bill has posted, because approval is what let it post."""
         return _posted_block_reason(
             document, "bill",
-            "A posted bill is corrected with a reversing entry, not by editing "
-            "the approval behind it.",
+            "A posted bill is corrected by voiding it or with a vendor credit note, "
+            "not by editing the approval behind it.",
         )
 
 
@@ -392,4 +393,56 @@ class VendorPaymentApprovalHandler(_ProcApprovalHandler):
             document, "payment",
             "A posted payment is corrected by reversing the payment, not by "
             "editing the approval behind it.",
+        )
+
+
+@register_handler(WF_DOCTYPE_VENDOR_CREDIT_NOTE)
+class VendorCreditNoteApprovalHandler(_ProcApprovalHandler):
+    noun = "Vendor credit note"
+    source_path = "/procurement/vendor-credit-notes"
+
+    @property
+    def document_model(self):
+        from .models import VendorCreditNote
+        return VendorCreditNote
+
+    def details(self, document) -> dict:
+        lines = document.lines.select_related("invoice_line")
+        bill = document.vendor_invoice
+        return document_details(
+            fields_section("Credit note details", [
+                ("Credit note date", document.note_date),
+                ("Bill", bill.document_number or str(bill.pk)),
+                ("Bill total", format_naira(bill.total)),
+                ("Bill still owed", format_naira(bill.balance_due)),
+                ("Vendor reference", document.vendor_reference or "-"),
+                ("Reason", document.reason),
+                ("Subtotal", format_naira(document.subtotal)),
+                ("Tax", format_naira(document.tax_total)),
+            ]),
+            table_section(
+                "Credited items",
+                [
+                    ("item", "Item"), ("quantity", "Quantity"),
+                    ("net", "Net"), ("tax", "Tax"), ("total", "Total"),
+                ],
+                [
+                    {
+                        "item": line.description or line.invoice_line.description or "-",
+                        "quantity": _quantity(line.quantity) if line.quantity else "-",
+                        "net": format_naira(line.net_amount),
+                        "tax": format_naira(line.tax_amount),
+                        "total": format_naira(line.net_amount + line.tax_amount),
+                    }
+                    for line in lines
+                ],
+            ),
+        )
+
+    def reversal_block_reason(self, document) -> str | None:
+        """Refuse once the note has posted, because approval is what let it post."""
+        return _posted_block_reason(
+            document, "credit note",
+            "A posted credit note is corrected by voiding it, not by editing the "
+            "approval behind it.",
         )

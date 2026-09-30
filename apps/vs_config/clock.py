@@ -73,6 +73,8 @@ DEFAULT_TIME_ZONE = "Africa/Lagos"
 
 _MEMO_ATTRIBUTE = "_vs_config_tenant_zone"
 _BRANCH_MEMO_ATTRIBUTE = "_vs_config_branch_zones"
+#: Where :func:`vs_config.display.display_style` keeps the date format and clock.
+_STYLE_MEMO_ATTRIBUTE = "_vs_config_display_style"
 
 
 @lru_cache(maxsize=1)
@@ -205,14 +207,16 @@ def tenant_zone(tenant) -> ZoneInfo:
 
 
 def forget_tenant_zone(tenant) -> None:
-    """Drop the memoised zones, the tenant's and its branches'.
+    """Drop every memoised display value: the zones and the date style.
 
-    The next read then sees a value just written, in the same request.
+    The tenant's zone, its branches' zones and the date format and clock
+    (:func:`vs_config.display.display_style`) go together, so the next read
+    sees a value just written, in the same request.
     """
     if tenant is None:
         return
     for holder in _memo_holders(tenant):
-        for attribute in (_MEMO_ATTRIBUTE, _BRANCH_MEMO_ATTRIBUTE):
+        for attribute in (_MEMO_ATTRIBUTE, _BRANCH_MEMO_ATTRIBUTE, _STYLE_MEMO_ATTRIBUTE):
             if hasattr(holder, attribute):
                 delattr(holder, attribute)
 

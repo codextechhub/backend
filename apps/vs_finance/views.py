@@ -20,7 +20,8 @@ from rest_framework.views import APIView
 
 from core.mixins import RetrieveModelMixin
 from core.response import success_response
-from vs_config.clock import branch_day_q, tenant_today
+from vs_config.clock import branch_day_q, branch_zone, tenant_today
+from vs_config.display import format_date, format_month
 from vs_rbac.permissions import (
     HasAnyModuleAccess,
     HasRBACPermission,
@@ -81,6 +82,15 @@ def visible_entities(request):
     if tenant is None:
         return LedgerEntity.objects.none()
     return LedgerEntity.objects.filter(tenant=tenant)
+
+
+def _day_at(instant, document):
+    """The calendar day *instant* falls on at *document*'s branch (else its tenant).
+
+    For a row that only has a creation time: the server stores UTC, so the
+    UTC date is the day before for the first hour after midnight in Lagos.
+    """
+    return instant.astimezone(branch_zone(document.entity.tenant, document.branch_id)).date()
 
 
 # Handle the resolve entity workflow.
@@ -1208,7 +1218,7 @@ class InvoiceSummaryView(APIView):
         monthly, cur = [], start
         for _ in range(12):
             key = datetime.date(cur.year, cur.month, 1)
-            monthly.append({"label": cur.strftime("%b %y"), "invoiced": inv_m.get(key, 0), "collected": col_m.get(key, 0)})
+            monthly.append({"label": format_month(cur, entity.tenant), "invoiced": inv_m.get(key, 0), "collected": col_m.get(key, 0)})
             cur = datetime.date(cur.year + (cur.month // 12), (cur.month % 12) + 1, 1)
 
         return success_response(
@@ -1334,7 +1344,7 @@ class InvoiceDetailView(APIView):
             j = writeoff_journals.get(int(log.metadata.get("journal_id") or 0))
             settlements.append({
                 "type": "WRITE_OFF",
-                "date": (j.date.isoformat() if j else log.created_at.date().isoformat()),
+                "date": (j.date.isoformat() if j else _day_at(log.created_at, inv).isoformat()),
                 "reference": inv.document_number,
                 "method": None,
                 "amount": _money(int(log.metadata.get("amount") or 0)),
@@ -1392,7 +1402,7 @@ class InvoiceDetailView(APIView):
 
         reminders = [
             {
-                "date": (d.notice_date or d.created_at.date()).isoformat(),
+                "date": (d.notice_date or _day_at(d.created_at, inv)).isoformat(),
                 "level": d.level,
                 "channel": d.channel or "",
                 "status": d.notice_status,
@@ -1420,7 +1430,7 @@ class InvoiceDetailView(APIView):
             j = writeoff_journals.get(int(log.metadata.get("journal_id") or 0))
             amount = int(log.metadata.get("amount") or 0)
             activity.append({
-                "date": (j.date.isoformat() if j else log.created_at.date().isoformat()),
+                "date": (j.date.isoformat() if j else _day_at(log.created_at, inv).isoformat()),
                 "label": f"Write-off ({format_naira(amount)})",
             })
         for r in reminders:
@@ -1617,10 +1627,16 @@ class DirectEntryCreateView(APIView):
     """POST /finance/direct-entries/?entity= - post a direct journal entry.
 
     Body: ``{"date"?, "narration"?, "reference"?, "lines": [{"account", "debit"|"credit"}],
-    "confirm_without_approval"?, "reason"?}`` with amounts in kobo. The one sanctioned way to
-    book money/balances that have no sub-ledger document behind them - capital injections,
-    equity contributions, loan drawdowns, grants, opening balances and manual adjustments.
-    Every other journal is a side-effect of an action.
+    "opening_balance"?, "confirm_without_approval"?, "reason"?}`` with amounts in kobo.
+    It posts as ``MANUAL``; ``opening_balance: true`` marks a balance brought forward on
+    the day the books began and posts it as ``OPENING``. The way to book a
+    balance no sub-ledger document carries: accruals, reclassifications and manual
+    adjustments between ordinary accounts. Every other journal is a side-effect of an
+    action. A line on an account a sub-ledger keeps is refused (422
+    ``CONTROL_ACCOUNT_LOCKED``) and the message names the document to use: money into or
+    out of a bank account is a bank transaction (capital, loans, drawings, interest), an
+    opening customer balance is an opening invoice, and an opening supplier balance is an
+    opening bill.
 
     A direct entry is a journal, so the school's journal approval route governs it
     exactly as it governs ``/journals/<id>/post/``:
@@ -1661,6 +1677,9 @@ class DirectEntryCreateView(APIView):
         serializer = DirectEntryCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        opening = (request.data or {}).get("opening_balance", False)
+        if not isinstance(opening, bool):
+            raise ValidationError({"opening_balance": "Expected a JSON boolean."})
         branch = _transaction_branch(request, entity, request.data)
         # Resolve each line's account under the caller's reach, and its optional cost
         # centre + analytical dimensions against this entity, before anything is written.
@@ -1678,7 +1697,7 @@ class DirectEntryCreateView(APIView):
                 entity, lines=lines,
                 date=data.get("date"), narration=data.get("narration", ""),
                 reference=data.get("reference", ""), actor_user=request.user,
-                branch=branch,
+                branch=branch, opening=opening,
             )
             if approval_required(entry):
                 from vs_workflow.services import release as release_svc
@@ -2228,7 +2247,7 @@ class BalanceSheetView(APIView):
                 rows.append([s.label, g.label, format_naira(g.amount)])
         export = _maybe_export(request, ReportTable(
             title="Balance Sheet",
-            subtitle=f"{entity.code} · as at {bs.as_of}",
+            subtitle=f"{entity.code} · as at {format_date(bs.as_of, entity.tenant)}",
             columns=["Section", "Line", "Amount"],
             rows=rows,
             summary_rows=[
@@ -2505,7 +2524,7 @@ class StatutoryPackView(APIView):
         rows.append(["", "  Net income", format_naira(pack.net_income)])
         export = _maybe_export(request, ReportTable(
             title="Statutory Pack (IFRS for SMEs)",
-            subtitle=f"{entity.code} · as at {pack.as_of}",
+            subtitle=f"{entity.code} · as at {format_date(pack.as_of, entity.tenant)}",
             columns=["Section", "Line", "Amount"],
             rows=rows,
             summary_rows=[
@@ -2718,7 +2737,7 @@ class ARAgingView(APIView):
         summary += [format_naira(report.total_net)]
         export = _maybe_export(request, ReportTable(
             title="Accounts Receivable Aging",
-            subtitle=f"{entity.code} · as at {report.as_of}",
+            subtitle=f"{entity.code} · as at {format_date(report.as_of, entity.tenant)}",
             columns=columns,
             rows=rows,
             summary_rows=[summary],

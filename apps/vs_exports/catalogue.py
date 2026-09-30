@@ -43,6 +43,7 @@ from decimal import Decimal
 from django.db.models import Q
 
 from vs_config.clock import tenant_today
+from vs_config.display import format_date, format_datetime, format_time
 
 from .constants import DatasetScope, ExportFormat, ValuesMode
 
@@ -55,19 +56,27 @@ from .constants import DatasetScope, ExportFormat, ValuesMode
 KIND_TEXT = "text"
 KIND_DATE = "date"
 KIND_DATETIME = "datetime"
+KIND_TIME = "time"         # a wall time with no date: a bell, an exam slot
 KIND_MONEY = "money"       # stored in kobo (integer), like the rest of the platform
 KIND_NUMBER = "number"
 KIND_CHOICE = "choice"     # stored as a code, displayed as its label
 
 
 # Render one cell value for the requested values mode.
-def render_value(kind: str, value, mode: str, *, choices: dict | None = None):
+def render_value(kind: str, value, mode: str, *, choices: dict | None = None, tenant=None):
     """Turn a raw ORM value into the cell that goes in the file.
 
     ``people`` mode is what a finance user reads (``26 Jul 2026``, ``₦1,240,000.00``,
     ``Overdue``); ``system`` mode is what another system imports (``2026-07-26``,
-    ``1240000.00``, ``OVERDUE``). Blank values are an em dash for people and an empty
+    ``1240000.00``, ``OVERDUE``). Blank values are a hyphen for people and an empty
     cell for systems, so an importer never has to strip decoration.
+
+    A people-mode date is written in *tenant*'s date format, and a people-mode
+    date and time on its clock, in its zone (:mod:`vs_config.display`): a file is
+    the whole school's, so it reads the school's zone rather than any one
+    branch's. A wall time is already the school's and is only reworded for its
+    clock ("8:00 am" or "08:00"). ``system`` mode never varies with the school:
+    an importer is written once, against ISO dates, UTC times and ``HH:MM:SS``.
     """
     people = mode == ValuesMode.PEOPLE
     if value is None or value == "":
@@ -75,15 +84,20 @@ def render_value(kind: str, value, mode: str, *, choices: dict | None = None):
 
     if kind == KIND_DATE:
         if isinstance(value, (datetime.date, datetime.datetime)):
-            return value.strftime("%d %b %Y") if people else value.strftime("%Y-%m-%d")
+            return format_date(value, tenant) if people else value.strftime("%Y-%m-%d")
         return str(value)
 
     if kind == KIND_DATETIME:
         if isinstance(value, datetime.datetime):
             return (
-                value.strftime("%d %b %Y %H:%M") if people
+                format_datetime(value, tenant) if people
                 else value.strftime("%Y-%m-%dT%H:%M:%S")
             )
+        return str(value)
+
+    if kind == KIND_TIME:
+        if isinstance(value, datetime.time):
+            return format_time(value, tenant) if people else value.strftime("%H:%M:%S")
         return str(value)
 
     if kind == KIND_MONEY:
@@ -717,13 +731,17 @@ def compile_filter(dataset: Dataset, spec: dict) -> Q:
 
 
 # Describe a filter in the plain language the review step reads back.
-def describe_filter(dataset: Dataset, spec: dict) -> str:
-    """One sentence a person can check - "Invoice date is 1 Jul 2026 to 31 Jul 2026"."""
+def describe_filter(dataset: Dataset, spec: dict, *, tenant=None) -> str:
+    """One sentence a person can check - "Invoice date is 1 Jul 2026 to 31 Jul 2026".
+
+    Dates are written in *tenant*'s date format; ``None`` reads the platform's.
+    """
     fdef = dataset.filter_def(str(spec.get("id") or ""))
     if fdef is None:
         return f"{spec.get('id')} (no longer available)"
     if fdef.kind == FILTER_DATE_RANGE:
-        start, end = spec.get("start") or "any", spec.get("end") or "any"
+        start = format_date(spec.get("start"), tenant) or "any"
+        end = format_date(spec.get("end"), tenant) or "any"
         return f"{fdef.label} is {start} to {end}"
     if fdef.kind == FILTER_CHOICE:
         values = [fdef.choices.get(str(v), str(v)) for v in (spec.get("values") or [])]

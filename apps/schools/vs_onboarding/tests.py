@@ -1992,7 +1992,7 @@ class NotificationTests(OnboardingFixture):
         self.assertTrue(activated.exists())
         self.assertIn("approved", reviewed.first().body)
         progress = OnboardingProgress.all_objects.get(tenant=self.tenant)
-        display_time = effects.display_datetime(progress.go_live_at)
+        display_time = effects.display_datetime(progress.go_live_at, self.tenant)
         self.assertIn(f"Reviewed at: {display_time}", reviewed.first().body)
         self.assertIn(f"Activated at: {display_time}", activated.first().body)
         self.assertNotIn("{{", activated.first().body)

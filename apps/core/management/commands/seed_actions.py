@@ -105,6 +105,7 @@ ACTIONS: list[tuple[str, str]] = [
     ("override",   "Override a policy control through a dedicated, audited exception."),
     ("adjust",     "Record a manual adjustment (stock revaluation, corrections)."),
     ("attach",     "Attach or remove supporting evidence files on a record (supplier invoices, receipts)."),
+    ("import_opening", "Carry in balances owed when the books began, one document per original bill."),
 
     # ── Library-specific ──────────────────────────────────────────────────────
     ("return",     "Record the return of a borrowed item."),

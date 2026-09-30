@@ -8,6 +8,7 @@ from vs_rbac.scoping import transaction_branch_q
 from vs_rbac.scoping import (
     WholeTenantWriteMixin,
     assert_caller_may_change,
+    caller_branch_ids,
     shared_write_refusal,
 )
 
@@ -181,6 +182,10 @@ class TaxObligationDetailView(_TaxObligationWriteMixin, _FinanceBase):
 class TaxObligationOutstandingView(_FinanceBase):
     """GET - per-obligation unremitted balance sitting in each control account.
 
+    A branch-bound reader sees only their branches' part of each balance, counted
+    by entry branch as a return counts its lines; a whole-tenant reader sees the
+    whole balance.
+
     docstring-name: Outstanding tax obligations
     """
 
@@ -191,7 +196,7 @@ class TaxObligationOutstandingView(_FinanceBase):
         from ..tax_filing import outstanding_obligations
 
         entity = resolve_entity(request)
-        rows = outstanding_obligations(entity)
+        rows = outstanding_obligations(entity, branch_ids=caller_branch_ids(request))
         return success_response(
             "Outstanding tax obligations retrieved.",
             data={
@@ -225,10 +230,13 @@ class TaxFilingSummaryView(_FinanceBase):
 
         from ..constants import TaxFilingStatus
 
+        from ..models import TaxFilingShare
+
         entity = resolve_entity(request)
-        agg = TaxFiling.objects.filter(
+        filings = TaxFiling.objects.filter(
             transaction_branch_q(request), entity=entity,
-        ).aggregate(
+        )
+        agg = filings.aggregate(
             outstanding=Coalesce(
                 Sum(F("amount_due") - F("amount_paid"),
                     filter=~Q(filing_status=TaxFilingStatus.PAID)), 0),
@@ -236,6 +244,13 @@ class TaxFilingSummaryView(_FinanceBase):
             filed=Count("id", filter=Q(filing_status=TaxFilingStatus.FILED)),
             paid=Count("id", filter=Q(filing_status=TaxFilingStatus.PAID)),
         )
+        reach = caller_branch_ids(request)
+        if reach is not None:
+            # A branch-bound reader's outstanding is their branches' shares only.
+            agg["outstanding"] = TaxFilingShare.objects.filter(
+                filing__in=filings.exclude(filing_status=TaxFilingStatus.PAID),
+                branch_id__in=tuple(sorted(reach)),
+            ).aggregate(o=Coalesce(Sum(F("amount_due") - F("amount_paid")), 0))["o"]
         return success_response("Tax filing summary retrieved.", data=agg)
 
 
@@ -268,7 +283,8 @@ class TaxFilingListCreateView(WholeTenantWriteMixin, _FinanceBase):
         if (status_val := request.query_params.get("filing_status")):
             qs = qs.filter(filing_status=status_val)
         return self.paginate(
-            request, qs.order_by("-period_end", "-id"), TaxFilingSerializer)
+            request, qs.order_by("-period_end", "-id"), TaxFilingSerializer,
+            context={"request": request, "branch_ids": caller_branch_ids(request)})
 
     # Handle POST requests for this endpoint.
     def post(self, request):
@@ -300,14 +316,18 @@ class TaxFilingListCreateView(WholeTenantWriteMixin, _FinanceBase):
 class _TaxFilingActionBase(_FinanceBase):
     """Resolve one filing in the caller's reach; on a write, one they may change.
 
-    A filing with no branch is the school's return, so filing, un-filing or
-    paying it needs whole-tenant reach. A branch-bound caller is refused with a
-    403 ``SHARED_RECORD_READ_ONLY`` before anything is posted; a filing of one
-    of their own branches is theirs.
+    A filing with no branch is the tenant's one return, readable by every
+    finance reader of the tenant and shown narrowed to their branches' shares
+    (:func:`_filing_data`). Filing, un-filing and reversing a remittance change
+    the whole return, so they need whole-tenant reach: a branch-bound caller is
+    refused with a 403 ``SHARED_RECORD_READ_ONLY`` before anything is posted.
+    Paying (``shares_only``) touches one branch's share, and the service refuses
+    a share outside the caller's branches. A filing of one of the caller's own
+    branches is theirs.
     """
 
     # Support the filing workflow.
-    def _filing(self, request, pk):
+    def _filing(self, request, pk, *, shares_only=False):
         from rest_framework.permissions import SAFE_METHODS
 
         entity = resolve_entity(request)
@@ -317,7 +337,7 @@ class _TaxFilingActionBase(_FinanceBase):
             "obligation__liability_account").prefetch_related(*FILING_PREFETCH).first()
         if filing is None:
             raise NotFound("Tax filing not found for this entity.")
-        if request.method not in SAFE_METHODS:
+        if request.method not in SAFE_METHODS and not shares_only:
             assert_caller_may_change(
                 request.user, getattr(request, "tenant", None), (filing.branch_id,),
                 message=shared_write_refusal(SHARED_FILING),
@@ -325,12 +345,15 @@ class _TaxFilingActionBase(_FinanceBase):
         return entity, filing
 
 
-# Group endpoint behavior for Tax Filing Detail View.
-def _filing_data(filing):
-    """The serialized filing, re-read with its shares and remittances."""
+def _filing_data(filing, reach=None):
+    """The serialized filing, re-read with its shares and remittances.
+
+    ``reach`` (the caller's branch ids, or ``None`` for the whole tenant) narrows
+    the breakdown, the payments and the totals to the caller's branches.
+    """
     fresh = TaxFiling.objects.select_related("obligation__liability_account").prefetch_related(
         *FILING_PREFETCH).get(pk=filing.pk)
-    return TaxFilingSerializer(fresh).data
+    return TaxFilingSerializer(fresh, context={"branch_ids": reach}).data
 
 
 class TaxFilingDetailView(_TaxFilingActionBase):
@@ -341,7 +364,10 @@ class TaxFilingDetailView(_TaxFilingActionBase):
     def get(self, request, pk):
         _, filing = self._filing(request, pk)
         return success_response(
-            "Tax filing retrieved.", data=TaxFilingSerializer(filing).data,
+            "Tax filing retrieved.",
+            data=TaxFilingSerializer(
+                filing, context={"request": request, "branch_ids": caller_branch_ids(request)},
+            ).data,
         )
 
 
@@ -410,10 +436,14 @@ class TaxFilingPayView(_TaxFilingActionBase):
 
     One payment: ``bank_account``, ``pay_date``, optional ``amount`` and optional
     ``branch`` (the share it pays). Without ``branch`` it pays the only unpaid
-    share, else the bank account's own branch's share, else, from a tenant-wide
-    account, every unpaid share. Several payments at once: ``shares``, a list of
-    ``{branch, bank_account, amount?}`` sharing the one ``pay_date``, all recorded
-    or none. A named share is paid only from its own branch's account.
+    share, else the bank account's own branch's share. Several payments at once:
+    ``shares``, a list of ``{branch, bank_account, amount?}`` sharing the one
+    ``pay_date``, all recorded or none. Each share is paid only from its own
+    branch's bank account (see :func:`vs_finance.tax_filing.pay_filing`).
+
+    Unlike the other writes to a return, paying does not need whole-tenant reach:
+    a branch-bound bursar pays her own branches' shares, and a share outside
+    her branches is refused.
 
     docstring-name: Pay a tax filing
     """
@@ -424,7 +454,7 @@ class TaxFilingPayView(_TaxFilingActionBase):
     def post(self, request, pk):
         from ..tax_filing import ANY_SHARE, pay_filing_shares
 
-        entity, filing = self._filing(request, pk)
+        entity, filing = self._filing(request, pk, shares_only=True)
         body = request.data or {}
         pay_date = _date(body.get("pay_date"), "pay_date", required=True)
         rows = body.get("shares")
@@ -457,10 +487,13 @@ class TaxFilingPayView(_TaxFilingActionBase):
                       if row.get("amount") not in (None, "") else None)
             payments.append((branch, bank, amount))
 
-        pay_filing_shares(filing, payments=payments, pay_date=pay_date, actor_user=request.user)
+        reach = caller_branch_ids(request)
+        pay_filing_shares(
+            filing, payments=payments, pay_date=pay_date, actor_user=request.user, reach=reach,
+        )
         return success_response(
             f"Tax filing {filing.document_number} remitted.",
-            data=_filing_data(filing),
+            data=_filing_data(filing, reach),
         )
 
 

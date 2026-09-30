@@ -149,6 +149,13 @@ class ContractStatus(models.TextChoices):
 #: tenant-scoped, collision-safe reference like ``CT-12607221``.
 CONTRACT_DOC_TYPE = "CT"
 
+#: Document-number tokens for the payables corrections. Both are fed straight to the
+#: shared tenant allocator like :data:`CONTRACT_DOC_TYPE`, so they number in their own
+#: daily series (``VC-12607221``, ``RV-12607221``) without widening finance's
+#: :class:`~vs_finance.constants.DocType`, which procurement does not own.
+VENDOR_CREDIT_NOTE_DOC_TYPE = "VC"
+GOODS_RETURN_DOC_TYPE = "RV"
+
 
 class MilestoneStatus(models.TextChoices):
     """Delivery state of a contract milestone.
@@ -185,6 +192,7 @@ WF_DOCTYPE_REQUISITION = "procurement.requisition"
 WF_DOCTYPE_PURCHASE_ORDER = "procurement.purchase_order"
 WF_DOCTYPE_VENDOR_INVOICE = "procurement.vendor_invoice"
 WF_DOCTYPE_VENDOR_PAYMENT = "procurement.vendor_payment"
+WF_DOCTYPE_VENDOR_CREDIT_NOTE = "procurement.vendor_credit_note"
 
 # One canonical boundary for every shared-workflow record owned by Procurement.
 # Keep queue/report adapters on this allow-list so adding a new approvable document
@@ -194,6 +202,7 @@ PROCUREMENT_APPROVAL_TYPES = (
     WF_DOCTYPE_PURCHASE_ORDER,
     WF_DOCTYPE_VENDOR_INVOICE,
     WF_DOCTYPE_VENDOR_PAYMENT,
+    WF_DOCTYPE_VENDOR_CREDIT_NOTE,
 )
 
 #: Statuses in which a purchase order has stopped being a live commitment.
@@ -262,10 +271,14 @@ class StockMovementType(models.TextChoices):
                   moving-average cost (Dr expense, Cr inventory).
     ADJUSTMENT -> a stock-count / write-down / write-up correction (signed). Posts
                   the value delta between inventory and an adjustment account.
+    RETURN     -> goods sent back to the vendor against a posted receipt. Takes the
+                  quantity out at the cost it came in at, and the goods return's
+                  journal (Dr GR/IR, Cr inventory) carries the GL side.
     """
     RECEIPT = "RECEIPT", "Receipt"
     ISSUE = "ISSUE", "Issue"
     ADJUSTMENT = "ADJUSTMENT", "Adjustment"
+    RETURN = "RETURN", "Return to vendor"
 
 
 #: Well-known Chart-of-Accounts codes the P2P journals resolve against (per entity).

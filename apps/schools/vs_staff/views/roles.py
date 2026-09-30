@@ -43,6 +43,9 @@ class StaffRolesView(StaffViewMixin, APIView):
     standing to them (``services/visibility.py``). The exceptions block still
     needs ``school.user_overrides.view`` either way.
 
+    ``can_change_exceptions`` sits beside ``overrides`` whenever that block is
+    present; see :meth:`_overrides`.
+
     ``?as_at=YYYY-MM-DD`` answers with the grants, reach and exceptions as they
     stood at the end of that day (``as_at.py``), for the person themselves and a
     reader whose key reaches them.
@@ -98,7 +101,12 @@ class StaffRolesView(StaffViewMixin, APIView):
         }
         overrides = self._overrides(staff)
         if overrides is not None:
+            from vs_rbac.grant_reach import caller_may_change_person
+
             data["overrides"] = overrides
+            data["can_change_exceptions"] = caller_may_change_person(
+                request.user, self.tenant, staff.user,
+            )
         return success_response(data=data)
 
     def _grant(self, grant, branch_names):
@@ -142,7 +150,15 @@ class StaffRolesView(StaffViewMixin, APIView):
         their own account. An empty block would say "there are none here", which
         is exactly the fact the restriction exists to withhold, so a caller
         without the key gets the key absent from the payload entirely.
+
+        The same absence answers a branch-bound reader looking at somebody
+        posted only to other branches, who may reach the profile through the
+        school's profile policy but not that person's exceptions
+        (:func:`vs_rbac.grant_reach.caller_may_read_person`). Beside the block,
+        ``can_change_exceptions`` says whether the reader's reach lets them
+        change it.
         """
+        from vs_rbac.grant_reach import caller_may_read_person
         from vs_rbac.permissions import has_permission
 
         from .. import as_at as past
@@ -150,6 +166,8 @@ class StaffRolesView(StaffViewMixin, APIView):
         if not has_permission(
             self.request.user, PERM_OVERRIDES_VIEW, tenant=self.tenant,
         ):
+            return None
+        if not caller_may_read_person(self.request.user, self.tenant, staff.user):
             return None
         return [
             {

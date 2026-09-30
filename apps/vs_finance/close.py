@@ -573,13 +573,17 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     if closing_date != fiscal_year.end_date:
         from rest_framework.exceptions import ValidationError
 
+        from vs_config.display import format_date
+
+        start = format_date(fiscal_year.start_date, entity.tenant)
+        end = format_date(fiscal_year.end_date, entity.tenant)
         raise ValidationError({
             "closing_date": (
                 f"The closing date must fall inside FY{fiscal_year.year} "
-                f"({fiscal_year.start_date} to {fiscal_year.end_date}) on its last day: "
-                f"the closing entry is dated {fiscal_year.end_date}, in the year's closing "
-                f"period. {closing_date} is not that day. Leave it out to close on "
-                f"{fiscal_year.end_date}."
+                f"({start} to {end}) on its last day: "
+                f"the closing entry is dated {end}, in the year's closing "
+                f"period. {format_date(closing_date, entity.tenant)} is not that day. "
+                f"Leave it out to close on {end}."
             ),
         })
 

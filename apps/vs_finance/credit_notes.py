@@ -25,6 +25,8 @@ from collections import defaultdict
 
 from django.db import transaction
 
+from vs_config.display import format_date
+
 from .account_mappings import resolve_mapped_account
 from .audit import record, record_rejection
 from .constants import (
@@ -453,7 +455,8 @@ def _attribute_refund_to_lots(refund, customer, *, as_of):
         raise PostingError(
             f"Only {format_naira(drawn)} of identifiable customer credit could be "
             f"matched to this {format_naira(refund.amount)} refund as at "
-            f"{as_of}. Refresh the customer's credit and try again.",
+            f"{format_date(as_of, refund.entity.tenant)}. Refresh the customer's credit "
+            f"and try again.",
         )
 
     rows = []  # Allocation rows written for this refund.
@@ -531,18 +534,20 @@ def _post_refund_atomic(refund, *, actor_user=None):
         later = customer_refund_available_balance(
             customer, exclude_refund_id=refund.pk,
             branch=refund.branch_id)  # Same figure with no date cutoff.
+        tenant = refund.entity.tenant
         hint = ""
         if later > available:  # The shortfall is purely a dating problem - say so.
             first = _earliest_credit_date(
                 customer, refund.amount, exclude_refund_id=refund.pk, branch=refund.branch_id)
             hint = (
                 f" {format_naira(later)} is available today, but not as at "
-                f"{refund.refund_date}"
-                + (f" - the credit exists from {first}." if first else ".")
+                f"{format_date(refund.refund_date, tenant)}"
+                + (f" - the credit exists from {format_date(first, tenant)}." if first else ".")
             )
         raise PostingError(
             f"Refund of {format_naira(refund.amount)} exceeds {customer.code}'s credit "
-            f"available on {refund.refund_date} ({format_naira(available)}).{hint}",
+            f"available on {format_date(refund.refund_date, tenant)} "
+            f"({format_naira(available)}).{hint}",
         )
 
     deposit = refund.deposit_account or (  # Resolve bank/deposit account to credit.
@@ -661,7 +666,8 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
         subject=f"Write-off of {invoice.document_number or invoice.pk}", subject_date=when,
         source=f"invoice {invoice.document_number or invoice.pk}",
         source_date=invoice.invoice_date,
-        remedy=f"Date the write-off {invoice.invoice_date} or later.",
+        remedy=f"Date the write-off {format_date(invoice.invoice_date, invoice.entity.tenant)} or later.",
+        tenant=invoice.entity.tenant,
     )
     period = resolve_period(invoice.entity, when)  # Resolve write-off period.
     entry = JournalEntry.objects.create(

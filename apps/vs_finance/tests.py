@@ -414,10 +414,20 @@ class _GLFixtureMixin:
         return entity, period
 
     # Prepare or verify the make entry test path.
-    def make_entry(self, entity, period, pairs, *, date=datetime.date(2026, 1, 15)):
-        """pairs: list of (account_code, debit_kobo, credit_kobo)."""
+    #: Source of the journals :meth:`make_entry` builds. A class whose journals stand
+    #: in for bank receipts and payments sets ``BANK``: a ``MANUAL`` journal may not
+    #: touch a bank account's ledger (``vs_finance.control_accounts``).
+    journal_source = "MANUAL"
+
+    def make_entry(self, entity, period, pairs, *, date=datetime.date(2026, 1, 15), source=None):
+        """pairs: list of (account_code, debit_kobo, credit_kobo).
+
+        ``source`` names the document the journal stands in for when it touches an
+        account a sub-ledger keeps; it defaults to the class's ``journal_source``.
+        """
         entry = JournalEntry.objects.create(
             entity=entity, date=date, period=period, narration="test",
+            source=source or self.journal_source,
         )
         for i, (code, dr, cr) in enumerate(pairs, start=1):
             acc = Account.objects.get(entity=entity, code=code)
@@ -2143,6 +2153,8 @@ class _Phase4FixtureMixin(_GLFixtureMixin):
 
 # Group tests for Bank Reconciliation Tests.
 class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
+    journal_source = "BANK"
+
     # Verify import is idempotent on external id behavior.
     def test_import_is_idempotent_on_external_id(self):
         entity, _, _ = self.build_books()
@@ -2449,7 +2461,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(line.status, BankLineStatus.MATCHED)
         # The bank's own date survives on the journal, so a charge booked into a
         # later period is not mistaken for one the bank raised then.
-        self.assertIn("bank value date 2026-01-20", entry.narration)
+        self.assertIn("bank value date 20 Jan 2026", entry.narration)
 
     # Verify an open line still books on its own date behavior.
     def test_adjustment_in_an_open_month_still_books_on_the_line_date(self):
@@ -2478,7 +2490,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
 
         self.assertEqual(entry.date, datetime.date(2026, 3, 5))
         self.assertEqual(entry.period_id, periods[2].id)
-        self.assertIn("bank value date 2026-01-20", entry.narration)
+        self.assertIn("bank value date 20 Jan 2026", entry.narration)
 
     # Verify an explicit closed posting date is still refused behavior.
     def test_explicit_posting_date_in_a_closed_period_is_refused(self):
@@ -2513,7 +2525,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
 
         self.assertEqual(entry.date, datetime.date(2026, 5, 31))
         self.assertEqual(entry.period_id, periods[4].id)
-        self.assertIn("bank value date 2026-06-15", entry.narration)
+        self.assertIn("bank value date 15 Jun 2026", entry.narration)
 
     # Verify adjustment fails closed when nothing is open behavior.
     def test_adjustment_fails_closed_when_no_period_is_open(self):
@@ -2983,7 +2995,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
         post_journal(self.make_entry(
             entity, period,
             [("1100", net + vat, 0), ("4100", 0, net), ("2200", 0, vat)],
-            date=date,
+            date=date, source="SALES",
         ))
 
     # Support the accrue input vat workflow.
@@ -2992,7 +3004,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
         post_journal(self.make_entry(
             entity, period,
             [("5300", net, 0), ("1300", vat, 0), ("1100", 0, net + vat)],
-            date=date,
+            date=date, source="PURCHASE",
         ))
 
     # Support the accrue wht workflow.
@@ -3001,7 +3013,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
         post_journal(self.make_entry(
             entity, period,
             [("5300", amount * 10, 0), ("2300", 0, amount), ("1100", 0, amount * 9)],
-            date=date,
+            date=date, source="BANK",
         ))
 
     # Verify prepare defaults due date from filing day behavior.
@@ -3893,7 +3905,7 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
         ar = Account.objects.get(entity=entity, code="1200")
         Customer.objects.create(entity=entity, code="C1", name="Acme", receivable_account=ar)
         post_journal(self.make_entry(
-            entity, jan, [("1200", 50000, 0), ("4100", 0, 50000)],
+            entity, jan, [("1200", 50000, 0), ("4100", 0, 50000)], source="SALES",
         ))
         with self.assertRaises(PeriodCloseError):
             close_period(entity, jan)
@@ -4008,17 +4020,18 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
 
     # Support the seed activity workflow.
     def _seed_activity(self, entity, period):
+        """Four bank movements, posted as the bank documents they stand in for."""
         post_journal(self.make_entry(
-            entity, period, [("1100", 1000000, 0), ("3100", 0, 1000000)],
+            entity, period, [("1100", 1000000, 0), ("3100", 0, 1000000)], source="BANK",
         ))  # capital
         post_journal(self.make_entry(
-            entity, period, [("1500", 400000, 0), ("1100", 0, 400000)],
+            entity, period, [("1500", 400000, 0), ("1100", 0, 400000)], source="BANK",
         ))  # buy equipment
         post_journal(self.make_entry(
-            entity, period, [("1100", 300000, 0), ("4100", 0, 300000)],
+            entity, period, [("1100", 300000, 0), ("4100", 0, 300000)], source="BANK",
         ))  # cash revenue
         post_journal(self.make_entry(
-            entity, period, [("5200", 120000, 0), ("1100", 0, 120000)],
+            entity, period, [("5200", 120000, 0), ("1100", 0, 120000)], source="BANK",
         ))  # salaries
 
     # Verify income statement nets revenue less expense behavior.
@@ -4127,7 +4140,7 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
         entity, _, periods = self.build_books()
         # An accrual that never touches cash (Dr expense, Cr payable) must not move cash.
         post_journal(self.make_entry(
-            entity, periods[0], [("5300", 50000, 0), ("2100", 0, 50000)],
+            entity, periods[0], [("5300", 50000, 0), ("2100", 0, 50000)], source="PURCHASE",
         ))
         cf = cash_flow_statement(entity)
         self.assertEqual(cf.closing_cash, 0)
@@ -4380,17 +4393,18 @@ class StatutoryPackTests(_Phase4FixtureMixin, TestCase):
 
     # Support the seed activity workflow.
     def _seed_activity(self, entity, period):
+        """Four bank movements, posted as the bank documents they stand in for."""
         post_journal(self.make_entry(
-            entity, period, [("1100", 1000000, 0), ("3100", 0, 1000000)],
+            entity, period, [("1100", 1000000, 0), ("3100", 0, 1000000)], source="BANK",
         ))  # capital
         post_journal(self.make_entry(
-            entity, period, [("1500", 400000, 0), ("1100", 0, 400000)],
+            entity, period, [("1500", 400000, 0), ("1100", 0, 400000)], source="BANK",
         ))  # buy equipment
         post_journal(self.make_entry(
-            entity, period, [("1100", 300000, 0), ("4100", 0, 300000)],
+            entity, period, [("1100", 300000, 0), ("4100", 0, 300000)], source="BANK",
         ))  # cash revenue
         post_journal(self.make_entry(
-            entity, period, [("5200", 120000, 0), ("1100", 0, 120000)],
+            entity, period, [("5200", 120000, 0), ("1100", 0, 120000)], source="BANK",
         ))  # salaries
 
     # Support the group workflow.
@@ -4830,7 +4844,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         bank = self.make_bank(entity)
         # A +50,000 cash inflow on the cash account (book balance moves).
         post_journal(self.make_entry(
-            entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)],
+            entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)], source="BANK",
             date=datetime.date(2026, 1, 15)))
         self.client.post(
             f"/v1/finance/bank-accounts/{bank.id}/statement-lines/?entity={entity.code}",
@@ -4857,10 +4871,10 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         bank = self.make_bank(entity)
         # Two posted cash movements (the "book" side).
         post_journal(self.make_entry(
-            entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)],
+            entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)], source="BANK",
             date=datetime.date(2026, 1, 15)))
         post_journal(self.make_entry(
-            entity, periods[0], [("1100", 30000, 0), ("4100", 0, 30000)],
+            entity, periods[0], [("1100", 30000, 0), ("4100", 0, 30000)], source="BANK",
             date=datetime.date(2026, 1, 16)))
 
         self.client.post(
@@ -4891,7 +4905,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         bank = self.make_bank(entity)
         # 1) A plain match: post a +50,000 cash line, import + auto-match it.
         post_journal(self.make_entry(
-            entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)],
+            entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)], source="BANK",
             date=datetime.date(2026, 1, 15)))
         imp = self.client.post(
             f"/v1/finance/bank-accounts/{bank.id}/statement-lines/?entity={entity.code}",
@@ -5140,7 +5154,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         )
         self.assertEqual(resp.status_code, 201, resp.content)
         data = resp.json()["data"]
-        self.assertEqual(data["source"], "OPENING")
+        self.assertEqual(data["source"], "MANUAL")
         self.assertEqual(data["status"], "POSTED")
         self.assertEqual(data["total_debit"], 5000000000)
         self.assertEqual(data["total_credit"], 5000000000)
@@ -9808,7 +9822,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
 
         # The message must name the date, not just the shortfall - that is the
         # difference between a fixable error and a baffling one.
-        self.assertIn("2026-02-01", str(ctx.exception))
+        self.assertIn("1 Feb 2026", str(ctx.exception))
         refund.refresh_from_db()
         self.assertEqual(refund.status, DocumentStatus.DRAFT)
         self.assertEqual(customer_credit_balance(customer), 45000)
@@ -10020,7 +10034,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
         )
         post_journal(self.make_entry(
             entity, jan, [("5300", 50000, 0), ("2300", 0, 50000)],
-            date=datetime.date(2026, 1, 10),
+            date=datetime.date(2026, 1, 10), source="PURCHASE",
         ))
         filing = prepare_filing(
             obligation, period_start=datetime.date(2026, 1, 1),
@@ -10049,7 +10063,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
         )
         post_journal(self.make_entry(
             entity, jan, [("5300", 50000, 0), ("2300", 0, 50000)],
-            date=datetime.date(2026, 1, 10),
+            date=datetime.date(2026, 1, 10), source="PURCHASE",
         ))
         filing = prepare_filing(
             obligation, period_start=datetime.date(2026, 1, 1),

@@ -981,7 +981,9 @@ class StaffPositionAssignment(_Owned):
     is_primary = models.BooleanField(default=True)
     #: Covering the post rather than holding it.
     is_acting = models.BooleanField(default=False)
-    start_date = models.DateField(default=timezone.localdate)
+    #: No default: the day is the person's posting's (``branch_today``), which a
+    #: column default cannot see, so every write names it.
+    start_date = models.DateField()
     end_date = models.DateField(null=True, blank=True)
 
     class Meta(_Owned.Meta):

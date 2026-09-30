@@ -42,11 +42,16 @@ class _ReversalFixture(_Phase4FixtureMixin, TestCase):
     def setUp(self):
         self.entity, _, self.periods = self.build_books()
 
-    def post(self, pairs, *, date=datetime.date(2026, 1, 15), dimensions=None):
-        """Post ``pairs`` of ``(code, debit, credit)``; ``dimensions`` tags every line."""
+    def post(self, pairs, *, date=datetime.date(2026, 1, 15), dimensions=None, source="MANUAL"):
+        """Post ``pairs`` of ``(code, debit, credit)``; ``dimensions`` tags every line.
+
+        ``source`` names the document the journal stands in for when it touches an
+        account a sub-ledger keeps (a bank ledger, a tax payable), which a ``MANUAL``
+        journal may not.
+        """
         period = self.periods[date.month - 1]
         entry = JournalEntry.objects.create(
-            entity=self.entity, date=date, period=period, narration="test",
+            entity=self.entity, date=date, period=period, narration="test", source=source,
         )
         for i, (code, dr, cr) in enumerate(pairs, start=1):
             JournalLine.objects.create(
@@ -98,6 +103,7 @@ class TaxWorksheetReversalTests(_ReversalFixture):
     def run_payroll(self, paye, *, date):
         return self.post(
             [("5300", paye * 5, 0), ("2310", 0, paye), ("1100", 0, paye * 4)], date=date,
+            source="PAYROLL",
         )
 
     def test_a_run_and_its_reversal_net_to_zero_movement(self):
@@ -172,8 +178,9 @@ class RegisterReversalTests(_ReversalFixture):
         from vs_finance.views_ops.banking import BankAccountDetailView
 
         bank = self.make_bank(self.entity)
-        self.post([("1100", 80_000, 0), ("4100", 0, 80_000)], date=datetime.date(2026, 1, 5))
-        reverse_journal(self.post([("1100", 50_000, 0), ("4100", 0, 50_000)]))
+        self.post([("1100", 80_000, 0), ("4100", 0, 80_000)], date=datetime.date(2026, 1, 5),
+                  source="BANK")
+        reverse_journal(self.post([("1100", 50_000, 0), ("4100", 0, 50_000)], source="BANK"))
 
         rows = BankAccountDetailView()._transactions(
             bank, book_balance=gl_account_balance(bank.gl_account))
@@ -189,7 +196,7 @@ class RegisterReversalTests(_ReversalFixture):
             entity=self.entity, name="Front Desk", custodian_name="Tunde Custodian",
             gl_account=self.account("1110"), float_amount=5_000,
         )
-        reverse_journal(self.post([("1110", 5_000, 0), ("1100", 0, 5_000)]))
+        reverse_journal(self.post([("1110", 5_000, 0), ("1100", 0, 5_000)], source="BANK"))
 
         rows = PettyCashFundDetailView()._register(fund)
         self.assertEqual([(r["in"], r["out"]) for r in rows], [(0, 5_000), (5_000, 0)])
@@ -234,15 +241,16 @@ class BankReconciliationReversalTests(_ReversalFixture):
 
     def test_an_unpaired_reversal_pair_is_not_unmatched(self):
         bank = self.make_bank(self.entity)
-        kept = self.post([("1100", 80_000, 0), ("4100", 0, 80_000)], date=datetime.date(2026, 1, 5))
-        reverse_journal(self.post([("1100", 50_000, 0), ("4100", 0, 50_000)]))
+        kept = self.post([("1100", 80_000, 0), ("4100", 0, 80_000)], date=datetime.date(2026, 1, 5),
+                         source="BANK")
+        reverse_journal(self.post([("1100", 50_000, 0), ("4100", 0, 50_000)], source="BANK"))
 
         self.assertEqual(
             [ln.id for ln in _unmatched_gl_lines(bank)], [self.cash_line(kept).id])
 
     def test_once_the_original_is_matched_its_reversal_is_a_real_item(self):
         bank = self.make_bank(self.entity)
-        receipt = self.post([("1100", 50_000, 0), ("4100", 0, 50_000)])
+        receipt = self.post([("1100", 50_000, 0), ("4100", 0, 50_000)], source="BANK")
         statement_line = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 15), "amount": 50_000},
         ])[1][0]
@@ -254,7 +262,7 @@ class BankReconciliationReversalTests(_ReversalFixture):
 
     def test_once_the_reversal_is_matched_the_original_can_be_matched(self):
         bank = self.make_bank(self.entity)
-        receipt = self.post([("1100", 50_000, 0), ("4100", 0, 50_000)])
+        receipt = self.post([("1100", 50_000, 0), ("4100", 0, 50_000)], source="BANK")
         reversal = reverse_journal(receipt)
         imported = {line.external_id: line for line in import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 16), "amount": -50_000, "external_id": "OUT"},

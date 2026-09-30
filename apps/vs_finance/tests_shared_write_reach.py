@@ -370,6 +370,7 @@ class TaxFilingWriteTests(_SharedWriteFixture):
         entry = JournalEntry.objects.create(
             entity=self.books, branch=branch or self.ikeja, date=date,
             period=resolve_period(self.books, date), narration="Vendor withholding",
+            source="PURCHASE",
         )
         for line_no, (code, debit, credit) in enumerate(
             (("5300", 50_000, 0), ("2300", 0, 50_000)), start=1,
@@ -394,14 +395,12 @@ class TaxFilingWriteTests(_SharedWriteFixture):
         self.assert_refused(response, self.MESSAGE)
         self.assertFalse(TaxFiling.objects.filter(obligation=self.obligation).exists())
 
-    def test_a_branch_bound_holder_cannot_reach_a_school_wide_filing_to_act_on_it(self):
+    def test_a_branch_bound_holder_cannot_reach_a_school_wide_filing_to_file_or_unfile_it(self):
         draft = self.filing(1)
         filed = self.filing(2, status=TaxFilingStatus.FILED)
         attempts = (
             (draft, "file", {"filed_date": "2026-02-05"}, TaxFilingStatus.DRAFT),
             (filed, "unfile", {}, TaxFilingStatus.FILED),
-            (filed, "pay", {"pay_date": "2026-01-20", "bank_account": self.bank.pk},
-             TaxFilingStatus.FILED),
         )
         for filing, action, body, status in attempts:
             with self.subTest(action=action):
@@ -410,6 +409,154 @@ class TaxFilingWriteTests(_SharedWriteFixture):
                 filing.refresh_from_db()
                 self.assertEqual(filing.filing_status, status)
                 self.assertEqual(filing.amount_paid, 0)
+
+    # -- a return split over Ikeja and Lekki ---------------------------------- #
+
+    def branch_bank(self, code, branch):
+        gl = Account.objects.create(
+            entity=self.books, code=code, name=f"{branch.name} Collections",
+            account_type=Account.objects.get(entity=self.books, code="1100").account_type,
+            is_postable=True,
+        )
+        return BankAccount.objects.create(
+            entity=self.books, name=f"{branch.name} Collections", branch=branch, gl_account=gl,
+        )
+
+    def split_return(self):
+        """March WHT: N500 withheld at Ikeja and N300 at Lekki, filed as one return."""
+        from .posting import post_journal, resolve_period
+        from .tax_filing import file_filing, prepare_filing
+
+        for branch, amount in ((self.ikeja, 50_000), (self.lekki, 30_000)):
+            date = datetime.date(2026, 3, 10)
+            entry = JournalEntry.objects.create(
+                entity=self.books, branch=branch, date=date,
+                period=resolve_period(self.books, date), narration="Vendor withholding",
+                source="PURCHASE",
+            )
+            for line_no, (code, debit, credit) in enumerate(
+                (("5300", amount, 0), ("2300", 0, amount)), start=1,
+            ):
+                entry.lines.create(
+                    account=Account.objects.get(entity=self.books, code=code),
+                    debit=debit, credit=credit, line_no=line_no,
+                )
+            post_journal(entry)
+        filing = prepare_filing(self.obligation, period_start=datetime.date(2026, 3, 1),
+                                period_end=datetime.date(2026, 3, 31))
+        return file_filing(filing, filed_date=datetime.date(2026, 4, 5))
+
+    def test_a_branch_bound_holder_pays_her_own_branchs_share_from_her_branchs_bank(self):
+        filing = self.split_return()
+        lekki_bank = self.branch_bank("1152", self.lekki)
+
+        response = self.send(self.ngozi, "post", f"tax-filings/{filing.pk}/pay/", body={
+            "pay_date": "2026-04-10", "bank_account": lekki_bank.pk,
+        })
+
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.json()["data"]
+        self.assertEqual([s["branch_id"] for s in data["branch_breakdown"]], [self.lekki.pk])
+        self.assertEqual((data["amount_due"], data["balance_due"]), (30_000, 0))
+        filing.refresh_from_db()
+        self.assertEqual(filing.filing_status, TaxFilingStatus.FILED)
+        self.assertEqual(filing.shares.get(branch=self.lekki).amount_paid, 30_000)
+        self.assertEqual(filing.shares.get(branch=self.ikeja).amount_paid, 0)
+
+    def test_a_branch_bound_holder_cannot_pay_another_branchs_share(self):
+        filing = self.split_return()
+        lekki_bank = self.branch_bank("1152", self.lekki)
+
+        named = self.send(self.ngozi, "post", f"tax-filings/{filing.pk}/pay/", body={
+            "pay_date": "2026-04-10", "bank_account": lekki_bank.pk, "branch": self.ikeja.pk,
+        })
+        self.assertEqual(named.status_code, 400, named.data)
+
+        self.send(self.ngozi, "post", f"tax-filings/{filing.pk}/pay/", body={
+            "pay_date": "2026-04-10", "bank_account": lekki_bank.pk,
+        })
+        only_ikeja_left = self.send(self.ngozi, "post", f"tax-filings/{filing.pk}/pay/", body={
+            "pay_date": "2026-04-11", "bank_account": lekki_bank.pk,
+        })
+        self.assertEqual(only_ikeja_left.status_code, 409, only_ikeja_left.data)
+        self.assertEqual(filing.shares.get(branch=self.ikeja).amount_paid, 0)
+
+    def test_a_tenant_wide_bank_pays_no_share_of_a_split_return(self):
+        filing = self.split_return()
+
+        response = self.send(self.adaeze, "post", f"tax-filings/{filing.pk}/pay/", body={
+            "pay_date": "2026-04-10", "bank_account": self.bank.pk,
+        })
+
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertFalse(filing.remittances.exists())
+
+    def test_a_branch_bound_reader_sees_only_her_branchs_share_of_the_return(self):
+        from .tax_filing import pay_filing
+
+        filing = self.split_return()
+        pay_filing(filing, bank_account=self.branch_bank("1151", self.ikeja),
+                   pay_date=datetime.date(2026, 4, 10))
+
+        whole = self.send(self.adaeze, "get", f"tax-filings/{filing.pk}/").json()["data"]
+        lekki = self.send(self.ngozi, "get", f"tax-filings/{filing.pk}/").json()["data"]
+        listed = self.send(self.ngozi, "get", "tax-filings/").json()["data"]
+        summary = self.send(self.ngozi, "get", "tax-filings/summary/").json()["data"]
+
+        self.assertEqual(len(whole["branch_breakdown"]), 2)
+        self.assertEqual((whole["amount_due"], whole["amount_paid"]), (80_000, 50_000))
+        self.assertEqual([s["branch_id"] for s in lekki["branch_breakdown"]], [self.lekki.pk])
+        self.assertEqual(
+            (lekki["gross_liability"], lekki["amount_due"], lekki["amount_paid"],
+             lekki["payment_status"], lekki["remittances"]),
+            (30_000, 30_000, 0, "UNPAID", []),
+        )
+        self.assertEqual([row["amount_due"] for row in listed if row["id"] == filing.pk], [30_000])
+        self.assertEqual(summary["outstanding"], 30_000)
+
+    def test_a_branch_bound_reader_sees_only_her_branchs_outstanding_tax(self):
+        """Lekki's bursar sees Lekki's N300; the school-wide N70 with no branch is nobody's."""
+        from .posting import post_journal, resolve_period
+
+        self.split_return()
+        date = datetime.date(2026, 3, 20)
+        entry = JournalEntry.objects.create(
+            entity=self.books, branch=None, date=date, source="PURCHASE",
+            period=resolve_period(self.books, date), narration="Unbranched withholding",
+        )
+        for line_no, (code, debit, credit) in enumerate(
+            (("5300", 7_000, 0), ("2300", 0, 7_000)), start=1,
+        ):
+            entry.lines.create(
+                account=Account.objects.get(entity=self.books, code=code),
+                debit=debit, credit=credit, line_no=line_no,
+            )
+        post_journal(entry)
+
+        def outstanding(user):
+            rows = self.send(user, "get", "tax-obligations/outstanding/").json()["data"]["rows"]
+            row = next(r for r in rows if r["code"] == "TWHT")
+            return row["payable_balance"]["kobo"], row["net_outstanding"]["kobo"]
+
+        self.assertEqual(outstanding(self.ngozi), (30_000, 30_000))
+        self.assertEqual(outstanding(self.adaeze), (87_000, 87_000))
+
+    def test_a_branch_bound_holder_cannot_reverse_a_remittance(self):
+        from .tax_filing import pay_filing
+
+        filing = self.split_return()
+        lekki_bank = self.branch_bank("1152", self.lekki)
+        pay_filing(filing, bank_account=lekki_bank, pay_date=datetime.date(2026, 4, 10))
+        remittance = filing.remittances.get()
+
+        response = self.send(
+            self.ngozi, "post", f"tax-filings/{filing.pk}/remittances/{remittance.pk}/reverse/",
+            body={"reason": "Paid twice."},
+        )
+
+        self.assert_refused(response, self.MESSAGE)
+        remittance.refresh_from_db()
+        self.assertFalse(remittance.is_reversed)
 
     def test_a_branch_bound_holder_still_files_her_own_branchs_return(self):
         own = self.filing(3, branch=self.lekki)
@@ -432,7 +579,8 @@ class TaxFilingWriteTests(_SharedWriteFixture):
             ("file", {"filed_date": "2026-01-05"}, TaxFilingStatus.FILED),
             ("unfile", {}, TaxFilingStatus.DRAFT),
             ("file", {"filed_date": "2026-01-06"}, TaxFilingStatus.FILED),
-            ("pay", {"pay_date": "2026-01-20", "bank_account": self.bank.pk},
+            ("pay", {"pay_date": "2026-01-20",
+                     "bank_account": self.branch_bank("1151", self.ikeja).pk},
              TaxFilingStatus.PAID),
         )
         for action, body, status in steps:

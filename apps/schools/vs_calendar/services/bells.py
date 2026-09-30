@@ -19,6 +19,8 @@ from __future__ import annotations
 from django.db import transaction
 from django.db.models import Q
 
+from vs_config.display import format_time
+
 from ..exceptions import PeriodOverlap, PeriodTimeInvalid
 from ..models import Period, PeriodType
 
@@ -89,7 +91,9 @@ def assert_no_overlap(tenant, session, *, branch, day_of_week, start_time,
     module the only place a reviewer meets the mechanism.
 
     Checked under a row lock in the same transaction as the write, which is the
-    shape ``vs_academics``' non-overlap rule on terms already uses.
+    shape ``vs_academics``' non-overlap rule on terms already uses. The refusal
+    names the period it collides with and that period's times on the school's
+    own clock ("8:00 am" or "08:00").
     """
     if end_time <= start_time:
         raise PeriodTimeInvalid()
@@ -110,7 +114,8 @@ def assert_no_overlap(tenant, session, *, branch, day_of_week, start_time,
         if other.start_time < end_time and other.end_time > start_time:
             raise PeriodOverlap(
                 f"This overlaps {other.label} "
-                f"({_t(other.start_time)} - {_t(other.end_time)}) on the same "
+                f"({format_time(other.start_time, tenant)} - "
+                f"{format_time(other.end_time, tenant)}) on the same "
                 f"day and scope.",
                 period_id=other.pk,
                 label=other.label,
@@ -162,13 +167,6 @@ def renumber_day(tenant, session, *, branch, day_of_week):
         Period.all_objects.filter(pk=row.pk).update(order_index=offset + index)
     for index, row in enumerate(rows, start=1):
         Period.all_objects.filter(pk=row.pk).update(order_index=index)
-
-
-def _t(value) -> str:
-    """A time the way the product writes it: 8:00 am, not 08:00:00."""
-    hour = value.hour % 12 or 12
-    suffix = "am" if value.hour < 12 else "pm"
-    return f"{hour}:{value.minute:02d} {suffix}"
 
 
 @transaction.atomic

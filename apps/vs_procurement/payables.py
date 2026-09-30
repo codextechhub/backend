@@ -32,6 +32,7 @@ from typing import NamedTuple
 from django.db import transaction
 from django.db.models import F
 
+from vs_config.display import format_date
 from vs_finance.audit import record, record_rejection
 from vs_finance.constants import (
     AccountType,
@@ -682,6 +683,7 @@ def _build_vendor_bill_plan(payment, allocations, *, as_of=None, bill_scope=None
     if allocations is not None:  # Explicit allocations always win over auto-allocation.
         plan = list(allocations)  # Normalize the iterable to a list.
         if as_of is not None:  # A named bill must already exist on the settling date.
+            tenant = payment.entity.tenant
             for invoice, _requested in plan:
                 bill_date = accounting_date(invoice)
                 ensure_on_or_after(
@@ -690,9 +692,10 @@ def _build_vendor_bill_plan(payment, allocations, *, as_of=None, bill_scope=None
                     source=f"bill {describe(invoice, 'the vendor invoice')}",
                     source_date=bill_date,
                     remedy=(
-                        f"Either date the payment {bill_date} or later, or leave it "
-                        f"unallocated and apply it once the bill is raised."
+                        f"Either date the payment {format_date(bill_date, tenant)} or later, "
+                        f"or leave it unallocated and apply it once the bill is raised."
                     ),
+                    tenant=tenant,
                 )
         return plan  # Explicit plan passed its date checks.
 
@@ -1009,3 +1012,171 @@ def reverse_vendor_payment(payment, *, actor_user=None, date=None):
     payment.status = DocumentStatus.REVERSED
     payment.save(update_fields=["status", "updated_at"])
     return reversal
+
+
+# --------------------------------------------------------------------------- #
+# Opening bills: supplier balances owed when the books begin                   #
+# --------------------------------------------------------------------------- #
+
+def books_went_live(entity):
+    """The first day these books recorded trading, or ``None`` if they have not yet.
+
+    That is the date of the earliest posted journal that is not itself an opening
+    balance: not a direct entry or opening bill (``OPENING`` source) and not the
+    journal of an opening customer invoice. Anything owed to a supplier before that
+    day is an opening balance; anything after it is ordinary business and is keyed
+    as an ordinary bill.
+    """
+    from vs_finance.models import JournalEntry
+
+    return (
+        JournalEntry.objects.filter(
+            entity=entity, status__in=(DocumentStatus.POSTED, DocumentStatus.REVERSED),
+            reverses__isnull=True,
+        )
+        .exclude(source=JournalSource.OPENING)
+        .exclude(ar_invoices__source="OPENING")
+        .order_by("date").values_list("date", flat=True).first()
+    )
+
+
+def post_opening_vendor_invoice(invoice, *, actor_user=None):
+    """Post an opening bill, recording a durable rejection audit row when refused."""
+    try:
+        return _post_opening_vendor_invoice_atomic(invoice, actor_user=actor_user)
+    except FinanceError as exc:
+        record_rejection(
+            entity=invoice.entity, action=FinanceAuditAction.VENDOR_OPENING_BILL_POSTED,
+            exc=exc, actor_user=actor_user, target=invoice,
+        )
+        raise
+
+
+@transaction.atomic
+def _post_opening_vendor_invoice_atomic(invoice, *, actor_user=None):
+    """Seat one unpaid supplier bill from before the books began: ``Dr equity, Cr AP``.
+
+    The AP mirror of :func:`vs_finance.receivables.post_opening_balance`, and like it
+    the other side is the retained-earnings mapping: what was owed on day one is
+    prior-period value, never this year's expense. There is no order or receipt to
+    match against and no approval route: the bill records a debt that already
+    existed, and the dedicated import key is the control.
+
+    The bill keeps its own invoice and due dates, so it ages as the original did.
+    Its journal is dated on the invoice date when a period covers that day, and on
+    the first day of the books otherwise, because nothing can post before the books
+    begin. It is refused when dated on or after the day the books went live
+    (:func:`books_went_live`); when the books have not gone live yet, any date is
+    accepted and the audit row says the date was not checked against one.
+
+    Once posted it is paid, credited, voided and reported like any bill.
+    """
+    from vs_finance.account_mappings import resolve_mapped_account
+    from vs_finance.constants import AccountMappingKey
+    from vs_finance.models import FiscalPeriod, JournalEntry, JournalLine
+
+    from .models import VendorInvoice
+
+    invoice = VendorInvoice.objects.select_for_update().select_related("vendor").get(pk=invoice.pk)
+    number = invoice.document_number or invoice.pk
+    if not invoice.is_opening:
+        raise PostingError(f"Vendor invoice {number} is not an opening bill.")
+    if invoice.status != DocumentStatus.DRAFT:
+        raise PostingError(f"Opening bill {number} is '{invoice.status}'; only a draft can be posted.")
+    if invoice.purchase_order_id or invoice.lines.exclude(po_line=None).exists():
+        raise PostingError("An opening bill stands on its own; it cannot name a purchase order.")
+    vendor = invoice.vendor
+    if vendor.payable_account_id is None:
+        raise PostingError(f"Vendor {vendor.code} has no payable (AP control) account set.")
+    invoice.recompute_totals(save=True)
+    if invoice.total <= 0 or invoice.tax_total:
+        raise PostingError("An opening bill carries a positive amount and no tax.")
+
+    live = books_went_live(invoice.entity)
+    if live is not None and invoice.invoice_date >= live:
+        raise PostingError(
+            f"Bill {invoice.vendor_reference or number} from {vendor.name} is dated "
+            f"{invoice.invoice_date}, on or after the books went live on {live}. "
+            f"Key it as an ordinary bill instead.",
+        )
+
+    journal_date = invoice.invoice_date
+    if resolve_period(invoice.entity, journal_date) is None:
+        first = (
+            FiscalPeriod.objects.filter(entity=invoice.entity, is_closing=False)
+            .order_by("start_date").first()
+        )
+        if first is not None and journal_date < first.start_date:
+            journal_date = first.start_date
+
+    equity = resolve_mapped_account(
+        invoice.entity, AccountMappingKey.RETAINED_EARNINGS, label="opening balance equity",
+    )
+    entry = JournalEntry.objects.create(
+        entity=invoice.entity, branch=invoice.branch, date=journal_date,
+        period=resolve_period(invoice.entity, journal_date),
+        source=JournalSource.OPENING, currency=invoice.currency,
+        narration=invoice.narration or f"Opening balance: {vendor.code} {invoice.vendor_reference}".strip(),
+        reference=invoice.vendor_reference, created_by=actor_user,
+    )
+    JournalLine.objects.create(
+        entry=entry, account=equity, debit=invoice.total, credit=0,
+        description="Opening balance", line_no=1,
+    )
+    JournalLine.objects.create(
+        entry=entry, account=vendor.payable_account, debit=0, credit=invoice.total,
+        description=f"AP: {vendor.code}", line_no=2,
+    )
+    post_journal(entry, actor_user=actor_user, allow_control_accounts=True)
+
+    invoice.journal = entry
+    invoice.status = DocumentStatus.POSTED
+    invoice.refresh_payment_status(save=False)
+    invoice.save(update_fields=["journal", "status", "payment_status", "updated_at"])
+    record(
+        entity=invoice.entity, action=FinanceAuditAction.VENDOR_OPENING_BILL_POSTED,
+        actor_user=actor_user, target=invoice,
+        message=(
+            f"Carried in an opening bill from {vendor.code} dated {invoice.invoice_date} "
+            f"({format_naira(invoice.total)})."
+        ),
+        journal_id=entry.pk, total=invoice.total, invoice_date=str(invoice.invoice_date),
+        journal_date=str(journal_date),
+        books_went_live=str(live) if live else None, go_live_checked=live is not None,
+    )
+    return invoice
+
+
+@transaction.atomic
+def import_opening_vendor_invoices(entity, rows, *, actor_user=None):
+    """Create and post one opening bill per row, all or nothing.
+
+    ``rows`` are dicts carrying ``vendor``, ``branch`` (a Branch or ``None``),
+    ``invoice_date``, ``due_date``, ``vendor_reference``, ``narration`` and ``amount``
+    (kobo), already resolved and checked for reach by the caller. One bill per unpaid
+    supplier bill, not one per supplier, is what keeps the aging true.
+    """
+    from vs_finance.account_mappings import resolve_mapped_account
+    from vs_finance.constants import AccountMappingKey
+
+    from .models import VendorInvoice, VendorInvoiceLine
+
+    equity = resolve_mapped_account(
+        entity, AccountMappingKey.RETAINED_EARNINGS, label="opening balance equity",
+    )
+    bills = []
+    for row in rows:
+        bill = VendorInvoice.objects.create(
+            entity=entity, vendor=row["vendor"], branch=row.get("branch"),
+            invoice_date=row["invoice_date"], due_date=row.get("due_date"),
+            vendor_reference=row.get("vendor_reference", ""),
+            narration=row.get("narration", "") or "Opening balance",
+            is_opening=True, created_by=actor_user,
+        )
+        VendorInvoiceLine.objects.create(
+            vendor_invoice=bill, description="Opening balance", expense_account=equity,
+            quantity=1, unit_price=int(row["amount"]),
+            net_amount=int(row["amount"]), tax_amount=0, line_no=1,
+        )
+        bills.append(post_opening_vendor_invoice(bill, actor_user=actor_user))
+    return bills

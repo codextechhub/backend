@@ -9,6 +9,7 @@ from .catalog import *          # noqa: F401,F403
 from .requisitions import *     # noqa: F401,F403
 from .orders import *           # noqa: F401,F403
 from .receiving import *        # noqa: F401,F403
+from .corrections import *      # noqa: F401,F403
 from .vendor_payments import *  # noqa: F401,F403
 from .attachments import *      # noqa: F401,F403
 from .approval_queue import *   # noqa: F401,F403

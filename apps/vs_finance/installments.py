@@ -23,6 +23,8 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
 
+from vs_config.display import format_date
+
 from .accounts import resolve_account
 from .audit import record, record_rejection
 from .constants import (
@@ -350,7 +352,8 @@ def _post_concession_atomic(concession, *, actor_user=None):
         subject_date=concession.concession_date,
         source=f"invoice {invoice.document_number or invoice.pk}",
         source_date=invoice.invoice_date,
-        remedy=f"Date the concession {invoice.invoice_date} or later.",
+        remedy=f"Date the concession {format_date(invoice.invoice_date, invoice.entity.tenant)} or later.",
+        tenant=invoice.entity.tenant,
     )
 
     balance = invoice.balance_due  # Current outstanding invoice balance.

@@ -16,728 +16,120 @@ TWO TRAPS, BOTH ALREADY MET HERE:
 - Ignore Office lock files (`~$*.docx`). Never commit rendered PDFs, page images
   or any other render artifact.
 
-LATEST BASES ON 2026-09-29 (405d89da): MRD v2.94, M01 v1.29, M03 v1.19, M04 v1.29,
-M05 v1.7, M06 v1.5, M07 v1.22, M08 v1.13, M09 v2.13, M10 v1.6, M11 v2.12,
-M12 v2.14, M13 v2.12, M14 v3.5, M17 v1.7, M18 v1.13, M19 v1.12, M20 v1.6,
-M21 v1.6, M22 v1.14, M23 v1.14, M24 v1.5, M25 v1.2, M26 v1.3, M30 v1.3,
-M31 v1.10. Recheck on the day.
+LATEST BASES ON 2026-09-30: MRD v2.96, M01 v1.30, M03 v1.20, M04 v1.31, M05 v1.8, M06 v1.6, M07 v1.23, M08 v1.14, M09 v2.14, M10 v1.7, M11 v2.13, M12 v2.16, M13 v2.13, M14 v3.6, M17 v1.8, M18 v1.14, M19 v1.13, M20 v1.7, M21 v1.7, M22 v1.15, M23 v1.15, M24 v1.5, M25 v1.3, M26 v1.4, M30 v1.4, M31 v1.10. Recheck on the day.
 
-### D51. A school sets its own student rules; a branch its own admission numbers (ba33b90d, dd11d9c9, 2026-09-28)
-MODULES: M11 student management, M13 academic structure, M10 bulk data import.
-New GET/PUT /v1/students/enrolment-rules/ (read school.students.view, write
-school.settings.update): age range (default 2 to 25), required documents
-(default birth certificate, still a prompt), required enrolment fields (default
-none; enrolment and import refuse a blank one, an edit only a field it blanks),
-capacity mode WARN/HARD/OFF (HARD is 422 CLASS_FULL with no override, on
-placement, bulk assign and promotion; the import refuses rows past the last
-seat; OFF checks nothing), and a default class size applied to a new class and
-to generated arms. Admission-number policy: ?branch= on GET/PUT/DELETE, a
-branch's rule replaces the school's whole, source and auto_issue in the body,
-automatic numbers at enrolment and confirmation. Numbers stay unique school-wide.
-MUST SAY: M11 the settings contract, each rule's effect and the new error code,
-the branch rule and automatic numbers; M13 the default class size; M10 that the
-import follows the age, required-field and capacity rules (required fields only
-where the template has a column) and does not issue numbers.
+### D83. Everything the server prints reads the school's date format, clock and zone (64574046, 0fedbda1, 86504d5c, 2ba493d4, c1777f3f, 3d3b02cd, e89c27c5, 7328c3bc, fdc54aa6, cee9cf2f, acd88d77, 53833b04, 2026-09-30)
+MODULES: M06 configuration and capability, M01 school and branch management
+(settings), M17 billing and invoicing, M18 payments and collections, M19
+finance and accounting, M20 adjustments and concessions, M22 procurement, M23
+purchase orders delivery and AP, M26 reporting and exports, M07 workflow and
+approval engine, M08 notifications and delivery, M09 school onboarding, M03
+identity (password reset), M11 student management, M12 staff management, M14
+calendar and timetables, M05 audit (record history), MRD. Closes the gap D78
+left open. Contract in docs/config/config_tenant_clock.md section 5.
+- vs_config.display prints for people: format_date, format_datetime,
+  format_time, format_month ("Sep 2026" in every format), format_date_range,
+  each taking the tenant and, for an instant, the branch whose zone applies;
+  template library display_dates. Output matches school-fe src/lib/dates.ts
+  ("29 Sep 2026, 2:30 pm" / "29/09/2026, 14:30"). A calendar date is never
+  shifted; a naive timestamp is UTC.
+- Follow the setting: printed invoice and receipt, their PDFs, statement PDF
+  and export, finance emails (invoice, receipt, statement, credit/debit note,
+  dunning), fiscal calendar warning, PO PDF and email, RFQ deadline and
+  quotation receipt (the RFQ's zone kept and named, "WAT"), settlement export,
+  unbooked-receipts digest, task-review email, onboarding emails, password
+  reset expiry (the person's branch zone, named), export files in people mode
+  (dates, date-times in the school's zone, and a new time kind for bell and
+  exam times), filter sentences, schedule descriptions, the expiry refusal,
+  report subtitles' as-at date, month labels ("Sep 2026", was "Sep 26"), and
+  every refusal and warning sentence that names a date (backdated postings and
+  their remedies, fiscal year gaps and closing date, depreciation, refunds,
+  tax filings, write-offs, exams, events, calendar import, period overlap
+  (was always 12-hour), leave overlap, organogram, history as-at, admission
+  and status summaries, contracts).
+- Approval cards: summaries and details stay stored ISO and are written in
+  the tenant's format each time they are read.
+- Stays ISO: JSON fields, system-mode export columns, file-name tokens (now
+  read on the school's clock: a download at 00:30 Lagos is named for that day),
+  audit metadata, document numbers, import instructions.
+- Stored copies are not rewritten: the PDF kept on a finance document delivery
+  and an export's file keep the format they were made in.
+- FIX: the settlement report dates confirmations on the school's day (a
+  payment confirmed 00:30 Lagos on 1 Oct is October's); onboarding days
+  remaining count the school's days; a configuration audit export and write-off
+  activity rows use the school's day; an RFQ amendment that moves the deadline
+  no longer returns 500.
+- No server-day defaults (ebbe5f25; the amendment route's test is 62faa51f): a
+  student's enrolment_date, a placement's (ClassEnrolment) and a status
+  change's (StudentStatusLog) effective_date, and a staff appointment's
+  (StaffPositionAssignment) start_date have no default (vs_students 0011,
+  vs_staff 0012, state only, reversible). Every service already named the
+  branch's day; a write that names none is refused by the database (NOT NULL,
+  IntegrityError). Left with a default: vs_user.PositionAssignment.start_date
+  (platform staff, not a school record) and
+  vs_procurement.VendorAssessment.assessment_date (date.today; its migration
+  waits for another session's uncommitted vs_procurement 0039 to 0041).
+MUST SAY: M06 the formatting contract beside the display settings; M01 that
+documents follow the display settings (remove the "do not read the format or
+the clock yet" limitation and the MRD gap D78 listed); M17, M18, M19, M20, M22,
+M23 that documents, emails and refusals print in the school's format, a
+vendor's deadline in the RFQ's zone named, and the settlement day rule; M26
+people versus system rendering including times and the file-name clock; M07
+approval cards reworded on read; M08 that notification contexts carry
+formatted dates; M09 onboarding email times and day counting; M03 the reset
+expiry line; M11, M12, M14, M05 the refusal wording; M11 and M12 that the
+enrolment, placement, status and appointment dates are always the branch's day
+and never defaulted. MRD: remove the D78 documents gap.
 
-### D52. The student import issues numbers and names each school's rules (aab85a8d, 2026-09-28)
-MODULES: M11 student records, M10 bulk data import.
-A blank admission number passes validation where the child's branch issues
-numbers automatically (and a next number can be worked out); each row is given
-the next number in turn when written. The students_v1 template's guidance
-(migration vs_import_data 0021) points at the school's own age range, required
-details, capacity cap and automatic numbering instead of fixed figures.
-MUST SAY: the import applies the Students settings exactly as enrolment does.
-
-### D53. A school's "today" follows its own time zone (480a4c87, bed82560, 39c256a6, 2026-09-28)
-MODULES: MRD, M01 school and branch management (settings), M14 calendar and
-timetables, M13 academic structure, M12 staff, M17 billing and invoicing, M18
-payments and collections, M19 finance and accounting, M20 adjustments and
-concessions, M26 reporting and exports.
-The server keeps UTC, so every "today" was the UTC day: between midnight and
-1am in Lagos a document was dated yesterday and yesterday's due date was not
-yet overdue. A new setting, display.timezone (platform and school scope,
-default Africa/Lagos, only real IANA zones accepted), decides the day; every
-"today" in the modules above now reads the school's own day through
-vs_config.clock. A school sets it at GET/PATCH /v1/i/me/settings/display/
-(school.settings.view / school.settings.update, live schools only, audited as
-config.value.updated), which answers the zone, where it came from and a short
-list of common zones. vs_procurement and vs_students are still on the UTC day.
-MUST SAY: M01 the display setting, its contract, keys, refusals and audit; the
-rule "a school's day is its own time zone's, Africa/Lagos by default" in each
-listed FRD wherever a date defaults to today, a due date is judged overdue or
-the calendar decides the current term; M26 that an export's default date
-window ends on the school's day; the MRD capability and, as a remaining gap
-until they are swept, procurement and student dates.
-
-### D54. A school sets its own guardian rules (db22e105, 2026-09-28)
-MODULES: M11 student management, M10 bulk data import.
-New GET/PUT /v1/students/guardian-rules/ (read school.students.view, write
-school.settings.update, audited as config.value.updated): guardians per child
-(1 to 4, default 1), guardian email required (default no), matching
-EMAIL_THEN_PHONE or EMAIL_ONLY (default EMAIL_THEN_PHONE), and up to 10
-relationships of the school's own. Enrolment and applicant save refuse fewer
-than the minimum; unlinking cannot take a child on the roll below it. A new
-guardian needs an email where required (enrolment, link, guardians import;
-the student import refuses a blank one), an existing one without is still
-linked, and an edit may not blank one. Matching on email only never joins two
-families on a phone, on every path. A school's own relationship is stored as
-Other plus StudentGuardian.relationship_detail, accepted on every write path,
-and read as relationship_label; removing it leaves stored links alone. The
-relink PATCH now validates the relationship it is sent.
-MUST SAY: M11 the settings contract, keys, refusals and each rule's effect,
-the new relationship_detail column and relationship_label on the guardian
-reads; M10 that both imports follow the guardian rules (a per-row warning for
-the minimum, the email refusal, matching mode, the school's relationships) and
-that vs_import_data 0022 rewords both templates' guidance.
-
-### D55. A school names its own admission stages (7ac744dc, 1ebd196e, 2026-09-28)
-MODULES: M11 student management.
-New GET/PUT /v1/students/admission-rules/ (read school.students.view, write
-school.settings.update): up to 12 admission stages a school names in its own
-order (new AdmissionStage model), any of them an offer stage with 1 to 365
-days to accept, plus the documents an applicant must hold before confirmation
-(applicants.documents.required_to_confirm, default none). Stages are a
-sub-state of APPLICANT; the statuses and transitions are unchanged. Student
-gains admission_stage, stage_entered_on and offer_expires_on; POST
-/v1/students/<id>/stage/ (school.students.update) moves an applicant, dating
-an offer from the school's today. An offer past its last day is flagged
-offer_expired on read for a person to decide; nothing rejects it. Every
-student row and profile carries the stage fields; the directory filters
-?stage=<id> and ?stage=none. Confirming refuses 422 DOCUMENTS_MISSING on
-/confirm/, /status/ and /bulk/status/, which now all confirm through
-confirm_applicant (7ac744dc: the status routes had skipped the admission
-number rule). Direct enrolment and the import are not held to the documents.
-MUST SAY: the settings contract and its refusals, the stage move and its
-refusals (NOT_AN_APPLICANT, 404, past date), the offer rule and that expiry
-is a flag and never an automatic rejection, the new Student fields and
-filter, DOCUMENTS_MISSING and the routes it covers, and that a school with no
-stages admits exactly as before. Contract detail: docs/student-management-api-plan.md
-section 13.
-
-### D64. A school's required documents hold a direct enrolment, and its import brings in applicants (aac3d646, 2026-09-28)
-MODULES: M11 student management, M10 bulk data import.
-applicants.documents.required_to_confirm now holds every way onto the roll.
-POST /v1/students/ takes multipart/form-data besides JSON: payload (the JSON
-body as a string) and one file per document in document_<TYPE>, each checked
-as on the upload route (5MB, an image for the passport photograph, the photo
-write switch). Field-keyed 400s for a missing payload, an unknown document
-field, two files for one document and any other field. A direct enrolment
-without every required document is 422 DOCUMENTS_MISSING ("Tunde Bello cannot
-be enrolled until the birth certificate is attached.", detail.missing), with
-nothing written; an applicant needs none, and documents sent either way are
-attached. At a school with required documents the students import writes each
-row as an APPLICANT (applied_for the class's level, no placement, no automatic
-number, typed number kept, blank number never refused), warns once per row
-("This school needs a birth certificate before enrolling, so this child is
-imported as an applicant and joins the roll once it is uploaded."), and does
-not count those rows against class capacity. vs_import_data 0023 adds one
-sentence to the students_v1 guidance; vs_students 0009 corrects the setting's
-description.
-MUST SAY: M11 the multipart contract, its refusals and the DOCUMENTS_MISSING
-body at enrolment; M10 the applicant rows, the warning, what is skipped
-(placement, capacity, auto-issue) and the template sentence.
-
-### D66. A school-wide setting needs a school-wide caller (f7634bc3, 2026-09-28)
-MODULES: M04 roles and permissions, M11 student management, M01 school and
-branch management, M06 configuration and capability, M12 staff management,
-M07 workflow and approval engine, M17 billing and invoicing, MRD.
-A settings write asked only for its permission key, never for branch reach, so
-a branch administrator given `school.settings.update` for her own branch's
-switches could change rules that bind every branch. The rule is now one helper,
-`vs_rbac.scoping.assert_caller_may_configure`: a setting with no branch needs a
-caller whose reach is the whole school; a branch's own setting needs that
-branch in reach. The refusal is 403 `SHARED_RECORD_READ_ONLY` with a sentence,
-and nothing is written. Reads are unchanged. Routes and their sentences:
-PUT /v1/students/enrolment-rules/ ("Only a school-wide administrator can change
-the school's enrolment rules."), PUT /v1/students/admission-rules/ ("... the
-school's admission rules."), PUT /v1/students/guardian-rules/ ("... the
-school's guardian rules."), PUT /v1/students/admission-number-policy/ with no
-branch ("... the school's admission number rule. Choose one of your branches to
-set its own."; a branch's own rule, PUT or DELETE, still needs only that branch,
-another branch is still 404; the school rule still needs
-`school.students.update`, not `school.settings.update`), PATCH
-/v1/i/me/settings/security/ with no branch ("... the school's security
-settings. Choose one of your branches to set its own."), PATCH
-/v1/i/me/settings/payroll-scope/ ("... how the school runs payroll."), PATCH
-/v1/i/me/settings/display/ ("... the school's time zone."), PUT
-/v1/i/me/settings/staff-profiles/ ("... who reads staff profiles."), PATCH
-/v1/i/me/profile/ ("... the school's profile."), POST and DELETE
-/v1/i/me/profile/logo/ ("... the school's logo."), PATCH
-/v1/school-finance/settings/fee-due-policy/ ("... when the school's fee bills
-fall due."), PATCH /v1/workflow/notification-settings/ ("... whether approvals
-send notifications."). PATCH /v1/notify/settings/update/ already refused a
-branch-bound caller at school scope (403 BRANCH_SCOPE_REQUIRED) and is
-unchanged.
-MUST SAY: M04 the configure rule beside the shared-row rule, and that a
-settings key is not reach; each module's route table and permission section
-the reach requirement, the 403 code and its sentence for its own routes (M11
-the four student settings routes, M01 profile, logo, payroll scope and time
-zone, M06 the school security layer, M12 staff profile visibility, M17 the fee
-due policy, M07 the workflow notification switch). MRD: a branch-bound
-administrator reads school settings and cannot change them.
-
-### D69. A school's promotion rules, and a promotion that keeps each pupil at their own branch (7860ea86, 1a22d386, 2026-09-28)
-MODULES: M11 student management, M13 academic structure, MRD.
-GET, PUT /v1/students/promotion-rules/ (read school.students.view; write
-school.settings.update and a school-wide caller, else 403
-SHARED_RECORD_READ_ONLY "Only a school-wide administrator can change the
-school's promotion rules.", nothing written). Four school settings, each
-defaulting to the old behaviour: suspended HOLD or PROMOTE (moved up, still
-suspended, review screen can override); not_placed (ENROLLED with a class in
-the year being left) HOLD or PROMOTE, and the run makes any such pupil it
-places (promoted or repeating) ACTIVE, reason "Placed in JSS2 A by the
-end-of-year promotion."; arms SAME_ARM or SPREAD
-(pupils moving into a level shared evenly across its classes: emptiest first
-counting seats taken, repeaters arriving and pupils assigned so far, ties by
-class name, pupils by last name, first name, id; repeats keep their arm);
-capacity_mode FOLLOW_ENROLMENT or the promotion's own WARN, HARD, OFF (the run
-applies the effective one; under SPREAD over-capacity is counted after the
-spread). The body also carries effective_capacity_mode, enrolment_capacity_mode
-and options with labels; PUT takes all four plus reason, 400s keyed on the
-field ("Choose HOLD or PROMOTE for what happens to suspended pupils at
-promotion."). The preview adds rules, level_map[].to_classes (to joined, to_id
-null when several) and students[].suspended. vs_students 0010 declares the
-four definitions. Two defects fixed with it: a whole-school run could place a
-pupil in another branch's class (every target is now school-wide or the
-pupil's own branch; a pupil with none is held under NO_CLASS_AT_NEXT_LEVEL, and
-class-wide entries count only the pupils their cause covers), and a pupil who
-cannot graduate (suspended, or confirmed but not placed) in a terminal class
-defaulted to GRADUATE and failed in the run; they are now held, and a GRADUATE
-override for one reads as HOLD.
-MUST SAY: M11 FR-010 the four rules and their defaults, the route, its
-permission and reach rule, the refusal sentences, the SPREAD allocation order,
-the effective capacity rule, the preview's added fields, the branch rule for
-targets and the hold for pupils who cannot graduate; M13 that a promotion
-target is only a class the pupil's branch may join. MRD: a school chooses how
-its end-of-year promotion treats suspended and unplaced pupils, arms and full
-classes.
-
-### D70. The books open their next year, count reversals once, and pay suppliers net of withholding tax (3dfa4f9e, 2026-09-28)
-MODULES: M19 finance and accounting, M18 payments and collections, M23 purchase
-orders delivery and AP, M22 procurement and requisitions, M30 system health and
-monitoring, M08 notifications and delivery, MRD.
+### D84. Supplier bills can be corrected, control accounts refuse hand journals, and bank money has its own documents (2ad6ba28, 2026-09-30)
+MODULES: M23 purchase orders delivery and AP, M21 vendor management, M24 inventory
+and stock ledger, M19 finance and accounting, M18 payments and collections (tax
+share payment), M04 roles and permissions, MRD.
 From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF).
 MUST SAY:
-- Fiscal calendar (M19). A set of books carries a calendar setting,
-  GET/PATCH /v1/finance/settings/calendar/: next_year_mode AUTO_OPEN (default) or
-  WARN_ONLY, and next_year_lead_days (default 60, 7 to 180). A daily task,
-  vs_finance.roll_fiscal_calendars (beat finance-daily-fiscal-calendar), opens
-  the next year contiguous with the last one, same start month and period length,
-  when coverage breaks inside the lead window, or warns holders of
-  finance.period.create through the event finance.fiscal_calendar_expiring (in-app
-  and email, not mutable): weekly, then daily in the last 7 days and once postings
-  fail. Opening a year, by hand or by the task, refuses a duplicate, an overlap or
-  a gap on either side. The runway reads gaps between years as well as the last
-  end date, reports first_uncovered_date and gaps, and a day inside a gap is
-  EXPIRED. New books take their default year from the school's own day, not UTC.
-  Changing year-end to a new start month is refused until a short transition
-  year exists (Needs Attention).
-- Close (M19). A year-close date outside the year is refused (400 on
-  closing_date). A void's reversal belongs to the voided document, so reversing it
-  by hand is refused and the journal screen offers no button. The closing journal
-  itself is still reversible by hand (LEDGER-2, Needs Attention).
-- One ledger rule (M19). Every reader that totals money counts posted and
-  reversed journals alike, through vs_finance.branch_ledger.ledger_lines: the tax
-  worksheet, analytics slices, the cash-flow statement, bank reconciliation's
-  unmatched book lines, and the bank and petty-cash registers. A void no longer
-  shows as a movement with no partner. An entry and its unmatched reversal on one
-  bank account drop out of reconciliation together; matching now refuses lines
-  of unposted drafts. The spend dashboard's claims-paid figure nets reversed
-  payments. The tax return's date-window formula is unchanged and still
-  under-declares after the first month (MISSED-1, Needs Attention).
-- Settings reach (M19, M22). Every write to finance settings (account mappings,
-  documents, banking, calendar) and procurement settings needs a caller who
-  covers every branch (vs_rbac.scoping.assert_caller_may_configure); a
-  branch-bound holder of the update key gets 403 SHARED_RECORD_READ_ONLY and
-  nothing is written. Reads are unchanged. Same rule as D66.
-- Payouts and withholding tax (M18, M23). A payout line's amount is the bill
-  value before WHT; the provider is sent amount minus WHT and confirmation is
-  checked against that net. When WHT is omitted it is computed from the vendor's
-  WHT code, half-up to the kobo; on a manual vendor payment it is computed on
-  each bill's value net of its VAT share. A typed WHT is kept and recorded as
-  ENTERED (VendorPayment.wht_source; payout metadata). WHT must leave something
-  to send. Payouts confirmed with WHT before this change still need correcting
-  entries (Needs Attention); settlement reconciliation still compares the gross.
-- Late and lost online payments (M18). FAILED and ABANDONED collections are
-  provisional: a provider-confirmed success still books, once. A success webhook
-  that booked nothing is marked FAILED, not PROCESSED. A 15-minute sweep,
-  recover_unconfirmed_payments, re-runs stuck webhook events and re-checks
-  pending collections and in-flight payouts (capped per run, backing off to
-  daily). A receipt is dated the day the provider says the payer paid, in the
-  school's time zone, or the first open day after it when that month is closed,
-  with the true day kept on the record. Booking tasks use acks_late and
-  reject_on_worker_lost.
-- Worker watchdog (M30). The web process's metrics flush checks the Celery queue
-  snapshot heartbeat; older than 5 minutes marks Celery CRITICAL, opens one SEV1
-  incident and tells platform operators once, and clears when it returns.
-  Skipped where Celery runs eagerly.
-- Deployment (MRD). The calendar roll and the payment sweep run on beat. The
-  owner reports a background worker running on Render, so recheck the MRD's P0
-  "worker not deployed" gap against the deployment and retire it if it no longer
-  holds.
-
-### D71. Settings, Staff: a school's own staff rules, and hires approved before they are invited (be002879, 2026-09-29)
-MODULES: M12 staff management, M06 configuration and capability, M07 workflow
-and approval engine, M10 bulk data import, M09 school onboarding, M04 roles and
-permissions, M14 calendar (read only), MRD.
-Eleven school settings (vs_staff 0009, seed_config_catalogue), read under
-school.teachers.view, written under school.settings.update and a school-wide
-caller (else 403 SHARED_RECORD_READ_ONLY, nothing written), 400s keyed on the
-field in sentences, audited with an optional reason. Full contract in
-docs/staff-management-api-plan.md section 9.
-- GET, PUT /v1/i/me/staff/rules/: starting_role (+ options), required_documents
-  (+ document_types), self_editable_fields (+ options, locked floor),
-  hire_requires_approval, leave {allowances per type or null, leave_types,
-  working_days ISO 1-7, exclude_closures}. "Staff rules saved." 403 "Only a
-  school-wide administrator can change the school's staff rules."
-- GET, PUT, DELETE /v1/i/me/staff/number-policy/ (?branch=): the admission
-  policy's shape {required, pattern, hint, auto_issue, source, suggestion}; a
-  branch's rule is whole and governs staff whose main posting is that branch.
-  Enforced on the Add form, the PATCH (an echo of the stored number is not
-  re-checked) and the import (staff_number_required, staff_number_format).
-  Auto-issue continues the latest number's trailing digits under a tenant lock
-  and never offers a number any record has held (history read). GET open before
-  go-live. 403 "Only a school-wide administrator can change the school's staff
-  number rule. Choose one of your branches to set its own."
-- Starting role: the Add form grants the school's choice, named in its errors;
-  a role carrying restricted keys the saver (on PUT, when it changes) or the
-  adder (on create, 403) does not hold is refused. Every seeded Teacher carries
-  restricted exports.file.download, so the rule is the grant ceiling.
-- Required documents are a flag: record missing_documents [{type, label}]
-  (records group, null as-at); list ?missing_documents=true and
-  counts.missing_documents, both needing school.staff_records.view.
-- Self-service: the school's list replaces the fixed four; floor staff_number,
-  job_title, employment_type, hire_date, exit_date, email, branch; own record
-  carries self_editable_fields.
-- Leave: allowance per type per academic session (the session covering the
-  start date for the person's main posting). Filing over is allowed:
-  LeaveRequest.over_allowance_by (vs_staff 0010) counts approved and pending
-  leave in the session, OVER_ALLOWANCE warning, shown on the approval card, and
-  a document.over_allowance_by condition field. The leave list adds balances
-  [{leave_type, label, allowance, taken, pending, remaining}] and
-  balance_session, with ?session=.
-- Working days: days default to the school's working weekdays (Mon-Fri) less
-  closes_school events with no audience at the person's branch or school-wide.
-  BEHAVIOUR CHANGE: this replaces the inclusive calendar span for requests filed
-  or re-dated from now; stored counts are never recomputed; days stays
-  overridable; 422 NO_WORKING_DAYS for a range with no counted day.
-- Hire approval: new EmploymentStatus PENDING_APPROVAL "Awaiting approval"
-  (vs_staff 0010), document type schools.staff_hire "New staff member", ladder
-  staff-hire with an empty hire-approvers group (published when the setting is
-  turned on or the first hire is submitted). Add and import send nothing,
-  submit the record, answer "Added. Their invitation is waiting for the hire to
-  be approved." with awaiting_approval. Approve: invitation sent (unless the
-  import row said No), Invited. Reject/withdraw/cancel: Terminated, post
-  released, grants revoked, account REJECTED. Adder approves only when alone on
-  the stage. Resend 422 HIRE_AWAITING_APPROVAL; revoke withdraws the hire.
-  Never during onboarding.
-- Staff import (owner's decision, ec907841): the template has no Role column. Everybody
-  imported starts on the school's starting role, as on the Add form, whoever
-  uploads. A file still carrying a Role column imports with it ignored and one
-  file-level warning role_column_ignored ("Roles are not imported. Everybody in
-  this file starts as {Role}; give other roles from Roles & Permissions."). A
-  starting role the uploader cannot give (retired, or restricted keys they
-  lack) is one file-level error starting_role with the Add form's sentence. A
-  school still onboarding imports on the starting role too (onboarding's data
-  step requires a full staff import); School Admin and Branch Admin stay the
-  Add form's. Reseed staff_master_v1 (seed_import --dataset-type staff) to
-  drop the column.
-- Setup imports are invited at go-live (owner's decision): new EmploymentStatus
-  AWAITING_GO_LIVE "Invited at go-live" (vs_staff 0011), account left
-  PENDING_APPROVAL, no email. approve_go_live (M09) sends every held
-  invitation after activation commits, one transaction each, failures logged
-  and audited (STAFF_EMPLOYMENT_STATUS_CHANGED, FAILED) without blocking
-  go-live or the rest, idempotent. Hire approval does not hold the setup list.
-  Resend during setup 422 INVITATION_HELD_FOR_GO_LIVE "Invitations for staff
-  imported during setup go out when the school goes live."; once live it sends
-  a held one. Revoke is open before go-live and closes a held invitation. The
-  Add form during onboarding is unchanged.
-Defects fixed beside it (aefd1843, bdcbdb41, c659d468): the Add form's docs promised documents it
-never saves (dead attach_documents removed); the staff import ignored the
-onboarding role narrowing and refused a restricted role only at execution
-(since superseded: the import has no role column). No restricted role was ever
-granted without approval.
-MUST SAY: M12 the eleven settings, both routes, their permission and reach
-rules, every refusal, the new status and document type, the leave balance and
-allowance contract, the working-day behaviour change and that stored counts are
-kept; M06 the eleven definitions and that the number keys are branch-scoped;
-M07 the schools.staff_hire type, its ladder, group and self-approval rule, and
-the leave condition field; M10 the staff import's number and approval
-rules, that it has no role column, the ignored-column warning and the
-starting role at an onboarding school; M09 that staff imported during setup are invited when the school goes live,
-and how a failure is handled; M04 that a starting role is held to the grant ceiling. MRD: a school
-runs its own staff rules and can approve hires before they are invited.
-
-### D72. Settings, Academic structure: the school's word for a term, its term names and its arms (c21710f7, 8cc6c5ee, 2026-09-29)
-MODULES: M13 academic structure, M06 configuration and capability, M11 student
-management (promotion), M14 calendar, M17 billing and invoicing, M25
-dashboards (the "This term" switch), MRD. Check M09 school onboarding and M01
-only if they describe term_structure as more than the starting point.
-Three school settings (vs_academics 0010, seed_config_catalogue), read by any
-signed-in member of the school with no key, written under
-school.settings.update and a school-wide caller (else 403
-SHARED_RECORD_READ_ONLY, "Only a school-wide administrator can change the
-school's academic structure settings.", nothing written), 400s keyed on the
-field in sentences, audited with an optional reason. Full contract in
-docs/academics-api-plan.md section 10.
-- GET, PUT /v1/academics/rules/: {term_word, term_word_options, term_names,
-  default_arms}. "Academic structure settings saved."
-- academics.terms.word TERM | SEMESTER, default null = what term_structure
-  implies (SEMESTER on 2_SEMESTERS). academics.terms.names 1 to 6 names, at
-  most 30 characters, unique ignoring case, default null = First/Second/Third
-  Term or First/Second Semester. academics.classes.default_arms 1 to 12, same
-  rules, default A, B, C. term_structure stays and stays locked once live; it
-  is the starting point, and saving the defaults it implies stores nothing.
-- The word: every backend sentence naming a term uses the school's word
-  (session and term refusals, term list message, calendar warnings, alerts and
-  import warning, "Mid-semester break" label, also accepted by the calendar
-  import, the exam refusal, the dashboard's "This semester", the fee due rule
-  "End of the semester billed", fee structure link messages). Stored term
-  names are never renamed.
-- The names pre-fill new years on the session drawer. A session created with
-  no terms still gets none (no dates to give them); the seed command builds its
-  years from the names.
-- generate-arms with no arms makes the school's default arms; a class is
-  "{level} {arm}".
-- BEHAVIOUR CHANGE, promotion under SAME_ARM: pupils whose arm has no class at
-  the next level used to all go to the level's first class; they are now
-  shared across its classes by the SPREAD allocation, counting pupils keeping
-  their arm. A matching arm still wins. level_map rows carry arm_fallback and
-  arm_note ("No JSS2 class has arm A, so these students are shared across
-  JSS2's classes.").
-- BEHAVIOUR CHANGE (8cc6c5ee): an invoice row's period label reads "First Term
-  2026/2027", the dashboard's order, instead of "2026/2027 First Term". Labels
-  are read from the fee structure's link, never stored on invoices.
-MUST SAY: M13 the three settings, the route, its read rule (any member, no
-key) and write rule, every refusal, that term_structure is the starting point,
-that changing the word never renames a term, the default arms on
-generate-arms, and that no terms are invented for a session sent without them;
-M06 the three definitions and their null defaults; M11 the arm fallback,
-arm_fallback and arm_note; M14 the calendar sentences and the Mid-semester
-break label and import alias; M17 the due rule label in the school's word and
-the one period name; M25 the switch label. MRD: a school names its own terms,
-says Term or Semester, and chooses its default arms.
-
-### D73. Who really acted is on the record, approvals count real people, and shared records need a school-wide caller (229f364d, 2026-09-29)
-MODULES: M07 workflow and approval engine, M04 roles and permissions, M05 audit
-and activity logging, M19 finance and accounting, M18 payments and collections,
-M22 procurement and requisitions, M21 vendor management, M08 notifications and
-delivery, M12 staff management, M13 academic structure, MRD.
-From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF).
-MUST SAY:
-- Impersonation (M05, M07, M19, M18, M22). Acting as a colleague is not locked.
-  Every row that says who did something records both people:
-  FinanceAuditLog.effective_user and WorkflowAuditLog.effective_user (the
-  impersonated person; actor stays the real one), WorkflowStageAction.proxied_by
-  and PaymentEvent.proxied_by (the real person; actor stays the impersonated one).
-  The finance trail, workflow votes and audit, procurement activity feeds and
-  approval detail, the procurement dashboard's activity and the payments
-  transactions log add real_actor_name, proxied_user_name and acted_label ("Ada
-  Obi for Chioma Okafor"); existing keys are unchanged. Document stamps
-  (created_by, posted_by) still name the impersonated person; their audit rows
-  explain them. Migrations: vs_finance 0032, vs_payments 0008, vs_workflow 0021.
-- Separation of duties counts real people (M07). The requester cannot approve,
-  whether as themselves or through a proxy; the requester is the named requester
-  plus the real submitter and any real resubmitter. One real person has one vote
-  per step, and ANY, QUORUM and ALL steps count distinct real people. A step Ada
-  already voted on by proxy leaves her queue. One person may still sign two
-  different steps (accepted). The payout two-approver rule follows in the next
-  payments change.
-- Shared records need a school-wide caller (M19, M22, M21). A branch-bound holder
-  of the key gets 403 SHARED_RECORD_READ_ONLY and nothing is written for: period
-  close, soft close, reopen, lock, year create and close; dunning policies; tax
-  obligations; preparing a tax filing and filing, unfiling or paying a filing with
-  no branch; currencies, FX rates, tax codes, dimensions; cost centres; chart of
-  accounts create and edit (a branch's own bank ledger stays editable by it);
-  reversing, posting or submitting a journal with no branch; procurement catalogue
-  items and vendor categories. One choke point, WholeTenantWriteMixin and
-  shared_write_refusal in vs_rbac.scoping. These no-branch cases retire once
-  every transaction names a branch (finance_branch_books_design).
-- One-branch schools (M04, all modules). At a tenant with exactly one branch, a
-  grant pinned to that branch reaches the whole tenant for reading, writing,
-  granting and approval routing, and session branch_reach.whole_tenant is true;
-  a second branch narrows it again at once. visible_branch_ids is the one answer;
-  the evaluator's tenant-scope match, staff reach_of and the staff roster follow.
-- A direct entry takes its branch by the raised-branch rule (M19). The fiscal
-  calendar warning goes only to finance.period.create holders who reach the whole
-  tenant (M19, M08).
-
-### D74. Settings, Calendar and timetables: teaching days, the week start, what closes the school, the publish gate, teaching duties, invigilators, and copying a bell schedule (f12a685d, 60712298, 2026-09-29)
-MODULES: M14 academic calendar and timetables, M06 configuration and
-capability, M12 staff management (teaching duties), M10 bulk data import (the
-calendar template's Closes School column), M04 roles and permissions (who may
-invigilate), MRD. Check M13 only if it describes the bell schedule as carried
-into a new year.
-Seven school settings (vs_calendar 0002, seed_config_catalogue), read by any
-signed-in member of the school with no key, written under
-school.settings.update and a school-wide caller (else 403
-SHARED_RECORD_READ_ONLY, "Only a school-wide administrator can change the
-school's calendar and timetable settings.", nothing written), 400s keyed on
-the field in sentences, audited with an optional reason. Full contract in
-docs/timetable-api-plan.md section 12.
-- GET, PUT /v1/academics/calendar/rules/: {teaching_days, week_starts_on,
-  closes_school_by_type, event_types, room_required_to_publish,
-  teacher_duty_match, teacher_duty_match_options, invigilator_roles,
-  invigilator_role_options, default_period_minutes}. "Calendar and timetable
-  settings saved."
-- calendar.teaching_days, ISO weekdays, default Monday to Friday, one set for
-  the whole school and separate from staff.leave.working_days. The class and
-  teacher grids draw these days (plus any day still holding a lesson, flagged
-  is_teaching_day false) in the order calendar.week_starts_on (1 or 7) sets;
-  a lesson or a period on another day is 422 DAY_NOT_TAUGHT; the overview's
-  teaching-day counts use them.
-- BEHAVIOUR CHANGE: an event created or imported without closes_school takes
-  calendar.closes_school_by_type; defaults HOLIDAY and MIDTERM_BREAK true,
-  EXAM_PERIOD, SCHOOL_EVENT, PTA and SPORTS false. Previously every such entry
-  was open. Stored events never change.
-- timetable.room_required_to_publish (default true): false lets a lesson with
-  no room publish; a teacher is always required.
-- timetable.teacher_duty_match OFF (default) | WARN | REFUSE against vs_staff
-  teaching duties: WARN saves with a TEACHER_HAS_NO_DUTY warning and publishes
-  listing them; REFUSE is 422 NO_TEACHING_DUTY on save and duplicate, and 409
-  TIMETABLE_TEACHER_HAS_NO_DUTY at publish.
-- exams.invigilator_roles (default ["teacher"]) decides who may invigilate
-  (422 NOT_AN_INVIGILATOR replaces NOT_A_TEACHING_USER on exam papers); GET
-  /v1/academics/exams/invigilators/ is the picker, narrowed to the caller's
-  branches.
-- timetable.default_period_minutes, 10 to 240 or null, exposed only.
-- POST /v1/academics/timetable/periods/copy/?session=<target> with
-  {from_session}: copies every period of a year into an empty one (a button,
-  never automatic); a branch-bound caller copies only their branches' periods.
-  A day-specific period on a day no longer taught is left out and listed:
-  {copied, skipped: [{name, day_of_week, day_label}], periods}, and the
-  message says so ("1 Saturday period was left out because Saturday is not a
-  teaching day."). 409 BELL_SCHEDULE_NOT_EMPTY, 422 BELL_SCHEDULE_EMPTY (also
-  when everything would be left out, saying why).
-- An exam paper's invigilator is judged only when set or changed, so a paper
-  kept by someone who has since lost the role can still be edited.
-- The publish answer carries warnings; the TIMETABLE_INCOMPLETE sentence says
-  "no teacher" alone when rooms are not required.
-- A lesson on a day the school no longer teaches blocks publishing its class:
-  409 TIMETABLE_LESSON_ON_DAY_NOT_TAUGHT ("JSS1 A has 1 lesson on Saturday,
-  which is not a teaching day. Move or remove it on the timetable, and publish
-  again."), detail {school_class, days, items, slot_ids}, checked after
-  incompleteness and before the duty check. Exam timetables are unaffected.
-MUST SAY: M14 the seven settings and the route, its read and write rules,
-every refusal, the day columns and is_teaching_day, DAY_NOT_TAUGHT, the
-closes-school defaults and that stored events never change, the four-step
-publish gate (incomplete, day not taught, duty, clashes) and its warnings,
-the duty match modes and their codes, the
-invigilator rule (judged only when set or changed) and picker, and the bell
-schedule copy with its branch rule and what it leaves out;
-M06 the seven definitions and their defaults; M12 that teaching duties can
-gate the timetable; M10 the blank Closes School cell and the reworded refusal;
-M04 that invigilation follows the school's chosen roles. MRD: a school sets
-its own teaching days and week start, which entries close it, what publishing
-needs, whether teachers must hold the duty, who invigilates, and copies a bell
-schedule into a new year.
-
-### D75. The final payments pass: settlement, approvals and payouts stay in their branch (merged 3247d41e, 2026-09-29)
-MODULES: M18 payments and collections, M23 purchase orders delivery and AP, M07 workflow and approval engine, M19 finance and accounting.
-Commits c7c21174, f4698b2a, d32ae8f4, 4fcf2c2f, 6c4c9e5c, b5bc2446, ddf0b59d,
-db9dc6f8. The FAL posts a vendor payment through the procurement post's checks
-(post_payment_for_caller), with no oldest-first fallback when a payment has no
-plan. Automatic settlement and applying an advance pick only bills of the
-payment's own branch; an explicit cross-branch application is 400
-SETTLEMENT_BRANCH naming both branches. A payout batch hidden from an approver by
-PaymentsReach is absent from their inbox and counts and answers 404 on every
-action (handler hook hidden_document_ids, exclude_hidden_documents). The
-transactions log returns named scalar metadata fields only and hides a virtual
-account number from a reader whose role hides it. A payment request naming only
-an invoice deposits into the invoice's customer's branch. Reconciliation and the
-movements feed read a WHT payout at the amount sent (payout_sent_amount), and
-movements rows gain gross_amount and wht_amount. A gateway payout books to the
-branch of the bank it was paid from, journal included.
-MUST SAY: each rule and its answer, the new movement fields, and the approval
-inbox narrowing; M07 the hidden_document_ids hook.
-
-### D76. A customer's record, a vendor's spend, settlement and refunds stay in the reader's branches (merged e6562b39, 2026-09-29)
-MODULES: M17 billing and invoicing, M19 finance and accounting, M20 adjustments and concessions, M21 vendor management, M18 payments and collections.
-Commits 185d01af, f53ec1fd, 41991dea, 96ff14ef, d96ba81c, ad64f7df, 30a550fa.
-A customer's detail, list balances, header cards and statement show only the
-documents of the reader's branches (anything sent to the customer still reads
-the whole account). Vendor year-to-date spend, category cards, insights and the
-open-order count sum only the reader's branches. A receipt or credit note
-settles only documents of its own branch (400 SETTLEMENT_BRANCH otherwise); an
-online payment that cannot settle across branches is kept as credit. A refund
-pays out only its own branch's credit, takes an optional `branch` on create and
-batch lines, and the availability screen lists one row per customer per branch
-(branch_id, branch_name); a branch-bound bursar neither sees nor pays out
-unbranched credit, a whole-school user does. A refund batch may name one family
-once per branch.
-MUST SAY: each narrowing and its readers, the settlement and refund rules with
-their refusals, the new refund fields and rows.
-
-### D77. A school's as-at day and its subscription expiry follow its own clock (merged b9ff459d, 2026-09-29)
-MODULES: M05 audit and activity logging (record history), M01 school and branch management, M12 staff management, M11 student management.
-Commits d9fe9d1b, caade5ff, ce70f396. `?as_at=` is resolved in the school's own
-zone (AsAt carries it; vs_config.clock.tenant_zone): the end of the chosen day,
-"today", the future-date refusal and every "history starts" date are the
-school's, not Lagos's, for staff, student, guardian and user records. A
-subscription's expiry is judged on the school's clock, so a school keeps its
-product until the end of its own last paid day. The tests that read "today"
-from the server clock now read it as the code does.
-MUST SAY: that as-at days and subscription expiry follow the school's zone
-(reference D53's rule).
-
-### D75. A closed year stays closed, closes per branch, and reopens only with a reason (a18d8ab1, 2026-09-29)
-MODULES: M19 finance and accounting, M04 roles and permissions, MRD.
-From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF).
-MUST SAY:
-- The posting guard reads the fiscal year as well as the month: nothing posts into
-  a CLOSED or LOCKED year, including privileged runs. A month of a closed year
-  cannot be reopened ("reopen the fiscal year first").
-- The year-end close is worked out per branch and closed together as one act: one
-  closing journal per branch (JournalEntry.closes_fiscal_year, related name
-  closing_journals; migration vs_finance 0033 back-fills earlier closes). At a
-  one-branch tenant unbranched lines close on the only branch; at a multi-branch
-  tenant the close is refused while income or expense entries have no branch,
-  naming the count. A tenant that owns no branch (CodeX today) closes as one
-  journal. The year close hard-closes every soft-closed month. The response adds
-  closing_journals; closing_journal stays as the first. Helper:
-  vs_finance.branch_ledger.branches_in_year.
-- A closing journal belongs to its year and cannot be reversed by hand. POST
-  /finance/fiscal-years/<id>/reopen/ with a reason (key finance.fiscalyear.reopen,
-  CRITICAL, whole-tenant caller) reverses every closing journal inside the year and
-  reopens it, audited FISCAL_YEAR_REOPENED; a LOCKED year cannot be reopened.
-- Forcing a period or year close needs finance.period.force_close (CRITICAL) and a
-  reason; reopening a period needs a reason. Forced closes record the checks they
-  overrode.
-- Year-close checks: a registry beside the period-close one. Registered: unposted
-  depreciation dated in the year blocks the close unless forced. The depreciation
-  run skips charges dated in a closed year, reports them as skipped_charges, and
-  carries on.
-- Postings and closes serialise: postings take FOR KEY SHARE on the year and month,
-  closes and reopens take FOR UPDATE (year before month), so postings never wait
-  for each other.
-- Needs Attention: the closing journal still sits in the final month; a separate
-  closing period is decided and is next (the full-year income statement reads zero
-  until then).
-
-### D78. Settings, Display: a school's date format and clock, and a branch keeps its own time zone (03bc11e1, 724d624d, 84e43b78, 7b041944, 3634a4c5, 2026-09-29)
-MODULES: M01 school and branch management (settings), M06 configuration and
-capability, M03 identity (the login and /me tenant block), M11 student
-management, M12 staff management, M14 calendar and timetables, M13 academic
-structure (overview), M17 billing and invoicing, M18 payments and collections,
-M19 finance and accounting, M20 adjustments and concessions, M22 procurement,
-M05 audit (dashboard), MRD. Supersedes D53's "a school keeps one calendar, not
-branch" and its "procurement and student dates are still on the UTC day".
-Full contract in docs/schools/school_settings.md section 5 and
-docs/config/config_tenant_clock.md.
-- Two school settings (vs_config 0014, seed_config_catalogue), platform and
-  school scope: display.date_format D_MMM_YYYY ("29 Sep 2026", default) |
-  DD_MM_YYYY | YYYY_MM_DD, no month-first format; display.clock H12 ("8:00 am",
-  default) | H24. display.timezone gains branch scope: the school's zone is the
-  default, a branch may keep its own.
-- GET /v1/i/me/settings/display/ adds date_format, date_format_options,
-  clock, clock_options and branches [{id, name, timezone, source branch|school}]
-  (the reader's branches; none at a one-branch school). ?branch=<id> answers
-  {branch, timezone, source, options}.
-- PATCH without a branch takes any of timezone, date_format, clock (at least
-  one) and reason, whole-school caller (else 403 SHARED_RECORD_READ_ONLY "Only a
-  school-wide administrator can change the school's display settings. Choose
-  one of your branches to set its own time zone."), all or nothing, one
-  config.value.updated per value. PATCH ?branch= {timezone, reason} sets the
-  branch's zone for a caller covering that branch ("<Branch> keeps its own time
-  zone."); DELETE ?branch= removes it ("<Branch> follows the school's time zone
-  again.", config.value.cleared). 404 "No such branch at this school." for an
-  unknown, foreign or out-of-reach branch. 400s keyed on the field, in
-  sentences: bad zone, bad format, bad clock, nothing sent, format or clock
-  sent for a branch, a branch zone at a one-branch school, DELETE with no
-  branch. Live schools only for every value (TENANT_NOT_LIVE), unchanged.
-- The login response and /me tenant block carry display {time_zone,
-  date_format, clock, branch_zones {"<id>": "<zone>"}} for every signed-in
-  member, no key needed; the platform tenant carries the platform values.
-- BEHAVIOUR: anything belonging to a branch reads that branch's day: student
-  enrolment, applicant, placement, promotion and status dates, age and the
-  offer expiry flag, the student import's dates; staff event and exit dates,
-  appointments, tenure, leave running or Completed; the calendar hub and
-  academic overview through a ?branch= lens; invoices from a fee run with no
-  date (each family's branch), overdue buckets and customer overdue status,
-  opening balances, payment plan overdue, dunning reminders and summary, petty
-  cash, bank reconciliation, journal reversal and direct entry defaults;
-  quotations, RFQ deadlines, awarded orders, stock movements, restock
-  requisitions, vendor bill overdue, vendor payment reversals; gateway receipts
-  and payouts. The fiscal calendar, reports, dashboards, the dunning run,
-  contracts, subscriptions and document numbers stay on the school's day. A
-  school whose branches share its zone sees no change.
-- FIX: the audit dashboard's daily series and critical heatmap count in the
-  reader's tenant zone, not UTC. A new school's default subscription expiry is
-  a year from the school's today, not the server's.
-MUST SAY: M01 the display settings contract, keys, every refusal and the
-tenant display block; M06 the two definitions and branch scope on the time
-zone; M03 the display block on login and /me; in M11, M12, M14, M13, M17, M18,
-M19, M20 and M22 the rule "a record belonging to a branch follows that branch's
-day, the school's zone unless the branch keeps its own" wherever D53's rule
-is written, and the school-wide exceptions (fiscal calendar, reports, dunning
-run); M05 the dashboard's zone. MRD: display preferences and per-branch time
-zones as a capability; as a remaining gap, documents (invoices, receipts,
-PDFs, emails, exports, refusal sentences) still print fixed formats, some on
-the server's UTC clock, and do not follow the school's date format or clock
-(vs_exports render_file_name names a download on the server's UTC day, so its
-file name disagrees with the builder's preview between midnight and 1am
-Lagos).
-
-### D79. An online payment belongs to its invoice's branch; payout approvers are real people (merged a708dc9c, 2026-09-29)
-MODULES: M18 payments and collections, M17 billing and invoicing, M07 workflow and approval engine, M23 purchase orders delivery and AP.
-Commits 14caeaea, 9511a404, 5e31f8e4, 94a5fd7c, 210ba4ba, 8039aaff, 3393cfdd,
-b9e85696. A collection that names an invoice belongs to the invoice's branch
-(services.collection_branch_id): the deposit bank is checked against it (the
-same-branch 400), the receipt is booked to it, dated on its clock and settles
-the invoice at once; a collection naming no invoice keeps the family's branch.
-A collection is seen by the branch it belongs to. A checkout may name a family
-outside the caller's branches when the named invoice is in reach and belongs to
-that family; any other out-of-reach family is still "No customer '<ref>'". The
-invoice list takes bucket=open (every posted invoice not fully paid). The payout
-two-approver rule counts distinct real people, coalesce(proxied_by, actor),
-minus requester_ids(instance). The transactions log and a vendor payment's
-activity name the real actor under a proxy ("Ada Obi for Chioma Okafor"). The
-collections, virtual accounts, payouts and batches lists load their related
-rows in one query.
-MUST SAY: the collection branch rule and its visibility, the checkout family
-rule, bucket=open, the real-person approver count, and proxy attribution.
-
-### D80. A closed year keeps its real figures, and tax returns declare the transactions they cover (ad7a950f, 2026-09-29)
-MODULES: M19 finance and accounting, M17 billing and invoicing, M25 dashboards and
-analytics, M26 reporting and exports, MRD.
-From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF).
-MUST SAY:
-- Closing period (M19, M25, M26). Every fiscal year has one closing period
-  (FiscalPeriod.is_closing, number 13, one day on the year's last day, created
-  CLOSED with the year; migration vs_finance 0034 creates it for existing years and
-  moves earlier closing journals and their reversals into it). Ordinary postings
-  never resolve to it; only the year close posts there and a reopen reverses there.
-  closing_date must be the year's last day or omitted. The income statement, its
-  comparison, budget-vs-actual, the finance dashboard and the statutory pack read a
-  year's ordinary periods only, so a closed year keeps its real profit; the balance
-  sheet and trial balance include the closing period. New ?fiscal_year= on the
-  income statement and the statutory pack (whose P&L now covers one fiscal year).
-  The income statement comparison defaults to the year today falls in. The
-  balance sheet's current-year earnings are only the open year's result. The
-  equity statement shows the close as a transfers column. The period list hides
-  closing periods unless ?include_closing=true.
-- Tax returns (M19). A return declares source lines, not a date window: every
-  undeclared line on the obligation's tax accounts dated on or before the period
-  end, excluding the tax module's own netting, penalty, remittance and
-  carry-forward journals (JournalSource.TAX). TaxFilingLine records which return
-  declared each line; unfiling releases them. A line dated before the period start
-  is a late item shown under its own month. The return shows a per-branch
-  breakdown (TaxFilingShare); lines with no branch are a "no branch yet" group
-  that blocks filing at a multi-branch tenant and count as the only branch at a
-  one-branch tenant. Paying books one remittance per branch share from that
-  branch's bank (TaxRemittance), and the return is PAID when every share is paid;
-  a remittance can be reversed, returning the return to FILED. Excess input VAT
-  carries forward to the next return. Nil returns file with nothing to remit. The
-  filed figures must match the prepared draft. Penalties split across branches in
-  proportion to their tax unless an adjustment branch is named. Migration vs_finance
-  0035 links existing filings, payments and declared lines.
-- VAT treatment (M19, M17). TaxCode.treatment is STANDARD, ZERO_RATED or EXEMPT;
-  only a standard code carries a rate. Every entity has VAT-STD, VAT-ZERO and
-  VAT-EXEMPT. A fee item with no tax code takes VAT-EXEMPT (new, updated, cloned,
-  and existing items by migration); an explicit code is kept. Printed invoices name
-  each line's treatment.
-- Needs Attention: unbranched tax lines block filing at a multi-branch school until
-  the branch backfill runs.
+- Supplier corrections (M23, M24). A vendor credit note (VC-), full, by amount or by
+  line, against one posted bill, approved through its own route
+  (procurement.vendor_credit_note) seeded like the bill ladder (manager, and a
+  senior approver at N500,000 by default); on a paid bill it becomes that branch's
+  vendor credit applied to later bills. A bill with nothing paid or credited can be
+  voided (PO invoiced quantities restored). Goods can be returned against a receipt
+  by line (RV-), reversing stock at receipt cost and GR/IR, allowed only for what
+  hasn't been billed beyond. The journal screen offers these as the document
+  actions; purchase-order cancellation names them. AP aging, reconciliation, cash
+  forecast, GR/IR, spend analysis and vendor performance count credits and
+  returns. Endpoints under /v1/procurement/: vendor-credit-notes/ (+ submit, post,
+  allocate, void), vendor-invoices/<id>/void/, goods-receipts/<id>/reverse/.
+  Migrations vs_procurement 0039, 0040 (credit-note routes for existing books).
+- Opening supplier balances (M23). One opening bill per unpaid bill
+  (VendorInvoice.is_opening), dated as the original so aging is true, Dr retained
+  earnings mapping, Cr AP, carrying its branch; refused on or after go-live (the
+  first non-opening journal). Bulk POST /procurement/vendor-invoices/opening/ (500
+  rows, all or nothing, key procurement.vendor_invoice.import_opening, CRITICAL).
+  Migration vs_procurement 0041. Customer opening invoices follow the same rule
+  later.
+- Control accounts are locked (M19). Manual journals and direct entries refuse
+  lines on any account a sub-ledger keeps (AR/AP controls and per-party accounts,
+  bank and petty-cash ledgers, tax obligation accounts, inventory, GR/IR, vendor
+  advances, customer and vendor credit): 422 CONTROL_ACCOUNT_LOCKED naming the
+  document to use. Derived from mappings and owning models
+  (vs_finance.control_accounts, with procurement registering its own).
+- Bank documents (M19). BankTransaction (money in or out with a non-control
+  counter-account: capital, loans, drawings, interest), route
+  finance.bank_transaction; BankTransfer between two accounts of the SAME branch,
+  route finance.bank_transfer; cross-branch is refused as an inter-branch transfer
+  (not built). Both carry the bank's branch, need whole-school reach for shared
+  accounts, and can be voided until reconciled. Migrations vs_finance 0036-0038.
+  Direct entries post as MANUAL; opening_balance: true keeps OPENING.
+- Tax shares (M19). A share is paid only from a bank account of its branch; an
+  unbranched account pays no share at a multi-branch tenant (it is the only
+  branch's at a one-branch tenant). A branch-bound bursar sees and pays only her
+  branches' shares (totals recomputed), and tax-obligations/outstanding narrows to
+  her branches; prepare, file, unfile and reverse stay whole-school.
+- New keys: procurement.vendor_credit_note.*, procurement.vendor_invoice.reverse,
+  procurement.goods_receipt.reverse, procurement.vendor_invoice.import_opening,
+  finance.banktransaction.*, finance.banktransfer.*.
+- Needs Attention: transfers between branches and paying petty cash back to the
+  bank have no document yet; FinPro lacks the new screens and journal actions.
 
 ## Undone
 

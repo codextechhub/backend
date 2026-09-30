@@ -15,6 +15,7 @@ from schools.vs_students.models import (
     Student,
     StudentDocument,
 )
+from vs_config.clock import branch_today
 
 from .base import StudentsFixture
 
@@ -148,6 +149,7 @@ class ConstraintTests(StudentsFixture):
                 first_name="Second", last_name="Child",
                 date_of_birth=dt.date(2013, 1, 1), gender=Gender.MALE,
                 student_number="bfs/2025/0142",
+                enrolment_date=branch_today(self.tenant, self.lekki),
             )
 
     def test_two_schools_may_hold_the_same_student_number(self):
@@ -157,6 +159,7 @@ class ConstraintTests(StudentsFixture):
             first_name="Theirs", last_name="Own",
             date_of_birth=dt.date(2013, 1, 1), gender=Gender.MALE,
             student_number="0001",
+            enrolment_date=branch_today(self.solo.tenant, self.solo_branch),
         )
         self.assertIsNotNone(other.pk)
 

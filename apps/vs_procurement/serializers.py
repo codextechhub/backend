@@ -26,6 +26,8 @@ from .models import (
     ContractMilestone,
     GoodsReceivedNote,
     GoodsReceivedNoteLine,
+    GoodsReturn,
+    GoodsReturnLine,
     PurchaseOrder,
     PurchaseOrderLine,
     PurchaseOrderVendorDelivery,
@@ -41,6 +43,9 @@ from .models import (
     VendorContact,
     VendorCategory,
     VendorContract,
+    VendorCreditNote,
+    VendorCreditNoteAllocation,
+    VendorCreditNoteLine,
     VendorInvoice,
     VendorInvoiceLine,
     VendorPayment,
@@ -1168,7 +1173,8 @@ class GRNLineSerializer(serializers.ModelSerializer):
             "expense_account_id", "expense_code",
             "cost_center_id", "cost_center_code",
             "stock_item_id", "stock_item_code", "stock_item_name",
-            "accepted_qty", "rejected_qty", "expected_qty", "unit_price", "value_amount",
+            "accepted_qty", "rejected_qty", "expected_qty", "returned_qty",
+            "unit_price", "value_amount",
         ]
 
 
@@ -1348,12 +1354,12 @@ class VendorInvoiceSerializer(serializers.ModelSerializer):
         model = VendorInvoice
         fields = [
             "id", "document_number", "status", "approval_state", "match_status", "payment_status",
-            "branch_id", "branch_name",
+            "branch_id", "branch_name", "is_opening",
             "display_status", "is_overdue",
             "vendor_id", "vendor_code", "vendor_name", "purchase_order_id", "purchase_order_number",
             "invoice_date", "due_date", "vendor_reference", "narration",
             "subtotal", "tax_total", "total", "total_naira",
-            "amount_paid", "balance_due", "journal_id", "lines", "attachments",
+            "amount_paid", "amount_credited", "balance_due", "journal_id", "lines", "attachments",
         ]
 
     def get_total_naira(self, obj) -> str:
@@ -1374,6 +1380,8 @@ class VendorInvoiceSerializer(serializers.ModelSerializer):
     def get_display_status(self, obj) -> str:
         # The list's single headline status follows the most actionable overlay;
         # callers still receive every underlying lifecycle field separately.
+        if obj.status in (DocumentStatus.REVERSED, DocumentStatus.CANCELLED):
+            return obj.status
         if obj.payment_status == "PAID":
             return "PAID"
         if obj.payment_status == "PARTIAL":
@@ -1514,3 +1522,93 @@ class VendorPaymentListSerializer(VendorPaymentSerializer):
 
     class Meta(VendorPaymentSerializer.Meta):
         fields = [f for f in VendorPaymentSerializer.Meta.fields if f != "attachments"]
+
+
+# --------------------------------------------------------------------------- #
+# Payables corrections                                                        #
+# --------------------------------------------------------------------------- #
+
+class VendorCreditNoteLineSerializer(serializers.ModelSerializer):
+    """One credited slice of a bill line."""
+
+    class Meta:
+        model = VendorCreditNoteLine
+        fields = [
+            "id", "line_no", "invoice_line_id", "description",
+            "quantity", "net_amount", "tax_amount",
+        ]
+
+
+class VendorCreditNoteAllocationSerializer(serializers.ModelSerializer):
+    """Where a credit note's value went: its own bill, then any later bill."""
+
+    document_number = serializers.CharField(
+        source="vendor_invoice.document_number", read_only=True,
+    )
+
+    class Meta:
+        model = VendorCreditNoteAllocation
+        fields = ["id", "vendor_invoice_id", "document_number", "amount", "effective_date"]
+
+
+class VendorCreditNoteSerializer(serializers.ModelSerializer):
+    """A vendor credit note with what it settled and what it left as vendor credit."""
+
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    vendor_invoice_number = serializers.CharField(
+        source="vendor_invoice.document_number", read_only=True,
+    )
+    advance_remaining = serializers.IntegerField(read_only=True)
+    lines = VendorCreditNoteLineSerializer(many=True, read_only=True)
+    allocations = VendorCreditNoteAllocationSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = VendorCreditNote
+        fields = [
+            "id", "document_number", "status", "approval_state",
+            "branch_id", "branch_name", "vendor_id", "vendor_code", "vendor_name",
+            "vendor_invoice_id", "vendor_invoice_number", "note_date",
+            "vendor_reference", "reason", "subtotal", "tax_total", "total",
+            "allocated_amount", "advance_remaining", "journal_id",
+            "lines", "allocations",
+        ]
+
+
+class VendorCreditNoteListSerializer(VendorCreditNoteSerializer):
+    """List rows omit the line and allocation arrays."""
+
+    lines = None
+    allocations = None
+
+    class Meta(VendorCreditNoteSerializer.Meta):
+        fields = [
+            f for f in VendorCreditNoteSerializer.Meta.fields
+            if f not in ("lines", "allocations")
+        ]
+
+
+class GoodsReturnLineSerializer(serializers.ModelSerializer):
+    """One returned receipt line."""
+
+    description = serializers.CharField(source="grn_line.description", read_only=True)
+
+    class Meta:
+        model = GoodsReturnLine
+        fields = ["id", "line_no", "grn_line_id", "description", "quantity", "value_amount"]
+
+
+class GoodsReturnSerializer(serializers.ModelSerializer):
+    """A posted return of goods to the vendor against one receipt."""
+
+    grn_number = serializers.CharField(source="grn.document_number", read_only=True)
+    lines = GoodsReturnLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = GoodsReturn
+        fields = [
+            "id", "document_number", "status", "branch_id", "vendor_id",
+            "grn_id", "grn_number", "return_date", "reason", "total_value",
+            "journal_id", "lines",
+        ]

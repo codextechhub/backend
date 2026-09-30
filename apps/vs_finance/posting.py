@@ -17,6 +17,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from vs_config.clock import branch_today, tenant_today
+from vs_config.display import format_date
 
 from .constants import (
     DocumentStatus,
@@ -525,6 +526,7 @@ def post_journal(
     actor_user=None,
     allow_restricted: bool = False,
     allow_closed: bool = False,
+    allow_control_accounts: bool = False,
 ):
     """Post a draft :class:`~vs_finance.models.JournalEntry`, making it affect balances.
 
@@ -532,6 +534,12 @@ def post_journal(
     :class:`~vs_finance.exceptions.FinanceError` into a **durable** rejection audit row
     before re-raising. The rejection must be logged *outside* the rolled-back posting
     transaction, which is why this layer sits above the ``@transaction.atomic`` core.
+
+    A journal whose source says a person typed it (``MANUAL`` or ``OPENING``) may not
+    touch an account a sub-ledger keeps (:mod:`vs_finance.control_accounts`).
+    ``allow_control_accounts`` is for the one kind of sub-ledger document that posts an
+    ``OPENING`` journal to a control account on purpose: an opening balance carried by
+    its own document, such as an opening supplier bill.
 
     Idempotent guard: re-posting an already-POSTED entry raises rather than
     double-counting. Returns the entry.
@@ -542,6 +550,7 @@ def post_journal(
         return _post_journal_atomic(  # Perform the actual posting.
             entry, actor_user=actor_user, allow_restricted=allow_restricted,
             allow_closed=allow_closed,  # Actor and tightly scoped period privileges.
+            allow_control_accounts=allow_control_accounts,
         )
     except FinanceError as exc:  # Finance-domain errors get durable rejection audit.
         record_rejection(  # Record failed posting attempt.
@@ -560,13 +569,15 @@ def _post_journal_atomic(
     actor_user=None,
     allow_restricted: bool = False,
     allow_closed: bool = False,
+    allow_control_accounts: bool = False,
 ):
     """The posting work proper, all in one transaction.
 
     Steps:
       1. Guard the period is open (SOFT_CLOSED only when ``allow_restricted``).
       2. Guard the lines balance (Σdebits == Σcredits, exact kobo).
-      3. Guard every line's account is active and postable.
+      3. Guard every line's account is active and postable, and that a hand-typed
+         journal names no account a sub-ledger keeps.
       4. Apply the line amounts to the per-period :class:`AccountBalance` aggregates.
       5. Stamp the entry POSTED with ``posted_at``/``posted_by``.
       6. Write the authoritative ``JOURNAL_POSTED`` audit row - same commit as 4–5.
@@ -610,6 +621,12 @@ def _post_journal_atomic(
         if not (account.is_active and account.is_postable):  # Inactive/header accounts cannot post.
             raise InactiveAccountError(account_code=account.code)
 
+    if not allow_control_accounts:
+        from .control_accounts import HAND_SOURCES, ensure_no_control_lines
+
+        if entry.source in HAND_SOURCES:
+            ensure_no_control_lines(entry.entity, [line.account for line in lines])
+
     _apply_to_balances(entry, sign=+1)  # Add line amounts to per-period balances.
 
     entry.status = DocumentStatus.POSTED  # Mark journal posted.
@@ -647,6 +664,12 @@ def _journal_document_owner(entry):
     (``closes_fiscal_year``), and so, through ``reverses``, does the reversal that
     reopening the year posts. Reversing either by hand would move a whole year's
     result in or out of Retained Earnings while the year's status said otherwise.
+
+    A stock movement names the journal it was valued in, and so does the goods
+    receipt or goods return that raised that journal. The document wins: a stock
+    movement is the owner only of a journal no document claims (an issue or an
+    adjustment), so a receipt's journal is never reported as belonging to one of
+    its own stock lines.
     """
     from django.core.exceptions import ObjectDoesNotExist
 
@@ -656,6 +679,7 @@ def _journal_document_owner(entry):
     if getattr(entry, "closes_fiscal_year_id", None) is not None:
         return entry.closes_fiscal_year
 
+    stock_movement = None
     for relation in entry._meta.related_objects:
         if "journal" not in relation.field.name:
             continue
@@ -667,6 +691,9 @@ def _journal_document_owner(entry):
             continue
         if owner is None:
             continue
+        if type(owner).__name__ == "StockMovement":
+            stock_movement = stock_movement or owner
+            continue
         # A later credit/advance reclassification belongs to its receipt, note or
         # vendor payment, not to the small linkage row that makes the relationship
         # durable. Both sides of the ledger park early money in a holding account and
@@ -675,7 +702,11 @@ def _journal_document_owner(entry):
             owner = owner.payment or owner.note
         elif type(owner).__name__ == "VendorAdvanceAllocationJournal":
             owner = owner.payment
+        elif type(owner).__name__ == "VendorCreditAllocationJournal":
+            owner = owner.note
         return owner
+    if stock_movement is not None:
+        return stock_movement
 
     # Pre-migration later-allocation journals were linked only through the
     # append-only audit metadata.  Keep the raw-reversal guard fail-closed even if a
@@ -699,12 +730,22 @@ def _journal_document_owner(entry):
     return None
 
 
+#: Model name -> (the ``document_type`` the journal screen is given, the route under
+#: ``/v1/`` that undoes the document). A payables document is undone by its own
+#: service like a receivables one: a bill is voided, a vendor credit note voided, a
+#: vendor payment reversed, and a goods receipt reversed by returning its goods.
 _DOCUMENT_VOID_ROUTES = {
-    "Invoice": ("INVOICE", "invoices/{pk}/void/"),
-    "Payment": ("PAYMENT", "payments/{pk}/void/"),
-    "CreditNote": ("CREDIT_NOTE", "credit-notes/{pk}/void/"),
-    "Refund": ("REFUND", "refunds/{pk}/void/"),
-    "Concession": ("CONCESSION", "concessions/{pk}/void/"),
+    "Invoice": ("INVOICE", "finance/invoices/{pk}/void/"),
+    "Payment": ("PAYMENT", "finance/payments/{pk}/void/"),
+    "CreditNote": ("CREDIT_NOTE", "finance/credit-notes/{pk}/void/"),
+    "Refund": ("REFUND", "finance/refunds/{pk}/void/"),
+    "Concession": ("CONCESSION", "finance/concessions/{pk}/void/"),
+    "BankTransaction": ("BANK_TRANSACTION", "finance/bank-transactions/{pk}/void/"),
+    "BankTransfer": ("BANK_TRANSFER", "finance/bank-transfers/{pk}/void/"),
+    "VendorInvoice": ("VENDOR_INVOICE", "procurement/vendor-invoices/{pk}/void/"),
+    "VendorCreditNote": ("VENDOR_CREDIT_NOTE", "procurement/vendor-credit-notes/{pk}/void/"),
+    "VendorPayment": ("VENDOR_PAYMENT", "procurement/vendor-payments/{pk}/reverse/"),
+    "GoodsReceivedNote": ("GOODS_RECEIVED_NOTE", "procurement/goods-receipts/{pk}/reverse/"),
 }
 
 
@@ -756,7 +797,7 @@ def _document_void_instruction(owner):
     config = _DOCUMENT_VOID_ROUTES.get(model_name)
     if config:
         _, route = config
-        remedy = f"Use POST /finance/{route.format(pk=owner.pk)} from the document screen instead."
+        remedy = f"Use POST /{route.format(pk=owner.pk)} from the document screen instead."
     elif model_name == "FiscalYear":
         remedy = (
             f"Reopen fiscal year {label} instead (POST /finance/fiscal-years/{owner.pk}/reopen/ "
@@ -822,12 +863,14 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
     # to reverse after a period closes.
     reversal_date = date or entry.date  # Prefer explicit reversal date, otherwise original date.
     from .chronology import ensure_on_or_after
+    tenant = entry.entity.tenant
+    remedy = f"Date the reversal {format_date(entry.date, tenant)} or later."
     ensure_on_or_after(
         subject=f"Reversal of journal {entry.document_number or entry.pk}",
         subject_date=reversal_date,
         source=f"journal {entry.document_number or entry.pk}",
         source_date=entry.date,
-        remedy=f"Date the reversal {entry.date} or later.",
+        remedy=remedy, tenant=tenant,
     )
     period = resolve_period(entry.entity, reversal_date)  # Resolve period for selected reversal date.
     if entry.period is not None and entry.period.is_closing and reversal_date == entry.date:
@@ -844,7 +887,7 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
             subject_date=reversal_date,
             source=f"journal {entry.document_number or entry.pk}",
             source_date=entry.date,
-            remedy=f"Date the reversal {entry.date} or later.",
+            remedy=remedy, tenant=tenant,
         )
         period = resolve_period(entry.entity, reversal_date)  # Resolve today's period.
 
@@ -895,7 +938,7 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
 
 @transaction.atomic
 def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
-                      actor_user=None, branch=None):  # Create and post a raw direct journal entry.
+                      actor_user=None, branch=None, opening=False):  # Create and post a raw direct journal entry.
     """Create a direct entry with :func:`create_direct_entry` and post it straight away.
 
     For callers that have already settled that the entry needs no approval. The
@@ -903,7 +946,7 @@ def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
     """
     entry = create_direct_entry(
         entity, lines=lines, date=date, narration=narration, reference=reference,
-        actor_user=actor_user, branch=branch,
+        actor_user=actor_user, branch=branch, opening=opening,
     )
     post_journal(entry, actor_user=actor_user)  # Run normal posting guards and balance updates.
     entry.refresh_from_db()
@@ -912,14 +955,24 @@ def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
 
 @transaction.atomic
 def create_direct_entry(entity, *, lines, date=None, narration="", reference="",
-                        actor_user=None, branch=None):  # Create a raw direct journal entry as a draft.
+                        actor_user=None, branch=None, opening=False):  # Create a raw direct journal entry as a draft.
     """Build a direct journal entry - money/balances seated into the books with no source doc.
 
-    This is the *sanctioned* way to record anything that has no sub-ledger document behind
-    it: capital injections and equity contributions, loan drawdowns, grants, opening cash,
-    opening AR/AP, and manual adjustments. Unlike sub-ledger postings (which derive their
-    journal from an invoice/payment/etc.), a direct entry is the one place a caller supplies
-    raw lines. It posts with ``source=OPENING`` (the catch-all for sourceless entries).
+    This is the way to record a balance no sub-ledger document carries: accruals,
+    reclassifications between ordinary accounts, depreciation adjustments and the like.
+    Unlike sub-ledger postings (which derive their journal from an invoice/payment/etc.),
+    a direct entry is the one place a caller supplies raw lines. It posts with
+    ``source=MANUAL``, which is what it is: a journal a person typed. ``opening`` marks
+    a true opening balance (brought forward on the day the books began, such as the
+    cost of fixed assets already owned) and posts it with ``source=OPENING`` instead,
+    which is also what keeps it from counting as the books' first trading
+    (:func:`vs_procurement.payables.books_went_live` reads it that way).
+
+    It may not name an account a sub-ledger keeps (:mod:`vs_finance.control_accounts`):
+    money into or out of a bank account is a bank transaction, an opening customer
+    balance an opening invoice, and an opening supplier balance an opening bill. The
+    refusal happens here, before the draft exists, so a journal that could never post
+    is not sent round an approval route first.
 
     ``lines`` is a list of ``(account, debit_kobo, credit_kobo)`` - optionally extended
     with a 4th element ``cost_center`` and a 5th element ``dimensions`` - where ``account``
@@ -938,11 +991,16 @@ def create_direct_entry(entity, *, lines, date=None, narration="", reference="",
     calling here; this function records it and does not judge it.
     """
     from .accounts import resolve_account
+    from .control_accounts import ensure_no_control_lines
     from .models import FiscalPeriod, JournalEntry, JournalLine
 
     rows = list(lines or [])  # Normalize iterable input and handle None.
     if not rows:  # Direct entries must include at least one line.
         raise PostingError("A direct entry needs at least one line.")
+    ensure_no_control_lines(entity, [
+        row[0] if not isinstance(row[0], str) else resolve_account(entity, row[0])
+        for row in rows
+    ])
 
     if date is None:  # Default direct-entry date when caller omits one.
         date = (  # Prefer earliest fiscal period start, otherwise today.
@@ -954,8 +1012,8 @@ def create_direct_entry(entity, *, lines, date=None, narration="", reference="",
     entry = JournalEntry.objects.create(
         entity=entity, branch=branch,  # Entity and the branch the entry was raised for.
         date=date, period=resolve_period(entity, date),  # Date and resolved period.
-        source=JournalSource.OPENING,  # Direct entries use opening/sourceless source.
-        narration=narration or "Opening balances",  # Default narration.
+        source=JournalSource.OPENING if opening else JournalSource.MANUAL,
+        narration=narration or ("Opening balances" if opening else "Direct entry"),
         reference=reference, created_by=actor_user,  # External reference and actor.
     )
     for i, row in enumerate(rows, start=1):  # Create journal lines in input order.

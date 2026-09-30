@@ -29,13 +29,14 @@ tell an auditor something the platform never recorded.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
 from django.db.models import Min
 from django.utils import timezone
 
 from vs_config.clock import tenant_zone
+from vs_config.display import format_date
 
 from .models import RecordVersion, TrackingStart
 from .registry import TrackedModel, owner_key, rebuild
@@ -77,10 +78,16 @@ def record_date(moment: dt.datetime, zone: ZoneInfo) -> dt.date:
 
 @dataclass(frozen=True)
 class AsAt:
-    """A past day, the zone it is counted in, and the instant it ends."""
+    """A past day, the zone it is counted in, and the instant it ends.
+
+    ``tenant`` is the tenant the request speaks for, whose date format a
+    refusal writes its dates in (:mod:`vs_config.display`); ``None`` writes
+    them in the platform's.
+    """
 
     date: dt.date
     zone: ZoneInfo
+    tenant: object = field(default=None, compare=False)
 
     @property
     def moment(self) -> dt.datetime:
@@ -121,7 +128,7 @@ def parse_as_at(request) -> AsAt | None:
         )
     if day == today:
         return None
-    return AsAt(day, zone)
+    return AsAt(day, zone, getattr(request, "tenant", None))
 
 
 def history_starts(spec: TrackedModel, record_id, zone: ZoneInfo) -> dt.date | None:
@@ -140,7 +147,7 @@ def require_history(spec: TrackedModel, record_id, as_at: AsAt, *, noun: str) ->
     """
     starts = history_starts(spec, record_id, as_at.zone)
     if starts is None or as_at.date < starts:
-        when = f"{starts.day} {starts:%B %Y}" if starts else "today"
+        when = format_date(starts, as_at.tenant, month="long") if starts else "today"
         raise HistoryNotKept(
             f"History for {noun} starts on {when}. Pick that day or a later one.",
             history_starts=starts.isoformat() if starts else None,
@@ -178,7 +185,7 @@ def require_list_history(spec: TrackedModel, owner_starts: dt.date, as_at: AsAt,
     tracked = tracking_starts(spec, as_at.zone)
     starts = max(owner_starts, tracked) if tracked else None
     if starts is None or as_at.date < starts:
-        when = f"{starts.day} {starts:%B %Y}" if starts else "today"
+        when = format_date(starts, as_at.tenant, month="long") if starts else "today"
         raise HistoryNotKept(
             f"History for {noun} starts on {when}. Pick that day or a later one.",
             history_starts=starts.isoformat() if starts else None,

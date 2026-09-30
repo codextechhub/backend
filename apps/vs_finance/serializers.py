@@ -1235,9 +1235,63 @@ class TaxFilingSerializer(serializers.ModelSerializer):
         shares = list(obj.shares.all())
         return shares[0].filing_journal_id if len(shares) == 1 else None
 
+    def to_representation(self, obj):
+        """The return as the reader may see it: whole, or narrowed to their branches.
+
+        ``context["branch_ids"]`` is the reader's branch reach (``None`` for the
+        whole tenant). A branch-bound reader is shown only the shares, payments
+        and late items of their own branches, and every total on the return is
+        the sum of those shares, so nothing another branch declared or paid can
+        be read back out of a figure.
+        """
+        data = super().to_representation(obj)
+        reach = self.context.get("branch_ids")
+        if reach is None:
+            return data
+        return _narrow_filing(data, obj, frozenset(reach))
+
+
+def _narrow_filing(data, obj, reach):
+    """``data`` for ``obj`` cut down to the shares of the branches in ``reach``."""
+    shares = [s for s in obj.shares.all() if s.branch_id in reach]
+    due = sum(s.amount_due for s in shares)
+    paid = sum(s.amount_paid for s in shares)
+    data.update({
+        "branch_breakdown": TaxFilingShareSerializer(shares, many=True).data,
+        "remittances": [r for r in data["remittances"] if r["branch_id"] in reach],
+        "gross_liability": sum(s.gross_liability for s in shares),
+        "recoverable_amount": sum(s.recoverable_amount for s in shares),
+        "adjustment_amount": sum(s.adjustment_amount for s in shares),
+        "brought_forward_credit": sum(s.brought_forward_credit for s in shares),
+        "carried_forward_credit": sum(s.carried_forward_credit for s in shares),
+        "amount_due": due, "amount_due_naira": format_naira(due),
+        "amount_paid": paid, "balance_due": due - paid,
+        "payment_status": (
+            "PAID" if due <= 0 or paid >= due else "UNPAID" if paid <= 0 else "PARTIAL"),
+        "declared_line_count": sum(s.line_count for s in shares),
+        "filing_journal_id": shares[0].filing_journal_id if len(shares) == 1 else None,
+    })
+    keys = {str(branch_id) for branch_id in reach}
+    items = []
+    for item in data.get("late_items") or []:
+        parts = [part for key, part in (item.get("branches") or {}).items() if key in keys]
+        count = sum(part["line_count"] for part in parts)
+        if not count:
+            continue
+        gross = sum(part["gross"] for part in parts)
+        recoverable = sum(part["recoverable"] for part in parts)
+        items.append({
+            "month": item["month"], "label": item["label"], "gross": gross,
+            "recoverable": recoverable, "net": gross - recoverable, "line_count": count,
+            "branches": {key: part for key, part in item["branches"].items() if key in keys},
+        })
+    data["late_items"] = items
+    data["late_line_count"] = sum(item["line_count"] for item in items)
+    return data
+
 
 # --------------------------------------------------------------------------- #
-# Payroll                                                                     #
+# Payroll                                                                    #
 # --------------------------------------------------------------------------- #
 
 class PayrollLineSerializer(FieldAccessMixin, serializers.ModelSerializer):

@@ -25,6 +25,8 @@ from django.core.files.storage import default_storage
 from django.db.models import F, Q
 from django.utils import timezone
 
+from vs_config.clock import tenant_now
+
 from . import analytics, audit
 from .catalogue import default_format_options, get_dataset
 from .constants import (
@@ -38,6 +40,7 @@ from .constants import (
     DEFAULT_ROW_CAP,
     DownloadOutcome,
     DownloadRefusal,
+    FileAccessKind,
     ExportFormat,
     ExportPermission,
     FAILURE_GUIDANCE,
@@ -532,7 +535,7 @@ def _store_file(run, body, field_ids, row_count) -> ExportFile:
 
     stem = run.definition.render_file_name(run_id=run.reference) if run.definition_id else (
         f"{config.get('dataset_key', 'export').replace('.', '-')}-"
-        f"{timezone.localtime():%Y-%m-%d}"
+        f"{tenant_now(run.tenant):%Y-%m-%d}"
     )
     name = f"{stem}.{extension}"
     # Storage keys are opaque and unguessable: the download endpoint is the only way
@@ -742,16 +745,17 @@ def authorise_download(file, user, tenant):
     return True, ""
 
 
-def log_download(file, user, *, outcome, reason="", ip=""):
-    """Write the download record and keep the file's counter in step.
+def log_file_access(file, user, *, kind=FileAccessKind.DOWNLOAD, outcome, reason="", ip=""):
+    """Record a view or download while counting only saved copies.
 
     Every attempt is logged before the bytes move, so a refused attempt leaves the same
     trail as an allowed one - which is exactly the question a compliance review asks.
     """
     record = ExportDownload.objects.create(
-        file=file, user=user, outcome=outcome, refusal_reason=reason or "", ip_address=ip or "",
+        file=file, user=user, access_kind=kind, outcome=outcome,
+        refusal_reason=reason or "", ip_address=ip or "",
     )
-    if outcome == DownloadOutcome.ALLOWED:
+    if outcome == DownloadOutcome.ALLOWED and kind == FileAccessKind.DOWNLOAD:
         # F() so two people downloading at once cannot lose a count.
         ExportFile.objects.filter(pk=file.pk).update(download_count=F("download_count") + 1)
         # How old files are when people fetch them tells us whether 30 days is the
@@ -760,14 +764,19 @@ def log_download(file, user, *, outcome, reason="", ip=""):
             analytics.Event.FILE_DOWNLOADED, tenant=file.run.tenant, actor=user,
             properties={"age_days": (timezone.now() - file.created_at).days},
         )
+    actions = {
+        (FileAccessKind.VIEW, DownloadOutcome.ALLOWED): AuditAction.FILE_VIEWED,
+        (FileAccessKind.VIEW, DownloadOutcome.REFUSED): AuditAction.FILE_VIEW_REFUSED,
+        (FileAccessKind.DOWNLOAD, DownloadOutcome.ALLOWED): AuditAction.FILE_DOWNLOADED,
+        (FileAccessKind.DOWNLOAD, DownloadOutcome.REFUSED): AuditAction.FILE_DOWNLOAD_REFUSED,
+    }
     audit.record(
-        AuditAction.FILE_DOWNLOADED if outcome == DownloadOutcome.ALLOWED
-        else AuditAction.FILE_DOWNLOAD_REFUSED,
+        actions[(kind, outcome)],
         actor=user, tenant=file.run.tenant, obj=file, label=file.name,
         severity="INFO" if outcome == DownloadOutcome.ALLOWED else "WARNING",
         # A refused download is DENIED, not FAILED: nothing broke, access was declined.
         status="SUCCESS" if outcome == DownloadOutcome.ALLOWED else "DENIED",
-        metadata={"run": file.run.reference, "reason": reason},
+        metadata={"run": file.run.reference, "reason": reason, "access_kind": kind},
     )
     return record
 

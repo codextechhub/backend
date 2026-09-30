@@ -15,6 +15,7 @@ from django.core.files.storage import default_storage
 from django.db import transaction
 from django.utils import timezone
 
+from ..clock import branch_zone
 from ..models import ConfigurationAuditEvent, ConfigurationAuditExportJob
 from ..serializers import build_configuration_target_labels
 from .audit import record_configuration_event
@@ -155,7 +156,9 @@ def execute_configuration_audit_export(job_id):
                 # are about to hand to storage.
                 text.detach()
             handle.seek(0)
-            file_name = f"configuration-audit-{job.requested_at.date()}-{job.pk}.csv"
+            # Named for the day it was asked for at the tenant, not the server's UTC day.
+            asked_on = job.requested_at.astimezone(branch_zone(job.tenant, job.branch_id)).date()
+            file_name = f"configuration-audit-{asked_on}-{job.pk}.csv"
             storage_name = default_storage.save(
                 f"configuration-audit/{job.pk}/{file_name}", File(handle, name=file_name),
             )

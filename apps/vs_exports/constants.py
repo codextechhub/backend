@@ -240,6 +240,11 @@ class DownloadOutcome(models.TextChoices):
     REFUSED = "REFUSED", "Refused"
 
 
+class FileAccessKind(models.TextChoices):
+    VIEW = "VIEW", "View"
+    DOWNLOAD = "DOWNLOAD", "Download"
+
+
 class DownloadRefusal(models.TextChoices):
     """Why a download was refused - logged on every refused attempt."""
 
@@ -362,5 +367,7 @@ class AuditAction:
     RUN_FAILED = "EXPORT_FAILED"
     FILE_DOWNLOADED = "EXPORT_FILE_DOWNLOADED"
     FILE_DOWNLOAD_REFUSED = "EXPORT_FILE_DOWNLOAD_REFUSED"
+    FILE_VIEWED = "EXPORT_FILE_VIEWED"
+    FILE_VIEW_REFUSED = "EXPORT_FILE_VIEW_REFUSED"
     FILE_EXPIRED = "EXPORT_FILE_EXPIRED"
     ADMIN_VIEWED_ACTIVITY = "EXPORT_ADMIN_VIEWED_ACTIVITY"

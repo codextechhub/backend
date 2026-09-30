@@ -26,8 +26,11 @@ branch where it has exactly one; at a tenant with several it forms its own "no
 branch yet" group, which a draft shows and filing refuses until the entries are
 given a branch. Each branch share gets its own netting/penalty journal at filing
 and its own remittance journals when paid, all carrying that branch; the return is
-PAID when every share is. A tenant with no branch at all (the platform's own books)
-files and pays as one share with no branch.
+PAID when every share is. A share is paid only from its own branch's bank account:
+an account with no branch pays nothing at a tenant with several branches, and
+counts as the branch's at a tenant with one. A tenant with no branch at all (the
+platform's own books) files and pays as one share with no branch. A branch-bound
+reader sees and pays only the shares of their own branches.
 
 **Credits carry forward.** When recoverable input tax (and any credit brought
 forward) exceeds the tax, the return is due nil and the excess is carried to the
@@ -59,6 +62,8 @@ from dataclasses import dataclass, field
 
 from django.db import transaction
 from django.db.models import Sum
+
+from vs_config.display import format_date, format_date_range
 
 from .audit import record, record_rejection
 from .constants import (
@@ -102,7 +107,8 @@ def _default_due_date(period_end, filing_day):
     return datetime.date(year, month, min(int(filing_day), last_day))
 
 
-def _account_movement(entity, account, *, period_start=None, period_end=None):
+def _account_movement(entity, account, *, period_start=None, period_end=None,
+                      branch_ids=None, rule=None):
     """Return ``(debit_sum, credit_sum)`` of ``account``'s lines in the ledger.
 
     Lines come from :func:`vs_finance.branch_ledger.ledger_lines`, so a reversed
@@ -111,10 +117,21 @@ def _account_movement(entity, account, *, period_start=None, period_end=None):
     otherwise the all-time movement (the account's current balance components).
     Used for the running balance in :func:`outstanding_obligations`; a return's own
     figures come from its source lines instead.
+
+    ``branch_ids`` narrows to the lines those branches own under ``rule`` (a
+    :class:`BranchRule`), the way a return counts them: an entry's own branch,
+    and an entry with no branch only at a tenant whose one branch is among them.
     """
+    from django.db.models import Q
+
     from .branch_ledger import ledger_lines
 
     qs = ledger_lines(entity).filter(account=account)
+    if branch_ids is not None:
+        own = Q(entry__branch_id__in=tuple(sorted(branch_ids)))
+        if rule is not None and rule.only_branch_id in branch_ids:
+            own |= Q(entry__branch_id__isnull=True)
+        qs = qs.filter(own)
     if period_start is not None:
         qs = qs.filter(entry__date__gte=period_start)
     if period_end is not None:
@@ -147,6 +164,15 @@ class BranchRule:
         if self.only_branch_id is not None:
             return self.only_branch_id, False
         return None, self.has_branches
+
+    def bank_branch_id(self, bank_account):
+        """The branch whose share ``bank_account`` may pay, or ``None``.
+
+        An account's own branch; at a tenant with one branch, an account with
+        none is that branch's. ``None`` means the account pays no branch: fine at
+        a tenant without branches, and a refusal at a tenant with several.
+        """
+        return bank_account.branch_id or self.only_branch_id
 
 
 def branch_rule(entity) -> BranchRule:
@@ -281,26 +307,41 @@ def _month_label(month_start, period_start):
 def late_items(lines, period_start) -> list:
     """Source lines dated before ``period_start``, grouped by the month they are dated in.
 
-    Each item is ``{"month", "label", "gross", "recoverable", "net", "line_count"}``,
-    oldest month first. A late line was recorded after the return for its own month
-    was filed (or before any return existed), so it is declared here and named.
+    Each item is ``{"month", "label", "gross", "recoverable", "net", "line_count",
+    "branches"}``, oldest month first. ``branches`` holds the same figures per
+    branch, keyed by the branch id as a string ("" for lines with no branch), so a
+    branch-bound reader is shown only their branches' part of each month. A late
+    line was recorded after the return for its own month was filed (or before any
+    return existed), so it is declared here and named.
     """
-    months: dict = {}
-    for line in lines:
-        if line.date >= period_start:
-            continue
-        month = line.date.replace(day=1)
-        item = months.setdefault(month, {"gross": 0, "recoverable": 0, "line_count": 0})
+    def figures():
+        return {"gross": 0, "recoverable": 0, "line_count": 0}
+
+    def add(item, line):
         if line.role == TaxSourceRole.PAYABLE:
             item["gross"] += line.amount
         else:
             item["recoverable"] += line.amount
         item["line_count"] += 1
+
+    months: dict = {}
+    for line in lines:
+        if line.date >= period_start:
+            continue
+        month = line.date.replace(day=1)
+        item = months.setdefault(month, {**figures(), "branches": {}})
+        add(item, line)
+        key = "" if line.branch_id is None else str(line.branch_id)
+        add(item["branches"].setdefault(key, figures()), line)
     return [
         {
             "month": f"{month:%Y-%m}", "label": _month_label(month, period_start),
             "gross": item["gross"], "recoverable": item["recoverable"],
             "net": item["gross"] - item["recoverable"], "line_count": item["line_count"],
+            "branches": {
+                key: {**part, "net": part["gross"] - part["recoverable"]}
+                for key, part in sorted(item["branches"].items())
+            },
         }
         for month, item in sorted(months.items())
     ]
@@ -600,10 +641,12 @@ def _prepare_filing_atomic(obligation, *, period_start, period_end, due_date,
             .first()
         )
         if clash is not None:
+            tenant = entity.tenant
             raise TaxFilingError(
-                f"Filing period {period_start}–{period_end} overlaps existing "
-                f"{obligation.code} filing {clash.document_number or clash.pk} "
-                f"({clash.period_start}–{clash.period_end}).",
+                f"Filing period {format_date_range(period_start, period_end, tenant)} "
+                f"overlaps existing {obligation.code} filing "
+                f"{clash.document_number or clash.pk} "
+                f"({format_date_range(clash.period_start, clash.period_end, tenant)}).",
             )
         filing = TaxFiling(
             entity=entity, obligation=obligation,
@@ -626,7 +669,8 @@ def _prepare_filing_atomic(obligation, *, period_start, period_end, due_date,
         entity=entity, action=FinanceAuditAction.TAX_FILING_PREPARED,
         actor_user=actor_user, target=filing,
         message=(
-            f"Prepared {obligation.code} filing for {period_start}–{period_end}: "
+            f"Prepared {obligation.code} filing for "
+            f"{format_date_range(period_start, period_end, entity.tenant)}: "
             f"{filing.amount_due} kobo due."
         ),
         total=filing.amount_due, tax=filing.recoverable_amount,
@@ -887,20 +931,26 @@ def _unfile_filing_atomic(filing, *, actor_user=None):
 # --------------------------------------------------------------------------- #
 
 def pay_filing(filing, *, bank_account, pay_date, amount=None, branch=ANY_SHARE,
-               actor_user=None):
-    """Remit a filed return's branch shares: ``Dr payable, Cr bank`` per share.
+               actor_user=None, reach=None):
+    """Remit one branch share of a filed return: ``Dr payable, Cr bank``.
+
+    Every share is paid only from its own branch's bank account
+    (:meth:`BranchRule.bank_branch_id`): at a tenant with several branches an
+    account with no branch pays no share; at a tenant with one branch its
+    accounts are that branch's; a tenant with no branch pays its one share from
+    any of its accounts.
 
     ``branch`` (a Branch, its id, or ``None`` for the no-branch share of a tenant
-    without branches) names the share to pay. Without it: the only unpaid share;
-    else the unpaid share of the bank account's own branch; else, from a
-    tenant-wide account, every unpaid share, each as its own journal. ``amount``
-    defaults to the share's balance and needs a single share. Records a durable
+    without branches) names the share to pay. Without it: the only unpaid share,
+    else the unpaid share of the bank account's branch. ``amount`` defaults to the
+    share's balance. ``reach`` (a set of branch ids, or ``None`` for the whole
+    tenant) refuses a share outside the caller's branches. Records a durable
     rejection audit on any :class:`FinanceError`.
     """
     try:
         _pay_filing_atomic(
             filing, bank_account=bank_account, pay_date=pay_date,
-            amount=amount, branch=branch, actor_user=actor_user,
+            amount=amount, branch=branch, actor_user=actor_user, reach=reach,
         )
         filing.refresh_from_db()
         return filing
@@ -912,20 +962,20 @@ def pay_filing(filing, *, bank_account, pay_date, amount=None, branch=ANY_SHARE,
         raise
 
 
-def pay_filing_shares(filing, *, payments, pay_date, actor_user=None):
+def pay_filing_shares(filing, *, payments, pay_date, actor_user=None, reach=None):
     """Several branch payments of one return on one date, recorded together or not at all.
 
     ``payments`` is a list of ``(branch, bank_account, amount)`` read as
     :func:`pay_filing` reads its arguments (``branch`` may be :data:`ANY_SHARE`,
-    ``amount`` may be ``None``). Records a durable rejection audit on any
-    :class:`FinanceError`.
+    ``amount`` may be ``None``), and ``reach`` is applied to each. Records a
+    durable rejection audit on any :class:`FinanceError`.
     """
     try:
         with transaction.atomic():
             for branch, bank_account, amount in payments:
                 _pay_filing_atomic(
                     filing, bank_account=bank_account, pay_date=pay_date,
-                    amount=amount, branch=branch, actor_user=actor_user,
+                    amount=amount, branch=branch, actor_user=actor_user, reach=reach,
                 )
         filing.refresh_from_db()
         return filing
@@ -973,7 +1023,8 @@ def _branch_name(branch_id):
 
 
 @transaction.atomic
-def _pay_filing_atomic(filing, *, bank_account, pay_date, amount, branch, actor_user):
+def _pay_filing_atomic(filing, *, bank_account, pay_date, amount, branch, actor_user,
+                       reach=None):
     from .chronology import ensure_on_or_after
     from .models import JournalEntry, JournalLine, TaxRemittance
 
@@ -988,13 +1039,24 @@ def _pay_filing_atomic(filing, *, bank_account, pay_date, amount, branch, actor_
         subject_date=pay_date,
         source=f"tax filing {label}",
         source_date=filing.filed_at,
-        remedy=f"Date the remittance {filing.filed_at} or later.",
+        remedy=f"Date the remittance {format_date(filing.filed_at, filing.entity.tenant)} or later.",
+        tenant=filing.entity.tenant,
     )
 
     rule = branch_rule(filing.entity)
+    bank_branch = rule.bank_branch_id(bank_account)
+    if rule.has_branches and bank_branch is None:
+        raise TaxFilingError(
+            f"{bank_account.name} is not any one branch's account. Each branch's share of "
+            f"the return is paid from that branch's own account.",
+            failures=["bank_account"],
+        )
     open_shares = [s for s in _shares_to_pay(filing, rule, bank_account) if s.balance_due > 0]
     if not open_shares:
         raise TaxFilingError("This filing has no outstanding balance to remit.")
+
+    def share_branch(share):
+        return share.branch_id or rule.only_branch_id or bank_branch
 
     if branch is not ANY_SHARE:
         wanted = _branch_id(branch)
@@ -1003,37 +1065,30 @@ def _pay_filing_atomic(filing, *, bank_account, pay_date, amount, branch, actor_
             raise TaxFilingError(f"{_branch_name(wanted)} owes nothing more on return {label}.")
     elif len(open_shares) == 1:
         targets = open_shares
-    elif bank_account.branch_id is not None:
-        targets = [s for s in open_shares if s.branch_id == bank_account.branch_id]
+    else:
+        targets = [s for s in open_shares if share_branch(s) == bank_branch][:1]
         if not targets:
             raise TaxFilingError(
-                f"{_branch_name(bank_account.branch_id)} owes nothing more on return {label}; "
+                f"{_branch_name(bank_branch)} owes nothing more on return {label}; "
                 f"name the branch whose share this pays.",
             )
-    else:
-        targets = open_shares
-    if amount is not None and len(targets) > 1:
-        raise TaxFilingError(
-            "A part payment settles one branch's share; name the branch it pays.",
-            failures=["branch"],
-        )
 
     obligation = filing.obligation
     period = resolve_period(filing.entity, pay_date)
     paid = []
     for share in targets:
-        journal_branch = share.branch_id
-        if journal_branch is None and rule.has_branches:
-            journal_branch = rule.only_branch_id or bank_account.branch_id
-            if journal_branch is None:
-                raise TaxFilingError(
-                    "This share of the return has no branch; pay it from a branch's account.",
-                )
-        if bank_account.branch_id is not None and bank_account.branch_id != journal_branch:
+        journal_branch = share_branch(share)
+        if rule.has_branches and journal_branch != bank_branch:
             raise TaxFilingError(
                 f"This share of the return belongs to {_branch_name(journal_branch)}. "
-                f"Pay it from that branch's account or a tenant-wide one.",
+                f"Pay it from {_branch_name(journal_branch)}'s own account.",
                 failures=["bank_account"],
+            )
+        if reach is not None and journal_branch not in reach:
+            raise TaxFilingError(
+                f"This share of the return belongs to {_branch_name(journal_branch)}, "
+                f"which is outside your branches.",
+                failures=["branch"],
             )
         pay = share.balance_due if amount is None else min(int(amount), share.balance_due)
         if pay <= 0:
@@ -1159,15 +1214,22 @@ def _reverse_remittance_atomic(remittance, *, reason, date, actor_user):
 # Read-only - what each obligation currently owes                              #
 # --------------------------------------------------------------------------- #
 
-def outstanding_obligations(entity) -> list:
+def outstanding_obligations(entity, branch_ids=None) -> list:
     """Per-obligation snapshot of the unremitted balance sitting in each control account.
 
     The running net credit balance of each active obligation's ``liability_account`` (less
     any recoverable input balance), i.e. what would be owed if a return were filed for all
     activity to date. Returns one dict per active obligation.
+
+    ``branch_ids`` (a branch-bound reader's reach; ``None`` for the whole tenant)
+    counts only the lines of those branches, by entry branch as a return counts
+    them (:class:`BranchRule`): lines with no branch belong to a branch only at a
+    tenant with exactly one.
     """
     from .models import TaxObligation
 
+    rule = branch_rule(entity) if branch_ids is not None else None
+    narrow = {"branch_ids": branch_ids, "rule": rule}
     rows = []
     qs = (
         TaxObligation.objects
@@ -1176,11 +1238,11 @@ def outstanding_obligations(entity) -> list:
         .order_by("code")
     )
     for ob in qs:
-        debit, credit = _account_movement(entity, ob.liability_account)
+        debit, credit = _account_movement(entity, ob.liability_account, **narrow)
         payable = credit - debit
         recoverable = 0
         if ob.recoverable_account_id:
-            rdebit, rcredit = _account_movement(entity, ob.recoverable_account)
+            rdebit, rcredit = _account_movement(entity, ob.recoverable_account, **narrow)
             recoverable = rdebit - rcredit
         net = max(payable - max(recoverable, 0), 0)
         rows.append({

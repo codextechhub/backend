@@ -32,6 +32,7 @@ from django.utils import timezone
 from .constants import (
     DownloadOutcome,
     DownloadRefusal,
+    FileAccessKind,
     ExportFormat,
     FailureCode,
     FILE_RETENTION_DAYS,
@@ -154,8 +155,16 @@ class ExportDefinition(TimeStampedModel):
 
     # Render the configured file name for one run.
     def render_file_name(self, *, run_id=None, when=None) -> str:
-        """Expand the name pattern's tokens. The extension is added by the writer."""
-        when = when or timezone.localtime()
+        """Expand the name pattern's tokens. The extension is added by the writer.
+
+        ``{date}`` and ``{datetime}`` are read on the tenant's own clock, the
+        clock the builder's preview of the name uses, so a download is named for
+        the day it is at the school. They stay ISO whatever the school's date
+        format: a file name is sorted and matched, and a slash cannot be in one.
+        """
+        from vs_config.clock import tenant_now
+
+        when = when or tenant_now(self.tenant)
         tokens = {
             "date": when.strftime("%Y-%m-%d"),
             "datetime": when.strftime("%Y-%m-%d-%H%M"),
@@ -531,7 +540,7 @@ class ExportFile(TimeStampedModel):
 
 
 class ExportDownload(models.Model):
-    """Every download attempt on a file - allowed and refused alike.
+    """Every file view or download attempt, allowed and refused alike.
 
     Refusals are logged because "who tried and was told no" is exactly the question a
     compliance review asks, and a refusal that leaves no trace cannot be answered.
@@ -547,6 +556,9 @@ class ExportDownload(models.Model):
     at = models.DateTimeField(auto_now_add=True)
     ip_address = models.CharField(max_length=45, blank=True, default="")
     outcome = models.CharField(max_length=8, choices=DownloadOutcome.choices)
+    access_kind = models.CharField(
+        max_length=8, choices=FileAccessKind.choices, default=FileAccessKind.DOWNLOAD,
+    )
     refusal_reason = models.CharField(
         max_length=24, choices=DownloadRefusal.choices, blank=True, default="",
     )

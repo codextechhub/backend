@@ -17,6 +17,7 @@ from django.db.models import Q
 from vs_finance.audit import record
 from vs_finance.constants import FinanceAuditAction
 from vs_config.clock import tenant_today
+from vs_config.display import format_date_range
 
 from .constants import CONTRACT_DOC_TYPE, ContractStatus, MilestoneStatus
 from .exceptions import ContractError
@@ -77,7 +78,7 @@ def activate_contract(contract, *, actor_user=None):
         entity=contract.entity, action=FinanceAuditAction.VENDOR_CONTRACT_ACTIVATED,
         actor_user=actor_user, target=contract,
         message=f"Activated contract {contract.reference} with {contract.vendor.code} "
-                f"({contract.start_date} → {contract.end_date}).",
+                f"({format_date_range(contract.start_date, contract.end_date, contract.entity.tenant)}).",
         vendor_id=contract.vendor_id,
     )
     # Preserve the service's historical mutation contract for callers that retain
@@ -172,7 +173,7 @@ def renew_contract(contract, *, reference, start_date, end_date, contract_value=
         entity=contract.entity, action=FinanceAuditAction.VENDOR_CONTRACT_RENEWED,
         actor_user=actor_user, target=successor,
         message=f"Renewed contract {contract.reference} → {successor.reference} "
-                f"({start_date} → {end_date}).",
+                f"({format_date_range(start_date, end_date, contract.entity.tenant)}).",
         vendor_id=contract.vendor_id, renews_id=contract.pk,
     )
     return successor

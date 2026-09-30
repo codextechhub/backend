@@ -584,7 +584,9 @@ class RoleFieldAccessPatchTests(_FieldAccessApi):
             {"field": self.bank.key, "read": True},
         ])
         data = response.json()["data"]
-        self.assertEqual(data["role"], {"key": "storekeeper", "name": "Storekeeper", "branch_name": None})
+        self.assertEqual(data["role"], {
+            "key": "storekeeper", "name": "Storekeeper", "branch_name": None, "can_edit": True,
+        })
         self.assertEqual([entry["key"] for entry in data["fields"]], [self.bank.key, self.name.key])
 
     def test_an_administrator_may_change_a_role_they_hold(self):
@@ -606,7 +608,9 @@ class RoleFieldAccessReadTests(_FieldAccessApi):
         response = self._get()
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
         data = response.json()["data"]
-        self.assertEqual(data["role"], {"key": "storekeeper", "name": "Storekeeper", "branch_name": None})
+        self.assertEqual(data["role"], {
+            "key": "storekeeper", "name": "Storekeeper", "branch_name": None, "can_edit": True,
+        })
         self.assertEqual(
             [entry["key"] for entry in data["fields"]],
             [self.bank.key, self.phone.key, self.name.key, self.total.key],

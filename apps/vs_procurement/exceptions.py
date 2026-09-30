@@ -208,3 +208,32 @@ class SettlementBranchError(PostingError):
     error_code = "SETTLEMENT_BRANCH"
     default_message = "This bill belongs to another branch than the payment."
     http_status = 400
+
+
+class VendorInvoiceVoidError(PostingError):
+    """A bill cannot be voided because something already stands on it.
+
+    A void is for a bill nothing has touched. Once cash has settled any of it, or a
+    credit note has been raised against it, voiding would strand those documents, so
+    the answer is a credit note instead.
+    """
+
+    error_code = "VENDOR_INVOICE_VOID_REFUSED"
+    default_message = "This vendor invoice cannot be voided."
+    http_status = 409
+
+
+class VendorCreditNoteError(PostingError):
+    """A vendor credit note cannot be raised, posted, applied or voided as asked."""
+
+    error_code = "VENDOR_CREDIT_NOTE_REFUSED"
+    default_message = "The vendor credit note could not be processed."
+    http_status = 409
+
+
+class GoodsReturnError(PostingError):
+    """Goods cannot be returned against this receipt as asked."""
+
+    error_code = "GOODS_RETURN_REFUSED"
+    default_message = "The goods could not be returned."
+    http_status = 409

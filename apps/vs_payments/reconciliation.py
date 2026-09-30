@@ -23,6 +23,7 @@ from __future__ import annotations
 import datetime
 from dataclasses import dataclass, field
 
+from vs_config.clock import tenant_zone
 from vs_finance.models import BankStatementLine
 from vs_finance.money import format_naira
 from vs_rbac.scoping import UNNARROWED
@@ -163,6 +164,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
     """
     if reach is None:
         reach = PaymentsReach(entity, UNNARROWED)
+    zone = tenant_zone(entity.tenant)  # Confirmations are dated on the tenant's calendar.
     rows: list[SettlementRow] = []  # Collect gateway movements into reconciliation rows.
 
     collections = reach.collections().filter(status=CollectionStatus.SUCCEEDED)
@@ -175,7 +177,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
         "id", "reference", "provider", "provider_reference", "amount", "confirmed_at",
     ):
         confirmed = ci.confirmed_at  # Confirmation timestamp for the collection.
-        if not _date_in_window(confirmed, start_date, end_date):  # Skip rows outside the window.
+        if not _date_in_window(confirmed, start_date, end_date, zone):  # Skip rows outside the window.
             continue
         rows.append(SettlementRow(  # Collections are positive signed movements.
             kind="COLLECTION", gateway_id=ci.id, reference=ci.reference,
@@ -187,7 +189,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
         "metadata", "confirmed_at",
     ):
         confirmed = po.confirmed_at  # Confirmation timestamp for the payout.
-        if not _date_in_window(confirmed, start_date, end_date):  # Skip rows outside the window.
+        if not _date_in_window(confirmed, start_date, end_date, zone):  # Skip rows outside the window.
             continue
         rows.append(SettlementRow(  # Payouts are negative signed movements.
             kind="PAYOUT", gateway_id=po.id, reference=po.reference,
@@ -232,7 +234,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
         lowest id - a deterministic, least-surprising tie-break. Still a heuristic (no
         global optimum), just a far better one than insertion order.
         """
-        conf = row.confirmed_at.date() if row.confirmed_at else None
+        conf = _day_at(row.confirmed_at, zone) if row.confirmed_at else None
         best, best_key = None, None
         for cand in candidates:
             if cand.id in consumed:  # Skip bank lines already matched.
@@ -294,11 +296,23 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
 
 
 # Support the date in window workflow.
-def _date_in_window(value, start_date, end_date):
-    """True if a (datetime) confirmation falls within the inclusive date window."""
+def _day_at(value, zone):
+    """The calendar day an instant falls on in *zone*; a plain date as it is."""
+    if isinstance(value, datetime.datetime):
+        return value.astimezone(zone).date()
+    return value
+
+
+def _date_in_window(value, start_date, end_date, zone):
+    """True if a confirmation falls within the inclusive date window.
+
+    The window names the tenant's days, so an instant is dated in *zone* first:
+    a payment confirmed at 00:30 in Lagos on 1 October is October's, although
+    the server's UTC day is still 30 September.
+    """
     if value is None:  # Missing dates only match when the caller supplied no window.
         return start_date is None and end_date is None
-    day = value.date() if hasattr(value, "date") else value  # Normalize datetimes to plain dates.
+    day = _day_at(value, zone)
     if start_date is not None and day < start_date:  # Respect the lower bound when provided.
         return False
     if end_date is not None and day > end_date:  # Respect the upper bound when provided.
