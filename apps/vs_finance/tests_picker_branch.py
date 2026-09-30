@@ -70,3 +70,43 @@ class LedgerAccountsNameTheirBanksBranchTests(_PickerFixture):
         self.assertEqual(rows["11811"]["bank_branch_id"], self.ikeja.pk)
         self.assertIsNone(rows["4100"]["bank_account_id"])
         self.assertIsNone(rows["4100"]["bank_branch_id"])
+
+
+class PaymentsPickersOfferOnlyWhatTheClerkMayUseTests(_PickerFixture):
+    """``?own=true`` lists what a branch clerk may raise a gateway record against."""
+
+    def setUp(self):
+        from vs_procurement.models import Vendor
+
+        super().setUp()
+        payable = Account.objects.get(entity=self.books, code="2100")
+        self.vendors = {
+            code: Vendor.objects.create(entity=self.books, code=code, name=f"Vendor {code}",
+                                        branch=branch, payable_account=payable)
+            for code, branch in (("VIKJ", self.ikeja), ("VLEK", self.lekki), ("VALL", None))
+        }
+
+    def vendor_rows(self, client, query=""):
+        response = client.get(f"/v1/procurement/vendors/?entity={self.books.code}{query}")
+        self.assertEqual(response.status_code, 200, getattr(response, "data", None))
+        return {row["code"]: row for row in response.json()["data"]}
+
+    def test_a_branch_clerks_own_customers_leave_out_the_shared_family(self):
+        clerk = self.client_for("pick-clerk@corona.test", "finance.customer.view", branches=[self.ikeja])
+
+        self.assertEqual({r["code"] for r in self.rows(clerk, "customers/")}, {"COKAF", "CADEY"})
+        self.assertEqual({r["code"] for r in self.rows(clerk, "customers/?own=true")}, {"COKAF"})
+
+    def test_a_whole_school_clerk_may_use_every_customer(self):
+        hq = self.client_for("pick-own-hq@corona.test", "finance.customer.view")
+
+        self.assertEqual({r["code"] for r in self.rows(hq, "customers/?own=true")}, {"COKAF", "CADEY"})
+
+    def test_vendor_rows_carry_their_branch_and_own_leaves_out_the_shared_ones(self):
+        clerk = self.client_for("pick-buyer@corona.test", "procurement.vendor.view", branches=[self.ikeja])
+
+        rows = self.vendor_rows(clerk)
+        self.assertEqual(set(rows), {"VIKJ", "VALL"})
+        self.assertEqual(rows["VIKJ"]["branch_id"], self.ikeja.pk)
+        self.assertIsNone(rows["VALL"]["branch_id"])
+        self.assertEqual(set(self.vendor_rows(clerk, "&own=true")), {"VIKJ"})

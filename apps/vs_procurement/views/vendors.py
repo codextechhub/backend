@@ -27,7 +27,7 @@ from vs_finance.views import resolve_entity
 from vs_finance.constants import AccountType, DocumentStatus
 from vs_rbac.field_enforcement import assert_writable
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
-from vs_rbac.scoping import WholeTenantWriteMixin
+from vs_rbac.scoping import WholeTenantWriteMixin, transaction_branch_q
 from vs_config.clock import tenant_today
 
 from ..constants import PAYMENT_TERM_DAYS, PaymentTerms, VendorKycStatus, VendorRisk
@@ -485,6 +485,11 @@ class VendorCategoryInsightsView(_ProcBase):
 class VendorListCreateView(_ProcBase):
     """GET (list) / POST (create) vendors for an entity.
 
+    ``?own=true`` lists only the vendors kept by one of the reader's branches
+    (every vendor, for a whole-school reader): the ones a branch clerk may pay
+    out to, which the payout pickers read rather than offering a shared vendor
+    the payout then refuses.
+
     docstring-name: Vendors
     """
 
@@ -499,7 +504,7 @@ class VendorListCreateView(_ProcBase):
         entity = resolve_entity(request)
         qs = _catalogue_visible(
             request, Vendor.objects.filter(entity=entity),
-        ).select_related("category").annotate(
+        ).select_related("category", "branch").annotate(
             # Open commitments: issued POs with an unreceived line, in the reader's branches.
             active_po_count=Count(
                 "purchase_orders",
@@ -510,6 +515,8 @@ class VendorListCreateView(_ProcBase):
                 distinct=True,
             ),
         )
+        if request.query_params.get("own") == "true":
+            qs = qs.filter(transaction_branch_q(request))
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         if (hold := request.query_params.get("on_hold")) in ("true", "false"):

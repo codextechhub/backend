@@ -335,7 +335,11 @@ def _money_obj(kobo) -> dict:
 class CustomerListCreateView(_FinanceBase):
     """Customers / payers for an entity.
 
-    List filters: ``?search=`` (code or name), ``?is_active=true|false``.
+    List filters: ``?search=`` (code or name), ``?is_active=true|false``, and
+    ``?own=true``: only customers filed under one of the reader's branches (every
+    customer, for a whole-school reader). That is the set a branch clerk may raise
+    a gateway record against on its own, so the payments pickers read it rather
+    than offering a shared family that the create then refuses.
     Customer codes are allocated by the model when a create request omits one;
     explicit codes remain accepted for trusted imports and existing API clients.
 
@@ -357,6 +361,8 @@ class CustomerListCreateView(_FinanceBase):
         qs = Customer.objects.filter(
             branch_q(request, include_shared=True), entity=entity,
         ).select_related("receivable_account", "branch")
+        if request.query_params.get("own") == "true":
+            qs = qs.filter(transaction_branch_q(request))
         if (search := request.query_params.get("search")):
             from django.db.models import Q
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
