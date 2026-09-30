@@ -41,10 +41,14 @@ _VARIABLE_RE = re.compile(r"\{\{\s*([a-z_0-9]+)")
 _IF_RE = re.compile(r"\{%\s*if\s+([a-z_0-9]+)")
 
 #: Event types with no subject of their own to fill: each shipped one already.
+#: An in-app template added after migration 0018 belongs here, not in a
+#: migration: the seed creates it with its subject, so no database holds a
+#: blank one to bring into line.
 _ALREADY_TITLED = {
     "health.alert_fired",
     "workflow.final_approved",
     "finance.fiscal_calendar_expiring",
+    "procurement.quotation_submitted",
 }
 
 
