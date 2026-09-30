@@ -392,7 +392,7 @@ def sample_rows(user, dataset, scope, config, tenant, *, limit=PREVIEW_ROWS):
     raw = qs.values_list(*paths)[:limit]
     rows = [
         [
-            render_value(field.kind, value, mode, choices=field.choices)
+            render_value(field.kind, value, mode, choices=field.choices, tenant=tenant)
             for field, value in zip(fields, record)
         ]
         for record in raw
@@ -472,7 +472,7 @@ def produce(user, config, scope, tenant, *, progress=None, is_cancelled=None):
     source = islice(qs.values_list(*paths).iterator(chunk_size=CHUNK_SIZE), row_cap)
     for index, record in enumerate(source, start=1):
         rows.append([
-            render_value(field.kind, value, mode, choices=field.choices)
+            render_value(field.kind, value, mode, choices=field.choices, tenant=tenant)
             for field, value in zip(fields, record)
         ])
         if index % CHUNK_SIZE == 0:
@@ -513,7 +513,7 @@ def filters_summary(dataset, config, scope):
          else "For another system to import"),
     ]
     for spec in config.get("filters") or []:
-        rows.append(("Filter", describe_filter(dataset, spec)))
+        rows.append(("Filter", describe_filter(dataset, spec, tenant=scope.tenant)))
     if not config.get("filters"):
         rows.append(("Filter", f"None - the whole dataset for {scope.label}"))
     return rows
@@ -526,7 +526,7 @@ def plain_sentence(dataset, config, scope, *, rows=None) -> str:
     fmt = "an Excel file" if (config.get("format") or "xlsx") == "xlsx" else "a CSV file"
     where = scope.label
     count = f"about {rows:,} rows" if rows is not None else "an unknown number of rows"
-    filters = [describe_filter(dataset, s) for s in config.get("filters") or []]
+    filters = [describe_filter(dataset, s, tenant=scope.tenant) for s in config.get("filters") or []]
     scope = f" where {'; '.join(filters)}" if filters else ""
     return (
         f"{dataset.name} in {where}{scope} - {columns} columns, {count} - as {fmt}. "

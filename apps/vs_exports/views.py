@@ -27,6 +27,7 @@ from core.client_ip import get_client_ip
 from core.pagination import XVSPagination
 from core.response import success_response
 from vs_config.clock import tenant_today
+from vs_config.display import format_date
 from vs_finance.views import resolve_entity
 from vs_notifications.services.acknowledge import acknowledge_record
 from vs_notifications.services.routing import RecordFamily
@@ -855,7 +856,8 @@ def _refusal_message(reason, file) -> str:
     return {
         DownloadRefusal.EXPIRED: (
             f"This file passed its availability date on "
-            f"{file.available_until:%d %b %Y}. Run the export again to produce a new one."
+            f"{format_date(file.available_until, file.run.tenant)}. Run the export again "
+            f"to produce a new one."
         ),
         DownloadRefusal.PURGED: (
             "This file has been deleted from storage. The run record is still here; run "

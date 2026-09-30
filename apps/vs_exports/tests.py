@@ -2226,7 +2226,7 @@ class ScheduleLifecycleTests(_ExportFixture, TestCase):
         }, format="json")
         self.assertEqual(response.status_code, 201)
         data = response.json()["data"]
-        self.assertIn("day 1 of every month at 03:00", data["reads_as"])
+        self.assertIn("day 1 of every month at 3:00 am", data["reads_as"])
         self.assertIn("Africa/Lagos", data["reads_as"])
         self.assertIsNotNone(data["next_run_at"])
 

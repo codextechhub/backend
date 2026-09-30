@@ -115,7 +115,7 @@ class ExportDefinitionDetailSerializer(ExportDefinitionListSerializer):
         dataset = obj.dataset
         if dataset is None:
             return []
-        return [describe_filter(dataset, spec) for spec in obj.filters or []]
+        return [describe_filter(dataset, spec, tenant=obj.tenant) for spec in obj.filters or []]
 
 
 class ExportDefinitionWriteSerializer(serializers.ModelSerializer):
@@ -314,7 +314,7 @@ class ExportRunDetailSerializer(ExportRunListSerializer):
             for c in config.get("columns") or []
         ]
         filters = (
-            [describe_filter(dataset, spec) for spec in config.get("filters") or []]
+            [describe_filter(dataset, spec, tenant=obj.tenant) for spec in config.get("filters") or []]
             if dataset else []
         )
         return {
@@ -343,8 +343,8 @@ class ExportRunDetailSerializer(ExportRunListSerializer):
             {
                 "field": c["field"],
                 "label": _DRIFT_LABELS.get(c["field"], c["field"].replace("_", " ").capitalize()),
-                "then": _readable_config_value(c["field"], c["then"], dataset),
-                "now": _readable_config_value(c["field"], c["now"], dataset),
+                "then": _readable_config_value(c["field"], c["then"], dataset, obj.tenant),
+                "now": _readable_config_value(c["field"], c["now"], dataset, obj.tenant),
             }
             for c in config_drift(obj)
         ]
@@ -371,7 +371,7 @@ _DRIFT_LABELS = {
 
 
 # Render one side of a drift entry as a sentence, never as the stored blob.
-def _readable_config_value(field, value, dataset) -> str:
+def _readable_config_value(field, value, dataset, tenant=None) -> str:
     """A person-readable rendering of one configuration value.
 
     Deliberately lossy: the point is "what changed", not a reconstructable dump.
@@ -389,7 +389,7 @@ def _readable_config_value(field, value, dataset) -> str:
     if field == "filters":
         if not dataset:
             return f"{len(value)} filters"
-        return "; ".join(describe_filter(dataset, spec) for spec in value) or "-"
+        return "; ".join(describe_filter(dataset, spec, tenant=tenant) for spec in value) or "-"
     if field == "sort":
         return ", ".join(
             f"{s.get('field')} {s.get('direction', 'asc')}" for s in value

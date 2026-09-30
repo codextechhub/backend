@@ -154,8 +154,16 @@ class ExportDefinition(TimeStampedModel):
 
     # Render the configured file name for one run.
     def render_file_name(self, *, run_id=None, when=None) -> str:
-        """Expand the name pattern's tokens. The extension is added by the writer."""
-        when = when or timezone.localtime()
+        """Expand the name pattern's tokens. The extension is added by the writer.
+
+        ``{date}`` and ``{datetime}`` are read on the tenant's own clock, the
+        clock the builder's preview of the name uses, so a download is named for
+        the day it is at the school. They stay ISO whatever the school's date
+        format: a file name is sorted and matched, and a slash cannot be in one.
+        """
+        from vs_config.clock import tenant_now
+
+        when = when or tenant_now(self.tenant)
         tokens = {
             "date": when.strftime("%Y-%m-%d"),
             "datetime": when.strftime("%Y-%m-%d-%H%M"),

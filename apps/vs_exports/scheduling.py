@@ -141,13 +141,20 @@ def describe(schedule) -> str:
 
     The UI shows this verbatim, so a schedule can be checked without anyone having to
     interpret a cron expression.
+
+    The time is the schedule's own wall time in the schedule's own zone, which the
+    sentence names; only its wording (the date format and the clock) is the
+    tenant's (:mod:`vs_config.display`).
     """
-    at = schedule.at_time.strftime("%H:%M")
+    from vs_config.display import format_date, format_time
+
+    tenant = schedule.definition.tenant
+    at = format_time(schedule.at_time, tenant)
     zone = schedule.timezone_name or DEFAULT_TIMEZONE
     day = schedule.day
 
     if schedule.recurrence == Recurrence.ONCE:
-        body = f"runs once on {schedule.starts_on:%d %b %Y} at {at}"
+        body = f"runs once on {format_date(schedule.starts_on, tenant)} at {at}"
     elif schedule.recurrence == Recurrence.DAILY:
         body = f"runs every day at {at}"
     elif schedule.recurrence == Recurrence.WEEKLY:
@@ -162,9 +169,9 @@ def describe(schedule) -> str:
     else:
         body = f"runs at {at}"
 
-    tail = f" ({zone}), starting {schedule.starts_on:%d %b %Y}"
+    tail = f" ({zone}), starting {format_date(schedule.starts_on, tenant)}"
     tail += (
-        f", ending {schedule.ends_on:%d %b %Y}" if schedule.ends_on
+        f", ending {format_date(schedule.ends_on, tenant)}" if schedule.ends_on
         else ", with no end date"
     )
     suffix = ". A clock change keeps the local time fixed."

@@ -25,6 +25,8 @@ from django.core.files.storage import default_storage
 from django.db.models import F, Q
 from django.utils import timezone
 
+from vs_config.clock import tenant_now
+
 from . import analytics, audit
 from .catalogue import default_format_options, get_dataset
 from .constants import (
@@ -532,7 +534,7 @@ def _store_file(run, body, field_ids, row_count) -> ExportFile:
 
     stem = run.definition.render_file_name(run_id=run.reference) if run.definition_id else (
         f"{config.get('dataset_key', 'export').replace('.', '-')}-"
-        f"{timezone.localtime():%Y-%m-%d}"
+        f"{tenant_now(run.tenant):%Y-%m-%d}"
     )
     name = f"{stem}.{extension}"
     # Storage keys are opaque and unguessable: the download endpoint is the only way
