@@ -178,6 +178,27 @@ class ALekkiReaderReadsLekkisCopiesTests(_BranchReachFixture):
     def test_events_of_other_modules_are_read_as_before(self):
         self.assertIn(str(self.sign_in.id), self.ids(self.ngozi))
 
+    def test_another_modules_event_about_an_ikeja_document_stays_ikejas(self):
+        ikeja_post = self.unapproved_post(self.ikeja, "21")
+        lekki_post = self.unapproved_post(self.lekki, "22")
+
+        seen = self.ids(self.ngozi, module_key="WORKFLOW")
+
+        self.assertEqual(seen, {str(lekki_post.id)})
+        self.assertEqual(self.ngozi.get(f"/v1/audit/events/{ikeja_post.id}/").status_code, 404)
+        self.assertEqual(
+            self.ids(self.bello, module_key="WORKFLOW"), {str(ikeja_post.id), str(lekki_post.id)},
+        )
+
+    def unapproved_post(self, branch, entity_id):
+        """The record that a branch's payout went out with no approval configured."""
+        return emit_audit_event(
+            module_key="WORKFLOW", action_type="POSTED_WITHOUT_APPROVAL",
+            entity_type="PayoutRun", entity_id=entity_id, tenant=self.tenant,
+            summary=f"PayoutRun {entity_id} posted with no approval stages configured.",
+            branch=branch,
+        )
+
 
 class OtherReadersAreUnchangedTests(_BranchReachFixture):
 
