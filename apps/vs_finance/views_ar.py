@@ -2633,9 +2633,15 @@ def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None):
     (:class:`vs_rbac.scoping.BranchScope`). The two sources reach a branch by
     different routes, which is exactly what a scope object is for rather than a
     pre-built ``Q``: a ``WriteOffRequest`` carries its own ``branch`` column,
-    while a posted write-off is reported from the audit log, which has none - its
-    branch is the written-off invoice's and has to be resolved. Omitting ``scope``
-    means no narrowing, which is what an unbound caller gets.
+    while a posted write-off is reported from the audit log, and its branch is
+    read from the written-off invoice rather than from the entry. An entry
+    written before entries carried a branch has none until the branch backfill
+    reaches it, and the invoice answers the same question for old and new
+    entries alike. Resolving it costs one extra query, bounded by ``limit``, and
+    only for a narrowed caller. A row whose target is not a resolvable invoice
+    is not shown to a narrowed caller: failing closed on an oddity is right where
+    failing open would leak another branch's bad debt. Omitting ``scope`` means
+    no narrowing, which is what an unbound caller gets.
     """
     from .approvals import ApprovalGate
     from vs_rbac.scoping import UNNARROWED
@@ -2653,13 +2659,7 @@ def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None):
     invs = {i.id: i for i in Invoice.objects.filter(id__in=need_ids).select_related("customer")} \
         if need_ids else {}
 
-    # The audit log has no branch column, so a posted write-off's branch is the
-    # branch of the invoice it wrote off. Resolving that costs one extra query,
-    # bounded by ``limit``, and is done only for a caller who is actually
-    # narrowed - an unbound caller's query count is byte-for-byte what it was.
-    # A row whose target is not a resolvable invoice cannot be attributed to a
-    # branch at all, so a narrowed caller does not see it: failing closed on an
-    # oddity is right where failing open would leak another branch's bad debt.
+    # A posted write-off's branch is its invoice's; narrowed callers only, fail closed.
     visible_ids = None
     if scope.is_narrowed:
         log_ids = [int(l.target_id) for l in logs if str(l.target_id).isdigit()]

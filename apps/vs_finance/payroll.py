@@ -532,7 +532,11 @@ def _post_accrual(run, lines, *, branch_id, accounts, period, actor_user, label_
 def post_payroll(run, *, actor_user=None):
     """Compute, validate and post a payroll run's **accrual**, one journal per branch.
 
-    Records a durable rejection audit on any :class:`FinanceError`, then re-raises.
+    The accrual is audited once per branch share, each entry carrying that
+    share's figures and filed under its branch, so a branch's bursar reads their
+    own staff's cost and never the school's total; a run booked as one journal
+    is audited once, under that journal's branch. Records a durable rejection
+    audit on any :class:`FinanceError`, then re-raises.
     """
     try:  # Atomic worker performs accrual posting.
         return _post_payroll_atomic(run, actor_user=actor_user)  # Post payroll accrual.
@@ -580,7 +584,7 @@ def _post_payroll_atomic(run, *, actor_user=None):
 
     accounts = _accounts_for(run)  # Resolve expense and liability accounts.
     period = resolve_period(run.entity, run.pay_date)  # Find payroll period.
-    journal_ids = []
+    shares = []
     if len(groups) == 1:
         (branch_id, lines), = groups.items()
         entry, _ = _post_accrual(
@@ -588,7 +592,6 @@ def _post_payroll_atomic(run, *, actor_user=None):
             actor_user=actor_user,
         )
         run.journal = entry  # Link run to accrual journal.
-        journal_ids.append(entry.pk)
     else:
         names = dict(Branch.all_objects.filter(pk__in=groups).values_list("pk", "name"))
         for branch_id in sorted(groups, key=lambda b: names.get(b, "")):
@@ -597,13 +600,12 @@ def _post_payroll_atomic(run, *, actor_user=None):
                 period=period, actor_user=actor_user,
                 label_suffix=f" - {names.get(branch_id, '')}",
             )
-            PayrollRunBranch.objects.create(
+            shares.append(PayrollRunBranch.objects.create(
                 run=run, branch_id=branch_id, journal=entry,
                 gross_total=totals["gross"], paye_total=totals["paye"],
                 pension_total=totals["pension"], net_total=totals["net"],
                 status=PayrollRunStatus.POSTED,
-            )
-            journal_ids.append(entry.pk)
+            ))
 
     salary, paye, pension, net = accounts
     run.salary_expense_account = salary  # Persist salary expense account used.
@@ -618,14 +620,25 @@ def _post_payroll_atomic(run, *, actor_user=None):
         "run_status", "status", "updated_at",  # Lifecycle fields.
     ])
 
-    record(  # Audit successful payroll accrual.
-        entity=run.entity, action=FinanceAuditAction.PAYROLL_POSTED,  # Audit action.
-        actor_user=actor_user, target=run,  # Actor and target context.
-        message=f"Accrued payroll: gross {run.gross_total}, net {run.net_total} kobo.",  # Summary.
-        journal_id=journal_ids[0] if len(journal_ids) == 1 else None,
-        journal_ids=journal_ids, gross=run.gross_total, paye=run.paye_total,
-        pension=run.pension_total, net=run.net_total,  # Pension and net metadata.
-    )
+    for share in shares:
+        record(
+            entity=run.entity, action=FinanceAuditAction.PAYROLL_POSTED,
+            actor_user=actor_user, target=run, branch=share.branch_id,
+            message=(
+                f"Accrued {names.get(share.branch_id, '')}'s payroll: "
+                f"gross {share.gross_total}, net {share.net_total} kobo."
+            ),
+            journal_id=share.journal_id, gross=share.gross_total, paye=share.paye_total,
+            pension=share.pension_total, net=share.net_total,
+        )
+    if not shares:
+        record(
+            entity=run.entity, action=FinanceAuditAction.PAYROLL_POSTED,
+            actor_user=actor_user, target=run, branch=run.journal.branch_id,
+            message=f"Accrued payroll: gross {run.gross_total}, net {run.net_total} kobo.",
+            journal_id=run.journal_id, gross=run.gross_total, paye=run.paye_total,
+            pension=run.pension_total, net=run.net_total,
+        )
     return run  # Return posted payroll run.
 
 
@@ -740,7 +753,7 @@ def _pay_payroll_atomic(run, *, bank_account=None, bank_accounts=None, pay_date=
 
     record(  # Audit successful disbursement.
         entity=run.entity, action=FinanceAuditAction.PAYROLL_PAID,  # Audit action.
-        actor_user=actor_user, target=run,  # Actor and target context.
+        actor_user=actor_user, target=run, branch=branch_id,  # The journal's branch.
         message=f"Disbursed net wages {run.net_total} kobo from {bank_account.name}.",  # Summary.
         journal_id=entry.pk, net=run.net_total,  # Structured metadata.
     )
@@ -792,7 +805,7 @@ def _pay_branch_shares(run, bank_accounts, *, pay_date, actor_user):
         share.save(update_fields=["disbursement_journal", "bank_account", "status", "updated_at"])
         record(
             entity=run.entity, action=FinanceAuditAction.PAYROLL_PAID,
-            actor_user=actor_user, target=run,
+            actor_user=actor_user, target=run, branch=share.branch_id,
             message=(
                 f"Disbursed {share.branch.name}'s net wages {share.net_total} kobo "
                 f"from {bank.name}."
@@ -820,6 +833,7 @@ def cancel_payroll_run(run, *, actor_user=None):
       must be reversed first (a real cash clawback), before the run can be voided. A
       run with any branch's share already paid is refused the same way.
 
+    Voiding a run posted per branch is audited once per share, under its branch.
     Idempotent on an already-cancelled run.
     """
     from .posting import reverse_journal
@@ -839,30 +853,44 @@ def cancel_payroll_run(run, *, actor_user=None):
             f"left the bank. Reverse the disbursement before voiding the run.",
         )
 
-    reversed_ids = []
     if run.run_status == PayrollRunStatus.POSTED:  # Accrued unpaid payroll needs reversal.
         if run.journal_id is not None:
             reverse_journal(run.journal, actor_user=actor_user, document_owner=run)
-            reversed_ids.append(run.journal_id)
         for share in shares:
             reverse_journal(share.journal, actor_user=actor_user, document_owner=share)
             share.status = PayrollRunStatus.CANCELLED
             share.save(update_fields=["status", "updated_at"])
-            reversed_ids.append(share.journal_id)
 
     was = run.run_status  # Capture previous status for audit message.
     run.run_status = PayrollRunStatus.CANCELLED  # Mark payroll run cancelled.
     run.status = DocumentStatus.CANCELLED  # Mark finance document cancelled.
     run.save(update_fields=["run_status", "status", "updated_at"])
 
-    record(  # Audit cancellation/void.
-        entity=run.entity, action=FinanceAuditAction.PAYROLL_CANCELLED,  # Audit action.
-        actor_user=actor_user, target=run,  # Actor and target context.
-        message=(f"Voided payroll run {run.document_number or run.pk} "  # Posted runs are voided with reversal.
-                 f"(reversed accrual journal{'s' if len(reversed_ids) > 1 else ''} "
-                 f"{', '.join(str(i) for i in reversed_ids)})."
-                 if was == PayrollRunStatus.POSTED  # Distinguish posted vs draft path.
-                 else f"Cancelled draft payroll run {run.document_number or run.pk}."),  # Draft path message.
-        journal_id=run.journal_id, journal_ids=reversed_ids, previous_status=was,
-    )
+    label = run.document_number or run.pk
+    if was == PayrollRunStatus.POSTED and shares:
+        for share in shares:
+            record(
+                entity=run.entity, action=FinanceAuditAction.PAYROLL_CANCELLED,
+                actor_user=actor_user, target=run, branch=share.branch_id,
+                message=(
+                    f"Voided {share.branch.name}'s share of payroll run {label} "
+                    f"(reversed accrual journal {share.journal_id})."
+                ),
+                journal_id=share.journal_id, previous_status=was,
+            )
+    elif was == PayrollRunStatus.POSTED:
+        record(
+            entity=run.entity, action=FinanceAuditAction.PAYROLL_CANCELLED,
+            actor_user=actor_user, target=run,
+            branch=run.journal.branch_id if run.journal_id else run.branch_id,
+            message=f"Voided payroll run {label} (reversed accrual journal {run.journal_id}).",
+            journal_id=run.journal_id, previous_status=was,
+        )
+    else:
+        record(
+            entity=run.entity, action=FinanceAuditAction.PAYROLL_CANCELLED,
+            actor_user=actor_user, target=run,
+            message=f"Cancelled draft payroll run {label}.",
+            journal_id=run.journal_id, previous_status=was,
+        )
     return run  # Return cancelled payroll run.

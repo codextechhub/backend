@@ -9,7 +9,9 @@ credit note reads the bill it credits, and a goods return the receipt it returns
 against.
 
 Order numbers sit between finance's documents and its journals, so every
-journal a procurement document raised can read that document's branch.
+journal a procurement document raised can read that document's branch. A stock
+movement's audit entry is about the item, which no branch owns, so it names its
+store in its details, and the finance audit trail's backfill reads it there.
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ from vs_finance.branch_derivation import (
     Target,
     agreeing,
     bank_behind,
+    register_audit_reference,
     register_journal_owner,
     register_target,
     user_branch,
@@ -81,3 +84,6 @@ for _target in _TARGETS:
     register_target(_target)
 for _owner in _JOURNAL_OWNERS:
     register_journal_owner(_owner)
+
+# A stock movement's audit entry names the item; its store is in the details.
+register_audit_reference("StockItem", "location_id", STOCK_LOCATION)

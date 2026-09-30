@@ -61,7 +61,7 @@ import datetime
 from dataclasses import dataclass, field
 
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Count, Sum
 
 from vs_config.display import format_date, format_date_range
 
@@ -578,6 +578,45 @@ def _write_shares(filing, figures) -> dict:
     return written
 
 
+def _audit_per_share(filing, shares, *, action, actor_user, describe):
+    """Audit ``action`` on ``filing`` once per branch share, each under its branch.
+
+    A return is booked per branch, so its trail is too: Lagoon View's VAT
+    return has an Ikeja share and a Lekki share, and Lekki's bursar reads
+    Lekki's N30,000 without ever seeing Ikeja's figures or the return's total.
+    The whole-school total is the sum of the shares' entries. ``describe(share)``
+    returns ``(message, metadata)`` for one share. A return with no shares is
+    audited once, under its own branch, with ``describe(None)``.
+    """
+    shares = list(shares)
+    for share in shares or [None]:
+        message, metadata = describe(share)
+        record(
+            entity=filing.entity, action=action, actor_user=actor_user, target=filing,
+            branch=share.branch_id if share is not None else filing.branch_id,
+            message=message[:255], **metadata,
+        )
+
+
+def _whose(share) -> str:
+    """How an entry names a share: "Lekki Branch's share", or "the return" for none."""
+    if share is None:
+        return "the return"
+    if share.branch_id is None:
+        return "the share with no branch yet" if share.branch_pending else "the return"
+    return f"{_branch_name(share.branch_id)}'s share"
+
+
+def _share_figures(share, filing) -> dict:
+    """The figures an entry carries: one share's, or the whole return's when it has none."""
+    source = share if share is not None else filing
+    return {
+        "total": source.amount_due, "tax": source.recoverable_amount,
+        "carried_forward": source.carried_forward_credit,
+        "lines": share.line_count if share is not None else filing.declared_line_count,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Prepare                                                                      #
 # --------------------------------------------------------------------------- #
@@ -663,19 +702,17 @@ def _prepare_filing_atomic(obligation, *, period_start, period_end, due_date,
     filing.adjustment_account = None
     filing.payment_status = InvoicePaymentStatus.UNPAID
     filing.save()
-    _write_shares(filing, figures)
+    shares = _write_shares(filing, figures)
 
-    record(
-        entity=entity, action=FinanceAuditAction.TAX_FILING_PREPARED,
-        actor_user=actor_user, target=filing,
-        message=(
-            f"Prepared {obligation.code} filing for "
-            f"{format_date_range(period_start, period_end, entity.tenant)}: "
-            f"{filing.amount_due} kobo due."
+    period = format_date_range(period_start, period_end, entity.tenant)
+    _audit_per_share(
+        filing, shares.values(), action=FinanceAuditAction.TAX_FILING_PREPARED,
+        actor_user=actor_user,
+        describe=lambda share: (
+            f"Prepared {obligation.code} filing for {period}: {_whose(share)}, "
+            f"{(share or filing).amount_due} kobo due.",
+            _share_figures(share, filing),
         ),
-        total=filing.amount_due, tax=filing.recoverable_amount,
-        lines=filing.declared_line_count, late_lines=filing.late_line_count,
-        carried_forward=filing.carried_forward_credit,
     )
     return filing
 
@@ -788,7 +825,6 @@ def _file_filing_atomic(filing, *, filed_date, filing_reference, adjustment_amou
     shares = _write_shares(filing, figures)
 
     period = resolve_period(filing.entity, filed_date)
-    journal_ids = []
     for fig in figures.shares:
         recoverable, penalty = fig.recoverable, fig.adjustment
         if not recoverable and not penalty:
@@ -818,7 +854,6 @@ def _file_filing_atomic(filing, *, filed_date, filing_reference, adjustment_amou
         share = shares[fig.key]
         share.filing_journal = entry
         share.save(update_fields=["filing_journal", "updated_at"])
-        journal_ids.append(entry.pk)
 
     filing.filing_reference = filing_reference
     filing.filed_at = filed_date
@@ -826,17 +861,16 @@ def _file_filing_atomic(filing, *, filed_date, filing_reference, adjustment_amou
     filing.refresh_payment_status(save=False)
     filing.save()
 
-    record(
-        entity=filing.entity, action=FinanceAuditAction.TAX_FILING_FILED,
-        actor_user=actor_user, target=filing,
-        message=(
-            f"Filed {obligation.code} return {filing.document_number or filing.pk} "
-            f"({filing.amount_due} kobo due, {filing.declared_line_count} lines declared)."
+    label = filing.document_number or filing.pk
+    _audit_per_share(
+        filing, shares.values(), action=FinanceAuditAction.TAX_FILING_FILED,
+        actor_user=actor_user,
+        describe=lambda share: (
+            f"Filed {obligation.code} return {label}: {_whose(share)}, "
+            f"{(share or filing).amount_due} kobo due.",
+            {**_share_figures(share, filing),
+             "journal_id": share.filing_journal_id if share is not None else None},
         ),
-        journal_id=journal_ids[0] if len(journal_ids) == 1 else None,
-        journal_ids=journal_ids, total=filing.amount_due, tax=filing.recoverable_amount,
-        lines=filing.declared_line_count, late_lines=filing.late_line_count,
-        carried_forward=filing.carried_forward_credit,
     )
     return filing
 
@@ -867,7 +901,7 @@ def unfile_filing(filing, *, actor_user=None):
 
 @transaction.atomic
 def _unfile_filing_atomic(filing, *, actor_user=None):
-    from .models import TaxFiling
+    from .models import TaxFiling, TaxFilingShare
     from .posting import reverse_journal
 
     filing = _lock(filing)
@@ -891,18 +925,21 @@ def _unfile_filing_atomic(filing, *, actor_user=None):
             f"carried forward; un-file it first.",
         )
 
-    reversed_ids = []
+    reversed_by_branch = {}
     for share in filing.shares.exclude(filing_journal=None).select_related("filing_journal"):
         reverse_journal(share.filing_journal, actor_user=actor_user, document_owner=share)
-        reversed_ids.append(share.filing_journal_id)
+        reversed_by_branch[share.branch_id] = share.filing_journal_id
         share.filing_journal = None
         share.save(update_fields=["filing_journal", "updated_at"])
     if filing.filing_journal_id is not None:
         reverse_journal(filing.filing_journal, actor_user=actor_user, document_owner=filing)
-        reversed_ids.append(filing.filing_journal_id)
+        reversed_by_branch.setdefault(filing.filing_journal.branch_id, filing.filing_journal_id)
         filing.filing_journal = None
 
-    released = filing.declared_lines.count()
+    released = dict(
+        filing.declared_lines.order_by().values("branch_id")
+        .annotate(n=Count("id")).values_list("branch_id", "n")
+    )
     filing.declared_lines.all().delete()
     filing.credit_from = None
     filing.filed_at = None
@@ -914,14 +951,21 @@ def _unfile_filing_atomic(filing, *, actor_user=None):
     filing.adjustment_account = None
     filing.payment_status = InvoicePaymentStatus.UNPAID
     filing.save()
-    _write_shares(filing, figures)
+    shares = list(_write_shares(filing, figures).values())
+    for branch_id in (reversed_by_branch.keys() | released.keys()) - {s.branch_id for s in shares}:
+        shares.append(TaxFilingShare(filing=filing, branch_id=branch_id))
 
-    record(
-        entity=filing.entity, action=FinanceAuditAction.TAX_FILING_UNFILED,
-        actor_user=actor_user, target=filing,
-        message=f"Un-filed {filing.obligation.code} return {label} back to draft.",
-        journal_id=reversed_ids[0] if len(reversed_ids) == 1 else None,
-        journal_ids=reversed_ids, released_lines=released,
+    def describe(share):
+        branch_id = share.branch_id if share is not None else filing.branch_id
+        return (
+            f"Un-filed {filing.obligation.code} return {label} back to draft: {_whose(share)}.",
+            {"journal_id": reversed_by_branch.get(branch_id),
+             "released_lines": released.get(branch_id, 0)},
+        )
+
+    _audit_per_share(
+        filing, shares, action=FinanceAuditAction.TAX_FILING_UNFILED,
+        actor_user=actor_user, describe=describe,
     )
     return filing
 
@@ -1120,15 +1164,15 @@ def _pay_filing_atomic(filing, *, bank_account, pay_date, amount, branch, actor_
 
     _refresh_filing_payment(filing)
 
-    total = sum(p for _, p, _ in paid)
-    record(
-        entity=filing.entity, action=FinanceAuditAction.TAX_FILING_PAID,
-        actor_user=actor_user, target=filing,
-        message=f"Remitted {total} kobo of {obligation.code} filing {label}.",
-        journal_id=paid[0][2].pk if len(paid) == 1 else None,
-        journal_ids=[e.pk for _, _, e in paid], amount=total,
-        branch_ids=[s.branch_id for s, _, _ in paid], payment_status=filing.payment_status,
-    )
+    for share, pay, entry in paid:
+        record(
+            entity=filing.entity, action=FinanceAuditAction.TAX_FILING_PAID,
+            actor_user=actor_user, target=filing, branch=entry.branch_id,
+            message=(
+                f"Remitted {pay} kobo of {obligation.code} filing {label}: {_whose(share)}."
+            )[:255],
+            journal_id=entry.pk, amount=pay, payment_status=share.payment_status,
+        )
     return filing
 
 
@@ -1199,7 +1243,7 @@ def _reverse_remittance_atomic(remittance, *, reason, date, actor_user):
 
     record(
         entity=filing.entity, action=FinanceAuditAction.TAX_REMITTANCE_REVERSED,
-        actor_user=actor_user, target=filing,
+        actor_user=actor_user, target=filing, branch=remittance.branch_id,
         message=(
             f"Reversed a {remittance.amount} kobo remittance of "
             f"{filing.obligation.code} return {filing.document_number or filing.pk}: {reason}"

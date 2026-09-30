@@ -613,6 +613,20 @@ class FinanceAuditLog(models.Model):
     impersonated person, are explained by the audit row beside them. Rows written
     before ``effective_user`` existed keep the pair only in ``metadata``
     (``effective_user_id``); the immutability triggers keep them as written.
+
+    ``branch`` is the branch of the document the entry is about, taken from that
+    document when the entry is written (:func:`vs_finance.audit.record`) and
+    never from the person acting. It is read like every transaction's branch
+    (:func:`vs_rbac.scoping.transaction_branch_q`): a branch-bound reader sees
+    their own branches' entries only, and an entry with no branch is shown to
+    whole-school readers alone. It is null for an entry about something that
+    belongs to the whole tenant (a setting, a fiscal year, a vendor contract), and
+    for entries written before entries carried a branch. A document booked per
+    branch, such as a central payroll run or the tenant's tax return, is recorded
+    one entry per branch share, each with that share's figures, so the
+    whole-school total is the sum of its shares. The immutability triggers allow
+    one change only: filling a blank branch, which is how
+    ``manage.py branch_backfill`` places an old entry.
     """
 
     entity = models.ForeignKey(
@@ -644,6 +658,11 @@ class FinanceAuditLog(models.Model):
     before = models.JSONField(default=dict, blank=True)
     after = models.JSONField(default=dict, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        related_name="finance_audit_logs", null=True, blank=True,
+        help_text="The branch of the document the entry is about; null for the whole tenant.",
+    )
     created_at = models.DateTimeField(default=timezone.now, editable=False)
 
     class Meta:
@@ -651,6 +670,7 @@ class FinanceAuditLog(models.Model):
             models.Index(fields=["entity", "action"]),
             models.Index(fields=["target_type", "target_id"]),
             models.Index(fields=["entity", "created_at"]),
+            models.Index(fields=["entity", "branch"], name="vs_finance_audit_branch_idx"),
         ]
         ordering = ["-created_at", "-id"]
 

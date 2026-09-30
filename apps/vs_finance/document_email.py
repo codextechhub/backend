@@ -143,6 +143,26 @@ def preview(*, customer, document_type, entity, document_number="") -> dict:
 # Audit                                                                       #
 # --------------------------------------------------------------------------- #
 
+def _delivery_branch_id(delivery):
+    """The branch of the document a delivery emails, for its audit entries.
+
+    An invoice's or a receipt's own branch; for a statement, the customer's own
+    branch, and none for a customer every branch shares, whose statement belongs
+    to the tenant as a whole.
+    """
+    from .models import Customer, Invoice, Payment
+
+    if delivery.document_type == FinanceDeliveryDocument.INVOICE:
+        rows = Invoice.objects.filter(pk=delivery.document_id) if str(delivery.document_id).isdigit() else None
+    elif delivery.document_type == FinanceDeliveryDocument.RECEIPT:
+        rows = Payment.objects.filter(pk=delivery.document_id) if str(delivery.document_id).isdigit() else None
+    else:
+        rows = Customer.objects.filter(pk=delivery.customer_id)
+    if rows is None:
+        return None
+    return rows.filter(entity_id=delivery.entity_id).values_list("branch_id", flat=True).first()
+
+
 def _audit(delivery, action, message, *, actor_user=None, status=FinanceAuditStatus.SUCCESS):
     return record(
         entity=delivery.entity,
@@ -150,6 +170,7 @@ def _audit(delivery, action, message, *, actor_user=None, status=FinanceAuditSta
         actor_user=actor_user or delivery.requested_by,
         target_type=f"{delivery.document_type.title()}Delivery",
         target_id=str(delivery.pk),
+        branch=_delivery_branch_id(delivery),
         document_number=delivery.document_number,
         status=status,
         message=message,

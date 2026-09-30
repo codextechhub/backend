@@ -73,6 +73,18 @@ def default_location(entity):
     ).first()
 
 
+def _store_branch(stock_item, location):
+    """The branch a refused movement's audit entry is filed under.
+
+    The named store's branch when it is one of the item's own books' stores, and
+    otherwise none: a refusal can be about a store that was never valid for the
+    item, and its branch says nothing about whose movement it was.
+    """
+    if getattr(location, "entity_id", None) != stock_item.entity_id:
+        return None
+    return location.branch_id
+
+
 def resolve_location(entity, location=None):
     """Decide which location a movement applies to.
 
@@ -267,7 +279,7 @@ def receive_stock(stock_item, *, quantity, value, movement_date, location=None,
     )
     record(
         entity=stock_item.entity, action=FinanceAuditAction.STOCK_RECEIVED,
-        actor_user=actor_user, target=stock_item,
+        actor_user=actor_user, target=stock_item, branch=location.branch_id,
         message=(
             f"Received {quantity} of {stock_item.code} into {location.code} "
             f"({format_naira(int(value))} into inventory)."
@@ -306,6 +318,7 @@ def issue_stock(stock_item, *, quantity, movement_date, location=None,
         record_rejection(
             entity=stock_item.entity, action=FinanceAuditAction.STOCK_ISSUE_REJECTED,
             exc=exc, actor_user=actor_user, target=stock_item,
+            branch=_store_branch(stock_item, location),
         )
         raise
 
@@ -379,7 +392,7 @@ def _issue_stock_atomic(stock_item, *, quantity, movement_date, location=None,
     )
     record(
         entity=stock_item.entity, action=FinanceAuditAction.STOCK_ISSUED,
-        actor_user=actor_user, target=stock_item,
+        actor_user=actor_user, target=stock_item, branch=location.branch_id,
         message=(
             f"Issued {quantity} of {stock_item.code} from {location.code} "
             f"({format_naira(value)} to expense)."
@@ -412,6 +425,7 @@ def adjust_stock(stock_item, *, quantity_delta, movement_date, location=None,
         record_rejection(
             entity=stock_item.entity, action=FinanceAuditAction.STOCK_ADJUST_REJECTED,
             exc=exc, actor_user=actor_user, target=stock_item,
+            branch=_store_branch(stock_item, location),
         )
         raise
 
@@ -495,7 +509,7 @@ def _adjust_stock_atomic(stock_item, *, quantity_delta, movement_date, location=
     )
     record(
         entity=stock_item.entity, action=FinanceAuditAction.STOCK_ADJUSTED,
-        actor_user=actor_user, target=stock_item,
+        actor_user=actor_user, target=stock_item, branch=location.branch_id,
         message=(
             f"Adjusted {stock_item.code} at {location.code} by {delta} "
             f"({format_naira(signed_value)})."
