@@ -132,7 +132,7 @@ MUST SAY:
 - Needs Attention: transfers between branches and paying petty cash back to the
   bank have no document yet; FinPro lacks the new screens and journal actions.
 
-### D85. Admins change who approves a waiting request, in advance or in bulk, and delegate for others (hash pending, 2026-09-30)
+### D85. Admins change who approves a waiting request, in advance or in bulk, and delegate for others (74875f8b, 2026-09-30)
 MODULES: M07 workflow and approval engine, M04 roles and permissions (new key), M08
 notifications and delivery (new event), M12 staff management (leave request), MRD.
 MUST SAY:
