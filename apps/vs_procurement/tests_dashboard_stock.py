@@ -1,13 +1,15 @@
 """The Stock & receiving tab, stock issued to a cost centre, and the restock draft.
 
-The two-branch school from the overview tests keeps paper in a school-wide
-central store and in a Lekki store, read as at 31 January 2026. The central
+The two-branch school from the overview tests keeps paper in a central store not
+yet given a branch and in a Lekki store, read as at 31 January 2026. The central
 store received 100 reams on 2 January (reorder level 40, reorder quantity 100)
 and issued 70 to Administration by the 30th; Lekki received 10 and issued none.
 
-A Lekki storekeeper reads the central store and Lekki's own, never Ikeja's. The
-restock draft is built from the server's own reading of low stock, is left as a
-draft, and needs both the requisition key and access to stock.
+A Lekki storekeeper reads Lekki's own store only: a store belongs to one branch,
+and one not yet given a branch is read only by somebody covering the whole
+school. The restock draft is built from the server's own reading of low stock, is
+left as a draft for the branch it names, and needs both the requisition key and
+access to stock.
 """
 from __future__ import annotations
 
@@ -47,7 +49,7 @@ class _StockFixture(_OverviewFixture):
 
         from .views.base import _BranchScope
 
-        return _BranchScope(BranchScope(frozenset({branch.id}), include_shared=True), {}) if branch else None
+        return _BranchScope(BranchScope(frozenset({branch.id}), include_shared=False), {}) if branch else None
 
     def tab(self, reader=None, branch=None):
         from vs_finance.dashboard import EVERY_BLOCK
@@ -64,16 +66,16 @@ class LowStockTests(_StockFixture):
         self.assertEqual(row.days_left, int(Decimal(40) / (Decimal(70) / 30)))
         self.assertEqual(row.suggested, Decimal(100))
 
-    def test_a_lekki_storekeeper_reads_the_central_store_and_their_own(self):
+    def test_a_lekki_storekeeper_reads_her_own_store_only(self):
         issue_stock(self.paper, quantity=Decimal(10), movement_date=datetime.date(2026, 1, 30), location=self.central)
         ikeja_store = StockLocation.objects.create(entity=self.multi.entity, code="IKJ", name="Ikeja store",
                                                    branch=self.ikeja)
         receive_stock(self.paper, quantity=500, value=2_500_000, movement_date=datetime.date(2026, 1, 3),
                       location=ikeja_store)
-        # Across every store there are 530 reams; Lekki reads 30 (central 20, Lekki 10) and sees it low.
+        # Across every store there are 530 reams; Lekki reads its own 10 and sees it low.
         self.assertEqual(low_stock(self.multi.entity, AS_OF), [])
         lekki = low_stock(self.multi.entity, AS_OF, self.stores(self.lekki))
-        self.assertEqual(lekki[0].on_hand, Decimal(30))
+        self.assertEqual(lekki[0].on_hand, Decimal(10))
 
     def test_the_tab_counts_what_is_low_and_what_went_to_whom(self):
         d = self.tab()
@@ -121,16 +123,23 @@ class RestockDraftTests(_StockFixture):
 
     def post(self, client, body=None):
         return client.post(f"/v1/procurement/stock-items/restock-requisition/?entity={self.multi.entity.code}",
-                           body or {}, format="json")
+                           {"branch": self.lekki.pk} if body is None else body, format="json")
 
     def test_it_drafts_one_line_per_low_item_at_the_suggested_quantity(self):
         response = self.post(self.client_with("buyer@t.com", "procurement.requisition.create", "procurement.stock.view"))
         self.assertEqual(response.status_code, 201, response.data)
         req = PurchaseRequisition.objects.get(pk=response.json()["data"]["id"])
         self.assertEqual(req.status, "DRAFT")
+        self.assertEqual(req.branch_id, self.lekki.pk)
         line = req.lines.get()
         self.assertEqual((line.description, line.quantity), ("A4 paper", Decimal(100)))
         self.assertEqual(line.estimated_unit_price, 5_000)  # 200,000 on hand for 40 reams.
+
+    def test_a_whole_school_buyer_names_the_branch_it_is_for(self):
+        response = self.post(self.client_with("buyer4@t.com", "procurement.requisition.create",
+                                              "procurement.stock.view"), body={})
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertFalse(PurchaseRequisition.objects.filter(title__startswith="Restock").exists())
 
     def test_it_needs_access_to_stock(self):
         response = self.post(self.client_with("buyer2@t.com", "procurement.requisition.create"))

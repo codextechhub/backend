@@ -38,8 +38,8 @@ from ..serializers import (
 
 from .base import (
     _branch_scope,
-    _catalogue_or_404,
-    _catalogue_visible,
+    _branch_visible,
+    _document_or_404,
     _kobo,
     _raised_branch,
     _ProcBase,
@@ -70,14 +70,12 @@ def _strict_bool(value, field):
 def _readable_balances(request, entity, location=None):
     """The balance rows one caller may read, narrowed to a store when they name one.
 
-    Stock sits in a location and a location names a branch, so the branch rule the
-    rest of procurement reads under reaches these rows through ``location__``. It is
-    the catalogue reading of a null branch rather than the document one: a central
-    store belongs to the whole school, so what stands in it is everybody's to see,
-    and withholding it would leave a branch storekeeper looking at an empty screen
-    instead of at their own stock.
+    Stock sits in a location and a location belongs to one branch, so the branch
+    rule the rest of procurement reads under reaches these rows through
+    ``location__``, exclusively: a branch storekeeper reads their own stores, and
+    another branch's stock is drawn on by requisition rather than read.
     """
-    qs = _catalogue_visible(
+    qs = _branch_visible(
         request, StockBalance.objects.filter(stock_item__entity=entity),
         prefix="location__",
     )
@@ -87,10 +85,10 @@ def _readable_balances(request, entity, location=None):
 def _readable_movements(request, entity):
     """The stock ledger one caller may read, by the store each movement happened at.
 
-    A movement carrying no location belongs to no store, so it reads as shared with
-    every branch rather than as another branch's.
+    A movement carrying no location belongs to no store, so only a whole-school
+    caller reads it.
     """
-    return _catalogue_visible(
+    return _branch_visible(
         request, StockMovement.objects.filter(entity=entity), prefix="location__",
     )
 
@@ -245,7 +243,7 @@ def _resolve_location(request, entity, raw, field="location"):
     if raw in (None, ""):
         return None
     lookup = {"pk": raw} if str(raw).isdigit() else {"code": str(raw)}
-    location = _catalogue_visible(
+    location = _branch_visible(
         request, StockLocation.objects.filter(entity=entity),
     ).filter(**lookup).first()
     if location is None:
@@ -270,7 +268,7 @@ def _implied_location(request, entity, field="location"):
     if not _branch_scope(request).is_narrowed:
         return None
     visible = list(
-        _catalogue_visible(
+        _branch_visible(
             request, StockLocation.objects.filter(entity=entity, is_active=True),
         ).order_by("-is_default", "code")[:2]
     )
@@ -299,11 +297,11 @@ def _movement_location(request, entity, raw, field="location"):
 class StockLocationListCreateView(_ProcBase):
     """GET (list) / POST (create) the places stock physically sits.
 
-    A location may name a branch or none. An entity-wide store leaves it blank; a
-    two-branch school gives each branch its own, and a branch with a main store and a
-    lab store gives each of those one. Exactly one location per entity is the default,
-    which is what a single-store school relies on to keep moving stock without naming
-    one.
+    A location belongs to one branch. A two-branch school gives each branch its own,
+    and a branch with a main store and a lab store gives each of those one; another
+    branch draws on a store by requisition. Exactly one location per entity is the
+    default, which is what a single-store school relies on to keep moving stock
+    without naming one.
 
     docstring-name: Stock locations
     """
@@ -316,7 +314,7 @@ class StockLocationListCreateView(_ProcBase):
     def get(self, request):
         """List this entity's locations, newest default first."""
         entity = resolve_entity(request)
-        qs = _catalogue_visible(
+        qs = _branch_visible(
             request, StockLocation.objects.filter(entity=entity),
         ).select_related("branch")
         if (active := request.query_params.get("is_active")) not in (None, ""):
@@ -331,12 +329,7 @@ class StockLocationListCreateView(_ProcBase):
         body = request.data or {}
         serializer = StockLocationSerializer(data=body)
         serializer.is_valid(raise_exception=True)
-        # ``shared_when_ambiguous=True``: a central store belongs to the whole
-        # school and is the ordinary shape for a school with one, so a caller
-        # covering several sites who names none is filing one of those rather
-        # than being asked which site it sits at. Naming a site they do not work
-        # in is refused rather than quietly retargeted.
-        branch = _raised_branch(request, entity, body, shared_when_ambiguous=True)
+        branch = _raised_branch(request, entity, body)
 
         # The first location an entity has must be its default, otherwise nothing
         # resolves for a caller that names none and the entity cannot move stock.
@@ -375,7 +368,7 @@ class StockLocationDetailView(_ProcBase):
 
     def _location(self, request, pk):
         entity = resolve_entity(request)
-        return entity, _catalogue_or_404(
+        return entity, _document_or_404(
             request, StockLocation.objects.filter(entity=entity), pk,
             "No such stock location in this entity.",
         )
@@ -394,9 +387,7 @@ class StockLocationDetailView(_ProcBase):
             if field in body:
                 setattr(location, field, _text(body[field], field, limit))
         if "branch" in body:
-            location.branch = _raised_branch(
-                request, entity, body, shared_when_ambiguous=True,
-            )
+            location.branch = _raised_branch(request, entity, body)
         if "is_default" in body and _strict_bool(body["is_default"], "is_default"):
             StockLocation.objects.filter(entity=entity, is_default=True).exclude(
                 pk=location.pk).update(is_default=False)
@@ -426,8 +417,7 @@ class StockBalanceListView(_ProcBase):
 
     The rows that add up to the item totals every other stock screen shows.
 
-    A caller pinned to a branch reads their own stores and the school's shared
-    ones. Naming no store asks about the stores they work in, never about every
+    A caller pinned to a branch reads their own branches' stores only. Naming no store asks about the stores they work in, never about every
     store the entity holds.
 
     docstring-name: Stock balances by location
@@ -720,10 +710,10 @@ class StockRestockRequisitionView(_ProcBase):
         item_ids = (request.data or {}).get("item_ids") or None
         if item_ids is not None and (not isinstance(item_ids, list) or not all(str(i).isdigit() for i in item_ids)):
             raise ValidationError({"item_ids": "Give a list of stock item ids."})
-        branch = _raised_branch(request, entity, {})
+        branch = _raised_branch(request, entity, request.data or {})
         req = draft_restock_requisition(
             entity, as_of=branch_today(entity.tenant, branch), branch=branch,
-            store_scope=_branch_scope(request, entity, include_shared=True),
+            store_scope=_branch_scope(request, entity),
             user=request.user, item_ids=item_ids,
         )
         if req is None:

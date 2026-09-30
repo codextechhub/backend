@@ -54,22 +54,6 @@ def _scope(request, entity):
     return _branch_scope(request, entity, request.query_params)
 
 
-def _with_unassigned(data, report):
-    """Add the excluded entity-level count, and only when the caller is narrowed.
-
-    ``unassigned_excluded_count`` is ``None`` for an unbound caller and for a tenant with
-    no branches, and the key is then absent entirely, so those callers keep byte-identical
-    responses.  When present it names how many documents in this report's population sit
-    at entity level (a null branch, typically raised before the column existed) and are
-    therefore outside the caller's view - so a subset total is never mistaken for the
-    whole picture.  A count, never an amount: another scope's money stays private.
-    """
-    count = report.unassigned_excluded_count
-    if count is not None:
-        data["unassigned_excluded_count"] = count
-    return data
-
-
 def _paginated_report(request, rows, data, *, key, render, message):
     """Page one primary list while retaining entity-wide report totals in ``data``."""
     paginator = XVSPagination()
@@ -97,17 +81,17 @@ class APAgingView(_ProcBase):
         # query-string would raise TypeError (str − date) and 500 the request.
         as_of = _date(request.query_params.get("as_of"), "as_of")
         report = ap_aging(entity, as_of=as_of, branch_scope=_scope(request, entity))
-        data = _with_unassigned({
-                "entity": entity.code, "as_of": str(report.as_of),
-                "buckets": list(AGING_BUCKETS),
-                "bucket_totals": {b: _kobo(v) for b, v in report.bucket_totals.items()},
-                # All three, because they answer different questions: what we owe
-                # (the AP control), what we have paid ahead of a bill (a separate
-                # asset), and the vendor's net position. Only the first is a payable.
-                "total_outstanding": _kobo(report.total_outstanding),
-                "total_unallocated_credit": _kobo(report.total_unallocated_credit),
-                "total_net": _kobo(report.total_net),
-        }, report)
+        data = {
+            "entity": entity.code, "as_of": str(report.as_of),
+            "buckets": list(AGING_BUCKETS),
+            "bucket_totals": {b: _kobo(v) for b, v in report.bucket_totals.items()},
+            # All three, because they answer different questions: what we owe
+            # (the AP control), what we have paid ahead of a bill (a separate
+            # asset), and the vendor's net position. Only the first is a payable.
+            "total_outstanding": _kobo(report.total_outstanding),
+            "total_unallocated_credit": _kobo(report.total_unallocated_credit),
+            "total_net": _kobo(report.total_net),
+        }
         return _paginated_report(
             request, report.rows, data, key="rows",
             render=lambda r: {
@@ -196,14 +180,14 @@ class APCashRequirementsView(_ProcBase):
         report = ap_cash_requirements(
             entity, as_of=as_of, branch_scope=_scope(request, entity),
         )
-        data = _with_unassigned({
-                "entity": entity.code, "as_of": str(report.as_of),
-                "buckets": list(FORECAST_BUCKETS),
-                "bucket_totals": {b: _kobo(v) for b, v in report.bucket_totals.items()},
-                "total_due": _kobo(report.total_due),
-                "total_unallocated_credit": _kobo(report.total_unallocated_credit),
-                "net_cash_requirement": _kobo(report.net_cash_requirement),
-        }, report)
+        data = {
+            "entity": entity.code, "as_of": str(report.as_of),
+            "buckets": list(FORECAST_BUCKETS),
+            "bucket_totals": {b: _kobo(v) for b, v in report.bucket_totals.items()},
+            "total_due": _kobo(report.total_due),
+            "total_unallocated_credit": _kobo(report.total_unallocated_credit),
+            "net_cash_requirement": _kobo(report.net_cash_requirement),
+        }
         return _paginated_report(
             request, report.rows, data, key="rows",
             render=lambda r: {
@@ -228,22 +212,22 @@ class GRIRAgingView(_ProcBase):
         entity = resolve_entity(request)
         as_of = _date(request.query_params.get("as_of"), "as_of")
         report = grir_aging(entity, as_of=as_of, branch_scope=_scope(request, entity))
-        data = _with_unassigned({
-                "entity": entity.code, "as_of": str(report.as_of),
-                "buckets": list(AGING_BUCKETS),
-                "bucket_totals": {b: _kobo(v) for b, v in report.bucket_totals.items()},
-                "total_open": _kobo(report.total_open),
-                # Null for a branch-narrowed caller: the GL carries no branch, so there is
-                # no branch-level control balance to reconcile the receipt walk against.
-                # The entity-level control stays on the GR/IR balance endpoint.
-                "control_balance": (
-                    _kobo(report.control_balance)
-                    if report.control_balance is not None else None
-                ),
-                "difference": (
-                    _kobo(report.difference) if report.difference is not None else None
-                ),
-        }, report)
+        data = {
+            "entity": entity.code, "as_of": str(report.as_of),
+            "buckets": list(AGING_BUCKETS),
+            "bucket_totals": {b: _kobo(v) for b, v in report.bucket_totals.items()},
+            "total_open": _kobo(report.total_open),
+            # Null for a branch-narrowed caller: the GL carries no branch, so there is
+            # no branch-level control balance to reconcile the receipt walk against.
+            # The entity-level control stays on the GR/IR balance endpoint.
+            "control_balance": (
+                _kobo(report.control_balance)
+                if report.control_balance is not None else None
+            ),
+            "difference": (
+                _kobo(report.difference) if report.difference is not None else None
+            ),
+        }
         return _paginated_report(
             request, report.rows, data, key="rows",
             render=lambda r: {
@@ -279,13 +263,13 @@ class APAgingVendorDetailView(_ProcBase):
             entity, vendor, as_of=as_of, branch_scope=_scope(request, entity),
         )
         data = {
-                "entity": entity.code, "as_of": str(detail.as_of),
-                "buckets": list(AGING_BUCKETS),
-                "vendor": {"id": detail.vendor_id, "code": detail.code, "name": detail.name},
-                "bucket_amounts": {b: _kobo(v) for b, v in detail.buckets.items()},
-                "outstanding": _kobo(detail.outstanding),
-                "unallocated_credit": _kobo(detail.unallocated_credit),
-                "net": _kobo(detail.net),
+            "entity": entity.code, "as_of": str(detail.as_of),
+            "buckets": list(AGING_BUCKETS),
+            "vendor": {"id": detail.vendor_id, "code": detail.code, "name": detail.name},
+            "bucket_amounts": {b: _kobo(v) for b, v in detail.buckets.items()},
+            "outstanding": _kobo(detail.outstanding),
+            "unallocated_credit": _kobo(detail.unallocated_credit),
+            "net": _kobo(detail.net),
         }
         return _paginated_report(
             request, detail.invoices, data, key="invoices",
@@ -326,15 +310,15 @@ class GRIRGrnDetailView(_ProcBase):
             # exist, so the drawer is not an id-discovery channel.
             raise NotFound("No such goods-received note in this entity.")
         data = {
-                "entity": entity.code,
-                "grn_id": detail.grn_id, "reference": detail.reference,
-                "vendor_code": detail.vendor_code, "vendor_name": detail.vendor_name,
-                "received_date": str(detail.received_date),
-                "days": detail.days, "bucket": detail.bucket,
-                "po_number": detail.po_number or None,
-                "received_value": _kobo(detail.received_value),
-                "invoiced_value": _kobo(detail.invoiced_value),
-                "open_value": _kobo(detail.open_value),
+            "entity": entity.code,
+            "grn_id": detail.grn_id, "reference": detail.reference,
+            "vendor_code": detail.vendor_code, "vendor_name": detail.vendor_name,
+            "received_date": str(detail.received_date),
+            "days": detail.days, "bucket": detail.bucket,
+            "po_number": detail.po_number or None,
+            "received_value": _kobo(detail.received_value),
+            "invoiced_value": _kobo(detail.invoiced_value),
+            "open_value": _kobo(detail.open_value),
         }
         return _paginated_report(
             request, detail.invoices, data, key="invoices",
@@ -363,7 +347,7 @@ class GRIRPoLinesView(_ProcBase):
         as_of = _date(request.query_params.get("as_of"), "as_of")
         report = grir_po_lines(entity, as_of=as_of, branch_scope=_scope(request, entity))
         data = {
-                "entity": entity.code, "as_of": str(report.as_of),
+            "entity": entity.code, "as_of": str(report.as_of),
         }
         return _paginated_report(
             request, report.rows, data, key="rows",
@@ -407,25 +391,25 @@ class GRIRPoLineDetailView(_ProcBase):
             # A line on another branch's order is reported exactly like a missing one.
             raise NotFound("No such purchase-order line in this entity.")
         data = {
-                "entity": entity.code,
-                "po_line_id": detail.po_line_id, "po_line_ref": detail.po_line_ref,
-                "item": detail.item,
-                "vendor_code": detail.vendor_code, "vendor_name": detail.vendor_name,
-                "po_number": detail.po_number,
-                "ordered_qty": detail.ordered_qty, "received_qty": detail.received_qty,
-                "invoiced_qty": detail.invoiced_qty,
-                "received_value": _kobo(detail.received_value),
-                "invoiced_value": _kobo(detail.invoiced_value),
-                "grir_balance": _kobo(detail.grir_balance),
-                "status": detail.status, "unit_price": _kobo(detail.unit_price),
-                "grns": [
-                    {
-                        "id": g["id"], "reference": g["reference"],
-                        "received_date": g["received_date"],
-                        "accepted_qty": g["accepted_qty"], "value": _kobo(g["value"]),
-                    }
-                    for g in detail.grns
-                ],
+            "entity": entity.code,
+            "po_line_id": detail.po_line_id, "po_line_ref": detail.po_line_ref,
+            "item": detail.item,
+            "vendor_code": detail.vendor_code, "vendor_name": detail.vendor_name,
+            "po_number": detail.po_number,
+            "ordered_qty": detail.ordered_qty, "received_qty": detail.received_qty,
+            "invoiced_qty": detail.invoiced_qty,
+            "received_value": _kobo(detail.received_value),
+            "invoiced_value": _kobo(detail.invoiced_value),
+            "grir_balance": _kobo(detail.grir_balance),
+            "status": detail.status, "unit_price": _kobo(detail.unit_price),
+            "grns": [
+                {
+                    "id": g["id"], "reference": g["reference"],
+                    "received_date": g["received_date"],
+                    "accepted_qty": g["accepted_qty"], "value": _kobo(g["value"]),
+                }
+                for g in detail.grns
+            ],
         }
         return _paginated_report(
             request, detail.invoices, data, key="invoices",
@@ -503,9 +487,9 @@ class ProcurementStockDashboardView(_ProcBase):
     """The Stock & receiving tab of the Procurement dashboard.
 
     Same opening rule and ``?window=`` as :class:`ProcurementDashboardView`. Stock
-    figures answer for the caller's stores (their branches' and the school-wide
-    ones, as the stock screens read them); receipts and orders answer under the
-    caller's branches. See :mod:`vs_procurement.dashboard_stock`.
+    figures answer for the caller's own branches' stores, as the stock screens read
+    them; receipts and orders answer under the caller's branches. See
+    :mod:`vs_procurement.dashboard_stock`.
     """
     permission_classes = [IsAuthenticatedAndActive & HasAnyModuleAccess]
     rbac_modules = ["procurement"]
@@ -520,7 +504,7 @@ class ProcurementStockDashboardView(_ProcBase):
             "Stock and receiving dashboard retrieved.",
             data=stock_view(
                 entity, user=request.user, doc_scope=_scope(request, entity),
-                store_scope=_branch_scope(request, entity, include_shared=True),
+                store_scope=_branch_scope(request, entity),
                 reader=DashboardReader.for_user(request.user, getattr(request.user, "tenant", None)),
                 window=request.query_params.get("window"),
             ),
@@ -572,24 +556,24 @@ class SpendAnalysisView(_ProcBase):
                 for r in rows
             ]
 
-        data = _with_unassigned({
-                "entity": entity.code,
-                "start_date": str(start) if start else None,
-                "end_date": str(end) if end else None,
-                "category": category,
-                "by_category": _rows(report.by_category),
-                "by_period": [
-                    {
-                        "period": p.period, "label": p.label,
-                        "gross": _kobo(p.gross), "invoice_count": p.invoice_count,
-                    }
-                    for p in report.by_period
-                ],
-                "total_net": _kobo(report.total_net),
-                "total_tax": _kobo(report.total_tax),
-                "total_gross": _kobo(report.total_gross),
-                "invoice_count": report.invoice_count,
-        }, report)
+        data = {
+            "entity": entity.code,
+            "start_date": str(start) if start else None,
+            "end_date": str(end) if end else None,
+            "category": category,
+            "by_category": _rows(report.by_category),
+            "by_period": [
+                {
+                    "period": p.period, "label": p.label,
+                    "gross": _kobo(p.gross), "invoice_count": p.invoice_count,
+                }
+                for p in report.by_period
+            ],
+            "total_net": _kobo(report.total_net),
+            "total_tax": _kobo(report.total_tax),
+            "total_gross": _kobo(report.total_gross),
+            "invoice_count": report.invoice_count,
+        }
         return _paginated_report(
             request, report.by_vendor, data, key="by_vendor",
             render=lambda r: {
@@ -617,11 +601,11 @@ class VendorPerformanceView(_ProcBase):
             entity, start_date=start, end_date=end,
             branch_scope=_scope(request, entity),
         )
-        data = _with_unassigned({
-                "entity": entity.code,
-                "start_date": str(start) if start else None,
-                "end_date": str(end) if end else None,
-        }, report)
+        data = {
+            "entity": entity.code,
+            "start_date": str(start) if start else None,
+            "end_date": str(end) if end else None,
+        }
 
         def render_vendor(r):
             a = r.latest_assessment
@@ -674,7 +658,7 @@ class ProcurementCycleTimeView(_ProcBase):
         )
         return success_response(
             "Procurement cycle time retrieved.",
-            data=_with_unassigned({
+            data={
                 "entity": entity.code,
                 "start_date": str(start) if start else None,
                 "end_date": str(end) if end else None,
@@ -689,5 +673,5 @@ class ProcurementCycleTimeView(_ProcBase):
                 "end_to_end_avg_days": report.end_to_end_avg_days,
                 "end_to_end_count": report.end_to_end_count,
                 "end_to_end_excluded_count": report.end_to_end_excluded_count,
-            }, report),
+            },
         )

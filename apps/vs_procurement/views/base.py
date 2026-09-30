@@ -14,10 +14,10 @@ from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.views import APIView
 
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
-from vs_rbac.scoping import BranchScope, branch_scope
+from vs_rbac.scoping import BranchScope, branch_scope, transaction_branch_scope
 from vs_rbac.scoping import caller_branch_ids as _rbac_caller_branch_ids
 from vs_rbac.scoping import inherited_branch_id as _rbac_inherited_branch_id
-from vs_rbac.scoping import raised_branch as _rbac_raised_branch
+from vs_rbac.scoping import raised_transaction_branch as _rbac_raised_transaction_branch
 from vs_rbac.scoping import resolve_branch as _rbac_resolve_branch
 from vs_rbac.scoping import sole_caller_branch as _rbac_sole_caller_branch
 
@@ -90,22 +90,22 @@ def _resolve_cost_center(entity, ref, field="cost_center"):
 # Branch sub-scope                                                            #
 # --------------------------------------------------------------------------- #
 #
-# Every finance document already carries an optional ``branch`` sub-scope inside
-# its entity (``vs_finance.FinanceDocument.branch``).  These helpers are the
-# single place procurement decides what goes in it, so the rules below hold for
-# every document type rather than one endpoint at a time:
+# Every procurement document is a transaction and names one branch of its entity
+# (``vs_finance.FinanceDocument.branch``), as does every store stock sits in.
+# These helpers are the single place procurement decides what goes in it, so the
+# rules below hold for every document type rather than one endpoint at a time:
 #
-#   * a document that *starts* a chain captures the branch the person raising it
-#     works in (:func:`_raised_branch`);
+#   * a document that *starts* a chain takes the branch the person raising it
+#     names or works in, and never none (:func:`_raised_branch`);
 #   * a document that *continues* a chain takes the branch from its source
 #     document and nothing else (:func:`_inherited_branch_id`);
 #
 #     Both rules live in :mod:`vs_rbac.scoping`, because finance needs the
 #     identical two.  What is here are one-line adapters supplying
 #     ``entity.tenant`` - procurement is entity-scoped, the rules are
-#     tenant-scoped - and procurement's own reading of a null branch.  No policy
-#     lives in them: a second copy of "which branch does this belong to" is how
-#     two modules come to disagree about the same school.
+#     tenant-scoped.  No policy lives in them: a second copy of "which branch
+#     does this belong to" is how two modules come to disagree about the same
+#     school.
 #
 #   * every read narrows to the caller's branch, whether it is a list, a KPI
 #     total, an analytics report or a single document.  One rule
@@ -114,15 +114,10 @@ def _resolve_cost_center(entity, ref, field="cost_center"):
 #     :func:`_branch_visible`, :func:`_document_or_404`), and as the scope object
 #     itself for a service that spans several models (:func:`_branch_scope`).
 #
-# An absent branch is a real, valid answer - the document belongs to the entity
-# as a whole - and is never coerced or rejected.  A tenant with no branches at
-# all therefore behaves exactly as it did before: every value here stays ``None``.
-#
 # Which branches a caller is entitled to is *not* decided here.  That answer is
 # the platform's, given once by :func:`vs_rbac.scoping.caller_branch_ids` and
-# rendered by :class:`vs_rbac.scoping.BranchScope`; procurement only chooses the
-# exclusive reading of a null branch (see :class:`_BranchScope`) and adds the
-# ``?branch=`` request filter on top.
+# rendered by :func:`vs_rbac.scoping.transaction_branch_scope`; procurement adds
+# the ``?branch=`` request filter on top.
 
 
 #: The branches this caller may work in, or ``None`` for the whole entity.
@@ -149,38 +144,23 @@ def _resolve_branch_reference(entity, ref, field="branch"):
     return _rbac_resolve_branch(entity.tenant, ref, field)
 
 
-def _raised_branch(request, entity, body, *, field="branch",
-                   shared_when_ambiguous=False):
-    """:func:`vs_rbac.scoping.raised_branch` for this entity's owning tenant.
+def _raised_branch(request, entity, body, *, field="branch"):
+    """:func:`vs_rbac.scoping.raised_transaction_branch` for this entity's owning tenant.
 
-    Procurement is entity-scoped and the rule is tenant-scoped; supplying
-    ``entity.tenant`` is most of what this adds.
-
-    The default is the strict reading of the ambiguous case, which is the one a
-    *document* takes: a caller covering several branches who names none is asked
-    which, rather than having the purchase filed against the entity as a whole,
-    where nothing later in the chain could narrow it again.  Master data passes
-    ``shared_when_ambiguous=True`` at its own call site, because a row belonging to
-    every branch is an ordinary answer for a store or a vendor rather than an
-    accident - see :func:`vs_rbac.scoping.raised_branch` for the full account of
-    both readings.
+    For a document or a store, never ``None`` at a school: a caller covering several
+    branches, or a whole-school caller at a school with several, names one (400
+    otherwise), and at a school with one branch the row takes it without asking.
     """
-    return _rbac_raised_branch(
-        request, entity.tenant, body, field=field,
-        shared_when_ambiguous=shared_when_ambiguous,
-    )
+    return _rbac_raised_transaction_branch(request, entity.tenant, body, field=field)
 
 
 #: The branch id a downstream document takes from the source it continues.
 #:
-#: The same object as :func:`vs_rbac.scoping.inherited_branch_id`, not a copy -
-#: procurement's exclusive reading of a null branch *is* that function's default,
-#: so there is nothing here to adapt.  A document raised for the entity as a whole
-#: is a scope of its own that a branch-pinned storekeeper is not in, so they may
-#: not continue that chain either; that is the same reading :class:`_BranchScope`
-#: takes on the read side, and the two must agree or a caller could be shown a
-#: document they may not build on.  Finance spells out the opposite reading at its
-#: own call site, for the opposite reason.
+#: The same object as :func:`vs_rbac.scoping.inherited_branch_id`, not a copy, so
+#: there is nothing here to adapt.  A branch-bound caller may not continue another
+#: branch's chain, nor one not yet given a branch, which is the same reading
+#: :class:`_BranchScope` takes on the read side: the two must agree or a caller
+#: could be shown a document they may not build on.
 _inherited_branch_id = _rbac_inherited_branch_id
 
 
@@ -221,14 +201,11 @@ class _BranchScope:
     exactly the drift Round 3 removed.  It is handed this instead: the same resolved
     answer, re-rendered per path.
 
-    The grant half is the platform-wide :class:`vs_rbac.scoping.BranchScope`, asked for
-    in its **exclusive** form.  That is procurement's deliberate reading and not the
-    platform default: a purchase raised with no branch belongs to the school as a
-    whole, which is a scope of its own that a branch-pinned storekeeper is not in.
-    A branch-pinned caller therefore does not inherit school-wide spend, matching
-    :func:`_inherited_branch_id`, which refuses to let them continue an entity-wide
-    chain either.  Elsewhere on the platform a null branch means *shared with every
-    branch* and stays visible; see :class:`vs_rbac.scoping.BranchScope`.
+    The grant half is :func:`vs_rbac.scoping.transaction_branch_scope`, the exclusive
+    reading every transaction takes: a branch-pinned caller sees their own branches'
+    documents only, never one not yet given a branch, matching
+    :func:`_inherited_branch_id`, which refuses to let them continue one either.
+    Master data takes the inclusive reading instead (:func:`_catalogue_visible`).
 
     ``is_narrowed`` reports whether the caller is looking at less than the whole entity.
     It is deliberately the *only* thing that turns branch-specific fields on in a report
@@ -265,11 +242,12 @@ def _branch_scope(request, entity=None, params=None, *, field="branch",
     per request, so an unknown branch is one 400 rather than a different error depending
     on which population the service happened to filter first.
 
-    ``include_shared`` defaults to procurement's exclusive reading of a document.
-    The master-data helpers below pass ``True``; see them for why the two differ.
+    ``include_shared`` defaults to the exclusive reading of a transaction. The
+    master-data helpers below pass ``True``; see them for why the two differ.
     """
     return _BranchScope(
-        branch_scope(request, include_shared=include_shared),
+        branch_scope(request, include_shared=True) if include_shared
+        else transaction_branch_scope(request),
         _branch_filter_lookups(request, entity, params, field=field),
         field,
     )
@@ -329,23 +307,21 @@ def _document_or_404(request, qs, pk, message, *, field="branch", prefix=""):
 # Master data reads the null branch the other way round                       #
 # --------------------------------------------------------------------------- #
 #
-# Everything above answers a question about a *document*, and answers it
-# exclusively: a purchase raised for the school as a whole is a scope of its own
-# that a branch-pinned storekeeper is not in, so they neither see it nor
-# continue it.
+# Everything above answers a question about a *document* or a store, and answers
+# it exclusively: a branch-pinned storekeeper neither sees nor continues another
+# branch's purchase, nor one not yet given a branch. A store belongs to one
+# branch; another branch draws on it by requisition, not by reading its shelves.
 #
-# Vendors and stock locations are not documents. They are the catalogue the
-# documents are raised against, and the same reading applied to them empties the
-# screen: a school buys from one stationer for every site and keeps one central
-# store, both recorded with no branch because they belong to all of them.
-# Excluding those leaves a branch-pinned storekeeper with no vendors to order
-# from and nowhere to receive into, which reads as the module being broken
-# rather than as a permission working.
+# Vendors and catalogue items are not transactions. They are the catalogue the
+# documents are raised against, and a school buys from one stationer for every
+# branch, recorded with no branch because it belongs to all of them. Excluding
+# those leaves a branch-pinned storekeeper with no vendors to order from, which
+# reads as the module being broken rather than as a permission working.
 #
 # So master data takes the platform's inclusive reading, the same one
 # :mod:`vs_academics` takes for a catalogue and :mod:`vs_finance` for a customer:
 # the shared rows plus this caller's own. What it withholds is the row another
-# site pinned to itself, which is the whole of what these are for.
+# branch pinned to itself, which is the whole of what these are for.
 
 
 def _catalogue_visible(request, qs, *, field="branch", prefix=""):
