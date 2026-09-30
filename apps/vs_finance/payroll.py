@@ -34,7 +34,7 @@ from .constants import (
     SalaryComponentKind,
     StatutoryType,
 )
-from .exceptions import FinanceError, PayrollError
+from .exceptions import FinanceError, PayrollBranchUnassignedError, PayrollError
 from .posting import post_journal, resolve_period
 
 
@@ -360,6 +360,7 @@ def generate_run_from_roster(entity, *, pay_date, branch=None, period_label="",
             paye, pension, components = emp.paye_amount, emp.pension_amount, []  # Use explicit amounts.
         PayrollLine.objects.create(
             run=run, line_no=i, employee=emp.employee, employee_name=emp.name,  # Link employee and preserve name.
+            branch_id=emp.branch_id,  # The branch this person's pay is booked to.
             gross_amount=emp.gross_amount, paye_amount=paye,  # Gross and PAYE amounts.
             pension_amount=pension, cost_center=emp.cost_center, components=components,  # Pension, analytics, and snapshot.
         )
@@ -387,9 +388,147 @@ def _accounts_for(run):
     return salary, paye, pension, net  # Return expense and liability accounts.
 
 
+# --------------------------------------------------------------------------- #
+# One run, one journal per branch                                             #
+# --------------------------------------------------------------------------- #
+#
+# A central run covers every branch's staff, but the money it moves is each
+# branch's own: Ikeja's teachers are Ikeja's salary cost, and they are paid out of
+# Ikeja's bank account. So a run whose staff sit in several branches posts one
+# accrual journal per branch, each naming its branch, and each branch's share is
+# paid from that branch's bank account (a :class:`PayrollRunBranch` per branch).
+# A run whose staff all sit in one branch (a branch run, any run at a school with
+# one branch, a central run that happens to pay one branch) posts one journal on
+# the run itself, as every run did before.
+#
+# Which branch a line belongs to is decided at posting, never guessed: the run's
+# own branch for a branch run, else the line's, else the branch on the
+# employee's salary row, else the school's only branch. At a school with several
+# branches a line none of those answers blocks the posting, by name.
+
+
+def _line_branch_ids(run) -> dict:
+    """Each line of ``run`` with the branch id its pay is booked to, and who has none.
+
+    Returns ``{line: branch_id}``. A line answered by nothing at a tenant with
+    several branches maps to ``_UNASSIGNED``; at a tenant with no branch at all
+    (the platform's books) every line maps to ``None``.
+    """
+    from vs_rbac.scoping import only_branch_id
+    from vs_tenants.models import Branch
+
+    from .models import EmployeeSalary
+
+    lines = list(run.lines.select_related("cost_center").order_by("line_no", "id"))
+    if run.branch_id is not None:
+        return {line: run.branch_id for line in lines}
+
+    tenant_id = run.entity.tenant_id
+    only = only_branch_id(tenant_id)
+    has_branches = only is not None or (
+        tenant_id is not None and Branch.all_objects.filter(tenant_id=tenant_id).exists()
+    )
+    employees = {line.employee_id for line in lines if line.branch_id is None and line.employee_id}
+    salary_branch = dict(
+        EmployeeSalary.objects.filter(
+            entity=run.entity, employee_id__in=employees, branch__isnull=False,
+        ).order_by("-is_active", "-id").values_list("employee_id", "branch_id")
+    ) if employees else {}
+
+    out = {}
+    for line in lines:
+        branch_id = line.branch_id or salary_branch.get(line.employee_id) or only
+        if branch_id is None and has_branches:
+            branch_id = _UNASSIGNED
+        out[line] = branch_id
+    return out
+
+
+#: The branch of a line nothing places, at a tenant with several branches.
+_UNASSIGNED = object()
+
+
+def _require_every_line_placed(run, placed) -> None:
+    """Refuse to post while any line has no branch, naming who.
+
+    Corona runs one payroll for Ikeja, Lekki and Yaba. If Mr Okon, a driver, has
+    no branch on his salary row, nobody can say whose salary cost he is or whose
+    bank pays him, and guessing would book him to a branch that never employed
+    him. So the run stops, names him, and posts once he is placed.
+    """
+    missing = [line for line, branch_id in placed.items() if branch_id is _UNASSIGNED]
+    if not missing:
+        return
+    names = [line.employee_name or f"line {line.line_no}" for line in missing]
+    shown = ", ".join(names[:10])
+    more = f" and {len(names) - 10} more" if len(names) > 10 else ""
+    raise PayrollBranchUnassignedError(
+        f"Payroll run {run.document_number or run.pk} pays staff with no branch: "
+        f"{shown}{more}. Give each of them a branch on the salary roster (or on the "
+        f"line), then post the run.",
+        employees=names,
+    )
+
+
+def _post_accrual(run, lines, *, branch_id, accounts, period, actor_user, label_suffix=""):
+    """Post one accrual journal for ``lines``, booked to ``branch_id``; return it and its totals.
+
+    ``Dr salary expense`` per cost centre, so the GL slices by department, and
+    ``Cr PAYE / pension / net wages payable``. Every figure is the sum of these
+    lines alone, so each branch's journal balances on its own.
+    """
+    from .models import JournalEntry, JournalLine
+
+    salary, paye, pension, net = accounts
+    totals = {
+        "gross": sum(line.gross_amount for line in lines),
+        "paye": sum(line.paye_amount for line in lines),
+        "pension": sum(line.pension_amount for line in lines),
+        "net": sum(line.net_amount for line in lines),
+    }
+    entry = JournalEntry.objects.create(
+        entity=run.entity, branch_id=branch_id,
+        date=run.pay_date, period=period, source=JournalSource.PAYROLL,
+        currency=run.currency,
+        narration=(
+            run.narration or f"Payroll {run.period_label or run.document_number or ''}".strip()
+        ) + label_suffix,
+        created_by=actor_user,
+    )
+    gross_by_cc: dict[int | None, int] = defaultdict(int)
+    cc_objs: dict[int | None, object] = {}
+    for line in lines:
+        gross_by_cc[line.cost_center_id] += line.gross_amount
+        cc_objs[line.cost_center_id] = line.cost_center
+
+    line_no = 0
+    for cc_id, amount in gross_by_cc.items():
+        if amount == 0:
+            continue
+        line_no += 1
+        JournalLine.objects.create(
+            entry=entry, account=salary, debit=amount, credit=0,
+            description="Gross salaries", cost_center=cc_objs[cc_id], line_no=line_no,
+        )
+    for account, amount, label in (
+        (paye, totals["paye"], "PAYE payable"),
+        (pension, totals["pension"], "Pension payable"),
+        (net, totals["net"], "Net wages payable"),
+    ):
+        if amount <= 0:
+            continue
+        line_no += 1
+        JournalLine.objects.create(
+            entry=entry, account=account, debit=0, credit=amount,
+            description=label, line_no=line_no,
+        )
+    post_journal(entry, actor_user=actor_user)
+    return entry, totals
+
+
 # Public wrapper for payroll accrual posting.
 def post_payroll(run, *, actor_user=None):
-    """Compute, validate and post a payroll run's **accrual** journal.
+    """Compute, validate and post a payroll run's **accrual**, one journal per branch.
 
     Records a durable rejection audit on any :class:`FinanceError`, then re-raises.
     """
@@ -406,7 +545,9 @@ def post_payroll(run, *, actor_user=None):
 @transaction.atomic
 # Transactional payroll accrual implementation.
 def _post_payroll_atomic(run, *, actor_user=None):
-    from .models import JournalEntry, JournalLine
+    from vs_tenants.models import Branch
+
+    from .models import PayrollLine, PayrollRunBranch
 
     if run.run_status != PayrollRunStatus.DRAFT:  # Only draft runs can be accrued.
         raise PayrollError(
@@ -420,58 +561,49 @@ def _post_payroll_atomic(run, *, actor_user=None):
     compute_payroll(run)  # Ensure line net amounts and totals are current.
     if run.gross_total <= 0:  # Payroll should recognize a positive salary cost.
         raise PayrollError("A payroll run must have a positive gross total to post.")
-    for line in run.lines.all():  # Validate every employee line.
+    placed = _line_branch_ids(run)
+    for line in placed:  # Validate every employee line.
         if line.net_amount < 0:  # Deductions cannot exceed gross pay.
             raise PayrollError(
                 f"Net pay is negative for {line.employee_name or line.employee_id}: "
                 f"deductions exceed gross.",
             )
+    _require_every_line_placed(run, placed)
 
-    salary, paye, pension, net = _accounts_for(run)  # Resolve expense and liability accounts.
+    groups: dict = {}
+    for line, branch_id in placed.items():
+        groups.setdefault(branch_id, []).append(line)
+        if line.branch_id != branch_id and branch_id is not None:
+            PayrollLine.objects.filter(pk=line.pk).update(branch_id=branch_id)
+
+    accounts = _accounts_for(run)  # Resolve expense and liability accounts.
     period = resolve_period(run.entity, run.pay_date)  # Find payroll period.
-
-    entry = JournalEntry.objects.create(
-        entity=run.entity, branch=run.branch,  # Scope entity and optional branch.
-        date=run.pay_date, period=period, source=JournalSource.PAYROLL,  # Payroll date/period/source.
-        currency=run.currency,  # Payroll currency.
-        narration=run.narration or f"Payroll {run.period_label or run.document_number or ''}".strip(),  # Narration.
-        created_by=actor_user,  # Posting actor.
-    )
-    # Dr salary expense (gross), split by cost centre so the GL slices by department.
-    # Salary is P&L, so it carries the cost centre; the PAYE/pension/net liabilities
-    # below are balance-sheet control accounts and stay aggregated. Σ(gross by cost
-    # centre) == run.gross_total (both sum the lines' gross_amount), so it stays balanced.  # Preserve department analytics.
-    gross_by_cc: dict[int | None, int] = defaultdict(int)  # Gross salary grouped by cost center id.
-    cc_objs: dict[int | None, object] = {}  # Cost center objects keyed by id.
-    for line in run.lines.select_related("cost_center"):
-        gross_by_cc[line.cost_center_id] += line.gross_amount  # Accumulate gross by cost center.
-        cc_objs[line.cost_center_id] = line.cost_center  # Keep object for journal line.
-
-    line_no = 0  # Journal line counter.
-    for cc_id, amount in gross_by_cc.items():  # Emit salary expense debit lines.
-        if amount == 0:  # Skip empty groups.
-            continue
-        line_no += 1  # Advance line number.
-        JournalLine.objects.create(
-            entry=entry, account=salary, debit=amount, credit=0,  # Dr salary expense.
-            description="Gross salaries", cost_center=cc_objs[cc_id], line_no=line_no,  # Preserve cost center.
+    journal_ids = []
+    if len(groups) == 1:
+        (branch_id, lines), = groups.items()
+        entry, _ = _post_accrual(
+            run, lines, branch_id=branch_id, accounts=accounts, period=period,
+            actor_user=actor_user,
         )
-    for account, amount, label in (  # Emit liability credit lines.
-        (paye, run.paye_total, "PAYE payable"),  # PAYE liability.
-        (pension, run.pension_total, "Pension payable"),  # Pension liability.
-        (net, run.net_total, "Net wages payable"),  # Net wages liability.
-    ):
-        if amount <= 0:  # Skip zero liability buckets.
-            continue
-        line_no += 1  # Advance line number.
-        JournalLine.objects.create(
-            entry=entry, account=account, debit=0, credit=amount,  # Cr liability.
-            description=label, line_no=line_no,  # Label and line order.
-        )
+        run.journal = entry  # Link run to accrual journal.
+        journal_ids.append(entry.pk)
+    else:
+        names = dict(Branch.all_objects.filter(pk__in=groups).values_list("pk", "name"))
+        for branch_id in sorted(groups, key=lambda b: names.get(b, "")):
+            entry, totals = _post_accrual(
+                run, groups[branch_id], branch_id=branch_id, accounts=accounts,
+                period=period, actor_user=actor_user,
+                label_suffix=f" - {names.get(branch_id, '')}",
+            )
+            PayrollRunBranch.objects.create(
+                run=run, branch_id=branch_id, journal=entry,
+                gross_total=totals["gross"], paye_total=totals["paye"],
+                pension_total=totals["pension"], net_total=totals["net"],
+                status=PayrollRunStatus.POSTED,
+            )
+            journal_ids.append(entry.pk)
 
-    post_journal(entry, actor_user=actor_user)  # Validate and post accrual journal.
-
-    run.journal = entry  # Link run to accrual journal.
+    salary, paye, pension, net = accounts
     run.salary_expense_account = salary  # Persist salary expense account used.
     run.paye_payable_account = paye  # Persist PAYE payable account used.
     run.pension_payable_account = pension  # Persist pension payable account used.
@@ -488,18 +620,27 @@ def _post_payroll_atomic(run, *, actor_user=None):
         entity=run.entity, action=FinanceAuditAction.PAYROLL_POSTED,  # Audit action.
         actor_user=actor_user, target=run,  # Actor and target context.
         message=f"Accrued payroll: gross {run.gross_total}, net {run.net_total} kobo.",  # Summary.
-        journal_id=entry.pk, gross=run.gross_total, paye=run.paye_total,  # Journal and gross/PAYE metadata.
+        journal_id=journal_ids[0] if len(journal_ids) == 1 else None,
+        journal_ids=journal_ids, gross=run.gross_total, paye=run.paye_total,
         pension=run.pension_total, net=run.net_total,  # Pension and net metadata.
     )
     return run  # Return posted payroll run.
 
 
 # Public wrapper for net wage disbursement.
-def pay_payroll(run, *, bank_account=None, pay_date=None, actor_user=None):
-    """Disburse a posted run's net pay: ``Dr net wages payable, Cr bank``."""
+def pay_payroll(run, *, bank_account=None, bank_accounts=None, pay_date=None, actor_user=None):
+    """Disburse a posted run's net pay: ``Dr net wages payable, Cr bank``, per branch.
+
+    A run posted as one journal is paid from ``bank_account`` (or the one stored on
+    the run). A run posted one journal per branch is paid a branch at a time: each
+    of ``bank_accounts`` (or ``bank_account`` alone) pays the share of the branch
+    it belongs to, so Ikeja's share leaves Ikeja's bank and nothing else's. The
+    run reads PAID once every share is paid.
+    """
     try:  # Atomic worker performs disbursement posting.
         return _pay_payroll_atomic(  # Pay net wages.
-            run, bank_account=bank_account, pay_date=pay_date, actor_user=actor_user,  # Bank/date/actor.
+            run, bank_account=bank_account, bank_accounts=bank_accounts,
+            pay_date=pay_date, actor_user=actor_user,
         )
     except FinanceError as exc:  # Failed disbursements should be auditable.
         record_rejection(  # Record durable rejection.
@@ -509,19 +650,53 @@ def pay_payroll(run, *, bank_account=None, pay_date=None, actor_user=None):
         raise
 
 
-@transaction.atomic
-# Transactional payroll payment.
-def _pay_payroll_atomic(run, *, bank_account=None, pay_date=None, actor_user=None):
+def _require_branch_bank(bank_account, branch_id, run, whose) -> None:
+    """Refuse a bank account that is not ``branch_id``'s own (the same-branch rule)."""
+    from vs_rbac.scoping import same_transaction_branch
+
+    if same_transaction_branch(run.entity.tenant_id, bank_account.branch_id, branch_id):
+        return
+    raise PayrollError(
+        f"{whose} of payroll run {run.document_number or run.pk} is paid from its "
+        f"own branch's bank account, not from {bank_account.name}.",
+    )
+
+
+def _post_disbursement(run, *, net_total, bank_account, branch_id, pay_date, actor_user):
+    """Post one ``Dr net wages payable, Cr bank`` journal booked to ``branch_id``."""
     from .models import JournalEntry, JournalLine
 
+    net = run.net_payable_account or resolve_account(  # Resolve net wages liability account.
+        run.entity, NET_WAGES_PAYABLE_CODE, label="net wages payable",  # Default account code.
+    )
+    entry = JournalEntry.objects.create(
+        entity=run.entity, branch_id=branch_id,
+        date=pay_date, period=resolve_period(run.entity, pay_date), source=JournalSource.BANK,
+        currency=run.currency,
+        narration=f"Pay net wages {run.period_label or run.document_number or ''}".strip(),
+        created_by=actor_user,
+    )
+    JournalLine.objects.create(
+        entry=entry, account=net, debit=net_total, credit=0,
+        description="Net wages payable", line_no=1,
+    )
+    JournalLine.objects.create(
+        entry=entry, account=bank_account.gl_account, debit=0, credit=net_total,
+        description="Net wages paid", line_no=2,
+    )
+    post_journal(entry, actor_user=actor_user)
+    return entry
+
+
+@transaction.atomic
+# Transactional payroll payment.
+def _pay_payroll_atomic(run, *, bank_account=None, bank_accounts=None, pay_date=None,
+                        actor_user=None):
     if run.run_status != PayrollRunStatus.POSTED:  # Only accrued payroll can be paid.
         raise PayrollError(
             f"Payroll run {run.document_number or run.pk} is '{run.run_status}', "
             f"it must be posted (accrued) before it can be paid.",
         )
-    bank_account = bank_account or run.bank_account  # Use explicit bank or stored bank.
-    if bank_account is None:  # Disbursement needs a bank account.
-        raise PayrollError("No bank account set to disburse the payroll from.")
     if run.net_total <= 0:  # Nothing leaves bank when net total is zero.
         raise PayrollError("Nothing to disburse: net total is zero.")
 
@@ -537,27 +712,21 @@ def _pay_payroll_atomic(run, *, bank_account=None, pay_date=None, actor_user=Non
         remedy=f"Date the payroll payment {run.pay_date} or later.",
     )
 
-    net = run.net_payable_account or resolve_account(  # Resolve net wages liability account.
-        run.entity, NET_WAGES_PAYABLE_CODE, label="net wages payable",  # Default account code.
-    )
-    period = resolve_period(run.entity, pay_date)  # Find payment period.
+    if run.branch_shares.exists():
+        return _pay_branch_shares(
+            run, list(bank_accounts or ([bank_account] if bank_account else [])),
+            pay_date=pay_date, actor_user=actor_user,
+        )
 
-    entry = JournalEntry.objects.create(
-        entity=run.entity, branch=run.branch,  # Scope entity and optional branch.
-        date=pay_date, period=period, source=JournalSource.BANK,  # Bank-source payment entry.
-        currency=run.currency,  # Payroll currency.
-        narration=f"Pay net wages {run.period_label or run.document_number or ''}".strip(),  # Narration.
-        created_by=actor_user,  # Posting actor.
+    bank_account = bank_account or run.bank_account  # Use explicit bank or stored bank.
+    if bank_account is None:  # Disbursement needs a bank account.
+        raise PayrollError("No bank account set to disburse the payroll from.")
+    branch_id = run.journal.branch_id if run.journal_id else run.branch_id
+    _require_branch_bank(bank_account, branch_id, run, "The pay")
+    entry = _post_disbursement(
+        run, net_total=run.net_total, bank_account=bank_account, branch_id=branch_id,
+        pay_date=pay_date, actor_user=actor_user,
     )
-    JournalLine.objects.create(
-        entry=entry, account=net, debit=run.net_total, credit=0,  # Dr net wages payable.
-        description="Net wages payable", line_no=1,  # Line label and order.
-    )
-    JournalLine.objects.create(
-        entry=entry, account=bank_account.gl_account, debit=0, credit=run.net_total,  # Cr bank.
-        description="Net wages paid", line_no=2,  # Line label and order.
-    )
-    post_journal(entry, actor_user=actor_user)  # Validate and post disbursement journal.
 
     run.disbursement_journal = entry  # Link run to disbursement journal.
     run.bank_account = bank_account  # Persist bank account used.
@@ -575,17 +744,78 @@ def _pay_payroll_atomic(run, *, bank_account=None, pay_date=None, actor_user=Non
     return run  # Return paid payroll run.
 
 
+def _pay_branch_shares(run, bank_accounts, *, pay_date, actor_user):
+    """Pay each named account's branch share of a run posted one journal per branch.
+
+    Mr Bello pays January's run from Ikeja's and Lekki's accounts on the 25th and
+    Yaba's on the 27th, when its transfer clears: each account pays its own
+    branch's share, a share is paid once, and the run reads PAID when the last
+    one is.
+    """
+    if not bank_accounts:
+        raise PayrollError(
+            "This run pays several branches' staff. Name each branch's bank account "
+            "to pay its share from.",
+        )
+    shares = {
+        share.branch_id: share
+        for share in run.branch_shares.select_for_update().select_related("branch")
+    }
+    chosen = {}
+    for bank in bank_accounts:
+        share = shares.get(bank.branch_id)
+        if share is None:
+            where = bank.branch.name if bank.branch_id else "no branch"
+            raise PayrollError(
+                f"{bank.name} belongs to {where}, and payroll run "
+                f"{run.document_number or run.pk} pays no staff there. Pay each "
+                f"branch's share from that branch's own account.",
+            )
+        if share.status == PayrollRunStatus.PAID:
+            raise PayrollError(f"{share.branch.name}'s share of this run is already paid.")
+        if share.branch_id in chosen:
+            raise PayrollError(f"Name one account for {share.branch.name}'s share, not two.")
+        chosen[share.branch_id] = (share, bank)
+
+    for share, bank in chosen.values():
+        _require_branch_bank(bank, share.branch_id, run, f"{share.branch.name}'s share")
+        entry = _post_disbursement(
+            run, net_total=share.net_total, bank_account=bank, branch_id=share.branch_id,
+            pay_date=pay_date, actor_user=actor_user,
+        )
+        share.disbursement_journal = entry
+        share.bank_account = bank
+        share.status = PayrollRunStatus.PAID
+        share.save(update_fields=["disbursement_journal", "bank_account", "status", "updated_at"])
+        record(
+            entity=run.entity, action=FinanceAuditAction.PAYROLL_PAID,
+            actor_user=actor_user, target=run,
+            message=(
+                f"Disbursed {share.branch.name}'s net wages {share.net_total} kobo "
+                f"from {bank.name}."
+            ),
+            journal_id=entry.pk, net=share.net_total, branch_id=share.branch_id,
+        )
+
+    if all(share.status == PayrollRunStatus.PAID for share in shares.values()):
+        run.run_status = PayrollRunStatus.PAID
+        run.save(update_fields=["run_status", "updated_at"])
+    return run
+
+
 @transaction.atomic
 # Cancel or void a payroll run.
 def cancel_payroll_run(run, *, actor_user=None):
     """Cancel / void a payroll run raised in error, by its state:
 
     * **DRAFT** - nothing posted, just mark it CANCELLED.
-    * **POSTED** (accrued, not yet paid) - reverse the accrual journal (an audit-correct
-      mirror that backs out the salary expense and the PAYE/pension/net liabilities) and
-      mark it CANCELLED.
+    * **POSTED** (accrued, not yet paid) - reverse the accrual (an audit-correct
+      mirror that backs out the salary expense and the PAYE/pension/net liabilities)
+      and mark it CANCELLED. A run posted one journal per branch has each branch's
+      journal reversed on its own, so each reversal is booked to its branch.
     * **PAID** - refused: the net wages have already left the bank, so the disbursement
-      must be reversed first (a real cash clawback), before the run can be voided.
+      must be reversed first (a real cash clawback), before the run can be voided. A
+      run with any branch's share already paid is refused the same way.
 
     Idempotent on an already-cancelled run.
     """
@@ -598,9 +828,24 @@ def cancel_payroll_run(run, *, actor_user=None):
             "This run has been paid - the net wages already left the bank. Reverse the "
             "disbursement before voiding the run.",
         )
+    shares = list(run.branch_shares.select_for_update().select_related("branch"))
+    paid = [share.branch.name for share in shares if share.status == PayrollRunStatus.PAID]
+    if paid:
+        raise PayrollError(
+            f"{', '.join(paid)} already paid its share of this run - those net wages "
+            f"left the bank. Reverse the disbursement before voiding the run.",
+        )
 
-    if run.run_status == PayrollRunStatus.POSTED and run.journal_id is not None:  # Accrued unpaid payroll needs reversal.
-        reverse_journal(run.journal, actor_user=actor_user, document_owner=run)  # Reverse accrual journal.
+    reversed_ids = []
+    if run.run_status == PayrollRunStatus.POSTED:  # Accrued unpaid payroll needs reversal.
+        if run.journal_id is not None:
+            reverse_journal(run.journal, actor_user=actor_user, document_owner=run)
+            reversed_ids.append(run.journal_id)
+        for share in shares:
+            reverse_journal(share.journal, actor_user=actor_user, document_owner=share)
+            share.status = PayrollRunStatus.CANCELLED
+            share.save(update_fields=["status", "updated_at"])
+            reversed_ids.append(share.journal_id)
 
     was = run.run_status  # Capture previous status for audit message.
     run.run_status = PayrollRunStatus.CANCELLED  # Mark payroll run cancelled.
@@ -611,9 +856,10 @@ def cancel_payroll_run(run, *, actor_user=None):
         entity=run.entity, action=FinanceAuditAction.PAYROLL_CANCELLED,  # Audit action.
         actor_user=actor_user, target=run,  # Actor and target context.
         message=(f"Voided payroll run {run.document_number or run.pk} "  # Posted runs are voided with reversal.
-                 f"(reversed accrual journal {run.journal_id})."
+                 f"(reversed accrual journal{'s' if len(reversed_ids) > 1 else ''} "
+                 f"{', '.join(str(i) for i in reversed_ids)})."
                  if was == PayrollRunStatus.POSTED  # Distinguish posted vs draft path.
                  else f"Cancelled draft payroll run {run.document_number or run.pk}."),  # Draft path message.
-        journal_id=run.journal_id, previous_status=was,  # Structured metadata.
+        journal_id=run.journal_id, journal_ids=reversed_ids, previous_status=was,
     )
     return run  # Return cancelled payroll run.

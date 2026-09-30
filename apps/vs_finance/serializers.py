@@ -54,6 +54,7 @@ from .models import (
     EmployeeSalary,
     PayrollLine,
     PayrollRun,
+    PayrollRunBranch,
     SalaryComponent,
     SalaryStructure,
     PettyCashFund,
@@ -1201,19 +1202,34 @@ class PayrollLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
         fields = [
             "id", "line_no", "employee_id", "employee_name",
             "gross_amount", "paye_amount", "pension_amount", "net_amount",
-            "components", "cost_center",
+            "components", "cost_center", "branch_id", "branch_name",
+        ]
+
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+
+
+class PayrollRunBranchSerializer(serializers.ModelSerializer):
+    """One branch's share of a run posted one journal per branch, and how it was paid."""
+
+    branch_name = serializers.CharField(source="branch.name", read_only=True)
+
+    class Meta:
+        model = PayrollRunBranch
+        fields = [
+            "id", "branch_id", "branch_name", "status",
+            "gross_total", "paye_total", "pension_total", "net_total",
+            "journal_id", "disbursement_journal_id", "bank_account_id",
         ]
 
 
 class PayrollRunSerializer(serializers.ModelSerializer):
+    """A payroll run. ``branch_shares`` is empty unless the run posted one journal
+    per branch, when it lists each branch's figures, journals and payment."""
+
     lines = PayrollLineSerializer(many=True, read_only=True)
+    branch_shares = PayrollRunBranchSerializer(many=True, read_only=True)
     net_total_naira = serializers.SerializerMethodField()
-    # Which site the run covers. Under PER_BRANCH a school raises one run per
-    # branch per pay date, so without this the list shows several rows with the
-    # same date, the same period label and nothing to tell them apart. Null
-    # means a central run over the whole entity, which is what every run was
-    # before per-branch payroll existed. Not a registered field: a site is not
-    # a pay figure, and the officer who has to pick the right run needs to read it.
+    # Which branch the run covers; null is a central run over every branch.
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     # Statutory liability accounts the run credited (set on post) - let the FE match the
     # real outstanding balance (trial balance) to show remittance status honestly.
@@ -1229,7 +1245,7 @@ class PayrollRunSerializer(serializers.ModelSerializer):
             "branch_id", "branch_name",
             "paye_payable_account", "paye_payable_account_id",
             "pension_payable_account", "pension_payable_account_id",
-            "journal_id", "disbursement_journal_id", "lines",
+            "journal_id", "disbursement_journal_id", "branch_shares", "lines",
         ]
 
     def get_net_total_naira(self, obj) -> str:

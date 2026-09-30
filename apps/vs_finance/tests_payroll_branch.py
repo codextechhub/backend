@@ -150,15 +150,12 @@ class CentralPayrollIsUnchangedTests(_PayrollFixture):
         self.assertEqual(self.names_on(run), ["Ada Obi", "Bola Lawal", "Chidi Eze"])
         self.assertIsNone(run.branch_id)
 
-    def test_a_branch_pinned_officer_still_runs_the_whole_school(self):
-        """The case that would have broken, and the reason the setting exists.
+    def test_a_branch_pinned_officer_cannot_run_the_whole_school(self):
+        """A run for all staff is the whole school's, so a branch officer is refused.
 
-        Mrs Bello is granted Bursar at Ikeja because that is where she sits, not
-        because Corona runs payroll per site - Corona runs one payroll. Her roster
-        carries no branches at all. If her pinned grant were allowed to narrow the
-        run she raises, it would select on a column nobody has filled in, match
-        nothing, and her January payroll would come back "no active employees" for
-        a school with three of them.
+        Mrs Bello is granted Bursar at Ikeja. A run covering Corona's whole roster
+        would show her Lekki's and Yaba's pay, and it names no branch, so she could
+        not open it once raised.
         """
         bello = self.officer(
             self.tenant, "central-ikeja@fin.test", "c-ikeja", branches=[self.ikeja],
@@ -166,13 +163,10 @@ class CentralPayrollIsUnchangedTests(_PayrollFixture):
 
         response = self.generate(bello, self.books)
 
-        self.assertEqual(response.status_code, 201, response.data)
-        run = PayrollRun.objects.get(entity=self.books)
-        self.assertEqual(self.names_on(run), ["Ada Obi", "Bola Lawal", "Chidi Eze"])
-        self.assertIsNone(run.branch_id)
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertFalse(PayrollRun.objects.filter(entity=self.books).exists())
 
-    def test_an_officer_covering_two_branches_is_not_asked_to_pick(self):
-        """Under CENTRAL there is nothing to pick between: the run covers everyone."""
+    def test_an_officer_covering_two_branches_is_refused_too(self):
         both = self.officer(
             self.tenant, "central-both@fin.test", "c-both",
             branches=[self.ikeja, self.lekki],
@@ -180,8 +174,7 @@ class CentralPayrollIsUnchangedTests(_PayrollFixture):
 
         response = self.generate(both, self.books)
 
-        self.assertEqual(response.status_code, 201, response.data)
-        self.assertEqual(PayrollRun.objects.get(entity=self.books).lines.count(), 3)
+        self.assertEqual(response.status_code, 403, response.data)
 
     def test_a_second_run_in_the_same_month_is_still_allowed(self):
         """Advances and supplementary payments have always been possible here.

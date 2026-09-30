@@ -555,7 +555,7 @@ def _recent_journals(entity, limit=5, scope=UNNARROWED) -> list[dict]:
     """
     from django.db.models import Exists, OuterRef, Q
 
-    from .models import JournalEntry, PayrollRun
+    from .models import JournalEntry, PayrollRun, PayrollRunBranch
 
     qs = (  # Recent journals for entity.
         scope.filter(JournalEntry.objects.filter(entity=entity))
@@ -564,6 +564,8 @@ def _recent_journals(entity, limit=5, scope=UNNARROWED) -> list[dict]:
             is_receipt=Exists(Payment.objects.filter(journal=OuterRef("pk"))),
             is_invoice=Exists(Invoice.objects.filter(journal=OuterRef("pk"))),
             is_payroll=Exists(PayrollRun.objects.filter(
+                Q(journal=OuterRef("pk")) | Q(disbursement_journal=OuterRef("pk")))),
+            is_payroll_share=Exists(PayrollRunBranch.objects.filter(
                 Q(journal=OuterRef("pk")) | Q(disbursement_journal=OuterRef("pk")))),
         )
         .order_by("-date", "-id")[:limit]
@@ -578,7 +580,7 @@ def _recent_journals(entity, limit=5, scope=UNNARROWED) -> list[dict]:
                 "source": getattr(j, "source", "") or "Manual",  # Journal source label.
                 "kind": (
                     "receipt" if j.is_receipt else "invoice" if j.is_invoice
-                    else "payroll" if j.is_payroll
+                    else "payroll" if j.is_payroll or j.is_payroll_share
                     else "manual" if getattr(j, "source", "") == "MANUAL" else "other"
                 ),
                 "narration": getattr(j, "narration", "") or "",  # Journal narration.

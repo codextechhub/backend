@@ -43,6 +43,7 @@ from .base import (
     _resolve_cost_center,
     _resolve_currency,
 )
+from vs_rbac.scoping import only_branch_id, transaction_branch_scope
 
 # --------------------------------------------------------------------------- #
 # Payroll                                                                     #
@@ -80,18 +81,56 @@ UNASSIGNED_REFS = ("unassigned", "none", "null")
 def _run_bank_account(request, entity, ref, run_branch):
     """The bank account a payroll run is paid from, by id or name, or None.
 
-    A branch's run is paid only from that branch's account, the rule every
-    document follows (:func:`_resolve_bank_account`). A central run carries no
-    branch, because its lines pay every branch's staff through one accrual
-    journal, so no single branch's account is its own; it is paid from any
-    account in the caller's reach. Splitting a central run into one journal per
-    branch, each paid from that branch's account, is what removes this case.
+    A run is paid from its own branch's account, the rule every document follows
+    (:func:`_resolve_bank_account`). A central run at a school with several
+    branches names no account of its own: it posts one journal per branch, and
+    each branch's share is paid from that branch's account when it is paid
+    (:func:`vs_finance.payroll.pay_payroll`). At a school with one branch a
+    central run is that branch's and takes its account like any other.
     """
-    if run_branch is None:
-        return _bank_account_in_reach(request, entity, ref, required=False)
+    if ref in (None, ""):
+        return None
+    if run_branch is None and only_branch_id(entity.tenant_id) is None and \
+            entity.tenant_id is not None:
+        raise ValidationError({"bank_account": (
+            "A payroll run for every branch is paid from each branch's own account. "
+            "Name the accounts when you pay it."
+        )})
     return _resolve_bank_account(
         request, entity, ref, required=False,
         document_branch=run_branch, noun="payroll run")
+
+
+def _refuse_central_run_for_branch_caller(request, entity) -> None:
+    """A run covering every branch's staff is raised only by a whole-school caller.
+
+    Mrs Bello keeps Ikeja's payroll at Corona. A run for all staff would put
+    Lekki's and Yaba's salaries in front of her, and it names no branch, so once
+    raised it would be out of her reach anyway. At a school with one branch her
+    grant covers the whole school and she is not refused.
+    """
+    from rest_framework.exceptions import PermissionDenied
+
+    if transaction_branch_scope(request).is_narrowed:
+        raise PermissionDenied(
+            "A payroll run for all staff is raised by someone who covers the whole "
+            "school. Raise one for your branch instead.",
+        )
+
+
+def _line_branch(request, entity, run_branch, ref, where):
+    """The branch a hand-typed line of a central run is booked to, or None.
+
+    A branch run's lines are its branch's. A central run's line may name its
+    branch; one that does not takes it from the employee's salary row, or the
+    school's only branch, when the run posts (:func:`vs_finance.payroll.post_payroll`).
+    """
+    if run_branch is not None or ref in (None, ""):
+        return run_branch
+    branch = _resolve_branch(entity.tenant, ref, where)
+    if branch is None or not caller_may_use_branch(request, branch):
+        raise ValidationError({where: "No such branch for this entity."})
+    return branch
 
 
 # Support the branch filter workflow.
@@ -137,7 +176,7 @@ class PayrollRunListCreateView(_FinanceBase):
         entity = resolve_entity(request)
         qs = PayrollRun.objects.filter(
             transaction_branch_q(request), entity=entity,
-        ).select_related("branch").prefetch_related("lines")
+        ).select_related("branch").prefetch_related("lines__branch", "branch_shares__branch")
         if (status_val := request.query_params.get("run_status")):
             qs = qs.filter(run_status=status_val)
         qs = _filter_by_branch(qs, request, entity)
@@ -152,7 +191,9 @@ class PayrollRunListCreateView(_FinanceBase):
         entity = resolve_entity(request)
         body = request.data or {}
         lines = _require_lines(body)
-        branch = _raised_branch(request, entity, body, **_branch_rule(entity))
+        branch = _raised_branch(request, entity, body)
+        if branch is None:
+            _refuse_central_run_for_branch_caller(request, entity)
         pay_date = _date(body.get("pay_date"), "pay_date", required=True)
         # The same guard as the generated run, at the other door into the same
         # table. Typing the lines by hand rather than drawing them from the roster
@@ -172,6 +213,7 @@ class PayrollRunListCreateView(_FinanceBase):
         for i, ln in enumerate(lines, start=1):
             PayrollLine.objects.create(
                 run=run, line_no=i,
+                branch=_line_branch(request, entity, branch, ln.get("branch"), f"lines[{i}].branch"),
                 employee_name=ln.get("employee_name", ""),
                 gross_amount=_money(ln.get("gross_amount", 0), f"lines[{i}].gross_amount"),
                 paye_amount=_money(ln.get("paye_amount", 0), f"lines[{i}].paye_amount"),
@@ -238,7 +280,7 @@ class _PayrollActionBase(_FinanceBase):
         entity = resolve_entity(request)
         run = PayrollRun.objects.filter(
             transaction_branch_q(request), entity=entity, pk=pk,
-        ).select_related("branch").first()
+        ).select_related("branch", "journal").first()
         if run is None:
             raise NotFound("Payroll run not found for this entity.")
         return entity, run
@@ -277,7 +319,15 @@ class PayrollRunPostView(_PayrollActionBase):
 
 # Group endpoint behavior for Payroll Run Pay View.
 class PayrollRunPayView(_PayrollActionBase):
-    """docstring-name: Pay a payroll run"""
+    """POST - pay a posted run's net wages.
+
+    A run posted as one journal is paid from ``bank_account``, its branch's own. A
+    run posted one journal per branch is paid from ``bank_accounts`` (or a single
+    ``bank_account``): each account pays its own branch's share, and the rest
+    stay unpaid until their accounts are named.
+
+    docstring-name: Pay a payroll run
+    """
     rbac_permission = "finance.payrollrun.pay"
 
     # Handle POST requests for this endpoint.
@@ -286,9 +336,22 @@ class PayrollRunPayView(_PayrollActionBase):
 
         entity, run = self._run(request, pk)
         body = request.data or {}
-        bank = _run_bank_account(request, entity, body.get("bank_account"), run.branch_id)
+        bank, banks = None, None
+        if run.branch_shares.exists():
+            refs = body.get("bank_accounts")
+            if refs in (None, ""):
+                refs = [body["bank_account"]] if body.get("bank_account") not in (None, "") else []
+            if not isinstance(refs, list):
+                raise ValidationError({"bank_accounts": "Expected a list of bank accounts."})
+            banks = [
+                _bank_account_in_reach(request, entity, ref, f"bank_accounts[{i}]")
+                for i, ref in enumerate(refs)
+            ]
+        else:
+            branch_id = run.journal.branch_id if run.journal_id else run.branch_id
+            bank = _run_bank_account(request, entity, body.get("bank_account"), branch_id)
         pay_payroll(
-            run, bank_account=bank,
+            run, bank_account=bank, bank_accounts=banks,
             pay_date=_date(body.get("pay_date"), "pay_date"),
             actor_user=request.user,
         )
@@ -535,9 +598,10 @@ class PayrollRunGenerateView(_FinanceBase):
     """POST - raise a draft payroll run from the active employee-salary roster.
 
     Central or per branch, whichever the school has chosen. Under CENTRAL the run
-    covers the whole roster exactly as it always has. Under PER_BRANCH the caller's
-    branch decides which roster rows it covers, and it covers that branch's staff
-    and nobody else's, so the same person is never on two runs.
+    covers the whole roster, names no branch, and is raised only by a caller who
+    covers the whole school; it posts one journal per branch. Under PER_BRANCH the
+    caller's branch decides which roster rows it covers, and it covers that
+    branch's staff and nobody else's, so the same person is never on two runs.
 
     docstring-name: Generate a payroll run
     """
@@ -551,16 +615,12 @@ class PayrollRunGenerateView(_FinanceBase):
 
         entity = resolve_entity(request)
         body = request.data or {}
-        # A central school's generated run gets no branch at all - not even a
-        # pinned officer's - because that is what this endpoint did before
-        # per-branch payroll existed, and stamping one now would be a change with
-        # no purpose: the run covers the whole roster either way. Reading the
-        # setting first also means a central school never meets the "which branch
-        # do you mean?" refusal, so nothing here can start failing for a school
-        # that has not opted in.
+        # Under CENTRAL the run covers every branch and names none.
         branch = (
             _raised_branch(request, entity, body) if is_per_branch(entity) else None
         )
+        if branch is None:
+            _refuse_central_run_for_branch_caller(request, entity)
         run = generate_run_from_roster(
             entity, pay_date=_date(body.get("pay_date"), "pay_date", required=True),
             branch=branch,

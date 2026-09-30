@@ -283,9 +283,8 @@ class SharedWhenAmbiguousTests(_WriteFixture):
     """The ambiguous case: a caller in two branches who names none.
 
     A fee template is a shared record, so it is published for every branch. A bank
-    account holds one branch's money and is asked for like any transaction. A
-    central payroll run still covers the whole school: one run for all staff is the
-    school's arrangement, and splitting its journal per branch is separate work.
+    account holds one branch's money and is asked for like any transaction, and so
+    is a payroll run: one covering every branch's staff is a whole-school caller's.
     """
 
     def setUp(self):
@@ -363,19 +362,17 @@ class SharedWhenAmbiguousTests(_WriteFixture):
             self.solo_main.pk,
         )
 
-    def test_a_payroll_run_from_a_two_branch_officer_covers_the_school(self):
-        """A central school's run covers the school, so there is nothing to pick.
+    def test_a_payroll_run_from_a_two_branch_officer_names_one_of_hers(self):
+        """A run for all staff is a whole-school caller's, so she is asked which branch.
 
-        ``payroll.scope`` defaults to CENTRAL and no school here has opted out, so
-        a run covers everybody the school employs whichever branches the officer
-        happens to be granted. The school that has switched to PER_BRANCH is asked
-        instead, and ``tests_payroll_branch`` holds that half.
+        Naming none would raise a run covering every branch's staff, which only a
+        caller covering the whole school raises; ``tests_payroll_split`` holds that
+        half.
         """
         response = self.post(self.both, "payroll-runs/", self.books, self.payroll_body())
 
-        self.assertEqual(response.status_code, 201, response.data)
-        run = PayrollRun.objects.get(entity=self.books)
-        self.assertIsNone(run.branch_id)
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertFalse(PayrollRun.objects.filter(entity=self.books).exists())
 
 
 class InheritedBranchTests(_WriteFixture):

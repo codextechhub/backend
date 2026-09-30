@@ -68,8 +68,9 @@ Two rules follow, and they are separate:
      sees only her own branches' transactions, and a transaction still carrying
      a null branch is visible only to a whole-school reader. A document is paid
      only from its own branch's bank account, and settles only documents of its
-     own branch. The one exception is a central payroll run, which covers every
-     branch's staff in one journal until that journal is split per branch.
+     own branch. A central payroll run covers every branch's staff, so it names
+     no branch itself: it posts one journal per branch, each naming its branch
+     and paid from that branch's bank account.
    - At a school with one branch, a transaction not yet given a branch is that
      branch's (`same_transaction_branch`), so the dimension recedes there.
 
