@@ -19,6 +19,7 @@ from django.test import TestCase
 
 from schools.core.fal import registry
 from schools.vs_schools.models import School
+from vs_config.clock import branch_today
 from vs_tenants.models import Branch
 
 User = get_user_model()
@@ -162,6 +163,7 @@ class FALFixture(TestCase):
             first_name=first, last_name=last,
             date_of_birth=_dt.date(2014, 3, 1), gender=Gender.MALE,
             status=StudentStatus.ACTIVE,
+            enrolment_date=branch_today(school.tenant, branch),
         )
 
     _order_index = 0
@@ -202,6 +204,7 @@ class FALFixture(TestCase):
         ClassEnrolment.all_objects.create(
             tenant=school.tenant, student=student, school_class=school_class,
             session=session,
+            effective_date=branch_today(school.tenant, student.branch_id),
         )
         return school_class
 

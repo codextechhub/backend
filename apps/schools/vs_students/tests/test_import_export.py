@@ -9,6 +9,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from schools.vs_students.constants import Relationship, StudentStatus
 from schools.vs_students.imports import resolve_row, validate_students_import_batch
 from schools.vs_students.models import Guardian, Student, StudentDocument
+from vs_config.clock import branch_today
 
 from .base import StudentsFixture
 
@@ -155,6 +156,7 @@ class ImportValidationTests(_ImportFixture):
             first_name="Theirs", last_name="Own",
             date_of_birth=self.row()["Date of Birth"], gender="FEMALE",
             student_number="BFS/2025/0142",
+            enrolment_date=branch_today(self.solo.tenant, self.solo_branch),
         )
         issues = validate_students_import_batch(
             self.batch([self.row(**{"Admission No.": "BFS/2025/0142"})]),
@@ -484,6 +486,7 @@ class DocumentTests(StudentsFixture):
             tenant=self.solo.tenant, branch=self.solo_branch,
             first_name="Theirs", last_name="Own",
             date_of_birth=self.row.date_of_birth, gender="FEMALE",
+            enrolment_date=branch_today(self.solo.tenant, self.solo_branch),
         )
         response = self.delete(
             self.admin, "student-document-detail",

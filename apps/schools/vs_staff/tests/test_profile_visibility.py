@@ -37,6 +37,7 @@ from schools.vs_staff.models import (
     StaffPositionAssignment,
 )
 from schools.vs_staff.services import visibility
+from vs_config.clock import branch_today
 from vs_rbac.models import PermissionScope
 from vs_rbac.tests.helpers import (
     install_declared_fields,
@@ -103,6 +104,7 @@ class ProfileVisibilityFixture(StaffFixture):
         cls.femi = member("femi@brightfield.test", "Femi", "Lawal", cls.ikeja)
 
         def appoint(staff, position, **kwargs):
+            kwargs.setdefault("start_date", branch_today(cls.tenant, staff.branch_id))
             StaffPositionAssignment.all_objects.create(
                 tenant=cls.tenant, staff=staff, position=position, **kwargs,
             )
@@ -330,6 +332,7 @@ class LineManagerTests(ProfileVisibilityFixture):
         StaffPositionAssignment.all_objects.create(
             tenant=self.tenant, staff=acting, position=self.hod_post,
             is_primary=False, is_acting=True,
+            start_date=branch_today(self.tenant, acting.branch_id),
         )
         self.assertIn("leave", self.record(acting, self.chika)["visible_sections"])
 
@@ -403,9 +406,11 @@ class TeacherLineManagerLeaveTests(ProfileVisibilityFixture):
         )
         StaffPositionAssignment.all_objects.create(
             tenant=cls.tenant, staff=cls.eze, position=maths,
+            start_date=branch_today(cls.tenant, cls.eze.branch_id),
         )
         StaffPositionAssignment.all_objects.create(
             tenant=cls.tenant, staff=cls.kemi, position=maths_teacher,
+            start_date=branch_today(cls.tenant, cls.kemi.branch_id),
         )
 
     def test_a_teacher_reads_leave_for_their_report_and_not_for_a_peer(self):

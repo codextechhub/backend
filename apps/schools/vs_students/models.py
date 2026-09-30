@@ -137,7 +137,9 @@ class Student(_Owned):
         max_length=12, choices=StudentStatus.choices,
         default=StudentStatus.APPLICANT, db_index=True,
     )
-    enrolment_date = models.DateField(default=timezone.localdate)
+    #: No default: the day is the branch's (``vs_config.clock.branch_today``),
+    #: which a column default cannot see, so every write names it.
+    enrolment_date = models.DateField()
 
     #: Application facts. Null for a student who was never an applicant.
     #: Without them an applicant is a record with blank everything and the
@@ -402,8 +404,9 @@ class ClassEnrolment(_Owned):
     #: When the placement takes effect for the school, which is not
     #: ``assigned_at``: a transfer agreed on Friday to start on Monday has two
     #: different dates, and a register that uses the wrong one is wrong for a
-    #: weekend.
-    effective_date = models.DateField(default=timezone.localdate)
+    #: weekend. No default: every write names the day, the student's branch's
+    #: unless the caller chose another.
+    effective_date = models.DateField()
     #: Blank on a first placement, where there is nothing to explain. Required
     #: on a transfer: a class move is the one record-changing act that would
     #: otherwise carry no explanation.
@@ -460,8 +463,9 @@ class StudentStatusLog(_Owned):
     to_status = models.CharField(max_length=12, choices=StudentStatus.choices)
     reason = models.CharField(max_length=200, blank=True, default="")
     #: When the change takes effect for the school, as distinct from
-    #: ``changed_at``, which is when the system recorded it.
-    effective_date = models.DateField(default=timezone.localdate)
+    #: ``changed_at``, which is when the system recorded it. No default: every
+    #: write names the day, the student's branch's unless the caller chose another.
+    effective_date = models.DateField()
     #: Required when to_status is TRANSFERRED, blank otherwise. Free text: the
     #: receiving school is not a tenant of this platform.
     destination_school = models.CharField(max_length=200, blank=True, default="")

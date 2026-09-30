@@ -841,12 +841,17 @@ class ConditionAreaTests(_Fixture):
         school_class = SchoolClass.objects.create(
             tenant=tenant, level=level, session=session, name=class_name,
             code=f"{class_name}-{n}".replace(" ", ""))
+        from vs_config.clock import branch_today
+
+        branch = self.branch if tenant == self.tenant else self.other_branch
+        joined = branch_today(tenant, branch)
         student = Student.objects.create(
-            tenant=tenant, branch=self.branch if tenant == self.tenant else self.other_branch,
+            tenant=tenant, branch=branch,
             first_name="Tunde", last_name="Okeye", date_of_birth="2014-05-02",
-            gender="MALE", status=status_ or "ACTIVE")
+            gender="MALE", status=status_ or "ACTIVE", enrolment_date=joined)
         ClassEnrolment.objects.create(
-            tenant=tenant, student=student, school_class=school_class, session=session)
+            tenant=tenant, student=student, school_class=school_class, session=session,
+            effective_date=joined)
         return student
 
     def _refund_for(self, student, *, tenant=None):

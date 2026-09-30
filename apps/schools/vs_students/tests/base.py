@@ -24,6 +24,7 @@ from schools.vs_academics.models import (
 )
 from schools.vs_students.constants import Gender, Relationship, StudentStatus
 from schools.vs_students.models import Guardian, Student, StudentGuardian
+from vs_config.clock import branch_today
 from vs_rbac.models import PermissionScope
 from vs_rbac.tests.helpers import (
     make_assignment,
@@ -195,8 +196,11 @@ class StudentsFixture(TestCase):
 
     def student(self, *, branch=None, tenant=None, status=StudentStatus.ACTIVE,
                 first="Chiamaka", last="Nwosu", number="", dob=None, **extra):
+        tenant = tenant or self.tenant
+        branch = branch or self.lekki
+        extra.setdefault("enrolment_date", branch_today(tenant, branch))
         return Student.all_objects.create(
-            tenant=tenant or self.tenant, branch=branch or self.lekki,
+            tenant=tenant, branch=branch,
             first_name=first, last_name=last, student_number=number,
             date_of_birth=dob or dt.date(2013, 4, 18),
             gender=Gender.FEMALE, status=status, **extra,
@@ -223,6 +227,7 @@ class StudentsFixture(TestCase):
             tenant=student.tenant, student=student,
             school_class=school_class or self.shared_class,
             session=session or self.year, is_active=True,
+            effective_date=branch_today(student.tenant, student.branch_id),
         )
 
     def enrolment_body(self, **overrides):

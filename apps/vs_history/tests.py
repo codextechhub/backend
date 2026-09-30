@@ -233,6 +233,7 @@ class ReadingTests(HistoryFixture):
             student = Student.all_objects.create(
                 tenant=self.tenant, branch=self.main, first_name="Tunde", last_name="Bakare",
                 date_of_birth=dt.date(2015, 1, 1), gender=Gender.MALE,
+                enrolment_date=dt.date(2026, 3, 1),
             )
             guardian = self.make_guardian()
             link = StudentGuardian.all_objects.create(

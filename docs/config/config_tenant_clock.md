@@ -194,9 +194,14 @@ below read a branch's day.
 - `vs_health.tasks.rollup_uptime_daily_task`: uptime rollups are the
   platform's own UTC day buckets over UTC probe instants, not anybody's
   calendar.
-- `DateField(default=timezone.localdate)` on `vs_staff` and `vs_user`
-  position assignments: a field default cannot see its row's tenant, and
-  every service that creates these rows passes a date.
+- `vs_user.PositionAssignment.start_date` (`default=timezone.localdate`):
+  platform staff seats, not a school's record, so it keeps its default. The
+  school records that had the same default (a student's `enrolment_date`, a
+  placement's and a status change's `effective_date`, a staff appointment's
+  `start_date`) have none: a column default can only be the server's UTC day,
+  so every write names the day (its branch's) and a write that names none is
+  refused by the database. `vs_procurement.VendorAssessment.assessment_date`
+  still defaults to `date.today` (see `todo.md` D83).
 - `vs_finance.export_datasets._translate_invoices`: the screen-translation
   hook takes only the query parameters, so its "overdue" bucket uses the
   platform day.
