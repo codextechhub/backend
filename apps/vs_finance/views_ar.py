@@ -1379,8 +1379,9 @@ def _customers_off_the_price_list(structure, customers):
     """How many of *customers* a branch fee structure may not bill.
 
     A structure with a branch is that branch's price list, so every customer it
-    bills must be filed under that branch. A school-wide customer is not: its
-    receivable would be filed school-wide at one branch's prices. A school-wide
+    bills must be filed under that branch. A customer every branch shares is not
+    filed under it, so billing them from one branch's price list would charge
+    them that branch's prices without being that branch's family. A school-wide
     structure (no branch) prices every branch and refuses nobody.
     """
     if not structure.branch_id:

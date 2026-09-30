@@ -127,7 +127,7 @@ class PostingThroughTheFalTests(FALFixture):
 
         with self.assertRaisesMessage(
             ProcurementStateError,
-            "This vendor payment belongs to Ikeja. Pay it from an Ikeja account or a school-wide one.",
+            "This vendor payment belongs to Ikeja. Pay it from an Ikeja account.",
         ):
             self.post(payment, ProcDocType.VENDOR_PAYMENT, self.bursar)
         self.assertNothingSettled(payment)

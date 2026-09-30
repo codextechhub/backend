@@ -341,8 +341,9 @@ class DirectEntryCreateSerializer(serializers.Serializer):
     branch = serializers.CharField(
         required=False, allow_blank=True, allow_null=True,
         help_text="Branch id or code the entry belongs to. A caller bound to one "
-                  "branch may leave it out; a caller bound to several must name "
-                  "one; a whole-tenant caller may leave it out for a school-wide entry.",
+                  "branch may leave it out; a caller bound to several, or a "
+                  "whole-tenant caller at a school with several branches, must name "
+                  "one. At a school with one branch it may be left out.",
     )
     lines = DirectEntryLineSerializer(many=True)
 

@@ -107,7 +107,7 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
 
     ``scope`` (a :class:`vs_rbac.scoping.BranchScope`) limits the run to the invoices
     a branch-bound caller can reach, so a bursar at Lekki chases Lekki's debtors and
-    the school-wide ones, never Ikeja's. ``None`` runs over the whole entity, which is
+    never Ikeja's, nor a debt not yet given a branch. ``None`` runs over the whole entity, which is
     what the scheduled daily run does.
 
     For each posted, not-fully-paid invoice with an outstanding balance, days-overdue is

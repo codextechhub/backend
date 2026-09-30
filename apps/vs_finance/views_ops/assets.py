@@ -74,10 +74,7 @@ class FixedAssetListCreateView(_FinanceBase):
             raise ValidationError({"method": "Choose a valid depreciation method."})
         asset = FixedAsset.objects.create(
             entity=entity, name=name,
-            # An asset is a physical thing standing in a room at one site, so the
-            # strict reading applies: a bursar covering two branches is asked
-            # which site the projector is at rather than having it recorded as
-            # belonging to the school as a whole.
+            # An asset stands at one branch.
             branch=_transaction_branch(request, entity, body),
             asset_code=body.get("asset_code", ""),
             category=category,
