@@ -772,10 +772,15 @@ def _maybe_export_settlement(request, recon, entity):
     Reuses vs_finance's report renderer so a settlement file looks like every other
     finance export - this app already depends on vs_finance for money formatting and
     entity resolution, so no new coupling is introduced.
+
+    The file is read by people, so its dates are the tenant's
+    (:mod:`vs_config.display`): the window and a bank line's date in its date
+    format, and a confirmation, which is an instant, on its wall clock.
     """
     if not request.query_params.get("export"):
         return None
 
+    from vs_config.display import format_date, format_date_range, format_datetime
     from vs_finance.exports import ReportTable
     from vs_finance.views import _maybe_export
 
@@ -785,9 +790,16 @@ def _maybe_export_settlement(request, recon, entity):
             "view": f"Expected one of {', '.join(_SETTLEMENT_VIEWS)}.",
         })
 
-    window = " to ".join(
-        d.isoformat() for d in (recon.start_date, recon.end_date) if d
-    ) or "All dates"
+    tenant = entity.tenant
+    start, end = recon.start_date, recon.end_date
+    if start and end:
+        window = format_date_range(start, end, tenant)
+    elif start:
+        window = f"From {format_date(start, tenant)}"
+    elif end:
+        window = f"Up to {format_date(end, tenant)}"
+    else:
+        window = "All dates"
     subtitle = f"{recon.entity_code} · {window}"
     kind = {"COLLECTION": "Collection"}
 
@@ -797,7 +809,7 @@ def _maybe_export_settlement(request, recon, entity):
             subtitle=subtitle,
             columns=["Date", "Description", "Reference", "Amount"],
             rows=[
-                [b.txn_date.isoformat(), b.description, b.reference, b.amount_naira]
+                [format_date(b.txn_date, tenant), b.description, b.reference, b.amount_naira]
                 for b in recon.unmatched_bank_lines
             ],
             summary_rows=[["", "TOTAL", "", format_naira(recon.unmatched_bank_total)]],
@@ -810,7 +822,7 @@ def _maybe_export_settlement(request, recon, entity):
             columns=["Date", "Type", "Provider", "Reference", "Gross", "Status"],
             rows=[
                 [
-                    r.confirmed_at.isoformat() if r.confirmed_at else "",
+                    format_datetime(r.confirmed_at, tenant),
                     kind.get(r.kind, "Payout"), r.provider, r.reference,
                     r.amount_naira, "Awaiting bank",
                 ]
@@ -829,7 +841,7 @@ def _maybe_export_settlement(request, recon, entity):
             ],
             rows=[
                 [
-                    r.confirmed_at.isoformat() if r.confirmed_at else "",
+                    format_datetime(r.confirmed_at, tenant),
                     kind.get(r.kind, "Payout"), r.provider, r.reference,
                     r.amount_naira,
                     format_naira(r.fee_amount or 0),
