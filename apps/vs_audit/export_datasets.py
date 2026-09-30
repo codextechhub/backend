@@ -56,9 +56,10 @@ def _audit_events(scope):
     from .scoping import branch_event_predicate, tenant_event_predicate
 
     events = AuditEvent.objects.filter(tenant_event_predicate(scope.tenant))
-    if scope.user is None:
+    user = getattr(scope, "user", None)
+    if user is None:
         return events
-    reach = transaction_branch_scope_for_user(scope.user, tenant=scope.tenant).branch_ids
+    reach = transaction_branch_scope_for_user(user, tenant=scope.tenant).branch_ids
     narrowing = branch_event_predicate(reach)
     return events if narrowing is None else events.filter(narrowing)
 
