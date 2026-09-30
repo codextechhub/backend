@@ -100,7 +100,7 @@ class StaffLeaveView(StaffViewMixin, APIView):
         self.refuse_as_at_unless_full(as_at, admission)
         session = self._balance_session(staff, as_at.date if as_at else None)
         if as_at is None:
-            rows = staff.leave_requests.select_related("requested_by", "staff__user")
+            rows = list(staff.leave_requests.select_related("requested_by", "staff__user"))
             days_taken = leave_service.days_taken(staff)
             counted = None
         else:
@@ -110,8 +110,9 @@ class StaffLeaveView(StaffViewMixin, APIView):
                 row.staff = record
             days_taken = past.days_taken_at(rows)
             counted = rows
+        read_context = self._request_context(rows, as_at)
         return success_response(data={
-            "leave": LeaveSerializer(rows, many=True, context={"as_at": as_at}).data,
+            "leave": LeaveSerializer(rows, many=True, context={"as_at": as_at, **read_context}).data,
             "days_taken": days_taken,
             "balances": (
                 leave_service.balances(staff, session, rows=counted)
@@ -131,6 +132,74 @@ class StaffLeaveView(StaffViewMixin, APIView):
                 "with no allowance has no limit."
             ),
         })
+
+    def _request_context(self, rows, as_at):
+        """Batch current approval holders and the last correction or cancellation."""
+        from django.db.models import F, Q
+
+        from vs_audit.models import AuditActionType, AuditEvent
+        from vs_workflow.models import (
+            WorkflowInstance, WorkflowStageAction, WorkflowStageApprover,
+        )
+
+        ids = [row.pk for row in rows]
+        approvals = {}
+        changes = {}
+        if not ids:
+            return {"leave_approvals": approvals, "leave_changes": changes}
+
+        change_rows = (
+            AuditEvent.objects.filter(
+                tenant=self.tenant, entity_type="LeaveRequest",
+                entity_id__in=[str(pk) for pk in ids],
+            ).filter(
+                Q(action_type=AuditActionType.UPDATE)
+                | Q(action_type=AuditActionType.STAFF_LEAVE_DECIDED,
+                    metadata__status="CANCELLED")
+            ).select_related("actor_user")
+        )
+        if as_at is not None:
+            change_rows = change_rows.filter(event_at__lt=as_at.moment)
+        for event in change_rows.order_by("entity_id", "-event_at").distinct("entity_id"):
+            changes[int(event.entity_id)] = event
+
+        if as_at is None:
+            pending_ids = [str(row.pk) for row in rows if row.status == "PENDING"]
+            instances = (
+                WorkflowInstance.all_objects.filter(
+                    tenant=self.tenant, document_type="schools.leave_request",
+                    document_object_id__in=pending_ids, status="IN_PROGRESS",
+                ).select_related("current_stage").order_by("-created_at")
+            )
+            for instance in instances:
+                approvals.setdefault(int(instance.document_object_id), {
+                    "instance_id": instance.pk,
+                    "stage": instance.current_stage.label if instance.current_stage else None,
+                    "pending_with": [],
+                })
+            instance_ids = [value["instance_id"] for value in approvals.values()]
+            snapshots = list(
+                WorkflowStageApprover.objects.filter(
+                    stage_instance__instance_id__in=instance_ids,
+                    stage_instance__status="ACTIVE",
+                    attempt=F("stage_instance__attempt"),
+                ).select_related("user", "stage_instance__instance")
+            )
+            stage_ids = {snap.stage_instance_id for snap in snapshots}
+            acted = set(WorkflowStageAction.objects.filter(
+                stage_instance_id__in=stage_ids, reversed_at__isnull=True,
+                is_reversal_of__isnull=True,
+            ).values_list("stage_instance_id", "actor_id"))
+            for snap in snapshots:
+                if (snap.stage_instance_id, snap.user_id) in acted:
+                    continue
+                name = " ".join(part for part in (
+                    snap.user.first_name, snap.user.last_name,
+                ) if part).strip()
+                names = approvals[int(snap.stage_instance.instance.document_object_id)]["pending_with"]
+                if name and name not in names:
+                    names.append(name)
+        return {"leave_approvals": approvals, "leave_changes": changes}
 
     def _balance_session(self, staff, on_date):
         """The session the balances count: named, covering the day, or active."""

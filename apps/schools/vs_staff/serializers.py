@@ -534,6 +534,9 @@ class LeaveSerializer(serializers.ModelSerializer):
     display_status = serializers.SerializerMethodField()
     requested_by = serializers.SerializerMethodField()
     staff_name = serializers.SerializerMethodField()
+    approval = serializers.SerializerMethodField()
+    last_changed_by = serializers.SerializerMethodField()
+    last_changed_at = serializers.SerializerMethodField()
 
     class Meta:
         model = LeaveRequest
@@ -541,6 +544,7 @@ class LeaveSerializer(serializers.ModelSerializer):
             "id", "staff_id", "staff_name", "leave_type", "leave_type_label",
             "start_date", "end_date", "days", "over_allowance_by", "note", "status",
             "display_status", "decided_at", "requested_by", "created_at",
+            "approval", "last_changed_by", "last_changed_at",
         ]
 
     def get_display_status(self, obj) -> str:
@@ -552,6 +556,17 @@ class LeaveSerializer(serializers.ModelSerializer):
 
     def get_staff_name(self, obj) -> str:
         return _full_name(obj.staff.user)
+
+    def get_approval(self, obj):
+        return self.context.get("leave_approvals", {}).get(obj.pk)
+
+    def get_last_changed_by(self, obj):
+        change = self.context.get("leave_changes", {}).get(obj.pk)
+        return _actor(change.actor_user) if change else None
+
+    def get_last_changed_at(self, obj):
+        change = self.context.get("leave_changes", {}).get(obj.pk)
+        return change.event_at if change else None
 
 
 class LeaveWriteSerializer(serializers.Serializer):

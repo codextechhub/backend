@@ -443,8 +443,9 @@ class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
     def get_document_details(self, obj):
         """The snapshotted layout, filtered for whoever is reading it now.
 
-        The snapshot is built when the document is submitted and kept as it
-        was; what a given approver may see of it is decided here, so two
+        The snapshot is built when the document is submitted and refreshed by
+        modules that permit pending corrections. What a given approver may see
+        of it is decided here, so two
         approvers of the same batch can be shown different columns without the
         stored document differing. Its dates are stored ISO and written in the
         tenant's display format as they are read.

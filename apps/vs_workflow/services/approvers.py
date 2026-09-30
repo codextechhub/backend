@@ -505,6 +505,18 @@ def requester_ids(instance: WorkflowInstance) -> set:
     return ids
 
 
+def approval_conflict_ids(instance: WorkflowInstance) -> set:
+    """Who may not decide this document under its owning module's rule."""
+    from vs_workflow.exceptions import UnknownDocumentTypeError
+    from vs_workflow.handlers import get_handler
+
+    try:
+        ids = get_handler(instance.document_type).approval_conflict_ids(instance)
+    except UnknownDocumentTypeError:
+        ids = None
+    return requester_ids(instance) if ids is None else set(ids)
+
+
 def real_person_id(user):
     """The id of the person really acting as *user* in the current request.
 
@@ -556,15 +568,12 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     not been taught must never be able to produce one. Adding a source means
     adding a branch below.
 
-    Every source is then contained to ``instance.tenant`` and the requester is
-    always excluded - they cannot approve their own submission. Both rules are
-    applied once, after the dispatch, because they hold for every source: an
-    approver from outside the requesting tenant is never eligible, whichever
-    branch above produced them. Containment is never made per-source, for the
-    same reason self-approval is not: a rule each branch has to remember is a
-    rule a new branch eventually forgets. Organogram positions in particular are
-    platform-global seats, so a climb that does not depend on the requester at
-    all could otherwise hand a tenant's document to somebody outside it.
+    Every source is then contained to ``instance.tenant`` and the document's
+    conflict identities are excluded. Submitters are the default conflict; a
+    leave request excludes the person taking leave even when another approver
+    filed it for them. Both rules run once after source dispatch and apply to
+    delegates too. Organogram positions in particular are platform-global
+    seats, so a climb could otherwise hand a tenant's document to an outsider.
 
     There are two doors into the eligible list and both run the same filter.
     The base users are the first. Delegations are the second: scoping the
@@ -619,14 +628,10 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     # The first of the two containment doors. See the docstring.
     base_users = _tenant_members(base_users, instance.tenant_id)
 
-    # Self-approval is barred on every source, so the filter lives here once
-    # rather than being repeated (and one day forgotten) per branch. The one
-    # document type that opts out says so on its handler, which is also the one
-    # place to look for which types those are - see
-    # ``BaseWorkflowHandler.allows_requester_self_approval``.
+    # Apply the document's conflict rule to every approver source.
     base_users = [u for u in base_users if u is not None]
-    requesters = requester_ids(instance)
-    others = [u for u in base_users if u.pk not in requesters]
+    conflicts = approval_conflict_ids(instance)
+    others = [u for u in base_users if u.pk not in conflicts]
     if not requester_may_self_approve(instance) or (
         others and _self_approval_only_when_alone(instance)
     ):
@@ -645,7 +650,7 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
         Q(document_type="") | Q(document_type=instance.document_type),
     ).select_related("delegator", "delegate"))
     if not requester_may_self_approve(instance):
-        delegations = [d for d in delegations if d.delegate_id not in requesters]
+        delegations = [d for d in delegations if d.delegate_id not in conflicts]
 
     # The second door, running the same filter. See the docstring.
     contained_delegate_ids = {

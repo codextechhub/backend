@@ -45,6 +45,16 @@ class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
     # Leave is kept on a school's staff records; the platform keeps none.
     audience = DocumentAudience.SCHOOL
 
+    def approval_conflict_ids(self, instance):
+        """The person taking leave cannot decide it, including as a delegate.
+
+        A staff administrator can file a colleague's request and also be in the
+        approver group. The request belongs to the colleague, so filing it on
+        their behalf does not remove that administrator from the approval path.
+        """
+        document = instance.document
+        return {document.staff.user_id} if document is not None else None
+
     condition_fields = (
         ConditionField("document.leave_type", "Leave type", "document",
                        ConditionFieldType.CHOICE, tuple(LeaveType.choices)),
@@ -126,6 +136,7 @@ class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
     def _settle(self, instance, status):
         from .models import LeaveRequest
         from .services.audit import emit_leave_decided
+        from vs_workflow.models import WorkflowStageAction
 
         row = LeaveRequest.all_objects.filter(pk=instance.document_object_id).first()
         if row is None:
@@ -135,11 +146,22 @@ class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
         # approval arriving later does not put them back on leave.
         if row.status != LeaveStatus.PENDING:
             return
+        actor = None
+        if status in (LeaveStatus.APPROVED, LeaveStatus.REJECTED):
+            vote = (
+                WorkflowStageAction.objects.filter(
+                    stage_instance__instance=instance, action=status,
+                    reversed_at__isnull=True, is_reversal_of__isnull=True,
+                ).select_related("actor").order_by("-acted_at").first()
+            )
+            actor = vote.actor if vote else None
+        else:
+            actor = instance.requested_by
         with transaction.atomic():
             row.status = status
             row.decided_at = timezone.now()
             row.save(update_fields=["status", "decided_at", "updated_at"])
-            emit_leave_decided(row, actor=getattr(instance, "requested_by", None))
+            emit_leave_decided(row, actor=actor)
 
     def on_approved(self, instance, context: dict) -> None:
         self._settle(instance, LeaveStatus.APPROVED)

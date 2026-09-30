@@ -10,6 +10,7 @@ FRD M12 v2.1, FR-013.
 from __future__ import annotations
 
 import datetime as dt
+from unittest.mock import patch
 
 from schools.vs_staff.approvals import ensure_tenant_approval_templates
 from schools.vs_staff.constants import LEAVE_APPROVER_GROUP_CODE, LeaveStatus
@@ -68,6 +69,83 @@ class FilingTests(LeaveFixture):
             ).exists(),
             "an absence is never both filed and allowed by one act",
         )
+
+    def test_approver_gets_the_pending_request_in_their_queue(self):
+        from vs_workflow.services.my_queue import pending_approval_snapshots
+
+        response = self.post(self.admin, "staff-leave", self.body(), pk=self.eze.pk)
+        self.assertEqual(response.status_code, 201, response.data)
+        row = LeaveRequest.all_objects.get(staff=self.eze)
+        snapshots = pending_approval_snapshots(self.lekki_head, self.tenant)
+        self.assertIn(
+            str(row.pk),
+            [snap.stage_instance.instance.document_object_id for snap in snapshots],
+        )
+
+    def test_filing_notifies_the_eligible_approver(self):
+        with patch("vs_workflow.tasks.dispatch_notification.delay") as dispatch:
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.post(self.admin, "staff-leave", self.body(), pk=self.eze.pk)
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(dispatch.call_count, 1)
+        self.assertIn(str(self.lekki_head.pk), dispatch.call_args.kwargs["recipient_user_ids"])
+
+    def test_an_approver_who_files_for_a_colleague_gets_the_request(self):
+        from vs_workflow.models import WorkflowApproverGroupMember, WorkflowStageApprover
+
+        WorkflowApproverGroupMember.objects.create(
+            group=self.leave_group, kind="USER", user=self.admin,
+        )
+        with patch("vs_workflow.tasks.dispatch_notification.delay") as dispatch:
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.post(self.admin, "staff-leave", self.body(), pk=self.eze.pk)
+        self.assertEqual(response.status_code, 201, response.data)
+        row = LeaveRequest.all_objects.get(staff=self.eze)
+        approvers = set(WorkflowStageApprover.objects.filter(
+            stage_instance__instance__document_type="schools.leave_request",
+            stage_instance__instance__document_object_id=str(row.pk),
+        ).values_list("user_id", flat=True))
+        self.assertEqual(approvers, {self.admin.pk, self.lekki_head.pk})
+        self.assertIn(str(self.admin.pk), dispatch.call_args.kwargs["recipient_user_ids"])
+
+    def test_the_person_taking_leave_cannot_approve_their_own_request(self):
+        from vs_workflow.models import WorkflowApproverGroupMember, WorkflowStageApprover
+
+        WorkflowApproverGroupMember.objects.create(
+            group=self.leave_group, kind="USER", user=self.eze.user,
+        )
+        response = self.post(self.eze.user, "staff-leave", self.body(), pk=self.eze.pk)
+        self.assertEqual(response.status_code, 201, response.data)
+        row = LeaveRequest.all_objects.get(staff=self.eze)
+        approvers = set(WorkflowStageApprover.objects.filter(
+            stage_instance__instance__document_type="schools.leave_request",
+            stage_instance__instance__document_object_id=str(row.pk),
+        ).values_list("user_id", flat=True))
+        self.assertEqual(approvers, {self.lekki_head.pk})
+
+    def test_a_parked_request_reaches_the_filer_when_they_join_the_group(self):
+        from vs_workflow.models import WorkflowApproverGroupMember
+        from vs_workflow.services.my_queue import pending_approval_snapshots
+
+        self.leave_group.members.all().delete()
+        response = self.post(self.admin, "staff-leave", self.body(), pk=self.eze.pk)
+        self.assertEqual(response.status_code, 201, response.data)
+        WorkflowApproverGroupMember.objects.create(
+            group=self.leave_group, kind="USER", user=self.admin,
+        )
+        snapshots = pending_approval_snapshots(self.admin, self.tenant)
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0].user_id, self.admin.pk)
+
+    def test_leave_read_names_the_pending_approver_without_exposing_other_tenants(self):
+        self.post(self.admin, "staff-leave", self.body(), pk=self.eze.pk)
+        response = self.get(self.admin, "staff-leave", pk=self.eze.pk)
+        self.assertEqual(response.status_code, 200, response.data)
+        approval = response.data["data"]["leave"][0]["approval"]
+        self.assertEqual(approval["pending_with"], [self.lekki_head.full_name])
+        self.assertIsNotNone(approval["instance_id"])
+        stranger = self.get(self.solo_admin, "staff-leave", pk=self.eze.pk)
+        self.assertIn(stranger.status_code, (403, 404))
 
     def test_leave_reason_and_day_count_are_in_details_not_the_summary(self):
         response = self.post(
@@ -261,11 +339,8 @@ class DecisionTests(LeaveFixture):
 
         row = self._file()
         actions.record_action(self._instance(row).id, self.lekki_head, "APPROVED", "")
-        self.assertTrue(
-            AuditEvent.objects.filter(
-                action_type=AuditActionType.STAFF_LEAVE_DECIDED,
-            ).exists(),
-        )
+        event = AuditEvent.objects.get(action_type=AuditActionType.STAFF_LEAVE_DECIDED)
+        self.assertEqual(event.actor_user_id, self.lekki_head.pk)
 
     def test_a_decided_request_refuses_an_edit(self):
         from vs_workflow.services import actions
@@ -283,11 +358,18 @@ class DecisionTests(LeaveFixture):
     def test_a_pending_request_accepts_a_correction(self):
         row = self._file()
         response = self.patch(
-            self.admin, "staff-leave-detail", {"days": 8}, pk=row.pk,
+            self.admin, "staff-leave-detail", {"days": 8, "note": "Family ceremony."}, pk=row.pk,
         )
         self.assertEqual(response.status_code, 200, response.data)
         row.refresh_from_db()
         self.assertEqual(row.days, 8)
+        instance = self._instance(row)
+        self.assertIn({"label": "Days", "value": "8"}, instance.document_details["sections"][0]["items"])
+        self.assertIn({"label": "Reason", "value": "Family ceremony."}, instance.document_details["sections"][0]["items"])
+        read = self.get(self.admin, "staff-leave", pk=self.eze.pk)
+        change = read.data["data"]["leave"][0]
+        self.assertEqual(change["last_changed_by"]["id"], self.admin.pk)
+        self.assertIsNotNone(change["last_changed_at"])
 
     def test_cancelling_never_deletes(self):
         """Leave taken is part of the employment history."""
@@ -296,6 +378,9 @@ class DecisionTests(LeaveFixture):
         row.refresh_from_db()
         self.assertEqual(row.status, LeaveStatus.CANCELLED)
         self.assertTrue(LeaveRequest.all_objects.filter(pk=row.pk).exists())
+        read = self.get(self.admin, "staff-leave", pk=self.eze.pk)
+        change = read.data["data"]["leave"][0]
+        self.assertEqual(change["last_changed_by"]["id"], self.admin.pk)
 
     def test_an_approval_arriving_after_a_cancellation_does_not_reinstate_it(self):
         """The person withdrew it, and an approval later does not put them back on leave."""
