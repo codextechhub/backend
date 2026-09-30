@@ -132,7 +132,7 @@ MUST SAY:
 - Needs Attention: transfers between branches and paying petty cash back to the
   bank have no document yet; FinPro lacks the new screens and journal actions.
 
-### D86. Receipts settle only what they may, credit applies itself, fee runs bill once, and leavers stop being billed (hash pending, 2026-09-30)
+### D86. Receipts settle only what they may, credit applies itself, fee runs bill once, and leavers stop being billed (58c30eb0, 2026-09-30)
 MODULES: M17 billing and invoicing, M18 payments and collections, M20 adjustments
 and concessions, M19 finance and accounting, M11 student management (the
 withdrawal hook), M25 dashboards and analytics, M04 roles and permissions, MRD.
