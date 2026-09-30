@@ -20,7 +20,8 @@ from rest_framework.views import APIView
 
 from core.mixins import RetrieveModelMixin
 from core.response import success_response
-from vs_config.clock import branch_day_q, tenant_today
+from vs_config.clock import branch_day_q, branch_zone, tenant_today
+from vs_config.display import format_date, format_month
 from vs_rbac.permissions import (
     HasAnyModuleAccess,
     HasRBACPermission,
@@ -86,6 +87,15 @@ def visible_entities(request):
     if tenant is None:
         return LedgerEntity.objects.none()
     return LedgerEntity.objects.filter(tenant=tenant)
+
+
+def _day_at(instant, document):
+    """The calendar day *instant* falls on at *document*'s branch (else its tenant).
+
+    For a row that only has a creation time: the server stores UTC, so the
+    UTC date is the day before for the first hour after midnight in Lagos.
+    """
+    return instant.astimezone(branch_zone(document.entity.tenant, document.branch_id)).date()
 
 
 # Handle the resolve entity workflow.
@@ -1221,7 +1231,7 @@ class InvoiceSummaryView(APIView):
         monthly, cur = [], start
         for _ in range(12):
             key = datetime.date(cur.year, cur.month, 1)
-            monthly.append({"label": cur.strftime("%b %y"), "invoiced": inv_m.get(key, 0), "collected": col_m.get(key, 0)})
+            monthly.append({"label": format_month(cur, entity.tenant), "invoiced": inv_m.get(key, 0), "collected": col_m.get(key, 0)})
             cur = datetime.date(cur.year + (cur.month // 12), (cur.month % 12) + 1, 1)
 
         return success_response(
@@ -1347,7 +1357,7 @@ class InvoiceDetailView(APIView):
             j = writeoff_journals.get(int(log.metadata.get("journal_id") or 0))
             settlements.append({
                 "type": "WRITE_OFF",
-                "date": (j.date.isoformat() if j else log.created_at.date().isoformat()),
+                "date": (j.date.isoformat() if j else _day_at(log.created_at, inv).isoformat()),
                 "reference": inv.document_number,
                 "method": None,
                 "amount": _money(int(log.metadata.get("amount") or 0)),
@@ -1405,7 +1415,7 @@ class InvoiceDetailView(APIView):
 
         reminders = [
             {
-                "date": (d.notice_date or d.created_at.date()).isoformat(),
+                "date": (d.notice_date or _day_at(d.created_at, inv)).isoformat(),
                 "level": d.level,
                 "channel": d.channel or "",
                 "status": d.notice_status,
@@ -1433,7 +1443,7 @@ class InvoiceDetailView(APIView):
             j = writeoff_journals.get(int(log.metadata.get("journal_id") or 0))
             amount = int(log.metadata.get("amount") or 0)
             activity.append({
-                "date": (j.date.isoformat() if j else log.created_at.date().isoformat()),
+                "date": (j.date.isoformat() if j else _day_at(log.created_at, inv).isoformat()),
                 "label": f"Write-off ({format_naira(amount)})",
             })
         for r in reminders:
@@ -2258,7 +2268,7 @@ class BalanceSheetView(APIView):
                 rows.append([s.label, g.label, format_naira(g.amount)])
         export = _maybe_export(request, ReportTable(
             title="Balance Sheet",
-            subtitle=f"{entity.code} · as at {bs.as_of}",
+            subtitle=f"{entity.code} · as at {format_date(bs.as_of, entity.tenant)}",
             columns=["Section", "Line", "Amount"],
             rows=rows,
             summary_rows=[
@@ -2535,7 +2545,7 @@ class StatutoryPackView(APIView):
         rows.append(["", "  Net income", format_naira(pack.net_income)])
         export = _maybe_export(request, ReportTable(
             title="Statutory Pack (IFRS for SMEs)",
-            subtitle=f"{entity.code} · as at {pack.as_of}",
+            subtitle=f"{entity.code} · as at {format_date(pack.as_of, entity.tenant)}",
             columns=["Section", "Line", "Amount"],
             rows=rows,
             summary_rows=[
@@ -2748,7 +2758,7 @@ class ARAgingView(APIView):
         summary += [format_naira(report.total_net)]
         export = _maybe_export(request, ReportTable(
             title="Accounts Receivable Aging",
-            subtitle=f"{entity.code} · as at {report.as_of}",
+            subtitle=f"{entity.code} · as at {format_date(report.as_of, entity.tenant)}",
             columns=columns,
             rows=rows,
             summary_rows=[summary],

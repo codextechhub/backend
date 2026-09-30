@@ -17,6 +17,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from vs_config.clock import branch_today, tenant_today
+from vs_config.display import format_date
 
 from .constants import (
     DocumentStatus,
@@ -822,12 +823,14 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
     # to reverse after a period closes.
     reversal_date = date or entry.date  # Prefer explicit reversal date, otherwise original date.
     from .chronology import ensure_on_or_after
+    tenant = entry.entity.tenant
+    remedy = f"Date the reversal {format_date(entry.date, tenant)} or later."
     ensure_on_or_after(
         subject=f"Reversal of journal {entry.document_number or entry.pk}",
         subject_date=reversal_date,
         source=f"journal {entry.document_number or entry.pk}",
         source_date=entry.date,
-        remedy=f"Date the reversal {entry.date} or later.",
+        remedy=remedy, tenant=tenant,
     )
     period = resolve_period(entry.entity, reversal_date)  # Resolve period for selected reversal date.
     if entry.period is not None and entry.period.is_closing and reversal_date == entry.date:
@@ -844,7 +847,7 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
             subject_date=reversal_date,
             source=f"journal {entry.document_number or entry.pk}",
             source_date=entry.date,
-            remedy=f"Date the reversal {entry.date} or later.",
+            remedy=remedy, tenant=tenant,
         )
         period = resolve_period(entry.entity, reversal_date)  # Resolve today's period.
 

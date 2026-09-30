@@ -19,6 +19,8 @@ from collections import defaultdict
 
 from django.db import transaction
 
+from vs_config.display import format_date
+
 from .accounts import resolve_account
 from .audit import record, record_rejection
 from .constants import (
@@ -534,7 +536,8 @@ def _pay_payroll_atomic(run, *, bank_account=None, pay_date=None, actor_user=Non
         subject_date=pay_date,
         source=f"payroll run {run.document_number or run.pk}",
         source_date=run.pay_date,
-        remedy=f"Date the payroll payment {run.pay_date} or later.",
+        remedy=f"Date the payroll payment {format_date(run.pay_date, run.entity.tenant)} or later.",
+        tenant=run.entity.tenant,
     )
 
     net = run.net_payable_account or resolve_account(  # Resolve net wages liability account.

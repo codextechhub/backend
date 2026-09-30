@@ -35,6 +35,7 @@ from django.db.models import F, Sum
 from django.db.models.functions import TruncMonth
 
 from vs_config.clock import tenant_today
+from vs_config.display import format_month
 from vs_rbac.scoping import UNNARROWED, BranchScope
 
 from .constants import (
@@ -412,7 +413,7 @@ def _trend(entity, anchor, *, scope=UNNARROWED, issued_ok=True, collected_ok=Tru
     cur = start  # Current month cursor.
     for _ in range(TREND_MONTHS):  # Build fixed-length trend arrays.
         key = datetime.date(cur.year, cur.month, 1)
-        labels.append(cur.strftime("%b %y"))  # Human month label.
+        labels.append(format_month(cur, entity.tenant))  # "Sep 2026", as the screens name a month.
         iss.append(issued.get(key, 0))
         col.append(collected.get(key, 0))
         cur = datetime.date(cur.year + (cur.month // 12), (cur.month % 12) + 1, 1)

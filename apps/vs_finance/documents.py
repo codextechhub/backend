@@ -4,7 +4,11 @@ These turn a posted :class:`~vs_finance.models.Invoice` / :class:`~vs_finance.mo
 into a flat ``dict`` the standalone print templates (``vs_finance/invoice_document.html``,
 ``receipt_document.html``) render. Money is kept as integer kobo everywhere inside the
 backend and formatted to naira strings only here, at the display edge, via
-:func:`vs_finance.money.format_naira` / :func:`vs_finance.money.to_naira`.
+:func:`vs_finance.money.format_naira` / :func:`vs_finance.money.to_naira`. Dates
+are written here too, in the entity's tenant's date format
+(:mod:`vs_config.display`), so a printed invoice reads its dates the way the
+school's screens do. Each document is built when it is asked for, so it follows
+the setting in force at that moment.
 
 Issuer identity comes from the entity's originating school (platform books have none,
 so those fields fall back to blanks); the 'pay to' bank is the entity's primary
@@ -15,6 +19,7 @@ from __future__ import annotations
 from django.template.loader import render_to_string
 
 from core.media import signed_url
+from vs_config.display import format_date
 
 from .constants import TaxTreatment
 from .money import format_naira, naira_in_words
@@ -147,6 +152,21 @@ def _issuer_block(entity, *, branch=None) -> dict:
     }
 
 
+def _printed_date(day, entity) -> str:
+    """*day* in the entity's tenant's date format, or "-" when there is none."""
+    return format_date(day, entity.tenant) or "-"
+
+
+def statement_period(statement, tenant) -> str:
+    """A statement's period as printed: "1 Sep 2026 to 30 Sep 2026".
+
+    A statement with no start runs from the account's first entry, which it
+    calls "inception".
+    """
+    start = format_date(statement.start_date, tenant) or "inception"
+    return f"{start} to {format_date(statement.end_date, tenant)}"
+
+
 # Build customer identity block for invoice/receipt templates.
 def _customer_block(customer) -> dict:
     return {  # Return a template-friendly customer structure.
@@ -230,8 +250,8 @@ def invoice_document_context(invoice) -> dict:
         "customer": _customer_block(invoice.customer),  # Bill-to block.
         "invoice": {  # Invoice-specific template values.
             "document_number": invoice.document_number,  # Invoice number.
-            "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else "-",  # Display invoice date.
-            "due_date": invoice.due_date.isoformat() if invoice.due_date else "-",  # Display due date.
+            "invoice_date": _printed_date(invoice.invoice_date, entity),  # Display invoice date.
+            "due_date": _printed_date(invoice.due_date, entity),  # Display due date.
             "reference": invoice.reference or "",  # External/reference text.
             "narration": invoice.narration or "",  # Narrative text.
             "payment_status": invoice.payment_status,  # Raw payment status.
@@ -302,7 +322,7 @@ def receipt_document_context(payment) -> dict:
         "customer": _customer_block(payment.customer),  # Receipt customer block.
         "receipt": {  # Receipt-specific template values.
             "document_number": payment.document_number,  # Receipt number.
-            "payment_date": payment.payment_date.isoformat() if payment.payment_date else "-",  # Display payment date.
+            "payment_date": _printed_date(payment.payment_date, entity),  # Display payment date.
             "method": method_label,  # Human-readable payment method.
             "provider_reference": _provider_reference(payment),  # Gateway provider reference when present.
             "amount": format_naira(payment.amount),  # Display receipt amount.

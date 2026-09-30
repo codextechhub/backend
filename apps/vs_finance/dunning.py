@@ -20,6 +20,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from vs_config.clock import branch_today, tenant_today
+from vs_config.display import format_date
 
 from .audit import record
 from .constants import (
@@ -200,7 +201,7 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
         entity=entity, action=FinanceAuditAction.DUNNING_RUN_GENERATED,  # Audit action for dunning generation.
         actor_user=actor_user, target=policy,  # Actor and policy context.
         message=f"Generated {len(created)} dunning notice(s) under '{policy.name}' "  # Human-readable summary.
-                f"as at {as_of}.",  # Include run date.
+                f"as at {format_date(as_of, entity.tenant)}.",  # Include run date.
         policy_id=policy.pk, as_of=str(as_of), notices_created=len(created),  # Structured run metadata.
     )
     return created  # Return newly created notices.
@@ -333,7 +334,7 @@ def _dispatch_notice(notice, *, actor_user=None):
             "customer_name": customer.name,  # Customer display name.
             "invoice_number": invoice.document_number,  # Posted invoice number.
             "amount_outstanding": f"{to_naira(notice.amount_due):,.2f}",  # Human-readable outstanding amount.
-            "due_date": invoice.due_date.isoformat() if invoice.due_date else "-",  # ISO due date or dash.
+            "due_date": format_date(invoice.due_date, notice.entity.tenant) or "-",  # The tenant's date format.
             "days_overdue": notice.days_overdue,  # Overdue age for template copy.
             "school_name": school.name if school else "",  # Optional school display name.
             # Escalation wording is owned by the dunning policy stage, not the event.  # Keep wording configurable.

@@ -60,6 +60,8 @@ from dataclasses import dataclass, field
 from django.db import transaction
 from django.db.models import Sum
 
+from vs_config.display import format_date, format_date_range
+
 from .audit import record, record_rejection
 from .constants import (
     FinanceAuditAction,
@@ -600,10 +602,12 @@ def _prepare_filing_atomic(obligation, *, period_start, period_end, due_date,
             .first()
         )
         if clash is not None:
+            tenant = entity.tenant
             raise TaxFilingError(
-                f"Filing period {period_start}–{period_end} overlaps existing "
-                f"{obligation.code} filing {clash.document_number or clash.pk} "
-                f"({clash.period_start}–{clash.period_end}).",
+                f"Filing period {format_date_range(period_start, period_end, tenant)} "
+                f"overlaps existing {obligation.code} filing "
+                f"{clash.document_number or clash.pk} "
+                f"({format_date_range(clash.period_start, clash.period_end, tenant)}).",
             )
         filing = TaxFiling(
             entity=entity, obligation=obligation,
@@ -626,7 +630,8 @@ def _prepare_filing_atomic(obligation, *, period_start, period_end, due_date,
         entity=entity, action=FinanceAuditAction.TAX_FILING_PREPARED,
         actor_user=actor_user, target=filing,
         message=(
-            f"Prepared {obligation.code} filing for {period_start}–{period_end}: "
+            f"Prepared {obligation.code} filing for "
+            f"{format_date_range(period_start, period_end, entity.tenant)}: "
             f"{filing.amount_due} kobo due."
         ),
         total=filing.amount_due, tax=filing.recoverable_amount,
@@ -988,7 +993,8 @@ def _pay_filing_atomic(filing, *, bank_account, pay_date, amount, branch, actor_
         subject_date=pay_date,
         source=f"tax filing {label}",
         source_date=filing.filed_at,
-        remedy=f"Date the remittance {filing.filed_at} or later.",
+        remedy=f"Date the remittance {format_date(filing.filed_at, filing.entity.tenant)} or later.",
+        tenant=filing.entity.tenant,
     )
 
     rule = branch_rule(filing.entity)

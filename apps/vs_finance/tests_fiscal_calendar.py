@@ -135,7 +135,7 @@ class FiscalYearOpeningTests(TestCase):
 
         self.assertEqual(response.status_code, 400, response.content)
         self.assertIn("uncovered", str(response.content))
-        self.assertIn("2027-01-01", str(response.content))
+        self.assertIn("1 Jan 2027", str(response.content))
         self.assertFalse(FiscalYear.objects.filter(entity=self.entity, year=2027).exists())
         self.assertFalse(FiscalPeriod.objects.filter(
             entity=self.entity, start_date__gte=datetime.date(2027, 1, 1),
@@ -255,9 +255,9 @@ class FiscalCalendarRolloverTests(TestCase):
         self.assertEqual(send.call_args.args[0], CALENDAR_ALERT_EVENT)
         self.assertEqual(send.call_args.kwargs["recipients"], [bursar])
         context = send.call_args.kwargs["context"]
-        self.assertEqual(context["first_uncovered_date"], "2027-09-01")
+        self.assertEqual(context["first_uncovered_date"], "1 Sep 2027")
         self.assertEqual(context["days_remaining"], 47)
-        self.assertIn("2027-08-31", context["situation"])
+        self.assertIn("31 Aug 2027", context["situation"])
         self.assertEqual(resolve.call_args.args[2], "finance.period.create")
         warned = FinanceAuditLog.objects.get(
             entity=entity, action=FinanceAuditAction.FISCAL_CALENDAR_WARNED,
@@ -302,7 +302,7 @@ class FiscalCalendarRolloverTests(TestCase):
         self.assertEqual(outcome["opened"], [])
         self.assertTrue(outcome["warned"])
         context = send.call_args.kwargs["context"]
-        self.assertIn("2027-01-01 to 2027-08-31", context["situation"])
+        self.assertIn("1 Jan 2027 to 31 Aug 2027", context["situation"])
 
     def test_a_failed_automatic_opening_is_warned_about(self):
         entity = self._september_books("ROLLFAIL")
@@ -362,8 +362,8 @@ class FiscalCalendarRolloverTests(TestCase):
         delivered = Notification.objects.filter(event_type__key=CALENDAR_ALERT_EVENT)
         self.assertEqual({n.recipient_id for n in delivered}, {bursar.pk})
         in_app = delivered.get(channel="in_app")
-        self.assertIn("2027-09-01", in_app.subject)
-        self.assertIn("2027-08-31", in_app.body)
+        self.assertIn("1 Sep 2027", in_app.subject)
+        self.assertIn("31 Aug 2027", in_app.body)
 
 
 class FinanceCalendarSettingsAPITests(TestCase):

@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import logging
 
+from vs_config.display import format_date
+
 from .constants import CreditNoteKind
 from .money import to_naira
 
@@ -122,7 +124,7 @@ def notify_credit_note_issued(note, *, actor_user=None):
         context = {
             "customer_name": customer.name,
             "note_number": note.document_number,
-            "note_date": note.note_date.isoformat() if note.note_date else "-",
+            "note_date": format_date(note.note_date, note.entity.tenant) or "-",
             "note_amount": _naira(note.total),
             "reason": note.reason or "Account adjustment",
             "related_invoice": related_invoice,

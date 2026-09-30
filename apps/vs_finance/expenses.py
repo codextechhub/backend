@@ -17,6 +17,8 @@ from collections import defaultdict
 
 from django.db import transaction
 
+from vs_config.display import format_date
+
 from .accounts import resolve_account
 from .audit import record, record_rejection
 from .constants import (
@@ -210,7 +212,8 @@ def _settle_expense_claim_atomic(claim, *, bank_account, pay_date, amount=None, 
         subject_date=pay_date,
         source=f"expense claim {claim.document_number or claim.pk}",
         source_date=claim.claim_date,
-        remedy=f"Date the reimbursement {claim.claim_date} or later.",
+        remedy=f"Date the reimbursement {format_date(claim.claim_date, claim.entity.tenant)} or later.",
+        tenant=claim.entity.tenant,
     )
 
     outstanding = claim.balance_due  # Amount still owed to the claimant.

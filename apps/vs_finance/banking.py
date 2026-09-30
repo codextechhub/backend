@@ -17,6 +17,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from vs_config.clock import branch_today
+from vs_config.display import format_date
 
 from .accounts import resolve_account
 from .account_mappings import resolve_mapped_account
@@ -787,7 +788,7 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
 
     text = narration or statement_line.description or "Bank adjustment"  # Base narration.
     if deferred:  # Keep the bank's value date visible on a journal booked in another period.
-        text = f"{text} (bank value date {statement_line.txn_date})"
+        text = f"{text} (bank value date {format_date(statement_line.txn_date, entity.tenant)})"
 
     entry = JournalEntry.objects.create(
         entity=entity, branch=bank_account.branch,
@@ -833,7 +834,8 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
         message=(
             f"Booked bank adjustment {magnitude} kobo on {bank_account.name}"
             + (
-                f" on {book_date} (bank value date {statement_line.txn_date} "
+                f" on {format_date(book_date, entity.tenant)} (bank value date "
+                f"{format_date(statement_line.txn_date, entity.tenant)} "
                 f"falls outside an open period)." if deferred else "."
             )
         ),

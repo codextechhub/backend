@@ -382,18 +382,21 @@ def receipt_pdf(payment, *, note: str = "") -> bytes:
 
 def statement_pdf(customer, *, start_date=None, end_date=None, note: str = "") -> bytes:
     """Render a statement of account for ``customer`` over the given period."""
-    from .documents import _customer_block, _issuer_block
+    from vs_config.display import format_date
+
+    from .documents import _customer_block, _issuer_block, statement_period
     from .money import format_naira
     from .reports import customer_statement
 
     statement = customer_statement(customer, start_date=start_date, end_date=end_date)
     issuer = _issuer_block(customer.entity)
+    tenant = customer.entity.tenant
     styles = _styles()
 
     widths = [CONTENT_WIDTH * 0.13, CONTENT_WIDTH * 0.17, CONTENT_WIDTH * 0.26,
               CONTENT_WIDTH * 0.14, CONTENT_WIDTH * 0.14, CONTENT_WIDTH * 0.16]
     rows = [[
-        str(entry.date),
+        format_date(entry.date, tenant),
         entry.document_number,
         entry.description or entry.doc_type,
         _bare(format_naira(entry.debit)) if entry.debit else "",
@@ -401,7 +404,7 @@ def statement_pdf(customer, *, start_date=None, end_date=None, note: str = "") -
         _bare(format_naira(entry.balance)),
     ] for entry in statement.entries]
 
-    period = f"{statement.start_date or 'inception'} to {statement.end_date}"
+    period = statement_period(statement, tenant)
     story = [
         _letterhead(issuer, "Statement of account", "", styles),
         Spacer(1, 6 * mm),

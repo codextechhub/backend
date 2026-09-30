@@ -2449,7 +2449,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(line.status, BankLineStatus.MATCHED)
         # The bank's own date survives on the journal, so a charge booked into a
         # later period is not mistaken for one the bank raised then.
-        self.assertIn("bank value date 2026-01-20", entry.narration)
+        self.assertIn("bank value date 20 Jan 2026", entry.narration)
 
     # Verify an open line still books on its own date behavior.
     def test_adjustment_in_an_open_month_still_books_on_the_line_date(self):
@@ -2478,7 +2478,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
 
         self.assertEqual(entry.date, datetime.date(2026, 3, 5))
         self.assertEqual(entry.period_id, periods[2].id)
-        self.assertIn("bank value date 2026-01-20", entry.narration)
+        self.assertIn("bank value date 20 Jan 2026", entry.narration)
 
     # Verify an explicit closed posting date is still refused behavior.
     def test_explicit_posting_date_in_a_closed_period_is_refused(self):
@@ -2513,7 +2513,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
 
         self.assertEqual(entry.date, datetime.date(2026, 5, 31))
         self.assertEqual(entry.period_id, periods[4].id)
-        self.assertIn("bank value date 2026-06-15", entry.narration)
+        self.assertIn("bank value date 15 Jun 2026", entry.narration)
 
     # Verify adjustment fails closed when nothing is open behavior.
     def test_adjustment_fails_closed_when_no_period_is_open(self):
@@ -9808,7 +9808,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
 
         # The message must name the date, not just the shortfall - that is the
         # difference between a fixable error and a baffling one.
-        self.assertIn("2026-02-01", str(ctx.exception))
+        self.assertIn("1 Feb 2026", str(ctx.exception))
         refund.refresh_from_db()
         self.assertEqual(refund.status, DocumentStatus.DRAFT)
         self.assertEqual(customer_credit_balance(customer), 45000)

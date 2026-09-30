@@ -89,13 +89,17 @@ def describe(document, fallback="the source document") -> str:
 
 
 # The single causal-ordering guard every posting service calls.
-def ensure_on_or_after(*, subject, subject_date, source, source_date, remedy="") -> None:
+def ensure_on_or_after(*, subject, subject_date, source, source_date, remedy="",
+                       tenant=None) -> None:
     """Raise :class:`BackdatedPostingError` if ``subject_date`` precedes ``source_date``.
 
     ``subject`` is the dependent movement ("Refund RF-126", "Write-off WO-12") and
     ``source`` is what it draws on ("the credit on RC-128", "invoice INV-9"); both
     are plain strings so the message reads as a sentence. ``remedy`` is appended
-    verbatim - give the user the concrete way out ("Date it 9 Sep 2026 or later.").
+    verbatim - give the user the concrete way out ("Date it 9 Sep 2026 or later."),
+    with any date in it written by :func:`vs_config.display.format_date`.
+    ``tenant`` is the books' tenant (``entity.tenant``), whose date format the
+    sentence uses; without it the request's tenant is used.
 
     A missing date on either side is not an error here: the period guard already
     refuses a dateless posting, and this guard must not turn an unrelated
@@ -106,7 +110,7 @@ def ensure_on_or_after(*, subject, subject_date, source, source_date, remedy="")
     if subject_date < source_date:  # The dependent movement predates the value it consumes.
         raise BackdatedPostingError(
             subject=subject, subject_date=subject_date,
-            source=source, source_date=source_date, remedy=remedy,
+            source=source, source_date=source_date, remedy=remedy, tenant=tenant,
         )
 
 

@@ -32,6 +32,7 @@ from urllib.parse import urlencode
 
 from django.db import transaction
 
+from vs_config.display import format_date
 from vs_workflow.conditions.fields import ConditionField
 from vs_workflow.constants import ConditionFieldType, DocumentAudience
 from vs_workflow.constants import WorkflowStageAction as StageActionEnum
@@ -381,7 +382,8 @@ class RefundHandler(_FinancePostOnApprove):
             raise PostingError(
                 f"Refund of {format_naira(document.amount)} exceeds "
                 f"{document.customer.code}'s credit available on "
-                f"{document.refund_date} ({format_naira(available)}).",
+                f"{format_date(document.refund_date, document.entity.tenant)} "
+                f"({format_naira(available)}).",
             )
 
         deposit = document.deposit_account or (  # Resolve source account for cash out.
@@ -464,7 +466,8 @@ class WriteOffHandler(_FinancePostOnApprove):
             subject=f"Write-off {document.document_number or document.pk}", subject_date=when,
             source=f"invoice {invoice.document_number or invoice.pk}",
             source_date=invoice.invoice_date,
-            remedy=f"Date the write-off {invoice.invoice_date} or later.",
+            remedy=f"Date the write-off {format_date(invoice.invoice_date, invoice.entity.tenant)} or later.",
+            tenant=invoice.entity.tenant,
         )
 
         balance = invoice.balance_due  # Current outstanding invoice balance.
@@ -575,7 +578,8 @@ class ConcessionHandler(_FinancePostOnApprove):
             subject_date=document.concession_date,
             source=f"invoice {invoice.document_number or invoice.pk}",
             source_date=invoice.invoice_date,
-            remedy=f"Date the concession {invoice.invoice_date} or later.",
+            remedy=f"Date the concession {format_date(invoice.invoice_date, invoice.entity.tenant)} or later.",
+            tenant=invoice.entity.tenant,
         )
 
         balance = invoice.balance_due  # Outstanding balance available to concede.

@@ -20,7 +20,8 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 
 from core.pagination import XVSPagination
 from core.response import error_response, success_response
-from vs_config.clock import branch_day_q, branch_today, tenant_today
+from vs_config.clock import branch_day_q, branch_today, branch_zone, tenant_today
+from vs_config.display import format_date
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 # ``include_shared=True`` is spelled out at every call site rather than left to the
 # default: a null branch means "shared across the school", so a school-wide fee
@@ -1895,7 +1896,7 @@ def _validated_refund_amount(customer, raw_amount, available, *, branch, as_of=N
         raise ValidationError({"amount": "A refund amount must be greater than zero."})
     if amount > available:
         require_refund_branch_credit(customer, amount, branch, as_of=as_of)
-        basis = f" as at {as_of}" if as_of else ""
+        basis = f" as at {format_date(as_of, customer.entity.tenant)}" if as_of else ""
         detail = ""
         if as_of is not None:  # Distinguish "no credit" from "not yet".
             today_available = customer_refund_available_balance(customer, branch=branch)
@@ -2539,9 +2540,10 @@ class ARAdjustmentBatchView(_FinanceBase):
                             index: {
                                 "invoice": (
                                     f"{invoice.document_number} is dated "
-                                    f"{invoice.invoice_date}; it cannot be written off "
-                                    f"on {common_date}. Date the batch "
-                                    f"{invoice.invoice_date} or later."
+                                    f"{format_date(invoice.invoice_date, entity.tenant)}; "
+                                    f"it cannot be written off on "
+                                    f"{format_date(common_date, entity.tenant)}. Date the batch "
+                                    f"{format_date(invoice.invoice_date, entity.tenant)} or later."
                                 ),
                             },
                         },
@@ -2667,7 +2669,9 @@ def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None):
         inv = invs.get(int(l.target_id)) if str(l.target_id).isdigit() else None
         rows.append({
             "key": f"W{l.id}", "kind": "WRITEOFF", "reference": l.document_number,
-            "date": l.created_at.date().isoformat(),
+            "date": l.created_at.astimezone(
+                branch_zone(entity.tenant, inv.branch_id if inv else None),
+            ).date().isoformat(),
             "customer_code": l.metadata.get("customer_code") or (inv.customer.code if inv else ""),
             "customer_name": l.metadata.get("customer_name") or (inv.customer.name if inv else "-"),
             "reason": l.metadata.get("narration") or "Bad-debt write-off",
@@ -2684,7 +2688,9 @@ def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None):
               .exclude(status=DocumentStatus.POSTED)
               .select_related("invoice", "invoice__customer", "entity__tenant", "branch")
               .order_by("-id")[:limit]):
-        wo_date = w.write_off_date or w.created_at.date()
+        wo_date = w.write_off_date or w.created_at.astimezone(
+            branch_zone(w.entity.tenant, w.branch_id),
+        ).date()
         rows.append({
             "key": f"WR{w.id}", "kind": "WRITEOFF", "reference": w.document_number,
             "date": wo_date.isoformat(),
@@ -3366,6 +3372,7 @@ class CustomerStatementView(_FinanceBase):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
+        from .documents import statement_period
         from .money import format_naira
         from .reports import customer_statement
         from .views import _maybe_export, _money as _money_pair
@@ -3383,7 +3390,7 @@ class CustomerStatementView(_FinanceBase):
         columns = ["Date", "Type", "Document", "Description", "Debit", "Credit", "Balance"]
         rows = [
             [
-                str(e.date), e.doc_type, e.document_number, e.description,
+                format_date(e.date, entity.tenant), e.doc_type, e.document_number, e.description,
                 format_naira(e.debit) if e.debit else "",
                 format_naira(e.credit) if e.credit else "",
                 format_naira(e.balance),
@@ -3393,7 +3400,7 @@ class CustomerStatementView(_FinanceBase):
         summary = ["", "", "", "TOTAL",
                    format_naira(stmt.total_debits), format_naira(stmt.total_credits),
                    format_naira(stmt.closing_balance)]
-        period = f"{stmt.start_date or 'inception'} → {stmt.end_date}"
+        period = statement_period(stmt, entity.tenant)
         export = _maybe_export(request, ReportTable(
             title=f"Statement of Account - {stmt.customer_name}",
             subtitle=f"{entity.code} · {stmt.customer_code} · {period} · "
