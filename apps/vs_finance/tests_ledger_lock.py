@@ -11,6 +11,12 @@ capital, a loan, interest) is a bank transaction: it names the bank account, car
 that account's branch and posts through the banking service. Money between two of
 Ikeja's own accounts (Zenith to GTBank) is a transfer; money between Ikeja's and
 Lekki's accounts is an inter-branch transfer, which is not built, and is refused.
+
+Both are transactions, so they follow the branch rules every transaction does. A
+branch-bound bursar reads and moves only her own branches' money, and an account
+not yet given a branch, at a school with several, moves nothing at all: nobody
+can say whose money it holds. At a school with one branch such an account is that
+branch's.
 """
 from __future__ import annotations
 
@@ -232,6 +238,83 @@ class BankTransactionTests(_LockFixture):
         self.assertEqual(BankTransaction.objects.get().status, DocumentStatus.REVERSED)
         self.assertEqual(_account_gl_net(self.ikeja_ledger), 0)
 
+    def test_lekki_neither_reads_nor_voids_ikejas_transaction(self):
+        created = self.bursar(self.ikeja).post(self.url(), self.body(), format="json")
+        pk = created.data["data"]["id"]
+        lekki = self.bursar(self.lekki)
+
+        listed = lekki.get(self.url()).data["data"]
+        detail = lekki.get(self.url(f"{pk}/"))
+        voided = lekki.post(self.url(f"{pk}/void/"), {"date": "2026-01-20"}, format="json")
+
+        self.assertEqual(listed, [])
+        self.assertEqual((detail.status_code, voided.status_code), (404, 404))
+        self.assertEqual(BankTransaction.objects.get().status, DocumentStatus.POSTED)
+
+    def test_an_unbranched_account_moves_nothing_at_a_school_with_several_branches(self):
+        """Mr Eze covers the whole school; the UBA account has no branch, so it is refused."""
+        shared = self.bank("1156", "School UBA", None)
+
+        whole_school = self.bursar(None).post(
+            self.url(), self.body(bank_account=shared.pk), format="json")
+        ikeja = self.bursar(self.ikeja).post(
+            self.url(), self.body(bank_account=shared.pk), format="json")
+
+        self.assertEqual(whole_school.status_code, 400, whole_school.data)
+        self.assertIn("School UBA has not been given a branch", str(whole_school.data))
+        self.assertEqual(ikeja.status_code, 404, ikeja.data)
+        self.assertFalse(BankTransaction.objects.exists())
+
+    def test_a_transaction_not_yet_given_a_branch_is_read_only_by_the_whole_school(self):
+        entry = BankTransaction.objects.create(
+            entity=self.books, bank_account=self.ikeja_bank, direction="IN", amount=1_000,
+            counter_account=self.acc("3100"), transaction_date=JAN_15, narration="Before branches",
+        )
+
+        ikeja = self.bursar(self.ikeja).get(self.url(f"{entry.pk}/"))
+        whole_school = self.bursar(None).get(self.url(f"{entry.pk}/"))
+
+        self.assertEqual(ikeja.status_code, 404, ikeja.data)
+        self.assertEqual(whole_school.status_code, 200, whole_school.data)
+
+    def test_at_a_one_branch_school_an_unbranched_account_is_its_branchs(self):
+        ledger = Account.objects.create(
+            entity=self.solo_books, code="1151", name="Main GTBank",
+            account_type=Account.objects.get(entity=self.solo_books, code="1100").account_type,
+            is_postable=True,
+        )
+        bank = BankAccount.objects.create(
+            entity=self.solo_books, name="Main GTBank", branch=None, gl_account=ledger,
+        )
+        user = self.user_for(self.solo_tenant, f"solo-{next(_roles)}@solo.test")
+        self.grant(user, *self.KEYS, tenant=self.solo_tenant, role_key=f"solo-{next(_roles)}",
+                   branch=self.solo_main)
+
+        response = TenantAPIClient(user=user).post(
+            f"/v1/finance/bank-transactions/?entity={self.solo_books.code}",
+            self.body(bank_account=bank.pk), format="json")
+
+        self.assertEqual(response.status_code, 201, response.data)
+        txn = BankTransaction.objects.get()
+        self.assertEqual((txn.branch_id, txn.journal.branch_id), (self.solo_main.pk,) * 2)
+
+    def test_a_transaction_whose_account_moved_branch_does_not_post(self):
+        """Approved for Ikeja, then the account was given to Lekki: the money stays put."""
+        from .banking import post_bank_transaction
+        from .exceptions import PostingError
+
+        txn = BankTransaction.objects.create(
+            entity=self.books, branch=self.ikeja, bank_account=self.ikeja_bank, direction="IN",
+            amount=1_000, counter_account=self.acc("3100"), transaction_date=JAN_15,
+            narration="Owner capital",
+        )
+        BankAccount.objects.filter(pk=self.ikeja_bank.pk).update(branch=self.lekki)
+        txn.refresh_from_db()
+
+        with self.assertRaisesMessage(PostingError, "belongs to Ikeja Branch"):
+            post_bank_transaction(txn)
+        self.assertEqual(_account_gl_net(self.ikeja_ledger), 0)
+
 
 class BankTransferTests(_LockFixture):
     """Mrs Okafor moves N2m from Ikeja's Zenith account into Ikeja's GTBank account."""
@@ -296,15 +379,39 @@ class BankTransferTests(_LockFixture):
         self.assertIn("inter-branch transfer", str(response.data))
         self.assertFalse(BankTransfer.objects.exists())
 
-    def test_shared_accounts_need_whole_school_reach(self):
-        refused = self.bursar(self.ikeja).post(
+    def test_accounts_not_yet_given_a_branch_move_nothing(self):
+        """No school-wide transfer: Mrs Okafor cannot see them, Mr Eze is told to place them."""
+        ikeja = self.bursar(self.ikeja).post(
             self.url(), self.body(self.shared_uba, self.shared_fcmb), format="json")
         whole_school = self.bursar(None).post(
             self.url(), self.body(self.shared_uba, self.shared_fcmb), format="json")
 
-        self.assertEqual(refused.status_code, 403, refused.data)
-        self.assertEqual(whole_school.status_code, 201, whole_school.data)
-        self.assertIsNone(BankTransfer.objects.get().branch_id)
+        self.assertEqual(ikeja.status_code, 404, ikeja.data)
+        self.assertEqual(whole_school.status_code, 400, whole_school.data)
+        self.assertIn("School UBA has not been given a branch", str(whole_school.data))
+        self.assertFalse(BankTransfer.objects.exists())
+
+    def test_an_unbranched_account_is_not_one_of_ikejas_own(self):
+        response = self.bursar(None).post(
+            self.url(), self.body(self.shared_uba, self.ikeja_bank), format="json")
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("no branch yet", str(response.data))
+        self.assertFalse(BankTransfer.objects.exists())
+
+    def test_lekki_neither_reads_nor_voids_ikejas_transfer(self):
+        created = self.bursar(self.ikeja).post(
+            self.url(), self.body(self.ikeja_zenith, self.ikeja_bank), format="json")
+        pk = created.data["data"]["id"]
+        lekki = self.bursar(self.lekki)
+
+        listed = lekki.get(self.url()).data["data"]
+        detail = lekki.get(self.url(f"{pk}/"))
+        voided = lekki.post(self.url(f"{pk}/void/"), {"date": "2026-01-20"}, format="json")
+
+        self.assertEqual(listed, [])
+        self.assertEqual((detail.status_code, voided.status_code), (404, 404))
+        self.assertEqual(BankTransfer.objects.get().status, DocumentStatus.POSTED)
 
     def test_a_transfer_is_voided_until_a_statement_line_is_matched_to_it(self):
         client = self.bursar(self.ikeja)

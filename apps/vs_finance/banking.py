@@ -849,6 +849,63 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
 # Bank transactions: money in or out that is not a customer's or a supplier's  #
 # --------------------------------------------------------------------------- #
 
+def money_branch_id(entity, *accounts, field="bank_account"):
+    """The branch a bank transaction or transfer is raised for: its accounts' own.
+
+    Money moved in a bank account is that account's branch's money, so the
+    document takes the account's branch and never names one of its own. An
+    account not yet given a branch is, at a tenant with one branch, that branch's
+    (:func:`vs_rbac.scoping.same_transaction_branch`). At a tenant with several,
+    nobody can say whose money it holds, so it moves nothing until it is given a
+    branch: Mr Bello's school-wide UBA account at a school running Ikeja and
+    Lekki is refused with a 400 naming it, rather than raising a transaction that
+    no branch's bursar can see. The one ``None`` is books with no branch at all
+    (the platform's own).
+    """
+    from rest_framework.exceptions import ValidationError
+
+    from vs_rbac.scoping import only_branch_id
+    from vs_tenants.models import Branch
+
+    named = next((a.branch_id for a in accounts if a.branch_id is not None), None)
+    if named is not None:
+        return named
+    tenant = entity.tenant if entity.tenant_id else None
+    if tenant is None:
+        return None
+    only = only_branch_id(tenant)
+    if only is not None:
+        return only
+    if not Branch.all_objects.filter(tenant=tenant).exists():
+        return None
+    unplaced = next(a for a in accounts if a.branch_id is None)
+    raise ValidationError({field: (
+        f"{unplaced.name} has not been given a branch, so no branch can move money "
+        f"through it. Give it its branch first."
+    )})
+
+
+def _require_accounts_branch(document, accounts, noun) -> None:
+    """Refuse ``document`` unless every one of ``accounts`` is its own branch's.
+
+    Checked again when the document posts, after any approval, so an account
+    moved to another branch in between cannot carry the money with it.
+    """
+    from vs_rbac.scoping import same_transaction_branch
+
+    from .exceptions import PostingError
+
+    tenant_id = document.entity.tenant_id
+    for account in accounts:
+        if same_transaction_branch(tenant_id, document.branch_id, account.branch_id):
+            continue
+        whose = document.branch.name if document.branch_id else "no branch yet"
+        raise PostingError(
+            f"This {noun} belongs to {whose} and {account.name} does not. "
+            f"Move {whose}'s money only through its own accounts.",
+        )
+
+
 def validate_bank_transaction(txn) -> None:
     """Refuse a bank transaction that could never post, before it is saved or routed.
 
@@ -875,6 +932,7 @@ def validate_bank_transaction(txn) -> None:
         raise PostingError(f"Account {counter.code} is not an active, postable account.")
     if counter.pk == bank.gl_account_id:
         raise PostingError("The counter-account cannot be the bank account's own ledger.")
+    _require_accounts_branch(txn, (bank,), "bank transaction")
     owner = control_accounts(txn.entity).get(counter.pk)
     if owner is not None:
         kept_by, use_instead = owner
@@ -1033,8 +1091,13 @@ def validate_bank_transfer(transfer) -> None:
     amount. Both must belong to the same branch: money between branches is an
     inter-branch transfer, which records that one branch owes the other and is not
     built yet, so moving it here would leave each branch's books wrong with nothing
-    saying why. Two accounts shared by every branch are the same branch for this rule.
+    saying why. The accounts are compared by
+    :func:`vs_rbac.scoping.same_transaction_branch`, so at a tenant with one branch
+    an account not yet given a branch is that branch's, and the transfer itself
+    must be the accounts' branch's.
     """
+    from vs_rbac.scoping import same_transaction_branch
+
     from .exceptions import PostingError
 
     source, target = transfer.from_account, transfer.to_account
@@ -1047,9 +1110,10 @@ def validate_bank_transfer(transfer) -> None:
             raise PostingError(f"Bank account {account.name} is closed.")
     if int(transfer.amount or 0) <= 0:
         raise PostingError("A transfer must move a positive amount.")
-    if source.branch_id != target.branch_id:
+    if not same_transaction_branch(
+            transfer.entity.tenant_id, source.branch_id, target.branch_id):
         def where(account):
-            return account.branch.name if account.branch_id else "every branch"
+            return account.branch.name if account.branch_id else "no branch yet"
 
         raise PostingError(
             f"{source.name} belongs to {where(source)} and {target.name} to "
@@ -1057,6 +1121,7 @@ def validate_bank_transfer(transfer) -> None:
             f"which records that one branch owes the other and is not available yet. "
             f"Move money here only between accounts of the same branch.",
         )
+    _require_accounts_branch(transfer, (source, target), "transfer")
 
 
 def post_bank_transfer(transfer, *, actor_user=None):
