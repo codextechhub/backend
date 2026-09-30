@@ -231,7 +231,8 @@ class BranchUniquenessConstraintTests(TestCase):
         Branch.objects.create(tenant=self.school.tenant, name="Main", is_main=True)
         Branch.objects.create(tenant=self.rival.tenant, name="Main", is_main=True)
 
-        self.assertEqual(Branch.all_objects.filter(is_main=True).count(), 2)
+        mains = Branch.all_objects.filter(is_main=True, tenant__in=[self.school.tenant, self.rival.tenant])
+        self.assertEqual(mains.count(), 2)
 
 
 # Tagged slow: the race needs two real transactions, so this is a

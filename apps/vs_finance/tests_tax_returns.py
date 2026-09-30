@@ -30,6 +30,7 @@ from django.test import TestCase, tag
 
 from core.migration_testing import RewoundSchemaTestCase
 from vs_rbac.tests.helpers import make_branch, make_school
+from vs_tenants.models import Branch
 
 from .branch_ledger import ledger_lines
 from .constants import (
@@ -428,10 +429,16 @@ class NarrowedReadTests(_ReturnsFixture):
         self.assertEqual(lekki["late_line_count"], 1)
 
 
-class NoBranchBooksTests(_Phase4FixtureMixin, TestCase):
-    """Books whose tenant owns no branch pay as one share from any of their accounts."""
+class OneBranchBooksTests(_Phase4FixtureMixin, TestCase):
+    """Books whose tenant owns one branch pay as one share, booked to that branch.
 
-    def test_books_without_branches_pay_their_one_share(self):
+    Every tenant keeps a branch; the platform's own books belong to Lagos. A
+    return on one-branch books needs no split: it is paid whole, from an
+    account with no branch as readily as from Lagos's, and the remittance is
+    booked to the only branch.
+    """
+
+    def test_one_branch_books_pay_their_one_share_to_that_branch(self):
         entity, _, periods = self.build_books()
         bank = self.make_bank(entity)
         self.post_wht(entity, periods[0])
@@ -442,7 +449,8 @@ class NoBranchBooksTests(_Phase4FixtureMixin, TestCase):
         pay_filing(filing, bank_account=bank, pay_date=d(2, 10))
 
         self.assertEqual(filing.filing_status, TaxFilingStatus.PAID)
-        self.assertIsNone(filing.remittances.get().journal.branch_id)
+        only_branch = Branch.all_objects.get(tenant=entity.tenant)
+        self.assertEqual(filing.remittances.get().journal.branch_id, only_branch.pk)
 
     def post_wht(self, entity, period):
         entry = JournalEntry.objects.create(entity=entity, date=d(1, 12), period=period,

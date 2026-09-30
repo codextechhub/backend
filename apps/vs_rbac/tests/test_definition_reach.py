@@ -16,7 +16,6 @@ a 403 ``SHARED_RECORD_READ_ONLY`` with nothing written.
 Harbour Primary has one branch, and its administrator's grant pinned to that
 branch reaches the whole school, so nothing here narrows her.
 """
-from datetime import date
 
 from django.test import TestCase
 from django.urls import reverse
@@ -38,6 +37,7 @@ from vs_rbac.models import (
     UserFieldAccessOverride,
     UserPermissionOverride,
 )
+from vs_config.clock import tenant_today
 from vs_user.tokens import CodeXRefreshToken
 
 from .helpers import (
@@ -421,9 +421,11 @@ class ExceptionReachTests(_BrightStar):
                 self.assertTrue(self._flag(self.okafor, self.ada, name))
 
     def test_the_flag_rides_the_as_at_list_too(self):
+        # Today on the school's clock, where the history's first day is counted.
+        today = tenant_today(self.tunde.tenant)
         response = _client(self.bello).get(
             self._url("rbac-user-field-access-override-list-create", user_id=self.tunde.pk)
-            + "&as_at=" + date.today().isoformat(),
+            + "&as_at=" + today.isoformat(),
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
         self.assertTrue(response.json()["can_change_exceptions"])

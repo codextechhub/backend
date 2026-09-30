@@ -361,7 +361,7 @@ class BranchDatabaseConstraintTests(TestCase):
             self._branch(self.beta, code=1, is_main=True),
         )
 
-        self.assertEqual(Branch.all_objects.filter(code=1).count(), 2)
+        self.assertEqual(Branch.all_objects.filter(code=1, tenant__in=[self.alpha, self.beta]).count(), 2)
 
     def test_code_is_not_nullable_so_the_constraint_has_no_null_escape(self):
         """A nullable column would let Postgres wave through unlimited rows.
@@ -392,7 +392,8 @@ class BranchDatabaseConstraintTests(TestCase):
             self._branch(self.beta, code=1, is_main=True, name="Beta HQ"),
         )
 
-        self.assertEqual(Branch.all_objects.filter(is_main=True).count(), 2)
+        mains = Branch.all_objects.filter(is_main=True, tenant__in=[self.alpha, self.beta])
+        self.assertEqual(mains.count(), 2)
 
     def test_many_non_main_branches_are_allowed(self):
         """The index is partial: only ``is_main=True`` rows are constrained."""
