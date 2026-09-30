@@ -65,10 +65,10 @@ left open. Contract in docs/config/config_tenant_clock.md section 5.
   (StaffPositionAssignment) start_date have no default (vs_students 0011,
   vs_staff 0012, state only, reversible). Every service already named the
   branch's day; a write that names none is refused by the database (NOT NULL,
-  IntegrityError). Left with a default: vs_user.PositionAssignment.start_date
-  (platform staff, not a school record) and
-  vs_procurement.VendorAssessment.assessment_date (date.today; its migration
-  waits for another session's uncommitted vs_procurement 0039 to 0041).
+  IntegrityError). A vendor assessment's assessment_date follows (2256058e,
+  vs_procurement 0042): no default, the endpoint names the tenant's day. Left
+  with a default: vs_user.PositionAssignment.start_date (platform staff, not a
+  school record).
 MUST SAY: M06 the formatting contract beside the display settings; M01 that
 documents follow the display settings (remove the "do not read the format or
 the clock yet" limitation and the MRD gap D78 listed); M17, M18, M19, M20, M22,
@@ -79,7 +79,8 @@ approval cards reworded on read; M08 that notification contexts carry
 formatted dates; M09 onboarding email times and day counting; M03 the reset
 expiry line; M11, M12, M14, M05 the refusal wording; M11 and M12 that the
 enrolment, placement, status and appointment dates are always the branch's day
-and never defaulted. MRD: remove the D78 documents gap.
+and never defaulted; M21 that a vendor assessment's date is always named, the
+tenant's day by default. MRD: remove the D78 documents gap.
 
 ### D84. Supplier bills can be corrected, control accounts refuse hand journals, and bank money has its own documents (2ad6ba28, 2026-09-30)
 MODULES: M23 purchase orders delivery and AP, M21 vendor management, M24 inventory
