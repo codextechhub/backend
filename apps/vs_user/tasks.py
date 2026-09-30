@@ -45,6 +45,7 @@ from django.db import transaction
 from django.urls import reverse
 from django.utils import timezone
 
+from vs_config.display import format_datetime
 from vs_tenants.app_urls import account_link_base
 
 logger = logging.getLogger('vs_user.tasks')
@@ -347,8 +348,9 @@ def send_password_reset_email_task(
         1,
         ceil((reset_request.expires_at - reset_request.created_at).total_seconds() / 3600),
     )
-    expires_at = timezone.localtime(reset_request.expires_at).strftime(
-        '%d %b %Y, %H:%M %Z'
+    # On the reader's own clock, zone named: the link dies at one instant everywhere.
+    expires_at = format_datetime(
+        reset_request.expires_at, user.tenant, branch=user.branch_id, with_zone=True,
     )
 
     send_notification(
