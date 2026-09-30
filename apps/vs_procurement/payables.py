@@ -1021,23 +1021,13 @@ def reverse_vendor_payment(payment, *, actor_user=None, date=None):
 def books_went_live(entity):
     """The first day these books recorded trading, or ``None`` if they have not yet.
 
-    That is the date of the earliest posted journal that is not itself an opening
-    balance: not a direct entry or opening bill (``OPENING`` source) and not the
-    journal of an opening customer invoice. Anything owed to a supplier before that
-    day is an opening balance; anything after it is ordinary business and is keyed
-    as an ordinary bill.
+    One definition for both ledgers (:func:`vs_finance.opening_balances.books_went_live`):
+    anything owed to a supplier, or by a customer, before that day is an opening
+    balance; anything after it is ordinary business.
     """
-    from vs_finance.models import JournalEntry
+    from vs_finance.opening_balances import books_went_live as went_live
 
-    return (
-        JournalEntry.objects.filter(
-            entity=entity, status__in=(DocumentStatus.POSTED, DocumentStatus.REVERSED),
-            reverses__isnull=True,
-        )
-        .exclude(source=JournalSource.OPENING)
-        .exclude(ar_invoices__source="OPENING")
-        .order_by("date").values_list("date", flat=True).first()
-    )
+    return went_live(entity)
 
 
 def post_opening_vendor_invoice(invoice, *, actor_user=None):

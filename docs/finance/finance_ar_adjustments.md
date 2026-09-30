@@ -8,7 +8,8 @@ charges them more, or recognises that a balance won't be collected - without
 editing the original invoice (which is immutable once posted).
 
 Routes (mounted at `/v1/finance/`): `credit-notes/…`, `refunds/…`,
-`invoices/<pk>/write-off/`, `ar-adjustments/`, `concessions/…`.
+`invoices/<pk>/write-off/`, `ar-adjustments/`, `concessions/…`,
+`credit-transfers/…`.
 
 > **Adjacent:** the AR core (customers, invoices, receipts) is `finance_invoicing_ar`;
 > installment plans are `finance_payment_plans`. Concessions live in the same model
@@ -25,10 +26,16 @@ Routes (mounted at `/v1/finance/`): `credit-notes/…`, `refunds/…`,
   customer's **credit balance** (the `2140` liability) - *not* off an invoice.
 - **`Concession`** (`models/adjustments.py:228`): a non-cash reduction of a
   *specific* invoice's balance; `kind` ∈ {DISCOUNT, WAIVER, SCHOLARSHIP}.
-- **Write-off**: an *action* on an invoice (`write_off_invoice`), recognising bad
-  debt. **It has no model** - only a journal + an audit-log row (§6).
+- **Write-off**: recognising bad debt on an invoice, raised as a
+  `WriteOffRequest` document and posted by `write_off_invoice` (§6).
+- **`CustomerCreditTransfer`** (`models/adjustments.py`): moves one customer's
+  unapplied credit to another customer, the only way money crosses between
+  customers. Always approved by a second person; there is no direct post (§6).
 
 **This does NOT:**
+- **Apply one customer's money to another customer's bill.** A credit note,
+  concession or write-off reduces only its own customer's posted bill; a credit
+  transfer moves credit between customers.
 - **Refund against an invoice.** A refund draws down customer credit (`2140`);
   there must be credit available, and it's **capped** at it (§5). To reverse an
   invoice's revenue, use a CREDIT note.
@@ -47,7 +54,9 @@ Routes (mounted at `/v1/finance/`): `credit-notes/…`, `refunds/…`,
 | `CreditNoteAllocation` | `:150` | `note`, `invoice`, `amount` | CREDIT note → invoice; bumps `Invoice.amount_credited`; `unique(note, invoice)` |
 | `DebitNoteAllocation` | `:182` | `payment`, `note`, `amount` | receipt → DEBIT note; bumps `CreditNote.amount_paid`; `unique(payment, note)` |
 | `Refund` | `:182` | `customer`, `refund_date`, `method`, `amount`, `bank_account?`/`deposit_account?`, `journal` | pays out credit |
-| `Concession` | `:228` | `customer`, `invoice`, `kind`, `amount`, `allowance_account?`, `journal` | single amount, no lines |
+| `Concession` | `:228` | `customer`, `invoice`, `kind`, `amount`, `allowance_account?`, `journal` | single amount, no lines; the invoice must be the customer's |
+| `CustomerCreditTransfer` | `models/adjustments.py` | `from_customer`, `to_customer`, `transfer_date`, `amount`, `reason`, `receipt` | the destination's credit-transfer receipt carries the GL effect |
+| `CustomerCreditTransferDraw` | `models/adjustments.py` | `transfer`, `payment` or `note`, `amount` | which source lots a transfer drew; bumps their `transferred_amount` |
 
 - Money is kobo. `CreditNote`/`Refund`/`Concession` all extend `FinanceDocument`
   (entity scope, numbered, `status`, `created_by`).
@@ -77,7 +86,12 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 | `POST /concessions/` | `finance.concession.create` | Create a **draft** concession | `customer`, `invoice`, `kind?`, `concession_date`, `amount`, `allowance_account?`, `reason?` | `201` `ConcessionSerializer` |
 | `GET /concessions/summary/` | `finance.concession.view` | KPI totals | - | `success_response` |
 | `GET /concessions/<pk>/` | `finance.concession.view` | One concession | - | detail |
-| `POST /concessions/<pk>/post/` | `finance.concession.post` | Post it (reduces the invoice) | - | `ConcessionSerializer` |
+| `POST /concessions/<pk>/post/` | `finance.concession.post` | Post it (reduces the invoice); refused to its own author above the second-person threshold | - | `ConcessionSerializer` |
+| `GET /credit-transfers/` | `finance.credittransfer.view` | List (paginated). Query: `status`, `customer` (either side) | - | paginated `CustomerCreditTransferSerializer` |
+| `POST /credit-transfers/` | `finance.credittransfer.create` | Create a **draft** transfer; refused if the source lacks the credit | `from_customer`, `to_customer`, `amount`, `transfer_date`, `reason?`, `branch?` | `201` |
+| `GET /credit-transfers/<pk>/` | `finance.credittransfer.view` | One transfer | - | detail |
+| `POST /credit-transfers/<pk>/submit/` | `finance.credittransfer.submit` | Submit for approval; posts only on final approval | - | transfer + `approval` block |
+| `POST /credit-transfers/<pk>/void/` | `finance.credittransfer.reverse` | Void: voids the destination receipt and restores the source lots | `date?` | detail |
 
 ## 4. Lifecycle / state machine
 
@@ -89,7 +103,25 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
   `amount_paid` / `settlement_status` (UNPAID → PARTIAL → PAID) via
   `DebitNoteAllocation`. See `finance_invoicing_ar` §receipts.
 - **Refund / concession:** `DRAFT` → `POSTED` (`post_refund` / `post_concession`).
-- **Write-off:** no draft - a single posted action on a POSTED invoice.
+  A concession and its invoice are locked and re-read before posting, so a double
+  click posts once.
+- **Write-off:** a `WriteOffRequest` `DRAFT` → `POSTED`, locked the same way.
+- **Customer credit transfer:** `DRAFT` → `PENDING_APPROVAL` (submit) →
+  `APPROVED` → `POSTED` (`post_customer_credit_transfer`, run by the approval) →
+  `REVERSED` (void). The seeded route (`finance.customer_credit_transfer`) has one
+  always-on step; a tenant's books carry the route empty until it adds approvers,
+  and an empty route refuses submission.
+
+**Approval weight of concessions and credit notes.** A threshold step weighs
+`cumulative_amount`: the document with every other live reduction (concession or
+CREDIT note pending approval, approved or posted) of the same bill and of the same
+customer's billing period (the period stamped on the bill, or the fiscal period of
+the document's date), whichever total is larger
+(`approvals.cumulative_adjustment_amount`). Three discounts of ₦49,000 on one bill
+weigh ₦49,000, ₦98,000 and ₦147,000, so the second and third meet the ₦50,000 step.
+Separately, above the entity's `concession_second_person_threshold` (document
+setting, default ₦10,000, weighed the same way) the person who raised a concession
+may not post it, directly or as its approver (`approvals.require_second_person`).
 
 ## 5. Calculations
 
@@ -139,11 +171,36 @@ Cr  bank / deposit           amount
 Dr  bad-debt expense (5300)  amount
 Cr  receivable (AR control)  amount        + invoice.amount_credited += amount
 ```
-**Concession** (`_post_concession_atomic`, `installments.py:266`):
+**Concession** (`_post_concession_atomic`, `installments.py`):
 ```
 Dr  discounts & allowances (4910)  amount
 Cr  receivable (AR control)        amount  + invoice.amount_credited += amount
 ```
+The allowance account must be revenue (usually contra) or expense, and a write-off
+account an expense or contra-revenue account (`accounts.require_account_kind`).
+
+**CREDIT note naming a bill** - the named invoice is settled first, up to its
+balance, on the direct and the approval path alike; any explicit `allocations`
+settle after it, and the remainder is customer credit, which pays the customer's
+next bill as it posts. A note naming no bill keeps the old behaviour (explicit
+allocations, or oldest-first on the direct path). The named invoice must be the
+note's customer's (refused at create).
+
+**Customer credit transfer** (`credit_transfers.py`) - the source's credit lots in
+the transfer's branch are drawn oldest first (`CustomerCreditTransferDraw`), and the
+destination gets a receipt with method `CREDIT_TRANSFER` whose deposit account is
+the customer-credit liability. That receipt's one journal is the transfer's GL
+effect, with no bank line:
+```
+Dr  customer credit (2140)   amount          (the source's credit)
+Cr  receivable (AR control)  applied         (the destination's open bills)
+Cr  customer credit (2140)   excess          (the destination's new credit)
+```
+The receipt settles the destination's open bills at once when
+`auto_apply_customer_credit` is on. It is not takings: collections and receipt
+totals leave it out (`collected.received_money_q`). It is voided only through its
+transfer, and a source receipt or credit note that funded a posted transfer is
+voided only after the transfer.
 **Applying stored credit** (`allocate_credit_note`, `credit_notes.py:250`) - no cash:
 `Dr customer credit (2140) · Cr AR`. All paths run `post_journal` (the
 `finance_journals_posting` guards) and write a durable rejection audit on failure.
@@ -172,8 +229,9 @@ concession_date}` → draft; `post/` → `Dr 4910 500000 / Cr 1200 500000`, invo
   stale; all four adjustment lists now use the standard `{pagination, data}` envelope.
 - **A refund needs existing credit** - you can't refund a customer who only has open
   invoices; settle/credit first so `2140` holds the balance.
-- **Write-offs have no document** to list/detail - they're audit-log entries only;
-  the only "list" is `ar-adjustments/`.
+- **A credit transfer needs its route staffed.** Books arrive with the transfer
+  route empty; submission is refused until the tenant adds approvers (or runs
+  `seed_finance_approvals`).
 - **DEBIT note `allocate/` → 400** ("a debit note increases the receivable"). This
   only blocks the credit-note *allocate* verb (which reduces another invoice). A DEBIT
   note is instead **settled by a receipt** - `post_payment`/`allocate_payment` pick it
@@ -189,8 +247,9 @@ concession_date}` → draft; `post/` → `Dr 4910 500000 / Cr 1200 500000`, invo
 
 - Verbs split per action: `finance.creditnote.{view,create,post,allocate}`,
   `finance.refund.{view,create,post}`, `finance.invoice.writeoff`,
-  `finance.concession.{view,create,post}`. The combined `ar-adjustments/` reuses
-  `finance.refund.view`.
+  `finance.concession.{view,create,post}`,
+  `finance.credittransfer.{view,create,submit,reverse}` (no post key: approval is
+  the only route). The combined `ar-adjustments/` reuses `finance.refund.view`.
 - Every action resolves the entity then `filter(entity=…, pk=…)` (e.g.
   `_note`/`_refund`/`_concession` bases), and `_resolve_customer`/`_resolve_invoice`
   are entity-scoped → another tenant's note/invoice/customer id → 404. ✅
@@ -204,6 +263,8 @@ concession_date}` → draft; `post/` → `Dr 4910 500000 / Cr 1200 500000`, invo
 | `credit_notes.py` | price/post/allocate credit notes, `post_refund`, `write_off_invoice` |
 | `receivables.py` | receipt allocation over invoices **+ DEBIT notes** (`_build_invoice_plan`, `_apply_payment_subledger`), `customer_credit_balance` |
 | `installments.py` | `post_concession` |
+| `credit_transfers.py` | `check_transfer`, `post_customer_credit_transfer`, `void_customer_credit_transfer` |
+| `approvals.py` | `cumulative_adjustment_amount`, `require_second_person`, the seeded routes |
 | `views_ar.py` | credit-note / refund / write-off / ar-adjustments / concession views |
 | `serializers.py` | `CreditNoteSerializer`, `RefundSerializer`, `ConcessionSerializer` |
 | `constants.py` | `CreditNoteKind`, `ConcessionKind`, `CUSTOMER_CREDIT_CODE` (2140), `BAD_DEBT_EXPENSE_CODE` (5300), `DISCOUNTS_ALLOWED_CODE` (4910) |
@@ -212,6 +273,10 @@ concession_date}` → draft; `post/` → `Dr 4910 500000 / Cr 1200 500000`, invo
 
 Existing (`tests.py`): `CreditNoteTests` (CREDIT note reverses AR + applies to
 invoice), `ConcessionTests` (discount reduces invoice, posts to allowances).
+
+`tests_ar_guards.py`: settlement targets, credit transfers (posting, voiding, the
+approval route, the missing post route), credit notes naming a bill, cumulative
+approval and the second person.
 
 Worth asserting if not already:
 - **403** per verb; **cross-tenant** note/refund/concession id → 404.

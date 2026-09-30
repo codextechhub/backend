@@ -53,8 +53,15 @@ FINANCE_RESOURCES = [
     ("directentry",  "direct entries",         [("view", "NORMAL"), ("post", "CRITICAL")]),
     # email_statement sends a customer their own account position, so it is a
     # disclosure of financial data to an outside party, not a read.
+    # ``import_opening`` carries in the customer bills unpaid when the books began,
+    # each dated as the original, with no approval route: the key is the control.
     ("customer",     "customers / payers",     [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"),
-                                                ("email_statement", "SENSITIVE")]),
+                                                ("email_statement", "SENSITIVE"),
+                                                ("import_opening", "CRITICAL")]),
+    # Moving one customer's credit to another. Always approval-gated: there is no
+    # post key, because approval is the only route to the ledger.
+    ("credittransfer", "customer credit transfers", [("view", "NORMAL"), ("create", "SENSITIVE"),
+                                                ("submit", "SENSITIVE"), ("reverse", "CRITICAL")]),
     ("feestructure", "fee structures",         [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("edit", "SENSITIVE"), ("generate", "CRITICAL")]),
     # email on invoice/payment sends the document to the customer. Separate from

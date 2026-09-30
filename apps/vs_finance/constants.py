@@ -92,6 +92,7 @@ class DocType(models.TextChoices):
     BUDGET = "BG", "Budget"
     BANK_TRANSACTION = "BT", "Bank Transaction"
     BANK_TRANSFER = "BX", "Transfer Between Own Accounts"
+    CUSTOMER_CREDIT_TRANSFER = "CT", "Customer Credit Transfer"
 
 # Define Account Type values.
 class AccountType(models.TextChoices):
@@ -351,6 +352,14 @@ class PaymentMethod(models.TextChoices):
     OTHER = "OTHER", "Other"
 
 
+#: The method of a customer receipt that carries credit moved from another customer
+#: by an approved transfer (:class:`~vs_finance.models.CustomerCreditTransfer`). No
+#: money arrived: the receipt holds credit the source customer already had. Only a
+#: customer receipt takes it, so it extends :class:`PaymentMethod` for that one field.
+CREDIT_TRANSFER_METHOD = "CREDIT_TRANSFER"
+RECEIPT_METHOD_CHOICES = [*PaymentMethod.choices, (CREDIT_TRANSFER_METHOD, "Customer credit transfer")]
+
+
 # --------------------------------------------------------------------------- #
 # Banking, expenses, payroll, budget, fixed assets, period close     #          
 # --------------------------------------------------------------------------- #
@@ -508,6 +517,13 @@ class FinanceAuditAction(models.TextChoices):
     PAYMENT_PLAN_CANCELLED = "PAYMENT_PLAN_CANCELLED", "Installment plan cancelled"
     CONCESSION_POSTED = "CONCESSION_POSTED", "Concession / discount / waiver posted"
     CONCESSION_REVERSED = "CONCESSION_REVERSED", "Concession / discount / waiver reversed"
+    CUSTOMER_UPDATED = "CUSTOMER_UPDATED", "Customer updated"
+    CUSTOMER_DEACTIVATED = "CUSTOMER_DEACTIVATED", "Customer deactivated"
+    CUSTOMER_REACTIVATED = "CUSTOMER_REACTIVATED", "Customer reactivated"
+    CUSTOMER_OPENING_POSTED = "CUSTOMER_OPENING_POSTED", "Customer opening invoice posted"
+    CREDIT_TRANSFER_POSTED = "CREDIT_TRANSFER_POSTED", "Customer credit transfer posted"
+    CREDIT_TRANSFER_REVERSED = "CREDIT_TRANSFER_REVERSED", "Customer credit transfer reversed"
+    RECEIPT_PARKED_AS_CREDIT = "RECEIPT_PARKED_AS_CREDIT", "Receipt parked as customer credit"
     DUNNING_RUN_GENERATED = "DUNNING_RUN_GENERATED", "Dunning run generated"
     DUNNING_NOTICE_SENT = "DUNNING_NOTICE_SENT", "Dunning notice marked sent"
     DUNNING_NOTICE_CANCELLED = "DUNNING_NOTICE_CANCELLED", "Dunning notice cancelled"

@@ -96,8 +96,10 @@ def _window_end(window: Window) -> datetime.date:
 # --------------------------------------------------------------------------- #
 
 def _billed(entity, window, scope) -> int:
-    agg = _window_invoices(entity, window, scope).aggregate(s=Sum(F("total") - F("amount_credited")))
-    return int(agg["s"] or 0)
+    from .collected import billed_and_collected
+
+    billed, _collected = billed_and_collected(_window_invoices(entity, window, scope))
+    return billed
 
 
 def _paid_by_day(entity, window, scope) -> dict:
@@ -185,11 +187,13 @@ def credit_held(entity, as_of, scope=UNNARROWED) -> dict:
     from .models import CreditNote, Payment
 
     receipts = scope.filter(Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED)).annotate(
-        spare=F("amount") - F("allocated_amount") - F("refunded_amount"),
+        spare=F("amount") - F("allocated_amount") - F("refunded_amount") - F("transferred_amount"),
     ).filter(spare__gt=0)
     notes = scope.filter(CreditNote.objects.filter(
         entity=entity, status=DocumentStatus.POSTED, kind="CREDIT",
-    )).annotate(spare=F("total") - F("allocated_amount") - F("refunded_amount")).filter(spare__gt=0)
+    )).annotate(
+        spare=F("total") - F("allocated_amount") - F("refunded_amount") - F("transferred_amount"),
+    ).filter(spare__gt=0)
     old = as_of - datetime.timedelta(days=OLD_CREDIT_DAYS)
     r = receipts.aggregate(total=Sum("spare"), n=Count("id"), payers=Count("customer_id", distinct=True),
                            old=Sum("spare", filter=Q(payment_date__lt=old)))

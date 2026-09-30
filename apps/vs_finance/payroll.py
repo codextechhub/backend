@@ -845,7 +845,7 @@ def cancel_payroll_run(run, *, actor_user=None):
             reverse_journal(run.journal, actor_user=actor_user, document_owner=run)
             reversed_ids.append(run.journal_id)
         for share in shares:
-            reverse_journal(share.journal, actor_user=actor_user, document_owner=share)
+            reverse_journal(share.journal, actor_user=actor_user, document_owner=run)
             share.status = PayrollRunStatus.CANCELLED
             share.save(update_fields=["status", "updated_at"])
             reversed_ids.append(share.journal_id)

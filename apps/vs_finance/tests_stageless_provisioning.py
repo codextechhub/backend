@@ -200,7 +200,7 @@ class ProvisionedBooksCarryNoLadderTests(TestCase):
 
         again = ensure_tenant_approval_templates(tenant, threshold=99_000_000)
 
-        self.assertEqual([created for _template_row, created in again], [False] * 4)
+        self.assertEqual([created for _template_row, created in again], [False] * 5)
         senior.refresh_from_db()
         # The tenant's own threshold survives a re-run with a different default.
         self.assertEqual(senior.inclusion_condition["value"], 10)

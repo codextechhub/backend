@@ -562,7 +562,8 @@ class ARDocumentVoidEndpointTests(_ARFixtureMixin, TestCase):
             {
                 "id", "document_number", "customer_id", "customer_code", "customer_name",
                 "payment_date", "method", "amount", "amount_naira", "allocated_amount",
-                "unallocated_amount", "refunded_amount", "credit_remaining",
+                "unallocated_amount", "refunded_amount", "transferred_amount",
+                "credit_remaining",
                 "allocation_status", "deposit_account_code", "deposit_account_name",
                 "reference", "narration", "journal_id", "status",
             },

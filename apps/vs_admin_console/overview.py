@@ -423,7 +423,7 @@ def _signals(user, tenant) -> dict:
 
         idle = Payment.objects.filter(
             status=DocumentStatus.POSTED,
-            amount__gt=F("allocated_amount") + F("refunded_amount"),
+            amount__gt=F("allocated_amount") + F("refunded_amount") + F("transferred_amount"),
             entity__tenant=tenant,
         ).count()
         if idle:

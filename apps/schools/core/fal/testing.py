@@ -223,6 +223,7 @@ class FakeStudentCustomer(StudentCustomerPort):
 
     def __init__(self, *, fail_race_once: bool = False) -> None:
         self.customers: dict = {}
+        self.inactive: set = set()
         self._fail_race_once = fail_race_once
 
     def ensure_customer(self, student_ref, *, entity_ref, name=None, code=None,
@@ -246,6 +247,20 @@ class FakeStudentCustomer(StudentCustomerPort):
 
     def customer_for(self, student_ref, *, entity_ref):
         return _ok(self.customers.get((entity_ref, student_ref)))
+
+    def set_customer_active(self, student_ref, *, active, reason="", actor_ref=None):
+        changed = 0
+        for (entity_ref, ref) in self.customers:
+            if ref != student_ref:
+                continue
+            was_active = (entity_ref, ref) not in self.inactive
+            if was_active != bool(active):
+                changed += 1
+                if active:
+                    self.inactive.discard((entity_ref, ref))
+                else:
+                    self.inactive.add((entity_ref, ref))
+        return _ok(changed)
 
 
 # --------------------------------------------------------------------------- #

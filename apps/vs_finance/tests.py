@@ -10691,8 +10691,9 @@ class AdjustmentApprovalSeedTests(TestCase):
         from vs_finance.constants import WF_ADJUSTMENT_THRESHOLD
 
         tenant = self._seeded(slug="juniper-adj", code="JNPAD")
-        for document_type, amount_field in (("finance.concession", "amount"),
-                                            ("finance.credit_note", "total")):
+        # Both weigh the running total of reductions, not one document alone.
+        for document_type, amount_field in (("finance.concession", "cumulative_amount"),
+                                            ("finance.credit_note", "cumulative_amount")):
             stages = self._stages(tenant, document_type)
             self.assertEqual(len(stages), 2, document_type)
             threshold = {"op": "gte", "field": amount_field,

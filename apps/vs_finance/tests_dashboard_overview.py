@@ -44,7 +44,8 @@ class _OverviewFixture(_FinanceBranchFixture):
             start_date=datetime.date(2026, 1, 5), end_date=datetime.date(2026, 3, 31),
         )
         structure = FeeStructure.objects.create(entity=e, code="T1", name="First Term fees")
-        FeeStructureTermLink.objects.create(fee_structure=structure, session=session, term=term)
+        link = FeeStructureTermLink.objects.create(fee_structure=structure, session=session, term=term)
+        cls.term_key = link.period_key
 
         cls.tunde = cls.customer(e, "CIKJ", cls.ikeja)
         cls.aisha = cls.customer(e, "CLEK", cls.lekki)
@@ -58,7 +59,9 @@ class _OverviewFixture(_FinanceBranchFixture):
         from vs_finance.receivables import post_invoice
 
         invoice.reference = reference
-        invoice.save(update_fields=["reference"])
+        # A fee run stamps the billing period its bills belong to; the term reads it.
+        invoice.billing_period = cls.term_key if reference == "FEE:T1" else ""
+        invoice.save(update_fields=["reference", "billing_period"])
         InvoiceLine.objects.filter(invoice=invoice).update(
             revenue_account=Account.objects.get(entity=invoice.entity, code="4100"),
         )

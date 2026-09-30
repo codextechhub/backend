@@ -127,14 +127,127 @@ def approval_required(document) -> bool:
 #:
 #: Refunds and write-offs are always gated: one moves cash out, the other concedes
 #: income, and neither has a size at which a second pair of eyes stops being worth it.
-#: Concessions and credit notes are gated only above a threshold, because a ₦2,000
-#: goodwill allowance should not need a meeting and a ₦400,000 waiver should.
+#: A customer credit transfer is always gated too: it moves one customer's money to
+#: another customer, which is the act a family disputes. Concessions and credit notes
+#: are gated only above a threshold, because a ₦2,000 goodwill allowance should not
+#: need a meeting and a ₦400,000 waiver should; the threshold is weighed against the
+#: running total of reductions (:func:`cumulative_adjustment_amount`), not one
+#: document alone.
 _ADJUSTMENT_TEMPLATES = {
     "finance.refund": ("refund", "Refund approval", False),
     "finance.write_off": ("write-off", "Write-off approval", False),
     "finance.concession": ("concession", "Concession approval", True),
     "finance.credit_note": ("credit note", "Credit-note approval", True),
+    "finance.customer_credit_transfer": (
+        "customer credit transfer", "Customer credit transfer approval", False),
 }
+
+
+#: Statuses in which a concession or credit note counts towards the running total:
+#: waiting on an approver, approved, or posted. A draft nobody has submitted and a
+#: voided document reduce nothing.
+_LIVE_ADJUSTMENT_STATUSES = ("PENDING_APPROVAL", "APPROVED", "POSTED")
+
+
+def cumulative_adjustment_amount(document) -> int:
+    """The running total of reductions an approval step weighs ``document`` by, in kobo.
+
+    A concession or CREDIT note is added to every other live reduction (a concession
+    or CREDIT note waiting on approval, approved or posted) of:
+
+    * **the same bill**, when the document names one; and
+    * **the same customer's billing period**: the period stamped on the bill it
+      names, or, for a bill with no period or a note naming no bill, the fiscal
+      period its own date falls in.
+
+    The larger of the two totals is the answer. That is what makes splitting
+    pointless: Mr Eze's three ₦49,000 "discounts" on one ₦150,000 bill weigh
+    ₦49,000, ₦98,000 and ₦147,000, so the second and third meet the ₦50,000 step
+    one waiver of ₦147,000 would have met. A DEBIT note raises what is owed and is
+    weighed by its own total.
+    """
+    from django.db.models import Q, Sum
+
+    from .constants import CreditNoteKind
+    from .models import Concession, CreditNote
+
+    if isinstance(document, CreditNote):
+        own = int(document.total or 0)
+        if document.kind == CreditNoteKind.DEBIT:
+            return own
+        own_date = document.note_date
+    else:
+        own = int(document.amount or 0)
+        own_date = document.concession_date
+
+    concessions = Concession.objects.filter(
+        entity_id=document.entity_id, status__in=_LIVE_ADJUSTMENT_STATUSES)
+    notes = CreditNote.objects.filter(
+        entity_id=document.entity_id, status__in=_LIVE_ADJUSTMENT_STATUSES,
+        kind=CreditNoteKind.CREDIT)
+    if document.pk:
+        if isinstance(document, CreditNote):
+            notes = notes.exclude(pk=document.pk)
+        else:
+            concessions = concessions.exclude(pk=document.pk)
+
+    def others(concession_q, note_q):
+        conceded = concessions.filter(concession_q).aggregate(s=Sum("amount"))["s"] or 0
+        credited = notes.filter(note_q).aggregate(s=Sum("total"))["s"] or 0
+        return int(conceded) + int(credited)
+
+    invoice = document.invoice if document.invoice_id else None
+    per_invoice = own
+    if invoice is not None:
+        same_bill = Q(invoice_id=invoice.pk)
+        per_invoice += others(same_bill, same_bill)
+
+    per_period = own
+    customer = Q(customer_id=document.customer_id)
+    if invoice is not None and invoice.billing_period:
+        same_period = customer & Q(invoice__billing_period=invoice.billing_period)
+        per_period += others(same_period, same_period)
+    elif own_date is not None:
+        from .posting import resolve_period
+
+        period = resolve_period(document.entity, own_date)
+        if period is not None:
+            window = (period.start_date, period.end_date)
+            per_period += others(
+                customer & Q(concession_date__range=window),
+                customer & Q(note_date__range=window),
+            )
+    return max(per_invoice, per_period)
+
+
+def require_second_person(concession, actor_user):
+    """Refuse a large concession posted by the person who raised it.
+
+    Above the entity's ``concession_second_person_threshold`` (weighed by
+    :func:`cumulative_adjustment_amount`), the person who raised a concession may
+    not also be the one who posts it, whether directly or as its approver. A
+    ₦9,000 goodwill discount still posts in one step; a ₦12,000 one, or a fourth
+    ₦3,000 discount on a bill that already carries ₦9,000 of them, needs somebody
+    else.
+    """
+    from .document_settings import resolve_finance_document_settings
+    from .exceptions import PostingError
+    from .money import format_naira
+
+    creator_id = getattr(concession, "created_by_id", None)
+    actor_id = getattr(actor_user, "pk", None)
+    if creator_id is None or actor_id is None or creator_id != actor_id:
+        return
+    limit = int(resolve_finance_document_settings(concession.entity)
+                .concession_second_person_threshold)
+    weighed = concession.cumulative_amount
+    if weighed <= limit:
+        return
+    raise PostingError(
+        f"Concession {concession.document_number or concession.pk} brings this bill's "
+        f"reductions to {format_naira(weighed)}, above the {format_naira(limit)} one "
+        f"person may grant alone. Ask a colleague to post it, or submit it for approval.",
+    )
 
 
 #: The submit keys a published adjustment ladder makes load-bearing, and the
@@ -142,6 +255,7 @@ _ADJUSTMENT_TEMPLATES = {
 _ADJUSTMENT_SUBMIT_KEYS = {
     "concession": ("concessions", "submit", "SENSITIVE"),
     "creditnote": ("credit/debit notes", "submit", "SENSITIVE"),
+    "credittransfer": ("customer credit transfers", "submit", "SENSITIVE"),
 }
 
 
@@ -225,10 +339,12 @@ def ensure_adjustment_submit_permissions():
 
 def _adjustment_models():
     """The finance documents these ladders route, keyed by their workflow type."""
-    from .models import Concession, CreditNote, Refund, WriteOffRequest
+    from .models import (
+        Concession, CreditNote, CustomerCreditTransfer, Refund, WriteOffRequest,
+    )
 
     return {m.workflow_document_type: m for m in
-            (Refund, WriteOffRequest, Concession, CreditNote)}
+            (Refund, WriteOffRequest, Concession, CreditNote, CustomerCreditTransfer)}
 
 
 def _stages_payload(*, amount_field, threshold, gated, approver_group_code,

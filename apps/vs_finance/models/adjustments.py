@@ -49,8 +49,12 @@ class CreditNote(FinanceDocument):
     #: type: the risk is a mistaken note either way, and one gate is simpler to
     #: administer than two. The gate is opt-in by template.
     workflow_document_type = "finance.credit_note"
-    #: The field a threshold-gated stage reads to decide whether it applies.
-    workflow_amount_field = "total"
+    #: The field a threshold-gated stage reads to decide whether it applies: the
+    #: running total of adjustments on the same bill and in the same billing period
+    #: (see :func:`vs_finance.approvals.cumulative_adjustment_amount`), so a
+    #: reduction split into small notes meets the step one note of the whole
+    #: amount would have met.
+    workflow_amount_field = "cumulative_amount"
 
     customer = models.ForeignKey(
         Customer, on_delete=models.PROTECT, related_name="credit_notes",
@@ -81,6 +85,11 @@ class CreditNote(FinanceDocument):
         help_text="Portion of a CREDIT note's unapplied value already paid back out as "
                   "a customer refund, in kobo. Maintained by RefundAllocation.",
     )
+    transferred_amount = MoneyField(
+        help_text="Portion of a CREDIT note's unapplied value moved to another customer "
+                  "by an approved credit transfer, in kobo. Maintained by "
+                  "CustomerCreditTransferDraw.",
+    )
     # A DEBIT note is a supplementary charge that debits AR, so - like an invoice - it
     # is *settled* by receipts. ``amount_paid`` tracks cash allocated against it and
     # ``settlement_status`` mirrors Invoice.payment_status. Both are inert on CREDIT
@@ -104,6 +113,38 @@ class CreditNote(FinanceDocument):
             models.Index(fields=["customer"]),
             models.Index(fields=["entity", "note_date"]),
         ]
+        constraints = [
+            *FinanceDocument.Meta.constraints,
+            models.CheckConstraint(
+                check=(
+                    models.Q(allocated_amount__gte=0) & models.Q(refunded_amount__gte=0)
+                    & models.Q(transferred_amount__gte=0) & models.Q(amount_paid__gte=0)
+                ),
+                name="ck_finance_creditnote_spent_non_negative",
+            ),
+            models.CheckConstraint(
+                check=models.Q(total__gte=(
+                    models.F("allocated_amount") + models.F("refunded_amount")
+                    + models.F("transferred_amount")
+                )),
+                name="ck_finance_creditnote_spent_within_total",
+            ),
+            models.CheckConstraint(
+                check=models.Q(total__gte=models.F("amount_paid")),
+                name="ck_finance_creditnote_paid_within_total",
+            ),
+        ]
+
+    @property
+    def cumulative_amount(self) -> int:
+        """The amount an approval step weighs this note by, in kobo.
+
+        A CREDIT note is weighed with every other live reduction of the same bill
+        and of the same customer's billing period; a DEBIT note by its own total.
+        """
+        from ..approvals import cumulative_adjustment_amount
+
+        return cumulative_adjustment_amount(self)
 
     @property
     def is_debit(self) -> bool:
@@ -122,10 +163,11 @@ class CreditNote(FinanceDocument):
     def credit_remaining(self) -> int:
         """CREDIT-note value still sitting in the customer-credit liability (2140).
 
-        Unapplied value less whatever has since been refunded out of it. This is the
-        spendable figure; ``unallocated_amount`` is not.
+        Unapplied value less whatever has since been refunded out of it or
+        transferred to another customer. This is the spendable figure;
+        ``unallocated_amount`` is not.
         """
-        return self.total - self.allocated_amount - self.refunded_amount
+        return self.total - self.allocated_amount - self.refunded_amount - self.transferred_amount
 
     @property
     def balance_due(self) -> int:
@@ -546,8 +588,10 @@ class Concession(FinanceDocument):
     #: threshold it should need a second person exactly as a refund does. The gate is
     #: opt-in by template; see :mod:`vs_finance.approvals`.
     workflow_document_type = "finance.concession"
-    #: The field a threshold-gated stage reads to decide whether it applies.
-    workflow_amount_field = "amount"
+    #: The field a threshold-gated stage reads to decide whether it applies: the
+    #: running total of reductions on the same bill and in the same billing period
+    #: (see :func:`vs_finance.approvals.cumulative_adjustment_amount`).
+    workflow_amount_field = "cumulative_amount"
 
     customer = models.ForeignKey(
         Customer, on_delete=models.PROTECT, related_name="concessions",
@@ -582,6 +626,17 @@ class Concession(FinanceDocument):
             models.Index(fields=["invoice"]),
             models.Index(fields=["entity", "concession_date"]),
         ]
+
+    @property
+    def cumulative_amount(self) -> int:
+        """The amount an approval step weighs this concession by, in kobo.
+
+        This concession with every other live reduction of the same bill and of
+        the same customer's billing period, whichever is larger.
+        """
+        from ..approvals import cumulative_adjustment_amount
+
+        return cumulative_adjustment_amount(self)
 
 
 class PaymentPlan(FinanceDocument):
@@ -701,3 +756,112 @@ class PaymentPlanInstallment(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"#{self.seq_no} due {self.due_date}: {self.amount} ({self.status})"
+
+
+class CustomerCreditTransfer(FinanceDocument):
+    """An approved move of unapplied credit from one customer to another.
+
+    Money is never applied to another customer's bill directly: a receipt settles
+    only its own customer's documents. A family that wants one child's overpayment
+    to pay a sibling's fees asks for a transfer, which a second person approves.
+
+    Posting draws ``amount`` from the source customer's credit lots of the
+    transfer's own branch, oldest first (one :class:`CustomerCreditTransferDraw`
+    per lot, bumping the lot's ``transferred_amount``), and gives the destination a
+    credit-transfer receipt (:attr:`receipt`, method ``CREDIT_TRANSFER``) whose
+    deposit account is the customer-credit liability. That receipt is an ordinary
+    credit lot for the destination: it settles their open bills, is refunded and
+    reported like any receipt, and its one journal is the whole GL effect
+    (``Dr customer credit``, then ``Cr AR`` for what it settled and ``Cr customer
+    credit`` for the rest). No money moves through a bank.
+
+    Voiding the transfer voids that receipt and restores the source lots, and is
+    refused once the destination has refunded or transferred the credit on.
+    """
+
+    DOC_TYPE = DocType.CUSTOMER_CREDIT_TRANSFER
+
+    #: Approval-gate identity. The seeded route gates every transfer: moving one
+    #: customer's money to another always needs a second person.
+    workflow_document_type = "finance.customer_credit_transfer"
+    workflow_amount_field = "amount"
+
+    from_customer = models.ForeignKey(
+        Customer, on_delete=models.PROTECT, related_name="credit_transfers_out",
+    )
+    to_customer = models.ForeignKey(
+        Customer, on_delete=models.PROTECT, related_name="credit_transfers_in",
+    )
+    transfer_date = models.DateField()
+    amount = MoneyField(help_text="Credit moved, in kobo.")
+    reason = models.CharField(max_length=255, blank=True, default="")
+    receipt = models.OneToOneField(
+        "Payment", on_delete=models.PROTECT, related_name="credit_transfer",
+        null=True, blank=True,
+        help_text="The destination's credit-transfer receipt, once posted.",
+    )
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["from_customer"]),
+            models.Index(fields=["to_customer"]),
+            models.Index(fields=["entity", "transfer_date"]),
+        ]
+        constraints = [
+            *FinanceDocument.Meta.constraints,
+            models.CheckConstraint(
+                check=models.Q(amount__gte=0), name="ck_finance_credittransfer_non_negative",
+            ),
+            models.CheckConstraint(
+                check=~models.Q(from_customer=models.F("to_customer")),
+                name="ck_finance_credittransfer_two_customers",
+            ),
+        ]
+
+
+class CustomerCreditTransferDraw(TimeStampedModel):
+    """Which of the source customer's credit lots one transfer drew, and how much.
+
+    Mirrors :class:`RefundAllocation`: exactly one of ``payment`` / ``note`` names
+    the lot, and its ``transferred_amount`` moves with this row in the same
+    transaction, so the source's credit can never be spent twice.
+    """
+
+    transfer = models.ForeignKey(
+        CustomerCreditTransfer, on_delete=models.CASCADE, related_name="draws",
+    )
+    payment = models.ForeignKey(
+        "Payment", on_delete=models.PROTECT, related_name="credit_transfer_draws",
+        null=True, blank=True,
+    )
+    note = models.ForeignKey(
+        CreditNote, on_delete=models.PROTECT, related_name="credit_transfer_draws",
+        null=True, blank=True,
+    )
+    amount = MoneyField(help_text="Amount drawn from this lot, in kobo.")
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(amount__gte=0), name="ck_finance_ctdraw_non_negative",
+            ),
+            models.CheckConstraint(
+                check=(
+                    models.Q(payment__isnull=False, note__isnull=True)
+                    | models.Q(payment__isnull=True, note__isnull=False)
+                ),
+                name="ck_finance_ctdraw_one_source",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["transfer"]),
+            models.Index(fields=["payment"]),
+            models.Index(fields=["note"]),
+        ]
+        ordering = ["transfer", "id"]
+
+    @property
+    def source(self):
+        """The credit lot this slice was drawn from (a Payment or a CreditNote)."""
+        return self.payment or self.note

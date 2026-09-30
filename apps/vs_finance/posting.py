@@ -665,6 +665,12 @@ def _journal_document_owner(entry):
     reopening the year posts. Reversing either by hand would move a whole year's
     result in or out of Retained Earnings while the year's status said otherwise.
 
+    A payroll run that pays several branches posts one journal per branch through
+    a :class:`~vs_finance.models.PayrollRunBranch` share; those journals belong to
+    the run, because cancelling the run is the only thing that may reverse them
+    (each on its own branch). Reversing one share's journal by hand would put that
+    branch's salary cost back while the run still read posted.
+
     A stock movement names the journal it was valued in, and so does the goods
     receipt or goods return that raised that journal. The document wins: a stock
     movement is the owner only of a journal no document claims (an issue or an
@@ -704,6 +710,8 @@ def _journal_document_owner(entry):
             owner = owner.payment
         elif type(owner).__name__ == "VendorCreditAllocationJournal":
             owner = owner.note
+        elif type(owner).__name__ == "PayrollRunBranch":
+            owner = owner.run
         return owner
     if stock_movement is not None:
         return stock_movement
@@ -798,6 +806,11 @@ def _document_void_instruction(owner):
     if config:
         _, route = config
         remedy = f"Use POST /{route.format(pk=owner.pk)} from the document screen instead."
+    elif model_name == "PayrollRun":
+        remedy = (
+            f"Cancel payroll run {label} instead (POST /finance/payroll-runs/{owner.pk}/cancel/), "
+            f"which reverses each branch's journal of the run."
+        )
     elif model_name == "FiscalYear":
         remedy = (
             f"Reopen fiscal year {label} instead (POST /finance/fiscal-years/{owner.pk}/reopen/ "
@@ -966,7 +979,7 @@ def create_direct_entry(entity, *, lines, date=None, narration="", reference="",
     a true opening balance (brought forward on the day the books began, such as the
     cost of fixed assets already owned) and posts it with ``source=OPENING`` instead,
     which is also what keeps it from counting as the books' first trading
-    (:func:`vs_procurement.payables.books_went_live` reads it that way).
+    (:func:`vs_finance.opening_balances.books_went_live` reads it that way).
 
     It may not name an account a sub-ledger keeps (:mod:`vs_finance.control_accounts`):
     money into or out of a bank account is a bank transaction, an opening customer

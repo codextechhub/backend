@@ -306,3 +306,18 @@ class SettlementBranchError(PostingError):
     error_code = "SETTLEMENT_BRANCH"
     default_message = "This document belongs to another branch than the one settling it."
     http_status = 400
+
+
+class SettlementTargetError(PostingError):
+    """A document named for settlement cannot be settled by this money at all.
+
+    Three cases, each a request that named the wrong document: it is not posted (a
+    draft, or voided), it belongs to another customer than the money settling it,
+    or it is a debit note named for a credit note, which settles invoices only.
+    Money moves between customers only through an approved customer credit
+    transfer, never by applying one customer's receipt to another's bill. A 400.
+    """
+
+    error_code = "SETTLEMENT_TARGET"
+    default_message = "This document cannot be settled by the money named."
+    http_status = 400

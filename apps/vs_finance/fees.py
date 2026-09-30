@@ -16,29 +16,75 @@ from django.db import transaction
 
 from vs_config.clock import branch_today
 
+from .constants import DocumentStatus
 from .exceptions import FinanceError, PostingError
 from .receivables import post_invoice
+
+
+def billing_key_for(structure, billing_period: str = "") -> str:
+    """The key a fee run stamps on each invoice: ``FEE:<code>``, ``@<period>`` when named."""
+    reference = f"FEE:{structure.code}"
+    return f"{reference}@{billing_period}" if billing_period else reference
+
+
+def already_billed_customer_ids(structure, customer_ids, billing_period: str = "") -> set:
+    """Customers holding a live invoice this run would duplicate.
+
+    With a billing period, a structure bills a customer once per period: a live
+    invoice carrying the same billing key. Without one, it bills a customer once
+    for good: any live invoice from the structure, whichever period it named. That
+    second rule is what stops a run from the finance screen (which names no period)
+    billing a child the school's own run already billed for this term.
+    """
+    from .models import Invoice
+
+    live = Invoice.objects.filter(
+        entity=structure.entity, customer_id__in=list(customer_ids),
+    ).exclude(status__in=(DocumentStatus.REVERSED, DocumentStatus.CANCELLED))
+    if billing_period:
+        live = live.filter(billing_key=billing_key_for(structure, billing_period))
+    else:
+        reference = f"FEE:{structure.code}"
+        live = live.filter(reference=reference)
+    return set(live.values_list("customer_id", flat=True))
 
 
 @transaction.atomic
 # Handle the generate invoices workflow.
 def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
-                      actor_user=None, branch=None):  # Generate posted invoices from a fee structure.
+                      actor_user=None, branch=None, billing_period="",
+                      billing_period_label=""):  # Generate posted invoices from a fee structure.
     """Raise one posted invoice per customer from ``structure``'s fee items.
 
     ``customers`` is an iterable of :class:`~vs_finance.models.Customer`. Returns the list
-    of created (POSTED) invoices. Skips a customer who already has a posted invoice
-    referencing this structure (idempotent re-run guard via the invoice ``reference``).
-    Raises :class:`PostingError` if the structure is empty or inactive.
+    of created (POSTED) invoices. Raises :class:`PostingError` if the structure is empty
+    or inactive.
+
+    **A run cannot bill twice.** The structure row is locked for the length of the run,
+    so two runs of one structure (a double click, a retry after a slow response, the
+    finance screen and the school screen at once) queue rather than interleave, and the
+    second finds the first's invoices and skips those customers
+    (:func:`already_billed_customer_ids`). Each invoice carries a ``billing_key`` that is
+    unique per customer among live invoices in the database, so a run that somehow
+    missed the lock fails instead of billing again.
+
+    ``billing_period`` and ``billing_period_label`` are the period the owner layer
+    bills by (a school's term), stamped on every invoice and fixed once it posts. A
+    structure reused for a later period bills again for that period; reports read the
+    period from the invoice, never from how the structure is linked today.
+
+    **Who is billed.** An inactive customer is skipped: one who has left keeps their
+    debt but is billed no more. An optional item is billed only to the customers
+    assigned to it (:class:`~vs_finance.models.FeeItemAssignment`), and a customer
+    left with no line at all gets no invoice.
 
     An omitted ``due_date`` is derived here, from the entity's
     ``default_invoice_due_days``, rather than left null. A null due date does not
     read as "no deadline", it reads as "never overdue": every ageing bucket,
     every debtor list and every dunning run selects on ``due_date__lt``, and NULL
-    matches none of them. A whole term's fees would sit outside the receivables
-    the school chases, and nothing would report them missing. Deriving it at this
-    level rather than in a caller is what makes that true for every caller,
-    including the school bridge, which bills a cohort and passes no date.
+    matches none of them. Deriving it at this level rather than in a caller is what
+    makes that true for every caller, including the owner layer's bridge, which bills
+    a cohort and passes no date.
 
     Each invoice belongs to its customer's branch. ``branch`` is the branch for a
     customer every branch shares, who has none to give; a caller billing such a
@@ -48,8 +94,11 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
     for, so a family billed at a branch that keeps its own time zone is billed on
     that branch's day, and its due date counts from it.
     """
-    from .models import Invoice, InvoiceLine
+    from .models import FeeItemAssignment, FeeStructure, Invoice, InvoiceLine
 
+    # One run of a structure at a time; see the docstring.
+    structure = FeeStructure.objects.select_for_update(of=("self",)).select_related(
+        "entity", "entity__tenant").get(pk=structure.pk)
     items = list(structure.items.select_related("revenue_account", "tax_code").all())
     if not items:  # A structure with no items cannot produce an invoice.
         raise PostingError(f"Fee structure {structure.code} has no items to bill.")
@@ -61,18 +110,32 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
         from .document_settings import resolve_finance_document_settings
         policy = resolve_finance_document_settings(structure.entity)
         due_after = datetime.timedelta(days=policy.default_invoice_due_days)
-    reference = f"FEE:{structure.code}"  # Stable idempotency reference for this structure.
+    reference = f"FEE:{structure.code}"  # What a statement shows for this structure.
+    billing_key = billing_key_for(structure, billing_period)
+
+    customers = list(customers)
+    for customer in customers:  # Cross-entity billing would corrupt books.
+        if customer.entity_id != structure.entity_id:
+            raise FinanceError(
+                f"Customer {customer.code} is not in entity {structure.entity.code}.")
+    billed = already_billed_customer_ids(
+        structure, [customer.pk for customer in customers], billing_period)
+    optional_ids = [item.pk for item in items if item.is_optional]
+    takes = set(
+        FeeItemAssignment.objects.filter(
+            item_id__in=optional_ids, customer_id__in=[c.pk for c in customers],
+        ).values_list("item_id", "customer_id")
+    ) if optional_ids else set()
     created = []  # Collect generated posted invoices for the return value.
 
     for customer in customers:  # Generate at most one invoice per selected customer.
-        if customer.entity_id != structure.entity_id:  # Cross-entity billing would corrupt books.
-            raise FinanceError(
-                f"Customer {customer.code} is not in entity {structure.entity.code}.")
-        # Idempotency: don't double-bill the same structure to the same customer.  # Re-runs are safe.
-        if Invoice.objects.filter(
-            entity=structure.entity, customer=customer, reference=reference,  # Match the same entity, customer, and fee reference.
-            status="POSTED",  # Only posted invoices count as already billed.
-        ).exists():
+        if customer.pk in billed or not customer.is_active:  # Billed already, or left.
+            continue
+        lines = [
+            item for item in items
+            if not item.is_optional or (item.pk, customer.pk) in takes
+        ]
+        if not lines:  # Nothing on this structure applies to this customer.
             continue
 
         invoice_branch = customer.branch if customer.branch_id is not None else branch
@@ -83,11 +146,13 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
             # The customer decides the branch, not the structure.
             branch=invoice_branch,
             invoice_date=dated, due_date=due_date or dated + due_after,  # Billing and due dates.
-            source="MANUAL", reference=reference,  # Mark source and idempotency reference.
+            source="MANUAL", reference=reference,  # Mark source and statement reference.
+            billing_key=billing_key, billing_period=billing_period or "",
+            billing_period_label=billing_period_label or "",
             narration=f"{structure.name} ({structure.code})",  # Describe the generated fee bill.
             created_by=actor_user,  # Attribute creation to the caller.
         )
-        for item in items:  # Materialize each fee item as an invoice line.
+        for item in lines:  # Materialize each applicable fee item as an invoice line.
             InvoiceLine.objects.create(
                 invoice=invoice, line_no=item.line_no or 0,  # Preserve configured line ordering.
                 description=item.description,  # Copy fee item description.

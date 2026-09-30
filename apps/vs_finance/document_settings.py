@@ -15,6 +15,8 @@ SETTING_FIELDS = (
     "auto_post_manual_invoices",
     "allow_customer_opening_balances",
     "term_collection_target_pct",
+    "auto_apply_customer_credit",
+    "concession_second_person_threshold",
     # Not a model field; kept last because the update loop skips it.
     "primary_collection_bank_account",
 )
@@ -51,6 +53,8 @@ def serialize_finance_document_settings(settings):
         "auto_post_manual_invoices": settings.auto_post_manual_invoices,
         "allow_customer_opening_balances": settings.allow_customer_opening_balances,
         "term_collection_target_pct": settings.term_collection_target_pct,
+        "auto_apply_customer_credit": settings.auto_apply_customer_credit,
+        "concession_second_person_threshold": settings.concession_second_person_threshold,
         "primary_collection_bank_account": _bank_summary(primary),
         "bank_account_options": [
             _bank_summary(bank) for bank in BankAccount.objects.filter(
@@ -86,7 +90,8 @@ def _validated_values(data):
         if len(value) > 255:
             raise ValidationError({"default_invoice_narration": "Use 255 characters or fewer."})
         values["default_invoice_narration"] = value
-    for field in ("auto_post_manual_invoices", "allow_customer_opening_balances"):
+    for field in ("auto_post_manual_invoices", "allow_customer_opening_balances",
+                  "auto_apply_customer_credit"):
         if field not in data:
             continue
         if not isinstance(data[field], bool):
@@ -103,6 +108,18 @@ def _validated_values(data):
         if value < 1 or value > 100:
             raise ValidationError({"term_collection_target_pct": "Use a value from 1 to 100."})
         values["term_collection_target_pct"] = value
+    if "concession_second_person_threshold" in data:
+        field = "concession_second_person_threshold"
+        value = data[field]
+        try:
+            if isinstance(value, bool):
+                raise TypeError
+            value = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({field: "Enter a whole amount in kobo."}) from exc
+        if value < 0:
+            raise ValidationError({field: "Use zero or a positive amount in kobo."})
+        values[field] = value
     if "primary_collection_bank_account" in data:
         values["primary_collection_bank_account"] = data["primary_collection_bank_account"]
     return values

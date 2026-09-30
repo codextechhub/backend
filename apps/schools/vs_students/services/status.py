@@ -9,6 +9,8 @@ FRD M11 v2.4 FR-011.
 """
 from __future__ import annotations
 
+import logging
+
 from django.db import transaction
 from django.utils import timezone
 
@@ -20,6 +22,7 @@ from vs_audit.services import emit_audit_event
 from ..constants import (
     ALLOWED_TRANSITIONS,
     LEAVES_THE_ROLL,
+    ON_ROLL,
     EnrolmentOutcome,
     StudentStatus,
 )
@@ -30,6 +33,8 @@ from ..exceptions import (
     TerminalStatus,
 )
 from ..models import StudentStatusLog
+
+logger = logging.getLogger(__name__)
 
 #: Which audit action each destination writes. A status change is the event a
 #: school looks up by name later, so it gets its own verb rather than a generic
@@ -143,6 +148,7 @@ def transition(
 
     if to_status in LEAVES_THE_ROLL:
         _release_seat(student, to_status)
+    _sync_billing(student, from_status, to_status, actor=None if system else actor)
 
     StudentStatusLog.objects.create(
         tenant=student.tenant, student=student,
@@ -176,6 +182,34 @@ def transition(
         },
     )
     return student
+
+
+def _sync_billing(student, from_status, to_status, *, actor):
+    """Stop billing a child who leaves the roll, and bill them again when readmitted.
+
+    A withdrawn, transferred or graduated child's finance account is deactivated
+    through the FAL, so no fee run and no "bill all active" selection bills them
+    again, while what they still owe stays owed and on the debtor list. A withdrawn
+    child readmitted (WITHDRAWN to ENROLLED) is reactivated. A finance backend that
+    does not answer does not block the status change; it is logged, because the
+    account would otherwise go on being billed unnoticed.
+    """
+    from schools.core.fal import get_student_customer
+
+    leaving = to_status in LEAVES_THE_ROLL
+    returning = from_status in LEAVES_THE_ROLL and to_status in ON_ROLL
+    if not (leaving or returning):
+        return
+    result = get_student_customer().set_customer_active(
+        student.pk, active=returning,
+        reason=f"Student moved from {from_status} to {to_status}.",
+        actor_ref=getattr(actor, "pk", None),
+    )
+    if not result.is_available:
+        logger.warning(
+            "Finance account of student %s was not %s: %s", student.pk,
+            "reactivated" if returning else "deactivated", result.reason,
+        )
 
 
 def _release_seat(student, to_status):

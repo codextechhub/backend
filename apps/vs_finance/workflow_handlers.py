@@ -698,6 +698,11 @@ class ConcessionHandler(_FinancePostOnApprove):
                 f"Invoice {invoice.document_number or invoice.pk} is '{invoice.status}'; "
                 f"a concession can only reduce a posted invoice.",
             )
+        if invoice.customer_id != document.customer_id:  # Its own customer's bill only.
+            raise PostingError(
+                f"Invoice {invoice.document_number or invoice.pk} belongs to another "
+                f"customer than {document.customer.code}, who this concession is for.",
+            )
 
         ensure_on_or_after(  # A discount cannot predate the charge it discounts.
             subject=f"Concession {document.document_number or document.pk}",
@@ -846,6 +851,54 @@ class CreditNoteHandler(_FinancePostOnApprove):
                 ],
             ),
         )
+
+
+@register_handler("finance.customer_credit_transfer")
+class CustomerCreditTransferHandler(_FinancePostOnApprove):
+    """Approval handler for a :class:`~vs_finance.models.CustomerCreditTransfer`.
+
+    A transfer moves one customer's money to another, so it has no direct-post
+    route at all: approval is the only way it reaches the ledger. The default
+    ``_mark_approved`` (flip to APPROVED) is what the posting service insists on.
+    """
+    noun = "Customer credit transfer"
+
+    @property
+    def document_model(self):
+        from .models import CustomerCreditTransfer
+        return CustomerCreditTransfer
+
+    def preflight(self, document) -> None:
+        """The transfer's posting guards, without writing anything."""
+        from .credit_transfers import check_transfer
+
+        check_transfer(document)
+
+    def post(self, document, *, actor_user) -> None:
+        from .credit_transfers import post_customer_credit_transfer
+
+        post_customer_credit_transfer(document, actor_user=actor_user)
+
+    def summary(self, document) -> dict:
+        return {
+            "title": document.document_number or str(document.pk),
+            "subtitle": "Customer credit transfer",
+            "fields": [
+                {"label": "From", "value": document.from_customer.code},
+                {"label": "To", "value": document.to_customer.code},
+                {"label": "Amount", "value": format_naira(document.amount)},
+            ],
+            "link": _console_document_link("/finance/receivables/credit-transfers", document),
+        }
+
+    def details(self, document) -> dict:
+        return document_details(fields_section("Transfer details", [
+            ("Date", document.transfer_date),
+            ("From", f"{document.from_customer.code} {document.from_customer.name}"),
+            ("To", f"{document.to_customer.code} {document.to_customer.name}"),
+            ("Amount", format_naira(document.amount)),
+            ("Reason", document.reason or "-"),
+        ]))
 
 
 @register_handler("finance.expense_claim")
