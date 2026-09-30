@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from django.db import transaction
 from rest_framework.exceptions import NotFound, ValidationError
-from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
+from vs_rbac.scoping import transaction_branch_q
 
 from core.response import success_response
 from vs_config.clock import branch_today
@@ -33,7 +33,7 @@ from .base import (
     _inherited_branch_id,
     _int,
     _money,
-    _raised_branch,
+    _transaction_branch,
     _require_lines,
     _resolve_account,
     _resolve_bank_account,
@@ -76,7 +76,7 @@ class PettyCashFundListCreateView(_FinanceBase):
     def get(self, request):
         entity = resolve_entity(request)
         qs = PettyCashFund.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
+            transaction_branch_q(request), entity=entity,
         ).select_related("gl_account")
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
@@ -93,10 +93,8 @@ class PettyCashFundListCreateView(_FinanceBase):
             raise ValidationError({"name": "A fund name is required."})
         fund = PettyCashFund.objects.create(
             entity=entity, name=body["name"],
-            # A float is a physical cash tin with a custodian standing next to
-            # it, so the strict reading applies: "the front-desk float" is a
-            # different tin at Ikeja and at Lekki and the two must not merge.
-            branch=_raised_branch(request, entity, body),
+            # A float is one branch's cash tin.
+            branch=_transaction_branch(request, entity, body),
             gl_account=_resolve_account(request, entity, body.get("gl_account"), "gl_account", required=True),
             custodian=_resolve_user(body.get("custodian"), "custodian"),
             custodian_name=body.get("custodian_name", ""),
@@ -116,7 +114,7 @@ class _PettyCashFundActionBase(_FinanceBase):
     def _fund(self, request, pk):
         entity = resolve_entity(request)
         fund = PettyCashFund.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk,
+            transaction_branch_q(request), entity=entity, pk=pk,
         ).first()
         if fund is None:
             raise NotFound("Petty cash fund not found for this entity.")
@@ -326,7 +324,7 @@ class PettyCashVoucherListCreateView(_FinanceBase):
     def get(self, request):
         entity = resolve_entity(request)
         qs = PettyCashVoucher.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
+            transaction_branch_q(request), entity=entity,
         ).prefetch_related("lines__expense_account")
         if (fund := request.query_params.get("fund")):
             qs = qs.filter(fund_id=fund)
@@ -346,15 +344,14 @@ class PettyCashVoucherListCreateView(_FinanceBase):
         fund_ref = body.get("fund")
         if fund_ref in (None, ""):
             raise ValidationError({"fund": "A petty cash fund is required."})
-        fund = PettyCashFund.objects.filter(entity=entity, pk=fund_ref).first()
+        fund = PettyCashFund.objects.filter(
+            transaction_branch_q(request), entity=entity, pk=fund_ref,
+        ).first()
         if fund is None:
             raise ValidationError({"fund": f"No petty cash fund '{fund_ref}' in this entity."})
         voucher = PettyCashVoucher.objects.create(
             entity=entity, fund=fund,
-            # A voucher continues the fund's chain: the cash came out of that tin,
-            # so the tin's branch is the answer and the request cannot override it.
-            # This is also the check that stops a Lekki custodian spending Ikeja's
-            # float by naming its id, which the fund lookup above does not narrow.
+            # A voucher takes its fund's branch.
             branch_id=_inherited_branch_id(request, fund),
             voucher_date=_date(body.get("voucher_date"), "voucher_date", required=True),
             payee=body.get("payee", ""),
@@ -394,7 +391,7 @@ class _PettyCashVoucherActionBase(_FinanceBase):
     def _voucher(self, request, pk):
         entity = resolve_entity(request)
         voucher = PettyCashVoucher.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk,
+            transaction_branch_q(request), entity=entity, pk=pk,
         ).first()
         if voucher is None:
             raise NotFound("Petty cash voucher not found for this entity.")

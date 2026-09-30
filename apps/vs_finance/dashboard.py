@@ -61,15 +61,15 @@ class DashboardReader:
 
     ``keys`` is ``None`` for a reader who holds every key, which is what callers
     without a request get by default (tests, internal reports). ``scope`` is the
-    finance reading of a blank branch (shared rows included); ``procurement_scope``
-    is procurement's (a blank branch is the institution, which a branch-pinned
-    reader is not in). Both come from the one helper every list uses, so a
-    dashboard figure and the list behind it cannot disagree.
+    reader's reach over transactions, finance's and procurement's alike: their
+    own branches only, never a document not yet given a branch
+    (:func:`vs_rbac.scoping.transaction_branch_scope_for_user`). It comes from the
+    one helper every list uses, so a dashboard figure and the list behind it
+    cannot disagree.
     """
 
     keys: frozenset | None = None
     scope: BranchScope = UNNARROWED
-    procurement_scope: BranchScope = UNNARROWED
 
     def can(self, *keys: str) -> bool:
         """True when the reader holds any one of ``keys``."""
@@ -94,14 +94,13 @@ class DashboardReader:
         from vs_rbac.evaluator import get_effective_permissions
         from vs_rbac.permissions import is_vision_super_admin
         from vs_rbac.plan_gate import keys_within_plan
-        from vs_rbac.scoping import branch_scope_for_user
+        from vs_rbac.scoping import transaction_branch_scope_for_user
 
         keys = None if is_vision_super_admin(user) else keys_within_plan(
             get_effective_permissions(user, tenant=tenant), tenant)
         return cls(
             keys=keys,
-            scope=branch_scope_for_user(user, include_shared=True, tenant=tenant),
-            procurement_scope=branch_scope_for_user(user, include_shared=False, tenant=tenant),
+            scope=transaction_branch_scope_for_user(user, tenant=tenant),
         )
 
 
@@ -505,7 +504,7 @@ def _approvals(entity, reader=EVERY_BLOCK) -> dict:
             model = getattr(pm, model_name, None)  # Resolve model defensively.
             if model is None or not reader.can(key):  # Skip unavailable or unreadable type.
                 continue
-            count = reader.procurement_scope.filter(
+            count = reader.scope.filter(
                 model.objects.filter(entity=entity, approval_state=pending)).count()
             items.append({"label": label, "count": count})  # Add count row.
     except Exception:  # pragma: no cover - procurement optional
@@ -714,7 +713,7 @@ def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK, window=None, u
         ),
         "top_overdue": _top_overdue(entity, as_of, scope) if invoices else None,
         "vendor_due": (
-            _vendor_due(entity, reader.procurement_scope)
+            _vendor_due(entity, reader.scope)
             if reader.can("procurement.vendor_invoice.view") else None
         ),
         "approvals": approvals if approvals["items"] else None,

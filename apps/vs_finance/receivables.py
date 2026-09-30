@@ -198,7 +198,7 @@ def _post_invoice_atomic(invoice, *, actor_user=None):
 
 
 # Handle the post opening balance workflow.
-def post_opening_balance(customer, *, actor_user=None, date=None):
+def post_opening_balance(customer, *, actor_user=None, date=None, branch_id=None):
     """Seat a customer's ``opening_balance`` as a posted opening invoice.
 
     Raises an :class:`~vs_finance.models.Invoice` (``source=OPENING``) that posts
@@ -209,6 +209,10 @@ def post_opening_balance(customer, *, actor_user=None, date=None):
     invoice-derived) *and* in the GL. No-op unless the opening balance is positive.
     Returns the invoice or ``None``. Runs the normal :func:`post_invoice` guards
     (open period, etc.).
+
+    The invoice belongs to the customer's branch. ``branch_id`` is the branch for a
+    customer every branch shares, who has none to give: the invoice is a
+    transaction, and names a branch.
     """
     from vs_config.clock import branch_today
 
@@ -224,10 +228,11 @@ def post_opening_balance(customer, *, actor_user=None, date=None):
     opening_equity = resolve_mapped_account(  # Book the offset to retained earnings.
         customer.entity, AccountMappingKey.RETAINED_EARNINGS, label="opening balance equity",
     )
+    invoice_branch_id = customer.branch_id or branch_id
     invoice = Invoice.objects.create(
         entity=customer.entity, customer=customer,
-        branch=customer.branch,  # Opening balance belongs where the customer does.
-        invoice_date=date or branch_today(customer.entity.tenant, customer.branch_id),
+        branch_id=invoice_branch_id,  # Opening balance belongs where the customer does.
+        invoice_date=date or branch_today(customer.entity.tenant, invoice_branch_id),
         source=InvoiceSource.OPENING,
         narration=f"Opening balance for {customer.code}",
         created_by=actor_user,

@@ -293,8 +293,9 @@ class FeeRunBillsOnlyWhatTheCallerReachesTests(_ReferenceFixture):
 
     Two bounds, and each is asserted for both forms of the body (``all_active``
     and a named list): the caller's branch reach, and the structure's own
-    branch. Corona's Ikeja bursar reaches Ikeja's families and the school-wide
-    ones; a Lekki price list bills Lekki's families and nobody else's.
+    branch. Corona's Ikeja bursar reaches Ikeja's families and the ones every
+    branch shares, whose bills she raises at Ikeja; a Lekki price list bills
+    Lekki's families and nobody else's.
     """
 
     def setUp(self):
@@ -348,13 +349,26 @@ class FeeRunBillsOnlyWhatTheCallerReachesTests(_ReferenceFixture):
         )
         self.assertEqual(self.billed(self.shared_fees), set())
 
-    def test_a_whole_school_callers_all_active_run_is_unchanged(self):
-        response = self.run_fees(self.head, self.shared_fees, {"all_active": True})
+    def test_a_whole_school_callers_all_active_run_names_the_shared_familys_branch(self):
+        """Each family is billed at its own branch; the shared one where the run says."""
+        from vs_finance.models import Invoice
+
+        unnamed = self.run_fees(self.head, self.shared_fees, {"all_active": True})
+        self.assertEqual(unnamed.status_code, 400, unnamed.data)
+        self.assertEqual(self.billed(self.shared_fees), set())
+
+        response = self.run_fees(
+            self.head, self.shared_fees, {"all_active": True, "branch": self.lekki.pk})
 
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(
             self.billed(self.shared_fees),
             {self.ikeja_family.code, self.lekki_family.code, self.shared_family.code},
+        )
+        self.assertEqual(
+            Invoice.objects.get(reference=f"FEE:{self.shared_fees.code}",
+                                customer=self.shared_family).branch_id,
+            self.lekki.pk,
         )
 
     def test_a_branch_price_list_refuses_a_family_filed_at_another_branch(self):
@@ -449,10 +463,11 @@ class BulkRunsNarrowToTheCallersReachTests(_ReferenceFixture):
                    .values_list("invoice_id", flat=True))
 
     def test_a_pinned_bursars_dunning_run_chases_only_her_reach(self):
+        """Ikeja's bill only: the unbranched one is not hers to chase."""
         response = self.post(self.bursar, "dunning/generate/", self.books, {"as_of": "2026-01-31"})
 
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(self.chased(), {self.ikeja_bill.pk, self.shared_bill.pk})
+        self.assertEqual(self.chased(), {self.ikeja_bill.pk})
 
     def test_a_whole_school_callers_dunning_run_is_unchanged(self):
         response = self.post(self.head, "dunning/generate/", self.books, {"as_of": "2026-01-31"})

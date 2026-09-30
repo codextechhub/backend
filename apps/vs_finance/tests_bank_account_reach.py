@@ -1,13 +1,15 @@
 """A bank account named in a posting must be one the caller can see.
 
-Corona runs Ikeja, Lekki and Yaba, and keeps a collection account at each branch
-beside the school-wide GTBank operations account. Ikeja's bursar sees Ikeja's
-account and the school-wide one in her bank list. Every route that moves money
-out of a named account (refunds singly and in batches, expense-claim
-reimbursements, tax payments, asset purchases and sales, petty-cash floats and
-top-ups, payroll runs and their payment, vendor payments) resolves that account
-through one resolver, so typing Lekki's account id into any of them answers the
-same 404 as a mistyped id and writes nothing.
+Corona runs Ikeja, Lekki and Yaba, and keeps a collection account at each
+branch, plus a GTBank operations account opened before accounts carried a
+branch. Ikeja's bursar sees Ikeja's account only: a bank account holds one
+branch's money, and one not yet given a branch is nobody's to her. Every route
+that moves money out of a named account (refunds singly and in batches,
+expense-claim reimbursements, tax payments, asset purchases and sales, petty-cash
+floats and top-ups, payroll runs and their payment, vendor payments) resolves
+that account through one resolver, so typing Lekki's account id, or the
+unbranched one's, into any of them answers the same 404 as a mistyped id and
+writes nothing.
 
 Each family is asserted separately because the defect was never one route: it
 was the resolver they share reading the whole school's books.
@@ -27,7 +29,7 @@ _bursars = itertools.count(1)
 
 
 class BankAccountNamedInAPostingTests(_FinanceBranchFixture):
-    """Each money-out route refuses another branch's account and keeps shared ones."""
+    """Each money-out route refuses every account but the caller's own branch's."""
 
     def setUp(self):
         super().setUp()
@@ -67,15 +69,15 @@ class BankAccountNamedInAPostingTests(_FinanceBranchFixture):
         self.assertNotIn("No bank account", str(response.data))
 
     def assertEachBank(self, client, path, body, *, refused_count=None):
-        """Lekki's account is unknown; Ikeja's and the school-wide one resolve."""
-        response = self.post(client, path, {**body, "bank_account": self.lekki_bank.pk})
-        self.assertRefusedAsUnknown(response)
-        if refused_count is not None:
-            self.assertEqual(refused_count(), 0, f"{path} wrote a row before refusing")
-        for bank in (self.ikeja_bank, self.shared_bank):
-            with self.subTest(path=path, bank=bank.name):
-                self.assertBankAccepted(
-                    self.post(client, path, {**body, "bank_account": bank.pk}))
+        """Lekki's account and the unbranched one are unknown; Ikeja's resolves."""
+        for bank in (self.lekki_bank, self.shared_bank):
+            with self.subTest(path=path, refused=bank.name):
+                response = self.post(client, path, {**body, "bank_account": bank.pk})
+                self.assertRefusedAsUnknown(response)
+                if refused_count is not None:
+                    self.assertEqual(refused_count(), 0, f"{path} wrote a row before refusing")
+        self.assertBankAccepted(
+            self.post(client, path, {**body, "bank_account": self.ikeja_bank.pk}))
 
     # -- refunds ---------------------------------------------------------------- #
 
@@ -204,15 +206,15 @@ class BankAccountNamedInAPostingTests(_FinanceBranchFixture):
 
 
 class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
-    """A branch's document is paid from that branch's account or a school-wide one.
+    """A branch's document is paid from that branch's account and no other.
 
     Mrs Okafor is bursar at both Ikeja and Lekki, so Lekki's account is in her
     bank list. An Ikeja document paid from it would leave Ikeja owing and Lekki
     short, so it is refused with a 400 naming the branch, not hidden as a 404.
-    A school-wide document may be paid from any account she can reach.
+    The account not yet given a branch is outside her reach altogether (404).
     """
 
-    MESSAGE = "belongs to Ikeja Branch. Pay it from an Ikeja Branch account or a school-wide one."
+    MESSAGE = "belongs to Ikeja Branch. Pay it from an Ikeja Branch account."
 
     def bursar(self, *keys):
         """Mrs Okafor, bound to Ikeja and to Lekki."""
@@ -229,11 +231,11 @@ class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
         self.assertIn(self.MESSAGE, str(response.data))
         if refused_count is not None:
             self.assertEqual(refused_count(), 0, f"{path} wrote a row before refusing")
-        for bank in (self.ikeja_bank, self.shared_bank):
-            with self.subTest(path=path, bank=bank.name):
-                accepted = self.post(client, path, {**body, "bank_account": bank.pk})
-                self.assertNotIn("No bank account", str(accepted.data))
-                self.assertNotIn("Pay it from", str(accepted.data))
+        self.assertRefusedAsUnknown(
+            self.post(client, path, {**body, "bank_account": self.shared_bank.pk}))
+        accepted = self.post(client, path, {**body, "bank_account": self.ikeja_bank.pk})
+        self.assertNotIn("No bank account", str(accepted.data))
+        self.assertNotIn("Pay it from", str(accepted.data))
 
     def test_a_refund_by_name_is_refused_the_same_way(self):
         customer = self.customer(self.books, "CREFN", self.ikeja)
@@ -268,7 +270,7 @@ class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
         )
 
     def test_a_tax_payment(self):
-        """A filing with no branch is the school's return, which she may not pay at all.
+        """A filing with no branch is outside her reach, so she may not pay it at all.
 
         Covering two of three branches is not the whole school, so the refusal
         comes before any bank is looked at (see ``tests_shared_write_reach``).
@@ -285,8 +287,7 @@ class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
             with self.subTest(bank=bank.name):
                 response = self.post(client, f"finance/tax-filings/{filing.pk}/pay/",
                                      {"pay_date": JAN.isoformat(), "bank_account": bank.pk})
-                self.assertEqual(response.status_code, 403, response.data)
-                self.assertEqual(response.data["error"]["code"], "SHARED_RECORD_READ_ONLY")
+                self.assertEqual(response.status_code, 404, response.data)
                 filing.refresh_from_db()
                 self.assertEqual(filing.amount_paid, 0)
 
@@ -313,15 +314,21 @@ class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
             refused_count=VendorPayment.objects.filter(vendor=vendor).count,
         )
 
-    def test_a_school_wide_refund_may_use_any_account_she_reaches(self):
+    def test_a_shared_customers_refund_names_its_branch_and_pays_from_it(self):
+        """No school-wide refund, and so no school-wide escape from the bank rule."""
         customer = self.customer(self.books, "CALLR", None)
         client = self.bursar("finance.refund.create")
-        response = self.post(client, "finance/refunds/", {
-            "customer": customer.code, "amount": 1000,
-            "refund_date": JAN.isoformat(), "bank_account": self.lekki_bank.pk,
-        })
-        self.assertNotIn("Pay it from", str(response.data))
-        self.assertNotIn("No bank account", str(response.data))
+        body = {"customer": customer.code, "amount": 1000, "refund_date": JAN.isoformat()}
+
+        unnamed = self.post(client, "finance/refunds/", {
+            **body, "bank_account": self.lekki_bank.pk})
+        self.assertEqual(unnamed.status_code, 400, unnamed.data)
+        self.assertIn("branch", unnamed.data["error"]["detail"])
+
+        crossed = self.post(client, "finance/refunds/", {
+            **body, "branch": self.ikeja.pk, "bank_account": self.lekki_bank.pk})
+        self.assertEqual(crossed.status_code, 400, crossed.data)
+        self.assertIn("This refund " + self.MESSAGE, str(crossed.data))
 
 
 class BranchOnThePickersTests(_FinanceBranchFixture):
@@ -379,3 +386,35 @@ class EligibleBillsNameTheirBranchTests(_FinanceBranchFixture):
             f"/v1/procurement/vendor-payments/eligible-invoices/?entity={self.books.code}"
             f"&vendor={vendor.pk}").data["data"]
         self.assertEqual({row["id"]: row["branch_id"] for row in rows}, {bill.pk: self.ikeja.pk})
+
+
+class OneBranchSchoolBankTests(_FinanceBranchFixture):
+    """At a school with one branch, an account opened before accounts carried a branch is that branch's."""
+
+    def test_a_main_document_is_paid_from_the_unbranched_account(self):
+        from vs_finance.models import ExpenseClaim
+
+        gl = Account.objects.create(
+            entity=self.solo_books, code="1133", name="Old Operations",
+            account_type=Account.objects.get(entity=self.solo_books, code="1000").account_type,
+            is_postable=True,
+        )
+        legacy = BankAccount.objects.create(
+            entity=self.solo_books, name="Old Operations", branch=None, gl_account=gl,
+        )
+        claim = ExpenseClaim.objects.create(
+            entity=self.solo_books, branch=self.solo_main, claim_date=JAN,
+        )
+        client = TenantAPIClient(user=self.grant(
+            self.user_for(self.solo_tenant, "solo-bank@corona.test"),
+            "finance.expenseclaim.settle", tenant=self.solo_tenant, role_key="solo-bank",
+            branch=self.solo_main,
+        ))
+
+        response = client.post(
+            f"/v1/finance/expense-claims/{claim.pk}/settle/?entity={self.solo_books.code}",
+            {"pay_date": JAN.isoformat(), "bank_account": legacy.pk}, format="json",
+        )
+
+        self.assertNotIn("No bank account", str(response.data))
+        self.assertNotIn("Pay it from", str(response.data))

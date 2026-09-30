@@ -314,14 +314,22 @@ def spending(entity, window, as_of, sets, scope=UNNARROWED) -> dict | None:
 
 
 def budgets(entity, fiscal_year, as_of, scope=UNNARROWED) -> dict | None:
-    """This year's plans in the reader's reach, and how much of each is spent."""
+    """This year's plans in the reader's reach, and how much of each is spent.
+
+    A budget is a plan, not a transaction, so the school's own plan (no branch)
+    stays in a branch reader's reach, as it does on the budgets screen, with its
+    actuals withheld.
+    """
+    from vs_rbac.scoping import BranchScope
+
     from .models import Budget
     from .reports import budget_vs_actual
 
     if fiscal_year is None:
         return None
     plans = list(
-        scope.filter(Budget.objects.filter(entity=entity, fiscal_year=fiscal_year))
+        BranchScope(scope.branch_ids).filter(
+            Budget.objects.filter(entity=entity, fiscal_year=fiscal_year))
         .select_related("branch").order_by(F("branch__name").asc(nulls_first=True), "name")[:BUDGET_ROWS]
     )
     items = []

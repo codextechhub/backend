@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 from rest_framework.exceptions import NotFound, ValidationError
-from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
+from vs_rbac.scoping import transaction_branch_q
 from vs_rbac.scoping import (
     WholeTenantWriteMixin,
     assert_caller_may_change,
@@ -32,6 +32,7 @@ from .base import (
     _int,
     _money,
     _resolve_account,
+    _bank_account_in_reach,
     _resolve_bank_account,
     _resolve_currency,
 )
@@ -226,7 +227,7 @@ class TaxFilingSummaryView(_FinanceBase):
 
         entity = resolve_entity(request)
         agg = TaxFiling.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
+            transaction_branch_q(request), entity=entity,
         ).aggregate(
             outstanding=Coalesce(
                 Sum(F("amount_due") - F("amount_paid"),
@@ -260,7 +261,7 @@ class TaxFilingListCreateView(WholeTenantWriteMixin, _FinanceBase):
     def get(self, request):
         entity = resolve_entity(request)
         qs = TaxFiling.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
+            transaction_branch_q(request), entity=entity,
         ).select_related("obligation__liability_account").prefetch_related(*FILING_PREFETCH)
         if (ob := request.query_params.get("obligation")):
             qs = qs.filter(obligation_id=ob)
@@ -311,7 +312,7 @@ class _TaxFilingActionBase(_FinanceBase):
 
         entity = resolve_entity(request)
         filing = TaxFiling.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk,
+            transaction_branch_q(request), entity=entity, pk=pk,
         ).select_related(
             "obligation__liability_account").prefetch_related(*FILING_PREFETCH).first()
         if filing is None:
@@ -412,8 +413,7 @@ class TaxFilingPayView(_TaxFilingActionBase):
     share, else the bank account's own branch's share, else, from a tenant-wide
     account, every unpaid share. Several payments at once: ``shares``, a list of
     ``{branch, bank_account, amount?}`` sharing the one ``pay_date``, all recorded
-    or none. Each bank account must be the share's branch's own or a tenant-wide
-    one.
+    or none. A named share is paid only from its own branch's account.
 
     docstring-name: Pay a tax filing
     """
@@ -443,10 +443,16 @@ class TaxFilingPayView(_TaxFilingActionBase):
                 raise ValidationError({f"shares[{i}]": "Each payment is an object."})
             named = "branch" in row and row.get("branch") not in ("",)
             branch = _filing_branch(entity, row.get("branch"), names[0]) if named else ANY_SHARE
-            bank = _resolve_bank_account(
-                request, entity, row.get("bank_account"), names[1],
-                document_branch=(branch.pk if branch not in (None, ANY_SHARE) else filing.branch_id),
-                noun="tax filing")
+            if branch is ANY_SHARE and filing.branch_id is None:
+                # The service pays the account's own branch's share.
+                bank = _bank_account_in_reach(
+                    request, entity, row.get("bank_account"), names[1])
+            else:
+                bank = _resolve_bank_account(
+                    request, entity, row.get("bank_account"), names[1],
+                    document_branch=(branch.pk if branch not in (None, ANY_SHARE)
+                                     else filing.branch_id),
+                    noun="tax filing")
             amount = (_money(row["amount"], names[2])
                       if row.get("amount") not in (None, "") else None)
             payments.append((branch, bank, amount))

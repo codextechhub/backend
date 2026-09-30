@@ -2,12 +2,12 @@
 
 Corona runs Ikeja, Lekki and Yaba. Ikeja invoices one parent 100,000 kobo and
 banks 60,000 of it; Lekki invoices a parent three times and banks 30,000; one
-invoice is school-wide. The
-Ikeja bursar's statements must show Ikeja's revenue and cash plus the school-wide
-invoice, never Lekki's, and each statement must still hold together: the trial
+invoice was raised before invoices carried a branch. The Ikeja bursar's
+statements must show Ikeja's revenue and cash alone, never Lekki's and never the
+unbranched invoice, and each statement must still hold together: the trial
 balance balances, the balance sheet satisfies its equation, the cash flow
-reconciles and the equity statement agrees with the balance sheet. A reader whose
-reach covers every branch must get exactly the whole-school figures.
+reconciles and the equity statement agrees with the balance sheet. Only a reader
+whose reach is the whole school sees the unbranched invoice.
 """
 from __future__ import annotations
 
@@ -65,18 +65,18 @@ class _LedgerFixture(_FinanceBranchFixture):
         )
         post_payment(lekki_receipt, allocations=[(lekki_invoices[0], 30_000)])
 
-        self.ikeja_scope = BranchScope(frozenset({self.ikeja.id}), include_shared=True)
+        self.ikeja_scope = BranchScope(frozenset({self.ikeja.id}), include_shared=False)
         self.every_branch = BranchScope(
-            frozenset({self.ikeja.id, self.lekki.id, self.yaba.id}), include_shared=True,
+            frozenset({self.ikeja.id, self.lekki.id, self.yaba.id}), include_shared=False,
         )
 
 
 class BranchStatementTests(_LedgerFixture):
     """The statements a branch reader gets, and that they still hold together."""
 
-    def test_income_is_the_branchs_and_the_school_wide_revenue_only(self):
+    def test_income_is_the_branchs_revenue_only(self):
         pnl = income_statement(self.books, scope=self.ikeja_scope)
-        self.assertEqual(pnl.total_income, 2 * INVOICE)  # Ikeja's and the school-wide one.
+        self.assertEqual(pnl.total_income, INVOICE)  # Ikeja's alone.
         self.assertEqual(income_statement(self.books).total_income, 5 * INVOICE)
 
     def test_the_branch_trial_balance_balances(self):
@@ -98,13 +98,13 @@ class BranchStatementTests(_LedgerFixture):
         soce = statement_of_changes_in_equity(self.books, scope=self.ikeja_scope)
         self.assertTrue(soce.is_reconciled)
 
-    def test_a_reach_over_every_branch_gives_the_whole_school_figures(self):
-        whole = trial_balance(self.books)
+    def test_a_reach_over_every_branch_leaves_out_only_the_unbranched_invoice(self):
+        """Every branch is still a branch-bound reach; the whole school is not narrowed."""
         every = trial_balance(self.books, scope=self.every_branch)
-        self.assertEqual(
-            [(r.code, r.debit, r.credit) for r in every.rows],
-            [(r.code, r.debit, r.credit) for r in whole.rows],
-        )
+        self.assertTrue(every.is_balanced)
+        self.assertEqual(income_statement(self.books, scope=self.every_branch).total_income,
+                         4 * INVOICE)
+        self.assertEqual(income_statement(self.books).total_income, 5 * INVOICE)
 
     def test_an_unnarrowed_reader_keeps_the_stored_balances(self):
         self.assertNotIsInstance(ledger_balances(self.books), BranchLedger)
@@ -148,7 +148,7 @@ class BranchReportEndpointTests(_LedgerFixture):
         response = self.get(client, "trial-balance", "&export=csv")
 
         body = b"".join(response.streaming_content) if response.streaming else response.content
-        self.assertIn(b"branches and school-wide entries only", body)
+        self.assertIn(b"the reader's branches only", body)
 
     def test_the_statutory_pack_is_the_schools_filing_and_refused_to_a_branch(self):
         branch = self.client_holding("pack-ikeja@corona.test", "finance.report.view", branch=self.ikeja)
@@ -171,8 +171,8 @@ class BranchReportEndpointTests(_LedgerFixture):
 class ChartOfAccountsNarrowsTests(_LedgerFixture):
     """The chart's balances and an account's lines follow the reader's statements.
 
-    The Ikeja bursar's income statement shows Ikeja's revenue and the school-wide
-    invoice. Her chart of accounts, the account drawer and the account's activity
+    The Ikeja bursar's income statement shows Ikeja's revenue alone. Her chart of
+    accounts, the account drawer and the account's activity
     must show the same figures, not the whole school's ledger one click away.
     """
 
@@ -211,7 +211,7 @@ class ChartOfAccountsNarrowsTests(_LedgerFixture):
     def test_a_branch_readers_chart_shows_her_branchs_balances(self):
         balances = self.chart(self.ikeja_reader)
 
-        self.assertEqual(balances["4100"], 2 * INVOICE)
+        self.assertEqual(balances["4100"], INVOICE)
         self.assertEqual(balances["1100"], 60_000)
 
     def test_a_branch_readers_chart_agrees_with_her_trial_balance(self):
@@ -230,9 +230,9 @@ class ChartOfAccountsNarrowsTests(_LedgerFixture):
     def test_the_account_drawer_shows_her_branchs_balance_and_lines(self):
         data = self.detail(self.ikeja_reader, self.revenue)
 
-        self.assertEqual(data["summary"]["current_balance"]["kobo"], 2 * INVOICE)
-        self.assertEqual(len(data["activity"]), 2)
-        self.assertEqual(data["summary"]["line_count"], 2)
+        self.assertEqual(data["summary"]["current_balance"]["kobo"], INVOICE)
+        self.assertEqual(len(data["activity"]), 1)
+        self.assertEqual(data["summary"]["line_count"], 1)
 
     def test_the_account_drawer_is_unchanged_for_a_school_wide_reader(self):
         data = self.detail(self.hq_reader, self.revenue)

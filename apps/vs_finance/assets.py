@@ -416,12 +416,14 @@ def preview_period_depreciation(entity, *, up_to_date):
 
 # Public wrapper for compound depreciation run.
 def run_period_depreciation(entity, *, up_to_date, actor_user=None):
-    """Post depreciation due up to ``up_to_date`` - one compound journal **per period**.
+    """Post depreciation due up to ``up_to_date`` - one compound journal per period and branch.
 
-    Due charges are grouped by their :class:`FiscalPeriod` and each period gets its own
-    compound journal (Dr per expense account / Cr per accumulated-depreciation account),
-    dated at the latest ``depreciation_date`` in that period - so a charge never posts
-    into the wrong period. If a period is CLOSED, :func:`post_journal` raises
+    Due charges are grouped by their :class:`FiscalPeriod` and by their asset's branch,
+    and each group gets its own compound journal (Dr per expense account / Cr per
+    accumulated-depreciation account), dated at the latest ``depreciation_date`` in
+    that period and booked to that branch - so a charge never posts into the wrong
+    period, and Ikeja's buses depreciate in Ikeja's books rather than in a journal
+    no branch owns. If a period is CLOSED, :func:`post_journal` raises
     :class:`PeriodClosedError` and it propagates: the operator re-opens that period (via
     the period-reopen endpoint) and re-runs. Records a durable rejection audit on any
     :class:`FinanceError`.
@@ -456,7 +458,7 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
     # Group the charge rows by the fiscal period their depreciation_date falls in, so
     # each period is posted with its own compound journal dated within that period.  # Prevent cross-period postings.
     period_cache: dict = {}  # Cache period by depreciation date.
-    groups: dict = {}  # period -> {"rows": [...], "latest_date": date}
+    groups: dict = {}  # (period, branch id) -> {"rows": [...], "latest_date": date}
     for row in charges:  # Assign each charge to its fiscal period.
         period = period_cache.get(row.depreciation_date)
         if period is None:  # Resolve uncached dates.
@@ -473,7 +475,8 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
             skipped.append(_skipped_charge(row, year_label))
             skipped_ids.add(row.pk)
             continue
-        bucket = groups.setdefault(period, {"rows": [], "latest_date": row.depreciation_date})  # Get period bucket.
+        bucket = groups.setdefault(  # The period and branch's bucket.
+            (period, row.asset.branch_id), {"rows": [], "latest_date": row.depreciation_date})
         bucket["rows"].append(row)  # Add charge row to period bucket.
         if row.depreciation_date > bucket["latest_date"]:  # Keep latest charge date for journal date.
             bucket["latest_date"] = row.depreciation_date  # Update journal date.
@@ -490,8 +493,8 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
     row_to_journal: dict = {}  # Map schedule row id to posted journal.
     journal_ids: list[int] = []  # Posted depreciation journal ids in chronological order.
     # Post chronologically so journal_ids[0] is the earliest period's journal.  # Stable audit metadata.
-    for period in sorted(groups, key=lambda p: p.start_date):  # Process period buckets in date order.
-        bucket = groups[period]  # Rows and latest date for this period.
+    for period, branch_id in sorted(groups, key=lambda k: (k[0].start_date, k[1] or 0)):
+        bucket = groups[(period, branch_id)]  # Rows and latest date for this period and branch.
         expense, accum = {}, {}  # Group debit and credit totals by account.
         for row in bucket["rows"]:  # Aggregate rows inside this period.
             _, accum_acct, expense_acct = _asset_accounts(row.asset)  # Resolve row posting accounts.
@@ -499,7 +502,8 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
             accum[accum_acct] = accum.get(accum_acct, 0) + row.amount
 
         entry = JournalEntry.objects.create(
-            entity=entity, date=bucket["latest_date"], period=period,  # Entity, in-period date, and period.
+            entity=entity, branch_id=branch_id,  # The assets' branch.
+            date=bucket["latest_date"], period=period,  # In-period date, and period.
             source=JournalSource.CLOSING,  # Depreciation run is a closing-source entry.
             narration=f"Depreciation run for {period.name}", created_by=actor_user,  # Narration and actor.
         )
@@ -534,18 +538,19 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
         asset.save(update_fields=["accumulated_depreciation", "asset_status", "updated_at"])
 
     total = sum(r.amount for r in charges)  # Total non-zero depreciation posted.
+    period_count = len({period for period, _branch in groups})  # Periods, not journals.
     record(  # Audit the depreciation run.
         entity=entity, action=FinanceAuditAction.DEPRECIATION_POSTED,  # Audit action.
         actor_user=actor_user, target=None, target_type="LedgerEntity",  # Entity-level target.
         target_id=str(entity.pk),  # Structured target id.
         message=f"Posted a {total} kobo depreciation run across {len(by_asset)} asset(s) "  # Human-readable summary.
-                f"in {len(journal_ids)} period(s).",  # Include period count.
+                f"in {period_count} period(s).",  # Include period count.
         journal_id=journal_ids[0], journal_ids=journal_ids, charges=len(charges),  # Journal and charge metadata.
-        total=total, assets=len(by_asset), period_count=len(journal_ids),  # Aggregate metadata.
+        total=total, assets=len(by_asset), period_count=period_count,  # Aggregate metadata.
         skipped=skipped,
     )
     return {"journal_id": journal_ids[0], "journal_ids": journal_ids,  # Return primary and all journal ids.
-            "period_count": len(journal_ids), "total": total,  # Return period count and total.
+            "period_count": period_count, "total": total,  # Return period count and total.
             "charge_count": len(charges), "asset_count": len(by_asset),  # Return row and asset counts.
             "skipped": skipped}  # Charges dated in a closed year, left unposted.
 

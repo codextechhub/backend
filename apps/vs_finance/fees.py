@@ -23,7 +23,7 @@ from .receivables import post_invoice
 @transaction.atomic
 # Handle the generate invoices workflow.
 def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
-                      actor_user=None):  # Generate posted invoices from a fee structure.
+                      actor_user=None, branch=None):  # Generate posted invoices from a fee structure.
     """Raise one posted invoice per customer from ``structure``'s fee items.
 
     ``customers`` is an iterable of :class:`~vs_finance.models.Customer`. Returns the list
@@ -40,9 +40,13 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
     level rather than in a caller is what makes that true for every caller,
     including the school bridge, which bills a cohort and passes no date.
 
+    Each invoice belongs to its customer's branch. ``branch`` is the branch for a
+    customer every branch shares, who has none to give; a caller billing such a
+    customer passes it, because an invoice is a transaction and names a branch.
+
     An omitted ``invoice_date`` is today at the branch each invoice is raised
-    for (the customer's), so a family billed at a branch that keeps its own
-    time zone is billed on that branch's day, and its due date counts from it.
+    for, so a family billed at a branch that keeps its own time zone is billed on
+    that branch's day, and its due date counts from it.
     """
     from .models import Invoice, InvoiceLine
 
@@ -71,15 +75,13 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
         ).exists():
             continue
 
-        dated = invoice_date or branch_today(structure.entity.tenant, customer.branch_id)
+        invoice_branch = customer.branch if customer.branch_id is not None else branch
+        dated = invoice_date or branch_today(
+            structure.entity.tenant, getattr(invoice_branch, "pk", None))
         invoice = Invoice.objects.create(
             entity=structure.entity, customer=customer,  # Scope invoice to the structure entity and customer.
-            # The *customer* decides the branch, not the structure: a school-wide
-            # fee template billed to an Ikeja family raises an Ikeja receivable,
-            # which is the only reading that keeps that family's ledger in one
-            # scope. A structure pinned to a branch is simply billed to the
-            # customers selected for it.
-            branch=customer.branch,
+            # The customer decides the branch, not the structure.
+            branch=invoice_branch,
             invoice_date=dated, due_date=due_date or dated + due_after,  # Billing and due dates.
             source="MANUAL", reference=reference,  # Mark source and idempotency reference.
             narration=f"{structure.name} ({structure.code})",  # Describe the generated fee bill.

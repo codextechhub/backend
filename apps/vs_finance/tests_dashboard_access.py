@@ -6,7 +6,7 @@ key school-wide. A payments clerk holds only a payout key.
 
 The dashboard opens to all three, because each works in the Finance console. What
 comes back differs: every figure the bursar gets, ledger figures included, covers
-Ikeja and the school-wide entries only, and the school's budget and period close
+Ikeja's entries only, never one not yet given a branch, and the school's budget and period close
 are not sent to him at all. The proprietor gets every block. The clerk gets the
 page with no figures in it.
 """
@@ -84,7 +84,7 @@ class FinanceDashboardAccessTests(_FinanceBranchFixture):
 
     # -- a branch bursar ------------------------------------------------------ #
 
-    def test_a_branch_bursar_sees_their_branch_and_the_shared_rows_only(self):
+    def test_a_branch_bursar_sees_her_branchs_figures_only(self):
         client = self.client_holding(
             "bursar-ikeja@corona.test",
             "finance.invoice.view", "finance.payment.view", "finance.report.view",
@@ -92,7 +92,7 @@ class FinanceDashboardAccessTests(_FinanceBranchFixture):
         )
         data = self.dashboard(client).data["data"]
 
-        own = 100_000 + 100_000  # Ikeja plus the school-wide invoice; never Lekki's.
+        own = 100_000  # Ikeja's alone; never Lekki's, never the unbranched invoice.
         self.assertTrue(data["narrowed"])
         self.assertEqual(data["ar_aging"]["total"]["kobo"], own)
         self.assertEqual(data["kpis"]["receivables"]["value"]["kobo"], own)
@@ -107,8 +107,8 @@ class FinanceDashboardAccessTests(_FinanceBranchFixture):
 
         for kpi in LEDGER_KPIS:
             self.assertIsNotNone(data["kpis"][kpi], kpi)
-        # Net income from Ikeja's invoice and the school-wide one; never Lekki's three.
-        self.assertEqual(data["kpis"]["net_income_ytd"]["value"]["kobo"], 2 * 100_000)
+        # Net income from Ikeja's invoice alone; never Lekki's three or the unbranched one.
+        self.assertEqual(data["kpis"]["net_income_ytd"]["value"]["kobo"], 100_000)
         self.assertIsNone(data["revenue_vs_budget"])
         self.assertIsNone(data["close_progress"])
 

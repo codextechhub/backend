@@ -1,28 +1,18 @@
 """What branch finance puts **on** a row, and where it gets it from.
 
 ``tests_branch_scope`` proves the read half: a branch-pinned grant narrows what
-comes back. That half was latent, because nothing in finance ever stamped a
-branch on anything it created - every document reached the database with
-``branch = NULL``, NULL means shared across the school, and so everybody kept
-seeing everything. These tests are the other half.
+comes back. These tests are the other half. There are only two ways a finance
+row may acquire a branch, and the split is the whole design:
 
-There are only two ways a finance row may acquire a branch, and the split is the
-whole design:
-
-* a row that **starts** a chain captures the branch its creator works in
-  (``_raised_branch``);
+* a row that **starts** a chain takes the branch its creator names or works in;
 * a row that **continues** a chain takes the branch from the row it continues and
-  from nothing else (``_inherited_branch_id``) - a receipt is its customer's
-  branch, a credit note is its invoice's, a voucher is its float's.
+  from nothing else - a credit note is its invoice's, a voucher is its float's.
 
-The case worth arguing about is the caller entitled to *several* branches who
-names none. Finance asks them, for anything that records something that happened
-somewhere - Mrs Adebayo covers Ikeja and Lekki, and an invoice she raises was
-raised for one of them; filing it school-wide would leave Yaba's bursar reading
-that family's fee debt for the life of the row, with nothing later in the chain
-able to narrow it again. Three kinds of row take the opposite reading and say why
-at their own call site: a fee template, a bank account and a payroll run are all
-things a school genuinely publishes once for everybody.
+A shared record (a customer, a fee structure) may be filed for every branch. A
+transaction may not: there is no school-wide transaction, so a document raised
+against a customer every branch shares takes the branch its creator names or
+works in, and Mr Bello, the school-wide bursar at a school with several branches,
+names one or gets a 400. At a school with one branch nobody is asked.
 
 Two shapes of school throughout, because a single-branch test proves nothing about
 a multi-branch one, and a rival tenant because none of this may weaken the tenant
@@ -290,13 +280,12 @@ class RaisedBranchTests(_WriteFixture):
 
 
 class SharedWhenAmbiguousTests(_WriteFixture):
-    """The three row types that read the ambiguous case the other way.
+    """The ambiguous case: a caller in two branches who names none.
 
-    A fee template, a bank account and a payroll run are things a school publishes
-    once for everybody, so asking a two-branch bursar to pick one would make the
-    school's own row invisible at every branch but that one. A *pinned* caller
-    still stamps her branch in all three, so a site with its own fees or its own
-    collection account keeps them to itself.
+    A fee template is a shared record, so it is published for every branch. A bank
+    account holds one branch's money and is asked for like any transaction. A
+    central payroll run still covers the whole school: one run for all staff is the
+    school's arrangement, and splitting its journal per branch is separate work.
     """
 
     def setUp(self):
@@ -330,15 +319,48 @@ class SharedWhenAmbiguousTests(_WriteFixture):
             self.ikeja.pk,
         )
 
-    def test_a_bank_account_from_a_two_branch_bursar_is_the_schools(self):
-        response = self.post(
+    def test_a_bank_account_from_a_two_branch_bursar_names_its_branch(self):
+        """No school-wide bank account: Mrs Adebayo says whose money it holds."""
+        refused = self.post(
             self.both, "bank-accounts/", self.books,
             self.bank_body("Group Operations", self.books),
         )
+        named = self.post(
+            self.both, "bank-accounts/", self.books,
+            self.bank_body("Lekki Operations", self.books, branch=self.lekki.pk),
+        )
+
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertIn("branch", refused.data["error"]["detail"])
+        self.assertFalse(BankAccount.objects.filter(name="Group Operations").exists())
+        self.assertEqual(named.status_code, 201, named.data)
+        self.assertEqual(
+            BankAccount.objects.get(entity=self.books, name="Lekki Operations").branch_id,
+            self.lekki.pk,
+        )
+
+    def test_a_bank_account_from_a_whole_school_bursar_names_its_branch_too(self):
+        hq = self.writer(self.tenant, "amb-hq@fin.test", "amb-hq")
+
+        response = self.post(
+            hq, "bank-accounts/", self.books, self.bank_body("HQ Operations", self.books),
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("branch", response.data["error"]["detail"])
+
+    def test_a_one_branch_school_files_its_bank_account_under_that_branch(self):
+        solo = self.writer(self.solo_tenant, "amb-solo@fin.test", "amb-solo")
+
+        response = self.post(
+            solo, "bank-accounts/", self.solo_books,
+            self.bank_body("Main Operations", self.solo_books),
+        )
 
         self.assertEqual(response.status_code, 201, response.data)
-        self.assertIsNone(
-            BankAccount.objects.get(entity=self.books, name="Group Operations").branch_id,
+        self.assertEqual(
+            BankAccount.objects.get(entity=self.solo_books, name="Main Operations").branch_id,
+            self.solo_main.pk,
         )
 
     def test_a_payroll_run_from_a_two_branch_officer_covers_the_school(self):
@@ -346,9 +368,8 @@ class SharedWhenAmbiguousTests(_WriteFixture):
 
         ``payroll.scope`` defaults to CENTRAL and no school here has opted out, so
         a run covers everybody the school employs whichever branches the officer
-        happens to be granted. Asking her to name a site would be asking her to
-        narrow a run that is not narrowed. The school that has switched to
-        PER_BRANCH is asked instead, and ``tests_payroll_branch`` holds that half.
+        happens to be granted. The school that has switched to PER_BRANCH is asked
+        instead, and ``tests_payroll_branch`` holds that half.
         """
         response = self.post(self.both, "payroll-runs/", self.books, self.payroll_body())
 
@@ -402,14 +423,8 @@ class InheritedBranchTests(_WriteFixture):
             self.ikeja.pk,
         )
 
-    def test_a_pinned_caller_may_continue_a_school_wide_chain(self):
-        """The inclusive reading, and where finance parts company with procurement.
-
-        The Ikeja bursar can see the school-wide customer on her own screen - that
-        is what the inclusive read half promises her. If the write half refused
-        her that customer's receipt she would be looking at a row she is told she
-        may not touch, which reads as a broken screen rather than a rule.
-        """
+    def test_a_receipt_for_a_shared_customer_takes_the_raisers_branch(self):
+        """The customer is every branch's; the money was received at Ikeja."""
         response = self.post(
             self.ikeja_only, f"customers/{self.cust_shared.code}/receipt/",
             self.books, self.receipt_body(),
@@ -417,9 +432,40 @@ class InheritedBranchTests(_WriteFixture):
 
         self.assertEqual(response.status_code, 201, response.data)
         payment = Payment.objects.get(entity=self.books, customer=self.cust_shared)
-        self.assertIsNone(
-            payment.branch_id,
-            "the chain decides: a school-wide customer keeps a school-wide receipt",
+        self.assertEqual(payment.branch_id, self.ikeja.pk)
+
+    def test_a_whole_school_bursar_names_the_branch_of_a_shared_customers_receipt(self):
+        """Mr Bello at a three-branch school: a 400 without a branch, never a NULL."""
+        refused = self.post(
+            self.hq, f"customers/{self.cust_shared.code}/receipt/",
+            self.books, self.receipt_body(),
+        )
+        named = self.post(
+            self.hq, f"customers/{self.cust_shared.code}/receipt/",
+            self.books, self.receipt_body(branch=self.yaba.pk),
+        )
+
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertIn("branch", refused.data["error"]["detail"])
+        self.assertEqual(named.status_code, 201, named.data)
+        self.assertEqual(
+            Payment.objects.get(entity=self.books, customer=self.cust_shared).branch_id,
+            self.yaba.pk,
+        )
+
+    def test_an_invoice_for_a_shared_customer_is_never_filed_without_a_branch(self):
+        refused = self.post(
+            self.hq, "invoices/", self.books, self.invoice_body(self.cust_shared),
+        )
+        named = self.post(
+            self.hq, "invoices/", self.books,
+            self.invoice_body(self.cust_shared, branch=self.lekki.pk),
+        )
+
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertEqual(named.status_code, 201, named.data)
+        self.assertEqual(
+            Invoice.objects.get(pk=named.data["data"]["id"]).branch_id, self.lekki.pk,
         )
 
     def test_a_pinned_caller_may_not_continue_another_branchs_chain(self):
@@ -436,9 +482,8 @@ class InheritedBranchTests(_WriteFixture):
         code gets. It matches ``get_student_or_404`` and procurement's
         ``_document_or_404``, which both refuse this way for this reason.
 
-        The inheritance rule is untouched and still matters - see the test above,
-        where a *shared* customer resolves for everybody and it is that rule which
-        decides the receipt's branch.
+        A *shared* customer does resolve for everybody, and then the receipt takes
+        its raiser's branch (see the tests above).
         """
         response = self.post(
             self.ikeja_only, f"customers/{self.cust_lekki.code}/receipt/",
@@ -468,9 +513,8 @@ class InheritedBranchTests(_WriteFixture):
         """The customer decides, not the template.
 
         Corona publishes one JSS1 tuition structure school-wide and bills it to
-        families at three sites. Taking the structure's branch would file every one
-        of those receivables school-wide; taking the customer's puts each family's
-        debt where the family is.
+        families at three branches. Each family's debt goes where the family is,
+        and a family every branch shares is billed at the branch the run names.
         """
         from vs_finance.fees import generate_invoices
 
@@ -486,13 +530,13 @@ class InheritedBranchTests(_WriteFixture):
         )
         invoices = generate_invoices(
             structure, [self.cust_ikeja, self.cust_lekki, self.cust_shared],
-            invoice_date=datetime.date(2026, 1, 12),
+            invoice_date=datetime.date(2026, 1, 12), branch=self.yaba,
         )
 
         by_customer = {inv.customer_id: inv.branch_id for inv in invoices}
         self.assertEqual(by_customer[self.cust_ikeja.pk], self.ikeja.pk)
         self.assertEqual(by_customer[self.cust_lekki.pk], self.lekki.pk)
-        self.assertIsNone(by_customer[self.cust_shared.pk])
+        self.assertEqual(by_customer[self.cust_shared.pk], self.yaba.pk)
 
 
 class WriteThenReadTests(_WriteFixture):

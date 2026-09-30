@@ -1,9 +1,10 @@
 """A bank's ledger account is that bank's money under another name.
 
-Corona keeps a collection account at Ikeja and at Lekki beside the school-wide
-GTBank operations account, and each is backed by its own ledger account. Ikeja's
-bursar cannot name Lekki's bank account on a payment, so she must not be able to
-name Lekki's bank ledger by its code either: as a receipt's deposit account, an
+Corona keeps a collection account at Ikeja and at Lekki, and a GTBank operations
+account opened before bank accounts carried a branch, each backed by its own
+ledger account. Ikeja's bursar cannot name Lekki's bank account, or the
+unbranched one, on a payment, so she must not be able to name their ledgers by
+code either: as a receipt's deposit account, an
 asset's credit account, a bank adjustment's counter account, a direct entry's
 line, a payout's source, a vendor's account, or by editing the ledger account
 itself. Each is refused exactly as an unknown account is. A school default she
@@ -79,12 +80,17 @@ class ResolverTests(_LedgerReachFixture):
             self.assertEqual(
                 str(refused.exception.detail["account"]), f"No account '{ref}' in this entity.")
 
-    def test_own_shared_and_plain_ledgers_resolve(self):
+    def test_own_and_plain_ledgers_resolve(self):
         ikeja = self.person("finance.payment.create", branch=self.ikeja)
-        for account in (self.ikeja_bank.gl_account, self.shared_bank.gl_account,
+        for account in (self.ikeja_bank.gl_account,
                         Account.objects.get(entity=self.books, code="4100")):
             with self.subTest(code=account.code):
                 self.assertEqual(self.resolve(ikeja, account.code), account)
+
+    def test_the_ledger_of_a_bank_not_yet_given_a_branch_is_unknown_to_her(self):
+        ikeja = self.person("finance.payment.create", branch=self.ikeja)
+        with self.assertRaises(ValidationError):
+            self.resolve(ikeja, self.shared_bank.gl_account.code)
 
     def test_a_caller_bound_to_no_branch_names_any_bank_ledger(self):
         hq = self.person("finance.payment.create", branch=None)
@@ -147,8 +153,9 @@ class LedgerNamedOnAWriteTests(_LedgerReachFixture):
     def test_a_payout_sourced_from_it(self):
         from vs_procurement.models import Vendor
 
+        # Ikeja's own vendor: a payout reaches its vendor exclusively.
         vendor = Vendor.objects.create(
-            entity=self.books, code="PAYEE", name="Payee Ltd",
+            entity=self.books, code="PAYEE", name="Payee Ltd", branch=self.ikeja,
             payable_account=Account.objects.get(entity=self.books, code="2100"),
         )
         response = self.post(
@@ -198,12 +205,12 @@ class LedgerNamedOnAWriteTests(_LedgerReachFixture):
 
 
 class LedgerOfAnotherBranchOnABranchDocumentTests(_LedgerReachFixture):
-    """A branch's document names its own branch's bank ledger or a school-wide one.
+    """A branch's document names its own branch's bank ledger and no other.
 
     Mrs Okafor covers Ikeja and Lekki, so Lekki's bank ledger is hers to name.
     On an Ikeja document it is refused all the same, with the 400 that choosing
     Lekki's bank account gets, because the code moves the same money. A ledger
-    account behind no bank account, and a school-wide document, are unaffected.
+    account behind no bank account is unaffected.
     """
 
     def okafor(self, *keys):
@@ -217,17 +224,19 @@ class LedgerOfAnotherBranchOnABranchDocumentTests(_LedgerReachFixture):
     def assertOwnBranchOnly(self, client, path, body, field, *, noun, verb,
                             written=None, **extra):
         message = (f"This {noun} belongs to Ikeja Branch. "
-                   f"{verb} an Ikeja Branch account or a school-wide one.")
+                   f"{verb} an Ikeja Branch account.")
         refused = self.post(client, path, {**body, field: self.lekki_ledger.code}, **extra)
         self.assertEqual(refused.status_code, 400, refused.data)
         self.assertIn(message, str(refused.data))
         if written is not None:
             self.assertEqual(written(), 0, f"{path} wrote a row before refusing")
-        for code in (self.ikeja_bank.gl_account.code, self.shared_bank.gl_account.code):
-            with self.subTest(path=path, code=code):
-                accepted = self.post(client, path, {**body, field: code}, **extra)
-                self.assertNotIn("belongs to Ikeja Branch", str(accepted.data))
-                self.assertNotIn("No account", str(accepted.data))
+        unbranched = self.post(
+            client, path, {**body, field: self.shared_bank.gl_account.code}, **extra)
+        self.assertIn("No account", str(unbranched.data))
+        accepted = self.post(
+            client, path, {**body, field: self.ikeja_bank.gl_account.code}, **extra)
+        self.assertNotIn("belongs to Ikeja Branch", str(accepted.data))
+        self.assertNotIn("No account", str(accepted.data))
 
     def test_an_asset_bought_on_another_branchs_bank_ledger(self):
         asset = self.fixed_asset(self.books, "Ikeja Bus", self.ikeja)
@@ -256,16 +265,23 @@ class LedgerOfAnotherBranchOnABranchDocumentTests(_LedgerReachFixture):
             written=Payment.objects.filter(customer=customer, deposit_account=self.lekki_ledger).count,
         )
 
-    def test_a_school_wide_customers_receipt_may_land_in_any_bank_she_reaches(self):
+    def test_a_shared_customers_receipt_lands_in_its_own_branchs_bank(self):
+        """The receipt takes the branch she names, and deposits only there."""
         customer = self.customer(self.books, "CRALL", None)
-        response = self.post(
-            self.okafor("finance.payment.create"),
-            f"finance/customers/{customer.code}/receipt/",
-            {"amount": 5_000, "payment_date": JAN.isoformat(),
-             "deposit_account": self.lekki_ledger.code},
-        )
-        self.assertNotIn("belongs to", str(response.data))
-        self.assertNotIn("No account", str(response.data))
+        body = {"amount": 5_000, "payment_date": JAN.isoformat(),
+                "deposit_account": self.lekki_ledger.code}
+        client = self.okafor("finance.payment.create")
+
+        crossed = self.post(client, f"finance/customers/{customer.code}/receipt/",
+                            {**body, "branch": self.ikeja.pk})
+        self.assertEqual(crossed.status_code, 400, crossed.data)
+        self.assertIn("This receipt belongs to Ikeja Branch. Deposit it into an Ikeja "
+                      "Branch account.", str(crossed.data))
+
+        own = self.post(client, f"finance/customers/{customer.code}/receipt/",
+                        {**body, "branch": self.lekki.pk})
+        self.assertNotIn("belongs to", str(own.data))
+        self.assertNotIn("No account", str(own.data))
 
     def test_an_invoice_payment_deposited_into_it(self):
         from vs_finance.models import Payment
@@ -280,7 +296,7 @@ class LedgerOfAnotherBranchOnABranchDocumentTests(_LedgerReachFixture):
         })
         self.assertEqual(refused.status_code, 400, refused.data)
         self.assertIn("This receipt belongs to Ikeja Branch. Deposit it into an Ikeja "
-                      "Branch account or a school-wide one.", str(refused.data))
+                      "Branch account.", str(refused.data))
         self.assertFalse(Payment.objects.filter(customer=invoice.customer).exists())
 
     def test_a_bank_adjustment_countered_on_it(self):

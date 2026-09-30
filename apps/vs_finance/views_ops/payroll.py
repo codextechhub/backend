@@ -11,7 +11,7 @@ from core.response import success_response
 from rest_framework.exceptions import ValidationError
 
 from django.db.models import Count
-from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
+from vs_rbac.scoping import branch_q, transaction_branch_q
 from vs_rbac.scoping import caller_may_use_branch
 from vs_rbac.scoping import resolve_branch as _resolve_branch
 
@@ -37,6 +37,7 @@ from .base import (
     _date,
     _money,
     _raised_branch,
+    _bank_account_in_reach,
     _require_lines,
     _resolve_bank_account,
     _resolve_cost_center,
@@ -74,6 +75,23 @@ def _branch_rule(entity) -> dict:
 
 
 UNASSIGNED_REFS = ("unassigned", "none", "null")
+
+
+def _run_bank_account(request, entity, ref, run_branch):
+    """The bank account a payroll run is paid from, by id or name, or None.
+
+    A branch's run is paid only from that branch's account, the rule every
+    document follows (:func:`_resolve_bank_account`). A central run carries no
+    branch, because its lines pay every branch's staff through one accrual
+    journal, so no single branch's account is its own; it is paid from any
+    account in the caller's reach. Splitting a central run into one journal per
+    branch, each paid from that branch's account, is what removes this case.
+    """
+    if run_branch is None:
+        return _bank_account_in_reach(request, entity, ref, required=False)
+    return _resolve_bank_account(
+        request, entity, ref, required=False,
+        document_branch=run_branch, noun="payroll run")
 
 
 # Support the branch filter workflow.
@@ -118,7 +136,7 @@ class PayrollRunListCreateView(_FinanceBase):
     def get(self, request):
         entity = resolve_entity(request)
         qs = PayrollRun.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
+            transaction_branch_q(request), entity=entity,
         ).select_related("branch").prefetch_related("lines")
         if (status_val := request.query_params.get("run_status")):
             qs = qs.filter(run_status=status_val)
@@ -148,9 +166,7 @@ class PayrollRunListCreateView(_FinanceBase):
             period_label=body.get("period_label", ""),
             narration=body.get("narration", ""),
             currency=_resolve_currency(body.get("currency")),
-            bank_account=_resolve_bank_account(
-                request, entity, body.get("bank_account"), required=False,
-                document_branch=branch, noun="payroll run"),
+            bank_account=_run_bank_account(request, entity, body.get("bank_account"), branch),
             created_by=request.user,
         )
         for i, ln in enumerate(lines, start=1):
@@ -188,7 +204,7 @@ class PayrollRunSummaryView(_FinanceBase):
         from ..constants import PayrollRunStatus
 
         entity = resolve_entity(request)
-        runs = PayrollRun.objects.filter(branch_q(request, include_shared=True), entity=entity)
+        runs = PayrollRun.objects.filter(transaction_branch_q(request), entity=entity)
         agg = runs.aggregate(
             runs=Count("id"),
             to_pay=Coalesce(
@@ -221,7 +237,7 @@ class _PayrollActionBase(_FinanceBase):
     def _run(self, request, pk):
         entity = resolve_entity(request)
         run = PayrollRun.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk,
+            transaction_branch_q(request), entity=entity, pk=pk,
         ).select_related("branch").first()
         if run is None:
             raise NotFound("Payroll run not found for this entity.")
@@ -270,9 +286,7 @@ class PayrollRunPayView(_PayrollActionBase):
 
         entity, run = self._run(request, pk)
         body = request.data or {}
-        bank = _resolve_bank_account(
-            request, entity, body.get("bank_account"), required=False,
-            document_branch=run.branch_id, noun="payroll run")
+        bank = _run_bank_account(request, entity, body.get("bank_account"), run.branch_id)
         pay_payroll(
             run, bank_account=bank,
             pay_date=_date(body.get("pay_date"), "pay_date"),

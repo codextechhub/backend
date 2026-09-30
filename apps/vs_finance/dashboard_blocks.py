@@ -571,7 +571,7 @@ def upcoming(entity, as_of, reader) -> list[dict]:
         try:
             from vs_procurement.models import VendorInvoice
 
-            rows = reader.procurement_scope.filter(
+            rows = reader.scope.filter(
                 VendorInvoice.objects.filter(
                     entity=entity, status=DocumentStatus.POSTED,
                     due_date__gte=as_of, due_date__lte=end,
@@ -609,7 +609,7 @@ def payables_due(entity, as_of, reader) -> dict | None:
         from vs_procurement.models import VendorInvoice
     except Exception:  # pragma: no cover - procurement optional
         return None
-    open_bills = reader.procurement_scope.filter(
+    open_bills = reader.scope.filter(
         VendorInvoice.objects.filter(entity=entity, status=DocumentStatus.POSTED)
         .exclude(payment_status=InvoicePaymentStatus.PAID)
     )

@@ -10,7 +10,7 @@ from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import NotFound, ValidationError
-from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
+from vs_rbac.scoping import transaction_branch_q
 
 from core.response import success_response
 
@@ -39,7 +39,7 @@ from .base import (
     _date,
     _inherited_branch_id,
     _int,
-    _raised_branch,
+    _transaction_branch,
     _require_lines,
     _resolve_account,
     _resolve_currency,
@@ -61,10 +61,11 @@ from .base import (
 # a bank account in this file and one of them is the list, so the resolver is
 # shared and the other ten do not each get a chance to forget it.
 #
-# ``include_shared=True`` throughout, because that is what a null branch means
-# here: the single operations account a school runs for every site stays
-# reachable from all of them. Statements and lines carry no branch of their own
-# and take the account's, through the ``bank_account__`` prefix, so an account a
+# A bank account holds one branch's money, so it is read as a transaction
+# (:func:`vs_rbac.scoping.transaction_branch_q`): a branch-bound caller reaches
+# only their own branches' accounts, and an account not yet given a branch only
+# by a whole-school caller. Statements and lines carry no branch of their own and
+# take the account's, through the ``bank_account__`` prefix, so an account a
 # caller may open and the rows hanging off it cannot give different answers.
 #
 # A row belonging to another site answers with the same message as one that does
@@ -89,7 +90,7 @@ def _bank_or_404(request, pk, *, entity=None, active_only=False):
         filters["is_active"] = True
     bank = (
         BankAccount.objects
-        .filter(branch_q(request, include_shared=True), **filters)
+        .filter(transaction_branch_q(request), **filters)
         .select_related("gl_account", "branch")
         .first()
     )
@@ -122,7 +123,7 @@ class BankAccountListCreateView(_FinanceBase):
     def get(self, request):
         entity = resolve_entity(request)
         qs = BankAccount.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
+            transaction_branch_q(request), entity=entity,
         ).select_related("gl_account")
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
@@ -151,13 +152,7 @@ class BankAccountListCreateView(_FinanceBase):
                     is_primary_collection=False)
             bank = BankAccount.objects.create(
                 entity=entity, name=name,
-                # ``shared_when_ambiguous=True``: one GTBank operations account
-                # that the whole school pays into is the normal arrangement, not
-                # an accident, and forcing a bursar who covers two branches to
-                # pick one would hide the school's own account from every other
-                # branch. A branch-pinned bursar still stamps her branch, so a
-                # site with its own collection account keeps it to itself.
-                branch=_raised_branch(request, entity, body, shared_when_ambiguous=True),
+                branch=_transaction_branch(request, entity, body),
                 bank_name=body.get("bank_name", ""),
                 account_number=body.get("account_number", ""),
                 gl_account=gl_account,
@@ -394,7 +389,7 @@ class BankStatementLineDetailView(_FinanceBase):
                 BankStatementLine.objects.select_for_update()
                 .select_related("bank_account__entity")
                 .filter(
-                    branch_q(request, "bank_account__", include_shared=True),
+                    transaction_branch_q(request, "bank_account__"),
                     pk=pk, bank_account__entity=entity,
                 )
                 .first()
@@ -596,7 +591,7 @@ class BankStatementDetailView(_FinanceBase):
         )
         queryset = (
             BankStatement.objects.filter(
-                branch_q(request, "bank_account__", include_shared=True),
+                transaction_branch_q(request, "bank_account__"),
                 pk=statement_id,
                 bank_account_id=pk,
                 bank_account__entity=entity,
@@ -828,13 +823,7 @@ class BankStatementImportWizardView(_FinanceBase):
         entity = resolve_entity(request)
         bank = _bank_or_404(request, pk, entity=entity, active_only=True)
 
-        # A statement continues the account's chain, so the account names the
-        # batch's branch and the person uploading does not: the school's own
-        # GTBank statement stays school-wide however it arrives, and Lekki's
-        # collection account keeps its statements to Lekki even when an
-        # administrator covering both sites uploads one. Whether this caller may
-        # touch this account at all was settled by the resolver above; what is
-        # left here is only which branch the batch is filed under.
+        # A statement takes its account's branch, never the uploader's.
         statement_branch_id = _inherited_branch_id(request, bank)
         statement_branch = bank.branch if statement_branch_id is not None else None
 
@@ -1030,7 +1019,7 @@ class _StatementLineActionBase(_FinanceBase):
         line = (
             BankStatementLine.objects
             .filter(
-                branch_q(request, "bank_account__", include_shared=True),
+                transaction_branch_q(request, "bank_account__"),
                 pk=pk, bank_account__entity=entity,
             )
             .select_related("bank_account").first()
