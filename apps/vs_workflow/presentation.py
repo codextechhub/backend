@@ -22,6 +22,7 @@ the same answer.
 
 from __future__ import annotations
 
+import re
 from typing import Iterable, Mapping, Sequence
 
 
@@ -307,6 +308,75 @@ def for_reader(details: Mapping, request) -> dict:
             })
         else:
             sections.append(section)
+    return {**details, "sections": sections}
+
+
+_ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_ISO_INSTANT = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$",
+)
+_ISO_SPAN = re.compile(r"^(\d{4}-\d{2}-\d{2}) (to|-) (\d{4}-\d{2}-\d{2})$")
+
+
+def reword_date(value, tenant, *, branch=None):
+    """*value* in the reader's date format when it is a date and nothing else.
+
+    A snapshot stores a date as ISO ("2026-09-29", or a timestamp from
+    ``str(datetime)``), so it reads the same whatever the tenant chooses later.
+    It is written in the tenant's format, and a timestamp on the wall clock of
+    *branch* (else the tenant's), each time it is read
+    (:mod:`vs_config.display`). A span "2026-09-01 to 2026-09-05" has each end
+    reworded. Anything else, including text that merely contains a date, is
+    returned untouched.
+    """
+    from vs_config.display import format_date, format_datetime
+
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if _ISO_DAY.match(text):
+        return format_date(text, tenant)
+    if _ISO_INSTANT.match(text):
+        return format_datetime(text, tenant, branch=branch)
+    span = _ISO_SPAN.match(text)
+    if span:
+        start, joiner, end = span.groups()
+        return f"{format_date(start, tenant)} {joiner} {format_date(end, tenant)}"
+    return value
+
+
+def summary_for_reader(summary: Mapping, tenant, *, branch=None) -> dict:
+    """A stored approval summary with its dates in the reader's format (see :func:`reword_date`)."""
+    summary = dict(summary or {})
+    if "subtitle" in summary:
+        summary["subtitle"] = reword_date(summary["subtitle"], tenant, branch=branch)
+    fields = summary.get("fields")
+    if isinstance(fields, list):
+        summary["fields"] = [
+            {**field, "value": reword_date(field.get("value"), tenant, branch=branch)}
+            if isinstance(field, dict) else field
+            for field in fields
+        ]
+    return summary
+
+
+def details_dates_for_reader(details: Mapping, tenant, *, branch=None) -> dict:
+    """Stored approval details with every field value and table cell that is a date reworded."""
+    if not details or not details.get("sections"):
+        return dict(details or {})
+    sections = []
+    for section in details["sections"]:
+        if section.get("kind") == "fields":
+            section = {**section, "items": [
+                {**item, "value": reword_date(item.get("value"), tenant, branch=branch)}
+                for item in section["items"]
+            ]}
+        elif section.get("kind") == "table":
+            section = {**section, "rows": [
+                {key: reword_date(cell, tenant, branch=branch) for key, cell in row.items()}
+                for row in section["rows"]
+            ]}
+        sections.append(section)
     return {**details, "sections": sections}
 
 
