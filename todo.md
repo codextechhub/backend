@@ -123,9 +123,9 @@ MUST SAY:
   Direct entries post as MANUAL; opening_balance: true keeps OPENING.
 - Tax shares (M19). A share is paid only from a bank account of its branch; an
   unbranched account pays no share at a multi-branch tenant (it is the only
-  branch's at a one-branch tenant). A branch-bound bursar sees and pays only her
+  branch's at a one-branch tenant). A branch-bound bursar sees and pays only their
   branches' shares (totals recomputed), and tax-obligations/outstanding narrows to
-  her branches; prepare, file, unfile and reverse stay whole-school.
+  their branches; prepare, file, unfile and reverse stay whole-school.
 - New keys: procurement.vendor_credit_note.*, procurement.vendor_invoice.reverse,
   procurement.goods_receipt.reverse, procurement.vendor_invoice.import_opening,
   finance.banktransaction.*, finance.banktransfer.*.
@@ -223,6 +223,124 @@ MUST SAY:
   finance.customer.import_opening.
 - Needs Attention: deferred fee income, the bad-debt provision, caution deposits and
   sponsor payers are the next stage; FinPro lacks the new screens.
+
+### D87. Every transaction names a branch, is read by its own branch, and is paid from its own branch's bank (merge c0137f00 of 237599d6..2e768bee, with e90ba13f; FinPro v0.7.35-v0.7.37; 2026-09-30)
+MODULES: M04 roles and permissions (branch reach), M01 school and branch
+management, M17 billing and invoicing, M18 payments and collections, M19 finance
+and accounting, M20 adjustments and concessions, M21 vendor management, M22
+procurement, M23 purchase orders delivery and AP, M24 inventory and stock ledger,
+M26 reporting and exports, M07 workflow and approval engine, M25 dashboards, MRD.
+Owner decisions of 2026-09-29/30, recorded as the rule the modules now follow.
+MUST SAY:
+- The rule (M04, MRD). There is no school-wide transaction: every money and
+  procurement document names a branch, Head Office included, and every school has
+  at least one branch (never called "Head Office branch" by the system). A
+  branch-bound reader reads a transaction only when it names one of their
+  branches (vs_rbac.scoping.transaction_branch_q, exclusive); a transaction with
+  no branch is whole-school only and reads "No branch yet", never "School-wide".
+  Shared records (customers, vendors, fee structures, settings) keep the
+  inclusive reading, where a blank branch means every branch. The same reading
+  serves lists, detail by id, counts, dashboards, reports, statements emailed by
+  a branch bursar, exports (transaction datasets exclusive, customer and vendor
+  datasets inclusive), imports (salary roster, bank statement) and approvals (a
+  money document's approval follows its branch).
+- Raising (M17, M19, M22). A new transaction takes the reader's branch when they
+  are pinned to one, and the form asks which branch only when there is a choice;
+  a document raised against a shared customer names its branch; a new customer is
+  filed under a branch when the reader covers several (whole-school readers may
+  leave it shared). Customer, invoice, payment-plan and ledger-account rows carry
+  branch_id (a ledger account names its bank account's branch). Pickers can list
+  only the customers and vendors a clerk may use (?own=true).
+- Money moves within a branch (M18, M19, M20, M23). A document is paid only from
+  a bank account of its own branch (require_own_branch_bank); an account with no
+  branch pays nothing at a school with several branches and is the only branch's
+  at a school with one. Advances, customer credit and vendor credit settle only
+  bills of the same branch (SettlementBranchError), with no school-wide case. A
+  gateway payout's payment takes the paying bank's branch; an online payment for
+  an invoice belongs to the invoice's branch; a top-up for a shared family takes
+  the branch of the account it lands in. Bank transactions and transfers (D84)
+  follow the same rules.
+- Per-branch documents (M19, M24). Every budget belongs to a branch and the
+  school's plan is their roll-up, shown as one "All branches" line. A store
+  belongs to one branch; other branches requisition from it. VAT and year close
+  are split per branch and filed or closed together; both are refused at a school
+  with several branches while any line lacks a branch. The school's tax return
+  names no branch and is booked per branch share: a branch bursar reaches it only
+  through their own branch's share, and filing, unfiling and reversal stay
+  whole-school. Payroll is D88.
+- Procurement (M22, M23). Requisitions, standalone RFQs, stores and restock drafts
+  name their branch; an RFQ raised from a requisition names it; procurement
+  reports count only documents in the reader's view.
+- Backfill (M19, M01). branch_audit reports unbranched transactions;
+  branch_backfill (dry run unless --apply) derives each row's branch from its
+  source (customer, raising document, bank account, store) and fills it, flags
+  what an administrator must decide (a shared bank account becomes one record per
+  branch; a central store or a budget is assigned), and leaves whole-school
+  documents (a central payroll run, the tenant's tax return) unbranched. It
+  refuses books whose tenant owns no branch (CodeX today). Run on the dev
+  database 2026-09-30: 1,741 rows filled.
+- Screens (FinPro v0.7.35-v0.7.37). The Branch field appears on create forms only
+  when there is a choice and starts on the branch picked in the school app's
+  header switcher (host export useBranchLens). A reader whose role cannot view the
+  books is told so ("Your role can't view the books. Ask your administrator."),
+  not "No set of books yet"; a failed load offers a retry.
+- Needs Attention: CodeX's books need a branch named after its city ("Lagos")
+  before the backfill can reach them; gateway (vs_payments) branch columns and a
+  per-branch primary collection account; the fee run passing a branch through the
+  FAL; making branch NOT NULL on transaction models (TaxFiling exempt,
+  TaxFilingShare constrained).
+
+### D88. A branch bursar reads a whole-school payroll run through their own branch's share (a1fb1e54, 2026-09-30; FinPro v0.7.37)
+MODULES: M19 finance and accounting (payroll), M12 staff management, M04 roles and
+permissions, MRD.
+MUST SAY:
+- One run, one journal per branch (M19). A payroll run for all staff posts one
+  journal per branch (PayrollLine.branch, PayrollRunBranch; migration vs_finance
+  0039), each paid from that branch's bank account. The per-branch payroll setting
+  stays: a school may let each branch run its own payroll.
+- Reading (M19, M04). A branch-bound reader opens a whole-school run only through
+  a share of their branch and sees only their branch's staff lines, share, journal
+  and totals; list totals, status and the summary (headcount, net pay, awaiting
+  payment) are theirs alone, and a partial_view flag marks the response. A run
+  with no share of theirs, a whole-school draft (no shares until posted) and
+  another branch's per-branch run are 404. A whole-school run booked wholly to one
+  branch is that branch's to read. Posting, paying, voiding and cancelling a
+  whole-school run are whole-school only (403 SHARED_RECORD_READ_ONLY); a branch's
+  own per-branch run stays theirs.
+- FIX: "Awaiting payment" no longer counts a branch share already paid.
+- Screen: the run drawer says "This run covers the whole school. You are shown
+  only your branch's part." and offers no post, pay or void.
+
+### D89. Audit trails are read by the branch of the document they record (3ea9961c, c8be34ff, 2026-09-30; FinPro v0.7.39)
+MODULES: M05 audit (platform audit trail), M19 finance and accounting (finance
+audit trail), M22 procurement, M07 workflow and approval engine, M26 reporting and
+exports, M04 roles and permissions, MRD.
+Owner decision of 2026-09-30.
+MUST SAY:
+- Finance audit trail (M19). Each entry records the branch of the document it is
+  about (FinanceAuditLog.branch; migration vs_finance 0042; the append-only
+  trigger allows only filling a blank branch). Entries about a whole-school
+  document booked per branch (payroll accrual, disbursement and void; tax return
+  prepare, file, unfile and pay; the period depreciation run) are written once per
+  branch share with that share's figures; the whole-school figure is their sum.
+  Entries about settings, fiscal years, year close, contracts and dunning runs
+  stay whole-school. A branch-bound reader sees only their branches' entries in
+  the list, facets, counts and the new detail route (audit-logs/<id>/, 404
+  otherwise); entries with no branch are whole-school only. The write-off list
+  narrows before its newest-1,000 cut.
+- Platform audit trail (M05). AuditEvent.branch (migration vs_audit 0018),
+  passed by emitters that know it and never inferred. An event naming a branch is
+  read only by that branch's readers, whichever module wrote it; a finance or
+  procurement event naming none is whole-school only; any other event naming none
+  (a sign-in, a role change) reads as before. The same filter serves the event
+  list, detail, entity trails, the security dashboard, the CSV export and the
+  Export Centre dataset. The workflow's "posted without approval" record names
+  its document's branch.
+- Backfill (M19, M05). branch_backfill fills both trails from the document an
+  entry names; entries about whole-school documents stay blank.
+- Screen: the finance audit trail shows a Branch column at a school with several
+  branches; an entry about the whole books reads "School-wide" ("Entity-wide" in
+  the console).
 
 ## Undone
 
