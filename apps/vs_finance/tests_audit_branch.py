@@ -470,6 +470,33 @@ class OldEntriesAreBackfilledTests(_AuditFixture):
         old.refresh_from_db()
         self.assertEqual(old.branch_id, self.lekki.pk)
 
+    def test_an_old_platform_copy_takes_its_documents_branch(self):
+        """The platform trail's copies follow the finance entries they copy."""
+        from vs_audit.services import emit_audit_event
+
+        invoice = self.invoice(self.books, self.customer(self.books, "L1", self.lekki), self.lekki)
+        central = self.posted_run()
+
+        def copy(entity_type, entity_id, module_key="FINANCE"):
+            return emit_audit_event(
+                module_key=module_key, action_type="FINANCIAL_TRANSACTION", entity_type=entity_type,
+                entity_id=str(entity_id), tenant=self.tenant, summary="old",
+            )
+
+        about_invoice = copy("vs_finance.Invoice", invoice.pk)
+        about_run = copy("vs_finance.PayrollRun", central.pk)
+        about_statement = copy("vs_finance.BankStatementLine", 5)
+        sign_in = copy("User", 1, module_key="IDENTITY")
+
+        self.backfill()
+
+        for event in (about_invoice, about_run, about_statement, sign_in):
+            event.refresh_from_db()
+        self.assertEqual(about_invoice.branch_id, self.lekki.pk)
+        self.assertIsNone(about_run.branch_id)
+        self.assertIsNone(about_statement.branch_id)
+        self.assertIsNone(sign_in.branch_id)
+
     def test_an_old_emailed_invoice_entry_takes_the_invoices_branch(self):
         from vs_finance.constants import (
             FinanceDeliveryDocument, FinanceDeliverySource, FinanceDeliveryStatus,

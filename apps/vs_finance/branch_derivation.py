@@ -124,6 +124,12 @@ class Target:
     the backfill fills. It may instead be a function returning the ``Q``, called
     when an entity is planned, for a target whose rule reads what the other
     targets registered (the finance audit trail's does).
+
+    ``scope_field`` names how a row reaches the books being planned: ``entity``
+    (the default) for a row of one set of books, ``tenant`` for a row kept per
+    tenant rather than per set of books, such as the platform audit trail's
+    copy of a finance entry. A tenant row is planned with each of its tenant's
+    books, and a row written by an earlier one is simply no longer blank.
     """
 
     model_label: str
@@ -133,6 +139,7 @@ class Target:
     has_branch_column: bool = True
     no_source_note: str = ""
     whole_tenant: object = None
+    scope_field: str = "entity"
 
     @property
     def model(self):
@@ -541,7 +548,8 @@ def plan_entity(entity) -> EntityPlan:
     plans: list[TargetPlan] = []
     for target in targets():
         model = target.model
-        rows = model._base_manager.filter(entity=entity)
+        owner = entity.tenant if target.scope_field == "tenant" else entity
+        rows = model._base_manager.filter(**{target.scope_field: owner})
         if target.has_branch_column:
             rows = rows.filter(branch__isnull=True)
         if target.whole_tenant is not None:
@@ -752,6 +760,7 @@ def _audit(plan: EntityPlan, target: Target, pk, label, branch_id, how) -> None:
             "branch_name": branch_name,
             "ledger_entity": plan.entity.code,
         },
+        branch=branch_id,
     )
     if event is None:
         raise BackfillAuditError(

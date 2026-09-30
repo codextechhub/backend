@@ -21,8 +21,12 @@ from .constants import FinanceAuditStatus
 
 # Support the mirror to central workflow.
 def _mirror_to_central(*, action, actor_user, entity, target_type, target_id,
-                       document_number, status, message, metadata):
-    """Best-effort copy into central vs_audit. Never raises - the in-app log is truth."""
+                       document_number, status, message, metadata, branch_id=None):
+    """Best-effort copy into central vs_audit. Never raises - the in-app log is truth.
+
+    The copy carries the entry's branch, so the platform trail narrows a
+    branch-bound reader exactly as the finance trail does.
+    """
     try:  # Mirroring must never block the primary finance write.
         from vs_audit.services import emit_audit_event
         from vs_audit.models import AuditModuleKey, AuditActionType
@@ -43,6 +47,7 @@ def _mirror_to_central(*, action, actor_user, entity, target_type, target_id,
             severity="INFO" if status == FinanceAuditStatus.SUCCESS else "WARNING",
             summary=message or f"Finance: {action}",
             metadata={"finance_action": str(action), **(metadata or {})},
+            branch=branch_id,
         )
     except Exception:  # pragma: no cover - mirror is best-effort
         pass  # Swallow mirror failures so the authoritative finance log stays intact.
@@ -124,7 +129,7 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
             action=action, actor_user=actor_user, entity=entity,
             target_type=target_type, target_id=target_id,
             document_number=document_number, status=status,
-            message=message, metadata=metadata,
+            message=message, metadata=metadata, branch_id=log.branch_id,
         )
     return log  # Return the authoritative finance audit row.
 

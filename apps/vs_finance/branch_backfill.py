@@ -16,7 +16,8 @@ entry takes the branch of the document it records, including a branch this
 same run has only planned for that document. An entry about something that
 belongs to the whole tenant (a setting, a fiscal year, a central payroll run,
 the tenant's tax return) is neither planned nor flagged, and stays visible to
-whole-school readers only.
+whole-school readers only. The platform audit trail's copies of those entries
+follow them the same way; that trail is kept per tenant, not per set of books.
 """
 from __future__ import annotations
 
@@ -52,6 +53,7 @@ BANK_ACCOUNT = "vs_finance.BankAccount"
 FIXED_ASSET = "vs_finance.FixedAsset"
 JOURNAL = "vs_finance.JournalEntry"
 AUDIT_LOG = "vs_finance.FinanceAuditLog"
+PLATFORM_AUDIT = "vs_audit.AuditEvent"
 
 #: An emailed document's audit entry names the delivery; the delivery names the document.
 _DELIVERED = {"InvoiceDelivery": INVOICE, "ReceiptDelivery": PAYMENT}
@@ -65,16 +67,34 @@ def _document_labels() -> dict[str, str]:
     """
     seen: dict[str, set[str]] = defaultdict(set)
     for target in targets():
-        if target.has_branch_column and target.model_label != AUDIT_LOG:
+        if target.has_branch_column and target.model_label not in _AUDIT_FIELDS:
             seen[target.model.__name__].add(target.model_label)
     return {name: labels.pop() for name, labels in seen.items() if len(labels) == 1}
 
 
-def _entries(pks, *fields):
-    from .models import FinanceAuditLog
+#: How each audit trail names what an entry is about: ``(type field, id field)``.
+_AUDIT_FIELDS = {
+    AUDIT_LOG: ("target_type", "target_id"),
+    PLATFORM_AUDIT: ("entity_type", "entity_id"),
+}
 
+
+def _entries(model_label, pks):
+    """``(pk, class name, id, metadata)`` of audit rows of either trail.
+
+    The finance trail names its target by class (``Invoice``); the platform
+    trail's copy by label (``vs_finance.Invoice``), and the backfill's own events
+    by their model's label (``vs_procurement.PurchaseOrder``). All read as the
+    class name, which is what :func:`_document_labels` is keyed by.
+    """
+    from django.apps import apps
+
+    type_field, id_field = _AUDIT_FIELDS[model_label]
+    model = apps.get_model(model_label)
     for chunk in _chunks(pks):
-        yield from FinanceAuditLog._base_manager.filter(pk__in=chunk).values_list("pk", *fields)
+        rows = model._base_manager.filter(pk__in=chunk).values_list("pk", type_field, id_field, "metadata")
+        for pk, target_type, target_id, metadata in rows:
+            yield pk, str(target_type or "").rsplit(".", 1)[-1], target_id, metadata or {}
 
 
 def _answer(ctx, links: dict[int, tuple[str, int]], label: str) -> Answer:
@@ -101,7 +121,7 @@ def audited_document() -> Source:
     def derive(ctx, model_label, pks):
         documents = _document_labels()
         links = {}
-        for pk, target_type, target_id in _entries(pks, "target_type", "target_id"):
+        for pk, target_type, target_id, _metadata in _entries(model_label, pks):
             ref = _as_id(target_id)
             if target_type in documents and ref is not None:
                 links[pk] = (documents[target_type], ref)
@@ -117,11 +137,11 @@ def audited_reference() -> Source:
     def derive(ctx, model_label, pks):
         references = audit_references()
         links = {}
-        for pk, target_type, metadata in _entries(pks, "target_type", "metadata"):
+        for pk, target_type, _target_id, metadata in _entries(model_label, pks):
             if target_type not in references:
                 continue
             key, reference_label = references[target_type]
-            ref = _as_id((metadata or {}).get(key))
+            ref = _as_id(metadata.get(key))
             if ref is not None:
                 links[pk] = (reference_label, ref)
         return _answer(ctx, links, label)
@@ -137,7 +157,7 @@ def delivered_document() -> Source:
         from .models import FinanceDocumentDelivery
 
         delivery_of = {}
-        for pk, target_type, target_id in _entries(pks, "target_type", "target_id"):
+        for pk, target_type, target_id, _metadata in _entries(model_label, pks):
             ref = _as_id(target_id)
             if target_type in _DELIVERED and ref is not None:
                 delivery_of[pk] = (_DELIVERED[target_type], ref)
@@ -178,6 +198,35 @@ def _unplaceable_entries() -> Q:
             .annotate(ref=Cast("pk", CharField())).values("ref"),
         )
     return whole
+
+
+def _unplaceable_events() -> Q:
+    """The platform trail's events the backfill leaves alone.
+
+    Every event of a module other than finance and procurement, and among
+    those, the same entries :func:`_unplaceable_entries` leaves alone, named the
+    way the platform trail names them: ``vs_finance.Invoice`` for the finance
+    trail's copy, the model's label for the backfill's own events.
+    """
+    from .models import PayrollRun, TaxFiling
+
+    documents = _document_labels()
+    references = audit_references()
+    readable = (
+        {f"vs_finance.{name}" for name in documents} | set(documents.values())
+        | {f"vs_finance.{name}" for name in references} | {f"vs_finance.{name}" for name in _DELIVERED}
+    )
+    whole = ~Q(module_key__in=["FINANCE", "PROCUREMENT"]) | ~Q(entity_type__in=sorted(readable))
+    for target_type, (key, _label) in references.items():
+        whole |= Q(entity_type=f"vs_finance.{target_type}") & ~Q(metadata__has_key=key)
+    for model, label in ((PayrollRun, "vs_finance.PayrollRun"), (TaxFiling, "vs_finance.TaxFiling")):
+        whole |= Q(
+            entity_type=label,
+            entity_id__in=model._base_manager.filter(branch__isnull=True)
+            .annotate(ref=Cast("pk", CharField())).values("ref"),
+        )
+    return whole
+
 
 _TARGETS = (
     Target(
@@ -252,6 +301,11 @@ _TARGETS = (
         AUDIT_LOG,
         (audited_document(), audited_reference(), delivered_document()),
         order=1000, whole_tenant=_unplaceable_entries,
+    ),
+    Target(
+        PLATFORM_AUDIT,
+        (audited_document(), audited_reference(), delivered_document()),
+        order=1010, whole_tenant=_unplaceable_events, scope_field="tenant",
     ),
 )
 
