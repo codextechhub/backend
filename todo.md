@@ -277,15 +277,20 @@ MUST SAY:
   what an administrator must decide (a shared bank account becomes one record per
   branch; a central store or a budget is assigned), and leaves whole-school
   documents (a central payroll run, the tenant's tax return) unbranched. It
-  refuses books whose tenant owns no branch (CodeX today). Run on the dev
-  database 2026-09-30: 1,741 rows filled.
+  refuses books whose tenant owns no branch. Run on the dev database 2026-09-30:
+  1,741 rows filled, then 432 on CodeX's books once Lagos existed.
+- The platform tenant's branch (M01, afef1c0a). Every tenant keeps a branch, the
+  platform included: vs_tenants 0011 gives codex its active main branch "Lagos"
+  (named after its city) where it owns none. Its reverse removes Lagos only while
+  nothing names it. Deploy: migrate, then branch_backfill --tenant codex --apply.
+  The "books whose tenant owns no branch" shape no longer exists; one-branch books
+  book to their only branch.
 - Screens (FinPro v0.7.35-v0.7.37). The Branch field appears on create forms only
   when there is a choice and starts on the branch picked in the school app's
   header switcher (host export useBranchLens). A reader whose role cannot view the
   books is told so ("Your role can't view the books. Ask your administrator."),
   not "No set of books yet"; a failed load offers a retry.
-- Needs Attention: CodeX's books need a branch named after its city ("Lagos")
-  before the backfill can reach them; gateway (vs_payments) branch columns and a
+- Needs Attention: gateway (vs_payments) branch columns and a
   per-branch primary collection account; the fee run passing a branch through the
   FAL; making branch NOT NULL on transaction models (TaxFiling exempt,
   TaxFilingShare constrained).
