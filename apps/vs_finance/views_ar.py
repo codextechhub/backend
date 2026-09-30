@@ -2637,43 +2637,40 @@ def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None):
     read from the written-off invoice rather than from the entry. An entry
     written before entries carried a branch has none until the branch backfill
     reaches it, and the invoice answers the same question for old and new
-    entries alike. Resolving it costs one extra query, bounded by ``limit``, and
-    only for a narrowed caller. A row whose target is not a resolvable invoice
-    is not shown to a narrowed caller: failing closed on an oddity is right where
-    failing open would leak another branch's bad debt. Omitting ``scope`` means
-    no narrowing, which is what an unbound caller gets.
+    entries alike. The narrowing is a subquery applied before ``limit`` cuts the
+    list, so Ngozi at Lekki still finds Lekki's write-off from March when Ikeja
+    has written off a thousand invoices since; cutting first and narrowing after
+    would hand them a list with none of their own. A row whose target is not a
+    resolvable invoice is not shown to a narrowed caller: failing closed on an
+    oddity is right where failing open would leak another branch's bad debt.
+    Omitting ``scope`` means no narrowing, which is what an unbound caller gets.
     """
     from .approvals import ApprovalGate
     from vs_rbac.scoping import UNNARROWED
 
+    from django.db.models import CharField
+    from django.db.models.functions import Cast
+
     gate = ApprovalGate() if gate is None else gate
     scope = UNNARROWED if scope is None else scope
-    logs = list(
-        FinanceAuditLog.objects.filter(
-            entity=entity, action=FinanceAuditAction.INVOICE_WRITTEN_OFF,
-            status=FinanceAuditStatus.SUCCESS,
-        ).order_by("-created_at", "-id")[:limit]
+    posted = FinanceAuditLog.objects.filter(
+        entity=entity, action=FinanceAuditAction.INVOICE_WRITTEN_OFF,
+        status=FinanceAuditStatus.SUCCESS,
     )
+    if scope.is_narrowed:
+        # Narrowed before the cut; see the docstring.
+        in_reach = scope.filter(Invoice.objects.filter(entity=entity)).annotate(
+            ref=Cast("pk", CharField()),
+        ).values("ref")
+        posted = posted.filter(target_type="Invoice", target_id__in=in_reach)
+    logs = list(posted.order_by("-created_at", "-id")[:limit])
     need_ids = [int(l.target_id) for l in logs
                 if not l.metadata.get("customer_code") and str(l.target_id).isdigit()]
     invs = {i.id: i for i in Invoice.objects.filter(id__in=need_ids).select_related("customer")} \
         if need_ids else {}
 
-    # A posted write-off's branch is its invoice's; narrowed callers only, fail closed.
-    visible_ids = None
-    if scope.is_narrowed:
-        log_ids = [int(l.target_id) for l in logs if str(l.target_id).isdigit()]
-        visible_ids = set(
-            scope.filter(Invoice.objects.filter(id__in=log_ids))
-            .values_list("id", flat=True)
-        ) if log_ids else set()
-
     rows = []
     for l in logs:
-        if visible_ids is not None and (
-            not str(l.target_id).isdigit() or int(l.target_id) not in visible_ids
-        ):
-            continue
         inv = invs.get(int(l.target_id)) if str(l.target_id).isdigit() else None
         rows.append({
             "key": f"W{l.id}", "kind": "WRITEOFF", "reference": l.document_number,

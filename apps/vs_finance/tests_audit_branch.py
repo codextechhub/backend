@@ -565,3 +565,26 @@ class OldEntriesAreBackfilledTests(_AuditFixture):
                 rows.update(**change)
         with self.assertRaises(DatabaseError), transaction.atomic():
             FinanceAuditLog.objects.filter(pk=old.pk).delete()
+
+
+class WriteOffListReachTests(_AuditFixture):
+    """A branch reader's own write-offs are not pushed out by other branches' newer ones."""
+
+    def test_an_older_lekki_write_off_survives_newer_ikeja_ones(self):
+        from vs_finance.constants import FinanceAuditStatus
+        from vs_finance.views_ar import _writeoff_rows
+        from vs_rbac.scoping import BranchScope
+
+        lekki_invoice = self.invoice(self.books, self.customer(self.books, "L1", self.lekki), self.lekki)
+        ikeja_customer = self.customer(self.books, "I1", self.ikeja)
+        lekki_entry = self.entry_about(lekki_invoice, FinanceAuditAction.INVOICE_WRITTEN_OFF)
+        for _ in range(3):
+            self.entry_about(self.invoice(self.books, ikeja_customer, self.ikeja),
+                             FinanceAuditAction.INVOICE_WRITTEN_OFF)
+        self.assertEqual(FinanceAuditLog.objects.filter(status=FinanceAuditStatus.SUCCESS).count(), 4)
+
+        rows = _writeoff_rows(
+            self.books, limit=2, scope=BranchScope(frozenset({self.lekki.pk}), include_shared=False),
+        )
+
+        self.assertEqual([row["key"] for row in rows], [f"W{lekki_entry.pk}"])
