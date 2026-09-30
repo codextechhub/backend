@@ -208,7 +208,7 @@ class BankAccountNamedInAPostingTests(_FinanceBranchFixture):
 class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
     """A branch's document is paid from that branch's account and no other.
 
-    Mrs Okafor is bursar at both Ikeja and Lekki, so Lekki's account is in her
+    Mrs Okafor is bursar at both Ikeja and Lekki, so Lekki's account is in their
     bank list. An Ikeja document paid from it would leave Ikeja owing and Lekki
     short, so it is refused with a 400 naming the branch, not hidden as a 404.
     The account not yet given a branch is outside their reach altogether (404).

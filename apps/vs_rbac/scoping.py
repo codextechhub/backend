@@ -27,13 +27,13 @@ Read in order, first match wins::
     then: exactly the tenant's only branch -> the whole tenant
 
 The last line applies to whichever arm answered. Harbour Primary has one
-branch, Main, and its bursar holds her role pinned to Main. Every row Harbour
+branch, Main, and its bursar holds their role pinned to Main. Every row Harbour
 has is a Main row, a shared record, or a transaction still waiting to be given
 its branch, and all of them are Main's, so the pin says nothing a whole-tenant
 grant would not: they read the tenant-level figures, changes shared records and
 grants roles across the tenant exactly as an unpinned bursar does. The day
 Harbour opens a second branch the same grant narrows to Main again, on the next
-request, because a shared row then binds a branch she does not work in. A
+request, because a shared row then binds a branch they do not work in. A
 caller covering every branch of a tenant with two or more stays narrowed: the
 next branch opened would inherit whatever they did to a shared row. The grant
 row itself is never rewritten; only its reading changes with the branch count.
@@ -42,7 +42,7 @@ A whole-tenant grant dominating is not a detail: it is what "whole tenant"
 means, and it is how everybody working today holds their access. It dominates
 ``User.branch`` too. Let the first arm and the last one both answer "no
 narrowing" and the caller falls through to their home posting either way, so a
-Finance Officer for the whole school sees the one site her staff record happens
+Finance Officer for the whole school sees the one branch their staff record happens
 to name, and two people holding the identical grant see different schools
 because one of them has a home posting and the other does not. That is a
 permission decided by a field which is not a permission. The grant wins;

@@ -611,7 +611,7 @@ class BankAccountReachedByIdNarrowsTests(_FinanceBranchFixture):
 
     The bank account is the one finance model whose list was narrowed while every
     route reaching it by id was not, so a bursar covering Ikeja could not see
-    Lekki's account on her screen and could still read its number and balance,
+    Lekki's account on their screen and could still read its number and balance,
     rename it, pull its statement lines, import onto it and reconcile it, by
     typing its id into the address.
 
@@ -691,7 +691,7 @@ class BankAccountReachedByIdNarrowsTests(_FinanceBranchFixture):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["data"]["name"], "Ikeja Collections")
 
-    def test_an_account_not_yet_given_a_branch_does_not_open_from_their_site(self):
+    def test_an_account_not_yet_given_a_branch_does_not_open_from_their_branch(self):
         """A bank account holds one branch's money, so an unbranched one is nobody's yet."""
         response = self.call("GET", f"bank-accounts/{self.shared_account.pk}/")
 
@@ -824,7 +824,7 @@ class DocumentEmailNarrowsTests(_FinanceBranchFixture):
 
         The preview names the family's email address; the POST beside it puts
         the invoice there. Neither is the Ikeja bursar's to do with Lekki's
-        bill, and the list she works from has never shown it to her.
+        bill, and the list they work from has never shown it to them.
         """
         path = f"invoices/{self.lekki_bill.pk}/email/"
 

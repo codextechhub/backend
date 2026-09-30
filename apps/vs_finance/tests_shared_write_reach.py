@@ -19,12 +19,12 @@ raising it: a branch-bound bursar's entry is their branch's, and theirs to rever
 and a whole-school bursar at a school with several branches names one.
 
 Lagoon View runs Ikeja and Lekki. Adaeze is the bursar for the whole school.
-Ngozi is Lekki's bursar: her role carries the same keys, pinned to Lekki. She
-reads all of it and changes none of the shared records, because closing
-January from Lekki closes it for Ikeja too. Her own branch's rows stay hers.
+Ngozi is Lekki's bursar: their role carries the same keys, pinned to Lekki. They
+read all of it and change none of the shared records, because closing
+January from Lekki closes it for Ikeja too. Their own branch's rows stay theirs.
 
 Harbour Primary has one branch, Main, and Tolu's grant is pinned to it. With
-one branch a shared record reaches nobody she does not cover, so she may
+one branch a shared record reaches nobody they do not cover, so they may
 change it; the day Harbour opens a second branch, the same grant is refused.
 """
 from __future__ import annotations

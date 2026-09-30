@@ -7,7 +7,7 @@ unbranched one, on a payment, so they must not be able to name their ledgers by
 code either: as a receipt's deposit account, an
 asset's credit account, a bank adjustment's counter account, a direct entry's
 line, a payout's source, a vendor's account, or by editing the ledger account
-itself. Each is refused exactly as an unknown account is. A school default she
+itself. Each is refused exactly as an unknown account is. A school default they
 cannot point anywhere, because a setting that binds every branch is changed only
 by a caller whose reach is the whole school. A ledger account behind no bank
 account is untouched, and a caller bound to no branch names any of them.
@@ -207,7 +207,7 @@ class LedgerNamedOnAWriteTests(_LedgerReachFixture):
 class LedgerOfAnotherBranchOnABranchDocumentTests(_LedgerReachFixture):
     """A branch's document names its own branch's bank ledger and no other.
 
-    Mrs Okafor covers Ikeja and Lekki, so Lekki's bank ledger is hers to name.
+    Mrs Okafor covers Ikeja and Lekki, so Lekki's bank ledger is theirs to name.
     On an Ikeja document it is refused all the same, with the 400 that choosing
     Lekki's bank account gets, because the code moves the same money. A ledger
     account behind no bank account is unaffected.

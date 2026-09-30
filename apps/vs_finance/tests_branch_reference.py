@@ -7,7 +7,7 @@ these tests close: **addressing**.
 A list is narrowed by ``branch_q``, in thirty-one places in ``views_ar``. The
 four resolvers those same screens share when a caller names a row - by customer
 code, invoice number, or fee structure code - were narrowed in none of them, so
-the row a bursar could not see in her list was one guessed code away from being
+the row a bursar could not see in their list was one guessed code away from being
 read, edited, and billed from. The list hid it; the id reached it.
 
 Two rules are asserted throughout, and they are the reason the fix is a filter
@@ -242,7 +242,7 @@ class FeeStructureByReferenceTests(_ReferenceFixture):
         )
 
     def test_a_school_wide_price_list_still_resolves_for_a_pinned_bursar(self):
-        """Corona publishes one template for all three branches. She uses it."""
+        """Corona publishes one template for all three branches. They use it."""
         response = self.get(
             self.bursar, f"fee-structures/{self.shared_fees.code}/", self.books,
         )
@@ -324,7 +324,7 @@ class FeeRunBillsOnlyWhatTheCallerReachesTests(_ReferenceFixture):
         )
 
     def test_a_pinned_bursars_all_active_run_bills_only_her_reach(self):
-        """Ikeja's family and the school-wide one; Lekki's family is not hers to bill."""
+        """Ikeja's family and the school-wide one; Lekki's family is not theirs to bill."""
         response = self.run_fees(self.bursar, self.shared_fees, {"all_active": True})
 
         self.assertEqual(response.status_code, 201, response.data)
@@ -334,7 +334,7 @@ class FeeRunBillsOnlyWhatTheCallerReachesTests(_ReferenceFixture):
         )
 
     def test_naming_another_branchs_family_answers_as_an_unknown_code_does(self):
-        """404, not 403, and nothing is billed, not even the lines she could reach."""
+        """404, not 403, and nothing is billed, not even the lines they could reach."""
         response = self.run_fees(
             self.bursar, self.shared_fees,
             {"customers": [self.ikeja_family.code, self.lekki_family.code]},
@@ -462,7 +462,7 @@ class BulkRunsNarrowToTheCallersReachTests(_ReferenceFixture):
         return set(DunningNotice.objects.filter(entity=self.books)
                    .values_list("invoice_id", flat=True))
 
-    def test_a_pinned_bursars_dunning_run_chases_only_her_reach(self):
+    def test_a_pinned_bursars_dunning_run_chases_only_their_reach(self):
         """Ikeja's bill only: the unbranched one is not theirs to chase."""
         response = self.post(self.bursar, "dunning/generate/", self.books, {"as_of": "2026-01-31"})
 

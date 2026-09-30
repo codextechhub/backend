@@ -1,9 +1,9 @@
 """The payments console works within the caller's branches, on reads and on writes.
 
-Corona runs Ikeja, Lekki and Yaba. Ikeja's clerk works payments for Ikeja. She
+Corona runs Ikeja, Lekki and Yaba. Ikeja's clerk works payments for Ikeja. They
 must not raise a payment request or a virtual account for a Lekki family, or pay
 out to a vendor Lekki keeps to itself, any more than the finance screens let
-her. Nor may she see, count or change Lekki's collections, virtual accounts,
+them. Nor may they see, count or change Lekki's collections, virtual accounts,
 payouts or their log. Every gateway record takes its reach from the row it hangs
 on, read exclusively: a record whose customer, invoice, vendor or bank carries no
 branch is not theirs either, because nothing says whose money it is. Each is
@@ -513,7 +513,7 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         return row
 
     def test_a_collection_for_an_invoice_is_reached_by_the_invoices_branch(self):
-        """Tola keeps Lekki's books, so she sees and opens the Okafors' Lekki payment."""
+        """Tola keeps Lekki's books, so they see and open the Okafors' Lekki payment."""
         okafor = self._okafor_collection()
         tola = self.reader(branch=self.lekki)
         detail = f"/v1/payments/collections/{okafor.pk}/?entity={self.books.code}"
@@ -606,7 +606,7 @@ class PayoutBatchApprovalsStayWithinReachTests(_FinanceBranchFixture):
     """The payout approval inbox holds only the batches the approver can reach.
 
     Mrs Bello is Ikeja's bursar and is named on Corona's payout approver group, so
-    the approval route puts her on every batch; a batch has no branch of its own.
+    the approval route puts them on every batch; a batch has no branch of its own.
     One batch pays an Ikeja vendor, another pays a Lekki vendor and one every
     branch shares. The payout screens already keep the second from them. The approval inbox,
     the instance behind it and its approve and reject answer the same way, while
