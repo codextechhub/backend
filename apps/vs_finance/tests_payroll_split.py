@@ -240,6 +240,37 @@ class PayingEachBranchsShareTests(_SplitFixture):
         self.assertIn("each branch's own account", str(response.data))
 
 
+class AwaitingPaymentTests(_SplitFixture):
+    """The summary's "awaiting payment" is the net pay no bank has paid yet.
+
+    Once Ikeja's share of January is paid, only Lekki's 72,000 is still owed,
+    though the run as a whole still reads POSTED until Lekki's is paid too.
+    """
+
+    def summary(self):
+        response = self.bello.get(f"/v1/finance/payroll-runs/summary/?entity={self.books.code}")
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["data"]
+
+    def test_a_posted_run_awaits_its_whole_net_pay(self):
+        self.posted_run()
+        self.assertEqual(self.summary()["to_pay"], 117_000)
+
+    def test_a_paid_branch_share_no_longer_awaits_payment(self):
+        run = self.posted_run()
+        self.act(run, "pay", {"bank_account": self.ikeja_bank.pk})
+
+        self.assertEqual(self.summary()["to_pay"], 72_000)
+
+    def test_a_run_posted_as_one_journal_awaits_its_net_until_paid(self):
+        self.bola.delete()
+        run = self.posted_run()
+        self.assertEqual(self.summary()["to_pay"], 45_000)
+
+        self.act(run, "pay", {"bank_account": self.ikeja_bank.pk})
+        self.assertEqual(self.summary()["to_pay"], 0)
+
+
 class CancellingPerJournalTests(_SplitFixture):
 
     def test_cancelling_reverses_each_branchs_journal_on_its_own(self):

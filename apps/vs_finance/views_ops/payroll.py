@@ -209,6 +209,11 @@ class PayrollRunListCreateView(_FinanceBase):
 class PayrollRunSummaryView(_FinanceBase):
     """GET - header KPIs over **all** payroll runs (accurate under pagination).
 
+    ``to_pay`` is the net pay no bank account has paid yet. A run posted one
+    journal per branch reads POSTED until its last share is paid, so it counts
+    its unpaid shares, not its whole net: once Ikeja's share of January is paid,
+    only Lekki's is still awaiting payment.
+
     docstring-name: Payroll runs
     """
 
@@ -216,18 +221,23 @@ class PayrollRunSummaryView(_FinanceBase):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
-        from django.db.models import Q, Sum
+        from django.db.models import Exists, OuterRef, Sum
         from django.db.models.functions import Coalesce
 
         from ..constants import PayrollRunStatus
+        from ..models import PayrollRunBranch
 
         entity = resolve_entity(request)
         runs = PayrollRun.objects.filter(transaction_branch_q(request), entity=entity)
-        agg = runs.aggregate(
-            runs=Count("id"),
-            to_pay=Coalesce(
-                Sum("net_total", filter=Q(run_status=PayrollRunStatus.POSTED)), 0),
+        posted = runs.filter(run_status=PayrollRunStatus.POSTED)
+        unsplit = posted.exclude(Exists(PayrollRunBranch.objects.filter(run=OuterRef("pk"))))
+        unpaid_shares = PayrollRunBranch.objects.filter(
+            run__in=posted, status=PayrollRunStatus.POSTED)
+        to_pay = (
+            unsplit.aggregate(net=Coalesce(Sum("net_total"), 0))["net"]
+            + unpaid_shares.aggregate(net=Coalesce(Sum("net_total"), 0))["net"]
         )
+        agg = {"runs": runs.count(), "to_pay": to_pay}
         latest = runs.order_by("-pay_date", "-id").first()
         from ..payroll import payroll_scope
 
