@@ -54,15 +54,23 @@ def provision_default_stock_location(entity):
     "an entity always has somewhere to put stock" is an invariant rather than something
     each caller has to remember to arrange.
 
-    A school that later runs two branches adds its second location and moves the
-    opening balances across deliberately, where the transfer is visible.
+    A store belongs to one branch, so this one is filed under the tenant's main
+    branch, which a school's books are created after. Books of a tenant with no
+    branch at all (the platform's own) have no branch to file it under. A school
+    that later runs two branches adds its second location and moves the opening
+    balances across deliberately, where the transfer is visible.
     """
+    from vs_rbac.scoping import only_branch_id
+    from vs_tenants.models import Branch
+
     from .models import StockLocation
 
     if StockLocation.objects.filter(entity=entity).exists():
         return
+    main = Branch.all_objects.filter(tenant_id=entity.tenant_id, is_main=True).first()
     StockLocation.objects.create(
         entity=entity, code="MAIN", name="Main store",
         description="Created with this entity's books.",
+        branch_id=main.pk if main is not None else only_branch_id(entity.tenant_id),
         is_default=True, is_active=True,
     )

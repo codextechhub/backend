@@ -7,10 +7,10 @@ turns, how much arrives short or rejected, adjustments in the window, and goods
 received that are still waiting for a bill).
 
 Stores and documents
-    Stock figures answer for the stores the reader works in: their branches'
-    stores and the stores that belong to the whole school, as the stock screens
-    read them. Receipts and orders are documents and answer under the reader's
-    branches, as everywhere else in procurement.
+    Stock figures answer for the stores of the branches the reader works in, as
+    the stock screens read them: a store belongs to one branch. Receipts and
+    orders are documents and answer under the reader's branches, as everywhere
+    else in procurement.
 
 Running low
     An item is low when its on-hand quantity is at or below its reorder level.

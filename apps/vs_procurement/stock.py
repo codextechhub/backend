@@ -352,7 +352,9 @@ def _issue_stock_atomic(stock_item, *, quantity, movement_date, location=None,
     inventory = stock_item.inventory_account
     period = resolve_period(stock_item.entity, movement_date)
     entry = JournalEntry.objects.create(
-        entity=stock_item.entity, date=movement_date, period=period,
+        # The store's branch: the stock it relieves stood there.
+        entity=stock_item.entity, branch_id=location.branch_id,
+        date=movement_date, period=period,
         source=JournalSource.PURCHASE,
         narration=narration or f"Stock issue: {stock_item.code}",
         reference=reference, created_by=actor_user,
@@ -461,7 +463,9 @@ def _adjust_stock_atomic(stock_item, *, quantity_delta, movement_date, location=
     inventory = stock_item.inventory_account
     period = resolve_period(stock_item.entity, movement_date)
     entry = JournalEntry.objects.create(
-        entity=stock_item.entity, date=movement_date, period=period,
+        # The store's branch: the count corrected its shelf.
+        entity=stock_item.entity, branch_id=location.branch_id,
+        date=movement_date, period=period,
         source=JournalSource.PURCHASE,
         narration=narration or f"Stock adjustment: {stock_item.code}",
         reference=reference, created_by=actor_user,

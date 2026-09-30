@@ -1,24 +1,19 @@
-"""Turning "which branches?" into "whose rows?" - and the null-branch trap.
+"""Turning "which branches?" into "whose rows?" - and what a NULL branch means.
 
-:mod:`vs_rbac.scoping` has answered *which branches a caller may work in* since
-branch-scoped grants started working. Nothing outside :mod:`vs_procurement` ever
-asked. The gate held - a branch-pinned grant opened the screen - and the
-narrowing never happened, so a "Bursar at Ikeja" opened the fee screens and read
-Lekki's and Yaba's rows too.
+:mod:`vs_rbac.scoping` answers *which branches a caller may work in*, and these
+tests pin the half that renders the answer against rows: :class:`BranchScope`,
+the ``branch_q`` / ``branch_visible`` renderings of it, and the transaction
+helpers. A NULL branch means two different things, and both are asserted here
+against real rows rather than against the shape of a ``Q``::
 
-These tests pin the half that closes that: :class:`BranchScope` and the
-``branch_q`` / ``branch_visible`` renderings of it. The rule they exist to
-protect is the inclusive one::
+    a shared record (a customer, a vendor, a fee structure) with no branch
+    belongs to every branch, and stays visible to a branch-pinned caller;
 
-    a row whose branch is NULL is shared across the school,
-    and stays visible to a branch-pinned caller
+    a transaction with no branch has not been given its branch yet, and is
+    seen only by a caller whose reach is the whole school.
 
-Getting that backwards is the quiet failure. A branch admin who silently loses
-every school-wide fee structure sees missing data, not a permission error, and
-missing data gets reported as a broken screen or not reported at all. So the
-inclusive reading is the default, the exclusive one has to be asked for by name
-(:mod:`vs_procurement` asks, deliberately), and both are asserted here against
-real rows rather than against the shape of a ``Q``.
+The write half is here too: a transaction is raised for a real branch, and a
+chain carries one branch from end to end.
 """
 from types import SimpleNamespace
 
@@ -33,6 +28,7 @@ from vs_rbac.scoping import (
     branch_scope,
     branch_visible,
     caller_branch_ids,
+    transaction_branch_visible,
 )
 
 from .helpers import (
@@ -219,31 +215,60 @@ class InclusiveByDefaultTests(_RowFixture):
         self.assertIn(solo_shared.id, seen)
 
 
-class ExclusiveOnRequestTests(_RowFixture):
-    """The opt-in reading, where a null branch is a scope of its own."""
+class TransactionScopeTests(_RowFixture):
+    """A transaction with no branch is seen only by a whole-school caller.
+
+    Mrs Adeyemi works at Ikeja only. A refund nobody has given a branch could be
+    Lekki's as easily as Ikeja's, so it stays out of their lists; Mr Bello, the
+    school-wide bursar, sees it and can give it its branch.
+    """
 
     def setUp(self):
         super().setUp()
         self.at_ikeja = self.row_at(self.tenant, self.ikeja, "x-ikeja@scope.test")
-        self.school_wide = self.row_at(self.tenant, None, "x-shared@scope.test")
+        self.at_lekki = self.row_at(self.tenant, self.lekki, "x-lekki@scope.test")
+        self.unbranched = self.row_at(self.tenant, None, "x-shared@scope.test")
 
-    def test_the_exclusive_form_withholds_the_school_wide_rows(self):
-        """What :mod:`vs_procurement` asks for, and why it has to be asked for."""
-        adebayo = self.pinned_at(self.tenant, "x-adebayo@scope.test", self.ikeja)
+    def seen(self, user, tenant=None):
+        qs = TenantUserRoleAssignment.objects.filter(
+            tenant=tenant or self.tenant, id__in=self.rows,
+        )
+        return set(
+            transaction_branch_visible(self.request_for(user), qs)
+            .values_list("id", flat=True)
+        )
 
-        seen = self.visible(adebayo, include_shared=False)
+    def test_a_branch_bound_caller_sees_only_their_own_branch(self):
+        adeyemi = self.pinned_at(self.tenant, "x-adeyemi@scope.test", self.ikeja)
 
-        self.assertIn(self.at_ikeja.id, seen)
-        self.assertNotIn(self.school_wide.id, seen)
+        seen = self.seen(adeyemi)
 
-    def test_the_exclusive_form_still_does_not_narrow_a_whole_tenant_caller(self):
-        """Exclusive is about the null rows, not about widening or narrowing reach."""
-        hq = self.whole_tenant(self.tenant, "x-hq@scope.test")
+        self.assertEqual(seen, {self.at_ikeja.id})
+        self.assertNotIn(self.unbranched.id, seen)
+        self.assertNotIn(self.at_lekki.id, seen)
 
-        seen = self.visible(hq, include_shared=False)
+    def test_it_is_the_exclusive_form_of_the_shared_scope(self):
+        adeyemi = self.pinned_at(self.tenant, "x-adeyemi2@scope.test", self.ikeja)
 
-        self.assertIn(self.at_ikeja.id, seen)
-        self.assertIn(self.school_wide.id, seen)
+        self.assertEqual(self.seen(adeyemi), self.visible(adeyemi, include_shared=False))
+
+    def test_a_whole_school_caller_still_sees_the_unbranched_rows(self):
+        bello = self.whole_tenant(self.tenant, "x-bello@scope.test")
+
+        self.assertEqual(
+            self.seen(bello), {self.at_ikeja.id, self.at_lekki.id, self.unbranched.id},
+        )
+
+    def test_a_one_branch_school_is_unchanged(self):
+        """Harbour's bursar pinned to Main reaches the whole school, unbranched rows too."""
+        at_main = self.row_at(self.solo_tenant, self.solo_main, "x-solo-a@scope.test")
+        unbranched = self.row_at(self.solo_tenant, None, "x-solo-b@scope.test")
+        caretaker = self.pinned_at(self.solo_tenant, "x-solo@scope.test", self.solo_main)
+
+        seen = self.seen(caretaker, self.solo_tenant)
+
+        self.assertIn(at_main.id, seen)
+        self.assertIn(unbranched.id, seen)
 
 
 class WithdrawnBranchTests(_RowFixture):
@@ -513,7 +538,7 @@ class RaisedBranchRuleTests(_RowFixture):
         with self.assertRaises(PermissionDenied):
             self.raised(user, {"branch": self.lekki.pk})
 
-    def test_an_unbound_caller_gets_nothing_and_that_is_a_real_answer(self):
+    def test_an_unbound_caller_files_a_shared_record_for_every_branch(self):
         user = self.whole_tenant(self.tenant, "raise-hq@t.com")
 
         self.assertIsNone(self.raised(user))
@@ -581,18 +606,77 @@ class RaisedBranchRuleTests(_RowFixture):
         self.assertEqual(foreign.exception.detail, unknown.exception.detail)
 
 
+class RaisedTransactionBranchTests(_RowFixture):
+    """A transaction is always raised for a real branch."""
+
+    def raised(self, user, body=None, tenant=None):
+        from vs_rbac.scoping import raised_transaction_branch
+
+        return raised_transaction_branch(
+            self.request_for(user), tenant or self.tenant, body or {},
+        )
+
+    def test_a_pinned_caller_gets_their_own_branch_without_naming_it(self):
+        adeyemi = self.pinned_at(self.tenant, "rt-one@t.com", self.ikeja)
+
+        self.assertEqual(self.raised(adeyemi), self.ikeja)
+
+    def test_a_pinned_caller_naming_another_branch_is_refused(self):
+        from rest_framework.exceptions import PermissionDenied
+
+        adeyemi = self.pinned_at(self.tenant, "rt-wrong@t.com", self.ikeja)
+
+        with self.assertRaises(PermissionDenied):
+            self.raised(adeyemi, {"branch": self.lekki.pk})
+
+    def test_a_caller_in_two_branches_names_one(self):
+        from rest_framework.exceptions import ValidationError
+
+        okafor = self.pinned_at(self.tenant, "rt-two@t.com", self.ikeja, self.lekki)
+
+        with self.assertRaises(ValidationError) as caught:
+            self.raised(okafor)
+        self.assertIn("branch", caught.exception.detail)
+        self.assertEqual(self.raised(okafor, {"branch": self.lekki.pk}), self.lekki)
+
+    def test_a_whole_school_caller_at_a_school_with_several_branches_names_one(self):
+        """No school-wide transaction: Mr Bello's unnamed refund is a 400, not NULL."""
+        from rest_framework.exceptions import ValidationError
+
+        bello = self.whole_tenant(self.tenant, "rt-hq@t.com")
+
+        with self.assertRaises(ValidationError) as caught:
+            self.raised(bello)
+        self.assertIn("branch", caught.exception.detail)
+        self.assertEqual(self.raised(bello, {"branch": self.yaba.pk}), self.yaba)
+
+    def test_a_one_branch_school_gets_its_only_branch_without_asking(self):
+        unpinned = self.whole_tenant(self.solo_tenant, "rt-solo-hq@t.com")
+        pinned = self.pinned_at(self.solo_tenant, "rt-solo-pin@t.com", self.solo_main)
+
+        self.assertEqual(self.raised(unpinned, tenant=self.solo_tenant), self.solo_main)
+        self.assertEqual(self.raised(pinned, tenant=self.solo_tenant), self.solo_main)
+
+    def test_another_tenants_branch_is_reported_like_an_unknown_one(self):
+        from rest_framework.exceptions import ValidationError
+
+        bello = self.whole_tenant(self.tenant, "rt-oracle@t.com")
+
+        with self.assertRaises(ValidationError) as foreign:
+            self.raised(bello, {"branch": self.rival_ikeja.pk})
+        with self.assertRaises(ValidationError) as unknown:
+            self.raised(bello, {"branch": 99_999_999})
+
+        self.assertEqual(foreign.exception.detail, unknown.exception.detail)
+
+
 class InheritedBranchRuleTests(_RowFixture):
-    """The rule that decides what branch a row copies from the row it continues.
+    """The rule that decides what branch a row copies from the row it continues."""
 
-    ``include_shared`` here has to mean the same thing it means in
-    :class:`BranchScope`, or a caller can see a row on their screen and then be
-    refused when they act on it - which reads as a broken screen, not a rule.
-    """
-
-    def inherited(self, user, *sources, **kwargs):
+    def inherited(self, user, *sources):
         from vs_rbac.scoping import inherited_branch_id
 
-        return inherited_branch_id(self.request_for(user), *sources, **kwargs)
+        return inherited_branch_id(self.request_for(user), *sources)
 
     def source_at(self, branch):
         return SimpleNamespace(branch_id=getattr(branch, "pk", None))
@@ -619,33 +703,43 @@ class InheritedBranchRuleTests(_RowFixture):
         with self.assertRaises(PermissionDenied):
             self.inherited(user, self.source_at(self.lekki))
 
-    def test_a_shared_source_is_refused_exclusively_and_allowed_inclusively(self):
-        """The whole difference between procurement's reading and finance's.
-
-        Procurement: a purchase raised for the school as a whole belongs to head
-        office, and the storekeeper at Ikeja is not in that scope. Finance: a
-        school-wide customer appears on the Ikeja bursar's own screen, so she must
-        be able to record their receipt - and the receipt stays school-wide,
-        because the chain decides and not the caller.
+    def test_an_unbranched_source_is_continued_only_by_a_whole_school_caller(self):
+        """They cannot read it, so they cannot build on it; Mr Bello can, and it
+        stays unbranched.
         """
         from rest_framework.exceptions import PermissionDenied
 
-        user = self.pinned_at(self.tenant, "inh-shared@t.com", self.ikeja)
+        adeyemi = self.pinned_at(self.tenant, "inh-shared@t.com", self.ikeja)
+        bello = self.whole_tenant(self.tenant, "inh-shared-hq@t.com")
 
         with self.assertRaises(PermissionDenied):
-            self.inherited(user, self.source_at(None))
+            self.inherited(adeyemi, self.source_at(None))
+        self.assertIsNone(self.inherited(bello, self.source_at(None)))
 
-        self.assertIsNone(
-            self.inherited(user, self.source_at(None), include_shared=True),
-        )
+    def test_sources_from_two_branches_are_refused(self):
+        """A payment settling an Ikeja bill and a Lekki bill has no branch to be booked to."""
+        from rest_framework.exceptions import ValidationError
 
-    def test_sources_that_disagree_resolve_to_the_school_as_a_whole(self):
-        user = self.whole_tenant(self.tenant, "inh-split@t.com")
+        bello = self.whole_tenant(self.tenant, "inh-split@t.com")
 
-        self.assertIsNone(
-            self.inherited(
-                user, self.source_at(self.ikeja), self.source_at(self.lekki),
-            ),
+        with self.assertRaises(ValidationError) as caught:
+            self.inherited(bello, self.source_at(self.ikeja), self.source_at(self.lekki))
+        self.assertIn("branch", caught.exception.detail)
+
+    def test_an_unbranched_source_beside_a_branched_one_is_refused_at_a_school_with_several(self):
+        from rest_framework.exceptions import ValidationError
+
+        bello = self.whole_tenant(self.tenant, "inh-mixed@t.com")
+
+        with self.assertRaises(ValidationError):
+            self.inherited(bello, self.source_at(self.ikeja), self.source_at(None))
+
+    def test_a_one_branch_school_continues_an_unbranched_source_into_its_branch(self):
+        harbour = self.whole_tenant(self.solo_tenant, "inh-solo@t.com")
+
+        self.assertEqual(
+            self.inherited(harbour, self.source_at(None), self.source_at(self.solo_main)),
+            self.solo_main.pk,
         )
 
     def test_a_missing_source_is_skipped_rather_than_counted_as_a_disagreement(self):
@@ -654,3 +748,43 @@ class InheritedBranchRuleTests(_RowFixture):
         self.assertEqual(
             self.inherited(user, None, self.source_at(self.yaba)), self.yaba.pk,
         )
+
+
+class SameTransactionBranchTests(_RowFixture):
+    """Which transactions belong to one branch, for settlement and the bank rule."""
+
+    def test_equal_branches_match_and_different_ones_do_not(self):
+        from vs_rbac.scoping import same_transaction_branch
+
+        self.assertTrue(same_transaction_branch(self.tenant, self.ikeja.pk, self.ikeja))
+        self.assertFalse(same_transaction_branch(self.tenant, self.ikeja, self.lekki))
+
+    def test_an_unbranched_row_matches_only_another_at_a_school_with_several(self):
+        from vs_rbac.scoping import same_transaction_branch
+
+        self.assertFalse(same_transaction_branch(self.tenant, self.ikeja, None))
+        self.assertTrue(same_transaction_branch(self.tenant, None, None))
+
+    def test_an_unbranched_row_is_the_only_branchs_at_a_one_branch_school(self):
+        from vs_rbac.scoping import same_transaction_branch
+
+        self.assertTrue(same_transaction_branch(self.solo_tenant, self.solo_main, None))
+        self.assertTrue(same_transaction_branch(self.solo_tenant.pk, None, self.solo_main.pk))
+
+    def test_the_q_selects_the_same_rows_the_predicate_accepts(self):
+        from vs_rbac.scoping import transaction_branch_match_q
+
+        at_main = self.row_at(self.solo_tenant, self.solo_main, "m-a@t.com")
+        unbranched_solo = self.row_at(self.solo_tenant, None, "m-b@t.com")
+        at_ikeja = self.row_at(self.tenant, self.ikeja, "m-c@t.com")
+        unbranched = self.row_at(self.tenant, None, "m-d@t.com")
+        rows = TenantUserRoleAssignment.objects.filter(id__in=self.rows)
+
+        def ids(tenant, branch):
+            return set(rows.filter(tenant=tenant).filter(
+                transaction_branch_match_q(tenant, branch)).values_list("id", flat=True))
+
+        self.assertEqual(ids(self.solo_tenant, self.solo_main), {at_main.id, unbranched_solo.id})
+        self.assertEqual(ids(self.solo_tenant, None), {at_main.id, unbranched_solo.id})
+        self.assertEqual(ids(self.tenant, self.ikeja), {at_ikeja.id})
+        self.assertEqual(ids(self.tenant, None), {unbranched.id})

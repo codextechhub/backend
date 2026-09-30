@@ -11,8 +11,9 @@ another site's is a 404 rather than a send. Both matter, and for the same reason
 an email endpoint reachable by a guessed id would put one family's figures in
 front of somebody who administers a different site, and then in their inbox.
 
-``include_shared=True``, finance's reading throughout: an invoice raised for the
-school as a whole carries no branch and stays sendable from any site.
+Invoices and receipts are transactions, read exclusively
+(:func:`vs_rbac.scoping.transaction_branch_q`): a branch-bound caller sends only
+their own branches' documents, and never one not yet given a branch.
 
 The services in :mod:`vs_finance.document_email` own recipients, rendering, queueing
 and outcome; these views only resolve, authorize and translate.
@@ -24,7 +25,7 @@ import datetime
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from core.response import success_response
-from vs_rbac.scoping import branch_q
+from vs_rbac.scoping import transaction_branch_q
 
 from .constants import FinanceDeliveryDocument
 from .document_email import preview as build_preview
@@ -100,7 +101,7 @@ class InvoiceEmailView(_DocumentEmailBase):
     def resolve(self, request, pk):
         entity = resolve_entity(request)
         invoice = Invoice.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk,
+            transaction_branch_q(request), entity=entity, pk=pk,
         ).select_related("customer").first()
         if invoice is None:
             raise NotFound("Invoice not found for this entity.")
@@ -127,7 +128,7 @@ class PaymentEmailView(_DocumentEmailBase):
     def resolve(self, request, pk):
         entity = resolve_entity(request)
         payment = Payment.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk,
+            transaction_branch_q(request), entity=entity, pk=pk,
         ).select_related("customer").first()
         if payment is None:
             raise NotFound("Receipt not found for this entity.")

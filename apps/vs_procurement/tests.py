@@ -10590,6 +10590,19 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         req.refresh_from_db()
         return req
 
+    def unbranched_requisition(self, client, books, *, approved=False):
+        """A requisition raised before documents carried a branch.
+
+        No route raises one now, so it is raised for Lekki and its branch cleared,
+        which is the shape the rows written before the rule have.
+        """
+        maker = self.approved_requisition if approved else (
+            lambda c, b, **kw: self.make_requisition(c, b, **kw)[0])
+        req = maker(client, books, branch=self.lekki.pk)
+        PurchaseRequisition.objects.filter(pk=req.pk).update(branch=None)
+        req.refresh_from_db()
+        return req
+
     @staticmethod
     def rows(response):
         return response.json()["data"]
@@ -10628,19 +10641,21 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
                 self.assertEqual(response.json()["data"]["branch_name"], branch.name)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    def test_empty_branch_is_valid_and_means_the_whole_entity(self, _permission):
-        """An unbound raiser leaving the branch out is a head-office purchase, not
-        missing data: no error, no coercion to a default branch."""
+    def test_an_unbound_raiser_names_the_branch_it_is_for(self, _permission):
+        """There is no school-wide purchase: leaving the branch out is a 400."""
         client = self.client_for(self.multi_school.tenant, "hq-empty@test.com")
-        omitted, response = self.make_requisition(client, self.multi)
-        self.assertIsNone(omitted.branch_id)
-        self.assertIsNone(response.json()["data"]["branch_id"])
-        self.assertIsNone(response.json()["data"]["branch_name"])
-
-        for value in (None, ""):
+        for value in ("omitted", None, ""):
             with self.subTest(branch=value):
-                explicit, _ = self.make_requisition(client, self.multi, branch=value)
-                self.assertIsNone(explicit.branch_id)
+                payload = self.requisition_payload()
+                if value != "omitted":
+                    payload["branch"] = value
+                response = client.post(
+                    f"/v1/procurement/requisitions/?entity={self.multi.entity.code}",
+                    payload, format="json",
+                )
+                self.assertEqual(response.status_code, 400, response.data)
+                self.assertIn("branch", response.json()["error"]["detail"])
+        self.assertFalse(PurchaseRequisition.objects.filter(entity=self.multi.entity).exists())
 
     # -- capture: cross-branch and cross-tenant refusal ----------------------- #
 
@@ -10707,7 +10722,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         )
         hq_client = self.client_for(self.multi_school.tenant, "hq-chain@test.com")
         lekki_req = self.approved_requisition(lekki_client, self.multi)
-        hq_req = self.approved_requisition(hq_client, self.multi)
+        hq_req = self.unbranched_requisition(hq_client, self.multi, approved=True)
 
         for label, requisition in (("other branch", lekki_req), ("entity level", hq_req)):
             with self.subTest(source=label):
@@ -10775,6 +10790,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         invoice.refresh_from_db()
         bank = BankAccount.objects.create(
             entity=entity, gl_account=self.acc(entity, "1100"), name="Operating Bank",
+            branch=self.lekki,
         )
         payment_response = lekki_client.post(
             f"/v1/procurement/vendor-payments/?entity={entity.code}",
@@ -10861,7 +10877,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         hq_client = self.client_for(self.multi_school.tenant, "hq-list@test.com")
         lekki_req, _ = self.make_requisition(hq_client, self.multi, branch=self.lekki.pk)
         ikeja_req, _ = self.make_requisition(hq_client, self.multi, branch=self.ikeja.pk)
-        entity_req, _ = self.make_requisition(hq_client, self.multi)
+        entity_req = self.unbranched_requisition(hq_client, self.multi)
         url = f"/v1/procurement/requisitions/?entity={self.multi.entity.code}"
 
         everything = hq_client.get(url)
@@ -10892,7 +10908,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         )
         lekki_req, _ = self.make_requisition(hq_client, self.multi, branch=self.lekki.pk)
         self.make_requisition(hq_client, self.multi, branch=self.ikeja.pk)
-        self.make_requisition(hq_client, self.multi)
+        self.unbranched_requisition(hq_client, self.multi)
         url = f"/v1/procurement/requisitions/?entity={self.multi.entity.code}"
 
         mine = lekki_client.get(url)
@@ -11041,13 +11057,13 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         )
         hq_client = self.client_for(self.multi_school.tenant, "hq-workflow@test.com")
         lekki_req, _ = self.make_requisition(lekki_client, self.multi)
-        hq_req, _ = self.make_requisition(hq_client, self.multi)
+        hq_req = self.unbranched_requisition(hq_client, self.multi)
 
         lekki_instance = submit_for_approval(lekki_req, actor_user=lekki_client.test_user)
         self.assertEqual(lekki_instance.template_id, branch_template.id)
         self.assertEqual(lekki_instance.branch_id, self.lekki.pk)
 
-        # The HQ requisition carries no branch, so the branch rung does not apply and
+        # The unbranched requisition carries no branch, so the branch rung does not apply and
         # the tenant's own ladder wins - not the branch one, and not the shared row.
         hq_instance = submit_for_approval(hq_req, actor_user=hq_client.test_user)
         self.assertNotEqual(hq_instance.template_id, branch_template.id)
@@ -12709,7 +12725,7 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
         spend = self.report(self.hq_client, "spend-analysis")
         self.assertEqual(spend["total_gross"]["kobo"], 1_000_000)  # 500k + 300k + 200k
         self.assertEqual(spend["invoice_count"], 3)
-        # Nothing was narrowed, so the excluded-rows key must not appear at all.
+        # No report carries a count of rows outside the caller's view.
         self.assertNotIn("unassigned_excluded_count", spend)
 
         aging = self.report(self.hq_client, "ap-aging")
@@ -12770,33 +12786,23 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
     # -- the historical wrinkle ---------------------------------------------- #
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    def test_entity_level_rows_are_declared_excluded_not_silently_dropped(self, _permission):
-        """A branch-bound caller is told their total is a subset, and by how many rows.
+    def test_unbranched_rows_are_left_out_and_not_even_counted(self, _permission):
+        """A branch-bound caller's reports hold their own branches' documents and nothing else.
 
-        The 200,000 raised for the entity as a whole predates the branch column, so it is
-        legitimately outside this caller's view and must not be counted. Reporting the
-        count (never the amount) is what stops 500,000 being read as the whole story,
-        without disclosing what head office spent.
+        The 200,000 raised before documents carried a branch has not been given one
+        yet, so it belongs to no branch they work in. It is neither summed nor
+        counted: even a count would tell Lekki's officer that something exists
+        outside their branch, and that is the whole-school bursar's to see and fix.
         """
         spend = self.report(self.lekki_client, "spend-analysis")
         self.assertEqual(spend["total_gross"]["kobo"], 500_000)
-        self.assertEqual(spend["unassigned_excluded_count"], 1)
-        # The excluded amount itself is never disclosed anywhere in the payload.
         self.assertNotIn("200000", str(spend))
-
-        self.assertEqual(
-            self.report(self.lekki_client, "ap-aging")["unassigned_excluded_count"], 1,
-        )
-        self.assertEqual(
-            self.report(self.lekki_client, "ap-cash-requirements")["unassigned_excluded_count"], 1,
-        )
-        # GR/IR counts receipts, of which the entity-level scope posted two.
-        self.assertEqual(
-            self.report(self.lekki_client, "grir-aging")["unassigned_excluded_count"], 2,
-        )
-        self.assertEqual(
-            self.report(self.lekki_client, "vendor-performance")["unassigned_excluded_count"], 1,
-        )
+        for path in ("spend-analysis", "ap-aging", "ap-cash-requirements", "grir-aging",
+                     "vendor-performance", "cycle-time"):
+            with self.subTest(path=path):
+                self.assertNotIn(
+                    "unassigned_excluded_count", self.report(self.lekki_client, path),
+                )
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_an_old_row_is_never_given_an_invented_branch(self, _permission):
@@ -12906,8 +12912,8 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
         self.assertEqual(self.report(client, "grir-aging")["total_open"]["kobo"], 0)
         self.assertEqual(self.report(client, "cycle-time")["end_to_end_count"], 0)
         self.assertEqual(self.report(client, "grir-lines")["rows"], [])
-        # Still narrowed, so the excluded-rows count is still reported honestly.
-        self.assertEqual(spend["unassigned_excluded_count"], 1)
+        # Nothing outside their branch is summed or counted.
+        self.assertNotIn("unassigned_excluded_count", spend)
 
     def test_every_report_endpoint_still_requires_permission(self):
         code = self.multi.entity.code
@@ -14132,14 +14138,12 @@ class SharedBranchScopeAgreementTests(_BranchTenantsFixture, TestCase):
         )
 
     def test_procurement_reads_a_null_branch_exclusively_and_says_so(self):
-        """The deliberate difference from the platform default, pinned.
+        """A document is a transaction, read as every transaction is.
 
-        Elsewhere a null branch means "shared across the school" and stays visible.
-        Here it means "raised for the school as a whole", which is a scope of its
-        own that a branch-pinned storekeeper is not in - matching
-        ``_inherited_branch_id``, which refuses to let them continue an entity-wide
-        chain either. If this ever starts matching the inclusive form, procurement's
-        behaviour has changed and it was not this test that changed it.
+        On a shared record a null branch means every branch and stays visible. On
+        a document it means the document has not been given its branch yet, which
+        a branch-pinned storekeeper does not see - matching ``_inherited_branch_id``,
+        which refuses to let them continue it either.
         """
         import types
 
@@ -14195,19 +14199,13 @@ class SharedBranchScopeAgreementTests(_BranchTenantsFixture, TestCase):
 
 
 class ProcurementCatalogueReadingTests(_BranchTenantsFixture, TestCase):
-    """Vendors and stock locations are the catalogue, not the spend.
+    """Vendors are the catalogue; documents and stores are not.
 
-    Procurement reads a null branch on a *document* exclusively: a purchase
-    raised for the school as a whole is a scope of its own that a branch-pinned
-    storekeeper is not in. Applied to master data that reading empties the
-    screen, because a school buys from one stationer for every site and keeps
-    one central store, both recorded with no branch precisely because they
-    belong to all of them. So master data takes the inclusive reading instead,
-    and what it withholds is the row another site pinned to itself.
-
-    Both halves are asserted here. A narrowing that hides the shared rows is as
-    much a defect as one that shows another site's, and it is the one that gets
-    reported as the module being broken.
+    A school buys from one stationer for every branch, recorded with no branch
+    because it belongs to all of them, so vendors take the inclusive reading and
+    withhold only the row another branch pinned to itself. A store belongs to
+    one branch, so stores take the exclusive reading every transaction takes: a
+    store not yet given a branch is not on a branch storekeeper's screen.
     """
 
     def setUp(self):
@@ -14261,12 +14259,12 @@ class ProcurementCatalogueReadingTests(_BranchTenantsFixture, TestCase):
 
         self.assertEqual(response.status_code, 200, response.data)
 
-    def test_the_central_store_is_still_reachable_from_every_site(self):
+    def test_a_store_not_yet_given_a_branch_is_not_reachable_from_a_branch(self):
         response = self.call(f"stock-locations/{self.central_store.pk}/")
 
-        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.status_code, 404, response.data)
 
-    def test_both_lists_carry_the_shared_row_and_this_site_and_no_other(self):
+    def test_the_vendor_list_carries_the_shared_row_and_the_store_list_does_not(self):
         vendors = self.call("vendors/")
         stores = self.call("stock-locations/")
 
@@ -14277,8 +14275,7 @@ class ProcurementCatalogueReadingTests(_BranchTenantsFixture, TestCase):
             {self.shared_vendor.pk},
         )
         self.assertEqual(
-            {row["id"] for row in stores.data["data"]},
-            {self.central_store.pk, self.ikeja_store.pk},
+            {row["id"] for row in stores.data["data"]}, {self.ikeja_store.pk},
         )
 
     # -- another site's row must not ----------------------------------------- #
@@ -14416,9 +14413,8 @@ class SharedBranchWriteRuleAgreementTests(_BranchTenantsFixture, TestCase):
     def test_the_inheritance_rule_is_the_platform_one_not_a_copy(self):
         """Identity, not equivalence: a copy would pass an equality test and drift.
 
-        Nothing to adapt here - procurement's exclusive reading of a null branch is
-        the shared function's own default - so this one is asserted the strict way,
-        exactly as ``_caller_branch_ids`` is.
+        Nothing to adapt here, so this one is asserted the strict way, exactly as
+        ``_caller_branch_ids`` is.
         """
         from vs_rbac.scoping import inherited_branch_id
 
@@ -14469,7 +14465,7 @@ class SharedBranchWriteRuleAgreementTests(_BranchTenantsFixture, TestCase):
             return ("raised", type(exc), str(exc))
 
     def test_raised_branch_agrees_with_the_shared_rule_for_every_caller_shape(self):
-        from vs_rbac.scoping import raised_branch
+        from vs_rbac.scoping import raised_transaction_branch
 
         from vs_procurement.views.base import _raised_branch
 
@@ -14483,19 +14479,17 @@ class SharedBranchWriteRuleAgreementTests(_BranchTenantsFixture, TestCase):
                             lambda: _raised_branch(request, self.multi.entity, body),
                         ),
                         self.outcome(
-                            lambda: raised_branch(
+                            lambda: raised_transaction_branch(
                                 request, self.multi_tenant, body,
                             ),
                         ),
                     )
 
-    def test_procurement_never_takes_the_shared_reading_of_the_ambiguous_case(self):
-        """The deliberate difference from finance, pinned so a change is visible.
+    def test_procurement_never_raises_a_document_without_a_branch(self):
+        """A storekeeper covering Lekki and Ikeja who names no branch is asked which.
 
-        A storekeeper covering Lekki and Ikeja who names no branch is asked which,
-        exactly as she was before the promotion. If this ever starts answering
-        ``None``, procurement's behaviour has changed and it was not this test that
-        changed it.
+        So is a whole-school buyer at a school with several branches: there is no
+        school-wide purchase.
         """
         from rest_framework.exceptions import ValidationError
 
@@ -14506,6 +14500,8 @@ class SharedBranchWriteRuleAgreementTests(_BranchTenantsFixture, TestCase):
         with self.assertRaises(ValidationError) as caught:
             _raised_branch(request, self.multi.entity, {})
         self.assertIn("branch", caught.exception.detail)
+        with self.assertRaises(ValidationError):
+            _raised_branch(self.unbound("agree-w-amb-hq@t.com"), self.multi.entity, {})
 
     def test_sole_caller_branch_agrees_with_the_shared_rule(self):
         from vs_rbac.scoping import sole_caller_branch
@@ -14520,12 +14516,10 @@ class SharedBranchWriteRuleAgreementTests(_BranchTenantsFixture, TestCase):
                 )
 
     def test_procurement_keeps_the_exclusive_reading_when_inheriting(self):
-        """A branch-pinned caller may not continue an entity-wide chain.
+        """A branch-pinned caller may not continue a chain not yet given a branch.
 
-        The read side refuses them entity-wide spend (``_BranchScope`` asks for the
-        exclusive form) and the write side must refuse it too, or a caller could be
-        shown a document they may not build on. Finance takes the opposite reading
-        for the opposite reason; both are call-site decisions over one rule.
+        The read side withholds it from them and the write side must refuse it too,
+        or a caller could be shown a document they may not build on.
         """
         import types
 

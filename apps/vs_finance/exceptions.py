@@ -255,6 +255,17 @@ class PayrollError(PostingError):
     default_message = "The payroll run could not be processed."  # Default payroll message.
 
 
+class PayrollBranchUnassignedError(PayrollError):
+    """A run cannot post while a line's branch is unknown at a school with several.
+
+    A 400 rather than the finance 422: the run is fine, the request is missing a
+    fact (each named employee's branch) that the caller supplies and then retries.
+    """
+    error_code = "PAYROLL_BRANCH_UNASSIGNED"
+    default_message = "Some staff on this payroll run have no branch."
+    http_status = 400
+
+
 class TaxFilingError(PostingError):
     """Raised for tax-remittance / filing lifecycle violations."""
     error_code = "TAX_FILING_ERROR"  # Tax filing or remittance lifecycle violation.
@@ -287,8 +298,8 @@ class PeriodCloseError(FinanceError):
 class SettlementBranchError(PostingError):
     """A document named for settlement belongs to another branch than the money settling it.
 
-    A receipt or credit note settles only documents of its own branch, or
-    school-wide documents when it is school-wide itself. A 400: the request named
+    A receipt or credit note settles only documents of its own branch
+    (:func:`vs_rbac.scoping.same_transaction_branch`). A 400: the request named
     the wrong document, and naming one of the settling document's own branch fixes it.
     """
 

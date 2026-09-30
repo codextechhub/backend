@@ -1,11 +1,11 @@
 """Procurement datasets published to the Export Centre.
 
-**Rows narrow to the caller's branches, exclusively.** ``include_shared=False``
-matches what ``vs_procurement/views/base.py`` already does on the screens these
-mirror: a purchase belongs to one place, and an entity-wide purchase is a scope
-of its own that a branch-pinned buyer is not in rather than a row shared with
-them. That is the opposite reading from finance, and both are right for what
-they describe - see ``vs_rbac.scoping.BranchScope``.
+**Rows narrow to the caller's branches, as the screens they mirror do.** Orders,
+vendor bills and requisitions are transactions (``inclusive=False``): a
+branch-pinned buyer exports their own branches' documents only, never one not yet
+given a branch. The vendor master is a shared record (``inclusive=True``): a
+vendor every branch buys from is in every branch's file, as it is on the vendor
+screen. See :mod:`vs_rbac.scoping` for the two readings.
 
 
 Registered from :meth:`vs_procurement.apps.VsProcurementConfig.ready`. Entity-scoped
@@ -41,9 +41,7 @@ from vs_exports.catalogue import (
 def _purchase_orders(scope):
     from .models import PurchaseOrder
 
-    # include_shared=False, as vs_procurement/views/base.py spells out:
-    # an entity-wide purchase is a scope of its own that a branch-pinned
-    # buyer is not in, not a row shared with them.
+    # A transaction: never one not yet given a branch.
     return narrow_to_caller_branches(
         PurchaseOrder.objects.filter(entity=scope.entity),
         scope, inclusive=False,
@@ -54,9 +52,7 @@ def _purchase_orders(scope):
 def _vendor_invoices(scope):
     from .models import VendorInvoice
 
-    # include_shared=False, as vs_procurement/views/base.py spells out:
-    # an entity-wide purchase is a scope of its own that a branch-pinned
-    # buyer is not in, not a row shared with them.
+    # A transaction: never one not yet given a branch.
     return narrow_to_caller_branches(
         VendorInvoice.objects.filter(entity=scope.entity),
         scope, inclusive=False,
@@ -67,12 +63,10 @@ def _vendor_invoices(scope):
 def _vendors(scope):
     from .models import Vendor
 
-    # include_shared=False, as vs_procurement/views/base.py spells out:
-    # an entity-wide purchase is a scope of its own that a branch-pinned
-    # buyer is not in, not a row shared with them.
+    # A shared record: a vendor with no branch is every branch's.
     return narrow_to_caller_branches(
         Vendor.objects.filter(entity=scope.entity),
-        scope, inclusive=False,
+        scope, inclusive=True,
     )
 
 
@@ -80,9 +74,7 @@ def _vendors(scope):
 def _requisitions(scope):
     from .models import PurchaseRequisition
 
-    # include_shared=False, as vs_procurement/views/base.py spells out:
-    # an entity-wide purchase is a scope of its own that a branch-pinned
-    # buyer is not in, not a row shared with them.
+    # A transaction: never one not yet given a branch.
     return narrow_to_caller_branches(
         PurchaseRequisition.objects.filter(entity=scope.entity),
         scope, inclusive=False,

@@ -247,7 +247,8 @@ class VendorCreditNoteTests(_APCorrectionsFixture):
         self.assertAPReconciled()
 
         lekki_bill = self.non_po_bill(30_000, branch=self.lekki, day=20, tax=False)
-        with self.assertRaises(SettlementBranchError):
+        with self.assertRaisesMessage(
+                SettlementBranchError, "Apply it to an Ikeja Branch bill."):
             allocate_vendor_credit_note(note, allocations=[(lekki_bill, 30_000)])
 
         later = self.non_po_bill(30_000, day=20, tax=False)
@@ -268,6 +269,55 @@ class VendorCreditNoteTests(_APCorrectionsFixture):
         self.assertEqual(later.balance_due, 30_000)
         self.assertEqual(self.balance("1240"), 0)
         self.assertAPReconciled()
+
+    def branch_credit(self, amount=40_000):
+        """N400 of Chuks's credit left on a paid bill, at the fixture's branch."""
+        bill = self.non_po_bill(100_000, branch=self.branch_for_credit, tax=False)
+        self.pay(bill, 100_000)
+        note = self.credit_note(bill, amount=amount)
+        post_vendor_credit_note(note)
+        note.refresh_from_db()
+        return note
+
+    def unbranched_bill(self, amount):
+        """A bill keyed before bills carried a branch."""
+        bill = self.non_po_bill(amount, branch=self.branch_for_credit, day=20, tax=False)
+        VendorInvoice.objects.filter(pk=bill.pk).update(branch=None)
+        bill.refresh_from_db()
+        return bill
+
+    def test_ikejas_credit_does_not_settle_a_bill_not_yet_given_a_branch(self):
+        """At a school with three branches nobody knows whose that bill's debt is."""
+        self.branch_for_credit = self.ikeja
+        note = self.branch_credit()
+        unplaced = self.unbranched_bill(30_000)
+
+        with self.assertRaisesMessage(SettlementBranchError, "has not been given a branch"):
+            allocate_vendor_credit_note(note, allocations=[(unplaced, 30_000)])
+        self.assertEqual(allocate_vendor_credit_note(note), [])
+        unplaced.refresh_from_db()
+        self.assertEqual(unplaced.amount_credited, 0)
+
+    def test_at_a_one_branch_school_an_unbranched_bill_is_its_branchs(self):
+        """Single Site's Main credit settles a bill keyed before bills carried a branch."""
+        self.books = self.solo_books
+        ProcurementSettings.objects.update_or_create(
+            entity=self.books, defaults={"allow_non_po_invoices": True},
+        )
+        self.vendor = Vendor.objects.create(
+            entity=self.books, code="CHUKS", name="Chuks Stationery",
+            payable_account=self.acc("2100"), default_expense_account=self.acc("5300"),
+            kyc_status="VERIFIED",
+        )
+        self.branch_for_credit = self.solo_main
+        note = self.branch_credit()
+        unplaced = self.unbranched_bill(30_000)
+
+        rows = allocate_vendor_credit_note(note)
+
+        self.assertEqual([row.vendor_invoice_id for row in rows], [unplaced.pk])
+        unplaced.refresh_from_db()
+        self.assertEqual(unplaced.payment_status, InvoicePaymentStatus.PAID)
 
     def test_a_credit_note_must_be_approved_before_it_posts(self):
         bill = self.non_po_bill(100_000, tax=False)

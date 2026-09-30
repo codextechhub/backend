@@ -626,8 +626,9 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
 def _auto_settlement_candidates(payment, bill_scope=None):
     """The open bills automatic allocation may settle for ``payment``, oldest due first.
 
-    Only bills of the payment's own branch, or school-wide bills for a school-wide
-    payment. A settlement is booked to the payment's branch (its journal carries
+    Only bills of the payment's own branch
+    (:func:`vs_rbac.scoping.same_transaction_branch`). A settlement is booked to the
+    payment's branch (its journal carries
     ``payment.branch``) while the bill's liability sits on the bill's branch, so
     Ikeja's money settling Lekki's bill would leave Ikeja's books short and Lekki's
     still owing. Nothing chooses a bill here but the order of due dates, so the
@@ -637,11 +638,14 @@ def _auto_settlement_candidates(payment, bill_scope=None):
     can reach, for a settlement a person asks for; a settlement with no caller (a
     gateway payout being booked) passes none.
     """
+    from vs_rbac.scoping import transaction_branch_match_q
+
     from .models import VendorInvoice
 
     qs = VendorInvoice.objects.filter(
+        transaction_branch_match_q(payment.entity.tenant_id, payment.branch_id),
         entity_id=payment.entity_id, vendor_id=payment.vendor_id,
-        branch_id=payment.branch_id, status=DocumentStatus.POSTED,
+        status=DocumentStatus.POSTED,
     ).exclude(payment_status=InvoicePaymentStatus.PAID)
     if bill_scope is not None:
         qs = qs.filter(bill_scope)
@@ -814,9 +818,9 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, stric
     the later of the two instead. The AP mirror of
     :func:`vs_finance.receivables.allocate_payment`.
 
-    A named bill must belong to the payment's own branch, or be school-wide for a
-    school-wide payment, the same bills the automatic plan draws from; any other is
-    refused with :class:`SettlementBranchError` before anything is settled (see
+    A named bill must belong to the payment's own branch, the same bills the
+    automatic plan draws from; any other is refused with
+    :class:`SettlementBranchError` before anything is settled (see
     :func:`_require_own_branch_bills`).
     """
     from vs_finance.chronology import effective_allocation_date
@@ -903,18 +907,21 @@ def _require_own_branch_bills(payment, bills):
     liability out of Ikeja's books. A caller who covers both branches can name either
     bill, which is why this is checked against the payment and not only the caller.
     """
+    from vs_rbac.scoping import same_transaction_branch
+
     for bill in bills:
-        if bill.branch_id == payment.branch_id:
+        if same_transaction_branch(payment.entity.tenant_id, payment.branch_id, bill.branch_id):
             continue
         number = bill.document_number or "the selected bill"
+        held = (f"belongs to {bill.branch.name}" if bill.branch_id
+                else "has not been given a branch")
         if payment.branch_id is None:
             raise SettlementBranchError(
-                f"This vendor payment is school-wide and bill {number} belongs to "
-                f"{bill.branch.name}. Apply its advance to a school-wide bill."
+                f"This vendor payment has not been given a branch and bill {number} "
+                f"{held}, so its advance cannot settle it."
             )
         name = payment.branch.name
         article = "an" if name[:1].upper() in "AEIOU" else "a"
-        held = f"belongs to {bill.branch.name}" if bill.branch_id else "is school-wide"
         raise SettlementBranchError(
             f"This vendor payment belongs to {name} and bill {number} {held}. "
             f"Apply its advance to {article} {name} bill."

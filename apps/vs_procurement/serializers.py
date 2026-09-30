@@ -139,17 +139,22 @@ class VendorSerializer(FieldAccessMixin, serializers.ModelSerializer):
 
 
 class VendorListSerializer(serializers.ModelSerializer):
-    """Non-sensitive vendor row shape; detail-only fields never leave the list API."""
+    """Non-sensitive vendor row shape; detail-only fields never leave the list API.
+
+    ``branch_id`` is the branch that keeps the vendor, or empty for one every
+    branch shares, so a picker can tell which vendors a branch clerk may pay.
+    """
 
     category_code = serializers.CharField(source="category.code", read_only=True, default=None)
     active_po_count = serializers.IntegerField(read_only=True, default=0)
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
 
     class Meta:
         model = Vendor
         fields = [
             "id", "code", "name", "category_id", "category_code",
             "payment_terms", "kyc_status", "risk", "on_hold", "is_active",
-            "active_po_count",
+            "active_po_count", "branch_id", "branch_name",
         ]
 
 

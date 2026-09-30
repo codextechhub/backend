@@ -1,8 +1,8 @@
 """A receipt or credit note settles only documents of its own branch.
 
-The Okafor family is one school-wide customer with a child at Lekki and a child
-at Ikeja. Each branch has invoiced them 100,000 kobo, Lekki first, and the school
-has raised one 100,000 invoice of its own with no branch.
+The Okafor family is one customer every branch shares, with a child at Lekki and
+a child at Ikeja. Each branch has invoiced them 100,000 kobo, Lekki first, and one
+100,000 invoice was raised before invoices carried a branch.
 
 The settling journal is booked to the receipt's branch while each invoice's
 receivable sits on the invoice's branch. Ikeja's 60,000 receipt settling Lekki's
@@ -11,8 +11,11 @@ invoice, the oldest one open, would clear Lekki's debt out of Ikeja's books, so:
 * automatic allocation of Ikeja money settles Ikeja's invoice and nothing else;
 * naming another branch's invoice is refused with a 400 naming both branches,
   whoever asks, because the rule belongs to the money and not to the caller;
-* a school-wide receipt settles school-wide invoices only, and a branch receipt
-  never settles a school-wide invoice.
+* a branch receipt never settles an invoice not yet given a branch. At a school
+  with several branches nobody knows whose that invoice is; a receipt not yet
+  given a branch settles only such invoices, both waiting for the backfill.
+* at a school with one branch, a row not yet given a branch is that branch's, so
+  a Main receipt settles it.
 
 The same holds for a credit note, posted with allocation or applied later.
 """
@@ -117,7 +120,7 @@ class ReceiptAutoAllocationTests(_SettlementFixture):
         self.assertEqual(self.settled(), {"lekki": 0, "school": 0, "ikeja": INVOICE})
         self.assertEqual(receipt.credit_remaining, 50_000)
 
-    def test_a_school_wide_receipt_settles_school_wide_invoices_only(self):
+    def test_an_unbranched_receipt_settles_unbranched_invoices_only(self):
         self.receipt(None)
 
         self.assertEqual(self.settled(), {"lekki": 0, "school": 60_000, "ikeja": 0})
@@ -143,16 +146,21 @@ class ReceiptExplicitAllocationTests(_SettlementFixture):
 
         self.assertEqual(self.settled(), {"lekki": 0, "school": 0, "ikeja": 0})
 
-    def test_a_branch_receipt_cannot_settle_a_school_wide_invoice(self):
-        with self.assertRaisesMessage(SettlementBranchError, "is school-wide"):
-            self.receipt(self.ikeja, allocations=[(self.school_invoice, 60_000)])
-
-    def test_a_school_wide_receipt_cannot_settle_a_branch_invoice(self):
+    def test_a_branch_receipt_cannot_settle_an_unbranched_invoice(self):
         with self.assertRaisesMessage(
             SettlementBranchError,
-            f"This receipt is school-wide and invoice "
-            f"{self.ikeja_invoice.document_number} belongs to Ikeja Branch. "
-            f"Apply it to a school-wide invoice.",
+            f"This receipt belongs to Ikeja Branch and invoice "
+            f"{self.school_invoice.document_number} has not been given a branch. "
+            f"Apply it to an Ikeja Branch invoice.",
+        ):
+            self.receipt(self.ikeja, allocations=[(self.school_invoice, 60_000)])
+
+    def test_an_unbranched_receipt_cannot_settle_a_branch_invoice(self):
+        with self.assertRaisesMessage(
+            SettlementBranchError,
+            f"This receipt has not been given a branch and invoice "
+            f"{self.ikeja_invoice.document_number} belongs to Ikeja Branch, "
+            f"so it cannot settle it.",
         ):
             self.receipt(None, allocations=[(self.ikeja_invoice, 60_000)])
 
@@ -222,3 +230,28 @@ class CreditNoteSettlementTests(_SettlementFixture):
         self.assertEqual(response.status_code, 400, response.data)
         self.assertEqual(response.data["error"]["code"], "SETTLEMENT_BRANCH")
         self.assertEqual(self.settled(), {"lekki": 0, "school": 0, "ikeja": 0})
+
+
+class OneBranchSchoolSettlementTests(_FinanceBranchFixture):
+    """At Harbour, with one branch, an invoice raised before invoices carried a branch is Main's."""
+
+    def test_a_main_receipt_settles_the_unbranched_invoice(self):
+        from vs_finance.receivables import post_invoice, post_payment
+
+        e = self.solo_books
+        family = self.customer(e, "HARB", None)
+        old = self.invoice(e, family, None)
+        InvoiceLine.objects.filter(invoice=old).update(
+            revenue_account=Account.objects.get(entity=e, code="4100"))
+        old.refresh_from_db()
+        post_invoice(old)
+        receipt = Payment.objects.create(
+            entity=e, customer=family, branch=self.solo_main,
+            payment_date=datetime.date(2026, 1, 20), amount=60_000,
+            deposit_account=Account.objects.get(entity=e, code="1100"),
+        )
+
+        post_payment(receipt)
+
+        old.refresh_from_db()
+        self.assertEqual(old.amount_paid, 60_000)

@@ -380,15 +380,22 @@ def receipt_pdf(payment, *, note: str = "") -> bytes:
 # Statement of account                                                        #
 # --------------------------------------------------------------------------- #
 
-def statement_pdf(customer, *, start_date=None, end_date=None, note: str = "") -> bytes:
-    """Render a statement of account for ``customer`` over the given period."""
+def statement_pdf(customer, *, start_date=None, end_date=None, note: str = "",
+                  scope=None) -> bytes:
+    """Render a statement of account for ``customer`` over the given period.
+
+    ``scope`` narrows it to a reader's branches, as
+    :func:`vs_finance.reports.customer_statement` does; ``None`` is the whole account.
+    """
     from vs_config.display import format_date
 
     from .documents import _customer_block, _issuer_block, statement_period
     from .money import format_naira
     from .reports import customer_statement
 
-    statement = customer_statement(customer, start_date=start_date, end_date=end_date)
+    statement = customer_statement(
+        customer, start_date=start_date, end_date=end_date, scope=scope,
+    )
     issuer = _issuer_block(customer.entity)
     tenant = customer.entity.tenant
     styles = _styles()

@@ -8,9 +8,10 @@ shown every branch's revenue.
 
 A journal does carry a branch, taken from the document that raised it. So a
 reader's own statements are built from the journal lines of the entries in their
-reach (their branches plus the school-wide entries, the finance module's
-inclusive reading of a blank branch), summed per account and period into rows of
-the same shape. Because every journal balances on its own, any set of whole
+reach, summed per account and period into rows of the same shape. The reach is
+the one every transaction is read by
+(:func:`vs_rbac.scoping.transaction_branch_scope`): their own branches' journals
+only, never one not yet given a branch. Because every journal balances on its own, any set of whole
 journals balances too: a branch trial balance still balances, and a branch
 balance sheet still satisfies assets = liabilities + equity.
 
@@ -20,10 +21,11 @@ their figures, and the SQL behind them, do not change. A narrowed reader gets a
 :class:`BranchLedger`, which accepts the same ``filter`` calls the statements
 make and yields rows with the same attributes.
 
-What a branch statement cannot say is the branch's true bank balance: the school
-banks in shared accounts, so "cash" on a branch balance sheet is the cash its own
-journals moved, not money it holds separately. The screens label narrowed
-statements for that reason.
+"Cash" on a branch balance sheet is the cash its own journals moved. Each bank
+account belongs to one branch and each document is paid from its own branch's
+account, so that is the money in the branch's accounts, except where a journal
+still carries no branch (the whole-school reader sees those). The screens label
+narrowed statements for that reason.
 """
 from __future__ import annotations
 

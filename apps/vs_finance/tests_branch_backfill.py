@@ -249,6 +249,41 @@ class OperationsDerivationTests(_BackfillFixture):
         self.assertIn("one record per branch", self.flag(plan, shared).reason)
 
 
+class WholeTenantDocumentTests(_BackfillFixture):
+    """A central payroll run and the tenant's tax return name no branch by design."""
+
+    def test_a_central_run_and_the_tenants_return_are_neither_flagged_nor_placed(self):
+        from vs_finance.models import PayrollRun, TaxFiling, TaxObligation
+
+        run = PayrollRun.objects.create(entity=self.books, pay_date=DAY)
+        filing = TaxFiling.objects.create(
+            entity=self.books, obligation=TaxObligation.objects.filter(entity=self.books).first(),
+            period_start=DAY, period_end=DAY,
+        )
+        plan = self.plan()
+        for row in (run, filing):
+            with self.subTest(row=type(row).__name__):
+                self.assertIsNone(self.assigned(plan, row))
+                self.assertIsNone(self.flag(plan, row))
+
+    def test_a_central_run_is_left_alone_at_a_one_branch_school_too(self):
+        from vs_finance.models import PayrollRun
+
+        run = PayrollRun.objects.create(entity=self.solo_books, pay_date=DAY)
+        self.assertIsNone(self.assigned(self.plan(self.solo_books), run))
+
+    def test_a_central_runs_branch_journals_read_their_share(self):
+        """Lekki's accrual of the central run is Lekki's, found through its share."""
+        from vs_finance.models import PayrollRun, PayrollRunBranch
+
+        run = PayrollRun.objects.create(entity=self.books, pay_date=DAY)
+        accrual = self.journal(self.books)
+        PayrollRunBranch.objects.create(run=run, branch=self.lekki, journal=accrual)
+        self.assertEqual(
+            self.assigned(self.plan(), accrual), (self.lekki.pk, "the document that raised it"),
+        )
+
+
 class JournalDerivationTests(_BackfillFixture):
     """A journal reads the document that raised it, the entry it reverses, then its banks."""
 
@@ -288,20 +323,27 @@ class JournalDerivationTests(_BackfillFixture):
         )
 
     def test_every_foreign_key_to_a_journal_is_a_registered_owner(self):
-        """A journal-raising model left unregistered would leave its journals blank."""
+        """A journal-raising model left unregistered would leave its journals blank.
+
+        ``related_objects`` are the reverse sides, so a foreign key to a journal
+        reads as one-to-many from here.
+        """
         registered = {(o.model_label, o.journal_field) for o in journal_owners()}
         not_owners = {
             ("vs_finance.JournalEntry", "reverses"),
             ("vs_finance.JournalLine", "entry"),
         }
+        checked = 0
         for field in JournalEntry._meta.related_objects:
-            if not field.many_to_one and not field.one_to_one:
+            if not field.one_to_many and not field.one_to_one:
                 continue
+            checked += 1
             key = (field.related_model._meta.label, field.field.name)
             if key in not_owners:
                 continue
             with self.subTest(key):
                 self.assertIn(key, registered)
+        self.assertGreater(checked, len(not_owners))
 
     def test_every_branched_finance_document_is_a_target(self):
         """A document model with a branch column and no target would never be backfilled."""

@@ -33,9 +33,8 @@ Spending
 Access follows the other tabs. The cash, bank, payroll and tax blocks are the
 school's money as a whole, so only readers who see the whole school get them.
 Spending, budgets, expense claims, petty cash and fixed assets answer under the
-reader's branches. A school-wide budget's figures are withheld from a
-branch-bound reader, as on the budgets screen: their branches' spending against
-the whole plan would read as a shortfall that is only the other branches' share.
+reader's branches. Every budget belongs to a branch, so a branch-bound reader
+sees their own branches' plans, each measured against its branch's journals.
 """
 from __future__ import annotations
 
@@ -314,7 +313,12 @@ def spending(entity, window, as_of, sets, scope=UNNARROWED) -> dict | None:
 
 
 def budgets(entity, fiscal_year, as_of, scope=UNNARROWED) -> dict | None:
-    """This year's plans in the reader's reach, and how much of each is spent."""
+    """This year's plans in the reader's reach, and how much of each is spent.
+
+    Budgets are read as the budgets screen reads them, with the transaction scope:
+    a branch-bound reader sees their own branches' plans, and one not yet given a
+    branch only a whole-school reader sees.
+    """
     from .models import Budget
     from .reports import budget_vs_actual
 
@@ -326,21 +330,18 @@ def budgets(entity, fiscal_year, as_of, scope=UNNARROWED) -> dict | None:
     )
     items = []
     for plan in plans:
-        withheld = plan.branch_id is None and scope.is_narrowed
         planned = used = 0
-        if not withheld:
-            report = budget_vs_actual(plan)
-            for row in report.rows:
-                if row.account_type == AccountType.EXPENSE:
-                    planned += row.budget
-                    used += row.actual
+        for row in budget_vs_actual(plan).rows:
+            if row.account_type == AccountType.EXPENSE:
+                planned += row.budget
+                used += row.actual
         items.append({
             "id": plan.id, "name": plan.name,
             "branch": plan.branch.name if plan.branch_id else None,
             "approved": plan.status == "APPROVED",
-            "plan": None if withheld else _m(planned),
-            "used": None if withheld else _m(used),
-            "pct": None if withheld else _ratio(used, planned),
+            "plan": _m(planned),
+            "used": _m(used),
+            "pct": _ratio(used, planned),
         })
     span = (fiscal_year.end_date - fiscal_year.start_date).days or 1
     gone = min(max((as_of - fiscal_year.start_date).days, 0), span)

@@ -55,14 +55,15 @@ class ARAgingBranchTests(_AccessFixture):
     def aging(self, client, suffix=""):
         return client.get(f"/v1/finance/reports/ar-aging/?entity={self.books.code}{suffix}")
 
-    def test_a_branch_reader_sees_their_branch_and_school_wide_customers_only(self):
+    def test_a_branch_reader_sees_their_branchs_debts_only(self):
+        """The school-wide customer's debt carries no branch, so it is not Ikeja's to age."""
         client = self.client_holding("aging-ikeja@corona.test", "finance.report.view", branch=self.ikeja)
         data = self.aging(client).data["data"]
 
         codes = {row["code"] for row in data["rows"]}
-        self.assertEqual(codes, {"CIKJ", "CALL"})
+        self.assertEqual(codes, {"CIKJ"})
         self.assertTrue(data["narrowed"])
-        self.assertEqual(data["total_net"]["kobo"], 2 * 100_000)
+        self.assertEqual(data["total_net"]["kobo"], 100_000)
 
     def test_the_export_is_the_same_narrowed_report(self):
         client = self.client_holding("aging-export@corona.test", "finance.report.view", branch=self.ikeja)

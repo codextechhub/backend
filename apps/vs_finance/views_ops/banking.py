@@ -10,7 +10,7 @@ from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import NotFound, ValidationError
-from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
+from vs_rbac.scoping import transaction_branch_q
 
 from core.response import success_response
 
@@ -37,11 +37,12 @@ from ..serializers import (
 
 from .base import (
     _FinanceBase,
+    _bank_account_in_reach,
     _bool,
     _date,
     _inherited_branch_id,
     _int,
-    _raised_branch,
+    _transaction_branch,
     _require_lines,
     _resolve_account,
     _resolve_currency,
@@ -63,10 +64,11 @@ from .base import (
 # a bank account in this file and one of them is the list, so the resolver is
 # shared and the other ten do not each get a chance to forget it.
 #
-# ``include_shared=True`` throughout, because that is what a null branch means
-# here: the single operations account a school runs for every site stays
-# reachable from all of them. Statements and lines carry no branch of their own
-# and take the account's, through the ``bank_account__`` prefix, so an account a
+# A bank account holds one branch's money, so it is read as a transaction
+# (:func:`vs_rbac.scoping.transaction_branch_q`): a branch-bound caller reaches
+# only their own branches' accounts, and an account not yet given a branch only
+# by a whole-school caller. Statements and lines carry no branch of their own and
+# take the account's, through the ``bank_account__`` prefix, so an account a
 # caller may open and the rows hanging off it cannot give different answers.
 #
 # A row belonging to another site answers with the same message as one that does
@@ -91,7 +93,7 @@ def _bank_or_404(request, pk, *, entity=None, active_only=False):
         filters["is_active"] = True
     bank = (
         BankAccount.objects
-        .filter(branch_q(request, include_shared=True), **filters)
+        .filter(transaction_branch_q(request), **filters)
         .select_related("gl_account", "branch")
         .first()
     )
@@ -124,7 +126,7 @@ class BankAccountListCreateView(_FinanceBase):
     def get(self, request):
         entity = resolve_entity(request)
         qs = BankAccount.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
+            transaction_branch_q(request), entity=entity,
         ).select_related("gl_account")
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
@@ -153,13 +155,7 @@ class BankAccountListCreateView(_FinanceBase):
                     is_primary_collection=False)
             bank = BankAccount.objects.create(
                 entity=entity, name=name,
-                # ``shared_when_ambiguous=True``: one GTBank operations account
-                # that the whole school pays into is the normal arrangement, not
-                # an accident, and forcing a bursar who covers two branches to
-                # pick one would hide the school's own account from every other
-                # branch. A branch-pinned bursar still stamps her branch, so a
-                # site with its own collection account keeps it to itself.
-                branch=_raised_branch(request, entity, body, shared_when_ambiguous=True),
+                branch=_transaction_branch(request, entity, body),
                 bank_name=body.get("bank_name", ""),
                 account_number=body.get("account_number", ""),
                 gl_account=gl_account,
@@ -396,7 +392,7 @@ class BankStatementLineDetailView(_FinanceBase):
                 BankStatementLine.objects.select_for_update()
                 .select_related("bank_account__entity")
                 .filter(
-                    branch_q(request, "bank_account__", include_shared=True),
+                    transaction_branch_q(request, "bank_account__"),
                     pk=pk, bank_account__entity=entity,
                 )
                 .first()
@@ -598,7 +594,7 @@ class BankStatementDetailView(_FinanceBase):
         )
         queryset = (
             BankStatement.objects.filter(
-                branch_q(request, "bank_account__", include_shared=True),
+                transaction_branch_q(request, "bank_account__"),
                 pk=statement_id,
                 bank_account_id=pk,
                 bank_account__entity=entity,
@@ -830,13 +826,7 @@ class BankStatementImportWizardView(_FinanceBase):
         entity = resolve_entity(request)
         bank = _bank_or_404(request, pk, entity=entity, active_only=True)
 
-        # A statement continues the account's chain, so the account names the
-        # batch's branch and the person uploading does not: the school's own
-        # GTBank statement stays school-wide however it arrives, and Lekki's
-        # collection account keeps its statements to Lekki even when an
-        # administrator covering both sites uploads one. Whether this caller may
-        # touch this account at all was settled by the resolver above; what is
-        # left here is only which branch the batch is filed under.
+        # A statement takes its account's branch, never the uploader's.
         statement_branch_id = _inherited_branch_id(request, bank)
         statement_branch = bank.branch if statement_branch_id is not None else None
 
@@ -1032,7 +1022,7 @@ class _StatementLineActionBase(_FinanceBase):
         line = (
             BankStatementLine.objects
             .filter(
-                branch_q(request, "bank_account__", include_shared=True),
+                transaction_branch_q(request, "bank_account__"),
                 pk=pk, bank_account__entity=entity,
             )
             .select_related("bank_account").first()
@@ -1253,17 +1243,24 @@ class BankTransactionSerializer(serializers.ModelSerializer):
 
 
 def _transaction_or_404(request, entity, pk):
-    """A bank transaction on a bank account this caller can open, or 404."""
+    """A bank transaction of the caller's own branches, or 404 (see :func:`_transactions_in_reach`)."""
     txn = (
-        BankTransaction.objects
-        .filter(branch_q(request, "bank_account__", include_shared=True),
-                entity=entity, pk=pk)
+        _transactions_in_reach(request, entity).filter(pk=pk)
         .select_related("bank_account", "counter_account")
         .first()
     )
     if txn is None:
         raise NotFound("Bank transaction not found for this entity.")
     return txn
+
+
+def _transactions_in_reach(request, entity):
+    """Bank transactions read as every transaction is: by their own branch, exclusively.
+
+    A branch-bound bursar sees their branches' transactions and none that has not
+    been given a branch (:func:`vs_rbac.scoping.transaction_branch_q`).
+    """
+    return BankTransaction.objects.filter(transaction_branch_q(request), entity=entity)
 
 
 class BankTransactionListCreateView(_FinanceBase):
@@ -1273,8 +1270,10 @@ class BankTransactionListCreateView(_FinanceBase):
     ``amount`` (kobo), ``counter_account`` (code or id), ``transaction_date``,
     ``narration`` and an optional ``reference``. The other side must be an ordinary
     account: one a sub-ledger keeps (AR, AP, a bank ledger, tax, stock...) is refused
-    and the message names the document to use instead. The transaction carries the
-    bank account's branch; a school-wide account needs whole-tenant reach.
+    and the message names the document to use instead. The bank account is one of
+    the caller's own branches' (404 otherwise) and the transaction carries its branch
+    (:func:`vs_finance.banking.money_branch_id`); an account not yet given a branch
+    at a school with several moves nothing (400).
 
     Approval follows the ``finance.bank_transaction`` route exactly as a direct entry
     follows the journal route: a route with steps holds it for approval (201 with an
@@ -1291,9 +1290,8 @@ class BankTransactionListCreateView(_FinanceBase):
 
     def get(self, request):
         entity = resolve_entity(request)
-        qs = BankTransaction.objects.filter(
-            branch_q(request, "bank_account__", include_shared=True), entity=entity,
-        ).select_related("bank_account", "counter_account")
+        qs = _transactions_in_reach(request, entity).select_related(
+            "bank_account", "counter_account")
         if (bank := request.query_params.get("bank_account")) and str(bank).isdigit():
             qs = qs.filter(bank_account_id=int(bank))
         if (status_ := request.query_params.get("status")):
@@ -1301,29 +1299,15 @@ class BankTransactionListCreateView(_FinanceBase):
         return self.paginate(request, qs.order_by("-transaction_date", "-id"), BankTransactionSerializer)
 
     def post(self, request):
-        from vs_rbac.scoping import assert_caller_may_change
-
         from ..approvals import approval_required, confirm_unconfigured_post
-        from ..banking import post_bank_transaction, validate_bank_transaction
+        from ..banking import money_branch_id, post_bank_transaction, validate_bank_transaction
         from ..constants import BankTransactionDirection
         from ..exceptions import PostingError
 
         entity = resolve_entity(request)
         body = request.data or {}
-        bank_ref = body.get("bank_account")
-        if bank_ref in (None, ""):
-            raise ValidationError({"bank_account": "A bank account (id or name) is required."})
-        bank = BankAccount.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
-        ).filter(
-            **({"pk": int(bank_ref)} if str(bank_ref).isdigit() else {"name": str(bank_ref)})
-        ).select_related("gl_account", "branch").first()
-        if bank is None:
-            raise NotFound(f"No bank account '{bank_ref}' in this entity.")
-        assert_caller_may_change(
-            request.user, getattr(request, "tenant", None), (bank.branch_id,),
-            message="Only a school-wide administrator can move money in a school-wide bank account.",
-        )
+        bank = _bank_account_in_reach(request, entity, body.get("bank_account"), "bank_account")
+        branch_id = money_branch_id(entity, bank)
         direction = str(body.get("direction") or "").upper()
         if direction not in BankTransactionDirection.values:
             raise ValidationError({"direction": "Choose IN (money in) or OUT (money out)."})
@@ -1338,7 +1322,7 @@ class BankTransactionListCreateView(_FinanceBase):
         )
         with transaction.atomic():
             txn = BankTransaction.objects.create(
-                entity=entity, branch=bank.branch, bank_account=bank,
+                entity=entity, branch_id=branch_id, bank_account=bank,
                 direction=direction, amount=amount, counter_account=counter,
                 transaction_date=_date(body.get("transaction_date"), "transaction_date", required=True),
                 narration=narration[:255], reference=str(body.get("reference") or "")[:64],
@@ -1385,8 +1369,8 @@ class BankTransactionDetailView(_FinanceBase):
 class BankTransactionVoidView(_FinanceBase):
     """POST /finance/bank-transactions/<id>/void/?entity= - reverse a posted bank transaction.
 
-    Optional body ``date`` dates the reversal. A school-wide account's transaction
-    needs whole-tenant reach, as posting it did.
+    Optional body ``date`` dates the reversal. The transaction must be one of the
+    caller's own branches' (404 otherwise), as reading it is.
 
     docstring-name: Void a bank transaction
     """
@@ -1394,16 +1378,10 @@ class BankTransactionVoidView(_FinanceBase):
     rbac_permission = "finance.banktransaction.reverse"
 
     def post(self, request, pk):
-        from vs_rbac.scoping import assert_caller_may_change
-
         from ..banking import void_bank_transaction
 
         entity = resolve_entity(request)
         txn = _transaction_or_404(request, entity, pk)
-        assert_caller_may_change(
-            request.user, getattr(request, "tenant", None), (txn.branch_id,),
-            message="Only a school-wide administrator can move money in a school-wide bank account.",
-        )
         void_bank_transaction(
             txn, actor_user=request.user,
             date=_date((request.data or {}).get("date"), "date"),
@@ -1436,26 +1414,14 @@ class BankTransferSerializer(serializers.ModelSerializer):
 
 
 def _transfers_in_reach(request, entity):
-    """Transfers whose two accounts the caller can both open."""
+    """Transfers read by their own branch, exclusively, as every transaction is.
+
+    A transfer's two accounts are its branch's (:func:`vs_finance.banking.validate_bank_transfer`),
+    so its branch is the whole of the question.
+    """
     return BankTransfer.objects.filter(
-        branch_q(request, "from_account__", include_shared=True),
-        branch_q(request, "to_account__", include_shared=True),
-        entity=entity,
+        transaction_branch_q(request), entity=entity,
     ).select_related("from_account", "to_account")
-
-
-def _reachable_bank(request, entity, ref, field):
-    """A bank account in the caller's reach, by id or name, or 404."""
-    if ref in (None, ""):
-        raise ValidationError({field: "A bank account (id or name) is required."})
-    bank = BankAccount.objects.filter(
-        branch_q(request, include_shared=True), entity=entity,
-    ).filter(
-        **({"pk": int(ref)} if str(ref).isdigit() else {"name": str(ref)})
-    ).select_related("gl_account", "branch").first()
-    if bank is None:
-        raise NotFound(f"No bank account '{ref}' in this entity.")
-    return bank
 
 
 class BankTransferListCreateView(_FinanceBase):
@@ -1463,9 +1429,10 @@ class BankTransferListCreateView(_FinanceBase):
 
     POST body: ``from_account`` and ``to_account`` (id or name), ``amount`` (kobo),
     ``transfer_date``, ``narration`` and an optional ``reference``. Both accounts must
-    be in the caller's reach and belong to the same branch; accounts of two branches
-    are refused, because that is an inter-branch transfer. Accounts shared by every
-    branch need whole-school reach. The transfer carries the accounts' branch.
+    be of the caller's own branches (404 otherwise) and belong to the same branch;
+    accounts of two branches are refused, because that is an inter-branch transfer.
+    The transfer carries the accounts' branch (:func:`vs_finance.banking.money_branch_id`),
+    and accounts not yet given a branch at a school with several move nothing (400).
 
     Approval follows the ``finance.bank_transfer`` route as a bank transaction follows
     its own: steps hold it for approval, an empty route needs
@@ -1491,16 +1458,14 @@ class BankTransferListCreateView(_FinanceBase):
         return self.paginate(request, qs.order_by("-transfer_date", "-id"), BankTransferSerializer)
 
     def post(self, request):
-        from vs_rbac.scoping import assert_caller_may_change
-
         from ..approvals import approval_required, confirm_unconfigured_post
-        from ..banking import post_bank_transfer, validate_bank_transfer
+        from ..banking import money_branch_id, post_bank_transfer, validate_bank_transfer
         from ..exceptions import PostingError
 
         entity = resolve_entity(request)
         body = request.data or {}
-        source = _reachable_bank(request, entity, body.get("from_account"), "from_account")
-        target = _reachable_bank(request, entity, body.get("to_account"), "to_account")
+        source = _bank_account_in_reach(request, entity, body.get("from_account"), "from_account")
+        target = _bank_account_in_reach(request, entity, body.get("to_account"), "to_account")
         amount = body.get("amount")
         if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
             raise ValidationError({"amount": "Expected a positive whole amount in kobo."})
@@ -1508,21 +1473,17 @@ class BankTransferListCreateView(_FinanceBase):
         if not narration:
             raise ValidationError({"narration": "Say why the money is moving."})
         transfer = BankTransfer(
-            entity=entity, branch=source.branch, from_account=source, to_account=target,
+            entity=entity, from_account=source, to_account=target,
             amount=amount,
             transfer_date=_date(body.get("transfer_date"), "transfer_date", required=True),
             narration=narration[:255], reference=str(body.get("reference") or "")[:64],
             created_by=request.user,
         )
+        transfer.branch_id = money_branch_id(entity, source, target, field="from_account")
         try:
             validate_bank_transfer(transfer)
         except PostingError as exc:
             raise ValidationError({"to_account": exc.message})
-        assert_caller_may_change(
-            request.user, getattr(request, "tenant", None), (source.branch_id,),
-            message="Only a school-wide administrator can move money between accounts "
-                    "shared by every branch.",
-        )
         with transaction.atomic():
             transfer.save()
             if approval_required(transfer):
@@ -1573,19 +1534,12 @@ class BankTransferVoidView(_FinanceBase):
     rbac_permission = "finance.banktransfer.reverse"
 
     def post(self, request, pk):
-        from vs_rbac.scoping import assert_caller_may_change
-
         from ..banking import void_bank_transfer
 
         entity = resolve_entity(request)
         transfer = _transfers_in_reach(request, entity).filter(pk=pk).first()
         if transfer is None:
             raise NotFound("Transfer not found for this entity.")
-        assert_caller_may_change(
-            request.user, getattr(request, "tenant", None), (transfer.branch_id,),
-            message="Only a school-wide administrator can move money between accounts "
-                    "shared by every branch.",
-        )
         void_bank_transfer(
             transfer, actor_user=request.user,
             date=_date((request.data or {}).get("date"), "date"),

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from django.db import transaction
 from rest_framework.exceptions import NotFound
-from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
+from vs_rbac.scoping import transaction_branch_q
 
 from core.response import success_response
 from vs_config.clock import tenant_today
@@ -24,7 +24,7 @@ from .base import (
     _FinanceBase,
     _date,
     _dec,
-    _raised_branch,
+    _transaction_branch,
     _money,
     _require_lines,
     _resolve_account,
@@ -58,7 +58,7 @@ class ExpenseClaimListCreateView(_FinanceBase):
 
         entity = resolve_entity(request)
         qs = ExpenseClaim.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
+            transaction_branch_q(request), entity=entity,
         ).prefetch_related("lines")
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
@@ -101,10 +101,7 @@ class ExpenseClaimListCreateView(_FinanceBase):
         lines = _require_lines(body)
         claim = ExpenseClaim.objects.create(
             entity=entity,
-            # A claim is money one person spent doing their job at one place, so
-            # the strict reading applies: a claims officer covering two branches
-            # is asked which this one is rather than having it filed school-wide.
-            branch=_raised_branch(request, entity, body),
+            branch=_transaction_branch(request, entity, body),
             claimant_name=body.get("claimant_name", ""),
             claim_date=_date(body.get("claim_date"), "claim_date", required=True),
             title=body.get("title", ""),
@@ -142,7 +139,7 @@ class _ExpenseClaimActionBase(_FinanceBase):
     def _claim(self, request, pk):
         entity = resolve_entity(request)
         claim = ExpenseClaim.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk,
+            transaction_branch_q(request), entity=entity, pk=pk,
         ).first()
         if claim is None:
             raise NotFound("Expense claim not found for this entity.")
@@ -367,7 +364,7 @@ class ExpenseClaimSummaryView(_FinanceBase):
             payment_status=InvoicePaymentStatus.PAID)
 
         agg = ExpenseClaim.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
+            transaction_branch_q(request), entity=entity,
         ).aggregate(
             open=Count("id", filter=Q(status__in=[
                 DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL,

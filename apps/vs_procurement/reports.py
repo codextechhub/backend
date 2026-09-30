@@ -66,27 +66,6 @@ class APAgingReport:
     total_outstanding: int = 0
     total_unallocated_credit: int = 0
     total_net: int = 0
-    #: Entity-level (branch-less) bills excluded from a narrowed view; None when not narrowed.
-    unassigned_excluded_count: int | None = None
-
-
-def _unassigned_count(qs, branch_scope, *, prefix="") -> int | None:
-    """How many rows of this population belong to the entity as a whole, not a branch.
-
-    A document raised before the branch column existed carries a null branch, so it reads
-    as entity-level and is legitimately outside a branch-bound caller's report.  Silently
-    dropping it would let that caller read their total as the whole story, so the reports
-    carry this count beside the total.
-
-    The **count** is deliberate: it says "your view is a subset, by this many documents"
-    without disclosing what head office or another branch actually spent, which a money
-    figure would.  ``None`` means the caller is not narrowed at all, and every caller
-    then gets the unnarrowed response, an unbound viewer and a tenant with no branches
-    included.  A row without a branch is never given an invented one.
-    """
-    if branch_scope is None or not branch_scope.is_narrowed:
-        return None
-    return qs.filter(**{f"{prefix}branch__isnull": True}).count()
 
 
 def _ap_snapshot(entity, *, as_of=None, vendor=None, branch_scope=None):
@@ -281,9 +260,6 @@ def ap_aging(entity, *, as_of=None, branch_scope=None) -> APAgingReport:
     invoices, paid_by_invoice, advances_by_vendor = _ap_snapshot(
         entity, as_of=cutoff, branch_scope=branch_scope,
     )
-    report.unassigned_excluded_count = _unassigned_count(
-        VendorInvoice.objects.filter(entity=entity, status="POSTED"), branch_scope,
-    )
     for inv in invoices:
         due = int(inv.total) - paid_by_invoice.get(inv.id, 0)
         if due <= 0:
@@ -416,8 +392,6 @@ class CashRequirementsForecast:
     total_due: int = 0
     total_unallocated_credit: int = 0
     net_cash_requirement: int = 0
-    #: Entity-level (branch-less) bills excluded from a narrowed view; None when not narrowed.
-    unassigned_excluded_count: int | None = None
 
 
 def ap_cash_requirements(entity, *, as_of=None, branch_scope=None) -> CashRequirementsForecast:
@@ -444,9 +418,6 @@ def ap_cash_requirements(entity, *, as_of=None, branch_scope=None) -> CashRequir
 
     invoices, paid_by_invoice, advances_by_vendor = _ap_snapshot(
         entity, as_of=cutoff, branch_scope=branch_scope,
-    )
-    report.unassigned_excluded_count = _unassigned_count(
-        VendorInvoice.objects.filter(entity=entity, status="POSTED"), branch_scope,
     )
     for inv in invoices:
         due = int(inv.total) - paid_by_invoice.get(inv.id, 0)
@@ -740,8 +711,6 @@ class GRIRAgingReport:
     # GL carries no branch, so there is no branch-level control figure to compare against.
     control_balance: int | None = 0
     difference: int | None = 0
-    #: Entity-level (branch-less) receipts excluded from a narrowed view; None when not narrowed.
-    unassigned_excluded_count: int | None = None
 
 
 def grir_aging(entity, *, as_of=None, branch_scope=None) -> GRIRAgingReport:
@@ -800,9 +769,6 @@ def grir_aging(entity, *, as_of=None, branch_scope=None) -> GRIRAgingReport:
     report.rows = rows
     from .models import GoodsReceivedNote
 
-    report.unassigned_excluded_count = _unassigned_count(
-        GoodsReceivedNote.objects.filter(entity=entity, status="POSTED"), branch_scope,
-    )
     if branch_scope is not None and branch_scope.is_narrowed:
         # No branch-level GL control exists to reconcile against; say so rather than
         # subtract an entity-wide balance from a branch-wide total.
@@ -1371,8 +1337,6 @@ class SpendAnalysis:
     total_tax: int = 0
     total_gross: int = 0
     invoice_count: int = 0
-    #: Entity-level (branch-less) bills excluded from a narrowed view; None when not narrowed.
-    unassigned_excluded_count: int | None = None
 
 
 def _credited_by_bill(bill_ids) -> dict:
@@ -1448,7 +1412,6 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, categ
     categories: dict = {}
     periods: dict = {}
     report = SpendAnalysis(entity_id=entity.id, start_date=start_date, end_date=end_date)
-    report.unassigned_excluded_count = _unassigned_count(population, branch_scope)
     bills = list(qs)
     credited = _credited_by_bill([inv.id for inv in bills])
 
@@ -1532,8 +1495,6 @@ class VendorPerformanceReport:
     start_date: object
     end_date: object
     rows: list = field(default_factory=list)
-    #: Entity-level (branch-less) bills excluded from a narrowed view; None when not narrowed.
-    unassigned_excluded_count: int | None = None
 
 
 def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None,
@@ -1633,9 +1594,6 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None,
         inv_population = inv_population.filter(invoice_date__gte=start_date)
     if end_date is not None:
         inv_population = inv_population.filter(invoice_date__lte=end_date)
-    # Billing is the report's headline (total_billed is also the row sort key), so the
-    # bill population is the one whose entity-level remainder is worth reporting.
-    report_unassigned = _unassigned_count(inv_population, branch_scope)
     inv_qs = inv_population
     if branch_scope is not None:
         inv_qs = inv_qs.filter(branch_scope.q())
@@ -1709,7 +1667,6 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None,
     )
     return VendorPerformanceReport(
         entity_id=entity.id, start_date=start_date, end_date=end_date, rows=ordered_rows,
-        unassigned_excluded_count=report_unassigned,
     )
 
 
@@ -1735,8 +1692,6 @@ class ProcurementCycleTime:
     end_to_end_avg_days: float | None = None
     end_to_end_count: int = 0
     end_to_end_excluded_count: int = 0
-    #: Entity-level (branch-less) settling payments excluded from a narrowed view.
-    unassigned_excluded_count: int | None = None
 
 
 def procurement_cycle_time(entity, *, start_date=None, end_date=None,
@@ -1761,9 +1716,8 @@ def procurement_cycle_time(entity, *, start_date=None, end_date=None,
     ``branch_scope`` narrows the chains to the caller's sub-scope.  The chain is anchored
     on the settling payment, so the payment's branch decides (``payment__``), and the
     receipt cache is narrowed to match; a document inherits its source's branch, so a
-    chain never straddles two branches.  A payment that settled bills from two branches
-    resolves to no branch at all (``views.base._inherited_branch_id``) and so belongs to
-    neither branch's cycle time, which is the honest answer rather than counting it twice.
+    chain never straddles two branches: a payment may not settle bills from two
+    branches (``views.base._inherited_branch_id`` refuses it).
     """
     from vs_finance.constants import DocumentStatus
 
@@ -1899,10 +1853,4 @@ def procurement_cycle_time(entity, *, start_date=None, end_date=None,
         end_to_end_avg_days=_avg_days(end_to_end),
         end_to_end_count=len(end_to_end),
         end_to_end_excluded_count=excluded["end_to_end"],
-        unassigned_excluded_count=_unassigned_count(
-            # The chain is anchored on the settling payment, so that is the population
-            # whose entity-level remainder a narrowed caller is not seeing.
-            VendorPayment.objects.filter(entity=entity, status=DocumentStatus.POSTED),
-            branch_scope,
-        ),
     )

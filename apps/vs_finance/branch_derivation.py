@@ -115,6 +115,13 @@ class Target:
     it. ``audit_module`` is the ``vs_audit`` module key its changes are filed
     under. ``no_source_note`` is the flag reason for a model with no source at
     all, where only an administrator can say which branch a row is.
+
+    ``whole_tenant`` (a ``Q``) picks out the rows that name no branch by design
+    and are neither planned nor flagged: a document covering every branch that
+    is booked per branch through branch shares of its own, such as a central
+    payroll run or the tenant's tax return. Giving one of them a branch would
+    hand that branch's staff every other branch's shares, so it is not a gap
+    the backfill fills.
     """
 
     model_label: str
@@ -123,6 +130,7 @@ class Target:
     audit_module: str = "FINANCE"
     has_branch_column: bool = True
     no_source_note: str = ""
+    whole_tenant: object = None
 
     @property
     def model(self):
@@ -516,6 +524,8 @@ def plan_entity(entity) -> EntityPlan:
         rows = model._base_manager.filter(entity=entity)
         if target.has_branch_column:
             rows = rows.filter(branch__isnull=True)
+        if target.whole_tenant is not None:
+            rows = rows.exclude(target.whole_tenant)
         pks = list(rows.order_by("pk").values_list("pk", flat=True))
         plan = TargetPlan(target=target, blank=len(pks))
         plans.append(plan)

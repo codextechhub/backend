@@ -165,7 +165,7 @@ class ScopeContextTests(_Base):
 
 
 class FinanceReadingTests(_Base):
-    """Finance reads a null branch as shared, at every one of its call sites."""
+    """Finance reads a null branch as shared on its customers and as unassigned on its transactions."""
 
     def rows(self, key, user):
         from vs_exports.catalogue import get_dataset
@@ -182,6 +182,34 @@ class FinanceReadingTests(_Base):
         """
         names = {c.name for c in self.rows("finance.customers", self.lekki_head)}
         self.assertEqual(names, {"Shared Payer", "Lekki Payer"})
+
+    def test_a_branch_callers_transaction_exports_hold_their_branch_only(self):
+        """The head of Lekki exports Lekki's invoices and receipts, not Ikeja's, not unbranched ones.
+
+        The school-level caller still gets every row, the unbranched ones included,
+        so they can be found and given a branch.
+        """
+        import datetime as dt
+
+        from vs_finance.models import Invoice, Payment
+
+        day = dt.date(2026, 9, 1)
+        for tag, branch in (("L", self.lekki), ("I", self.ikeja), ("N", None)):
+            Invoice.objects.create(
+                entity=self.entity, customer=self.shared, branch=branch,
+                invoice_date=day, reference=f"INV-{tag}",
+            )
+            Payment.objects.create(
+                entity=self.entity, customer=self.shared, branch=branch,
+                payment_date=day, reference=f"PAY-{tag}",
+            )
+
+        for key, prefix in (("finance.customer_invoices", "INV"), ("finance.customer_receipts", "PAY")):
+            with self.subTest(dataset=key):
+                mine = {row.reference for row in self.rows(key, self.lekki_head)}
+                everything = {row.reference for row in self.rows(key, self.school_level)}
+                self.assertEqual(mine, {f"{prefix}-L"})
+                self.assertEqual(everything, {f"{prefix}-L", f"{prefix}-I", f"{prefix}-N"})
 
     def test_every_finance_dataset_narrows(self):
         """Enumerated rather than sampled, so one added later is caught here."""

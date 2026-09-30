@@ -2,23 +2,29 @@
 
 The fiscal calendar, dunning policies, tax obligations, currencies, FX rates,
 tax codes, cost centres, dimensions and the chart of accounts carry no branch,
-so each binds every branch posting to the books. So does a tax filing or a
-journal filed with no branch, whether it is posted, submitted or reversed.
-Holding the write key is not enough to change one: the caller's reach has to be
-the whole tenant, and a refusal is a 403 ``SHARED_RECORD_READ_ONLY`` with
-nothing written. The warning that the calendar is running out goes only to the
-people who could open the next year.
+so each binds every branch posting to the books. Holding the write key is not
+enough to change one: the caller's reach has to be the whole tenant, and a
+refusal is a 403 ``SHARED_RECORD_READ_ONLY`` with nothing written. The warning
+that the calendar is running out goes only to the people who could open the
+next year.
 
-A direct entry starts a chain, so it takes its branch from the person raising
-it: a branch-bound bursar's entry is her branch's, and hers to reverse.
+A journal with no branch is a transaction not yet given its branch, not a
+shared record: a branch-bound bursar cannot read it, so posting, submitting or
+reversing it answers 404, as another branch's does. The school's tax return
+names no branch because it is booked per branch: Ngozi reaches it through
+Lekki's share, reads and pays only that share, and may not file, un-file or
+reverse the whole return (403). A return with no Lekki share is a 404 to them.
+A direct entry starts a chain, so it takes its branch from the person
+raising it: a branch-bound bursar's entry is their branch's, and theirs to reverse,
+and a whole-school bursar at a school with several branches names one.
 
 Lagoon View runs Ikeja and Lekki. Adaeze is the bursar for the whole school.
-Ngozi is Lekki's bursar: her role carries the same keys, pinned to Lekki. She
-reads all of it and changes none of the shared records, because closing
-January from Lekki closes it for Ikeja too. Her own branch's rows stay hers.
+Ngozi is Lekki's bursar: their role carries the same keys, pinned to Lekki. They
+read all of it and change none of the shared records, because closing
+January from Lekki closes it for Ikeja too. Their own branch's rows stay theirs.
 
 Harbour Primary has one branch, Main, and Tolu's grant is pinned to it. With
-one branch a shared record reaches nobody she does not cover, so she may
+one branch a shared record reaches nobody they do not cover, so they may
 change it; the day Harbour opens a second branch, the same grant is refused.
 """
 from __future__ import annotations
@@ -392,7 +398,7 @@ class TaxFilingWriteTests(_SharedWriteFixture):
         self.assert_refused(response, self.MESSAGE)
         self.assertFalse(TaxFiling.objects.filter(obligation=self.obligation).exists())
 
-    def test_a_branch_bound_holder_cannot_file_or_unfile_a_school_wide_filing(self):
+    def test_a_branch_bound_holder_cannot_reach_a_school_wide_filing_to_file_or_unfile_it(self):
         draft = self.filing(1)
         filed = self.filing(2, status=TaxFilingStatus.FILED)
         attempts = (
@@ -402,7 +408,7 @@ class TaxFilingWriteTests(_SharedWriteFixture):
         for filing, action, body, status in attempts:
             with self.subTest(action=action):
                 response = self.send(self.ngozi, "post", f"tax-filings/{filing.pk}/{action}/", body=body)
-                self.assert_refused(response, self.MESSAGE)
+                self.assertEqual(response.status_code, 404, response.data)
                 filing.refresh_from_db()
                 self.assertEqual(filing.filing_status, status)
                 self.assertEqual(filing.amount_paid, 0)
@@ -538,6 +544,29 @@ class TaxFilingWriteTests(_SharedWriteFixture):
         self.assertEqual(outstanding(self.ngozi), (30_000, 30_000))
         self.assertEqual(outstanding(self.adaeze), (87_000, 87_000))
 
+    def test_a_branch_bound_holder_reaches_a_split_return_but_cannot_unfile_it(self):
+        """Ngozi opens the return through Lekki's share; un-filing it moves Ikeja's too."""
+        filing = self.split_return()
+
+        response = self.send(self.ngozi, "post", f"tax-filings/{filing.pk}/unfile/")
+
+        self.assert_refused(response, self.MESSAGE)
+        filing.refresh_from_db()
+        self.assertEqual(filing.filing_status, TaxFilingStatus.FILED)
+
+    def test_a_return_with_no_share_of_theirs_is_not_listed_for_them(self):
+        """A return not yet given a branch or any share is the whole school's to place."""
+        split = self.split_return()
+        unshared = self.filing(1)
+
+        def listed(user):
+            return {row["id"] for row in self.send(user, "get", "tax-filings/").json()["data"]}
+
+        self.assertEqual(listed(self.ngozi), {split.pk})
+        self.assertEqual(listed(self.adaeze), {split.pk, unshared.pk})
+        detail = self.send(self.ngozi, "get", f"tax-filings/{unshared.pk}/")
+        self.assertEqual(detail.status_code, 404, detail.json())
+
     def test_a_branch_bound_holder_cannot_reverse_a_remittance(self):
         from .tax_filing import pay_filing
 
@@ -649,13 +678,18 @@ class ChartOfAccountsWriteTests(_SharedWriteFixture):
 
     def test_a_branch_bound_holder_cannot_edit_a_shared_account(self):
         plain = Account.objects.get(entity=self.books, code="5300")
-        shared_bank = self.bank_ledger("1160", None)
-        for account in (plain, shared_bank):
-            with self.subTest(code=account.code):
-                before = account.name
-                self.assert_refused(self.rename(self.ngozi, account, "Renamed"), self.MESSAGE)
-                account.refresh_from_db()
-                self.assertEqual(account.name, before)
+        before = plain.name
+        self.assert_refused(self.rename(self.ngozi, plain, "Renamed"), self.MESSAGE)
+        plain.refresh_from_db()
+        self.assertEqual(plain.name, before)
+
+    def test_the_ledger_of_a_bank_not_yet_given_a_branch_is_not_theirs_to_name(self):
+        """A bank account holds one branch's money; until it has a branch it is nobody's to them."""
+        unbranched_bank = self.bank_ledger("1160", None)
+        response = self.rename(self.ngozi, unbranched_bank, "Renamed")
+        self.assertEqual(response.status_code, 404, response.data)
+        unbranched_bank.refresh_from_db()
+        self.assertEqual(unbranched_bank.name, "Bank 1160")
 
     def test_a_branch_bound_holder_edits_her_own_branchs_bank_ledger(self):
         own = self.bank_ledger("1170", self.lekki)
@@ -675,9 +709,7 @@ class ChartOfAccountsWriteTests(_SharedWriteFixture):
 
 
 class JournalReversalTests(_SharedWriteFixture):
-    """Reversing a journal with no branch moves every branch's statements."""
-
-    MESSAGE = "Only a school-wide administrator can reverse a school-wide journal."
+    """A journal not yet given a branch is reversed only by a whole-school bursar."""
 
     def posted_journal(self, branch=None):
         from .posting import create_direct_entry, post_journal
@@ -696,9 +728,9 @@ class JournalReversalTests(_SharedWriteFixture):
     def reverse(self, user, entry):
         return self.send(user, "post", f"journals/{entry.pk}/reverse/")
 
-    def test_a_branch_bound_holder_cannot_reverse_a_school_wide_journal(self):
+    def test_a_branch_bound_holder_cannot_reach_an_unbranched_journal_to_reverse_it(self):
         entry = self.posted_journal()
-        self.assert_refused(self.reverse(self.ngozi, entry), self.MESSAGE)
+        self.assertEqual(self.reverse(self.ngozi, entry).status_code, 404)
         entry.refresh_from_db()
         self.assertEqual(entry.status, DocumentStatus.POSTED)
         self.assertEqual(JournalEntry.objects.filter(entity=self.books).count(), 1)
@@ -763,16 +795,14 @@ def _draft(books, branch=None):
 
 
 class DraftJournalPostTests(_SharedWriteFixture):
-    """Posting a draft with no branch moves every branch's statements."""
-
-    MESSAGE = "Only a school-wide administrator can post a school-wide journal."
+    """A draft not yet given a branch is posted only by a whole-school bursar."""
 
     def post(self, user, entry):
         return self.send(user, "post", f"journals/{entry.pk}/post/")
 
-    def test_a_branch_bound_holder_cannot_post_a_school_wide_draft(self):
+    def test_a_branch_bound_holder_cannot_reach_an_unbranched_draft_to_post_it(self):
         entry = _draft(self.books)
-        self.assert_refused(self.post(self.ngozi, entry), self.MESSAGE)
+        self.assertEqual(self.post(self.ngozi, entry).status_code, 404)
         entry.refresh_from_db()
         self.assertEqual(entry.status, DocumentStatus.DRAFT)
 
@@ -792,9 +822,7 @@ class DraftJournalPostTests(_SharedWriteFixture):
 
 
 class DraftJournalSubmitTests(_SharedWriteFixture):
-    """Submitting a draft with no branch sends the school's journal for posting."""
-
-    MESSAGE = "Only a school-wide administrator can submit a school-wide journal."
+    """A draft not yet given a branch is submitted only by a whole-school bursar."""
 
     def setUp(self):
         super().setUp()
@@ -831,9 +859,9 @@ class DraftJournalSubmitTests(_SharedWriteFixture):
 
         return WorkflowInstance.objects.for_document(entry)
 
-    def test_a_branch_bound_holder_cannot_submit_a_school_wide_draft(self):
+    def test_a_branch_bound_holder_cannot_reach_an_unbranched_draft_to_submit_it(self):
         entry = _draft(self.books)
-        self.assert_refused(self.submit(self.ngozi, entry), self.MESSAGE)
+        self.assertEqual(self.submit(self.ngozi, entry).status_code, 404)
         entry.refresh_from_db()
         self.assertEqual(entry.status, DocumentStatus.DRAFT)
         self.assertFalse(self.instances(entry).exists())
@@ -901,10 +929,11 @@ class DirectEntryBranchTests(_SharedWriteFixture):
         self.assertEqual(named.status_code, 201, named.data)
         self.assertEqual(self.entry(named).branch_id, self.ikeja.pk)
 
-    def test_a_whole_tenant_caller_may_leave_it_school_wide_or_name_a_branch(self):
-        shared = self.enter(self.adaeze)
-        self.assertEqual(shared.status_code, 201, shared.data)
-        self.assertIsNone(self.entry(shared).branch_id)
+    def test_a_whole_tenant_caller_at_a_two_branch_school_names_a_branch(self):
+        """No school-wide journal: Adaeze's unnamed entry is a 400 and nothing is written."""
+        unnamed = self.enter(self.adaeze)
+        self.assertEqual(unnamed.status_code, 400, unnamed.data)
+        self.assertFalse(JournalEntry.objects.filter(entity=self.books).exists())
 
         at_ikeja = self.enter(self.adaeze, branch=self.ikeja.pk)
         self.assertEqual(at_ikeja.status_code, 201, at_ikeja.data)

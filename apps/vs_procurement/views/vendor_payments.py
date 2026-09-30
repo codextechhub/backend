@@ -56,26 +56,33 @@ def _payment_list_queryset(entity):
     ).prefetch_related("allocations__vendor_invoice")
 
 
+#: Passed as ``document_branch`` by a new payment, whose branch its bills give later.
+CHECKED_AFTER = object()
+
+
 def _resolve_bank_account(request, entity, ref, *, document_branch):
     """Resolve an active bank account, backed by a postable GL account, the caller can see.
 
     Which accounts a caller may name, and which a branch's payment may be paid
-    from, are finance's rules, read through finance's resolver: the caller's
-    branches' accounts and the school-wide ones, and for a payment that belongs
-    to a branch, that branch's or a school-wide one. What is added here is the
-    payment's own condition, that the account and its ledger account are open
-    for posting. A payment's branch is the one its bills give
+    from, are finance's rules, read through finance's resolver: the caller's own
+    branches' accounts, and for a payment, its own branch's. What is added here
+    is the payment's own condition, that the account and its ledger account are
+    open for posting. A payment's branch is the one its bills give
     (:func:`_settled_branch_id`): an edit and a post derive it first and pass it
     here, while a new payment names its account before its bills are resolved,
-    so it passes ``document_branch=None`` and checks the branch afterwards with
+    so it passes :data:`CHECKED_AFTER` and checks the branch afterwards with
     :func:`require_own_branch_bank`.
     """
     if ref in (None, ""):
         raise ValidationError({"bank_account": "An active bank or cash account is required."})
+    from vs_finance.views_ops.base import _bank_account_in_reach
     from vs_finance.views_ops.base import _resolve_bank_account as _reachable_bank_account
 
-    account = _reachable_bank_account(
-        request, entity, ref, document_branch=document_branch, noun="vendor payment")
+    if document_branch is CHECKED_AFTER:
+        account = _bank_account_in_reach(request, entity, ref)
+    else:
+        account = _reachable_bank_account(
+            request, entity, ref, document_branch=document_branch, noun="vendor payment")
     gl = account.gl_account
     if not (account.is_active and gl.is_active and gl.is_postable):
         raise ValidationError({"bank_account": "No active bank account with a postable GL account exists in this entity."})
@@ -147,9 +154,9 @@ def _allocation_plan(request, entity, vendor, payload):
 def _settled_branch_id(request, plan):
     """The branch a payment takes from the bills it settles, checked against the caller.
 
-    Bills of one branch give that branch; bills of several (only a caller who is not
-    branch-bound can select those) settle at entity level. Create, edit and post all
-    derive it here, so an edit that swaps the bills moves the payment with them.
+    Bills of one branch give that branch; bills of several are refused with a 400,
+    because one payment is booked to one branch. Create, edit and post all derive
+    it here, so an edit that swaps the bills moves the payment with them.
     """
     return _inherited_branch_id(request, *(invoice for invoice, _ in plan))
 
@@ -269,7 +276,8 @@ class VendorPaymentListCreateView(_ProcBase):
         body = request.data
         vendor = _resolve_vendor(request, entity, body.get("vendor"))
         _validate_vendor_for_payment(vendor)
-        bank = _resolve_bank_account(request, entity, body.get("bank_account"), document_branch=None)
+        bank = _resolve_bank_account(
+            request, entity, body.get("bank_account"), document_branch=CHECKED_AFTER)
         plan = _allocation_plan(request, entity, vendor, body.get("allocations"))
         gross = sum(amount for _, amount in plan)  # Gross is the exact approved liability split.
         wht_code = _resolve_tax(entity, body.get("wht_tax_code")) or vendor.default_wht_tax_code
@@ -438,8 +446,8 @@ def _recheck_branch_before_posting(request, entity, payment):
     * the bills still give the branch the payment carries, which is the branch
       its journal is booked to (a 400 asking for the draft to be edited, which
       re-derives it);
-    * the bank account is one this caller can reach, and is that branch's or a
-      school-wide one (finance's 404 and 400, see
+    * the bank account is one this caller can reach, and is that branch's own
+      (finance's 404 and 400, see
       :func:`vs_finance.views_ops.base._resolve_bank_account`).
 
     A payment whose ledger account backs no bank account was not written by this
@@ -515,8 +523,7 @@ class VendorPaymentAllocateAdvanceView(_ProcBase):
 
     Body ``{allocations:[{vendor_invoice, amount}]}`` for an explicit split, or
     ``{auto_allocate:true}`` to settle the vendor's open bills oldest-first: only bills
-    of the payment's own branch (school-wide bills for a school-wide payment) that the
-    caller can reach. Each amount is capped at the bill's balance and the advance still
+    of the payment's own branch that the caller can reach. Each amount is capped at the bill's balance and the advance still
     remaining.
 
     The AP mirror of ``/finance/payments/<id>/allocate/``. Note the deliberate

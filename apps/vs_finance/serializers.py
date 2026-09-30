@@ -54,6 +54,7 @@ from .models import (
     EmployeeSalary,
     PayrollLine,
     PayrollRun,
+    PayrollRunBranch,
     SalaryComponent,
     SalaryStructure,
     PettyCashFund,
@@ -178,7 +179,19 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
 
 
 class AccountSerializer(serializers.ModelSerializer):
+    """A chart-of-accounts row.
+
+    ``bank_account_id`` and ``bank_branch_id`` name the bank account behind a
+    ledger account and that account's branch, empty for an account no bank
+    account backs. A document is deposited into, or paid from, its own branch's
+    bank only, so a deposit picker offering ledger accounts narrows by
+    ``bank_branch_id`` to the document's branch instead of offering Lekki's
+    collection ledger on an Ikeja receipt and meeting the refusal on save.
+    """
+
     parent_code = serializers.CharField(source="parent.code", read_only=True, default=None)
+    bank_account_id = serializers.SerializerMethodField()
+    bank_branch_id = serializers.SerializerMethodField()
     # Net GL balance signed to the account's normal balance - populated from the
     # ``_bal_dr``/``_bal_cr`` annotations the chart-of-accounts view adds.
     balance = serializers.SerializerMethodField()
@@ -190,8 +203,23 @@ class AccountSerializer(serializers.ModelSerializer):
         fields = [
             "id", "code", "name", "account_type", "normal_balance",
             "is_contra", "is_postable", "is_active", "parent_id", "parent_code",
-            "subtype", "balance", "tag",
+            "subtype", "balance", "tag", "bank_account_id", "bank_branch_id",
         ]
+
+    @staticmethod
+    def _bank(obj):
+        from django.core.exceptions import ObjectDoesNotExist
+
+        try:
+            return obj.bank_account
+        except ObjectDoesNotExist:
+            return None
+
+    def get_bank_account_id(self, obj):
+        return getattr(self._bank(obj), "pk", None)
+
+    def get_bank_branch_id(self, obj):
+        return getattr(self._bank(obj), "branch_id", None)
 
     def get_balance(self, obj):
         from .constants import NormalBalance
@@ -341,8 +369,9 @@ class DirectEntryCreateSerializer(serializers.Serializer):
     branch = serializers.CharField(
         required=False, allow_blank=True, allow_null=True,
         help_text="Branch id or code the entry belongs to. A caller bound to one "
-                  "branch may leave it out; a caller bound to several must name "
-                  "one; a whole-tenant caller may leave it out for a school-wide entry.",
+                  "branch may leave it out; a caller bound to several, or a "
+                  "whole-tenant caller at a school with several branches, must name "
+                  "one. At a school with one branch it may be left out.",
     )
     lines = DirectEntryLineSerializer(many=True)
 
@@ -360,8 +389,15 @@ class DirectEntryCreateSerializer(serializers.Serializer):
 
 
 class CustomerSerializer(serializers.ModelSerializer):
-    """Read shape for a customer / payer (the AR sub-ledger party)."""
+    """Read shape for a customer / payer (the AR sub-ledger party).
 
+    ``branch_id`` is the branch the customer is filed under, or empty for one
+    every branch shares. A document raised against a filed customer takes its
+    branch; one raised against a shared customer names its own, so a form asks
+    for a branch only when this is empty.
+    """
+
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     receivable_account_code = serializers.CharField(
         source="receivable_account.code", read_only=True, default=None)
     receivable_account_name = serializers.CharField(
@@ -374,6 +410,7 @@ class CustomerSerializer(serializers.ModelSerializer):
             "id", "code", "name", "billing_email", "billing_phone", "billing_address",
             "receivable_account_code", "receivable_account_name", "opening_balance",
             "opening_balance_naira", "source_type", "source_id", "is_active",
+            "branch_id", "branch_name",
         ]
 
     def get_opening_balance_naira(self, obj) -> str:
@@ -454,16 +491,27 @@ class FeeStructureSerializer(serializers.ModelSerializer):
 
 
 class InvoiceSerializer(serializers.ModelSerializer):
+    """Read shape for a sales invoice.
+
+    ``branch_id`` is the invoice's own branch, which is not always its
+    customer's: an invoice raised against a customer every branch shares names
+    the branch that raised it. A receipt against the invoice takes that branch
+    and is deposited only into that branch's bank accounts, so a payment form
+    narrows its deposit picker by this rather than by the customer's.
+    """
+
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     settled_amount = serializers.IntegerField(read_only=True)
     balance_due = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
 
     class Meta:
         model = Invoice
         fields = [
             "id", "document_number", "customer_id", "customer_code", "customer_name",
+            "branch_id", "branch_name",
             "invoice_date", "due_date", "status", "payment_status",
             "subtotal", "tax_total", "total", "total_naira",
             "amount_paid", "amount_credited", "settled_amount", "balance_due",
@@ -654,6 +702,13 @@ class PaymentPlanInstallmentSerializer(serializers.ModelSerializer):
 
 
 class PaymentPlanSerializer(serializers.ModelSerializer):
+    """Read shape for a payment plan and its instalments.
+
+    ``branch_id`` is the plan's own branch: its invoice's when it spreads one,
+    otherwise its customer's or the one named for a shared customer. An
+    instalment payment is deposited only into that branch's bank accounts.
+    """
+
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     invoice_number = serializers.CharField(
@@ -664,11 +719,13 @@ class PaymentPlanSerializer(serializers.ModelSerializer):
     outstanding_total = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
     installments = PaymentPlanInstallmentSerializer(many=True, read_only=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
 
     class Meta:
         model = PaymentPlan
         fields = [
             "id", "document_number", "customer_id", "customer_code", "customer_name",
+            "branch_id", "branch_name",
             "invoice_id", "invoice_number", "plan_status", "start_date", "frequency",
             "installment_count", "total_amount", "total_naira",
             "baseline_settled", "scheduled_total", "settled_total", "outstanding_total",
@@ -1254,19 +1311,34 @@ class PayrollLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
         fields = [
             "id", "line_no", "employee_id", "employee_name",
             "gross_amount", "paye_amount", "pension_amount", "net_amount",
-            "components", "cost_center",
+            "components", "cost_center", "branch_id", "branch_name",
+        ]
+
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+
+
+class PayrollRunBranchSerializer(serializers.ModelSerializer):
+    """One branch's share of a run posted one journal per branch, and how it was paid."""
+
+    branch_name = serializers.CharField(source="branch.name", read_only=True)
+
+    class Meta:
+        model = PayrollRunBranch
+        fields = [
+            "id", "branch_id", "branch_name", "status",
+            "gross_total", "paye_total", "pension_total", "net_total",
+            "journal_id", "disbursement_journal_id", "bank_account_id",
         ]
 
 
 class PayrollRunSerializer(serializers.ModelSerializer):
+    """A payroll run. ``branch_shares`` is empty unless the run posted one journal
+    per branch, when it lists each branch's figures, journals and payment."""
+
     lines = PayrollLineSerializer(many=True, read_only=True)
+    branch_shares = PayrollRunBranchSerializer(many=True, read_only=True)
     net_total_naira = serializers.SerializerMethodField()
-    # Which site the run covers. Under PER_BRANCH a school raises one run per
-    # branch per pay date, so without this the list shows several rows with the
-    # same date, the same period label and nothing to tell them apart. Null
-    # means a central run over the whole entity, which is what every run was
-    # before per-branch payroll existed. Not a registered field: a site is not
-    # a pay figure, and the officer who has to pick the right run needs to read it.
+    # Which branch the run covers; null is a central run over every branch.
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     # Statutory liability accounts the run credited (set on post) - let the FE match the
     # real outstanding balance (trial balance) to show remittance status honestly.
@@ -1282,7 +1354,7 @@ class PayrollRunSerializer(serializers.ModelSerializer):
             "branch_id", "branch_name",
             "paye_payable_account", "paye_payable_account_id",
             "pension_payable_account", "pension_payable_account_id",
-            "journal_id", "disbursement_journal_id", "lines",
+            "journal_id", "disbursement_journal_id", "branch_shares", "lines",
         ]
 
     def get_net_total_naira(self, obj) -> str:
@@ -1399,11 +1471,11 @@ class BudgetLineSerializer(serializers.ModelSerializer):
 
 
 class BudgetSerializer(serializers.ModelSerializer):
-    """A budget, with whose plan it is and whether the reader may change it.
+    """A budget, with the branch it belongs to and whether the reader may change it.
 
-    ``branch_id`` is empty for the school's own plan. ``can_manage`` answers for
-    the request's reader: a branch-bound reader may read the school's plan but
-    not change it (see :func:`vs_rbac.scoping.caller_may_change`).
+    ``branch_id`` is empty only on a budget raised before every budget named a
+    branch, which only a whole-school reader reaches. ``can_manage`` answers for
+    the request's reader (see :func:`vs_rbac.scoping.caller_may_change`).
     """
 
     fiscal_year = serializers.IntegerField(source="fiscal_year.year", read_only=True)

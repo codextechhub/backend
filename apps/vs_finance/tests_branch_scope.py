@@ -2,18 +2,17 @@
 
 ``HasRBACPermission`` deliberately names no branch: it answers "may I open this
 screen?" and stops there. The other half - "whose rows, then?" - is
-:mod:`vs_rbac.scoping`, and until now :mod:`vs_procurement` was the only module
-on the platform that asked it. So a grant of "Bursar at Ikeja" opened the fee
-screens and returned Lekki's and Yaba's rows too. The gate held; the narrowing
-never happened.
+:mod:`vs_rbac.scoping`, and these tests are the end-to-end evidence that finance
+asks it, over real HTTP with real grants rather than by inspecting a queryset.
 
-These tests are the end-to-end evidence that it now happens, over real HTTP with
-real grants rather than by inspecting a queryset. The rule they exist to protect
-is the inclusive one: a row whose branch is NULL is **shared across the school**
-and stays visible. Corona publishes one fee structure for all three branches and
-leaves its branch empty; a Bursar at Ikeja must still see it. Hiding it would
-look like missing data rather than a permission error, which is why every class
-below asserts the shared row by name and not merely as part of a set.
+A NULL branch reads two ways, and both are asserted by name:
+
+* a **shared record** - a customer or a fee structure - with no branch is the
+  school's, published once for every branch. Corona publishes one fee structure
+  for all three branches; Mrs Adeyemi, the Bursar at Ikeja, still sees it.
+* a **transaction** - an invoice, a receipt, a journal, a bank account - with no
+  branch has not been given its branch yet. Mrs Adeyemi does not see it, by list
+  or by id; the school-wide bursar does, and can give it one.
 
 Two shapes of school throughout: the three-branch one where the narrowing bites,
 and the single-branch one where the dimension should recede and nothing changes.
@@ -242,10 +241,11 @@ class BranchPinnedReadsTests(_FinanceBranchFixture):
         self.assertEqual(by_id[self.fee_ikeja.id], self.ikeja.id)
         self.assertIsNone(by_id[self.fee_shared.id])
 
-    def test_the_invoice_list_narrows_and_keeps_the_school_wide_invoice(self):
+    def test_the_invoice_list_narrows_and_withholds_the_unbranched_invoice(self):
         seen = self.ids(self.bursar, "invoices/", self.books)
 
-        self.assertEqual(seen, {self.inv_ikeja.id, self.inv_shared.id})
+        self.assertEqual(seen, {self.inv_ikeja.id})
+        self.assertNotIn(self.inv_shared.id, seen)
         self.assertNotIn(self.inv_lekki.id, seen)
         self.assertNotIn(self.inv_yaba.id, seen)
 
@@ -264,7 +264,7 @@ class BranchPinnedReadsTests(_FinanceBranchFixture):
         """
         seen = self.ids(self.bursar, "fixed-assets/", self.books)
 
-        self.assertIn(self.asset_shared.id, seen)
+        self.assertNotIn(self.asset_shared.id, seen)
         self.assertIn(self.asset_ikeja.id, seen)
         self.assertNotIn(self.asset_lekki.id, seen)
 
@@ -291,9 +291,19 @@ class BranchPinnedReadsTests(_FinanceBranchFixture):
 
         self.assertEqual(response.status_code, 404, response.data)
 
-    def test_the_school_wide_invoice_is_readable_by_id(self):
-        """The other half of the same rule: shared rows stay reachable, not just listed."""
+    def test_the_unbranched_invoice_is_not_readable_by_id(self):
+        """Withheld from the list is withheld by id too: 404, as for another branch's."""
         response = self.bursar.get(
+            f"/v1/finance/invoices/{self.inv_shared.pk}/?entity={self.books.code}",
+        )
+
+        self.assertEqual(response.status_code, 404, response.data)
+
+    def test_a_whole_school_reader_reads_the_unbranched_invoice_by_id(self):
+        """Mr Bello can open it, so somebody can give it its branch."""
+        hq = self.reader(self.tenant, "hq-by-id@fin.test", "fin-hq-by-id")
+
+        response = hq.get(
             f"/v1/finance/invoices/{self.inv_shared.pk}/?entity={self.books.code}",
         )
 
@@ -310,9 +320,7 @@ class BranchPinnedReadsTests(_FinanceBranchFixture):
 
         seen = self.ids(client, "invoices/", self.books)
 
-        self.assertEqual(
-            seen, {self.inv_ikeja.id, self.inv_lekki.id, self.inv_shared.id},
-        )
+        self.assertEqual(seen, {self.inv_ikeja.id, self.inv_lekki.id})
         self.assertNotIn(self.inv_yaba.id, seen)
 
 
@@ -356,7 +364,7 @@ class SingleBranchSchoolTests(_FinanceBranchFixture):
     where an over-eager exclusive predicate would silently empty the screens.
     """
 
-    def test_a_grant_pinned_to_the_only_branch_still_sees_the_school_wide_rows(self):
+    def test_a_grant_pinned_to_the_only_branch_still_sees_the_unbranched_rows(self):
         e = self.solo_books
         cust = self.customer(e, "SOLO", None)
         at_main = self.invoice(e, cust, self.solo_main)
@@ -425,17 +433,16 @@ class EveryBranchBearingListNarrowsTests(_FinanceBranchFixture):
     helper - finance grew three list conventions over time - so a narrowing proved
     on the invoice screen proves nothing about the payroll one. Rather than a
     hand-written test per screen, the same three rows are built for each model and
-    the same question asked: does an Ikeja-pinned caller get Ikeja's row and the
-    school-wide row, and not Lekki's?
+    the same question asked: does an Ikeja-pinned caller get Ikeja's row, and
+    neither Lekki's nor the one not yet given a branch?
 
     A screen added later that forgets the narrowing does not fail here - it simply
     is not listed - so this is a floor, not a proof of completeness. The floor is
     still worth having: it is what catches a narrowing removed from an existing
     screen by a refactor.
 
-    Screens in :attr:`EXCLUSIVE` read the school-wide row the other way: it holds
-    unbranched money, which a branch-bound caller neither sees nor pays out, so it
-    is listed for the unbound caller only.
+    Every screen here lists transactions, so the unbranched row is listed for the
+    unbound caller only.
     """
 
     #: (url path, permission key, builder attribute)
@@ -453,9 +460,6 @@ class EveryBranchBearingListNarrowsTests(_FinanceBranchFixture):
         ("bank-accounts/", "finance.bankaccount.view", "_bank_account"),
         ("fixed-assets/", "finance.fixedasset.view", "_fixed_asset_row"),
     )
-
-    #: Screens whose school-wide row a branch-bound caller must not get.
-    EXCLUSIVE = frozenset({"refunds/"})
 
     JAN = datetime.date(2026, 1, 12)
 
@@ -559,7 +563,7 @@ class EveryBranchBearingListNarrowsTests(_FinanceBranchFixture):
 
     # -- the sweep ------------------------------------------------------------- #
 
-    def test_every_listed_screen_narrows_and_keeps_the_school_wide_row(self):
+    def test_every_listed_screen_narrows_and_withholds_the_unbranched_row(self):
         for index, (path, key, builder) in enumerate(self.SCREENS):
             with self.subTest(screen=path):
                 e = self.books
@@ -583,10 +587,7 @@ class EveryBranchBearingListNarrowsTests(_FinanceBranchFixture):
                 )
                 seen = self.ids(TenantAPIClient(user=user), path, e)
 
-                if path in self.EXCLUSIVE:
-                    self.assertNotIn(shared.pk, seen, f"{path} showed unbranched money")
-                else:
-                    self.assertIn(shared.pk, seen, f"{path} hid the school-wide row")
+                self.assertNotIn(shared.pk, seen, f"{path} showed an unbranched row")
                 self.assertIn(at_ikeja.pk, seen, f"{path} hid the caller's own row")
                 self.assertNotIn(at_lekki.pk, seen, f"{path} leaked another branch")
 
@@ -610,7 +611,7 @@ class BankAccountReachedByIdNarrowsTests(_FinanceBranchFixture):
 
     The bank account is the one finance model whose list was narrowed while every
     route reaching it by id was not, so a bursar covering Ikeja could not see
-    Lekki's account on her screen and could still read its number and balance,
+    Lekki's account on their screen and could still read its number and balance,
     rename it, pull its statement lines, import onto it and reconcile it, by
     typing its id into the address.
 
@@ -690,16 +691,11 @@ class BankAccountReachedByIdNarrowsTests(_FinanceBranchFixture):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["data"]["name"], "Ikeja Collections")
 
-    def test_the_school_wide_account_opens_from_her_site(self):
-        """The one operations account the whole school pays into.
-
-        It carries no branch, and withholding it would read as the school's own
-        bank having disappeared rather than as a permission working.
-        """
+    def test_an_account_not_yet_given_a_branch_does_not_open_from_their_branch(self):
+        """A bank account holds one branch's money, so an unbranched one is nobody's yet."""
         response = self.call("GET", f"bank-accounts/{self.shared_account.pk}/")
 
-        self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.data["data"]["name"], "GTBank Operations")
+        self.assertEqual(response.status_code, 404, response.data)
 
     def test_no_route_into_another_sites_account_answers(self):
         for method, path in self.ACCOUNT_ROUTES:
@@ -774,9 +770,7 @@ class BankAccountReachedByIdNarrowsTests(_FinanceBranchFixture):
         """
         listed = self.ids(self.client, "bank-accounts/", self.books)
 
-        self.assertEqual(
-            listed, {self.ikeja_account.pk, self.shared_account.pk},
-        )
+        self.assertEqual(listed, {self.ikeja_account.pk})
         for pk in listed:
             self.assertEqual(
                 self.call("GET", f"bank-accounts/{pk}/").status_code, 200,
@@ -830,7 +824,7 @@ class DocumentEmailNarrowsTests(_FinanceBranchFixture):
 
         The preview names the family's email address; the POST beside it puts
         the invoice there. Neither is the Ikeja bursar's to do with Lekki's
-        bill, and the list she works from has never shown it to her.
+        bill, and the list they work from has never shown it to them.
         """
         path = f"invoices/{self.lekki_bill.pk}/email/"
 
@@ -847,11 +841,11 @@ class DocumentEmailNarrowsTests(_FinanceBranchFixture):
 
         self.assertNotEqual(response.status_code, 404, response.data)
 
-    def test_a_school_wide_invoice_previews(self):
-        """No branch means the school raised it, and any site may send it."""
+    def test_an_unbranched_invoice_cannot_be_previewed(self):
+        """Nobody knows whose it is yet, so no branch sends it."""
         response = self.preview(f"invoices/{self.shared_bill.pk}/email/")
 
-        self.assertNotEqual(response.status_code, 404, response.data)
+        self.assertEqual(response.status_code, 404, response.data)
 
     def test_another_sites_receipt_cannot_be_previewed(self):
         response = self.preview(f"payments/{self.receipt(self.lekki).pk}/email/")
@@ -862,3 +856,46 @@ class DocumentEmailNarrowsTests(_FinanceBranchFixture):
         response = self.preview(f"payments/{self.receipt(self.ikeja).pk}/email/")
 
         self.assertNotEqual(response.status_code, 404, response.data)
+
+
+class TransactionFiguresNarrowTests(_FinanceBranchFixture):
+    """Mrs Adeyemi's statements and summaries add up Ikeja's journals and nothing else.
+
+    Three posted journals: 10,000 at Ikeja, 20,000 at Lekki, and 40,000 raised before
+    journals carried a branch. Their trial balance and journal summary count the
+    10,000 alone; Mr Bello, who covers the whole school, still counts all 70,000.
+    """
+
+    KEYS = ("finance.report.view", "finance.journal.view")
+
+    def setUp(self):
+        from vs_finance.posting import create_direct_entry, post_journal
+
+        super().setUp()
+        for branch, amount in ((self.ikeja, 10_000), (self.lekki, 20_000), (None, 40_000)):
+            entry = create_direct_entry(
+                self.books, lines=[("1100", amount, 0), ("3100", 0, amount)],
+                date=datetime.date(2026, 1, 10), narration="Capital", branch=branch,
+            )
+            post_journal(entry)
+        self.adeyemi = TenantAPIClient(user=self.grant(
+            self.user_for(self.tenant, "adeyemi@fin.test"), *self.KEYS,
+            tenant=self.tenant, role_key="figures-ikeja", branch=self.ikeja,
+        ))
+        self.bello = TenantAPIClient(user=self.grant(
+            self.user_for(self.tenant, "bello@fin.test"), *self.KEYS,
+            tenant=self.tenant, role_key="figures-hq",
+        ))
+
+    def data(self, client, path):
+        response = client.get(f"/v1/finance/{path}?entity={self.books.code}")
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["data"]
+
+    def test_their_trial_balance_counts_ikejas_journal_only(self):
+        self.assertEqual(self.data(self.adeyemi, "reports/trial-balance/")["total_debit"]["kobo"], 10_000)
+        self.assertEqual(self.data(self.bello, "reports/trial-balance/")["total_debit"]["kobo"], 70_000)
+
+    def test_their_journal_summary_counts_ikejas_journal_only(self):
+        self.assertEqual(self.data(self.adeyemi, "journals/summary/")["posted_total"]["kobo"], 10_000)
+        self.assertEqual(self.data(self.bello, "journals/summary/")["posted_total"]["kobo"], 70_000)

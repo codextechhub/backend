@@ -13,6 +13,8 @@ only branch.
 """
 from __future__ import annotations
 
+from django.db.models import Q
+
 from .branch_derivation import (
     JournalOwner,
     Target,
@@ -86,17 +88,10 @@ _TARGETS = (
     Target("vs_finance.PettyCashVoucher", (via("the fund", "fund", "vs_finance.PettyCashFund"),), order=55),
     Target("vs_finance.ExpenseClaim", (user_branch("the claimant", "claimant"),), order=50),
     Target(FIXED_ASSET, (banks_on_journal("the funding bank account", "acquisition_journal"),), order=50),
-    Target(
-        "vs_finance.PayrollRun", (), order=50,
-        no_source_note=(
-            "a payroll run covers staff of several branches, with a journal per "
-            "branch; an administrator decides which branch the run itself is"
-        ),
-    ),
-    Target(
-        "vs_finance.TaxFiling", (), order=50,
-        no_source_note="a return is filed per branch; an administrator decides which branch this one is",
-    ),
+    # A run with no branch is a central run, booked one journal per branch.
+    Target("vs_finance.PayrollRun", (), order=50, whole_tenant=Q(branch__isnull=True)),
+    # A return with no branch is the tenant's one return, booked per branch share.
+    Target("vs_finance.TaxFiling", (), order=50, whole_tenant=Q(branch__isnull=True)),
     Target(
         "vs_finance.Budget", (), order=50,
         no_source_note="every budget belongs to a branch; an administrator decides which",
@@ -130,6 +125,8 @@ _JOURNAL_OWNERS = (
     JournalOwner("vs_finance.TaxRemittance", "reversal_journal"),
     JournalOwner("vs_finance.PayrollRun", "journal"),
     JournalOwner("vs_finance.PayrollRun", "disbursement_journal"),
+    JournalOwner("vs_finance.PayrollRunBranch", "journal"),
+    JournalOwner("vs_finance.PayrollRunBranch", "disbursement_journal"),
     JournalOwner(FIXED_ASSET, "acquisition_journal"),
     JournalOwner(FIXED_ASSET, "disposal_journal"),
     JournalOwner("vs_finance.DepreciationSchedule", "journal", via="asset", via_label=FIXED_ASSET),

@@ -1,29 +1,29 @@
 """Budgets and variance.
 
-A budget is either the school's plan (no branch) or one branch's plan. Readers
-see the plans in their reach: their own branches' and the school's.
+Every budget belongs to one branch, and the school's plan is the roll-up of its
+branches' plans rather than a document of its own.
 
-* A branch plan is measured against that branch's own journals, and whoever can
-  see it sees its actuals and variance.
-* The school's plan is measured against the whole ledger. A branch-bound reader
-  sees that plan but not its actuals: the school's actuals would show them other
-  branches' money, and their own against the whole plan would read as a
-  shortfall that is only the other branches' share. For them those figures are
-  ``None``, and variance rows for accounts the plan does not cover are left out,
-  since their presence alone reports other branches' postings.
-* A branch-bound reader may change only their own branches' plans; the school's
-  plan is read-only to them, and ``can_manage`` on each budget says which. What
-  they create is filed to their branch. A school-wide reader names a branch, or
-  none for the school's plan.
+* A budget is read with the transaction scope
+  (:func:`vs_rbac.scoping.transaction_branch_scope`): a branch-bound reader sees
+  and changes only their own branches' budgets, and one not yet given a branch
+  (raised before every budget named one) only a whole-school reader sees.
+* A budget is measured against its own branch's journals, so whoever can read it
+  sees its actuals and variance in full.
+* A new budget names its branch (:func:`vs_rbac.scoping.raised_transaction_branch`):
+  a branch-bound reader's is filed to their branch, a whole-school reader at a
+  school with several branches names one, and a school with one branch files it
+  to that branch without asking.
+* ``budgets/rollup/`` is the school total: the reader's branches' plans for a year
+  summed and set against the same reader's journals
+  (:func:`vs_finance.reports.budget_rollup`).
 """
 from __future__ import annotations
 
 
 from rest_framework.exceptions import NotFound, ValidationError
-from rest_framework.permissions import SAFE_METHODS
 
 from core.response import success_response
-from vs_rbac.scoping import assert_caller_may_change, branch_scope, raised_branch
+from vs_rbac.scoping import transaction_branch_scope
 
 from ..money import format_naira
 from ..views import resolve_entity
@@ -42,6 +42,7 @@ from .base import (
     _resolve_account,
     _resolve_cost_center,
     _resolve_fiscal_year,
+    _transaction_branch,
 )
 
 # --------------------------------------------------------------------------- #
@@ -49,22 +50,17 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 def _reader_scope(request):
-    """The reader's reach over budgets: their branches' plans and the school's."""
-    return branch_scope(request, include_shared=True)
-
-
-def _withholds_actuals(request, budget) -> bool:
-    """True when this reader sees only ``budget``'s plan; see the module docstring."""
-    return budget.branch_id is None and _reader_scope(request).is_narrowed
+    """The reader's reach over budgets: their own branches' only."""
+    return transaction_branch_scope(request)
 
 
 def _filing_choices(request, entity) -> dict:
-    """Whose plan this reader may create: the school's, and which branches'.
+    """The branches this reader may file a budget for.
 
     Answered by the server because the branch list a client can read is the
     school's, not the reader's; offering Lekki to the Ikeja bursar would only
     lead to a refusal on save. ``POST`` applies the same rule through
-    :func:`vs_rbac.scoping.raised_branch`.
+    :func:`vs_rbac.scoping.raised_transaction_branch`.
     """
     from vs_rbac.scoping import WHOLE_TENANT, caller_branch_ids
     from vs_tenants.models import Branch
@@ -73,9 +69,32 @@ def _filing_choices(request, entity) -> dict:
     branches = Branch.objects.filter(tenant=entity.tenant)
     if ids is not WHOLE_TENANT:
         branches = branches.filter(pk__in=ids)
+    return {"branches": [{"id": b.id, "name": b.name} for b in branches.order_by("name")]}
+
+
+def _money_pair(amount):
+    return {"kobo": amount, "naira": format_naira(amount)}
+
+
+def _variance_payload(report) -> dict:
+    """A variance report, one budget's or a roll-up's, as the variance screen reads it."""
     return {
-        "school": ids is WHOLE_TENANT,
-        "branches": [{"id": b.id, "name": b.name} for b in branches.order_by("name")],
+        "budget_id": report.budget_id,
+        "fiscal_year_id": report.fiscal_year_id,
+        "period_no": report.period_no,
+        "rows": [
+            {
+                "account_id": r.account_id, "code": r.code, "name": r.name,
+                "account_type": r.account_type,
+                "budget": _money_pair(r.budget),
+                "actual": _money_pair(r.actual),
+                "variance": _money_pair(r.variance),
+            }
+            for r in report.rows
+        ],
+        "total_budget": _money_pair(report.total_budget),
+        "total_actual": _money_pair(report.total_actual),
+        "total_variance": _money_pair(report.total_variance),
     }
 
 
@@ -113,16 +132,11 @@ class BudgetListCreateView(_FinanceBase):
         data = BudgetSerializer(page, many=True, context={"request": request}).data
         by_id = {b.id: b for b in page}
         for row in data:
-            budget = by_id[row["id"]]
-            report = budget_vs_actual(budget)
-            budgeted = report.total_budget
-            actual = report.total_actual
-            hidden = _withholds_actuals(request, budget)
+            report = budget_vs_actual(by_id[row["id"]])
+            budgeted, actual = report.total_budget, report.total_actual
             row["budgeted_total"] = budgeted
-            row["actual_ytd"] = None if hidden else actual
-            row["consumed_pct"] = (
-                None if hidden or not budgeted else round(actual * 100 / budgeted, 1)
-            )
+            row["actual_ytd"] = actual
+            row["consumed_pct"] = round(actual * 100 / budgeted, 1) if budgeted else None
         response = paginator.get_paginated_response(data)
         response.data["narrowed"] = _reader_scope(request).is_narrowed
         response.data["filing"] = _filing_choices(request, entity)
@@ -143,7 +157,7 @@ class BudgetListCreateView(_FinanceBase):
             fiscal_year=_resolve_fiscal_year(entity, body.get("fiscal_year")),
             lines=_resolve_lines(request, entity, body.get("lines")),
             actor_user=request.user,
-            branch=raised_branch(request, entity.tenant, body),
+            branch=_transaction_branch(request, entity, body),
         )
         return success_response(
             f"Budget {budget.code} created.",
@@ -172,23 +186,18 @@ def _resolve_lines(request, entity, raw):
 # Define Budget Action Base values.
 class _BudgetActionBase(_FinanceBase):
     def _budget(self, request, pk):
-        """The budget, if it is in the reader's reach, and theirs to change on a write.
+        """The budget, if it is in the reader's reach, for a read or a write alike.
 
-        Another branch's plan answers 404, so its existence is not confirmed. A
-        write to the school's plan by a branch-bound reader is refused here, once,
-        for every write endpoint below.
+        Another branch's budget, and one not yet given a branch, answers 404 to a
+        branch-bound reader, so its existence is not confirmed. What they can reach
+        is their own branches', and theirs to change.
         """
         entity = resolve_entity(request)
-        budget = branch_scope(request, include_shared=True).filter(
+        budget = transaction_branch_scope(request).filter(
             Budget.objects.filter(entity=entity, pk=pk)
         ).select_related("fiscal_year", "branch", "entity__tenant").first()
         if budget is None:
             raise NotFound("Budget not found for this entity.")
-        if request.method not in SAFE_METHODS:
-            assert_caller_may_change(
-                request.user, entity.tenant, [budget.branch_id],
-                message="This is the school's budget. Your branch can read it but not change it.",
-            )
         return entity, budget
 
     def _payload(self, request, budget):
@@ -323,37 +332,7 @@ class BudgetVarianceView(_BudgetActionBase):
         _, budget = self._budget(request, pk)
         period_no = _int(request.query_params.get("period_no"), "period_no", minimum=1)
         report = budget_vs_actual(budget, period_no=period_no)
-        narrowed = _withholds_actuals(request, budget)
-
-        # Support the money pair workflow.
-        def _money_pair(amount):
-            if narrowed:
-                return None
-            return {"kobo": amount, "naira": format_naira(amount)}
-
-        return success_response(
-            "Budget variance retrieved.",
-            data={
-                "budget_id": report.budget_id,
-                "fiscal_year_id": report.fiscal_year_id,
-                "period_no": report.period_no,
-                "narrowed": narrowed,
-                "rows": [
-                    {
-                        "account_id": r.account_id, "code": r.code, "name": r.name,
-                        "account_type": r.account_type,
-                        "budget": {"kobo": r.budget, "naira": format_naira(r.budget)},
-                        "actual": _money_pair(r.actual),
-                        "variance": _money_pair(r.variance),
-                    }
-                    for r in report.rows
-                    if not narrowed or r.budget
-                ],
-                "total_budget": {"kobo": report.total_budget, "naira": format_naira(report.total_budget)},
-                "total_actual": _money_pair(report.total_actual),
-                "total_variance": _money_pair(report.total_variance),
-            },
-        )
+        return success_response("Budget variance retrieved.", data=_variance_payload(report))
 
 
 # Group endpoint behavior for Budget Heatmap View.
@@ -374,30 +353,73 @@ class BudgetHeatmapView(_BudgetActionBase):
 
         _, budget = self._budget(request, pk)
         matrix = budget_monthly_matrix(budget)
-        narrowed = _withholds_actuals(request, budget)
         return success_response(
             "Budget heatmap retrieved.",
             data={
                 "budget_id": matrix.budget_id,
                 "fiscal_year_id": matrix.fiscal_year_id,
                 "periods": matrix.periods,
-                "narrowed": narrowed,
                 "rows": [
                     {
                         "account_id": r.account_id, "code": r.code, "name": r.name,
                         "account_type": r.account_type,
-                        "cells": [
-                            {**cell, "actual": None} for cell in r.cells
-                        ] if narrowed else r.cells,
+                        "cells": r.cells,
                         "budget_total": r.budget_total,
-                        "actual_total": None if narrowed else r.actual_total,
+                        "actual_total": r.actual_total,
                     }
                     for r in matrix.rows
-                    if not narrowed or r.budget_total
                 ],
                 "total_budget": matrix.total_budget,
-                "total_actual": None if narrowed else matrix.total_actual,
+                "total_actual": matrix.total_actual,
             },
         )
+
+
+# Group endpoint behavior for Budget Rollup View.
+class BudgetRollupView(_FinanceBase):
+    """GET ?fiscal_year&period_no - the school total: every plan in reach, summed.
+
+    Each branch contributes its approved budget for the year, else its latest
+    draft (:func:`vs_finance.reports.rolled_up_budgets`), and the sum is set
+    against the reader's own journals. A whole-school reader gets the school's
+    total; a branch-bound reader gets their own branches'. ``budgets`` lists the
+    plans summed, so the screen can say what the total is made of.
+
+    docstring-name: Budget school total
+    """
+
+    rbac_permission = "finance.budget.view"
+
+    # Handle GET requests for this endpoint.
+    def get(self, request):
+        from vs_config.clock import tenant_today
+
+        from ..models import FiscalYear
+        from ..reports import budget_rollup, fiscal_year_as_of
+
+        entity = resolve_entity(request)
+        if request.query_params.get("fiscal_year"):
+            fiscal_year = _resolve_fiscal_year(entity, request.query_params["fiscal_year"])
+        else:
+            fiscal_year = (
+                fiscal_year_as_of(entity, tenant_today(entity.tenant))
+                or FiscalYear.objects.filter(entity=entity).order_by("-year").first()
+            )
+        if fiscal_year is None:
+            raise ValidationError({"fiscal_year": "This entity has no fiscal year to total."})
+        period_no = _int(request.query_params.get("period_no"), "period_no", minimum=1)
+        scope = _reader_scope(request)
+        report = budget_rollup(entity, fiscal_year, scope=scope, period_no=period_no)
+        data = _variance_payload(report)
+        data["fiscal_year"] = fiscal_year.year
+        data["narrowed"] = scope.is_narrowed
+        data["budgets"] = [
+            {
+                "id": b.id, "code": b.code, "name": b.name, "status": b.status,
+                "branch_id": b.branch_id, "branch_name": b.branch.name if b.branch_id else None,
+            }
+            for b in report.budgets
+        ]
+        return success_response("Budget school total retrieved.", data=data)
 
 

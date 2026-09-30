@@ -9,9 +9,10 @@ from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.views import APIView
 
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
-from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 from vs_rbac.scoping import inherited_branch_id as _rbac_inherited_branch_id
 from vs_rbac.scoping import raised_branch as _rbac_raised_branch
+from vs_rbac.scoping import raised_transaction_branch as _rbac_raised_transaction_branch
+from vs_rbac.scoping import transaction_branch_q
 
 from ..models import (
     Account,
@@ -28,45 +29,30 @@ from ..models import (
 # Branch sub-scope: the write half                                            #
 # --------------------------------------------------------------------------- #
 #
-# Every finance row that carries a branch (:attr:`FinanceDocument.branch`, plus
-# ``Customer``, ``FeeStructure``, ``BankAccount`` and ``PettyCashFund``) gets it
-# from exactly one of two places, and never from both:
+# Finance rows that carry a branch are of two kinds, and a NULL branch means a
+# different thing on each (see :mod:`vs_rbac.scoping`):
 #
-#   * a row that *starts* a chain captures the branch the person creating it works
-#     in (:func:`_raised_branch`);
-#   * a row that *continues* a chain takes the branch from the row it continues and
-#     from nothing else (:func:`_inherited_branch_id`) - a receipt is the customer's
-#     branch, a credit note is the invoice's, a journal is its source document's.
+#   * **shared records** - ``Customer`` and ``FeeStructure``. No branch means
+#     every branch, and :func:`_raised_branch` may file one that way;
+#   * **transactions** - every :class:`FinanceDocument`, and the ``BankAccount``
+#     and ``PettyCashFund`` that hold a branch's money. Each names one real
+#     branch. A row that *starts* a chain takes it from the person raising it
+#     (:func:`_transaction_branch`), and a row that *continues* one takes it from
+#     the row it continues and from nothing else (:func:`_inherited_branch_id`):
+#     a credit note is its invoice's, a journal is its source document's.
 #
-# Both rules are the platform's, in :mod:`vs_rbac.scoping`, shared with
-# :mod:`vs_procurement`; what is here are one-line adapters supplying
-# ``entity.tenant`` (finance is entity-scoped, the rules are tenant-scoped) and
-# finance's own reading of a null branch.
-#
-# **Finance reads a null branch inclusively**, which is the platform default and
-# the opposite of procurement's: a row with no branch is *shared across the
-# school*, not a scope of its own, so a branch-pinned bursar sees it and may build
-# on it.  The two halves have to agree - a caller who can see a school-wide
-# customer in her list must be able to record that customer's receipt - which is
-# why ``include_shared=True`` is spelled out below and at every
-# ``branch_q`` call site in this app.
-#
-# An absent branch stays a real, valid answer: the row belongs to the school as a
-# whole.  Nothing here backfills or coerces an existing null.
+# The rules are the platform's, shared with :mod:`vs_procurement`; these are
+# one-line adapters supplying ``entity.tenant``, because finance is
+# entity-scoped and the rules are tenant-scoped.
 
 
 def _raised_branch(request, entity, body, *, field="branch",
                    shared_when_ambiguous=False):
-    """:func:`vs_rbac.scoping.raised_branch` for this entity's owning tenant.
+    """:func:`vs_rbac.scoping.raised_branch` for a shared record of this entity.
 
-    ``shared_when_ambiguous`` is the one judgement each call site makes, and it
-    only decides what happens to a caller bound to **several** branches who names
-    none.  The default asks them, because a document records something that
-    happened at one place: an invoice raised by a bursar who covers Ikeja and
-    Lekki belongs to one of them, and filing it school-wide would leave it visible
-    to every branch for the life of the row with nothing later able to narrow it.
-    Master data a school genuinely publishes once - a fee template, the bank
-    account everyone pays into - passes ``True`` and says why in a comment there.
+    Only a customer or a fee structure is raised through this, because only a
+    shared record may be filed for every branch. A transaction uses
+    :func:`_transaction_branch`.
     """
     return _rbac_raised_branch(
         request, entity.tenant, body, field=field,
@@ -74,19 +60,37 @@ def _raised_branch(request, entity, body, *, field="branch",
     )
 
 
-def _inherited_branch_id(request, *sources, field="branch"):
-    """:func:`vs_rbac.scoping.inherited_branch_id`, in finance's inclusive reading.
+def _transaction_branch(request, entity, body, *, field="branch"):
+    """:func:`vs_rbac.scoping.raised_transaction_branch` for this entity's tenant.
 
-    ``include_shared=True`` is spelled out rather than left to the shared default
-    (which is procurement's exclusive reading): a source with no branch is shared
-    across the school, so a branch-pinned caller may continue its chain, and the
-    row she creates stays school-wide because the chain decides, not the caller.
-    Without it, an Ikeja bursar could see a school-wide customer in her list and
-    then be refused when she tried to record that customer's receipt.
+    Never ``None`` at a school: a whole-school caller at a school with several
+    branches names one, and at a school with one branch gets it without asking.
+    Only books with no branch at all (the platform's) raise it with none.
     """
-    return _rbac_inherited_branch_id(
-        request, *sources, field=field, include_shared=True,
-    )
+    return _rbac_raised_transaction_branch(request, entity.tenant, body, field=field)
+
+
+def _customer_document_branch_id(request, entity, body, customer):
+    """The branch id of a document raised against *customer* with no document before it.
+
+    A customer is a shared record. One filed under a branch (a family at Ikeja)
+    gives the document that branch whatever the request says, and a caller who
+    cannot work there is refused (403). One the school shares across every branch
+    has no branch to give, so the document takes the branch the person raising it
+    names or works in (:func:`_transaction_branch`), and is never left without one.
+    """
+    if customer.branch_id is not None:
+        return _inherited_branch_id(request, customer)
+    return getattr(_transaction_branch(request, entity, body), "pk", None)
+
+
+def _inherited_branch_id(request, *sources, field="branch"):
+    """:func:`vs_rbac.scoping.inherited_branch_id`, for the transactions a row continues.
+
+    A branch-bound caller may continue only a source of their own branches, and
+    sources from two branches are a 400.
+    """
+    return _rbac_inherited_branch_id(request, *sources, field=field)
 
 
 # --------------------------------------------------------------------------- #
@@ -109,12 +113,12 @@ def _resolve_account(request, entity, ref, field, *, required=False,
     :func:`vs_finance.accounts.accounts_a_caller_may_name`).
 
     A route naming the account a branch's document pays from or deposits into
-    passes ``document_branch`` (a Branch, its id, or None for a school-wide
-    document) with its ``noun``. A ledger account behind a bank account then obeys
-    the bank rule of :func:`_resolve_bank_account`: that branch's or a school-wide
-    one, so naming Lekki's bank ledger code on an Ikeja asset is the same 400 as
-    choosing Lekki's bank account. ``verb`` words the fix for the receiving side
-    ("Deposit it into"). A ledger account behind no bank account is unaffected.
+    passes ``document_branch`` (a Branch or its id) with its ``noun``. A ledger
+    account behind a bank account then obeys the bank rule of
+    :func:`_resolve_bank_account`: that branch's own, so naming Lekki's bank
+    ledger code on an Ikeja asset is the same 400 as choosing Lekki's bank
+    account. ``verb`` words the fix for the receiving side ("Deposit it into").
+    A ledger account behind no bank account is unaffected.
     """
     from ..accounts import accounts_a_caller_may_name
 
@@ -284,24 +288,37 @@ def _resolve_bank_account(request, entity, ref, field="bank_account", *, require
     Two rules, in this order, and every money-out route names its account here:
 
     * **Reach.** The account must be one the caller can see in their bank list:
-      their own branches' accounts and the school-wide ones. Ikeja's bursar naming
-      Lekki's collection account gets the same 404 as a mistyped id, which neither
-      pays out of Lekki's money nor confirms the account exists.
-    * **The document's own branch.** A document that belongs to a branch is paid
-      from that branch's account or a school-wide one. Mrs Okafor covers Ikeja and
-      Lekki, so she can see Lekki's account, but an Ikeja refund paid from it would
-      leave Ikeja's books owing and Lekki's short; that is a 400 naming both. A
-      school-wide document (``document_branch`` None) may use any account in reach.
+      their own branches' accounts only. Ikeja's bursar naming Lekki's collection
+      account gets the same 404 as a mistyped id, which neither pays out of
+      Lekki's money nor confirms the account exists.
+    * **The document's own branch.** A document is paid only from an account of
+      its own branch (:func:`require_own_branch_bank`). Mrs Okafor covers Ikeja
+      and Lekki, so they can see Lekki's account, but an Ikeja refund paid from it
+      would leave Ikeja's books owing and Lekki's short; that is a 400 naming the
+      branch to pay it from.
 
-    ``document_branch`` (a Branch, its id, or None) and ``noun`` ("refund") are
-    required so a new money route cannot forget the second rule.
+    ``document_branch`` (a Branch or its id) and ``noun`` ("refund") are required
+    so a new money route cannot forget the second rule.
+    """
+    ba = _bank_account_in_reach(request, entity, ref, field, required=required)
+    require_own_branch_bank(ba, document_branch, noun=noun, field=field)
+    return ba
+
+
+def _bank_account_in_reach(request, entity, ref, field="bank_account", *, required=True):
+    """The reach half of :func:`_resolve_bank_account` alone.
+
+    For the one route whose document branch is chosen from the account itself: a
+    tax return paid without naming a share pays the account's own branch's share
+    (:func:`vs_finance.tax_filing.pay_filing`), so the account and the share
+    agree by construction. Every other route uses :func:`_resolve_bank_account`.
     """
     if ref in (None, ""):  # Blank input means missing bank account.
         if required:  # Most payment endpoints require a bank account.
             raise ValidationError({field: "A bank account (id or name) is required."})
         return None
     qs = BankAccount.objects.filter(
-        branch_q(request, include_shared=True), entity=entity,
+        transaction_branch_q(request), entity=entity,
     ).select_related("gl_account", "branch")
     ba = (  # Resolve by id for numeric refs, otherwise by name.
         qs.filter(pk=int(ref)).first() if str(ref).isdigit()
@@ -309,22 +326,38 @@ def _resolve_bank_account(request, entity, ref, field="bank_account", *, require
     )
     if ba is None:  # Unknown, another entity's, or outside the caller's branches.
         raise NotFound(f"No bank account '{ref}' in this entity.")
-    require_own_branch_bank(ba, document_branch, noun=noun, field=field)
     return ba
 
 
 def require_own_branch_bank(bank, document_branch, *, noun, field="bank_account", verb="Pay it from"):
-    """Refuse ``bank`` for a document of ``document_branch`` unless it is that branch's or school-wide.
+    """Refuse ``bank`` for a document of ``document_branch`` unless it is that branch's own.
 
     Split out for the routes that learn the document's branch only after the
     account is named (a batch, or a vendor payment whose branch comes from the
-    bills it settles). See :func:`_resolve_bank_account` for the rule.
+    bills it settles). The account's branch must equal the document's, with no
+    exception for an account without a branch: Lekki's refund paid from such an
+    account would take the money from wherever that account's cash really sits.
+    The refusal names the branch and the way out, for example "This refund
+    belongs to Lekki Branch. Pay it from a Lekki Branch account."
+
+    The two are compared by :func:`vs_rbac.scoping.same_transaction_branch`: at a
+    school with one branch, a document or an account not yet given a branch is
+    that branch's; at a school with several, a document not yet given a branch is
+    paid only from an account not yet given one either.
     """
+    from vs_rbac.scoping import same_transaction_branch
     from vs_tenants.models import Branch
 
     branch_id = getattr(document_branch, "pk", document_branch)
-    if bank is None or branch_id is None or bank.branch_id is None or bank.branch_id == branch_id:
+    if bank is None or bank.branch_id == branch_id:
         return
+    if same_transaction_branch(bank.entity.tenant_id, bank.branch_id, branch_id):
+        return
+    if branch_id is None:
+        raise ValidationError({field: (
+            f"This {noun} has not been given a branch, so it cannot use "
+            f"{bank.branch.name}'s account."
+        )})
     branch = (
         document_branch if isinstance(document_branch, Branch)
         else Branch.all_objects.get(pk=branch_id)
@@ -332,7 +365,7 @@ def require_own_branch_bank(bank, document_branch, *, noun, field="bank_account"
     article = "an" if branch.name[:1].upper() in "AEIOU" else "a"
     raise ValidationError({field: (
         f"This {noun} belongs to {branch.name}. "
-        f"{verb} {article} {branch.name} account or a school-wide one."
+        f"{verb} {article} {branch.name} account."
     )})
 
 

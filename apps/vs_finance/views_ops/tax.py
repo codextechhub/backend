@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 
+from django.db.models import Q
 from rest_framework.exceptions import NotFound, ValidationError
-from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 from vs_rbac.scoping import (
     WholeTenantWriteMixin,
     assert_caller_may_change,
@@ -33,6 +33,7 @@ from .base import (
     _int,
     _money,
     _resolve_account,
+    _bank_account_in_reach,
     _resolve_bank_account,
     _resolve_currency,
 )
@@ -46,6 +47,33 @@ SHARED_FILING = "a school-wide tax filing"
 
 #: What a filing read loads with it: the obligation, the branch shares and the payments.
 FILING_PREFETCH = ("shares__branch", "remittances__branch", "remittances__bank_account")
+
+
+def _filings_in_reach(request, entity):
+    """The returns the caller may open: their branches' own, and the tenant's through their shares.
+
+    A return is a transaction, read by its own branch exclusively
+    (:func:`vs_rbac.scoping.transaction_branch_q`). The tenant's one return names
+    no branch because it is booked per branch: each :class:`TaxFilingShare` names
+    one, and that share is the branch's money. So a branch-bound reader reaches a
+    tenant return through a share of one of their branches, and is shown only those
+    shares (:func:`_filing_data`). Lagoon View's March WHT return has an Ikeja
+    share and a Lekki share: Ngozi at Lekki opens it and sees Lekki's N300. A
+    return with no share of theirs, and one not yet given a branch or any share,
+    is not found for them, as another branch's is. A whole-tenant reader is not
+    narrowed.
+    """
+    from ..models import TaxFilingShare
+
+    qs = TaxFiling.objects.filter(entity=entity)
+    reach = caller_branch_ids(request)
+    if reach is None:
+        return qs
+    ids = tuple(sorted(reach))
+    shared_through = TaxFilingShare.objects.filter(branch_id__in=ids).values("filing_id")
+    return qs.filter(
+        Q(branch_id__in=ids) | Q(branch__isnull=True, pk__in=shared_through),
+    )
 
 
 def _filing_branch(entity, ref, field):
@@ -232,9 +260,7 @@ class TaxFilingSummaryView(_FinanceBase):
         from ..models import TaxFilingShare
 
         entity = resolve_entity(request)
-        filings = TaxFiling.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
-        )
+        filings = _filings_in_reach(request, entity)
         agg = filings.aggregate(
             outstanding=Coalesce(
                 Sum(F("amount_due") - F("amount_paid"),
@@ -274,9 +300,8 @@ class TaxFilingListCreateView(WholeTenantWriteMixin, _FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = TaxFiling.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
-        ).select_related("obligation__liability_account").prefetch_related(*FILING_PREFETCH)
+        qs = _filings_in_reach(request, entity).select_related(
+            "obligation__liability_account").prefetch_related(*FILING_PREFETCH)
         if (ob := request.query_params.get("obligation")):
             qs = qs.filter(obligation_id=ob)
         if (status_val := request.query_params.get("filing_status")):
@@ -315,9 +340,10 @@ class TaxFilingListCreateView(WholeTenantWriteMixin, _FinanceBase):
 class _TaxFilingActionBase(_FinanceBase):
     """Resolve one filing in the caller's reach; on a write, one they may change.
 
-    A filing with no branch is the tenant's one return, readable by every
-    finance reader of the tenant and shown narrowed to their branches' shares
-    (:func:`_filing_data`). Filing, un-filing and reversing a remittance change
+    A filing with no branch is the tenant's one return, reached by a
+    branch-bound reader through a share of one of their branches and shown
+    narrowed to those shares (:func:`_filings_in_reach`, :func:`_filing_data`);
+    one with no share of theirs is a 404. Filing, un-filing and reversing a remittance change
     the whole return, so they need whole-tenant reach: a branch-bound caller is
     refused with a 403 ``SHARED_RECORD_READ_ONLY`` before anything is posted.
     Paying (``shares_only``) touches one branch's share, and the service refuses
@@ -330,9 +356,7 @@ class _TaxFilingActionBase(_FinanceBase):
         from rest_framework.permissions import SAFE_METHODS
 
         entity = resolve_entity(request)
-        filing = TaxFiling.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk,
-        ).select_related(
+        filing = _filings_in_reach(request, entity).filter(pk=pk).select_related(
             "obligation__liability_account").prefetch_related(*FILING_PREFETCH).first()
         if filing is None:
             raise NotFound("Tax filing not found for this entity.")
@@ -472,10 +496,16 @@ class TaxFilingPayView(_TaxFilingActionBase):
                 raise ValidationError({f"shares[{i}]": "Each payment is an object."})
             named = "branch" in row and row.get("branch") not in ("",)
             branch = _filing_branch(entity, row.get("branch"), names[0]) if named else ANY_SHARE
-            bank = _resolve_bank_account(
-                request, entity, row.get("bank_account"), names[1],
-                document_branch=(branch.pk if branch not in (None, ANY_SHARE) else filing.branch_id),
-                noun="tax filing")
+            if branch is ANY_SHARE and filing.branch_id is None:
+                # The service pays the account's own branch's share.
+                bank = _bank_account_in_reach(
+                    request, entity, row.get("bank_account"), names[1])
+            else:
+                bank = _resolve_bank_account(
+                    request, entity, row.get("bank_account"), names[1],
+                    document_branch=(branch.pk if branch not in (None, ANY_SHARE)
+                                     else filing.branch_id),
+                    noun="tax filing")
             amount = (_money(row["amount"], names[2])
                       if row.get("amount") not in (None, "") else None)
             payments.append((branch, bank, amount))

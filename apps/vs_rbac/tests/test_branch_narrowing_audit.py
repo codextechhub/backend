@@ -122,10 +122,6 @@ SETTLED_ELSEWHERE = {
         "Re-pointing a draft vendor invoice at an order. The invoice was "
         "already resolved through the entity's scoped resolver, and the order "
         "must match its vendor.",
-    "vs_finance/views_ops/pettycash.py::post::PettyCashFund":
-        "A voucher continues the fund's chain, and inherited_branch_id on the "
-        "voucher is what stops a Lekki custodian spending Ikeja's float by "
-        "naming its id. Said in a comment at the call site.",
     "vs_admin_console/views.py::start::User":
         "Choosing somebody to impersonate. Pinned to the asserted tenant, and "
         "impersonation is a platform act that no branch narrows: an operator "

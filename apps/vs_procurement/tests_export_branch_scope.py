@@ -1,11 +1,10 @@
-"""Procurement exports read a null branch exclusively, as its screens do.
+"""Procurement exports read a null branch as the screens they mirror do.
 
-The opposite of finance, and both are right for what they describe: a purchase
-belongs to one place, so an entity-wide purchase is a scope of its own that a
-branch-pinned buyer is not in rather than a row shared with them. That is what
-``vs_procurement/views/base.py`` already does on the screens these datasets
-mirror, and an export that disagreed with its own screen would be the bug this
-narrowing exists to prevent.
+A vendor is a shared record: one every branch buys from carries no branch and
+is in every branch's file, as it is on the vendor screen. Orders, bills and
+requisitions are transactions: a branch-pinned buyer exports their own branches'
+documents only, never one not yet given a branch. An export that disagreed with
+its own screen would be the bug this narrowing exists to prevent.
 
 These live here rather than in ``vs_exports`` because the engine may not import
 a domain app - ``CatalogueRegistrationTests.test_the_engine_never_imports_a_domain_app``
@@ -78,8 +77,10 @@ class ProcurementExportBranchScopeTests(TestCase):
             )
         }
 
-    def test_an_entity_wide_vendor_is_not_the_branch_buyers_to_export(self):
-        self.assertEqual(self.names("procurement.vendors", self.buyer), {"Lekki Vendor"})
+    def test_a_vendor_every_branch_shares_is_in_the_branch_buyers_file(self):
+        self.assertEqual(
+            self.names("procurement.vendors", self.buyer), {"Shared Vendor", "Lekki Vendor"},
+        )
 
     def test_head_office_still_exports_everything(self):
         self.assertEqual(
@@ -112,7 +113,8 @@ class ProcurementExportBranchScopeTests(TestCase):
                 "narrow_to_caller_branches", source,
                 f"vs_procurement.export_datasets.{name} does not narrow by branch",
             )
+            expected = "inclusive=True" if name == "_vendors" else "inclusive=False"
             self.assertIn(
-                "inclusive=False", source,
-                f"{name} must read a null branch exclusively, as its screens do",
+                expected, source,
+                f"{name} must read a null branch as its screen does ({expected})",
             )

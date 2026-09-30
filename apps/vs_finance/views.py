@@ -27,17 +27,12 @@ from vs_rbac.permissions import (
     HasRBACPermission,
     IsAuthenticatedAndActive,
 )
-# ``include_shared=True`` is spelled out at every call site below rather than left
-# to the default. A null branch means "shared across the school", so a row with no
-# branch stays visible to a branch-pinned caller; getting that backwards hides
-# every school-wide record from a branch admin, which looks like missing data
-# rather than a permission error and so goes unreported.
 from vs_rbac.scoping import (
     WholeTenantWriteMixin,
     assert_caller_may_change,
-    branch_q,
-    branch_scope,
     shared_write_refusal,
+    transaction_branch_q,
+    transaction_branch_scope,
 )
 
 from .models import (
@@ -301,7 +296,7 @@ class AccountListCreateView(WholeTenantWriteMixin, EntityScopedListMixin, generi
       with no receivable account to choose.
     * The balances are the ledger, so ``with_balance`` keeps
       ``finance.account.view``, and a branch-bound reader's balances are the
-      journals of their branches plus the school-wide ones, read through
+      journals of their own branches only, read through
       :func:`vs_finance.branch_ledger.ledger_balances` exactly as their financial
       statements are. A whole-school reader's balances are unchanged.
     * Creating an account keeps ``finance.account.create``, and needs
@@ -383,7 +378,8 @@ class AccountListCreateView(WholeTenantWriteMixin, EntityScopedListMixin, generi
         )
 
     def entity_qs(self, entity):
-        qs = Account.objects.filter(entity=entity).select_related("parent").order_by("code")
+        qs = Account.objects.filter(entity=entity).select_related(
+            "parent", "bank_account").order_by("code")
         params = self.request.query_params
         if self._with_balance() and not _reader_scope(self.request).is_narrowed:
             from django.db.models import F, Sum
@@ -473,10 +469,9 @@ class AccountDetailView(APIView):
     line/journal counts) and its posted journal-line activity (newest first, with
     a running balance) - feeds the Chart-of-Accounts detail drawer.
 
-    A branch-bound reader's summary and activity cover the journals of their
-    branches plus the school-wide ones (the rule of their financial statements,
-    :func:`_reader_scope`); the account itself is the school's and reads the same
-    for everyone.
+    A branch-bound reader's summary and activity cover the journals of their own
+    branches only (the rule of their financial statements, :func:`_reader_scope`);
+    the account itself is the school's and reads the same for everyone.
 
     Editing follows the account's branch, which is the branch of the bank
     account behind it. A branch-bound caller may edit the ledger account of
@@ -631,8 +626,7 @@ class AccountActivityView(APIView):
     """Paginated posted activity for an account or non-postable account group.
 
     Narrowed like :class:`AccountDetailView`: a branch-bound reader sees the lines
-    of their branches' journals and the school-wide ones, and the totals add up
-    only those lines.
+    of their own branches' journals, and the totals add up only those lines.
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
@@ -905,7 +899,7 @@ class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
 
         qs = (
             JournalEntry.objects.filter(
-                branch_q(self.request, include_shared=True), entity=entity,
+                transaction_branch_q(self.request), entity=entity,
             )
             .select_related("period", "created_by")
             .annotate(_total_debit=Coalesce(Sum("lines__debit"), 0))
@@ -949,7 +943,7 @@ class JournalSummaryView(APIView):
 
         entity = resolve_entity(request)
         qs = JournalEntry.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
+            transaction_branch_q(request), entity=entity,
         )
         params = request.query_params
         if (source := params.get("source")):
@@ -1001,7 +995,7 @@ class JournalEntryDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
         entity = resolve_entity(self.request)
         return (
             JournalEntry.objects.filter(
-                branch_q(self.request, include_shared=True), entity=entity,
+                transaction_branch_q(self.request), entity=entity,
             )
             .select_related("period")
             .prefetch_related("lines__account")
@@ -1036,7 +1030,7 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
         from .receivables import post_invoice, price_invoice
         from .views_ar import _resolve_customer
         from .views_ops import (
-            _date, _dec, _inherited_branch_id, _money, _require_lines,
+            _customer_document_branch_id, _date, _dec, _money, _require_lines,
             _resolve_account, _resolve_cost_center, _resolve_currency, _resolve_tax,
         )
 
@@ -1060,15 +1054,8 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
             invoice = Invoice.objects.create(
                 entity=entity,
                 customer=customer,
-                # An invoice continues the customer's chain: the debt is owed by a
-                # family that attends one site, so the receivable belongs there and
-                # no request body may retarget it. A school-wide customer keeps a
-                # school-wide invoice, which is what keeps their ledger consistent.
-                # It is also the second half of the guard against a Lekki bursar
-                # billing an Ikeja family: _resolve_customer now refuses to return
-                # a customer outside her branches at all, and this rule still
-                # decides the branch when the customer is legitimately shared.
-                branch_id=_inherited_branch_id(request, customer),
+                # The customer's branch, or the raiser's for a customer every branch shares.
+                branch_id=_customer_document_branch_id(request, entity, body, customer),
                 invoice_date=invoice_date,
                 due_date=due_date,
                 currency=_resolve_currency(body.get("currency")),
@@ -1109,8 +1096,8 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
         from django.db.models import Q
 
         qs = Invoice.objects.filter(
-            branch_q(self.request, include_shared=True), entity=entity,
-        ).select_related("customer")
+            transaction_branch_q(self.request), entity=entity,
+        ).select_related("customer", "branch")
         params = self.request.query_params
         if (status_val := params.get("status")):
             qs = qs.filter(status=status_val)
@@ -1186,7 +1173,7 @@ class InvoiceSummaryView(APIView):
         entity = resolve_entity(request)
         today = tenant_today(entity.tenant)
         base = Invoice.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
+            transaction_branch_q(request), entity=entity,
         )
         if (search := request.query_params.get("search")):
             base = base.filter(
@@ -1200,7 +1187,7 @@ class InvoiceSummaryView(APIView):
 
         invoiced = posted.aggregate(t=Coalesce(Sum("total"), 0))["t"]
         collected = Payment.objects.filter(
-            branch_q(request, include_shared=True),
+            transaction_branch_q(request),
             entity=entity, status=DocumentStatus.POSTED,
         ).aggregate(t=Coalesce(Sum("amount"), 0))["t"]
         overdue_balance = unpaid_posted.filter(
@@ -1225,7 +1212,7 @@ class InvoiceSummaryView(APIView):
         inv_m = {r["m"]: int(r["s"] or 0) for r in posted.filter(invoice_date__gte=start)
                  .annotate(m=TruncMonth("invoice_date")).values("m").annotate(s=Sum("total"))}
         col_m = {r["m"]: int(r["s"] or 0) for r in Payment.objects
-                 .filter(branch_q(request, include_shared=True), entity=entity,
+                 .filter(transaction_branch_q(request), entity=entity,
                          status=DocumentStatus.POSTED, payment_date__gte=start)
                  .annotate(m=TruncMonth("payment_date")).values("m").annotate(s=Sum("amount"))}
         monthly, cur = [], start
@@ -1270,9 +1257,9 @@ class InvoiceDetailView(APIView):
         entity = resolve_entity(request)
         inv = (
             Invoice.objects.filter(
-                branch_q(request, include_shared=True), entity=entity, pk=pk,
+                transaction_branch_q(request), entity=entity, pk=pk,
             )
-            .select_related("customer", "journal")
+            .select_related("customer", "journal", "branch")
             .prefetch_related(
                 "lines__revenue_account", "lines__tax_code",
                 "allocations__payment__journal__lines__account",
@@ -1486,7 +1473,7 @@ class InvoiceDocumentView(APIView):
         entity = resolve_entity(request)
         inv = (
             Invoice.objects.filter(
-                branch_q(request, include_shared=True), entity=entity, pk=pk,
+                transaction_branch_q(request), entity=entity, pk=pk,
             )
             .select_related("entity__tenant__school_profile", "branch", "customer")
             .prefetch_related("lines__revenue_account", "lines__tax_code", "lines__cost_center")
@@ -1520,11 +1507,8 @@ class JournalSubmitView(APIView):
     handler's ``on_approved`` posting. Only meaningful when a template exists for
     ``finance.journal`` at this journal's scope (see :func:`approvals.approval_required`).
 
-    A draft with no branch belongs to the books as a whole, so submitting it
-    needs whole-tenant reach, exactly as reversing one does: Lekki's bursar may
-    read the school's January accrual and may not send it for posting. A
-    branch-bound caller is refused with a 403 ``SHARED_RECORD_READ_ONLY`` and
-    nothing is submitted. A draft of one of her own branches is hers.
+    A branch-bound caller reaches only their own branches' journals; another
+    branch's, or one not yet given a branch, answers 404 and nothing is submitted.
 
     docstring-name: Submit a journal for approval
     """
@@ -1538,14 +1522,10 @@ class JournalSubmitView(APIView):
 
         entity = resolve_entity(request)
         entry = JournalEntry.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, id=id,
+            transaction_branch_q(request), entity=entity, id=id,
         ).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
-        assert_caller_may_change(
-            request.user, getattr(request, "tenant", None), (entry.branch_id,),
-            message="Only a school-wide administrator can submit a school-wide journal.",
-        )
         from vs_workflow.services import release as release_svc
 
         instance = submit_for_approval(entry, requested_by=request.user)
@@ -1570,10 +1550,9 @@ class JournalPostView(APIView):
     as posted without approval (:func:`vs_finance.approvals.guard_direct_post`).
     With no template at all, the draft posts directly.
 
-    A draft with no branch belongs to the books as a whole, so posting it needs
-    whole-tenant reach, exactly as reversing one does. A branch-bound caller is
-    refused with a 403 ``SHARED_RECORD_READ_ONLY`` before the approval guard
-    runs, and nothing is posted. A draft of one of her own branches is hers.
+    A branch-bound caller reaches only their own branches' journals; another
+    branch's, or one not yet given a branch, answers 404 before the approval guard
+    runs, and nothing is posted.
 
     docstring-name: Post a journal entry
     """
@@ -1588,14 +1567,10 @@ class JournalPostView(APIView):
 
         entity = resolve_entity(request)
         entry = JournalEntry.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, id=id,
+            transaction_branch_q(request), entity=entity, id=id,
         ).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
-        assert_caller_may_change(
-            request.user, getattr(request, "tenant", None), (entry.branch_id,),
-            message="Only a school-wide administrator can post a school-wide journal.",
-        )
         guard_direct_post(entry, request, noun="journal")
         post_journal(entry, actor_user=request.user)
         entry.refresh_from_db()
@@ -1609,11 +1584,8 @@ class JournalPostView(APIView):
 class JournalReverseView(APIView):
     """POST /finance/journals/<id>/reverse/?entity= - reverse a posted journal.
 
-    A journal with no branch belongs to the books as a whole, so reversing it
-    needs whole-tenant reach: Lekki's bursar reversing the school's January
-    accrual would move every branch's statements. A branch-bound caller is
-    refused with a 403 ``SHARED_RECORD_READ_ONLY`` and nothing is posted. A
-    journal of one of her own branches is hers to reverse.
+    A branch-bound caller reaches only their own branches' journals; another
+    branch's, or one not yet given a branch, answers 404 and nothing is posted.
 
     docstring-name: Reverse a journal entry
     """
@@ -1628,14 +1600,10 @@ class JournalReverseView(APIView):
 
         entity = resolve_entity(request)
         entry = JournalEntry.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, id=id,
+            transaction_branch_q(request), entity=entity, id=id,
         ).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
-        assert_caller_may_change(
-            request.user, getattr(request, "tenant", None), (entry.branch_id,),
-            message="Only a school-wide administrator can reverse a school-wide journal.",
-        )
         # Optional reversal date; when omitted the service reverses into the original
         # period, or into the current open period if that period has since closed.
         body = request.data or {}
@@ -1682,12 +1650,12 @@ class DirectEntryCreateView(APIView):
     * no route at all: the entry posts directly.
 
     A direct entry starts a chain, so its branch comes from the caller under the
-    platform rule (:func:`vs_rbac.scoping.raised_branch`). Ikeja's bursar, bound to
-    Ikeja alone, files it at Ikeja whether or not she names the branch, and can
-    later reverse it herself. A caller bound to Ikeja and Lekki names one (400
-    otherwise), because an entry left school-wide would be one neither could
-    reverse. A whole-tenant caller may name a branch or leave the entry
-    school-wide. The approval route is chosen at the entry's branch.
+    platform rule (:func:`vs_rbac.scoping.raised_transaction_branch`). Ikeja's
+    bursar, bound to Ikeja alone, files it at Ikeja whether or not they name the
+    branch. A caller bound to Ikeja and Lekki, or a whole-school caller at a
+    school with several branches, names one (400 otherwise). At a school with
+    one branch the entry takes it without asking. The approval route is chosen
+    at the entry's branch.
 
     docstring-name: Post a direct entry
     """
@@ -1702,7 +1670,7 @@ class DirectEntryCreateView(APIView):
         from .approvals import approval_required, confirm_unconfigured_post
         from .posting import create_direct_entry, post_journal
         from .views_ops import (
-            _raised_branch, _resolve_account, _resolve_cost_center, _resolve_dimensions,
+            _resolve_account, _resolve_cost_center, _resolve_dimensions, _transaction_branch,
         )
 
         entity = resolve_entity(request)
@@ -1712,7 +1680,7 @@ class DirectEntryCreateView(APIView):
         opening = (request.data or {}).get("opening_balance", False)
         if not isinstance(opening, bool):
             raise ValidationError({"opening_balance": "Expected a JSON boolean."})
-        branch = _raised_branch(request, entity, request.data)
+        branch = _transaction_branch(request, entity, request.data)
         # Resolve each line's account under the caller's reach, and its optional cost
         # centre + analytical dimensions against this entity, before anything is written.
         lines = [
@@ -2039,13 +2007,15 @@ def _line(row):
 
 # Support the maybe export workflow.
 def _reader_scope(request):
-    """The caller's branch narrowing for a report, in finance's inclusive reading.
+    """The caller's branch narrowing for a report.
 
     Every report endpoint asks this one helper, so a statement, its export and the
-    lists beside it narrow the same way: a branch-bound reader's own branches plus
-    the school-wide rows. See :mod:`vs_finance.branch_ledger` for the ledger side.
+    lists beside it narrow the same way: a branch-bound reader's own branches'
+    journals only, as every transaction is read
+    (:func:`vs_rbac.scoping.transaction_branch_scope`). See
+    :mod:`vs_finance.branch_ledger` for the ledger side.
     """
-    return branch_scope(request, include_shared=True)
+    return transaction_branch_scope(request)
 
 
 def _maybe_export(request, table, *, filename, narrowed=False):
@@ -2065,7 +2035,7 @@ def _maybe_export(request, table, *, filename, narrowed=False):
     if not fmt:
         return None
     if narrowed:
-        table.subtitle = f"{table.subtitle} · the reader's branches and school-wide entries only"
+        table.subtitle = f"{table.subtitle} · the reader's branches only"
     from .exports import render
 
     try:  # Start protected finance operation.
@@ -2737,8 +2707,8 @@ class ARAgingView(APIView):
 
     Built from the invoices, debit notes, receipts and credit notes themselves,
     so it narrows like the lists they come from: a branch-bound reader sees their
-    branches' documents and the school-wide ones, and nothing of another
-    branch's. The export is the same narrowed report.
+    own branches' documents, and nothing of another branch's or of a document not
+    yet given a branch. The export is the same narrowed report.
 
     docstring-name: AR aging report
     """

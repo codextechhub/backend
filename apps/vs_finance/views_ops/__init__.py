@@ -6,6 +6,7 @@ from .base import *
 from .base import (
     _FinanceBase,
     _bool,
+    _customer_document_branch_id,
     _date,
     _dec,
     _inherited_branch_id,
@@ -21,6 +22,7 @@ from .base import (
     _resolve_fiscal_year,
     _resolve_tax,
     _signed_money,
+    _transaction_branch,
 )
 from .masterdata import *
 from .banking import *

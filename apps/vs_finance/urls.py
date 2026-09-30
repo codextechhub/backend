@@ -149,6 +149,7 @@ from .views_ops import (
     BudgetLineCreateView,
     BudgetLineDetailView,
     BudgetListCreateView,
+    BudgetRollupView,
     BudgetVarianceView,
     CostCenterListCreateView,
     CurrencyListCreateView,
@@ -465,6 +466,7 @@ urlpatterns = [
 
     # Budgets
     path("budgets/", BudgetListCreateView.as_view(), name="finance-budget-list"),
+    path("budgets/rollup/", BudgetRollupView.as_view(), name="finance-budget-rollup"),
     path("budgets/<int:pk>/", BudgetDetailView.as_view(), name="finance-budget-detail"),
     path("budgets/<int:pk>/lines/", BudgetLineCreateView.as_view(), name="finance-budget-line"),
     path("budgets/<int:pk>/lines/<int:line_id>/", BudgetLineDetailView.as_view(), name="finance-budget-line-detail"),

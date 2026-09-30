@@ -83,6 +83,21 @@ class _ProcApprovalHandler(BaseWorkflowHandler):
     def resolve_default_template_code(self, document) -> str:
         return WF_DEFAULT_TEMPLATE_CODE
 
+    def hidden_document_ids(self, user, tenant):
+        """This type's documents outside ``user``'s transaction reach.
+
+        A procurement document is a transaction, read by its own branch
+        exclusively, so its approval is too: a Lekki approver named on the
+        purchase group does not see an Ikeja order's approval, nor one raised
+        before orders named a branch (see
+        :func:`vs_workflow.services.visibility.documents_outside_transaction_reach`).
+        """
+        from vs_workflow.services.visibility import documents_outside_transaction_reach
+
+        return documents_outside_transaction_reach(
+            self.document_model.objects.filter(entity__tenant=tenant), user, tenant,
+        )
+
     def get_source_document_link(self, document) -> str:
         query = urlencode({"document": document.pk, "entity": document.entity.code})
         return f"{self.source_path}?{query}"

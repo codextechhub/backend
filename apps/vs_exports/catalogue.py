@@ -267,14 +267,14 @@ def narrow_to_caller_branches(queryset, scope, *, field="branch", inclusive=True
     exists to prevent.
 
     ``inclusive`` maps to ``BranchScope.include_shared``, and both readings of a
-    NULL branch are correct for something:
+    NULL branch are correct for something (see :mod:`vs_rbac.scoping`):
 
-    * ``True`` - the row is shared across the tenant and stays visible. What a
-      ledger entity, master data or a catalogue means, and what
-      :mod:`vs_finance` spells out at every one of its own call sites.
-    * ``False`` - the row is a scope of its own that a branch-pinned caller is
-      not in. What a document means, and what :mod:`vs_procurement` spells out
-      at its own.
+    * ``True`` - the row is a shared record or configuration, and one with no
+      branch belongs to every branch: a customer, a vendor, a catalogue item.
+    * ``False`` - the row is a transaction: every document, in every module. A
+      branch-pinned caller exports their own branches' rows only, never one not
+      yet given a branch, exactly as
+      :func:`vs_rbac.scoping.transaction_branch_scope` reads it on screen.
 
     ``prefix`` names the route to ``branch`` for a dataset whose rows reach it
     through a parent - an invoice line through its invoice, a posting through

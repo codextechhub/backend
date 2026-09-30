@@ -18,15 +18,14 @@ from vs_notifications.services.acknowledge import acknowledge_record
 from vs_notifications.services.routing import RecordFamily
 from vs_rbac.field_enforcement import FieldReadDenied
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
-# ``include_shared=True`` spelled out at each ``branch_q`` call site. A batch
-# with no branch was uploaded for the school as a whole, which is a normal shape
-# for an import, and it must stay visible from every branch. ``raised_branch``
+# Batches are read through ``batch_branch_q`` (see ``.scoping``). ``raised_branch``
 # is the other half of the same rule, deciding which branch a new batch is filed
 # under: a narrowing nothing writes to narrows nothing.
-from vs_rbac.scoping import branch_q, raised_branch
+from vs_rbac.scoping import raised_branch
 
 from .constants import ImportPermission
 from .permissions import HasImportBatchRBACPermission
+from .scoping import batch_branch_q
 
 from .models import (
     ImportBatch,
@@ -156,7 +155,7 @@ class ImportBatchContextMixin(SchoolContextMixin):
         # matches the 404 for one that does not exist.
         return get_object_or_404(
             ImportBatch.objects.filter(
-                branch_q(self.request, include_shared=True),
+                batch_branch_q(self.request),
             ).select_related(
                 "tenant",
                 "uploaded_by",
@@ -421,7 +420,7 @@ class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.L
         # Inside the tenant filter, never instead of it: an upload belongs to the
         # branch it was made for, and a branch admin has no business reading
         # another site's uploaded roster.
-        queryset = queryset.filter(branch_q(self.request, include_shared=True))
+        queryset = queryset.filter(batch_branch_q(self.request))
 
         status_param = self.request.query_params.get("status")
         if status_param:
@@ -527,7 +526,7 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
         )
         if tenant is not None:
             qs = qs.filter(tenant=tenant)
-        return qs.filter(branch_q(self.request, include_shared=True))
+        return qs.filter(batch_branch_q(self.request))
 
     def get_object(self):
         self._cached_import_batch = super().get_object()

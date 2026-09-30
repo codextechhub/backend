@@ -1,10 +1,11 @@
 """Finance datasets published to the Export Centre.
 
-**Rows narrow to the caller's branches, inclusively.** ``include_shared=True``
-is spelled out at every call site below for the same reason ``views_ar`` spells
-it out at every one of its own: a null branch means "shared across the school",
-so a school-wide invoice, customer or credit note stays visible to a
-branch-pinned caller. An export and the screen it mirrors must not answer
+**Rows narrow to the caller's branches, as the screen each dataset mirrors
+does.** Invoices, invoice lines, postings, receipts and expense claims are
+transactions (``inclusive=False``): a branch-bound caller exports their own
+branches' rows only, never one not yet given a branch. Customers are shared
+records (``inclusive=True``): one the school shares across every branch stays in
+every branch's file. An export and the screen it mirrors must not answer
 differently, and the only way to be sure of that is to make the same call.
 
 ``InvoiceLine`` and ``JournalLine`` reach ``branch`` through their parent, so
@@ -47,12 +48,10 @@ from vs_exports.catalogue import (
 def _invoices(scope):
     from .models import Invoice
 
-    # include_shared=True, as every finance screen spells out: a null
-    # branch means shared across the school, so a school-wide row stays
-    # visible to a branch-pinned caller.
+    # A transaction: never one not yet given a branch.
     return narrow_to_caller_branches(
         Invoice.objects.filter(entity=scope.entity),
-        scope, inclusive=True,
+        scope, inclusive=False,
     )
 
 
@@ -60,12 +59,10 @@ def _invoices(scope):
 def _invoice_lines(scope):
     from .models import InvoiceLine
 
-    # include_shared=True, as every finance screen spells out: a null
-    # branch means shared across the school, so a school-wide row stays
-    # visible to a branch-pinned caller.
+    # A transaction: never one not yet given a branch.
     return narrow_to_caller_branches(
         InvoiceLine.objects.filter(invoice__entity=scope.entity),
-        scope, inclusive=True, prefix="invoice__",
+        scope, inclusive=False, prefix="invoice__",
     )
 
 
@@ -73,12 +70,10 @@ def _invoice_lines(scope):
 def _gl_postings(scope):
     from .models import JournalLine
 
-    # include_shared=True, as every finance screen spells out: a null
-    # branch means shared across the school, so a school-wide row stays
-    # visible to a branch-pinned caller.
+    # A transaction: never one not yet given a branch.
     return narrow_to_caller_branches(
         JournalLine.objects.filter(entry__entity=scope.entity),
-        scope, inclusive=True, prefix="entry__",
+        scope, inclusive=False, prefix="entry__",
     )
 
 
@@ -86,12 +81,10 @@ def _gl_postings(scope):
 def _payments(scope):
     from .models import Payment
 
-    # include_shared=True, as every finance screen spells out: a null
-    # branch means shared across the school, so a school-wide row stays
-    # visible to a branch-pinned caller.
+    # A transaction: never one not yet given a branch.
     return narrow_to_caller_branches(
         Payment.objects.filter(entity=scope.entity),
-        scope, inclusive=True,
+        scope, inclusive=False,
     )
 
 
@@ -99,12 +92,10 @@ def _payments(scope):
 def _expense_claims(scope):
     from .models import ExpenseClaim
 
-    # include_shared=True, as every finance screen spells out: a null
-    # branch means shared across the school, so a school-wide row stays
-    # visible to a branch-pinned caller.
+    # A transaction: never one not yet given a branch.
     return narrow_to_caller_branches(
         ExpenseClaim.objects.filter(entity=scope.entity),
-        scope, inclusive=True,
+        scope, inclusive=False,
     )
 
 
@@ -112,9 +103,7 @@ def _expense_claims(scope):
 def _customers(scope):
     from .models import Customer
 
-    # include_shared=True, as every finance screen spells out: a null
-    # branch means shared across the school, so a school-wide row stays
-    # visible to a branch-pinned caller.
+    # A shared record: one with no branch is every branch's.
     return narrow_to_caller_branches(
         Customer.objects.filter(entity=scope.entity),
         scope, inclusive=True,

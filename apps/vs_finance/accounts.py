@@ -61,7 +61,8 @@ def accounts_a_caller_may_name(request, qs):
     A ledger account that backs a bank account is that bank's money under another
     name. Naming it as a deposit, credit, counter or journal-line account moves the
     bank's money exactly as naming the bank account would, so it answers to the
-    bank list's rule: the caller's own branches' accounts and the school-wide ones.
+    bank list's rule: the caller's own branches' accounts only, because a bank
+    account is a transaction container (:func:`vs_rbac.scoping.transaction_branch_scope`).
     Ikeja's bursar who types the code of Lekki's collection ledger gets the same
     answer as for a code that does not exist. A ledger account behind no bank
     account is untouched, and an unbound caller is never narrowed.
@@ -70,11 +71,11 @@ def accounts_a_caller_may_name(request, qs):
     returns only the reader's own rows, and the chart lists every account.
     """
     from django.db.models import Q
-    from vs_rbac.scoping import branch_scope
+    from vs_rbac.scoping import transaction_branch_scope
 
     from .models import BankAccount
 
-    scope = branch_scope(request, include_shared=True)
+    scope = transaction_branch_scope(request)
     if not scope.is_narrowed:
         return qs
     reachable = BankAccount.objects.filter(scope.q())

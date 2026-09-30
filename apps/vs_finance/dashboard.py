@@ -23,8 +23,8 @@ reader's branches and the school-wide rows, the same rows their lists show. The
 ledger figures (cash, receivables, payables, net income) are read from the same
 journals through :mod:`vs_finance.branch_ledger`, so they agree with the
 reader's own income statement and balance sheet. Two blocks stay school-wide
-only: revenue against budget, because a budget is the school's plan and has no
-branch, and the period close, which is a school-wide act.
+only: revenue against budget, which sets the whole ledger against the roll-up of
+every branch's plan, and the period close, which is a school-wide act.
 """
 from __future__ import annotations
 
@@ -62,15 +62,15 @@ class DashboardReader:
 
     ``keys`` is ``None`` for a reader who holds every key, which is what callers
     without a request get by default (tests, internal reports). ``scope`` is the
-    finance reading of a blank branch (shared rows included); ``procurement_scope``
-    is procurement's (a blank branch is the institution, which a branch-pinned
-    reader is not in). Both come from the one helper every list uses, so a
-    dashboard figure and the list behind it cannot disagree.
+    reader's reach over transactions, finance's and procurement's alike: their
+    own branches only, never a document not yet given a branch
+    (:func:`vs_rbac.scoping.transaction_branch_scope_for_user`). It comes from the
+    one helper every list uses, so a dashboard figure and the list behind it
+    cannot disagree.
     """
 
     keys: frozenset | None = None
     scope: BranchScope = UNNARROWED
-    procurement_scope: BranchScope = UNNARROWED
 
     def can(self, *keys: str) -> bool:
         """True when the reader holds any one of ``keys``."""
@@ -95,14 +95,13 @@ class DashboardReader:
         from vs_rbac.evaluator import get_effective_permissions
         from vs_rbac.permissions import is_vision_super_admin
         from vs_rbac.plan_gate import keys_within_plan
-        from vs_rbac.scoping import branch_scope_for_user
+        from vs_rbac.scoping import transaction_branch_scope_for_user
 
         keys = None if is_vision_super_admin(user) else keys_within_plan(
             get_effective_permissions(user, tenant=tenant), tenant)
         return cls(
             keys=keys,
-            scope=branch_scope_for_user(user, include_shared=True, tenant=tenant),
-            procurement_scope=branch_scope_for_user(user, include_shared=False, tenant=tenant),
+            scope=transaction_branch_scope_for_user(user, tenant=tenant),
         )
 
 
@@ -319,28 +318,22 @@ def _payable_account_ids(entity) -> set:
 def _revenue_vs_budget(entity, fiscal_year) -> dict:
     """Income and expense of ``fiscal_year`` against the school's plan for it.
 
-    The actuals are the same year the plan covers (the dashboard's anchor year),
-    read from its ordinary periods, so an earlier year never counts towards this
-    year's plan and a closed year still shows what it earned.
+    The school's plan is the roll-up of every branch's
+    (:func:`vs_finance.reports.budget_rollup`). The actuals are the same year the
+    plan covers (the dashboard's anchor year), read from its ordinary periods, so
+    an earlier year never counts towards this year's plan and a closed year still
+    shows what it earned.
     """
-    from .reports import budget_vs_actual, income_statement
+    from .reports import budget_rollup, income_statement, rollup_name
 
     pnl = income_statement(entity, fiscal_year=fiscal_year)  # The anchor year's result.
     rev_actual, exp_actual = pnl.total_income, pnl.total_expense  # Actual P&L totals.
 
-    budget = None  # Optional approved/latest budget.
-    if fiscal_year is not None:  # Budget lookup requires a fiscal year.
-        from .models import Budget
-
-        budget = (  # The school's latest plan; branch plans cover part of the ledger.
-            Budget.objects.filter(entity=entity, fiscal_year=fiscal_year, branch__isnull=True)
-            .order_by("-approved_at", "-id")
-            .first()
-        )
+    rollup = budget_rollup(entity, fiscal_year) if fiscal_year is not None else None
+    has_budget = bool(rollup and rollup.budgets)
     rev_plan = exp_plan = 0  # Budget totals default to zero.
-    if budget is not None:  # Compute plan totals when a budget exists.
-        rep = budget_vs_actual(budget)  # Reuse budget-vs-actual report rows.
-        for r in rep.rows:  # Sum budget by P&L account type.
+    if has_budget:
+        for r in rollup.rows:  # Sum budget by P&L account type.
             if r.account_type == AccountType.INCOME:  # Income budget row.
                 rev_plan += r.budget  # Add revenue plan.
             elif r.account_type == AccountType.EXPENSE:  # Expense budget row.
@@ -354,8 +347,8 @@ def _revenue_vs_budget(entity, fiscal_year) -> dict:
     net_actual = rev_actual - exp_actual  # Actual net income.
     net_plan = rev_plan - exp_plan  # Planned net income.
     return {  # Return budget block.
-        "has_budget": budget is not None,  # UI flag.
-        "budget_name": getattr(budget, "name", None),  # Budget display name.
+        "has_budget": has_budget,  # UI flag.
+        "budget_name": rollup_name(rollup.budgets) if has_budget else None,
         "revenue": line(rev_actual, rev_plan),  # Revenue actual vs plan.
         "expense": line(exp_actual, exp_plan),  # Expense actual vs plan.
         "net": {"actual": _m(net_actual), "delta_pct": _pct_change(net_actual, net_plan)},  # Net actual and plan delta.
@@ -506,7 +499,7 @@ def _approvals(entity, reader=EVERY_BLOCK) -> dict:
             model = getattr(pm, model_name, None)  # Resolve model defensively.
             if model is None or not reader.can(key):  # Skip unavailable or unreadable type.
                 continue
-            count = reader.procurement_scope.filter(
+            count = reader.scope.filter(
                 model.objects.filter(entity=entity, approval_state=pending)).count()
             items.append({"label": label, "count": count})  # Add count row.
     except Exception:  # pragma: no cover - procurement optional
@@ -563,7 +556,7 @@ def _recent_journals(entity, limit=5, scope=UNNARROWED) -> list[dict]:
     """
     from django.db.models import Exists, OuterRef, Q
 
-    from .models import JournalEntry, PayrollRun
+    from .models import JournalEntry, PayrollRun, PayrollRunBranch
 
     qs = (  # Recent journals for entity.
         scope.filter(JournalEntry.objects.filter(entity=entity))
@@ -572,6 +565,8 @@ def _recent_journals(entity, limit=5, scope=UNNARROWED) -> list[dict]:
             is_receipt=Exists(Payment.objects.filter(journal=OuterRef("pk"))),
             is_invoice=Exists(Invoice.objects.filter(journal=OuterRef("pk"))),
             is_payroll=Exists(PayrollRun.objects.filter(
+                Q(journal=OuterRef("pk")) | Q(disbursement_journal=OuterRef("pk")))),
+            is_payroll_share=Exists(PayrollRunBranch.objects.filter(
                 Q(journal=OuterRef("pk")) | Q(disbursement_journal=OuterRef("pk")))),
         )
         .order_by("-date", "-id")[:limit]
@@ -586,7 +581,7 @@ def _recent_journals(entity, limit=5, scope=UNNARROWED) -> list[dict]:
                 "source": getattr(j, "source", "") or "Manual",  # Journal source label.
                 "kind": (
                     "receipt" if j.is_receipt else "invoice" if j.is_invoice
-                    else "payroll" if j.is_payroll
+                    else "payroll" if j.is_payroll or j.is_payroll_share
                     else "manual" if getattr(j, "source", "") == "MANUAL" else "other"
                 ),
                 "narration": getattr(j, "narration", "") or "",  # Journal narration.
@@ -715,7 +710,7 @@ def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK, window=None, u
         ),
         "top_overdue": _top_overdue(entity, as_of, scope) if invoices else None,
         "vendor_due": (
-            _vendor_due(entity, reader.procurement_scope)
+            _vendor_due(entity, reader.scope)
             if reader.can("procurement.vendor_invoice.view") else None
         ),
         "approvals": approvals if approvals["items"] else None,

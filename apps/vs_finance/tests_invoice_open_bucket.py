@@ -28,10 +28,11 @@ class OpenInvoiceBucketTests(_FinanceBranchFixture):
 
         expected = {
             invoice(self.lekki, DocumentStatus.POSTED, InvoicePaymentStatus.UNPAID),
-            invoice(self.lekki, DocumentStatus.POSTED, InvoicePaymentStatus.PARTIAL),
-            invoice(None, DocumentStatus.POSTED, InvoicePaymentStatus.UNPAID,
+            invoice(self.lekki, DocumentStatus.POSTED, InvoicePaymentStatus.PARTIAL,
                     due=datetime.date(2099, 1, 1)),
         }
+        # Unbranched: outside Tola's reach however open it is.
+        invoice(None, DocumentStatus.POSTED, InvoicePaymentStatus.UNPAID)
         invoice(self.lekki, DocumentStatus.POSTED, InvoicePaymentStatus.PAID)
         invoice(self.lekki, DocumentStatus.DRAFT, InvoicePaymentStatus.UNPAID)
         invoice(self.ikeja, DocumentStatus.POSTED, InvoicePaymentStatus.UNPAID)

@@ -8,7 +8,7 @@ day with no cost centre.
 
 Cash and the school's bank, payroll and tax blocks are for readers who see the
 whole school. Spending, budgets and expense claims answer under a branch
-reader's branches, and a school-wide plan's figures are withheld from them.
+reader's branches, and a plan not yet given a branch is not among them.
 """
 from __future__ import annotations
 
@@ -164,12 +164,13 @@ class BudgetAndAccessTests(_SpendFixture):
         item = self.view()["budgets"]["items"][0]
         self.assertEqual((item["plan"]["kobo"], item["used"]["kobo"], item["pct"]), (80_000, 40_000, 50.0))
 
-    def test_a_branch_reader_sees_their_plan_but_not_the_schools_figures(self):
+    def test_a_branch_reader_sees_only_their_branchs_plan(self):
         self.plan()
         self.plan(self.ikeja)
+        self.plan(self.lekki)
         ikeja = self.reader("finance.budget.view", branch=self.ikeja)
         items = {i["branch"]: i for i in self.view(reader=ikeja)["budgets"]["items"]}
-        self.assertIsNone(items[None]["used"])
+        self.assertEqual(set(items), {self.ikeja.name})
         self.assertEqual(items[self.ikeja.name]["used"]["kobo"], 30_000)
 
     def test_the_schools_money_is_for_whole_school_readers_only(self):

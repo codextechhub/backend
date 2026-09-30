@@ -1153,6 +1153,12 @@ class PayrollRun(FinanceDocument):
     * **Disbursement** (:func:`vs_finance.payroll.pay_payroll`):
       ``Dr net wages payable, Cr bank`` - clears the net-pay liability when employees
       are actually paid.
+
+    ``branch`` is the branch a branch run covers. A central run names none: it
+    covers every branch's staff, so its accrual is one journal per branch
+    (:class:`PayrollRunBranch`), each paid from its branch's bank account. Where
+    a run's staff all sit in one branch its single journal is ``journal``, and
+    ``bank_account`` and ``disbursement_journal`` record how it was paid.
     """
 
     DOC_TYPE = DocType.PAYROLL_RUN
@@ -1225,10 +1231,21 @@ class PayrollRun(FinanceDocument):
 
 
 class PayrollLine(TimeStampedModel):
-    """One employee's pay for a run. ``net = gross - paye - pension`` (all kobo)."""
+    """One employee's pay for a run. ``net = gross - paye - pension`` (all kobo).
+
+    ``branch`` is the branch this pay is booked to: the employee's roster branch
+    when the run is generated, or the branch a hand-typed line names. Empty until
+    the run posts, which fills it from the run, the employee's salary row or the
+    school's only branch, and refuses a line none of those places
+    (:func:`vs_finance.payroll.post_payroll`).
+    """
 
     run = models.ForeignKey(
         PayrollRun, on_delete=models.CASCADE, related_name="lines",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        related_name="finance_payroll_lines", null=True, blank=True,
     )
     employee = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
@@ -1256,6 +1273,61 @@ class PayrollLine(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.employee_name or self.employee_id}: net {self.net_amount}"
+
+
+class PayrollRunBranch(TimeStampedModel):
+    """One branch's share of a payroll run whose staff sit in several branches.
+
+    Corona pays Ikeja's, Lekki's and Yaba's staff in one January run. Each branch's
+    salary cost is its own, and so is the bank account its staff are paid from, so
+    the run posts three accrual journals, one per branch, and each branch's share
+    is paid from that branch's account and carries its own disbursement journal.
+    Cancelling the run reverses each branch's journal on its own.
+
+    ``status`` is POSTED until the share is paid (PAID) or the run is voided
+    (CANCELLED). The figures are the share's lines summed at posting.
+    """
+
+    run = models.ForeignKey(
+        PayrollRun, on_delete=models.CASCADE, related_name="branch_shares",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT, related_name="payroll_run_shares",
+    )
+    gross_total = MoneyField()
+    paye_total = MoneyField()
+    pension_total = MoneyField()
+    net_total = MoneyField()
+    status = models.CharField(
+        max_length=10, choices=PayrollRunStatus.choices, default=PayrollRunStatus.POSTED,
+    )
+    journal = models.ForeignKey(
+        "JournalEntry", on_delete=models.PROTECT, related_name="payroll_branch_accruals",
+    )
+    disbursement_journal = models.ForeignKey(
+        "JournalEntry", on_delete=models.PROTECT, related_name="payroll_branch_disbursements",
+        null=True, blank=True,
+    )
+    bank_account = models.ForeignKey(
+        BankAccount, on_delete=models.PROTECT, related_name="payroll_run_shares",
+        null=True, blank=True,
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["run", "branch"], name="uniq_finance_payroll_run_branch",
+            ),
+        ]
+        ordering = ["run", "branch__name"]
+
+    @property
+    def document_number(self) -> str:
+        """How a person names this share: the run's number and the branch."""
+        return f"{self.run.document_number or self.run_id} ({self.branch.name})"
+
+    def __str__(self) -> str:
+        return self.document_number
 
 
 class SalaryStructure(TimeStampedModel):
@@ -1337,17 +1409,18 @@ class EmployeeSalary(TimeStampedModel):
     posts on its own; :func:`vs_finance.payroll.generate_run_from_roster` copies the
     active rows into a draft :class:`PayrollRun`.
 
-    ``branch`` is what lets a school run payroll **per branch** instead of centrally.
-    It is the roster row, not the run, that decides who a branch run covers, and a
-    branch run reads it **exclusively** - the one place in finance that does. See
-    :func:`vs_finance.payroll.roster_for` for the argument.
+    ``branch`` is the branch the employee works in. It decides who a branch run
+    covers (:func:`vs_finance.payroll.roster_for`), which branch's journal a
+    central run books the pay to, and who may read the row: the roster is read
+    exclusively, like every money record, so a branch officer sees their own
+    branch's staff only.
 
-    Null does **not** mean "shared across the school" here, unlike everywhere else
-    in this codebase. Head office is a branch in this product, so there is no such
-    person as an employee who belongs to no site: a null branch is an *unassigned*
-    row, a data gap rather than a meaning. It stays null for every school running
-    payroll centrally, which is all of them until one deliberately opts in, and
-    opting in is refused while any active row is still unassigned.
+    Null does **not** mean "shared across the school". Head office is a branch
+    in this product, so there is no such person as an employee who belongs to no
+    site: a null branch is an *unassigned* row, a data gap rather than a meaning.
+    New rows always name a branch; an unassigned one stops a run it is on from
+    posting at a school with several branches, and blocks the switch to
+    per-branch payroll.
     """
 
     entity = models.ForeignKey(
@@ -1407,11 +1480,12 @@ class Budget(TimeStampedModel):
     ledger's actuals. Approval **locks** the figures so the plan can't be quietly
     rewritten to flatter the variance.
 
-    ``branch`` makes it one branch's plan, measured against the journals raised
-    in that branch alone; empty, it is the school's plan, measured against the
-    whole ledger. A branch plan leaves out school-wide entries because those are
-    the school plan's to measure: counting them in every branch's plan would
-    charge each branch the whole school's shared spend.
+    ``branch`` is the branch whose plan this is, measured against the journals
+    raised in that branch alone, and the school's plan for a year is the roll-up
+    of its branches' (:func:`vs_finance.reports.rolled_up_budgets`). Every budget
+    is raised for a branch (:func:`vs_rbac.scoping.raised_transaction_branch`);
+    one with none predates that rule, is measured against the whole ledger, and
+    is read only by a whole-school reader.
     """
 
     entity = models.ForeignKey(

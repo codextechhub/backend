@@ -934,7 +934,9 @@ def customer_statement(customer, *, start_date=None, end_date=None,
     ``scope`` (a :class:`vs_rbac.scoping.BranchScope`) builds the statement from the
     documents in a reader's branches only, movements and aging alike, so the Ikeja
     bursar's statement of a family billed at two branches is Ikeja's account with
-    that family. ``None`` is the whole account, which is what the customer is sent.
+    that family. ``None`` is the whole account. An emailed statement is built with
+    its sender's scope (:func:`vs_finance.document_email._statement_scope`), so it
+    says what the sender's screen says.
     """
     from .constants import DocumentStatus
     from .models import Invoice
@@ -1034,12 +1036,19 @@ class BudgetVarianceRow:
 @dataclass
 # Group behavior for Budget Variance Report.
 class BudgetVarianceReport:
-    budget_id: int
+    """Budget against actual for one budget, or for a roll-up of several.
+
+    ``budget_id`` is the budget's, and ``None`` for a roll-up
+    (:func:`budget_rollup`), whose ``budgets`` lists the plans it summed.
+    """
+
+    budget_id: int | None
     fiscal_year_id: int
     period_no: int | None
     rows: list = field(default_factory=list)
     total_budget: int = 0
     total_actual: int = 0
+    budgets: list = field(default_factory=list)
 
     @property
     # Handle the total variance workflow.
@@ -1047,64 +1056,49 @@ class BudgetVarianceReport:
         return self.total_actual - self.total_budget
 
 
-# Handle the budget vs actual workflow.
 def _budget_actuals(budget):
-    """The ledger a budget is measured against: the whole entity, or its branch.
+    """The ledger a budget is measured against: its branch's journals.
 
-    A branch's plan is measured against the journals raised in that branch alone
-    (the exclusive reading), because school-wide entries are the school plan's to
-    measure; see :class:`vs_finance.models.Budget`.
+    A budget belongs to one branch and is measured against the journals raised in
+    that branch alone (the exclusive reading), so a branch's plan never counts
+    another branch's spending. At a school with one branch every journal is that
+    branch's, including one not yet given a branch
+    (:func:`vs_rbac.scoping.same_transaction_branch`), so the plan there is
+    measured against the whole ledger. A budget not yet given a branch predates
+    that rule and is measured against the whole ledger, which is what it was
+    raised to plan.
     """
     from .branch_ledger import ledger_balances
-    from vs_rbac.scoping import BranchScope
+    from vs_rbac.scoping import BranchScope, only_branch_id
 
-    if budget.branch_id is None:
+    if budget.branch_id is None or budget.branch_id == only_branch_id(budget.entity.tenant_id):
         return ledger_balances(budget.entity)
     return ledger_balances(
         budget.entity, BranchScope(frozenset({budget.branch_id}), include_shared=False),
     )
 
 
-def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
-    """Compare a budget's planned figures to ledger actuals, per account.
+def _plan_vs_actual(budget_lines, balances) -> tuple[list, int, int]:
+    """Variance rows and totals for planned ``budget_lines`` against ``balances``.
 
-    Budgeted amounts come from the (frozen) :class:`~vs_finance.models.BudgetLine`
-    cells; actuals come from the denormalised :class:`AccountBalance` *movement* in
-    the matching fiscal periods (period movement only - opening balances are
-    excluded), signed to each account's normal balance so an expense budget of
-    ``100`` lines up with ``100`` of actual expense. Pass a configured ``period_no``
-    to scope both sides to a single period; otherwise the whole fiscal year is summed.
-    The year's closing period is left out, so a closed year's actuals still read
-    what was earned and spent.
+    Budgeted amounts are summed per account across cost centres and periods;
+    actuals are each account's period movement, signed to its normal balance so an
+    expense plan of ``100`` lines up with ``100`` of actual expense. A budget covers
+    income and expense, so an unbudgeted account appears only when it is a P&L
+    account that moved (genuinely unbudgeted income or spend), never the cash or
+    receivable side of a posting.
     """
     from .constants import AccountType, NormalBalance
-    from .models import BudgetLine
 
-    # Budgets are plans of income/expense; the balance-sheet contra side of a posting
-    # (cash, AR, payables) is noise in a variance report, so unbudgeted accounts only
-    # appear when they are P&L accounts (i.e. genuinely unbudgeted income/spend).
-    _PL_TYPES = {AccountType.INCOME, AccountType.EXPENSE}
-
-    fiscal_year = budget.fiscal_year
-    if period_no is not None:
-        from .budgets import ensure_budget_period
-        period_no = ensure_budget_period(budget, period_no)
-
-    # Budgeted amounts per account (summed across cost centres / periods).
-    budget_lines = BudgetLine.objects.filter(budget=budget).select_related("account")
-    if period_no is not None:
-        budget_lines = budget_lines.filter(period_no=int(period_no))
-
+    pl_types = {AccountType.INCOME, AccountType.EXPENSE}
     slots: dict[int, dict] = {}
 
-    # Handle the slot for workflow.
     def slot_for(account):
         s = slots.get(account.id)
         if s is None:
             s = {
                 "code": account.code, "name": account.name,
                 "account_type": account.account_type,
-                "normal_balance": account.normal_balance,
                 "budget": 0, "actual": 0,
             }
             slots[account.id] = s
@@ -1113,51 +1107,145 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
     for line in budget_lines:
         slot_for(line.account)["budget"] += line.amount
 
-    # Actual movement per account from this fiscal year's ordinary periods.
+    for bal in balances:
+        acc = bal.account
+        if acc.id not in slots and acc.account_type not in pl_types:
+            continue
+        movement = bal.debit_total - bal.credit_total
+        if acc.normal_balance != NormalBalance.DEBIT:
+            movement = -movement
+        if movement == 0 and acc.id not in slots:
+            continue  # untouched, unbudgeted account
+        slot_for(acc)["actual"] += movement
+
+    rows: list[BudgetVarianceRow] = []
+    total_budget = total_actual = 0
+    for account_id, slot in sorted(slots.items(), key=lambda kv: kv[1]["code"]):
+        if slot["budget"] == 0 and slot["actual"] == 0:
+            continue
+        total_budget += slot["budget"]
+        total_actual += slot["actual"]
+        rows.append(BudgetVarianceRow(
+            account_id=account_id, code=slot["code"], name=slot["name"],
+            account_type=slot["account_type"],
+            budget=slot["budget"], actual=slot["actual"],
+        ))
+    return rows, total_budget, total_actual
+
+
+def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
+    """Compare a budget's planned figures to its branch's ledger actuals, per account.
+
+    Budgeted amounts come from the (frozen) :class:`~vs_finance.models.BudgetLine`
+    cells; actuals come from the period *movement* of the ledger the budget is
+    measured against (:func:`_budget_actuals`; opening balances are excluded). Pass
+    a configured ``period_no`` to scope both sides to a single period; otherwise the
+    whole fiscal year is summed. The year's closing period is left out, so a closed
+    year's actuals still read what was earned and spent.
+    """
+    from .models import BudgetLine
+
+    fiscal_year = budget.fiscal_year
+    if period_no is not None:
+        from .budgets import ensure_budget_period
+        period_no = int(ensure_budget_period(budget, period_no))
+
+    budget_lines = BudgetLine.objects.filter(budget=budget).select_related("account")
     balances = (
         _budget_actuals(budget)
         .filter(period__fiscal_year=fiscal_year, period__is_closing=False)
         .select_related("account", "period")
     )
     if period_no is not None:
-        balances = balances.filter(period__period_no=int(period_no))
+        budget_lines = budget_lines.filter(period_no=period_no)
+        balances = balances.filter(period__period_no=period_no)
 
-    for bal in balances:
-        acc = bal.account
-        # An unbudgeted, non-P&L account (e.g. the cash contra side) is not part of a
-        # budget variance - only surface budgeted accounts and unbudgeted P&L activity.
-        if acc.id not in slots and acc.account_type not in _PL_TYPES:
-            continue
-        movement = bal.debit_total - bal.credit_total
-        if acc.normal_balance != NormalBalance.DEBIT:
-            movement = -movement
-        if movement == 0 and acc.id not in slots:
-            continue  # untouched, unbudgeted account - skip the noise
-        slot_for(acc)["actual"] += movement
-
-    rows: list[BudgetVarianceRow] = []
-    total_budget = 0
-    total_actual = 0
-    for account_id, slot in sorted(slots.items(), key=lambda kv: kv[1]["code"]):
-        if slot["budget"] == 0 and slot["actual"] == 0:
-            continue
-        total_budget += slot["budget"]
-        total_actual += slot["actual"]
-        rows.append(
-            BudgetVarianceRow(
-                account_id=account_id, code=slot["code"], name=slot["name"],
-                account_type=slot["account_type"],
-                budget=slot["budget"], actual=slot["actual"],
-            )
-        )
-
+    rows, total_budget, total_actual = _plan_vs_actual(budget_lines, balances)
     return BudgetVarianceReport(
         budget_id=budget.id,
+        fiscal_year_id=fiscal_year.id,
+        period_no=period_no,
+        rows=rows,
+        total_budget=total_budget,
+        total_actual=total_actual,
+    )
+
+
+def rolled_up_budgets(entity, fiscal_year, scope=None) -> list:
+    """The budgets that together make ``fiscal_year``'s plan for ``scope``'s reader.
+
+    Every budget belongs to a branch, so the school's plan is the sum of its
+    branches' plans rather than a document of its own. Each branch contributes
+    one budget: its approved one, or else its latest draft, so a draft revision
+    beside an approved plan is not counted twice.
+
+    ``scope`` (a :class:`vs_rbac.scoping.BranchScope`) is the reader's reach over
+    transactions: a branch-bound reader's roll-up is their own branches' plans, and
+    a whole-school reader's is every branch's. A budget not yet given a branch
+    predates that rule and was raised as the whole school's plan, so it is counted
+    only for a whole-school reader and only in a year no branch has planned,
+    where it is still the only plan there is; beside branch plans it would count
+    the same spending twice.
+    """
+    from .constants import BudgetStatus
+    from .models import Budget
+    from vs_rbac.scoping import UNNARROWED
+
+    scope = scope if scope is not None else UNNARROWED
+    plans = scope.filter(Budget.objects.filter(entity=entity, fiscal_year=fiscal_year))
+    chosen: dict = {}
+    for plan in plans.order_by("-id"):
+        current = chosen.get(plan.branch_id)
+        if current is None or (
+            plan.status == BudgetStatus.APPROVED and current.status != BudgetStatus.APPROVED
+        ):
+            chosen[plan.branch_id] = plan
+    if len(chosen) > 1:
+        chosen.pop(None, None)
+    return sorted(chosen.values(), key=lambda b: (b.branch_id is None, b.branch_id or 0))
+
+
+def rollup_name(budgets) -> str | None:
+    """How a roll-up is named on screen: its one budget's name, or the school total."""
+    if not budgets:
+        return None
+    if len(budgets) == 1:
+        return budgets[0].name
+    return f"School total ({len(budgets)} budgets)"
+
+
+def budget_rollup(entity, fiscal_year, *, scope=None, period_no=None) -> BudgetVarianceReport:
+    """The school total: the reader's branches' plans summed, against their ledger.
+
+    Plans are :func:`rolled_up_budgets`; actuals are the reader's own journals
+    (:func:`vs_finance.branch_ledger.ledger_balances`), so a whole-school reader
+    measures every branch's plan against the whole ledger and a branch-bound
+    reader measures their branches' plans against their branches' journals. The
+    report has no ``budget_id``: it is no one budget.
+    """
+    from .branch_ledger import ledger_balances
+    from .models import BudgetLine
+
+    plans = rolled_up_budgets(entity, fiscal_year, scope)
+    budget_lines = BudgetLine.objects.filter(budget__in=plans).select_related("account")
+    balances = (
+        ledger_balances(entity, scope)
+        .filter(period__fiscal_year=fiscal_year, period__is_closing=False)
+        .select_related("account", "period")
+    )
+    if period_no is not None:
+        budget_lines = budget_lines.filter(period_no=int(period_no))
+        balances = balances.filter(period__period_no=int(period_no))
+
+    rows, total_budget, total_actual = _plan_vs_actual(budget_lines, balances)
+    return BudgetVarianceReport(
+        budget_id=None,
         fiscal_year_id=fiscal_year.id,
         period_no=int(period_no) if period_no is not None else None,
         rows=rows,
         total_budget=total_budget,
         total_actual=total_actual,
+        budgets=plans,
     )
 
 
@@ -1467,8 +1555,8 @@ class IncomeStatementCompare:
     Unlike :func:`income_statement` (which sums income/expense across *all* periods),
     this is **fiscal-year scoped**: "this period" is the current fiscal year (or one
     period of it), so the Prior-year column - the same scope in the previous fiscal
-    year - is a like-for-like comparison. Budget comes from the entity's budget for the
-    current fiscal year. Variance is signed *favourable* (revenue: actual − budget;
+    year - is a like-for-like comparison. Budget is the roll-up of the branches' plans
+    for the current fiscal year (:func:`rolled_up_budgets`). Variance is signed *favourable* (revenue: actual − budget;
     expense: budget − actual; net income: actual − budget).
     """
     entity_id: int
@@ -1500,14 +1588,15 @@ def income_statement_compare(entity, *, period=None, fiscal_year=None,
     closed year shows the profit it made and the next year's prior-year column
     reads it too.
 
-    ``scope`` narrows the actuals, this year and last, to a reader's journals. The
-    budget is the entity's plan and has no branch, so a narrowed statement carries
-    no budget column: set against one branch's actuals it would read as a shortfall
-    that is only the other branches' share.
+    ``scope`` narrows the actuals, this year and last, to a reader's journals, and
+    the budget column to the same reader's plans: the roll-up of
+    :func:`rolled_up_budgets`, so a whole-school reader compares the school's
+    result with every branch's plan and the Ikeja bursar compares Ikeja's result
+    with Ikeja's plan.
     """
     from .branch_ledger import ledger_balances
-    from .constants import AccountType, BudgetStatus
-    from .models import Budget, BudgetLine, FiscalYear
+    from .constants import AccountType
+    from .models import BudgetLine, FiscalYear
 
     if period is not None:
         fy = period.fiscal_year
@@ -1542,16 +1631,11 @@ def income_statement_compare(entity, *, period=None, fiscal_year=None,
     has_prior = prior_fy is not None
     pri_inc, pri_exp = _actuals(prior_fy) if has_prior else ({}, {})
 
-    # The school's plan for the year, approved over draft. A branch plan is not
-    # compared here: it covers one branch exclusively, the statement does not.
-    school_plans = Budget.objects.filter(entity=entity, fiscal_year=fy, branch__isnull=True)
-    budget = None if scope is not None and scope.is_narrowed else (
-        school_plans.filter(status=BudgetStatus.APPROVED).order_by("-id").first()
-        or school_plans.order_by("-id").first())
-    has_budget = budget is not None
+    plans = rolled_up_budgets(entity, fy, scope)
+    has_budget = bool(plans)
     budget_by_acc: dict[int, list] = {}
     if has_budget:
-        blines = BudgetLine.objects.filter(budget=budget).select_related("account")
+        blines = BudgetLine.objects.filter(budget__in=plans).select_related("account")
         if period_no is not None:
             blines = blines.filter(period_no=period_no)
         for ln in blines:

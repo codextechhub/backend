@@ -6,9 +6,10 @@ named, each of these used to answer for every store the entity holds: a storekee
 who cannot open another branch's store by id could still read its balances and every
 movement through it simply by leaving the filter off.
 
-The narrowing is the one the rest of procurement already uses, in its catalogue
-reading: a store with no branch belongs to the whole school and stays visible, which
-is what keeps the central store on a branch storekeeper's screen.
+The narrowing is the one every transaction takes: a store belongs to one branch, and
+another branch draws on it by requisition rather than reading its shelves. A store
+not yet given a branch is read only by somebody who covers the whole school, who can
+give it one.
 
 Two shapes of school run through this. The two-branch school is where the narrowing
 has to bite; the single-branch school is where it must change nothing at all.
@@ -101,7 +102,7 @@ class _StockFixture:
 
 @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
 class StockBranchScopeTests(_StockFixture, TestCase):
-    """Ikeja holds 300, Lekki 700, and the central store 100 of the same book."""
+    """Ikeja holds 300, Lekki 700, and a store not yet given a branch 100 of the same book."""
 
     def setUp(self):
         seed_currencies()
@@ -132,13 +133,12 @@ class StockBranchScopeTests(_StockFixture, TestCase):
 
     # -- balances ------------------------------------------------------------ #
 
-    def test_a_storekeeper_reads_their_own_store_and_the_shared_one(self, _perm):
+    def test_a_storekeeper_reads_their_own_store_only(self, _perm):
         response = self.storekeeper.get(self.url("stock-balances/"))
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(
-            {row["location_code"] for row in self.rows(response)},
-            {"IKEJA", "CENTRAL"},
+            {row["location_code"] for row in self.rows(response)}, {"IKEJA"},
         )
 
     def test_head_office_still_reads_every_store(self, _perm):
@@ -164,7 +164,7 @@ class StockBranchScopeTests(_StockFixture, TestCase):
 
         self.assertEqual(response.status_code, 200, response.data)
         codes = {row["location_code"] for row in self.rows(response)}
-        self.assertEqual(codes, {"IKEJA", "CENTRAL"})
+        self.assertEqual(codes, {"IKEJA"})
         self.assertNotIn("LEKKI", codes)
 
     # -- item list ----------------------------------------------------------- #
@@ -173,9 +173,9 @@ class StockBranchScopeTests(_StockFixture, TestCase):
         response = self.storekeeper.get(self.url("stock-items/"))
         row = self.rows(response)[0]
 
-        self.assertEqual(Decimal(str(row["on_hand_qty"])), Decimal(400))
-        self.assertEqual(row["stock_value"], 200_000)
-        # 400 is at or below the reorder level of 500; the school's 1,100 is not.
+        self.assertEqual(Decimal(str(row["on_hand_qty"])), Decimal(300))
+        self.assertEqual(row["stock_value"], 150_000)
+        # 300 is at or below the reorder level of 500; the school's 1,100 is not.
         self.assertTrue(row["needs_reorder"])
 
     def test_head_offices_item_list_is_the_school_total(self, _perm):
@@ -204,7 +204,7 @@ class StockBranchScopeTests(_StockFixture, TestCase):
     def test_the_summary_values_only_the_stores_in_scope(self, _perm):
         data = self.storekeeper.get(self.url("stock-items/summary/")).data["data"]
 
-        self.assertEqual(data["total_value"], 200_000)
+        self.assertEqual(data["total_value"], 150_000)
         self.assertEqual(data["tracked"], 1)
         self.assertEqual(data["low_stock"], 1)
         self.assertEqual(data["out_of_stock"], 0)
@@ -223,11 +223,10 @@ class StockBranchScopeTests(_StockFixture, TestCase):
             self.url(f"stock-items/{self.book.pk}/")).data["data"]
 
         self.assertEqual(
-            {movement["location_code"] for movement in data["movements"]},
-            {"IKEJA", "CENTRAL"},
+            {movement["location_code"] for movement in data["movements"]}, {"IKEJA"},
         )
-        self.assertEqual(Decimal(str(data["on_hand_qty"])), Decimal(400))
-        self.assertEqual(data["stock_value"], 200_000)
+        self.assertEqual(Decimal(str(data["on_hand_qty"])), Decimal(300))
+        self.assertEqual(data["stock_value"], 150_000)
 
 
 @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
@@ -386,31 +385,42 @@ class StockMovementComesFromTheCallersStoreTests(_StockFixture, TestCase):
         self.assertEqual(
             response.data["data"]["movement"]["location_code"], "IKEJA")
 
-    def test_a_central_store_is_still_everybodys_to_issue_from(self, _perm):
-        """A null branch means shared with the whole school on this side too."""
+    def test_a_store_not_yet_given_a_branch_is_not_theirs_to_issue_from(self, _perm):
+        """Nothing says whose shelf it is, so a branch storekeeper does not draw on it."""
         shared = self.build_entity("STKSHARE", self.tenant)
         central = self.store(shared, "CENTRAL", "Central store", is_default=True)
         book = self.item(shared)
         self.receive(book, central, 80, 40_000)
+        before = StockMovement.objects.count()
 
         response = self.storekeeper.post(
             f"/v1/procurement/stock-items/{book.pk}/issue/?entity={shared.code}",
             {"quantity": 10, "movement_date": "2026-01-20"}, format="json",
         )
 
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(StockMovement.objects.count(), before)
+
+    def test_an_issue_books_its_journal_to_the_stores_branch(self, _perm):
+        """The stock relieved stood at Lekki, so Lekki's books carry the charge."""
+        from vs_finance.models import JournalEntry
+
+        response = self.issue(self.head_office)
+
         self.assertEqual(response.status_code, 201, response.data)
+        movement = StockMovement.objects.get(pk=response.data["data"]["movement"]["id"])
         self.assertEqual(
-            response.data["data"]["movement"]["location_code"], "CENTRAL")
+            JournalEntry.objects.get(pk=movement.journal_id).branch_id, self.lekki.pk)
 
 
 @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
 class StockLocationBranchWriteTests(_StockFixture, TestCase):
     """Which branch a store is filed at when the person filing it names none.
 
-    A store is master data, not a purchase: a school keeping one central store for
-    every site is the ordinary arrangement, so somebody who covers several branches
-    and names none has filed a school-wide store rather than left a question
-    unanswered. Somebody who works at one branch has filed that branch's store.
+    A store belongs to one branch. Somebody who works at one branch has filed that
+    branch's store; somebody who covers several, or the whole school at a school
+    with several branches, names one, because there is no school-wide store. At a
+    school with one branch nobody is asked.
     """
 
     def setUp(self):
@@ -458,25 +468,42 @@ class StockLocationBranchWriteTests(_StockFixture, TestCase):
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response.data["data"]["branch_id"], self.ikeja.pk)
 
-    def test_somebody_over_two_branches_files_it_school_wide(self, _perm):
-        """The ambiguous case, and the route that crashed before it could answer."""
+    def test_somebody_over_two_branches_names_the_stores_branch(self, _perm):
         client = self.works_at(
             self.client_for(self.tenant, "both-stores@test.com"),
             self.lekki, self.ikeja,
         )
 
-        response = self.create(client)
+        refused = self.create(client)
+        named = self.create(client, branch=self.lekki.pk)
 
-        self.assertEqual(response.status_code, 201, response.data)
-        self.assertIsNone(response.data["data"]["branch_id"])
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertEqual(named.status_code, 201, named.data)
+        self.assertEqual(named.data["data"]["branch_id"], self.lekki.pk)
 
-    def test_an_unbound_caller_leaves_a_new_store_school_wide(self, _perm):
+    def test_a_whole_school_caller_names_the_stores_branch_too(self, _perm):
         client = self.client_for(self.tenant, "hq-stores@test.com")
 
-        response = self.create(client)
+        refused = self.create(client)
+        named = self.create(client, branch=self.ikeja.pk)
+
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertEqual(named.status_code, 201, named.data)
+        self.assertEqual(named.data["data"]["branch_id"], self.ikeja.pk)
+
+    def test_a_one_branch_school_files_a_new_store_under_its_branch(self, _perm):
+        solo = make_school(slug="stock-solo-store", name="Solo Store School")
+        main = make_branch(solo, name="Main Branch")
+        entity = self.build_entity("STKSOLO", solo.tenant)
+        client = self.client_for(solo.tenant, "solo-stores@test.com")
+
+        response = client.post(
+            f"/v1/procurement/stock-locations/?entity={entity.code}",
+            {"code": "ANNEX", "name": "Annex store"}, format="json",
+        )
 
         self.assertEqual(response.status_code, 201, response.data)
-        self.assertIsNone(response.data["data"]["branch_id"])
+        self.assertEqual(response.data["data"]["branch_id"], main.pk)
 
     def test_a_storekeeper_cannot_file_a_store_at_another_branch(self, _perm):
         client = self.client_for(self.tenant, "ikeja-cross@test.com", branch=self.ikeja)
@@ -486,19 +513,37 @@ class StockLocationBranchWriteTests(_StockFixture, TestCase):
         self.assertEqual(response.status_code, 403, response.data)
         self.assertFalse(StockLocation.objects.filter(code="ANNEX").exists())
 
-    def test_re_branching_a_store_takes_the_same_answer(self, _perm):
-        """The rule holds on the way back: a store moves the way it arrived."""
-        shared = self.works_at(
-            self.client_for(self.tenant, "both-patch@test.com"),
-            self.lekki, self.ikeja,
-        )
+    def test_a_store_not_yet_given_a_branch_is_given_one_by_a_whole_school_caller(self, _perm):
+        """Mr Bello can reach it and file it; Ikeja's storekeeper cannot open it at all."""
+        head = self.client_for(self.tenant, "hq-patch@test.com")
         pinned = self.client_for(
             self.tenant, "ikeja-patch@test.com", branch=self.ikeja)
 
-        stays_shared = self.patch_store(shared, self.central, branch="")
-        becomes_ikejas = self.patch_store(pinned, self.central, branch="")
+        unnamed = self.patch_store(head, self.central, branch="")
+        unseen = self.patch_store(pinned, self.central, branch=self.ikeja.pk)
+        filed = self.patch_store(head, self.central, branch=self.lekki.pk)
 
-        self.assertEqual(stays_shared.status_code, 200, stays_shared.data)
-        self.assertIsNone(stays_shared.data["data"]["branch_id"])
-        self.assertEqual(becomes_ikejas.status_code, 200, becomes_ikejas.data)
-        self.assertEqual(becomes_ikejas.data["data"]["branch_id"], self.ikeja.pk)
+        self.assertEqual(unnamed.status_code, 400, unnamed.data)
+        self.assertEqual(unseen.status_code, 404, unseen.data)
+        self.assertEqual(filed.status_code, 200, filed.data)
+        self.assertEqual(filed.data["data"]["branch_id"], self.lekki.pk)
+
+
+class ProvisionedMainStoreTests(_StockFixture, TestCase):
+    """The store a school's books are created with belongs to its main branch."""
+
+    def test_a_schools_main_store_is_filed_under_its_main_branch(self):
+        school = make_school(slug="stock-provision", name="Provisioned School")
+        main = make_branch(school, name="Main Branch", is_main=True)
+        make_branch(school, name="Annex Branch", is_main=False)
+
+        from vs_procurement.provisioning import provision_default_stock_location
+
+        entity = LedgerEntity.objects.create(
+            name="Provisioned Books", code="STKPROV", kind=LedgerEntity.Kind.TENANT,
+            tenant=school.tenant,
+        )
+        provision_default_stock_location(entity)
+
+        store = StockLocation.objects.get(entity=entity, code="MAIN")
+        self.assertEqual(store.branch_id, main.pk)

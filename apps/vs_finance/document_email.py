@@ -202,11 +202,46 @@ def _render(delivery):
 
     from .pdf import statement_pdf
 
+    scope = _statement_scope(delivery)
     pdf = statement_pdf(
-        customer, start_date=delivery.period_start, end_date=delivery.period_end, note=delivery.note,
+        customer, start_date=delivery.period_start, end_date=delivery.period_end,
+        note=delivery.note, scope=scope,
     )
-    return pdf, _statement_context(customer, delivery), f"Statement-{customer.code}.pdf", \
-        customer.branch
+    return pdf, _statement_context(customer, delivery, scope), f"Statement-{customer.code}.pdf", \
+        _statement_branch(customer, scope)
+
+
+def _statement_scope(delivery):
+    """Whose documents a statement covers: the sender's branches, or the whole account.
+
+    A statement says what the screen its sender reads says
+    (:class:`vs_finance.views_ar.CustomerStatementView`). Mrs Adeyemi, the Ikeja
+    bursar, emails the Okafor family a statement of their Ikeja fees and payments,
+    not of their Lekki ones, which they cannot read; the whole-school bursar's
+    statement covers the family's whole account. The sender is the delivery's
+    ``requested_by``, so a retry covers the branches of whoever retries it. A
+    delivery nobody requested (an automatic one) covers the whole account.
+    """
+    from vs_rbac.scoping import UNNARROWED, transaction_branch_scope_for_user
+
+    if delivery.requested_by_id is None:
+        return UNNARROWED
+    return transaction_branch_scope_for_user(
+        delivery.requested_by, tenant=delivery.entity.tenant,
+    )
+
+
+def _statement_branch(customer, scope):
+    """The branch a statement is about, for whose notification settings apply.
+
+    The customer's own branch, or for a customer every branch shares, the one
+    branch the sender's statement covers. ``None`` is the tenant as a whole.
+    """
+    if customer.branch_id is not None or not scope.is_narrowed or len(scope.branch_ids) != 1:
+        return customer.branch
+    from vs_tenants.models import Branch
+
+    return Branch.all_objects.filter(pk=next(iter(scope.branch_ids))).first()
 
 
 def _naira(kobo) -> str:
@@ -247,12 +282,12 @@ def _receipt_context(payment, delivery) -> dict:
     }
 
 
-def _statement_context(customer, delivery) -> dict:
+def _statement_context(customer, delivery, scope=None) -> dict:
     from .money import format_naira
     from .reports import customer_statement
 
     statement = customer_statement(
-        customer, start_date=delivery.period_start, end_date=delivery.period_end,
+        customer, start_date=delivery.period_start, end_date=delivery.period_end, scope=scope,
     )
     tenant = customer.entity.tenant
     return {
@@ -409,7 +444,10 @@ def send_receipt(payment, *, actor_user, note="", source=FinanceDeliverySource.M
 @transaction.atomic
 def send_statement(customer, *, actor_user, start_date=None, end_date=None, note="",
                    source=FinanceDeliverySource.MANUAL, parent=None):
-    """Email a statement of account for one customer over a period."""
+    """Email a statement of account for one customer over a period.
+
+    It covers the documents ``actor_user`` may read (see :func:`_statement_scope`).
+    """
     if start_date and end_date and start_date > end_date:
         raise FinanceDocumentEmailError("The statement period ends before it starts.")
     delivery = _create(

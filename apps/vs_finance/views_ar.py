@@ -14,7 +14,7 @@ from __future__ import annotations
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import F, Q, prefetch_related_objects
 from django.http import HttpResponse
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
@@ -23,11 +23,9 @@ from core.response import error_response, success_response
 from vs_config.clock import branch_day_q, branch_today, branch_zone, tenant_today
 from vs_config.display import format_date
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
-# ``include_shared=True`` is spelled out at every call site rather than left to the
-# default: a null branch means "shared across the school", so a school-wide fee
-# structure, customer or credit note stays visible to a branch-pinned caller.
 from vs_rbac.scoping import (
-    WholeTenantWriteMixin, branch_q, branch_scope, caller_may_use_branch, resolve_branch,
+    WholeTenantWriteMixin, branch_q, caller_may_use_branch, resolve_branch,
+    transaction_branch_q, transaction_branch_scope,
 )
 
 
@@ -82,17 +80,19 @@ from .serializers import (
     WriteOffRequestSerializer,
 )
 from .views import resolve_entity
-from .views_ops.base import require_own_branch_bank
+from .views_ops.base import _bank_account_in_reach, require_own_branch_bank
 from .views_ops import (
     _FinanceBase,
     _date,
     _money,
     _dec,
+    _customer_document_branch_id,
     _inherited_branch_id,
     _raised_branch,
     _require_lines,
     _resolve_account,
     _resolve_bank_account,
+    _transaction_branch,
     _resolve_cost_center,
     _resolve_currency,
     _resolve_tax,
@@ -112,10 +112,13 @@ from .views_ops import (
 # so a Lekki family's statement, record and fee structure were all one guessed
 # code away from an Ikeja bursar.
 #
-# ``include_shared=True`` throughout, because that is what a null branch means in
-# finance: a customer or fee template the school publishes once for every branch
-# stays reachable by a branch-pinned caller. The exclusive reading belongs to
-# procurement's spend documents and would hide the school's own shared rows here.
+# Customers and fee structures are shared records: one with no branch is the
+# school's, published once for every branch, and stays reachable by a
+# branch-pinned caller (:func:`_branch_visible`). Everything raised against them
+# (invoices, receipts, notes, refunds, concessions, plans, write-offs, dunning
+# notices) is a transaction and is read exclusively
+# (:func:`vs_rbac.scoping.transaction_branch_q`): a branch-bound caller reaches
+# their own branches' documents only, and never one not yet given a branch.
 #
 # A row in another branch answers with exactly the same "no ... matches" message
 # as one that does not exist, so a code cannot be used to discover that another
@@ -123,33 +126,32 @@ from .views_ops import (
 # ``_document_or_404``; it is why these raise NotFound rather than
 # PermissionDenied even where a 403 would read more naturally.
 #
-# The write-side rule (:func:`_inherited_branch_id`, which refuses to let a
-# pinned caller continue another branch's chain) stays exactly as it was. It
-# still guards the case these cannot: a *shared* customer is legitimately
-# resolvable by everyone, and it is that rule which decides the branch of the
-# document raised against them.
+# The branch a new document takes is decided on the write side: from the
+# document it continues (:func:`_inherited_branch_id`), or, for a document
+# raised against a customer alone, from the customer when they are filed under
+# a branch and otherwise from the person raising it
+# (:func:`_customer_document_branch_id`).
 
 
 def _branch_visible(request, qs):
-    """Narrow *qs* to the branches this caller may work in, sharing what is shared.
+    """Narrow a queryset of shared records (customers, fee structures) to this caller.
 
+    Inclusive: a record with no branch is the school's and every branch uses it.
     One expression of the rule for every resolver, so a list and the resolver
     behind its detail route cannot drift apart.
     """
     return qs.filter(branch_q(request, include_shared=True))
 
 
-def _document_scope(request):
-    """The reader's reach over the documents raised against a customer.
+def _transaction_visible(request, qs):
+    """Narrow a queryset of documents to this caller's own branches only.
 
-    A customer is master data and a school-wide one stays reachable by everybody
-    (:func:`_branch_visible`). The invoices, receipts, notes, refunds and concessions
-    under it are transactions, and they are narrowed to the reader's own branches
-    only: a family billed at both Ikeja and Lekki is one customer, and the Ikeja
-    bursar opening that family sees Ikeja's documents and the balance they make,
-    never Lekki's. A whole-school reader is not narrowed at all.
+    A family billed at both Ikeja and Lekki is one customer, and the Ikeja bursar
+    opening that family sees Ikeja's documents and the balance they make, never
+    Lekki's, and never a document not yet given a branch. A whole-school reader
+    is not narrowed at all.
     """
-    return branch_scope(request, include_shared=False)
+    return transaction_branch_scope(request).filter(qs)
 
 
 # Support the resolve customer workflow.
@@ -176,7 +178,7 @@ def _resolve_invoice(request, entity, ref, field="invoice", *, required=True):
         if required:
             raise ValidationError({field: "An invoice (document number or id) is required."})
         return None
-    qs = _branch_visible(request, Invoice.objects.filter(entity=entity))
+    qs = _transaction_visible(request, Invoice.objects.filter(entity=entity))
     invoice = (
         qs.filter(pk=int(ref)).first() if str(ref).isdigit()
         else qs.filter(document_number=str(ref)).first()
@@ -192,7 +194,7 @@ def _resolve_debit_note(request, entity, ref, field="debit_note"):
     from .constants import CreditNoteKind, DocumentStatus
     from .models import CreditNote
 
-    qs = _branch_visible(request, CreditNote.objects.filter(
+    qs = _transaction_visible(request, CreditNote.objects.filter(
         entity=entity, kind=CreditNoteKind.DEBIT, status=DocumentStatus.POSTED))
     note = (
         qs.filter(pk=int(ref)).first() if str(ref).isdigit()
@@ -334,7 +336,11 @@ def _money_obj(kobo) -> dict:
 class CustomerListCreateView(_FinanceBase):
     """Customers / payers for an entity.
 
-    List filters: ``?search=`` (code or name), ``?is_active=true|false``.
+    List filters: ``?search=`` (code or name), ``?is_active=true|false``, and
+    ``?own=true``: only customers filed under one of the reader's branches (every
+    customer, for a whole-school reader). That is the set a branch clerk may raise
+    a gateway record against on its own, so the payments pickers read it rather
+    than offering a shared family that the create then refuses.
     Customer codes are allocated by the model when a create request omits one;
     explicit codes remain accepted for trusted imports and existing API clients.
 
@@ -352,10 +358,12 @@ class CustomerListCreateView(_FinanceBase):
         from .money import format_naira
 
         entity = resolve_entity(request)
-        scope = _document_scope(request)
+        scope = transaction_branch_scope(request)
         qs = Customer.objects.filter(
             branch_q(request, include_shared=True), entity=entity,
-        ).select_related("receivable_account")
+        ).select_related("receivable_account", "branch")
+        if request.query_params.get("own") == "true":
+            qs = qs.filter(transaction_branch_q(request))
         if (search := request.query_params.get("search")):
             from django.db.models import Q
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
@@ -465,9 +473,15 @@ class CustomerListCreateView(_FinanceBase):
         # An optional historical opening_date backdates the opening invoice + its journal
         # (falls back to today inside the service); the posting guards roll the whole
         # create back if that date lands in a closed/missing period.
+        # A shared customer's opening invoice names its branch in ``opening_branch``.
+        opening_branch_id = (
+            getattr(_transaction_branch(request, entity, body, field="opening_branch"), "pk", None)
+            if opening_balance and customer.branch_id is None else None
+        )
         post_opening_balance(
             customer, actor_user=request.user,
             date=_date(body.get("opening_date"), "opening_date"),
+            branch_id=opening_branch_id,
         )
         return success_response(
             f"Customer {customer.code} created.",
@@ -498,7 +512,7 @@ class CustomerDetailView(_FinanceBase):
 
         entity = resolve_entity(request)
         customer = _resolve_customer(request, entity, pk)
-        scope = _document_scope(request)
+        scope = transaction_branch_scope(request)
         led = _customer_ledger(entity, [customer.id], scope=scope).get(customer.id, {})
         net = led.get("outstanding", 0) - led.get("credit", 0)
 
@@ -701,11 +715,8 @@ class CustomerReceiptView(_FinanceBase):
         amount = _money(body.get("amount"), "amount")
         if amount <= 0:
             raise ValidationError({"amount": "A positive amount is required."})
-        # A receipt continues the customer's chain: the money settles their
-        # invoices, so it belongs where they do, and lands in that branch's bank.
-        # A school-wide customer keeps a school-wide receipt, which is what keeps
-        # their ledger consistent.
-        branch_id = _inherited_branch_id(request, customer)
+        # The customer's branch, or the raiser's for a customer every branch shares.
+        branch_id = _customer_document_branch_id(request, entity, body, customer)
         payment = Payment.objects.create(
             entity=entity, customer=customer,
             branch_id=branch_id,
@@ -767,7 +778,7 @@ class CustomerSummaryView(_FinanceBase):
 
         custs = list(qs.values("id", "is_active"))
         ledger = _customer_ledger(
-            entity, [c["id"] for c in custs], scope=_document_scope(request),
+            entity, [c["id"] for c in custs], scope=transaction_branch_scope(request),
         )
         receivable = 0
         on_credit = 0
@@ -814,7 +825,7 @@ class PaymentListView(_FinanceBase):
 
         entity = resolve_entity(request)
         qs = (Payment.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, status=DocumentStatus.POSTED,
+            transaction_branch_q(request), entity=entity, status=DocumentStatus.POSTED,
         ).select_related("customer", "deposit_account"))
         if (method := request.query_params.get("method")):
             qs = qs.filter(method=method)
@@ -868,7 +879,7 @@ class PaymentSummaryView(_FinanceBase):
 
         entity = resolve_entity(request)
         qs = (Payment.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, status=DocumentStatus.POSTED,
+            transaction_branch_q(request), entity=entity, status=DocumentStatus.POSTED,
         ))
         if (method := request.query_params.get("method")):
             qs = qs.filter(method=method)
@@ -933,7 +944,7 @@ class PaymentDetailView(_FinanceBase):
 
         entity = resolve_entity(request)
         p = (Payment.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk)
+            transaction_branch_q(request), entity=entity, pk=pk)
              .select_related("customer", "deposit_account", "journal")
              .prefetch_related("allocations__invoice", "debit_note_allocations__note",
                                "journal__lines__account").first())
@@ -1000,7 +1011,7 @@ class PaymentReceiptView(_FinanceBase):
         entity = resolve_entity(request)
         payment = (
             Payment.objects.filter(
-                branch_q(request, include_shared=True),
+                transaction_branch_q(request),
                 entity=entity, pk=pk, status=DocumentStatus.POSTED,
             )
             .select_related("entity__tenant__school_profile", "branch", "customer")
@@ -1040,7 +1051,7 @@ class PaymentAllocateView(_FinanceBase):
 
         entity = resolve_entity(request)
         p = Payment.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
+            transaction_branch_q(request), entity=entity, pk=pk).first()
         if p is None:
             raise NotFound("Receipt not found for this entity.")
         body = request.data or {}
@@ -1075,7 +1086,7 @@ class PaymentVoidView(_FinanceBase):
 
         entity = resolve_entity(request)
         payment = Payment.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
+            transaction_branch_q(request), entity=entity, pk=pk).first()
         if payment is None:
             raise NotFound("Receipt not found for this entity.")
         void_payment(
@@ -1100,7 +1111,7 @@ class InvoiceVoidView(_FinanceBase):
 
         entity = resolve_entity(request)
         invoice = Invoice.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
+            transaction_branch_q(request), entity=entity, pk=pk).first()
         if invoice is None:
             raise NotFound("Invoice not found for this entity.")
         void_invoice(
@@ -1345,10 +1356,11 @@ class FeeStructureDuplicateView(_FinanceBase):
             new_code = FeeStructure.generate_code(entity, new_name)
         clone = FeeStructure.objects.create(
             entity=entity, code=new_code,
-            # A clone continues the source template's chain, so it starts life in
-            # the same scope as what it was copied from - and the caller cannot
-            # widen a branch template into a school-wide one by duplicating it.
-            branch_id=_inherited_branch_id(request, source),
+            # A clone keeps its source's branch, or none for a school-wide template.
+            branch_id=(
+                None if source.branch_id is None
+                else _inherited_branch_id(request, source)
+            ),
             name=new_name,
             applies_to=source.applies_to, description=source.description,
             is_active=False, created_by=request.user,
@@ -1374,8 +1386,9 @@ def _customers_off_the_price_list(structure, customers):
     """How many of *customers* a branch fee structure may not bill.
 
     A structure with a branch is that branch's price list, so every customer it
-    bills must be filed under that branch. A school-wide customer is not: its
-    receivable would be filed school-wide at one branch's prices. A school-wide
+    bills must be filed under that branch. A customer every branch shares is not
+    filed under it, so billing them from one branch's price list would charge
+    them that branch's prices without being that branch's family. A school-wide
     structure (no branch) prices every branch and refuses nobody.
     """
     if not structure.branch_id:
@@ -1394,7 +1407,7 @@ class FeeStructureGenerateView(_FinanceBase):
     the body:
 
     * **The caller's branch reach.** A bursar pinned to Lekki bills Lekki's
-      families and the school-wide ones, never Ikeja's. ``all_active`` means
+      families and the ones every branch shares, never Ikeja's. ``all_active`` means
       every active customer *she* can reach, not every customer in the books,
       and a named customer outside her reach answers 404 exactly as an unknown
       code does, through :func:`_resolve_customer`.
@@ -1404,6 +1417,10 @@ class FeeStructureGenerateView(_FinanceBase):
       409 ``WRONG_BRANCH``, and ``all_active`` selects only that branch's
       customers. A school-wide structure prices every branch and narrows
       nothing.
+
+    Every invoice raised belongs to a branch: its customer's, or, for a customer
+    every branch shares, the branch the caller names or works in
+    (:func:`_transaction_branch`), asked once for the run.
 
     docstring-name: Generate invoices from a fee structure
     """
@@ -1443,12 +1460,18 @@ class FeeStructureGenerateView(_FinanceBase):
                     "from their own branch's structure.",
                     status=409, code="WRONG_BRANCH",
                 )
+        shared_customers_branch = None
+        if any(customer.branch_id is None for customer in customers):
+            shared_customers_branch = _transaction_branch(request, entity, body)
         invoices = generate_invoices(
             structure, customers,
             invoice_date=invoice_date,
             due_date=due_date,
             actor_user=request.user,
+            branch=shared_customers_branch,
         )
+        # One query each for the rows' customers and branches, not one per invoice.
+        prefetch_related_objects(invoices, "customer", "branch")
         return success_response(
             f"{len(invoices)} invoice(s) generated from {structure.code}.",
             data={
@@ -1483,7 +1506,7 @@ class CreditNoteListCreateView(_FinanceBase):
         # entity__tenant and branch: the serializer's approval_required scopes
         # through the ledger entity's owning tenant and the document's branch,
         # both of which would otherwise load per row on a multi-branch school.
-        qs = (CreditNote.objects.filter(branch_q(request, include_shared=True), entity=entity)
+        qs = (CreditNote.objects.filter(transaction_branch_q(request), entity=entity)
               .select_related("customer", "invoice", "entity__tenant", "branch")
               .prefetch_related("lines"))
         if (kind := request.query_params.get("kind")):
@@ -1520,11 +1543,11 @@ class CreditNoteListCreateView(_FinanceBase):
         note = CreditNote.objects.create(
             entity=entity,
             customer=customer,
-            # A note continues the chain of what it gives back against: the
-            # invoice when one is named (the more specific source, and itself the
-            # customer's branch), otherwise the customer. Naming a branch in the
-            # body cannot move it, and naming another branch's invoice is refused.
-            branch_id=_inherited_branch_id(request, invoice or customer),
+            # The invoice's branch when one is named, otherwise the customer's.
+            branch_id=(
+                _inherited_branch_id(request, invoice) if invoice is not None
+                else _customer_document_branch_id(request, entity, body, customer)
+            ),
             kind=body.get("kind", "CREDIT"),
             note_date=_date(body.get("note_date"), "note_date", required=True),
             currency=_resolve_currency(body.get("currency")),
@@ -1563,7 +1586,7 @@ class _CreditNoteActionBase(_FinanceBase):
     def _note(self, request, pk):
         entity = resolve_entity(request)
         note = CreditNote.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
+            transaction_branch_q(request), entity=entity, pk=pk).first()
         if note is None:
             raise NotFound("Credit note not found for this entity.")
         return entity, note
@@ -1716,7 +1739,8 @@ class RefundAvailabilityView(_FinanceBase):
     raised by this reader may belong to. A refund pays out only its own branch's
     credit, so a family holding 300 at Ikeja and 200 at Lekki is two rows for a
     bursar covering both branches, and one row (Ikeja's 300) for the Ikeja bursar.
-    School-wide credit is offered only to a whole-school user (:func:`_refund_scope`).
+    Credit not yet given a branch is offered only to a whole-school user
+    (:func:`vs_rbac.scoping.transaction_branch_scope`).
 
     docstring-name: Refund availability
     """
@@ -1739,7 +1763,7 @@ class RefundAvailabilityView(_FinanceBase):
         customers = {customer.pk: customer for customer in qs}
         # The branches a refund raised here may belong to, so each row is one it can pay.
         available = refundable_credit_by_branch(
-            entity, list(customers), as_of=as_of, scope=_refund_scope(request),
+            entity, list(customers), as_of=as_of, scope=transaction_branch_scope(request),
         )
         names = dict(Branch.objects.filter(
             pk__in={branch_id for _cid, branch_id in available if branch_id},
@@ -1784,7 +1808,7 @@ class RefundListCreateView(_FinanceBase):
         # entity__tenant and branch: the serializer's approval_required scopes
         # through the ledger entity's owning tenant and the document's branch,
         # both of which would otherwise load per row on a multi-branch school.
-        qs = _refund_scope(request).filter(Refund.objects.filter(
+        qs = transaction_branch_scope(request).filter(Refund.objects.filter(
             entity=entity,
         )).select_related(
             "customer", "entity__tenant", "branch")
@@ -1844,34 +1868,21 @@ def _build_refund(request, entity, body):
     )
 
 
-def _refund_scope(request):
-    """The refunds, and the credit to refund, that the caller may see and act on.
-
-    Exclusive: money belongs to the branch that holds it, so a branch-bound bursar
-    sees and pays out her own branches' refunds and credit and never unbranched
-    (school-wide) money. A whole-school user is not narrowed and handles that too.
-    """
-    return branch_scope(request, include_shared=False)
-
-
 def _refund_branch_id(request, entity, customer, body):
     """The branch a new refund belongs to, and so the only branch whose credit it pays out.
 
-    By default the refund continues the customer's chain and takes their branch. A
-    body ``branch`` names another, which is how credit a customer holds at a branch
-    other than their own (a family that moved from Lekki to Ikeja, a school-wide
-    family paid at Ikeja) is handed back from the branch that received it. The
-    caller must work in the branch they name.
-
-    A branch-bound caller never raises a school-wide refund: for a school-wide
-    customer the refund takes her own branch, or she is asked which when she works
-    in several (:func:`_raised_branch`).
+    By default the refund is raised against the customer and takes its branch as
+    any document raised against a customer does (:func:`_customer_document_branch_id`).
+    A body ``branch`` names another, which is how credit a customer holds at a
+    branch other than their own (a family that moved from Lekki to Ikeja) is handed
+    back from the branch that received it. The caller must work in the branch they
+    name.
     """
+    from .views_ops.base import _customer_document_branch_id
+
     raw = body.get("branch")
     if raw in (None, ""):
-        if customer.branch_id is None and _refund_scope(request).is_narrowed:
-            return _raised_branch(request, entity, body).pk
-        return _inherited_branch_id(request, customer)
+        return _customer_document_branch_id(request, entity, body, customer)
     branch = resolve_branch(entity.tenant, raw)
     if not caller_may_use_branch(request, branch):
         raise PermissionDenied("You can only raise documents for your own branch.")
@@ -1881,8 +1892,7 @@ def _refund_branch_id(request, entity, customer, body):
 def _validated_refund_amount(customer, raw_amount, available, *, branch, as_of=None):
     """Apply the shared positive/available-credit boundary to a refund amount.
 
-    ``available`` is the credit of the refund's own ``branch`` (an id, or ``None`` for
-    school-wide). When that falls short while another branch holds the credit, the
+    ``available`` is the credit of the refund's own ``branch`` (an id). When that falls short while another branch holds the credit, the
     refusal names both branches (:func:`~vs_finance.receivables.require_refund_branch_credit`).
 
     ``as_of`` is the refund's accounting date and only shapes the message: when the
@@ -1919,9 +1929,8 @@ class _RefundActionBase(_FinanceBase):
     # Support the refund workflow.
     def _refund(self, request, pk):
         entity = resolve_entity(request)
-        # Exclusive, as _refund_scope: branch-bound readers never reach unbranched money.
         refund = Refund.objects.filter(
-            branch_q(request, include_shared=False), entity=entity, pk=pk).first()
+            transaction_branch_q(request), entity=entity, pk=pk).first()
         if refund is None:
             raise NotFound("Refund not found for this entity.")
         return entity, refund
@@ -2086,7 +2095,7 @@ class WriteOffRequestListCreateView(_FinanceBase):
         # through the ledger entity's owning tenant and the document's branch,
         # both of which would otherwise load per row on a multi-branch school.
         qs = WriteOffRequest.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
+            transaction_branch_q(request), entity=entity,
         ).select_related(
             "invoice", "invoice__customer", "entity__tenant", "branch")
         if (status_val := request.query_params.get("status")):
@@ -2112,7 +2121,7 @@ class _WriteOffActionBase(_FinanceBase):
     def _wor(self, request, pk):
         entity = resolve_entity(request)
         wor = WriteOffRequest.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk).select_related(
+            transaction_branch_q(request), entity=entity, pk=pk).select_related(
             "invoice", "invoice__customer").first()
         if wor is None:
             raise NotFound("Write-off request not found for this entity.")
@@ -2216,7 +2225,7 @@ class InvoiceWriteOffView(_FinanceBase):
 
         entity = resolve_entity(request)
         invoice = Invoice.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
+            transaction_branch_q(request), entity=entity, pk=pk).first()
         if invoice is None:
             raise NotFound("Invoice not found for this entity.")
 
@@ -2361,7 +2370,7 @@ def _batch_invoices(request, entity, items):
     ids = [int(ref) for ref in refs if ref.isdigit()]
     numbers = [ref for ref in refs if not ref.isdigit()]
     invoices = list(
-        _branch_visible(request, Invoice.objects.select_for_update().select_related("customer")
+        _transaction_visible(request, Invoice.objects.select_for_update().select_related("customer")
                         .filter(entity=entity))
         .filter(Q(pk__in=ids) | Q(document_number__in=numbers))
     )
@@ -2449,9 +2458,8 @@ class ARAdjustmentBatchView(_FinanceBase):
             from .receivables import refundable_credit_by_branch
 
             # The batch names one account; each refund's own branch is checked per line.
-            bank_account = _resolve_bank_account(
-                request, entity, body.get("bank_account"), required=True,
-                document_branch=None, noun="refund")
+            bank_account = _bank_account_in_reach(
+                request, entity, body.get("bank_account"), required=True)
             customers = _batch_customers(request, entity, items)
             # The whole batch shares one accounting date, so availability is measured
             # on that date - not today. A batch dated before the credit arrived is
@@ -2744,7 +2752,7 @@ class ARAdjustmentListView(_FinanceBase):
 
         sees_refunds = holds("finance.refund.view")
         sees_writeoffs = holds("finance.writeoff.view")
-        scope = branch_scope(request, include_shared=True)
+        scope = transaction_branch_scope(request)
 
         # One gate for the whole page. This view pulls up to 1000 refunds plus
         # the write-offs into memory before paginating, and the gate's answer
@@ -2757,7 +2765,7 @@ class ARAdjustmentListView(_FinanceBase):
         # document through its ledger entity's owning tenant and its branch, and
         # without these every row would lazy-load them back - on a multi-branch
         # school that is two extra queries a row for a handful of distinct scopes.
-        refunds = (_refund_scope(request).filter(Refund.objects.filter(entity=entity))
+        refunds = (transaction_branch_scope(request).filter(Refund.objects.filter(entity=entity))
                    if sees_refunds else Refund.objects.none())
         for r in (refunds
                   .select_related("customer", "entity__tenant", "branch")
@@ -2791,11 +2799,11 @@ class ARAdjustmentListView(_FinanceBase):
         refundable_credit = None
         if sees_refunds:
             from .receivables import refundable_credit_by_branch
-            active_customer_ids = scope.filter(Customer.objects.filter(
+            active_customer_ids = _branch_visible(request, Customer.objects.filter(
                 entity=entity, is_active=True)).values_list("id", flat=True)
             # The credit this reader could refund: their branches' credit only.
             refundable_credit = sum(refundable_credit_by_branch(
-                entity, active_customer_ids, scope=_refund_scope(request)).values())
+                entity, active_customer_ids, scope=transaction_branch_scope(request)).values())
 
         rows = []
         if type_f in ("", "refund"):
@@ -2851,7 +2859,7 @@ class InvoicePayView(_FinanceBase):
 
         entity = resolve_entity(request)
         invoice = Invoice.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
+            transaction_branch_q(request), entity=entity, pk=pk).first()
         if invoice is None:
             raise NotFound("Invoice not found for this entity.")
         if invoice.status != "POSTED":
@@ -2902,7 +2910,7 @@ class InvoiceRemindView(_FinanceBase):
 
         entity = resolve_entity(request)
         invoice = Invoice.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
+            transaction_branch_q(request), entity=entity, pk=pk).first()
         if invoice is None:
             raise NotFound("Invoice not found for this entity.")
         notice = remind_invoice(
@@ -2943,7 +2951,7 @@ class InvoiceRevokePayLinkView(_FinanceBase):
 
         entity = resolve_entity(request)
         invoice = Invoice.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
+            transaction_branch_q(request), entity=entity, pk=pk).first()
         if invoice is None:
             raise NotFound("Invoice not found for this entity.")
 
@@ -2988,7 +2996,7 @@ class ConcessionListCreateView(_FinanceBase):
         # through the ledger entity's owning tenant and the document's branch,
         # both of which would otherwise load per row on a multi-branch school.
         qs = Concession.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
+            transaction_branch_q(request), entity=entity,
         ).select_related(
             "customer", "invoice", "entity__tenant", "branch")
         if (kind := request.query_params.get("kind")):
@@ -3041,7 +3049,7 @@ class _ConcessionActionBase(_FinanceBase):
     def _concession(self, request, pk):
         entity = resolve_entity(request)
         concession = Concession.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
+            transaction_branch_q(request), entity=entity, pk=pk).first()
         if concession is None:
             raise NotFound("Concession not found for this entity.")
         return entity, concession
@@ -3164,7 +3172,7 @@ class ConcessionSummaryView(_FinanceBase):
         from django.utils import timezone
 
         entity = resolve_entity(request)
-        qs = Concession.objects.filter(branch_q(request, include_shared=True), entity=entity)
+        qs = Concession.objects.filter(transaction_branch_q(request), entity=entity)
         posted_ytd = qs.filter(
             status=DocumentStatus.POSTED, concession_date__year=timezone.now().year,
         ).aggregate(s=Sum("amount"))["s"] or 0
@@ -3197,8 +3205,8 @@ class PaymentPlanListCreateView(_FinanceBase):
     def get(self, request):
         entity = resolve_entity(request)
         qs = (
-            PaymentPlan.objects.filter(branch_q(request, include_shared=True), entity=entity)
-            .select_related("customer", "invoice").prefetch_related("installments")
+            PaymentPlan.objects.filter(transaction_branch_q(request), entity=entity)
+            .select_related("customer", "invoice", "branch").prefetch_related("installments")
         )
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(plan_status=status_val)
@@ -3233,10 +3241,11 @@ class PaymentPlanListCreateView(_FinanceBase):
             entity=entity,
             customer=customer,
             invoice=invoice,
-            # A plan continues the chain of what it spreads: the invoice when one
-            # is named (the more specific source), otherwise the customer whose
-            # account it schedules.
-            branch_id=_inherited_branch_id(request, invoice or customer),
+            # The invoice's branch when one is named, otherwise the customer's.
+            branch_id=(
+                _inherited_branch_id(request, invoice) if invoice is not None
+                else _customer_document_branch_id(request, entity, body, customer)
+            ),
             start_date=_date(body.get("start_date"), "start_date", required=True),
             frequency=body.get("frequency", "MONTHLY"),
             installment_count=count,
@@ -3260,7 +3269,8 @@ class _PaymentPlanActionBase(_FinanceBase):
     def _plan(self, request, pk):
         entity = resolve_entity(request)
         plan = PaymentPlan.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
+            transaction_branch_q(request), entity=entity, pk=pk,
+        ).select_related("customer", "invoice", "branch").first()
         if plan is None:
             raise NotFound("Payment plan not found for this entity.")
         return entity, plan
@@ -3382,7 +3392,7 @@ class CustomerStatementView(_FinanceBase):
         start = _date(request.query_params.get("start"), "start")
         end = _date(request.query_params.get("end"), "end")
         stmt = customer_statement(
-            customer, start_date=start, end_date=end, scope=_document_scope(request),
+            customer, start_date=start, end_date=end, scope=transaction_branch_scope(request),
         )
 
         from .exports import ReportTable
@@ -3616,7 +3626,7 @@ class DunningGenerateView(_FinanceBase):
 
         notices = generate_dunning(
             entity, as_of=as_of, policy=policy, customer=customer,
-            actor_user=request.user, scope=branch_scope(request, include_shared=True),
+            actor_user=request.user, scope=transaction_branch_scope(request),
         )
         return success_response(
             f"Generated {len(notices)} dunning notice(s).",
@@ -3650,7 +3660,7 @@ class DunningSummaryView(_FinanceBase):
         # date-bucketing is left to Python, over the still-owing set.
         balance = F("total") - F("amount_paid") - F("amount_credited")
         owing = (Invoice.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, status=DocumentStatus.POSTED,
+            transaction_branch_q(request), entity=entity, status=DocumentStatus.POSTED,
         )
                  .exclude(due_date__isnull=True)
                  .annotate(_balance=balance).filter(_balance__gt=0)
@@ -3687,7 +3697,7 @@ class DunningNoticeListCreateView(_FinanceBase):
     def get(self, request):
         entity = resolve_entity(request)
         qs = DunningNotice.objects.filter(
-            branch_q(request, include_shared=True), entity=entity,
+            transaction_branch_q(request), entity=entity,
         ).select_related("customer", "invoice")
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(notice_status=status_val)
@@ -3705,7 +3715,7 @@ class _DunningNoticeActionBase(_FinanceBase):
     def _notice(self, request, pk):
         entity = resolve_entity(request)
         notice = DunningNotice.objects.filter(
-            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
+            transaction_branch_q(request), entity=entity, pk=pk).first()
         if notice is None:
             raise NotFound("Dunning notice not found for this entity.")
         return entity, notice
