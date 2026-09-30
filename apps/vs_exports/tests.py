@@ -41,6 +41,7 @@ from vs_exports.constants import (
     Recurrence,
     ScheduleState,
     DownloadOutcome,
+    FileAccessKind,
     DownloadRefusal,
     ExportFormat,
     ExportPermission,
@@ -914,6 +915,47 @@ class ExportDownloadTests(_ExportFixture, TestCase):
         log = ExportDownload.objects.get(file=self.file)
         self.assertEqual(log.outcome, DownloadOutcome.ALLOWED)
         self.assertEqual(log.user_id, self.admin.pk)
+
+    def test_preview_logs_view_without_incrementing_download_count(self):
+        response = TenantAPIClient(user=self.admin).get(
+            f"/v1/exports/files/{self.file.pk}/preview/",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("inline;", response["Content-Disposition"])
+        self.file.refresh_from_db()
+        self.assertEqual(self.file.download_count, 0)
+        self.assertEqual(
+            ExportDownload.objects.get(file=self.file).access_kind,
+            FileAccessKind.VIEW,
+        )
+
+    def test_file_details_logs_view_without_transferring_bytes(self):
+        response = TenantAPIClient(user=self.admin).get(
+            f"/v1/exports/files/{self.file.pk}/preview/?details=1",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["name"], self.file.name)
+        self.file.refresh_from_db()
+        self.assertEqual(self.file.download_count, 0)
+        self.assertEqual(ExportDownload.objects.get(file=self.file).access_kind, FileAccessKind.VIEW)
+
+    def test_unshared_user_cannot_preview_another_users_file(self):
+        response = TenantAPIClient(user=self.analyst).get(
+            f"/v1/exports/files/{self.file.pk}/preview/",
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(ExportDownload.objects.filter(file=self.file).exists())
+
+    def test_expired_preview_is_refused_and_logged_as_view(self):
+        self.file.available_until = timezone.now() - datetime.timedelta(minutes=1)
+        self.file.save(update_fields=["available_until"])
+        response = TenantAPIClient(user=self.admin).get(
+            f"/v1/exports/files/{self.file.pk}/preview/",
+        )
+        self.assertEqual(response.status_code, 403)
+        log = ExportDownload.objects.get(file=self.file)
+        self.assertEqual(log.access_kind, FileAccessKind.VIEW)
+        self.assertEqual(log.outcome, DownloadOutcome.REFUSED)
 
     def test_the_log_records_the_peer_address_not_a_forwarded_for_claim(self):
         response = TenantAPIClient(user=self.admin).get(

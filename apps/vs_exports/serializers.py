@@ -407,13 +407,13 @@ def _readable_config_value(field, value, dataset, tenant=None) -> str:
 
 
 class ExportDownloadSerializer(serializers.ModelSerializer):
-    """The download log - who took it, when, and who was refused."""
+    """The file access log names views separately from downloads."""
 
     user_name = serializers.SerializerMethodField()
 
     class Meta:
         model = ExportDownload
-        fields = ["id", "user_name", "at", "ip_address", "outcome", "refusal_reason"]
+        fields = ["id", "user_name", "at", "ip_address", "access_kind", "outcome", "refusal_reason"]
 
     def get_user_name(self, obj):
         user = obj.user

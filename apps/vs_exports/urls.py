@@ -39,6 +39,7 @@ urlpatterns = [
     # Files
     path("files/", views.FileListView.as_view(), name="export-files"),
     path("files/<int:pk>/download/", views.FileDownloadView.as_view(), name="export-file-download"),
+    path("files/<int:pk>/preview/", views.FilePreviewView.as_view(), name="export-file-preview"),
     path("files/<int:pk>/downloads/", views.FileDownloadLogView.as_view(), name="export-file-downloads"),
 
     # Schedules
