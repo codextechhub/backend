@@ -198,10 +198,10 @@ below read a branch's day.
   platform staff seats, not a school's record, so it keeps its default. The
   school records that had the same default (a student's `enrolment_date`, a
   placement's and a status change's `effective_date`, a staff appointment's
-  `start_date`) have none: a column default can only be the server's UTC day,
-  so every write names the day (its branch's) and a write that names none is
-  refused by the database. `vs_procurement.VendorAssessment.assessment_date`
-  still defaults to `date.today` (see `todo.md` D83).
+  `start_date`, and a vendor assessment's `assessment_date`) have none: a
+  column default can only be the server's UTC day, so every write names the
+  day (its branch's, or the tenant's for a record with no branch) and a write
+  that names none is refused by the database.
 - `vs_finance.export_datasets._translate_invoices`: the screen-translation
   hook takes only the query parameters, so its "overdue" bucket uses the
   platform day.

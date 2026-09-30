@@ -4133,10 +4133,10 @@ class VendorAssessmentTests(_P2PFixtureMixin, TestCase):
         entity, _, vendor, _, _ = self.build_p2p()
         other, other_vendor = self._second_entity()
         VendorAssessment.objects.create(
-            entity=entity, vendor=vendor,
+            entity=entity, vendor=vendor, assessment_date=tenant_today(entity.tenant),
             on_time_delivery=80, quality_acceptance=80, invoice_accuracy=80, responsiveness=80)
         VendorAssessment.objects.create(
-            entity=other, vendor=other_vendor,
+            entity=other, vendor=other_vendor, assessment_date=tenant_today(other.tenant),
             on_time_delivery=60, quality_acceptance=60, invoice_accuracy=60, responsiveness=60)
         resp = self._client(self._user(entity, "assess-list@test.com")).get(
             f"/v1/procurement/vendor-assessments/?entity={entity.code}")
@@ -4168,7 +4168,7 @@ class VendorAssessmentTests(_P2PFixtureMixin, TestCase):
         vi = self.make_bill(entity, vendor, [("5300", 1, 1_000_000, None, None)])
         post_vendor_invoice(vi)
         VendorAssessment.objects.create(
-            entity=entity, vendor=vendor,
+            entity=entity, vendor=vendor, assessment_date=tenant_today(entity.tenant),
             on_time_delivery=94, quality_acceptance=97, invoice_accuracy=89, responsiveness=82)
         resp = self._client(self._user(entity, "vp-assess@test.com")).get(
             f"/v1/procurement/reports/vendor-performance/?entity={entity.code}")

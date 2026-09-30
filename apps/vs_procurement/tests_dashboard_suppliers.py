@@ -101,7 +101,8 @@ class DeliveryAndBillingTests(_SuppliersFixture):
 class VendorTests(_SuppliersFixture):
     def test_the_scorecard_carries_the_latest_grade(self):
         VendorAssessment.objects.create(entity=self.multi.entity, vendor=self.multi.vendor, on_time_delivery=95,
-                                        quality_acceptance=95, invoice_accuracy=95, responsiveness=95)
+                                        quality_acceptance=95, invoice_accuracy=95, responsiveness=95,
+                                        assessment_date=AS_OF)
         row = next(r for r in self.view()["scorecard"] if r["name"] == "Acme Supplies")
         self.assertEqual(row["grade"], "A")
         self.assertEqual(row["open_orders"], 2)

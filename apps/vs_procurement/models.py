@@ -2146,7 +2146,9 @@ class VendorAssessment(TimeStampedModel):
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="vendor_assessments", null=True, blank=True,
     )
-    assessment_date = models.DateField(default=datetime.date.today)
+    #: No default: a column default could only be the server's UTC day. Every
+    #: write names it, the tenant's day unless the assessor chose another.
+    assessment_date = models.DateField()
 
     on_time_delivery = models.PositiveSmallIntegerField(
         validators=[MinValueValidator(0), MaxValueValidator(100)])
