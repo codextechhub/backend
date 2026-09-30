@@ -857,9 +857,9 @@ def money_branch_id(entity, *accounts, field="bank_account"):
     account not yet given a branch is, at a tenant with one branch, that branch's
     (:func:`vs_rbac.scoping.same_transaction_branch`). At a tenant with several,
     nobody can say whose money it holds, so it moves nothing until it is given a
-    branch: Mr Bello's school-wide UBA account at a school running Ikeja and
-    Lekki is refused with a 400 naming it, rather than raising a transaction that
-    no branch's bursar can see. The one ``None`` is books with no branch at all
+    branch: Mr Bello's UBA account, opened before accounts carried a branch, at a
+    school running Ikeja and Lekki is refused with a 400 naming it, rather than
+    raising a transaction that no branch's bursar can see. The one ``None`` is books with no branch at all
     (the platform's own).
     """
     from rest_framework.exceptions import ValidationError
