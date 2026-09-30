@@ -934,7 +934,9 @@ def customer_statement(customer, *, start_date=None, end_date=None,
     ``scope`` (a :class:`vs_rbac.scoping.BranchScope`) builds the statement from the
     documents in a reader's branches only, movements and aging alike, so the Ikeja
     bursar's statement of a family billed at two branches is Ikeja's account with
-    that family. ``None`` is the whole account, which is what the customer is sent.
+    that family. ``None`` is the whole account. An emailed statement is built with
+    its sender's scope (:func:`vs_finance.document_email._statement_scope`), so it
+    says what the sender's screen says.
     """
     from .constants import DocumentStatus
     from .models import Invoice
