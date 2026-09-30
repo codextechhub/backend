@@ -2,7 +2,7 @@
 
 Corona runs Ikeja, Lekki and Yaba, and buys from one stationer for all of them.
 A payment belongs to the branch of the bills it settles and is paid from that
-branch's bank account or a school-wide one. Those rules hold when a draft is
+branch's bank account and no other. Those rules hold when a draft is
 written, and they must still hold when it is edited to settle different bills,
 and when it is finally posted, whatever changed in between.
 """
@@ -112,7 +112,7 @@ class VendorPaymentBranchTests(_VendorPaymentFixture):
         self.assertEqual(refused.status_code, 400, refused.data)
         self.assertIn(
             "This vendor payment belongs to Lekki Branch. "
-            "Pay it from a Lekki Branch account or a school-wide one.", str(refused.data))
+            "Pay it from a Lekki Branch account.", str(refused.data))
         payment.refresh_from_db()
         self.assertEqual((payment.branch_id, self.settles(payment)),
                          (self.ikeja.pk, [self.ikeja_bill.pk]))
@@ -179,11 +179,12 @@ class VendorPaymentBranchTests(_VendorPaymentFixture):
 class VendorAdvanceBranchTests(_VendorPaymentFixture):
     """Money a vendor was paid ahead of a bill settles bills of the payment's own branch.
 
-    Ojo Stationers holds open bills at Ikeja, at Lekki and for the whole school, all
-    due the same day. Ikeja paid Ojo ahead of any bill. Settling that advance
-    automatically, oldest-first, must pick Ikeja's bills only: Ikeja's money settling
-    Lekki's bill leaves Ikeja's books short and Lekki's still owing. A school-wide
-    advance settles the school-wide bills.
+    Ojo Stationers holds open bills at Ikeja, at Lekki and one raised before bills
+    carried a branch, all due the same day. Ikeja paid Ojo ahead of any bill.
+    Settling that advance automatically, oldest-first, must pick Ikeja's bills only:
+    Ikeja's money settling Lekki's bill leaves Ikeja's books short and Lekki's still
+    owing. An advance not yet given a branch settles only a bill not yet given one,
+    at a school with several branches, since nothing says whose either is.
     """
 
     def officer(self, *branches):
@@ -196,7 +197,7 @@ class VendorAdvanceBranchTests(_VendorPaymentFixture):
         return TenantAPIClient(user=user)
 
     def bursar(self):
-        """A caller who covers the whole school, the only one who reaches a school-wide payment."""
+        """A caller who covers the whole school, the only one who reaches an unbranched payment."""
         user = self.user_for(self.tenant, f"advance-bursar-{next(_officers)}@corona.test")
         self.grant(user, *KEYS, "procurement.vendor_payment.allocate", tenant=self.tenant,
                    role_key=f"advance-bursar-{user.pk}")
@@ -240,7 +241,7 @@ class VendorAdvanceBranchTests(_VendorPaymentFixture):
         self.assertEqual(self.paid(), {"ikeja": 10_000, "lekki": 0, "shared": 0})
         self.assertEqual(payment.advance_remaining, 20_000)
 
-    def test_a_school_wide_advance_settles_only_school_wide_bills(self):
+    def test_an_unbranched_advance_settles_only_unbranched_bills(self):
         self.shared_bill = self.bill(None)
         whole_school = self.bank("Head Office", None, "42")
         payment = self.advance(None, whole_school)
@@ -281,7 +282,7 @@ class VendorAdvanceBranchTests(_VendorPaymentFixture):
 
         refused = self.allocate(self.bursar(), payment, self.shared_bill)
         self.assertEqual(refused.status_code, 400, refused.data)
-        self.assertIn(f"bill {self.shared_bill.document_number} is school-wide.",
+        self.assertIn(f"bill {self.shared_bill.document_number} has not been given a branch.",
                       refused.data["message"])
         self.assertEqual(self.paid(), {"ikeja": 0, "lekki": 0, "shared": 0})
 
@@ -289,7 +290,7 @@ class VendorAdvanceBranchTests(_VendorPaymentFixture):
         self.assertEqual(accepted.status_code, 200, accepted.data)
         self.assertEqual(self.paid(), {"ikeja": 10_000, "lekki": 0, "shared": 0})
 
-    def test_a_school_wide_advance_cannot_be_applied_to_a_branch_bill(self):
+    def test_an_unbranched_advance_cannot_be_applied_to_a_branch_bill(self):
         self.shared_bill = self.bill(None)
         payment = self.advance(None, self.bank("Head Office", None, "43"))
         bursar = self.bursar()
@@ -297,9 +298,9 @@ class VendorAdvanceBranchTests(_VendorPaymentFixture):
         refused = self.allocate(bursar, payment, self.lekki_bill)
         self.assertEqual(refused.status_code, 400, refused.data)
         self.assertEqual(refused.data["message"], (
-            f"This vendor payment is school-wide and bill "
-            f"{self.lekki_bill.document_number} belongs to Lekki Branch. "
-            f"Apply its advance to a school-wide bill."))
+            f"This vendor payment has not been given a branch and bill "
+            f"{self.lekki_bill.document_number} belongs to Lekki Branch, "
+            f"so its advance cannot settle it."))
         self.assertEqual(self.paid(), {"ikeja": 0, "lekki": 0, "shared": 0})
 
         accepted = self.allocate(bursar, payment, self.shared_bill)

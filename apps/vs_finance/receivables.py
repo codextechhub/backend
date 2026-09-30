@@ -342,8 +342,9 @@ def customer_refund_available_balances(
       date cannot fund it. Callers must pass the refund date, not today.
 
     ``branch`` measures one branch's credit, debit notes and reservations only (a
-    branch id, or ``None`` for school-wide), which is what a refund of that branch
-    can pay out. :data:`~vs_finance.chronology.ANY_BRANCH` reads every branch together.
+    branch id, compared by :func:`vs_rbac.scoping.same_transaction_branch`), which
+    is what a refund of that branch can pay out.
+    :data:`~vs_finance.chronology.ANY_BRANCH` reads every branch together.
     """
     return _refund_available(
         entity, customer_ids, exclude_refund_id=exclude_refund_id, as_of=as_of,
@@ -358,19 +359,39 @@ def refundable_credit_by_branch(entity, customer_ids=None, *, as_of=None,
     One refund pays out one branch's credit, so this is the figure a refund screen
     offers: a family holding 30,000 at Ikeja and 20,000 at Lekki has two refundable
     amounts, not one of 50,000. ``scope`` (a :class:`vs_rbac.scoping.BranchScope`)
-    keeps the branches a reader may refund from, and school-wide credit when the
-    scope is inclusive.
+    keeps the branches a reader may refund from; credit not yet given a branch is
+    kept only for a reader the scope does not narrow.
     """
     available = _refund_available(
         entity, customer_ids, exclude_refund_id=None, as_of=as_of,
         branch=ANY_BRANCH, by_branch=True,
     )
+    if any(branch_id is None for _cid, branch_id in available):
+        available = _unbranched_credit_to_the_only_branch(entity, available)
     ids = None if scope is None else scope.branch_ids
     shared = scope is None or scope.include_shared
     return {
         key: amount for key, amount in available.items()
         if amount > 0 and (ids is None or key[1] in ids or (key[1] is None and shared))
     }
+
+
+def _unbranched_credit_to_the_only_branch(entity, available):
+    """Fold credit not yet given a branch into the tenant's only branch, where it has one.
+
+    At a school with one branch that credit is the branch's
+    (:func:`vs_rbac.scoping.same_transaction_branch`), and a refund raised there
+    names the branch, so the figure it is offered must be keyed the same way.
+    """
+    from vs_rbac.scoping import only_branch_id
+
+    only = only_branch_id(entity.tenant_id)
+    if only is None:
+        return available
+    folded: dict = defaultdict(int)
+    for (customer_id, branch_id), amount in available.items():
+        folded[(customer_id, only if branch_id is None else branch_id)] += amount
+    return dict(folded)
 
 
 def _refund_available(entity, customer_ids, *, exclude_refund_id, as_of, branch, by_branch):
@@ -400,7 +421,10 @@ def _refund_available(entity, customer_ids, *, exclude_refund_id, as_of, branch,
         debit_notes = debit_notes.filter(customer_id__in=customer_ids)
         pending = pending.filter(customer_id__in=customer_ids)
     if branch is not ANY_BRANCH:
-        debit_notes, pending = debit_notes.filter(branch_id=branch), pending.filter(branch_id=branch)
+        from vs_rbac.scoping import transaction_branch_match_q
+
+        held_here = transaction_branch_match_q(entity.tenant_id, branch)
+        debit_notes, pending = debit_notes.filter(held_here), pending.filter(held_here)
     if exclude_refund_id is not None:
         pending = pending.exclude(pk=exclude_refund_id)
 
@@ -423,7 +447,7 @@ def customer_refund_available_balance(customer, *, exclude_refund_id=None, as_of
                                       branch=ANY_BRANCH) -> int:
     """Credit available to one refund on its own date, after pending reservations.
 
-    ``branch`` is the refund's own branch id (``None`` for school-wide); see
+    ``branch`` is the refund's own branch id; see
     :func:`customer_refund_available_balances`.
     """
     return customer_refund_available_balances(
@@ -445,6 +469,7 @@ def require_refund_branch_credit(customer, amount, branch_id, *, as_of=None,
     Returns quietly when the own branch covers ``amount`` or no other branch holds
     anything, so the caller's own shortfall message still applies.
     """
+    from vs_rbac.scoping import same_transaction_branch
     from vs_tenants.models import Branch
 
     from .money import format_naira
@@ -455,26 +480,32 @@ def require_refund_branch_credit(customer, amount, branch_id, *, as_of=None,
     )
     if amount <= own:
         return
+    tenant_id = customer.entity.tenant_id
     elsewhere = {
         branch: held for (_cid, branch), held in _refund_available(
             customer.entity, [customer.pk], exclude_refund_id=exclude_refund_id,
             as_of=as_of, branch=ANY_BRANCH, by_branch=True,
         ).items()
-        if held > 0 and branch != branch_id
+        if held > 0 and not same_transaction_branch(tenant_id, branch, branch_id)
     }
     if not elsewhere:
         return
     names = dict(Branch.objects.filter(
         pk__in=[b for b in (*elsewhere, branch_id) if b]).values_list("pk", "name"))
-    ordered = sorted(elsewhere, key=lambda b: (b is None, names.get(b, "")))
-    holders = " and ".join(names[b] if b else "the school as a whole" for b in ordered)
-    held = format_naira(sum(elsewhere.values()))
-    remedy = (f"Raise the refund for {names[ordered[0]]}." if ordered[0] is not None
-              else "Raise a school-wide refund.")
-    side = f"belongs to {names[branch_id]}" if branch_id is not None else "is school-wide"
+    side = (f"belongs to {names[branch_id]}" if branch_id is not None
+            else "has not been given a branch")
+    branched = sorted((b for b in elsewhere if b is not None), key=lambda b: names.get(b, ""))
+    if not branched:
+        held = format_naira(sum(elsewhere.values()))
+        raise SettlementBranchError(
+            f"This refund {side} and {customer.code}'s refundable credit of {held} has "
+            f"not been given a branch, so no branch's refund can pay it out."
+        )
+    held = format_naira(sum(elsewhere[b] for b in branched))
+    holders = " and ".join(names[b] for b in branched)
     raise SettlementBranchError(
         f"This refund {side} and {customer.code}'s refundable credit of {held} is "
-        f"held by {holders}. {remedy}"
+        f"held by {holders}. Raise the refund for {names[branched[0]]}."
     )
 
 
@@ -488,9 +519,9 @@ def _build_invoice_plan(source, allocations, *, strategy="oldest", include_debit
 
     ``source`` is the document whose value settles the plan: a :class:`Payment` or a
     CREDIT :class:`CreditNote`. Its customer names whose AR items are settled, and its
-    branch names which of them: only items of the source's own branch, or school-wide
-    items for a school-wide source. The settling journal is booked to the source's
-    branch while each item's receivable sits on the item's branch, so Ikeja's receipt
+    branch names which of them: only items of the source's own branch
+    (:func:`vs_rbac.scoping.same_transaction_branch`). The settling journal is booked
+    to the source's branch while each item's receivable sits on the item's branch, so Ikeja's receipt
     settling a Lekki invoice would clear Lekki's debt out of Ikeja's books. The
     automatic plan draws only from those items; an explicit plan naming any other is
     refused with :class:`SettlementBranchError` before anything is settled (see
@@ -540,10 +571,13 @@ def _build_invoice_plan(source, allocations, *, strategy="oldest", include_debit
                 )
         return plan  # Explicit plan passed its branch and date checks.
 
-    own = {"customer_id": source.customer_id, "branch_id": source.branch_id,
-           "status": DocumentStatus.POSTED}
+    from vs_rbac.scoping import transaction_branch_match_q
+
+    same_branch = transaction_branch_match_q(source.entity.tenant_id, source.branch_id)
+    own = {"customer_id": source.customer_id, "status": DocumentStatus.POSTED}
     open_invoices = list(  # Open posted invoices of the customer, in the source's branch.
-        Invoice.objects.filter(**own).exclude(payment_status=InvoicePaymentStatus.PAID)
+        Invoice.objects.filter(same_branch, **own)
+        .exclude(payment_status=InvoicePaymentStatus.PAID)
     )
     if as_of is not None:  # Auto-allocation only settles what already exists.
         open_invoices = [inv for inv in open_invoices if inv.invoice_date <= as_of]
@@ -551,7 +585,7 @@ def _build_invoice_plan(source, allocations, *, strategy="oldest", include_debit
     items = [(inv, inv.balance_due, inv.due_date or inv.invoice_date) for inv in open_invoices]  # Invoice settlement candidates.
     if include_debit_notes:  # Optionally include posted debit notes in the settlement plan.
         open_notes = list(  # Open debit notes of the customer, in the source's branch.
-            CreditNote.objects.filter(kind=CreditNoteKind.DEBIT, **own)
+            CreditNote.objects.filter(same_branch, kind=CreditNoteKind.DEBIT, **own)
             .exclude(settlement_status=InvoicePaymentStatus.PAID)
         )
         if as_of is not None:  # Same rule: a charge not yet raised cannot be settled.
@@ -569,26 +603,29 @@ def _require_own_branch_targets(source, targets):
     """Refuse a target named for ``source``'s value unless it is of the source's branch.
 
     The rule :func:`_build_invoice_plan` applies to an automatic plan, applied to one a
-    person names. The message names both branches and the way out, for example "This
+    person names. The message names both sides and the way out, for example "This
     receipt belongs to Ikeja Branch and invoice INV-0002 belongs to Lekki Branch.
     Apply it to an Ikeja Branch invoice."
     """
+    from vs_rbac.scoping import same_transaction_branch
+
     from .models import CreditNote
 
     noun = "credit note" if isinstance(source, CreditNote) else "receipt"
     for target in targets:
-        if target.branch_id == source.branch_id:
+        if same_transaction_branch(source.entity.tenant_id, source.branch_id, target.branch_id):
             continue
         kind = "debit note" if isinstance(target, CreditNote) else "invoice"
         number = target.document_number or f"the selected {kind}"
+        held = (f"belongs to {target.branch.name}" if target.branch_id
+                else "has not been given a branch")
         if source.branch_id is None:
             raise SettlementBranchError(
-                f"This {noun} is school-wide and {kind} {number} belongs to "
-                f"{target.branch.name}. Apply it to a school-wide {kind}."
+                f"This {noun} has not been given a branch and {kind} {number} {held}, "
+                f"so it cannot settle it."
             )
         name = source.branch.name
         article = "an" if name[:1].upper() in "AEIOU" else "a"
-        held = f"belongs to {target.branch.name}" if target.branch_id else "is school-wide"
         raise SettlementBranchError(
             f"This {noun} belongs to {name} and {kind} {number} {held}. "
             f"Apply it to {article} {name} {kind}."

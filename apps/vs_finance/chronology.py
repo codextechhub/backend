@@ -146,7 +146,7 @@ class CreditLot:
     date: _date          # Accounting date the credit came into existence.
     number: str          # Document number, for messages and audit metadata.
     remaining: int       # Kobo of this lot still sitting in 2140.
-    branch_id: int | None = None  # Branch that holds the credit; None is school-wide.
+    branch_id: int | None = None  # Branch that holds the credit; None if not yet given one.
 
 
 #: Passed as ``branch`` to read a customer's credit in every branch at once.
@@ -171,11 +171,11 @@ def credit_lots(entity, customer_ids=None, *, as_of=None, scope=None,
     shows the credit those documents hold and not another branch's. ``None`` reads
     the whole entity.
 
-    ``branch`` keeps only the credit held by one branch (a branch id, or ``None`` for
-    school-wide credit). A refund pays out the credit of its own branch and no other,
-    because its journal is booked to that branch: Ikeja paying back money that Lekki
-    received would leave Lekki's books still owing it. :data:`ANY_BRANCH` reads every
-    branch's credit together.
+    ``branch`` keeps only the credit held by one branch, a branch id, compared by
+    :func:`vs_rbac.scoping.same_transaction_branch`. A refund pays out the credit of
+    its own branch and no other, because its journal is booked to that branch: Ikeja
+    paying back money that Lekki received would leave Lekki's books still owing it.
+    :data:`ANY_BRANCH` reads every branch's credit together.
     """
     from .models import CreditNote, Payment
 
@@ -189,7 +189,10 @@ def credit_lots(entity, customer_ids=None, *, as_of=None, scope=None,
     if scope is not None:  # Only the reader's branches.
         payments, notes = scope.filter(payments), scope.filter(notes)
     if branch is not ANY_BRANCH:  # Only the credit this one branch holds.
-        payments, notes = payments.filter(branch_id=branch), notes.filter(branch_id=branch)
+        from vs_rbac.scoping import transaction_branch_match_q
+
+        held_here = transaction_branch_match_q(entity.tenant_id, branch)
+        payments, notes = payments.filter(held_here), notes.filter(held_here)
     if as_of is not None:  # Only credit that exists by the cutoff may be spent.
         payments = payments.filter(payment_date__lte=as_of)
         notes = notes.filter(note_date__lte=as_of)
