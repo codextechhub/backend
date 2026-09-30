@@ -166,7 +166,7 @@ def reject_go_live(tenant, pk, *, actor=None, rejection_reason="") -> GoLiveRequ
             "decision": "rejected",
             "reviewed_by_name": effects.actor_name(actor),
             "reviewed_at": now.isoformat(),
-            "reviewed_at_display": effects.display_datetime(now),
+            "reviewed_at_display": effects.display_datetime(now, tenant),
             "rejection_reason": reason,
         })
         effects.record(
@@ -281,7 +281,7 @@ def approve_go_live(tenant, pk, *, actor=None) -> GoLiveRequest:
         "decision": "approved",
         "reviewed_by_name": effects.actor_name(actor),
         "reviewed_at": now.isoformat(),
-        "reviewed_at_display": effects.display_datetime(now),
+        "reviewed_at_display": effects.display_datetime(now, tenant),
         "rejection_reason": "",
     })
     # Two events, in the order they happened: the decision, then what the
@@ -313,7 +313,7 @@ def approve_go_live(tenant, pk, *, actor=None) -> GoLiveRequest:
         if live_progress and live_progress.go_live_at else ""
     )
     activated_context["go_live_at_display"] = effects.display_datetime(
-        live_progress.go_live_at if live_progress else None
+        live_progress.go_live_at if live_progress else None, tenant,
     )
     effects.record(
         tenant=tenant,

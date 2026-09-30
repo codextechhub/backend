@@ -200,9 +200,29 @@ class ReadingTests(HistoryFixture):
         with self.assertRaises(HistoryNotKept) as caught:
             require_history(spec_for(Guardian), guardian.pk, AsAt(dt.date(2026, 3, 4), DEFAULT_ZONE), noun="this guardian")
         self.assertEqual(caught.exception.extra["history_starts"], "2026-03-05")
+        self.assertIn("starts on 5 March 2026.", caught.exception.message)
         self.assertEqual(
             require_history(spec_for(Guardian), guardian.pk, AsAt(dt.date(2026, 3, 5), DEFAULT_ZONE), noun="x"),
             dt.date(2026, 3, 5),
+        )
+
+    def test_the_refusal_writes_the_first_date_in_the_schools_format(self):
+        from vs_config.clock import forget_tenant_zone
+        from vs_config.display import DATE_FORMAT_KEY
+
+        set_value(
+            definition=ConfigurationDefinition.objects.get(key=DATE_FORMAT_KEY),
+            value="DD_MM_YYYY", actor=None, tenant=self.tenant,
+        )
+        forget_tenant_zone(self.tenant)
+        with mock.patch("vs_history.recorder.timezone.now", return_value=_at(2026, 3, 5)):
+            guardian = self.make_guardian()
+        as_at = AsAt(dt.date(2026, 3, 4), DEFAULT_ZONE, self.tenant)
+        with self.assertRaises(HistoryNotKept) as caught:
+            require_history(spec_for(Guardian), guardian.pk, as_at, noun="this guardian")
+        self.assertEqual(
+            caught.exception.message,
+            "History for this guardian starts on 05/03/2026. Pick that day or a later one.",
         )
 
     def test_rows_listed_on_an_owner_page_are_rebuilt_as_they_stood(self):

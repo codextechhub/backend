@@ -43,6 +43,8 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from vs_audit.models import AuditActionType, AuditSeverity
+from vs_config.clock import tenant_zone
+from vs_config.display import format_date
 
 from ..constants import (
     EVENT_EXPIRY_WARNING,
@@ -107,15 +109,17 @@ def _expires_at(since):
     return since + timezone.timedelta(days=ONBOARDING_EXPIRY_DAYS)
 
 
-def _whole_days_between(later, earlier) -> int:
-    """Days between two moments, counted as calendar days and never negative.
+def _whole_days_between(later, earlier, zone) -> int:
+    """Days between two moments, counted as calendar days in *zone*, never negative.
 
     Between dates rather than between timestamps: a school warned one second
     after it entered the window is fourteen days from expiry, and
-    ``(14 days - 1 second).days`` is 13.
+    ``(14 days - 1 second).days`` is 13. The days are the school's own
+    (:func:`vs_config.clock.tenant_zone`), so the count turns at its midnight,
+    the day its screens and its warning email say.
     """
     return max(
-        (timezone.localtime(later).date() - timezone.localtime(earlier).date()).days,
+        (later.astimezone(zone).date() - earlier.astimezone(zone).date()).days,
         0,
     )
 
@@ -126,8 +130,9 @@ def expiry_outlook(tenant, *, now=None) -> dict:
     The single authority. The sweep warns and expires from these numbers and
     the control room renders them, so a countdown can never show a date the
     sweep does not intend to act on. Reads only columns the tenant already
-    carries, so it costs no query: ``state/`` is query-budgeted and this must
-    not be what breaks it.
+    carries, plus the school's zone for counting its days, which is memoised
+    on the tenant: ``state/`` is query-budgeted, and this costs it a fixed two
+    queries at most, never one per task.
 
     A tenant that is not PENDING has no expiry at all, and says so with
     ``applies: False`` and nulls rather than a leftover date. A live school is
@@ -156,7 +161,7 @@ def expiry_outlook(tenant, *, now=None) -> dict:
         "applies": True,
         "pending_since": since,
         "expires_at": expires_at,
-        "days_remaining": _whole_days_between(expires_at, now),
+        "days_remaining": _whole_days_between(expires_at, now, tenant_zone(tenant)),
         "warning_sent": warned_at is not None,
         "warning_sent_at": warned_at,
     })
@@ -310,8 +315,8 @@ def warn_expiring_onboarding(*, now=None, dry_run: bool = False) -> dict:
         context = effects.school_context(tenant)
         context.update({
             "days_remaining": row["days_remaining"],
-            "expires_on": timezone.localtime(expires_at).date().isoformat(),
-            "expires_on_display": timezone.localtime(expires_at).strftime("%d %b %Y"),
+            "expires_on": expires_at.astimezone(tenant_zone(tenant)).date().isoformat(),
+            "expires_on_display": format_date(expires_at, tenant),
             "expiry_days": ONBOARDING_EXPIRY_DAYS,
             "pending_days": row["pending_days"],
         })

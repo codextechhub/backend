@@ -20,9 +20,9 @@ from __future__ import annotations
 import logging
 
 from django.db import transaction
-from django.utils import timezone
 
 from vs_audit.models import AuditModuleKey, AuditSeverity, AuditStatus
+from vs_config.display import format_datetime
 
 from ..constants import PERM_GO_LIVE_APPROVE, PERM_PROGRESS_VIEW
 
@@ -83,11 +83,14 @@ def actor_name(actor) -> str:
     )
 
 
-def display_datetime(value) -> str:
-    """Render one lifecycle timestamp for a person reading an email."""
-    if value is None:
-        return ""
-    return timezone.localtime(value).strftime("%d %b %Y, %H:%M %Z")
+def display_datetime(value, tenant) -> str:
+    """Render one lifecycle timestamp for a person at *tenant* reading an email.
+
+    On the school's clock and in its date format (:mod:`vs_config.display`),
+    as its own screens show the same moment. A school being onboarded reads
+    the platform's settings until it goes live.
+    """
+    return format_datetime(value, tenant)
 
 
 def notification_recipients(tenant):
