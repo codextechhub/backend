@@ -746,7 +746,8 @@ class VendorInvoiceSummaryView(_ProcBase):
             "as_of": today,
             "under_review": {"count": qs.filter(approval_state="PENDING").count()},
             "approved": {"count": qs.filter(status="DRAFT", approval_state="APPROVED").count()},
-            "overdue": {"count": overdue.count(), "amount": overdue.aggregate(v=Sum("total") - Sum("amount_paid"))["v"] or 0},
+            "overdue": {"count": overdue.count(), "amount": overdue.aggregate(
+                v=Sum("total") - Sum("amount_paid") - Sum("amount_credited"))["v"] or 0},
             "disputed": {"count": qs.filter(match_status__in=("UNDER_RECEIVED", "OVER_BILLED")).count()},
         }
         return success_response("Vendor invoice summary retrieved.", data=data)

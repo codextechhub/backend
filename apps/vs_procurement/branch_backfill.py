@@ -4,7 +4,9 @@ Discovered by :mod:`vs_finance.branch_derivation` on first use. A purchase
 document reads the document it came from: the RFQ its requisition, the order
 its requisition or the quotation it awarded, the receipt and the bill their
 order. A requisition reads the person who raised it. A supplier payment reads
-the bills it settles, when they agree, then the bank it was paid from.
+the bills it settles, when they agree, then the bank it was paid from. A vendor
+credit note reads the bill it credits, and a goods return the receipt it returns
+against.
 
 Order numbers sit between finance's documents and its journals, so every
 journal a procurement document raised can read that document's branch.
@@ -30,6 +32,8 @@ GRN = "vs_procurement.GoodsReceivedNote"
 BILL = "vs_procurement.VendorInvoice"
 VENDOR_PAYMENT = "vs_procurement.VendorPayment"
 STOCK_LOCATION = "vs_procurement.StockLocation"
+CREDIT_NOTE = "vs_procurement.VendorCreditNote"
+GOODS_RETURN = "vs_procurement.GoodsReturn"
 
 _TARGETS = (
     Target(REQUISITION, (user_branch("the requester", "requested_by"),), order=100, audit_module="PROCUREMENT"),
@@ -45,6 +49,8 @@ _TARGETS = (
     ),
     Target(GRN, (via("the purchase order", "purchase_order", PURCHASE_ORDER),), order=140, audit_module="PROCUREMENT"),
     Target(BILL, (via("the purchase order", "purchase_order", PURCHASE_ORDER),), order=140, audit_module="PROCUREMENT"),
+    Target(CREDIT_NOTE, (via("the bill", "vendor_invoice", BILL),), order=145, audit_module="PROCUREMENT"),
+    Target(GOODS_RETURN, (via("the goods receipt", "grn", GRN),), order=145, audit_module="PROCUREMENT"),
     Target(
         VENDOR_PAYMENT,
         (
@@ -66,6 +72,9 @@ _JOURNAL_OWNERS = (
     JournalOwner(VENDOR_PAYMENT, "journal"),
     JournalOwner("vs_procurement.StockMovement", "journal", via="location", via_label=STOCK_LOCATION),
     JournalOwner("vs_procurement.VendorAdvanceAllocationJournal", "journal", via="payment", via_label=VENDOR_PAYMENT),
+    JournalOwner(CREDIT_NOTE, "journal"),
+    JournalOwner(GOODS_RETURN, "journal"),
+    JournalOwner("vs_procurement.VendorCreditAllocationJournal", "journal", via="note", via_label=CREDIT_NOTE),
 )
 
 for _target in _TARGETS:

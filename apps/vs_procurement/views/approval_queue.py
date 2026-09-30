@@ -35,10 +35,13 @@ from ..constants import (
     WF_APPROVAL_OVERRIDE_PERMISSION,
     WF_DOCTYPE_PURCHASE_ORDER,
     WF_DOCTYPE_REQUISITION,
+    WF_DOCTYPE_VENDOR_CREDIT_NOTE,
     WF_DOCTYPE_VENDOR_INVOICE,
     WF_DOCTYPE_VENDOR_PAYMENT,
 )
-from ..models import PurchaseOrder, PurchaseRequisition, VendorInvoice, VendorPayment
+from ..models import (
+    PurchaseOrder, PurchaseRequisition, VendorCreditNote, VendorInvoice, VendorPayment,
+)
 
 
 DOCUMENT_MODELS = {
@@ -46,6 +49,7 @@ DOCUMENT_MODELS = {
     WF_DOCTYPE_PURCHASE_ORDER: PurchaseOrder,
     WF_DOCTYPE_VENDOR_INVOICE: VendorInvoice,
     WF_DOCTYPE_VENDOR_PAYMENT: VendorPayment,
+    WF_DOCTYPE_VENDOR_CREDIT_NOTE: VendorCreditNote,
 }
 
 
@@ -70,6 +74,8 @@ def _document_title(document, document_type: str) -> str:
         return document.narration or document.reference or vendor_name or "Purchase order"
     if document_type == WF_DOCTYPE_VENDOR_INVOICE:
         return document.narration or document.vendor_reference or vendor_name or "Vendor invoice"
+    if document_type == WF_DOCTYPE_VENDOR_CREDIT_NOTE:
+        return document.reason or document.vendor_reference or vendor_name or "Vendor credit note"
     return document.narration or document.reference or (
         f"{vendor_name} payment" if vendor_name else "Vendor payment"
     )

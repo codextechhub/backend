@@ -13,6 +13,7 @@ from ..constants import (
     BankMatchSource,
     BankReconStatus,
     BankStatementStatus,
+    BankTransactionDirection,
     BudgetStatus,
     DepreciationMethod,
     DocType,
@@ -93,6 +94,119 @@ class BankAccount(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.name} ({self.account_number or self.gl_account_id})"
+
+
+class BankTransaction(FinanceDocument):
+    """Money into or out of a bank account that is not a customer's or a supplier's.
+
+    Owner capital, a loan drawn or repaid, drawings, interest earned, a grant: money
+    that moves the bank with no invoice or bill behind it. The bank ledger is kept by
+    its bank account, so a hand-typed journal may not post to it
+    (:mod:`vs_finance.control_accounts`); this document is how such money reaches it.
+    It names the bank account, which way the money went, how much and the ordinary
+    account on the other side, and posts through
+    :func:`vs_finance.banking.post_bank_transaction`.
+
+    It carries its bank account's branch, so a Lekki account's interest lands on
+    Lekki's statements. It is approved through its own workflow route, exactly as a
+    journal is: a route with steps holds it until approved, an empty route needs the
+    post confirmed, and no route lets it post directly.
+    """
+
+    DOC_TYPE = DocType.BANK_TRANSACTION
+    workflow_document_type = "finance.bank_transaction"
+    workflow_amount_field = "amount"
+
+    bank_account = models.ForeignKey(
+        BankAccount, on_delete=models.PROTECT, related_name="transactions",
+    )
+    direction = models.CharField(max_length=3, choices=BankTransactionDirection.choices)
+    amount = MoneyField(help_text="Kobo moved, always positive; direction gives the sign.")
+    counter_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="bank_transactions",
+        help_text="The ordinary account on the other side (capital, loan, interest...).",
+    )
+    transaction_date = models.DateField()
+    narration = models.CharField(max_length=255)
+    reference = models.CharField(max_length=64, blank=True, default="")
+    journal = models.ForeignKey(
+        "JournalEntry", on_delete=models.PROTECT, related_name="bank_transactions",
+        null=True, blank=True,
+    )
+
+    class Meta(FinanceDocument.Meta):
+        constraints = FinanceDocument.Meta.constraints + [
+            models.CheckConstraint(
+                check=models.Q(amount__gt=0), name="ck_finance_banktxn_amount_positive",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "transaction_date"]),
+            models.Index(fields=["bank_account", "transaction_date"]),
+        ]
+        ordering = ["-transaction_date", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.document_number or self.pk}: {self.direction} {self.amount}"
+
+
+class BankTransfer(FinanceDocument):
+    """Money moved between two of the same branch's own bank accounts.
+
+    Zenith to GTBank, or the savings account into operations: the money never leaves
+    the school, so there is no counterparty and no counter-account, only two bank
+    ledgers. Both ledgers are kept by their bank accounts, so neither a hand-typed
+    journal nor a :class:`BankTransaction` can move it; this document can. It posts
+    ``Dr to_account's ledger, Cr from_account's ledger`` through
+    :func:`vs_finance.banking.post_bank_transfer`, and each side then appears on its
+    own account's register and reconciliation like any other movement.
+
+    Both accounts belong to one branch, which the transfer carries. Money between
+    branches is the inter-branch transfer of the branch-books design, which records
+    who owes whom and is a different document. Topping up a petty cash float from the
+    bank is the fund's own establish and replenish actions.
+
+    It is approved through its own workflow route, as a bank transaction is.
+    """
+
+    DOC_TYPE = DocType.BANK_TRANSFER
+    workflow_document_type = "finance.bank_transfer"
+    workflow_amount_field = "amount"
+
+    from_account = models.ForeignKey(
+        BankAccount, on_delete=models.PROTECT, related_name="transfers_out",
+    )
+    to_account = models.ForeignKey(
+        BankAccount, on_delete=models.PROTECT, related_name="transfers_in",
+    )
+    amount = MoneyField(help_text="Kobo moved, always positive.")
+    transfer_date = models.DateField()
+    narration = models.CharField(max_length=255)
+    reference = models.CharField(max_length=64, blank=True, default="")
+    journal = models.ForeignKey(
+        "JournalEntry", on_delete=models.PROTECT, related_name="bank_transfers",
+        null=True, blank=True,
+    )
+
+    class Meta(FinanceDocument.Meta):
+        constraints = FinanceDocument.Meta.constraints + [
+            models.CheckConstraint(
+                check=models.Q(amount__gt=0), name="ck_finance_banktransfer_amount_positive",
+            ),
+            models.CheckConstraint(
+                check=~models.Q(from_account=models.F("to_account")),
+                name="ck_finance_banktransfer_two_accounts",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "transfer_date"]),
+            models.Index(fields=["from_account", "transfer_date"]),
+            models.Index(fields=["to_account", "transfer_date"]),
+        ]
+        ordering = ["-transfer_date", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.document_number or self.pk}: {self.amount}"
 
 
 class FinanceDocumentSettings(TimeStampedModel):

@@ -268,25 +268,31 @@ class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
         )
 
     def test_a_tax_payment(self):
-        """A filing with no branch is the school's return, which she may not pay at all.
+        """Yaba's share of the return is paid from Yaba's account, never from hers.
 
-        Covering two of three branches is not the whole school, so the refusal
-        comes before any bank is looked at (see ``tests_shared_write_reach``).
+        She covers Ikeja and Lekki, so she pays those branches' shares of the
+        school's one return from their own accounts. The only unpaid share here is
+        Yaba's: her Ikeja and Lekki accounts are refused because they are not
+        Yaba's, and the school-wide account because it is no one branch's.
         """
-        from vs_finance.models import TaxFiling, TaxObligation
+        from vs_finance.models import TaxFiling, TaxFilingShare, TaxObligation
 
         filing = TaxFiling.objects.create(
             entity=self.books,
             obligation=TaxObligation.objects.filter(entity=self.books).first(),
             period_start=datetime.date(2026, 1, 1), period_end=datetime.date(2026, 1, 31),
+            filing_status="FILED", filed_at=datetime.date(2026, 1, 5),
+            gross_liability=50_000, amount_due=50_000,
+        )
+        TaxFilingShare.objects.create(
+            filing=filing, branch=self.yaba, gross_liability=50_000, amount_due=50_000,
         )
         client = self.bursar("finance.tax.pay")
         for bank in (self.ikeja_bank, self.lekki_bank, self.shared_bank):
             with self.subTest(bank=bank.name):
                 response = self.post(client, f"finance/tax-filings/{filing.pk}/pay/",
                                      {"pay_date": JAN.isoformat(), "bank_account": bank.pk})
-                self.assertEqual(response.status_code, 403, response.data)
-                self.assertEqual(response.data["error"]["code"], "SHARED_RECORD_READ_ONLY")
+                self.assertEqual(response.status_code, 409, response.data)
                 filing.refresh_from_db()
                 self.assertEqual(filing.amount_paid, 0)
 

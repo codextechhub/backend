@@ -73,6 +73,12 @@ FINANCE_RESOURCES = [
     ("bankaccount",  "bank accounts",          [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("update", "SENSITIVE"), ("import", "SENSITIVE"),
                                                 ("reconcile", "SENSITIVE")]),
+    # Money in or out of a bank account with no customer or supplier behind it.
+    ("banktransaction", "bank transactions",   [("view", "NORMAL"), ("create", "CRITICAL"),
+                                                ("reverse", "CRITICAL")]),
+    # Money between two of one branch's own bank accounts.
+    ("banktransfer", "transfers between own accounts", [("view", "NORMAL"), ("create", "CRITICAL"),
+                                                         ("reverse", "CRITICAL")]),
     ("budget",       "budgets",                [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("edit", "SENSITIVE"), ("approve", "SENSITIVE"),
                                                 ("delete", "SENSITIVE")]),

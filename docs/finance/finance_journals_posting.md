@@ -54,8 +54,15 @@ Routes covered (mounted at `/v1/finance/`):
   `DOC_TYPE = JOURNAL` supplies the `JN` prefix, while the owning tenant supplies
   the tenant id and daily counter (`models/core.py:271-299`; `numbering.py:9-28`).
 - **`source`** (`JournalSource`, `constants.py:136`) is `MANUAL`, `SALES`,
-  `PURCHASE`, `BANK`, `SYSTEM` (reversals), `OPENING` (direct entries), etc. -
-  for filtering/audit only, never for posting logic.
+  `PURCHASE`, `BANK`, `SYSTEM` (reversals), `OPENING` (opening balances), etc.
+  A direct entry is `MANUAL`, or `OPENING` when it is sent with
+  `opening_balance: true`. The source also decides one posting rule: a `MANUAL` or
+  `OPENING` journal may not name an account a sub-ledger keeps (AR, AP, a bank or
+  petty cash ledger, tax payable and recoverable, GR/IR, inventory, customer credit,
+  vendor advances). It is refused `CONTROL_ACCOUNT_LOCKED`, naming the document to use
+  instead (`control_accounts.py`). Money into or out of a bank account with no
+  customer or supplier is a bank transaction (`/bank-transactions/`); money between
+  two of one branch's own accounts is a transfer (`/bank-transfers/`).
 
 ## 3. Endpoint map
 
@@ -171,14 +178,15 @@ original's period unless a `date` is given.
 ```
 → serializer checks `5,000,000 == 5,000,000` (kobo) and non-zero →
 `post_direct_entry` resolves codes `1100`/`3000` to accounts, creates the entry
-`source=OPENING`, posts it. Response `201`:
+`source=MANUAL`, posts it. (This works only while no bank account uses `1100`;
+once one does, owner capital is a bank transaction.) Response `201`:
 ```json
 {
   "success": true,
   "message": "Direct entry posted as JN-12606011.",
   "data": {
     "id": 312, "document_number": "JN-12606011",
-    "date": "2026-06-01", "period": "Jun 2026", "source": "OPENING",
+    "date": "2026-06-01", "period": "Jun 2026", "source": "MANUAL",
     "status": "POSTED", "narration": "Owner capital injection",
     "total_debit": 5000000, "total_credit": 5000000,
     "lines": [

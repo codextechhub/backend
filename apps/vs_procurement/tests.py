@@ -7177,7 +7177,7 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         )
 
         first = ensure_default_approval_templates()
-        self.assertEqual(len(first), 4)
+        self.assertEqual(len(first), 5)
         # One platform-wide template per approvable document type.
         #
         # Narrowed by document type, and it has to be: WorkflowTemplate is the
@@ -7192,7 +7192,7 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
                 code=WF_DEFAULT_TEMPLATE_CODE,
                 document_type__in=PROCUREMENT_APPROVAL_TYPES,
             ).count(),
-            4,
+            5,
         )
         req_tmpl = WorkflowTemplate.objects.get(
             document_type=WF_DOCTYPE_REQUISITION, code=WF_DEFAULT_TEMPLATE_CODE,
@@ -7203,14 +7203,14 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         # named from here. A document resolving here is refused as unconfigured.
         self.assertFalse(WorkflowStage.objects.filter(template=req_tmpl).exists())
 
-        # Re-running upserts in place - still exactly four templates, still no stages.
+        # Re-running upserts in place - still exactly five templates, still no stages.
         ensure_default_approval_templates()
         self.assertEqual(
             WorkflowTemplate.objects.filter(
                 code=WF_DEFAULT_TEMPLATE_CODE,
                 document_type__in=PROCUREMENT_APPROVAL_TYPES,
             ).count(),
-            4,
+            5,
         )
         self.assertEqual(WorkflowStage.objects.filter(template=req_tmpl).count(), 0)
 
@@ -11470,14 +11470,14 @@ class ProcurementTenantApprovalRulesTests(_BranchTenantsFixture, TestCase):
         from vs_procurement.approvals import ensure_tenant_approval_templates
 
         first = ensure_tenant_approval_templates(self.multi_tenant)
-        self.assertEqual(len(first), 4)
+        self.assertEqual(len(first), 5)
         self.assertTrue(all(created for _, created in first))
-        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
+        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 5)
 
         second = ensure_tenant_approval_templates(self.multi_tenant)
-        # Idempotent: the same four ladders, none of them created again.
+        # Idempotent: the same five ladders, none of them created again.
         self.assertFalse(any(created for _, created in second))
-        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
+        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 5)
         self.assertEqual({t.pk for t, _ in first}, {t.pk for t, _ in second})
         # Another tenant is untouched by seeding this one.
         self.assertEqual(self.tenant_templates(self.foreign_tenant).count(), 0)
@@ -11515,7 +11515,7 @@ class ProcurementTenantApprovalRulesTests(_BranchTenantsFixture, TestCase):
         self.assertEqual([stage.code for stage in stages], ["board"])
         self.assertEqual(stages[0].advance_rule, "UNANIMOUS")
         # The document types it had not customised were still filled in.
-        self.assertEqual(sum(1 for _, was_created in results if was_created), 3)
+        self.assertEqual(sum(1 for _, was_created in results if was_created), 4)
 
     def test_a_tenants_own_rules_beat_the_platform_fallback(self):
         from vs_procurement.approvals import (
@@ -11609,8 +11609,8 @@ class ProcurementTenantApprovalRulesTests(_BranchTenantsFixture, TestCase):
 
         results = ensure_tenant_approval_templates(self.multi_tenant)
 
-        self.assertEqual(sum(1 for _t, created in results if created), 4)
-        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
+        self.assertEqual(sum(1 for _t, created in results if created), 5)
+        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 5)
         self.assertEqual(self.platform_templates().count(), 0)
         self.assertEqual(self.tenant_templates(self.foreign_tenant).count(), 0)
 
@@ -11618,7 +11618,7 @@ class ProcurementTenantApprovalRulesTests(_BranchTenantsFixture, TestCase):
 
         # Non-destructive: a second call reports nothing created and changes nothing.
         self.assertEqual(sum(1 for _t, created in again if created), 0)
-        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
+        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 5)
 
     def test_seeding_command_is_idempotent_and_reports_what_it_did(self):
         from io import StringIO
@@ -11627,18 +11627,18 @@ class ProcurementTenantApprovalRulesTests(_BranchTenantsFixture, TestCase):
 
         out = StringIO()
         call_command("seed_procurement_approvals", "--tenant", self.multi_tenant.slug, stdout=out)
-        self.assertIn("4 created", out.getvalue())
-        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
+        self.assertIn("5 created", out.getvalue())
+        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 5)
 
         out = StringIO()
         call_command("seed_procurement_approvals", "--tenant", self.multi_tenant.slug, stdout=out)
         self.assertIn("0 created", out.getvalue())
-        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
+        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 5)
 
         # The platform fallback is published deliberately, not as a side effect.
         self.assertEqual(self.platform_templates().count(), 0)
         call_command("seed_procurement_approvals", "--platform", stdout=StringIO())
-        self.assertEqual(self.platform_templates().count(), 4)
+        self.assertEqual(self.platform_templates().count(), 5)
 
 
 class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
@@ -11782,8 +11782,10 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
         migration = importlib.import_module(
             "vs_procurement.migrations.0025_procurement_stages_route_by_branch",
         )
+        # The migration moves the document types that existed when it was written;
+        # a type added since is seeded branch-scoped from the start.
         procurement_stages = WorkflowStage.objects.filter(
-            template__document_type__in=PROCUREMENT_APPROVAL_TYPES,
+            template__document_type__in=migration.PROCUREMENT_DOCUMENT_TYPES,
         )
         procurement_stages.update(approver_scope="PLATFORM")
 
@@ -12190,7 +12192,7 @@ class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
 
         self.assertTrue(report["has_gaps"])
         ikeja_scope = next(s for s in report["scopes"] if s["branch_id"] == self.ikeja.pk)
-        self.assertEqual(ikeja_scope["gap_count"], 8)  # 4 document types x 2 stages
+        self.assertEqual(ikeja_scope["gap_count"], 10)  # 5 document types x 2 stages
 
     def test_a_tenant_wide_holder_covers_every_branch_and_the_entity(self):
         from vs_procurement.constants import WF_DOCTYPE_PURCHASE_ORDER
@@ -12239,7 +12241,7 @@ class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
         report = self.coverage(self.foreign_tenant)
         scope = report["scopes"][0]
         self.assertTrue(scope["is_entity_level"])
-        self.assertEqual(len(scope["unconfigured_document_types"]), 4)
+        self.assertEqual(len(scope["unconfigured_document_types"]), 5)
         self.assertTrue(all(not d["configured"] for d in scope["documents"]))
 
     def test_a_tenant_without_branches_reports_one_scope(self):

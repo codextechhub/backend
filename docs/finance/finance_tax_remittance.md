@@ -93,7 +93,7 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 |---|---|---|---|---|
 | `GET/POST /tax-obligations/` | `finance.tax.view` / `.create` | Obligation list / create | `code`, `name`, `obligation_type`, `liability_account`, `recoverable_account?`, `authority_name?`, `frequency?`, `filing_day?` | obligation |
 | `GET/PATCH /tax-obligations/<pk>/` | `finance.tax.view` / `.update` | One obligation / edit | - | obligation |
-| `GET /tax-obligations/outstanding/` | `finance.tax.view` | Running balance in each control account (all-time GL net, less recoverable) | - | rows |
+| `GET /tax-obligations/outstanding/` | `finance.tax.view` | Running balance in each control account (all-time GL net, less recoverable); a branch-bound reader gets only her branches' lines, by entry branch (no-branch lines only at a one-branch tenant) | - | rows |
 | `GET/POST /tax-filings/` | `finance.tax.view` / `.file` | Filings list (paginated) / **prepare** a draft | `obligation`, `period_start`, `period_end`, `due_date?` | filing |
 | `GET /tax-filings/summary/` | `finance.tax.view` | KPIs over all filings | - | summary |
 | `GET /tax-filings/<pk>/` | `finance.tax.view` | One filing | - | filing |
@@ -111,8 +111,17 @@ A filing response adds to the earlier fields: `brought_forward_credit`,
 `pay_date`, `amount`, `journal_id`, `is_reversed`, `reversed_at`,
 `reversal_journal_id`, `reversal_reason`).
 
-A school-wide filing needs whole-tenant reach for every write; a branch-bound caller
-gets `403 SHARED_RECORD_READ_ONLY`.
+**Reads.** A return has no branch, so every finance reader of the tenant reaches it.
+A branch-bound reader is shown it narrowed to their branches: `branch_breakdown`,
+`remittances` and `late_items` list only their branches' parts, and every total
+(`gross_liability`, `amount_due`, `amount_paid`, `balance_due`, `payment_status`,
+`declared_line_count`, `late_line_count`, …) is the sum of their shares. The summary's
+`outstanding` is their shares' balance. A whole-tenant reader sees the whole return.
+
+**Writes.** Preparing, filing, un-filing and reversing a remittance change the whole
+return and need whole-tenant reach; a branch-bound caller gets
+`403 SHARED_RECORD_READ_ONLY`. Paying does not: a branch-bound bursar pays her own
+branches' shares from their own accounts, and a share outside her branches is refused.
 
 ## 5. Lifecycle
 
@@ -136,9 +145,11 @@ DRAFT ──file──▶ FILED ──pay (per share, partial ok)──▶ PAID
   deletes the declarations (the lines return to the pool), and refreshes the draft.
 - **Pay** (`pay_filing`, `pay_filing_shares`): FILED (or PAID with a balance) only,
   dated on or after `filed_at`. Without `branch`, pays the only unpaid share, else the
-  bank account's own branch's share, else (tenant-wide account) every unpaid share,
-  each as its own journal. A bank account must be the share's branch's own or
-  tenant-wide. `amount` needs a single share. The return is PAID when every share is.
+  bank account's branch's share. A share is paid only from its own branch's account:
+  at a tenant with several branches an account with no branch pays no share; at a
+  tenant with one branch its accounts are that branch's; a tenant with no branch pays
+  its one share from any of its accounts. Each payment is one journal for one share.
+  The return is PAID when every share is.
 - **Reverse a remittance** (`reverse_remittance`): reverses the remittance journal
   (on its own date where that month is open), keeps the row marked reversed, takes the
   amount off the share and the return, and puts a PAID return back to FILED. The
@@ -223,7 +234,7 @@ journal. Ikeja pays from its account, Lekki from its own; PAID after both.
   `finance.tax.pay`.
 - Entity-scoped resolution everywhere; a remittance is reached only through its
   filing. A bank account outside the caller's branches is a 404; one of another branch
-  than the share's is refused.
+  than the share's, or one with no branch at a tenant with several, is refused.
 
 ## 11. Code map
 

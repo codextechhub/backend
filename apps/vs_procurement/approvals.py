@@ -50,6 +50,7 @@ _TEMPLATE_META = {
     "procurement.purchase_order": ("purchase order", "Purchase-order approval"),
     "procurement.vendor_invoice": ("vendor invoice", "Vendor-invoice approval"),
     "procurement.vendor_payment": ("vendor payment", "Vendor-payment approval"),
+    "procurement.vendor_credit_note": ("vendor credit note", "Vendor-credit-note approval"),
 }
 
 
@@ -58,9 +59,11 @@ def _doc_models():
 
     Lazy imports avoid the model/handler/service cycle during Django app loading.
     """
-    from .models import PurchaseOrder, PurchaseRequisition, VendorInvoice, VendorPayment
+    from .models import (
+        PurchaseOrder, PurchaseRequisition, VendorCreditNote, VendorInvoice, VendorPayment,
+    )
 
-    return (PurchaseRequisition, PurchaseOrder, VendorInvoice, VendorPayment)
+    return (PurchaseRequisition, PurchaseOrder, VendorInvoice, VendorPayment, VendorCreditNote)
 
 
 def _default_stages_payload(
@@ -346,8 +349,9 @@ def submit_for_approval(document, *, actor_user, template_code: str | None = Non
     :class:`ApprovalWorkflowError` if the document is already PENDING or APPROVED.
 
     This is the single choke point every procurement submit view funnels through
-    (requisition, purchase order, vendor invoice, vendor payment), so the three
-    configuration outcomes are separated here once rather than in four views:
+    (requisition, purchase order, vendor invoice, vendor payment, vendor credit note),
+    so the three configuration outcomes are separated here once rather than in five
+    views:
 
     * **No template at all** - a genuine configuration failure. The engine's
       :class:`~vs_workflow.exceptions.TemplateNotFoundError` names internal template
@@ -419,11 +423,12 @@ def apply_approved(document, *, actor_user=None) -> None:
 
     Sets ``approval_state`` APPROVED, then runs the document-type effect: a requisition
     advances to ``DocumentStatus.APPROVED`` (so a PO can be raised), a PO likewise, a
-    vendor invoice records an approval audit, and a vendor payment becomes postable.
+    vendor invoice or vendor credit note records an approval audit, and a vendor
+    payment becomes postable.
     Invoice/payment ledger status remains independent from workflow approval: governance
     makes them eligible to post but never manufactures a journal here.
     """
-    from .models import PurchaseOrder, PurchaseRequisition, VendorInvoice
+    from .models import PurchaseOrder, PurchaseRequisition, VendorCreditNote, VendorInvoice
     from .purchasing import approve_purchase_order, approve_requisition
 
     document.approval_state = ProcApprovalState.APPROVED
@@ -440,6 +445,12 @@ def apply_approved(document, *, actor_user=None) -> None:
             entity=document.entity, action=FinanceAuditAction.VENDOR_INVOICE_APPROVED,
             actor_user=actor_user, target=document,
             message=f"Approved vendor invoice {document.document_number or document.pk}.",
+        )
+    elif isinstance(document, VendorCreditNote):
+        record(
+            entity=document.entity, action=FinanceAuditAction.VENDOR_CREDIT_NOTE_APPROVED,
+            actor_user=actor_user, target=document,
+            message=f"Approved vendor credit note {document.document_number or document.pk}.",
         )
 
 

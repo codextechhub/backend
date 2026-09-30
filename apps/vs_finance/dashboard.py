@@ -464,7 +464,7 @@ def _vendor_due(entity, scope=UNNARROWED) -> list[dict]:
                 due_date__lte=end,  # Due within configured window.
             ))
             .exclude(payment_status=InvoicePaymentStatus.PAID)
-            .annotate(bal=F("total") - F("amount_paid"))
+            .annotate(bal=F("total") - F("amount_paid") - F("amount_credited"))
             .filter(bal__gt=0)
             .select_related("vendor")
             .order_by("due_date")[:TOP_OVERDUE]

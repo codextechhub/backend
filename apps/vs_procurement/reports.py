@@ -109,27 +109,39 @@ def _ap_snapshot(entity, *, as_of=None, vendor=None, branch_scope=None):
     them. Reading the row without its date put settlements on the timeline before the
     ledger moved, and the reconciliation then failed for the days in between.
 
+    Vendor credit notes count on both sides the way payments do. What a note applied to
+    a bill settles that bill (the second return value is everything settled, cash and
+    credit alike), and what it has not applied is vendor credit sitting in the same
+    1240 asset as an advance, so it joins the third value.
+
     ``branch_scope`` (``views.base._BranchScope``) narrows both sides of the snapshot to
     the sub-scope the caller can actually open: bills through ``VendorInvoice.branch`` and
-    advances through ``VendorPayment.branch``.  Narrowing both is what keeps the net
+    advances through ``VendorPayment.branch`` and ``VendorCreditNote.branch``.  Narrowing both is what keeps the net
     honest - a branch's bills reduced by another branch's prepayment would be a figure
     that reconciles with nothing.  Allocations need no scope filter of their own: they are
     already bounded by the two id sets above.  Omitted, the snapshot stays entity-wide.
     """
     from django.db.models import Q, Sum
-    from .models import VendorInvoice, VendorPayment, VendorPaymentAllocation
+    from .models import (
+        VendorCreditNote, VendorCreditNoteAllocation, VendorInvoice, VendorPayment,
+        VendorPaymentAllocation,
+    )
 
     invoices = VendorInvoice.objects.filter(entity=entity)
     payments = VendorPayment.objects.filter(entity=entity)
+    notes = VendorCreditNote.objects.filter(entity=entity)
     if branch_scope is not None:
         invoices = invoices.filter(branch_scope.q())
         payments = payments.filter(branch_scope.q())
+        notes = notes.filter(branch_scope.q())
     if vendor is not None:
         invoices = invoices.filter(vendor=vendor)
         payments = payments.filter(vendor=vendor)
+        notes = notes.filter(vendor=vendor)
     if as_of is None:
         invoices = invoices.filter(status="POSTED")
         payments = payments.filter(status="POSTED")
+        notes = notes.filter(status="POSTED")
     else:
         invoices = invoices.filter(
             journal__status__in=("POSTED", "REVERSED"), journal__date__lte=as_of,
@@ -138,6 +150,12 @@ def _ap_snapshot(entity, *, as_of=None, vendor=None, branch_scope=None):
             | Q(journal__reversed_by__date__gt=as_of)
         )
         payments = payments.filter(
+            journal__status__in=("POSTED", "REVERSED"), journal__date__lte=as_of,
+        ).filter(
+            Q(journal__reversed_by__isnull=True)
+            | Q(journal__reversed_by__date__gt=as_of)
+        )
+        notes = notes.filter(
             journal__status__in=("POSTED", "REVERSED"), journal__date__lte=as_of,
         ).filter(
             Q(journal__reversed_by__isnull=True)
@@ -173,6 +191,19 @@ def _ap_snapshot(entity, *, as_of=None, vendor=None, branch_scope=None):
         .filter(payment_id__in=payment_ids, vendor_invoice_id__in=invoice_ids),
         "payment_id",
     )
+    note_ids = list(notes.values_list("id", flat=True))
+    credited_by_invoice = _settled(
+        VendorCreditNoteAllocation.objects
+        .filter(vendor_invoice_id__in=invoice_ids, note_id__in=note_ids),
+        "vendor_invoice_id",
+    )
+    for invoice_id, amount in credited_by_invoice.items():
+        paid_by_invoice[invoice_id] = paid_by_invoice.get(invoice_id, 0) + amount
+    applied_by_note = _settled(
+        VendorCreditNoteAllocation.objects
+        .filter(note_id__in=note_ids, vendor_invoice_id__in=invoice_ids),
+        "note_id",
+    )
     advances_by_vendor = {}
     for payment in payments.select_related("vendor").order_by("payment_date", "id"):
         advance = int(payment.gross_amount) - allocated_by_payment.get(payment.id, 0)
@@ -180,6 +211,10 @@ def _ap_snapshot(entity, *, as_of=None, vendor=None, branch_scope=None):
             advances_by_vendor[payment.vendor_id] = (
                 advances_by_vendor.get(payment.vendor_id, 0) + advance
             )
+    for note in notes.only("id", "vendor_id", "total"):
+        credit = int(note.total) - applied_by_note.get(note.id, 0)
+        if credit > 0:
+            advances_by_vendor[note.vendor_id] = advances_by_vendor.get(note.vendor_id, 0) + credit
     return invoices, paid_by_invoice, advances_by_vendor
 
 
@@ -480,6 +515,77 @@ def _grir_invoice_line_basis(line) -> int:
     return compute_line_net(line.quantity, unit_price)
 
 
+def _effective_by(queryset, cutoff, prefix):
+    """Narrow ``queryset`` to documents whose journal (through ``prefix``) counts by ``cutoff``."""
+    from django.db.models import Q
+
+    return queryset.filter(**{
+        f"{prefix}journal__status__in": ("POSTED", "REVERSED"),
+        f"{prefix}journal__date__lte": cutoff,
+    }).filter(
+        Q(**{f"{prefix}journal__reversed_by__isnull": True})
+        | Q(**{f"{prefix}journal__reversed_by__date__gt": cutoff})
+    )
+
+
+def _grir_returns(entity, cutoff=None) -> dict:
+    """``{receipt line id: (quantity, value)}`` sent back to the vendor by ``cutoff``.
+
+    A goods return takes its value back out of GR/IR at the receipt's own price, so
+    everything reading a receipt's GR/IR position reads it net of these.
+    """
+    from decimal import Decimal
+
+    from django.db.models import Sum
+
+    from .models import GoodsReturnLine
+
+    rows = GoodsReturnLine.objects.filter(goods_return__entity=entity)
+    rows = (
+        rows.filter(goods_return__status="POSTED") if cutoff is None
+        else _effective_by(rows, cutoff, "goods_return__")
+    )
+    return {
+        row["grn_line_id"]: (Decimal(row["q"] or 0), int(row["v"] or 0))
+        for row in rows.values("grn_line_id").annotate(q=Sum("quantity"), v=Sum("value_amount"))
+    }
+
+
+def _grir_credits(entity, cutoff=None) -> dict:
+    """``{bill line id: (quantity, GR/IR basis)}`` credited back by vendor credit notes.
+
+    Only a credit by quantity touches GR/IR: it clears the credited units at the same
+    basis the bill cleared them at (:func:`_grir_invoice_line_basis`). A value-only
+    credit is a price allowance and moves purchase price variance, not GR/IR.
+    """
+    from collections import defaultdict
+    from decimal import Decimal
+
+    from .models import VendorCreditNoteLine
+
+    rows = VendorCreditNoteLine.objects.filter(
+        credit_note__entity=entity, quantity__gt=0,
+    ).select_related("invoice_line__po_line", "invoice_line__grn_line__grn")
+    rows = (
+        rows.filter(credit_note__status="POSTED") if cutoff is None
+        else _effective_by(rows, cutoff, "credit_note__")
+    )
+    credited = defaultdict(lambda: (Decimal(0), 0))
+    for row in rows:
+        bill_line = row.invoice_line
+        if bill_line.grn_line_id is not None and bill_line.grn_line.grn.status == "POSTED":
+            price = bill_line.grn_line.unit_price
+        elif bill_line.po_line_id is not None:
+            price = bill_line.po_line.unit_price
+        else:
+            continue
+        quantity, basis = credited[bill_line.pk]
+        credited[bill_line.pk] = (
+            quantity + Decimal(row.quantity), basis + compute_line_net(row.quantity, price),
+        )
+    return dict(credited)
+
+
 def _grir_attribution(entity, *, as_of=None, branch_scope=None):
     """Attribute posted invoice clearing to receipt lines, including PO-only FIFO.
 
@@ -532,8 +638,18 @@ def _grir_attribution(entity, *, as_of=None, branch_scope=None):
 
     receipts = list(receipt_qs)
     invoice_lines = list(invoice_qs)
+    returns = _grir_returns(entity, as_of)
+    credits = _grir_credits(entity, as_of)
     receipt_by_id = {line.id: line for line in receipts}
-    remaining = {line.id: int(line.value_amount) for line in receipts}
+    remaining = {
+        line.id: int(line.value_amount) - returns.get(line.id, (0, 0))[1] for line in receipts
+    }
+    returned_by_grn = defaultdict(int)
+    for line in receipts:
+        returned_by_grn[line.grn_id] += returns.get(line.id, (0, 0))[1]
+
+    def clearing_basis(line):
+        return _grir_invoice_line_basis(line) - credits.get(line.id, (0, 0))[1]
     receipts_by_po = defaultdict(list)
     for line in receipts:
         if line.po_line_id is not None:
@@ -562,7 +678,7 @@ def _grir_attribution(entity, *, as_of=None, branch_scope=None):
         receipt = receipt_by_id.get(line.grn_line_id)
         if receipt is None:
             continue
-        basis = _grir_invoice_line_basis(line)
+        basis = clearing_basis(line)
         add_evidence(receipt.grn_id, line.vendor_invoice, basis)
         remaining[receipt.id] = max(0, remaining[receipt.id] - basis)
 
@@ -570,7 +686,7 @@ def _grir_attribution(entity, *, as_of=None, branch_scope=None):
     for line in invoice_lines:
         if line.grn_line_id is not None or line.po_line_id is None:
             continue
-        left = _grir_invoice_line_basis(line)
+        left = clearing_basis(line)
         for receipt in receipts_by_po.get(line.po_line_id, ()):
             if left <= 0:
                 break
@@ -590,6 +706,7 @@ def _grir_attribution(entity, *, as_of=None, branch_scope=None):
             for grn_id, rows in evidence_by_grn.items()
         },
         "unattributed_by_po": dict(unattributed_by_po),
+        "returned_by_grn": dict(returned_by_grn),
         "receipt_lines": receipts,
         "invoice_lines": invoice_lines,
     }
@@ -656,15 +773,17 @@ def grir_aging(entity, *, as_of=None, branch_scope=None) -> GRIRAgingReport:
     for line in attribution["receipt_lines"]:
         posted_grns[line.grn_id] = line.grn
     invoiced_by_grn = attribution["by_grn"]
+    returned_by_grn = attribution["returned_by_grn"]
 
     rows = []
     for grn in sorted(
         posted_grns.values(), key=lambda row: (row.received_date, row.id),
     ):
         invoiced = invoiced_by_grn.get(grn.id, 0)
-        # GRN credit less matched invoice debit: positive is an uncleared receipt;
-        # negative is an over-clear position and remains visible.
-        open_value = grn.total_value - invoiced
+        received = grn.total_value - returned_by_grn.get(grn.id, 0)
+        # GRN credit (net of goods sent back) less matched invoice debit: positive is an
+        # uncleared receipt; negative is an over-clear position and remains visible.
+        open_value = received - invoiced
         if open_value == 0:
             continue
         days = (as_of - grn.received_date).days
@@ -673,7 +792,7 @@ def grir_aging(entity, *, as_of=None, branch_scope=None) -> GRIRAgingReport:
             grn_id=grn.id, reference=grn.document_number or str(grn.pk),
             vendor_code=grn.vendor.code, vendor_name=grn.vendor.name,
             received_date=grn.received_date, days=days, bucket=bucket,
-            received_value=grn.total_value, invoiced_value=invoiced, open_value=open_value,
+            received_value=received, invoiced_value=invoiced, open_value=open_value,
         ))
         report.bucket_totals[bucket] += open_value
         report.total_open += open_value
@@ -846,6 +965,7 @@ def grir_grn_detail(entity, grn_id, *, as_of=None, branch_scope=None) -> GRIRGrn
     attribution = _grir_attribution(entity, as_of=cutoff, branch_scope=branch_scope)
     invoiced = attribution["by_grn"].get(grn.id, 0)
     invoices = attribution["evidence_by_grn"].get(grn.id, [])
+    received = grn.total_value - attribution["returned_by_grn"].get(grn.id, 0)
 
     days = (as_of - grn.received_date).days
     return GRIRGrnDetail(
@@ -853,8 +973,8 @@ def grir_grn_detail(entity, grn_id, *, as_of=None, branch_scope=None) -> GRIRGrn
         vendor_code=grn.vendor.code, vendor_name=grn.vendor.name,
         received_date=grn.received_date, days=days, bucket=_bucket_for(days),
         po_number=(grn.purchase_order.document_number if grn.purchase_order else ""),
-        received_value=grn.total_value, invoiced_value=invoiced,
-        open_value=grn.total_value - invoiced,
+        received_value=received, invoiced_value=invoiced,
+        open_value=received - invoiced,
         invoices=invoices,
     )
 
@@ -974,6 +1094,14 @@ def grir_po_lines(entity, *, as_of=None, branch_scope=None) -> GRIRPoLinesReport
     )
     for r in grn_agg:
         recv[r["po_line"]] = (Decimal(r["qty"] or 0), int(r["value"] or 0))
+    returned = _grir_returns(entity, cutoff)
+    if returned:
+        for grn_line_id, po_line_id in GoodsReceivedNoteLine.objects.filter(
+            pk__in=list(returned), po_line__isnull=False,
+        ).values_list("pk", "po_line_id"):
+            quantity, value = recv[po_line_id]
+            back_qty, back_value = returned[grn_line_id]
+            recv[po_line_id] = (quantity - back_qty, value - back_value)
 
     # Invoiced side: billed qty + GR/IR clearing basis, loaded once for all PO lines.
     inv = defaultdict(lambda: (Decimal(0), 0))
@@ -994,11 +1122,13 @@ def grir_po_lines(entity, *, as_of=None, branch_scope=None) -> GRIRPoLinesReport
             Q(vendor_invoice__journal__reversed_by__isnull=True)
             | Q(vendor_invoice__journal__reversed_by__date__gt=cutoff)
         )
+    credits = _grir_credits(entity, cutoff)
     for invoice_line in inv_lines:
         quantity, value = inv[invoice_line.po_line_id]
+        credit_qty, credit_basis = credits.get(invoice_line.pk, (Decimal(0), 0))
         inv[invoice_line.po_line_id] = (
-            quantity + Decimal(invoice_line.quantity),
-            value + _grir_invoice_line_basis(invoice_line),
+            quantity + Decimal(invoice_line.quantity) - credit_qty,
+            value + _grir_invoice_line_basis(invoice_line) - credit_basis,
         )
 
     rows = []
@@ -1094,15 +1224,18 @@ def grir_po_line_detail(entity, po_line_id, *, as_of=None, branch_scope=None) ->
             Q(grn__journal__reversed_by__isnull=True)
             | Q(grn__journal__reversed_by__date__gt=as_of)
         )
+    returns = _grir_returns(entity, as_of)
     for gl in grn_lines:
-        received_qty += Decimal(gl.accepted_qty)
-        received_value += int(gl.value_amount)
+        back_qty, back_value = returns.get(gl.pk, (Decimal(0), 0))
+        received_qty += Decimal(gl.accepted_qty) - back_qty
+        received_value += int(gl.value_amount) - back_value
         grns.append({
             "id": gl.grn_id,
             "reference": gl.grn.document_number or str(gl.grn_id),
             "received_date": str(gl.grn.received_date),
             "accepted_qty": str(gl.accepted_qty),
-            "value": int(gl.value_amount),
+            "returned_qty": str(back_qty),
+            "value": int(gl.value_amount) - back_value,
         })
 
     invoiced_qty, invoiced_value = Decimal(0), 0
@@ -1123,9 +1256,11 @@ def grir_po_line_detail(entity, po_line_id, *, as_of=None, branch_scope=None) ->
             Q(vendor_invoice__journal__reversed_by__isnull=True)
             | Q(vendor_invoice__journal__reversed_by__date__gt=as_of)
         )
+    credits = _grir_credits(entity, as_of)
     for il in inv_lines:
-        invoiced_qty += Decimal(il.quantity)
-        clearing_basis = _grir_invoice_line_basis(il)
+        credit_qty, credit_basis = credits.get(il.pk, (Decimal(0), 0))
+        invoiced_qty += Decimal(il.quantity) - credit_qty
+        clearing_basis = _grir_invoice_line_basis(il) - credit_basis
         invoiced_value += clearing_basis
         vi = il.vendor_invoice
         invoices.append({
@@ -1240,6 +1375,22 @@ class SpendAnalysis:
     unassigned_excluded_count: int | None = None
 
 
+def _credited_by_bill(bill_ids) -> dict:
+    """``{bill id: (net, tax)}`` credited back by posted vendor credit notes."""
+    from django.db.models import Sum
+
+    from .models import VendorCreditNote
+
+    if not bill_ids:
+        return {}
+    return {
+        row["vendor_invoice_id"]: (int(row["net"] or 0), int(row["tax"] or 0))
+        for row in VendorCreditNote.objects.filter(
+            vendor_invoice_id__in=bill_ids, status="POSTED",
+        ).values("vendor_invoice_id").annotate(net=Sum("subtotal"), tax=Sum("tax_total"))
+    }
+
+
 def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, category=None,
                    branch_scope=None) -> SpendAnalysis:
     """Analyse realised spend for ``entity`` from POSTED vendor invoices.
@@ -1256,6 +1407,11 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, categ
     ``branch_scope`` (``views.base._BranchScope``) narrows the population to the bills the
     caller can actually open, so a branch-bound viewer's spend equals the sum of their own
     vendor-invoice list.  Omitted, the analysis stays entity-wide exactly as before.
+
+    Spend is net of posted vendor credit notes: a note is read against the bill it
+    credits and lands in that bill's month, vendor and category, so a bill keyed ten
+    times too large and credited back reads as what was really bought. Opening bills
+    are left out: they carry debts from before the books began, not spend of the window.
     """
     from vs_finance.constants import DocumentStatus
 
@@ -1267,7 +1423,7 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, categ
     # than the totals beside it.
     population = (
         VendorInvoice.objects
-        .filter(entity=entity, status=DocumentStatus.POSTED)
+        .filter(entity=entity, status=DocumentStatus.POSTED, is_opening=False)
         .select_related("vendor", "vendor__category")
     )
     if vendor is not None:
@@ -1293,11 +1449,16 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, categ
     periods: dict = {}
     report = SpendAnalysis(entity_id=entity.id, start_date=start_date, end_date=end_date)
     report.unassigned_excluded_count = _unassigned_count(population, branch_scope)
+    bills = list(qs)
+    credited = _credited_by_bill([inv.id for inv in bills])
 
-    for inv in qs:
-        report.total_net += inv.subtotal
-        report.total_tax += inv.tax_total
-        report.total_gross += inv.total
+    for inv in bills:
+        credit_net, credit_tax = credited.get(inv.id, (0, 0))
+        net, tax = inv.subtotal - credit_net, inv.tax_total - credit_tax
+        gross = net + tax
+        report.total_net += net
+        report.total_tax += tax
+        report.total_gross += gross
         report.invoice_count += 1
 
         # Monthly trend: bucket each bill on its invoice_date month in this same pass
@@ -1308,16 +1469,16 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, categ
             prow = periods[pkey] = SpendPeriod(
                 period=pkey, label=inv.invoice_date.strftime("%b %Y"),
             )
-        prow.gross += inv.total
+        prow.gross += gross
         prow.invoice_count += 1
 
         v = inv.vendor
         vrow = vendors.get(v.id)
         if vrow is None:
             vrow = vendors[v.id] = SpendRow(key=v.code, label=v.name)
-        vrow.net += inv.subtotal
-        vrow.tax += inv.tax_total
-        vrow.gross += inv.total
+        vrow.net += net
+        vrow.tax += tax
+        vrow.gross += gross
         vrow.invoice_count += 1
 
         cat = v.category
@@ -1326,9 +1487,9 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, categ
         crow = categories.get(ckey)
         if crow is None:
             crow = categories[ckey] = SpendRow(key=ckey, label=clabel)
-        crow.net += inv.subtotal
-        crow.tax += inv.tax_total
-        crow.gross += inv.total
+        crow.net += net
+        crow.tax += tax
+        crow.gross += gross
         crow.invoice_count += 1
 
     report.by_vendor = sorted(vendors.values(), key=lambda r: (-r.gross, r.key))
@@ -1386,7 +1547,8 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None,
     * **Delivery** - POSTED goods receipts (``received_date`` in window) classified
       on-time vs late against their PO's ``expected_date`` (receipts whose PO has no
       expected date are not rated).
-    * **Billing & payment** - POSTED vendor invoices and the average days from
+    * **Billing & payment** - POSTED vendor invoices, net of the posted credit notes
+      against them and leaving out opening bills, and the average days from
       ``invoice_date`` to each allocating payment's ``payment_date``. The denominator is
       allocation rows, while ``payment_count`` de-duplicates payment documents per vendor.
 
@@ -1462,7 +1624,7 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None,
 
     inv_population = (
         VendorInvoice.objects
-        .filter(entity=entity, status=DocumentStatus.POSTED)
+        .filter(entity=entity, status=DocumentStatus.POSTED, is_opening=False)
         .select_related("vendor")
     )
     if vendor is not None:
@@ -1478,10 +1640,13 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None,
     if branch_scope is not None:
         inv_qs = inv_qs.filter(branch_scope.q())
     pay_days: dict = {}
-    for inv in inv_qs:
+    bills = list(inv_qs)
+    credited = _credited_by_bill([inv.id for inv in bills])
+    for inv in bills:
         r = row_for(inv.vendor)
         r.invoice_count += 1
-        r.total_billed += inv.total
+        credit_net, credit_tax = credited.get(inv.id, (0, 0))
+        r.total_billed += inv.total - credit_net - credit_tax
 
     # Average days-to-pay: invoice_date → allocating payment date. Each allocation is a
     # sample, so a bill paid in instalments contributes once per payment allocation.

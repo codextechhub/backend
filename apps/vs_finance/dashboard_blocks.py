@@ -54,6 +54,8 @@ APPROVAL_TYPES = {
     "finance.credit_note": ("credit or debit note", "credit or debit notes"),
     "finance.expense_claim": ("expense claim", "expense claims"),
     "finance.journal": ("journal", "journals"),
+    "finance.bank_transaction": ("bank transaction", "bank transactions"),
+    "finance.bank_transfer": ("transfer between own accounts", "transfers between own accounts"),
     "payments.payout_batch": ("payout", "payouts"),
 }
 
@@ -576,7 +578,8 @@ def upcoming(entity, as_of, reader) -> list[dict]:
                     entity=entity, status=DocumentStatus.POSTED,
                     due_date__gte=as_of, due_date__lte=end,
                 ).exclude(payment_status=InvoicePaymentStatus.PAID)
-            ).values("due_date").annotate(n=Count("id"), amount=Sum(F("total") - F("amount_paid")))
+            ).values("due_date").annotate(
+                n=Count("id"), amount=Sum(F("total") - F("amount_paid") - F("amount_credited")))
             for r in rows:
                 out.append({
                     "date": r["due_date"].isoformat(), "kind": "vendor_bills", "direction": "out",
@@ -615,9 +618,9 @@ def payables_due(entity, as_of, reader) -> dict | None:
     )
     end = as_of + datetime.timedelta(days=UPCOMING_DAYS)
     due = open_bills.filter(due_date__gte=as_of, due_date__lte=end).aggregate(
-        n=Count("id"), amount=Sum(F("total") - F("amount_paid")))
+        n=Count("id"), amount=Sum(F("total") - F("amount_paid") - F("amount_credited")))
     late = open_bills.filter(due_date__lt=as_of).aggregate(
-        n=Count("id"), amount=Sum(F("total") - F("amount_paid")))
+        n=Count("id"), amount=Sum(F("total") - F("amount_paid") - F("amount_credited")))
     return {
         "due_count": due["n"], "due_amount": _m(due["amount"]),
         "overdue_count": late["n"], "overdue_amount": _m(late["amount"]),

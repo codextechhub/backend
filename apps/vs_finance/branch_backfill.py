@@ -53,6 +53,8 @@ _TARGETS = (
         order=20,
     ),
     Target(CREDIT_NOTE, (via("the invoice", "invoice", INVOICE), customer()), order=30),
+    Target("vs_finance.BankTransaction", (via("the bank account", "bank_account", BANK_ACCOUNT),), order=20),
+    Target("vs_finance.BankTransfer", (via("the sending bank account", "from_account", BANK_ACCOUNT),), order=20),
     Target(
         "vs_finance.WriteOffRequest",
         (via("the invoice", "invoice", INVOICE), customer("invoice__customer")),
@@ -120,6 +122,8 @@ _JOURNAL_OWNERS = (
     JournalOwner("vs_finance.Concession", "journal"),
     JournalOwner("vs_finance.ExpenseClaim", "journal"),
     JournalOwner("vs_finance.PettyCashVoucher", "journal"),
+    JournalOwner("vs_finance.BankTransaction", "journal"),
+    JournalOwner("vs_finance.BankTransfer", "journal"),
     JournalOwner("vs_finance.TaxFiling", "filing_journal"),
     JournalOwner("vs_finance.TaxFilingShare", "filing_journal"),
     JournalOwner("vs_finance.TaxRemittance", "journal"),

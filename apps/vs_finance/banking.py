@@ -843,3 +843,323 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
         posting_date=str(book_date), value_date=str(statement_line.txn_date),
     )
     return entry  # Return the posted adjusting journal entry.
+
+
+# --------------------------------------------------------------------------- #
+# Bank transactions: money in or out that is not a customer's or a supplier's  #
+# --------------------------------------------------------------------------- #
+
+def validate_bank_transaction(txn) -> None:
+    """Refuse a bank transaction that could never post, before it is saved or routed.
+
+    The bank account must be a live one of the same books with a ledger behind it,
+    and the counter-account an active, postable, ordinary account: not the bank's own
+    ledger, and not an account a sub-ledger keeps. A counter-account kept by a
+    sub-ledger would be the same bypass the hand-journal lock closes, one step
+    removed: a "bank transaction" to AP is a vendor payment with no bill behind it.
+    """
+    from .control_accounts import control_accounts
+    from .exceptions import PostingError
+
+    bank = txn.bank_account
+    if bank.entity_id != txn.entity_id:
+        raise PostingError("The bank account belongs to other books.")
+    if not bank.is_active:
+        raise PostingError(f"Bank account {bank.name} is closed.")
+    if int(txn.amount or 0) <= 0:
+        raise PostingError("A bank transaction must move a positive amount.")
+    counter = txn.counter_account
+    if counter.entity_id != txn.entity_id:
+        raise PostingError("The counter-account belongs to other books.")
+    if not (counter.is_active and counter.is_postable):
+        raise PostingError(f"Account {counter.code} is not an active, postable account.")
+    if counter.pk == bank.gl_account_id:
+        raise PostingError("The counter-account cannot be the bank account's own ledger.")
+    owner = control_accounts(txn.entity).get(counter.pk)
+    if owner is not None:
+        kept_by, use_instead = owner
+        raise PostingError(
+            f"Account {counter.code} {counter.name} is kept by {kept_by}, so it cannot be "
+            f"the other side of a bank transaction. Record it with {use_instead} instead.",
+            account_code=counter.code,
+        )
+
+
+def post_bank_transaction(txn, *, actor_user=None):
+    """Post a draft or approved bank transaction, recording a durable rejection on failure."""
+    from .audit import record_rejection
+    from .exceptions import FinanceError
+
+    try:
+        return _post_bank_transaction_atomic(txn, actor_user=actor_user)
+    except FinanceError as exc:
+        record_rejection(
+            entity=txn.entity, action=FinanceAuditAction.BANK_TRANSACTION_POSTED,
+            exc=exc, actor_user=actor_user, target=txn,
+        )
+        raise
+
+
+@transaction.atomic
+def _post_bank_transaction_atomic(txn, *, actor_user=None):
+    """Raise the transaction's journal on its bank account's branch and mark it POSTED.
+
+    Money in is ``Dr bank, Cr counter-account``; money out is the reverse. The journal
+    is a ``BANK`` journal, raised by the banking service, so the hand-journal lock does
+    not apply to the bank line; the counter-account was checked by
+    :func:`validate_bank_transaction` instead.
+    """
+    from .constants import BankTransactionDirection, DocumentStatus
+    from .exceptions import PostingError
+    from .models import BankTransaction, JournalEntry, JournalLine
+
+    txn = BankTransaction.objects.select_for_update().get(pk=txn.pk)
+    if txn.status not in (DocumentStatus.DRAFT, DocumentStatus.APPROVED):
+        raise PostingError(
+            f"Bank transaction {txn.document_number or txn.pk} is '{txn.status}'; "
+            f"only a draft or approved one can be posted.",
+        )
+    validate_bank_transaction(txn)
+    bank = txn.bank_account
+    money_in = txn.direction == BankTransactionDirection.IN
+    entry = JournalEntry.objects.create(
+        entity=txn.entity, branch=txn.branch, date=txn.transaction_date,
+        period=resolve_period(txn.entity, txn.transaction_date),
+        source=JournalSource.BANK, narration=txn.narration,
+        reference=txn.reference, created_by=actor_user,
+    )
+    bank_line = (bank.gl_account, txn.amount, 0) if money_in else (bank.gl_account, 0, txn.amount)
+    counter_line = (
+        (txn.counter_account, 0, txn.amount) if money_in
+        else (txn.counter_account, txn.amount, 0)
+    )
+    for number, (account, debit, credit) in enumerate(
+            (bank_line, counter_line) if money_in else (counter_line, bank_line), start=1):
+        JournalLine.objects.create(
+            entry=entry, account=account, debit=debit, credit=credit,
+            description=txn.narration, line_no=number,
+        )
+    post_journal(entry, actor_user=actor_user)
+
+    txn.journal = entry
+    txn.status = DocumentStatus.POSTED
+    txn.save(update_fields=["journal", "status", "updated_at"])
+    record(
+        entity=txn.entity, action=FinanceAuditAction.BANK_TRANSACTION_POSTED,
+        actor_user=actor_user, target=txn,
+        message=(
+            f"{'Received' if money_in else 'Paid'} {txn.amount} kobo "
+            f"{'into' if money_in else 'out of'} {bank.name}: {txn.narration}"
+        ),
+        journal_id=entry.pk, amount=txn.amount, direction=txn.direction,
+        counter_account=txn.counter_account.code, bank_account_id=bank.pk,
+    )
+    return txn
+
+
+def void_bank_transaction(txn, *, actor_user=None, date=None):
+    """Void a posted bank transaction by reversing its journal, recording refusals."""
+    from .audit import record_rejection
+    from .exceptions import FinanceError
+
+    try:
+        return _void_bank_transaction_atomic(txn, actor_user=actor_user, date=date)
+    except FinanceError as exc:
+        record_rejection(
+            entity=txn.entity, action=FinanceAuditAction.BANK_TRANSACTION_VOIDED,
+            exc=exc, actor_user=actor_user, target=txn,
+        )
+        raise
+
+
+@transaction.atomic
+def _void_bank_transaction_atomic(txn, *, actor_user=None, date=None):
+    """Reverse the journal and mark the transaction REVERSED.
+
+    Refused while a bank statement line is matched to the transaction's bank line:
+    the statement says the money moved, so the match is undone first and the reason
+    is visible on the reconciliation, not buried under a reversal.
+    """
+    from .constants import DocumentStatus
+    from .exceptions import PostingError
+    from .models import BankTransaction
+
+    txn = BankTransaction.objects.select_for_update().get(pk=txn.pk)
+    if txn.status != DocumentStatus.POSTED or txn.journal_id is None:
+        raise PostingError(
+            f"Only a posted bank transaction can be voided; "
+            f"{txn.document_number or txn.pk} is '{txn.status}'.",
+        )
+    if journal_is_reconciled(txn.journal_id):
+        raise PostingError(
+            f"Bank transaction {txn.document_number} is matched to a bank statement line. "
+            f"Unmatch it on the reconciliation first.",
+        )
+    reversal = reverse_journal(txn.journal, actor_user=actor_user, date=date, document_owner=txn)
+    txn.status = DocumentStatus.REVERSED
+    txn.save(update_fields=["status", "updated_at"])
+    record(
+        entity=txn.entity, action=FinanceAuditAction.BANK_TRANSACTION_VOIDED,
+        actor_user=actor_user, target=txn,
+        message=f"Voided bank transaction {txn.document_number}.",
+        journal_id=txn.journal_id, reversal_id=reversal.pk,
+    )
+    return txn
+
+
+def journal_is_reconciled(journal_id) -> bool:
+    """Whether any line of the journal is matched to a bank statement line.
+
+    A line is matched one to one (``BankStatementLine.matched_line``) or as part of a
+    group or split (``BankLineMatch``); either means the bank has said the money moved.
+    """
+    from django.db.models import Q
+
+    from .models import JournalLine
+
+    return JournalLine.objects.filter(entry_id=journal_id).filter(
+        Q(bank_statement_lines__isnull=False) | Q(bank_line_matches__isnull=False),
+    ).exists()
+
+
+# --------------------------------------------------------------------------- #
+# Transfers between a branch's own bank accounts                              #
+# --------------------------------------------------------------------------- #
+
+def validate_bank_transfer(transfer) -> None:
+    """Refuse a transfer that could never post, before it is saved or routed.
+
+    Two different live accounts of the same books, each with a ledger, and a positive
+    amount. Both must belong to the same branch: money between branches is an
+    inter-branch transfer, which records that one branch owes the other and is not
+    built yet, so moving it here would leave each branch's books wrong with nothing
+    saying why. Two accounts shared by every branch are the same branch for this rule.
+    """
+    from .exceptions import PostingError
+
+    source, target = transfer.from_account, transfer.to_account
+    if source.pk == target.pk:
+        raise PostingError("Choose two different accounts to move money between.")
+    for account in (source, target):
+        if account.entity_id != transfer.entity_id:
+            raise PostingError(f"Bank account {account.name} belongs to other books.")
+        if not account.is_active:
+            raise PostingError(f"Bank account {account.name} is closed.")
+    if int(transfer.amount or 0) <= 0:
+        raise PostingError("A transfer must move a positive amount.")
+    if source.branch_id != target.branch_id:
+        def where(account):
+            return account.branch.name if account.branch_id else "every branch"
+
+        raise PostingError(
+            f"{source.name} belongs to {where(source)} and {target.name} to "
+            f"{where(target)}. Money between branches is an inter-branch transfer, "
+            f"which records that one branch owes the other and is not available yet. "
+            f"Move money here only between accounts of the same branch.",
+        )
+
+
+def post_bank_transfer(transfer, *, actor_user=None):
+    """Post a draft or approved transfer, recording a durable rejection on failure."""
+    from .audit import record_rejection
+    from .exceptions import FinanceError
+
+    try:
+        return _post_bank_transfer_atomic(transfer, actor_user=actor_user)
+    except FinanceError as exc:
+        record_rejection(
+            entity=transfer.entity, action=FinanceAuditAction.BANK_TRANSFER_POSTED,
+            exc=exc, actor_user=actor_user, target=transfer,
+        )
+        raise
+
+
+@transaction.atomic
+def _post_bank_transfer_atomic(transfer, *, actor_user=None):
+    """Raise ``Dr to_account, Cr from_account`` as a ``BANK`` journal and mark it POSTED."""
+    from .constants import DocumentStatus
+    from .exceptions import PostingError
+    from .models import BankTransfer, JournalEntry, JournalLine
+
+    transfer = BankTransfer.objects.select_for_update().get(pk=transfer.pk)
+    if transfer.status not in (DocumentStatus.DRAFT, DocumentStatus.APPROVED):
+        raise PostingError(
+            f"Transfer {transfer.document_number or transfer.pk} is '{transfer.status}'; "
+            f"only a draft or approved one can be posted.",
+        )
+    validate_bank_transfer(transfer)
+    source, target = transfer.from_account, transfer.to_account
+    entry = JournalEntry.objects.create(
+        entity=transfer.entity, branch=transfer.branch, date=transfer.transfer_date,
+        period=resolve_period(transfer.entity, transfer.transfer_date),
+        source=JournalSource.BANK, narration=transfer.narration,
+        reference=transfer.reference, created_by=actor_user,
+    )
+    JournalLine.objects.create(
+        entry=entry, account=target.gl_account, debit=transfer.amount, credit=0,
+        description=f"Transfer from {source.name}", line_no=1,
+    )
+    JournalLine.objects.create(
+        entry=entry, account=source.gl_account, debit=0, credit=transfer.amount,
+        description=f"Transfer to {target.name}", line_no=2,
+    )
+    post_journal(entry, actor_user=actor_user)
+
+    transfer.journal = entry
+    transfer.status = DocumentStatus.POSTED
+    transfer.save(update_fields=["journal", "status", "updated_at"])
+    record(
+        entity=transfer.entity, action=FinanceAuditAction.BANK_TRANSFER_POSTED,
+        actor_user=actor_user, target=transfer,
+        message=f"Moved {transfer.amount} kobo from {source.name} to {target.name}.",
+        journal_id=entry.pk, amount=transfer.amount,
+        from_account_id=source.pk, to_account_id=target.pk,
+    )
+    return transfer
+
+
+def void_bank_transfer(transfer, *, actor_user=None, date=None):
+    """Void a posted transfer by reversing its journal, recording refusals."""
+    from .audit import record_rejection
+    from .exceptions import FinanceError
+
+    try:
+        return _void_bank_transfer_atomic(transfer, actor_user=actor_user, date=date)
+    except FinanceError as exc:
+        record_rejection(
+            entity=transfer.entity, action=FinanceAuditAction.BANK_TRANSFER_VOIDED,
+            exc=exc, actor_user=actor_user, target=transfer,
+        )
+        raise
+
+
+@transaction.atomic
+def _void_bank_transfer_atomic(transfer, *, actor_user=None, date=None):
+    """Reverse the journal while neither side is matched to a bank statement line."""
+    from .constants import DocumentStatus
+    from .exceptions import PostingError
+    from .models import BankTransfer
+
+    transfer = BankTransfer.objects.select_for_update().get(pk=transfer.pk)
+    if transfer.status != DocumentStatus.POSTED or transfer.journal_id is None:
+        raise PostingError(
+            f"Only a posted transfer can be voided; "
+            f"{transfer.document_number or transfer.pk} is '{transfer.status}'.",
+        )
+    if journal_is_reconciled(transfer.journal_id):
+        raise PostingError(
+            f"Transfer {transfer.document_number} is matched to a bank statement line on "
+            f"one of its accounts. Unmatch it on that reconciliation first.",
+        )
+    reversal = reverse_journal(
+        transfer.journal, actor_user=actor_user, date=date, document_owner=transfer,
+    )
+    transfer.status = DocumentStatus.REVERSED
+    transfer.save(update_fields=["status", "updated_at"])
+    record(
+        entity=transfer.entity, action=FinanceAuditAction.BANK_TRANSFER_VOIDED,
+        actor_user=actor_user, target=transfer,
+        message=f"Voided transfer {transfer.document_number}.",
+        journal_id=transfer.journal_id, reversal_id=reversal.pk,
+    )
+    return transfer

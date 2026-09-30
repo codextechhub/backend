@@ -1659,10 +1659,16 @@ class DirectEntryCreateView(APIView):
     """POST /finance/direct-entries/?entity= - post a direct journal entry.
 
     Body: ``{"date"?, "narration"?, "reference"?, "lines": [{"account", "debit"|"credit"}],
-    "confirm_without_approval"?, "reason"?}`` with amounts in kobo. The one sanctioned way to
-    book money/balances that have no sub-ledger document behind them - capital injections,
-    equity contributions, loan drawdowns, grants, opening balances and manual adjustments.
-    Every other journal is a side-effect of an action.
+    "opening_balance"?, "confirm_without_approval"?, "reason"?}`` with amounts in kobo.
+    It posts as ``MANUAL``; ``opening_balance: true`` marks a balance brought forward on
+    the day the books began and posts it as ``OPENING``. The way to book a
+    balance no sub-ledger document carries: accruals, reclassifications and manual
+    adjustments between ordinary accounts. Every other journal is a side-effect of an
+    action. A line on an account a sub-ledger keeps is refused (422
+    ``CONTROL_ACCOUNT_LOCKED``) and the message names the document to use: money into or
+    out of a bank account is a bank transaction (capital, loans, drawings, interest), an
+    opening customer balance is an opening invoice, and an opening supplier balance is an
+    opening bill.
 
     A direct entry is a journal, so the school's journal approval route governs it
     exactly as it governs ``/journals/<id>/post/``:
@@ -1703,6 +1709,9 @@ class DirectEntryCreateView(APIView):
         serializer = DirectEntryCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        opening = (request.data or {}).get("opening_balance", False)
+        if not isinstance(opening, bool):
+            raise ValidationError({"opening_balance": "Expected a JSON boolean."})
         branch = _raised_branch(request, entity, request.data)
         # Resolve each line's account under the caller's reach, and its optional cost
         # centre + analytical dimensions against this entity, before anything is written.
@@ -1720,7 +1729,7 @@ class DirectEntryCreateView(APIView):
                 entity, lines=lines,
                 date=data.get("date"), narration=data.get("narration", ""),
                 reference=data.get("reference", ""), actor_user=request.user,
-                branch=branch,
+                branch=branch, opening=opening,
             )
             if approval_required(entry):
                 from vs_workflow.services import release as release_svc

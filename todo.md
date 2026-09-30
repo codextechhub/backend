@@ -81,6 +81,56 @@ expiry line; M11, M12, M14, M05 the refusal wording; M11 and M12 that the
 enrolment, placement, status and appointment dates are always the branch's day
 and never defaulted. MRD: remove the D78 documents gap.
 
+### D84. Supplier bills can be corrected, control accounts refuse hand journals, and bank money has its own documents (hash pending, 2026-09-30)
+MODULES: M23 purchase orders delivery and AP, M21 vendor management, M24 inventory
+and stock ledger, M19 finance and accounting, M18 payments and collections (tax
+share payment), M04 roles and permissions, MRD.
+From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF).
+MUST SAY:
+- Supplier corrections (M23, M24). A vendor credit note (VC-), full, by amount or by
+  line, against one posted bill, approved through its own route
+  (procurement.vendor_credit_note) seeded like the bill ladder (manager, and a
+  senior approver at N500,000 by default); on a paid bill it becomes that branch's
+  vendor credit applied to later bills. A bill with nothing paid or credited can be
+  voided (PO invoiced quantities restored). Goods can be returned against a receipt
+  by line (RV-), reversing stock at receipt cost and GR/IR, allowed only for what
+  hasn't been billed beyond. The journal screen offers these as the document
+  actions; purchase-order cancellation names them. AP aging, reconciliation, cash
+  forecast, GR/IR, spend analysis and vendor performance count credits and
+  returns. Endpoints under /v1/procurement/: vendor-credit-notes/ (+ submit, post,
+  allocate, void), vendor-invoices/<id>/void/, goods-receipts/<id>/reverse/.
+  Migrations vs_procurement 0039, 0040 (credit-note routes for existing books).
+- Opening supplier balances (M23). One opening bill per unpaid bill
+  (VendorInvoice.is_opening), dated as the original so aging is true, Dr retained
+  earnings mapping, Cr AP, carrying its branch; refused on or after go-live (the
+  first non-opening journal). Bulk POST /procurement/vendor-invoices/opening/ (500
+  rows, all or nothing, key procurement.vendor_invoice.import_opening, CRITICAL).
+  Migration vs_procurement 0041. Customer opening invoices follow the same rule
+  later.
+- Control accounts are locked (M19). Manual journals and direct entries refuse
+  lines on any account a sub-ledger keeps (AR/AP controls and per-party accounts,
+  bank and petty-cash ledgers, tax obligation accounts, inventory, GR/IR, vendor
+  advances, customer and vendor credit): 422 CONTROL_ACCOUNT_LOCKED naming the
+  document to use. Derived from mappings and owning models
+  (vs_finance.control_accounts, with procurement registering its own).
+- Bank documents (M19). BankTransaction (money in or out with a non-control
+  counter-account: capital, loans, drawings, interest), route
+  finance.bank_transaction; BankTransfer between two accounts of the SAME branch,
+  route finance.bank_transfer; cross-branch is refused as an inter-branch transfer
+  (not built). Both carry the bank's branch, need whole-school reach for shared
+  accounts, and can be voided until reconciled. Migrations vs_finance 0036-0038.
+  Direct entries post as MANUAL; opening_balance: true keeps OPENING.
+- Tax shares (M19). A share is paid only from a bank account of its branch; an
+  unbranched account pays no share at a multi-branch tenant (it is the only
+  branch's at a one-branch tenant). A branch-bound bursar sees and pays only her
+  branches' shares (totals recomputed), and tax-obligations/outstanding narrows to
+  her branches; prepare, file, unfile and reverse stay whole-school.
+- New keys: procurement.vendor_credit_note.*, procurement.vendor_invoice.reverse,
+  procurement.goods_receipt.reverse, procurement.vendor_invoice.import_opening,
+  finance.banktransaction.*, finance.banktransfer.*.
+- Needs Attention: transfers between branches and paying petty cash back to the
+  bank have no document yet; FinPro lacks the new screens and journal actions.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

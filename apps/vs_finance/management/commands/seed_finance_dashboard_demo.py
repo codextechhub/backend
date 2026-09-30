@@ -150,7 +150,7 @@ class Seeder:
             entity=self.entity, date=date,
             period=FiscalPeriod.objects.get(entity=self.entity, is_closing=False, start_date__lte=date, end_date__gte=date),
             narration=f"{MARK} Balances brought forward from the bank",
-            reference=f"{MARK}-OPENING",
+            reference=f"{MARK}-OPENING", source="BANK",
         )
         amounts = {"operations": 14_800_000_00, "payroll": 26_000_000_00}
         for key, amount in amounts.items():

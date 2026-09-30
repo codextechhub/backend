@@ -275,6 +275,10 @@ class JournalHandler(_FinancePostOnApprove):
                 from .exceptions import InactiveAccountError
                 raise InactiveAccountError(account_code=account.code)
 
+        from .control_accounts import ensure_hand_journal_allowed
+
+        ensure_hand_journal_allowed(document)
+
     # Post an approved journal.
     def post(self, document, *, actor_user) -> None:
         from .posting import post_journal
@@ -319,6 +323,112 @@ class JournalHandler(_FinancePostOnApprove):
                     for line in lines
                 ],
             ),
+        )
+
+
+@register_handler("finance.bank_transaction")
+class BankTransactionHandler(_FinancePostOnApprove):
+    """Approval handler for a :class:`~vs_finance.models.BankTransaction`.
+
+    Money in or out of the bank with no customer or supplier behind it is routed the
+    way a journal is, through its own document type so a school can set its own
+    steps for it. The banking service posts it once approved.
+    """
+    noun = "Bank transaction"
+
+    @property
+    def document_model(self):
+        from .models import BankTransaction
+        return BankTransaction
+
+    def preflight(self, document) -> None:
+        from .banking import validate_bank_transaction
+        from .posting import ensure_period_open, resolve_period
+
+        validate_bank_transaction(document)
+        ensure_period_open(resolve_period(document.entity, document.transaction_date))
+
+    def post(self, document, *, actor_user) -> None:
+        from .banking import post_bank_transaction
+
+        post_bank_transaction(document, actor_user=actor_user)
+
+    def summary(self, document) -> dict:
+        return {
+            "title": document.document_number or str(document.pk),
+            "subtitle": "Bank transaction",
+            "fields": [
+                {"label": "Date", "value": document.transaction_date.isoformat()},
+                {"label": "Amount", "value": format_naira(document.amount)},
+                {"label": "Bank account", "value": document.bank_account.name},
+            ],
+            "link": _console_document_link("/finance/bank-transactions", document),
+        }
+
+    def details(self, document) -> dict:
+        return document_details(
+            fields_section("Bank transaction details", [
+                ("Bank account", document.bank_account.name),
+                ("Direction", document.get_direction_display()),
+                ("Amount", format_naira(document.amount)),
+                ("Other side", f"{document.counter_account.code} · {document.counter_account.name}"),
+                ("Date", document.transaction_date),
+                ("Narration", document.narration),
+                ("Reference", document.reference or "-"),
+            ]),
+        )
+
+
+@register_handler("finance.bank_transfer")
+class BankTransferHandler(_FinancePostOnApprove):
+    """Approval handler for a :class:`~vs_finance.models.BankTransfer`.
+
+    Money between a branch's own accounts is routed on its own document type, as a
+    bank transaction is, so a school can decide whether moving its own money needs a
+    second pair of eyes. The banking service posts it once approved.
+    """
+    noun = "Transfer between own accounts"
+
+    @property
+    def document_model(self):
+        from .models import BankTransfer
+        return BankTransfer
+
+    def preflight(self, document) -> None:
+        from .banking import validate_bank_transfer
+        from .posting import ensure_period_open, resolve_period
+
+        validate_bank_transfer(document)
+        ensure_period_open(resolve_period(document.entity, document.transfer_date))
+
+    def post(self, document, *, actor_user) -> None:
+        from .banking import post_bank_transfer
+
+        post_bank_transfer(document, actor_user=actor_user)
+
+    def summary(self, document) -> dict:
+        return {
+            "title": document.document_number or str(document.pk),
+            "subtitle": "Transfer between own accounts",
+            "fields": [
+                {"label": "Date", "value": document.transfer_date.isoformat()},
+                {"label": "Amount", "value": format_naira(document.amount)},
+                {"label": "From", "value": document.from_account.name},
+                {"label": "To", "value": document.to_account.name},
+            ],
+            "link": _console_document_link("/finance/bank-transfers", document),
+        }
+
+    def details(self, document) -> dict:
+        return document_details(
+            fields_section("Transfer details", [
+                ("From", document.from_account.name),
+                ("To", document.to_account.name),
+                ("Amount", format_naira(document.amount)),
+                ("Date", document.transfer_date),
+                ("Narration", document.narration),
+                ("Reference", document.reference or "-"),
+            ]),
         )
 
 

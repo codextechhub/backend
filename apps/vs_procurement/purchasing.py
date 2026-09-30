@@ -186,17 +186,41 @@ def approve_purchase_order(po, *, actor_user=None):
 
 
 def goods_arrived(receipts) -> bool:
-    """Whether anything in ``receipts`` has posted, which is what received means.
+    """Whether ``receipts`` hold goods the school still has, which is what received means.
 
     One definition of arrival for everything that asks it: a purchase order asks
     about its own receipts, a requisition about the receipts of every order raised
-    from it, and cancellation about the order it is being asked to withdraw. A
-    goods receipt has a single status write in this application, DRAFT to POSTED,
-    and no route cancels or reverses one, so a posted receipt is a permanent fact
-    and there is no un-posted state to allow for. A receipt entered in error is
-    corrected by a further document, never by undoing what let the goods in.
+    from it, and cancellation about the order it is being asked to withdraw.
+
+    A goods receipt has a single status write, DRAFT to POSTED, and is never
+    un-posted: a receipt entered in error is corrected by a further document, a goods
+    return (:func:`vs_procurement.corrections.return_goods`), which sends some or all
+    of it back and counts it in each line's ``returned_qty``. So arrival is a posted
+    receipt with at least one line not wholly sent back. A receipt returned in full
+    has handed back both the stock and its GR/IR entry, and an order whose every
+    receipt went back that way can be cancelled like one that never took delivery.
     """
-    return receipts.filter(status=DocumentStatus.POSTED).exists()
+    return receipts.filter(
+        status=DocumentStatus.POSTED,
+        lines__accepted_qty__gt=F("lines__returned_qty"),
+    ).exists()
+
+
+def _credited_in_full(bill) -> bool:
+    """Whether posted vendor credit notes have credited ``bill``'s whole total.
+
+    Such a bill stays POSTED, because the record of what was billed and credited is
+    kept, but it no longer stands against its order: every kobo of it has been
+    handed back.
+    """
+    from django.db.models import Sum
+
+    if bill.status != DocumentStatus.POSTED or bill.total <= 0:
+        return False
+    credited = bill.credit_notes.filter(status=DocumentStatus.POSTED).aggregate(
+        total=Sum("total"),
+    )["total"] or 0
+    return credited >= bill.total
 
 
 @transaction.atomic
@@ -210,16 +234,17 @@ def cancel_purchase_order(po, *, reason: str, actor_user=None):
 
     What refuses, and why each one is a different answer rather than one refusal:
 
-    * Goods received. The stock is on the shelf and the GR/IR liability exists,
-      and cancelling the commitment returns neither, so the order stays as the
-      document those goods arrived against. The correction is a return, not a
-      cancellation.
-    * A vendor bill that is not itself cancelled, whether it names the order or
-      only one of its lines. A billed order is unwound through the bill with a
-      credit note or a reversal; cancelling underneath it would leave a payable
-      pointing at a withdrawn commitment. A payment reaches an order only through
-      a bill, so refusing here covers payments without a second rule that could
-      disagree with this one.
+    * Goods received and not sent back. The stock is on the shelf and the GR/IR
+      liability exists, and cancelling the commitment returns neither, so the
+      order stays as the document those goods arrived against. The correction is a
+      goods return against the receipt, after which the order can be cancelled.
+    * A vendor bill that is neither cancelled, voided nor credited in full, whether
+      it names the order or only one of its lines. A billed order is unwound
+      through the bill: voided while nothing is paid or credited on it, credited in
+      full otherwise.
+      Cancelling underneath it would leave a payable pointing at a withdrawn
+      commitment. A payment reaches an order only through a bill, so refusing here
+      covers payments without a second rule that could disagree with this one.
     * An approval still in flight. The engine owns that decision while it is
       running, and a document cancelled underneath its own workflow would leave an
       instance deciding something that no longer exists. Withdrawing the approval
@@ -247,22 +272,37 @@ def cancel_purchase_order(po, *, reason: str, actor_user=None):
             f"Purchase order {po.document_number or po.pk} is already "
             f"'{po.get_status_display().lower()}'.",
         )
+    bill = next((
+        candidate for candidate in VendorInvoice.objects
+        .filter(Q(purchase_order=po) | Q(lines__po_line__purchase_order=po))
+        .exclude(status__in=(DocumentStatus.CANCELLED, DocumentStatus.REVERSED))
+        .distinct().order_by("id")
+        if not _credited_in_full(candidate)
+    ), None)
+    if bill is not None:
+        number = bill.document_number or bill.pk
+        if bill.status != DocumentStatus.POSTED:
+            message = (
+                f"Vendor bill {number} is still a draft against this purchase order, "
+                "so the order cannot be cancelled while it stands."
+            )
+        elif bill.amount_paid or bill.amount_credited:
+            message = (
+                f"Vendor bill {number} stands against this purchase order and has been "
+                "paid or credited in part, so the order cannot be cancelled. Credit the "
+                "rest of the bill with a vendor credit note first, then cancel the order."
+            )
+        else:
+            message = (
+                f"Vendor bill {number} stands against this purchase order, so it cannot "
+                "be cancelled. Void the bill first, then cancel the order."
+            )
+        raise PurchaseOrderBilledError(message)
     if goods_arrived(po.goods_receipts):
         raise PurchaseOrderReceivedError(
             "Goods have already been received against this purchase order, so it "
-            "cannot be cancelled. Return the goods to the vendor instead.",
-        )
-    bill = (
-        VendorInvoice.objects
-        .filter(Q(purchase_order=po) | Q(lines__po_line__purchase_order=po))
-        .exclude(status=DocumentStatus.CANCELLED)
-        .order_by("id").first()
-    )
-    if bill is not None:
-        raise PurchaseOrderBilledError(
-            f"Vendor bill {bill.document_number or bill.pk} stands against this "
-            "purchase order, so it cannot be cancelled. Credit or reverse the bill "
-            "instead.",
+            "cannot be cancelled. Reverse the goods receipt to return the goods to "
+            "the vendor first, then cancel the order.",
         )
     if po.approval_state == ProcApprovalState.PENDING:
         raise PurchaseOrderUnderApprovalError(
