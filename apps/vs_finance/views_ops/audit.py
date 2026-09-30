@@ -1,8 +1,21 @@
-"""Finance audit log read endpoints (the trail + its filter facets).
+"""Finance audit log read endpoints: the trail, one entry, and the trail's filter facets.
+
+Every read here is narrowed to the caller's branches the way every transaction
+read is (:func:`vs_rbac.scoping.transaction_branch_q`), because an entry is
+about a document and carries that document's branch
+(:class:`~vs_finance.models.FinanceAuditLog`). Lagoon View's Lekki bursar,
+Ngozi, reads Lekki's entries only: their share of a central payroll run and not
+Ikeja's, and no entry without a branch, since nothing on such an entry says
+whose it is. The narrowing is applied before any filter, count or facet, so a
+filter cannot find, and a count or a facet cannot hint at, an entry the list
+would not show. A whole-school reader is not narrowed.
 """
 from __future__ import annotations
 
+from rest_framework.exceptions import NotFound
+
 from core.response import success_response
+from vs_rbac.scoping import transaction_branch_q
 
 from ..views import resolve_entity
 from ..constants import FinanceAuditAction
@@ -24,7 +37,7 @@ from .base import (
 
 # List/filter finance audit log entries.
 class FinanceAuditLogListView(_FinanceBase):
-    """GET - the append-only finance audit trail for an entity.
+    """GET - the append-only finance audit trail for an entity, in the caller's branches.
 
     Filterable by ``action``, ``status``, ``target_type``, ``actor`` (user id)
     and a ``date_from``/``date_to`` (YYYY-MM-DD, inclusive on ``created_at``).
@@ -37,7 +50,9 @@ class FinanceAuditLogListView(_FinanceBase):
     # Handle GET /finance/audit.
     def get(self, request):
         entity = resolve_entity(request)  # Scope audit rows to the active entity.
-        qs = FinanceAuditLog.objects.filter(entity=entity).select_related("actor", "effective_user")
+        qs = FinanceAuditLog.objects.filter(
+            transaction_branch_q(request), entity=entity,
+        ).select_related("actor", "effective_user", "branch")
         params = request.query_params  # Query parameters drive optional filters.
         if (action := params.get("action")):
             qs = qs.filter(action=action)
@@ -54,13 +69,41 @@ class FinanceAuditLogListView(_FinanceBase):
         return self.paginate(request, qs.order_by("-id"), FinanceAuditLogSerializer)
 
 
+class FinanceAuditLogDetailView(_FinanceBase):
+    """GET - one entry of the finance audit trail.
+
+    An entry outside the caller's branches, or with no branch at all for a
+    branch-bound caller, is the same 404 as an id that does not exist, so the
+    address says nothing about whether another branch's entry is there.
+
+    docstring-name: Finance audit entry
+    """
+
+    rbac_permission = "finance.audit.view"
+
+    def get(self, request, pk):
+        entity = resolve_entity(request)
+        entry = (
+            FinanceAuditLog.objects.filter(transaction_branch_q(request), entity=entity, pk=pk)
+            .select_related("actor", "effective_user", "branch")
+            .first()
+        )
+        if entry is None:
+            raise NotFound("No such audit entry in this entity.")
+        return success_response(
+            "Audit entry retrieved.",
+            data=FinanceAuditLogSerializer(entry, context={"request": request}).data,
+        )
+
+
 # Return filter facet values for audit UI.
 class FinanceAuditFacetsView(_FinanceBase):
     """GET - distinct filter options for this entity's audit trail.
 
     Powers the Audit Trail filter dropdowns with only the values that actually
-    occur for the entity (actors, target types, actions) - cheaper and more
-    useful than listing the whole ~70-value action enum.
+    occur in the entries the caller can read (actors, target types, actions) -
+    cheaper and more useful than listing the whole ~70-value action enum, and
+    never an option only another branch's entries carry.
 
     docstring-name: Finance audit filters
     """
@@ -70,7 +113,7 @@ class FinanceAuditFacetsView(_FinanceBase):
     # Handle GET /finance/audit/facets.
     def get(self, request):
         entity = resolve_entity(request)  # Scope facet values to the active entity.
-        qs = FinanceAuditLog.objects.filter(entity=entity)
+        qs = FinanceAuditLog.objects.filter(transaction_branch_q(request), entity=entity)
 
         actors = (  # Distinct actors that appear in the audit trail.
             qs.filter(actor__isnull=False)

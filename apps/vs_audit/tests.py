@@ -1541,10 +1541,20 @@ class EntityTrailCounterQueryCostTests(EntityTrailCounterFixture, TestCase):
         return list(EntityAuditTrail.objects.all())
 
     def test_one_query_answers_a_whole_page_however_many_trails(self):
+        """One query for the page, beside the caller's branch reach.
+
+        The reach (:func:`vs_rbac.scoping.visible_branch_ids`) is one query per
+        request, memoised on the user and shared by every narrowed read in it, so
+        it is resolved before measuring: what this pins is that the counters
+        cost one query per page, not one per trail.
+        """
+        from vs_rbac.scoping import visible_branch_ids
+
         from .scoping import visible_trail_counters
 
         trails = self._trails()
         self.assertGreater(len(trails), 5, "the fixture must be worth measuring")
+        visible_branch_ids(self.bright_officer)
 
         with self.assertNumQueries(1):
             counters = visible_trail_counters(trails, self._request(self.bright_officer))

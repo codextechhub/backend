@@ -17,9 +17,10 @@ Two layers, deliberately separate:
 * :func:`tenant_event_predicate` answers "which rows are tenant T's". It is the
   boundary itself and it never widens.
 * :func:`audit_scope_predicate` answers "which rows may *this caller* read",
-  which is the boundary plus one policy: the console a PLATFORM caller opens
+  which is the boundary plus two policies: the console a PLATFORM caller opens
   reads across tenants by construction, so for them there is no predicate at
-  all. That widening is a property of the console, not of the row, which is why
+  all; and a branch-bound caller inside a tenant reads finance and procurement
+  events of their own branches only (:func:`branch_event_predicate`). That widening is a property of the console, not of the row, which is why
   it sits above the predicate rather than inside it. The Export Centre reads the
   predicate directly and never takes the widening: an export always covers your
   own organisation, which is what
@@ -64,6 +65,28 @@ def tenant_event_predicate(tenant) -> Q:
     )
 
 
+#: The modules whose events copy a finance or procurement document's trail.
+BRANCH_READ_MODULES = ("FINANCE", "PROCUREMENT")
+
+
+def branch_event_predicate(branch_ids):
+    """The ``Q`` confining a branch-bound reader's finance and procurement events.
+
+    ``branch_ids`` is the reader's reach (:func:`vs_rbac.scoping.caller_branch_ids`),
+    ``None`` for a whole-school reader, who gets no predicate at all. A finance
+    or procurement event is a copy of a finance trail entry and is read the way
+    that entry is (:func:`vs_rbac.scoping.transaction_branch_q`): only when it
+    names one of the reader's branches, so an event naming no branch is
+    whole-school only. Lagoon View's Lekki bursar, holding the audit-view key,
+    reads "Disbursed Lekki Branch's net wages" and never Ikeja's, nor an old
+    "Accrued payroll" event carrying the whole school's salaries. Events of
+    every other module carry no branch and are left as they were.
+    """
+    if branch_ids is None:
+        return None
+    return ~Q(module_key__in=BRANCH_READ_MODULES) | Q(branch_id__in=tuple(sorted(branch_ids)))
+
+
 def audit_scope_predicate(request):
     """The ``Q`` confining an ``AuditEvent`` read to the caller's own tenant.
 
@@ -83,6 +106,10 @@ def audit_scope_predicate(request):
     a narrowing convenience, not a boundary - it narrows if she asks and does
     nothing if she does not.
 
+    Inside the tenant, a branch-bound caller is narrowed further by
+    :func:`branch_event_predicate`; a platform caller never is, because their
+    console reads across tenants and no branch grant applies to it.
+
     The gate is the caller's *home* tenant kind, which no grant and no
     ``?tenant=`` can change. Under impersonation ``request.user`` is the
     effective (target) user, so a Codex staffer proxied as a Bright Star account
@@ -97,7 +124,11 @@ def audit_scope_predicate(request):
 
     # A caller inside no tenant cannot be inside this one. Every authenticated
     # request carries one, so this fails closed to keep None unreachable.
-    return tenant_event_predicate(getattr(request, "tenant", None) or home)
+    from vs_rbac.scoping import caller_branch_ids
+
+    predicate = tenant_event_predicate(getattr(request, "tenant", None) or home)
+    narrowing = branch_event_predicate(caller_branch_ids(request))
+    return predicate if narrowing is None else predicate & narrowing
 
 
 def scope_events_to_caller(queryset, request):

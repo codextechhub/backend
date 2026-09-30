@@ -21,8 +21,12 @@ from .constants import FinanceAuditStatus
 
 # Support the mirror to central workflow.
 def _mirror_to_central(*, action, actor_user, entity, target_type, target_id,
-                       document_number, status, message, metadata):
-    """Best-effort copy into central vs_audit. Never raises - the in-app log is truth."""
+                       document_number, status, message, metadata, branch_id=None):
+    """Best-effort copy into central vs_audit. Never raises - the in-app log is truth.
+
+    The copy carries the entry's branch, so the platform trail narrows a
+    branch-bound reader exactly as the finance trail does.
+    """
     try:  # Mirroring must never block the primary finance write.
         from vs_audit.services import emit_audit_event
         from vs_audit.models import AuditModuleKey, AuditActionType
@@ -43,14 +47,32 @@ def _mirror_to_central(*, action, actor_user, entity, target_type, target_id,
             severity="INFO" if status == FinanceAuditStatus.SUCCESS else "WARNING",
             summary=message or f"Finance: {action}",
             metadata={"finance_action": str(action), **(metadata or {})},
+            branch=branch_id,
         )
     except Exception:  # pragma: no cover - mirror is best-effort
         pass  # Swallow mirror failures so the authoritative finance log stays intact.
 
 
+#: :func:`record`'s default: the entry takes the branch of its ``target``.
+FROM_TARGET = object()
+
+
+def entry_branch_id(target=None, branch=FROM_TARGET):
+    """The branch an entry about ``target`` is filed under, as an id or ``None``.
+
+    ``branch`` (a Branch, its id, or ``None``) wins when given. Otherwise the
+    target's own ``branch`` column answers, and a target without one (a setting,
+    a fiscal year, a vendor contract) belongs to the whole tenant.
+    """
+    if branch is not FROM_TARGET:
+        return getattr(branch, "pk", branch)
+    return getattr(target, "branch_id", None) if target is not None else None
+
+
 def record(*, entity, action, actor_user=None, target=None, target_type="",
            target_id="", document_number="", status=FinanceAuditStatus.SUCCESS,
-           message="", before=None, after=None, mirror=True, **metadata):
+           message="", before=None, after=None, mirror=True, branch=FROM_TARGET,
+           **metadata):
     """Write an authoritative :class:`FinanceAuditLog` row (and mirror to vs_audit).
 
     Call this **inside** the same transaction as a successful action so the audit row
@@ -60,6 +82,16 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
 
     ``target`` may be passed instead of ``target_type``/``target_id`` for convenience;
     its class name and pk are used. Returns the created row.
+
+    The entry's branch is the document's, never the acting person's
+    (:func:`entry_branch_id`): a target carrying a ``branch`` column files the
+    entry under it. ``branch`` is passed only where the document is not the
+    target itself: a bank statement correction is the bank account's, a stock
+    movement its store's, and one branch share of a central payroll run or of the
+    tenant's tax return is that share's branch. The branch decides who reads the
+    entry (:class:`~vs_finance.models.FinanceAuditLog`), so an entry about a
+    document booked per branch is written once per share, with that share's
+    figures, never once with the whole-school total.
 
     Under a proxy, an ``actor_user`` that is either side of the proxy is recorded
     as the real person, and the impersonated person lands in ``effective_user``,
@@ -89,6 +121,7 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
         before=before or {},
         after=after or {},
         metadata=metadata or {},
+        branch_id=entry_branch_id(target, branch),
     )
 
     if mirror:  # Optionally mirror the event into the platform-wide audit log.
@@ -96,14 +129,15 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
             action=action, actor_user=actor_user, entity=entity,
             target_type=target_type, target_id=target_id,
             document_number=document_number, status=status,
-            message=message, metadata=metadata,
+            message=message, metadata=metadata, branch_id=log.branch_id,
         )
     return log  # Return the authoritative finance audit row.
 
 
 # Handle the record rejection workflow.
 def record_rejection(*, entity, action, exc, actor_user=None, target=None,
-                     target_type="", target_id="", document_number="", **metadata):
+                     target_type="", target_id="", document_number="",
+                     branch=FROM_TARGET, **metadata):
     """Durably record a *failed* action in its own committed transaction.
 
     The action's own transaction rolled back (that's what a rejection means), so the
@@ -117,7 +151,7 @@ def record_rejection(*, entity, action, exc, actor_user=None, target=None,
             record(  # Persist the failed finance action.
                 entity=entity, action=action, actor_user=actor_user,
                 target=target, target_type=target_type, target_id=target_id,
-                document_number=document_number,
+                document_number=document_number, branch=branch,
                 status=FinanceAuditStatus.FAILED,
                 message=str(exc)[:255],
                 error_code=error_code,

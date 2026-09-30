@@ -10,21 +10,38 @@ they read the documents that raised them.
 Where a model has no source at all, ``no_source_note`` is the reason an
 administrator is shown, and a one-branch tenant still files the row under its
 only branch.
+
+The finance audit trail comes last, after every document it can be about: an
+entry takes the branch of the document it records, including a branch this
+same run has only planned for that document. An entry about something that
+belongs to the whole tenant (a setting, a fiscal year, a central payroll run,
+the tenant's tax return) is neither planned nor flagged, and stays visible to
+whole-school readers only. The platform audit trail's copies of those entries
+follow them the same way; that trail is kept per tenant, not per set of books.
 """
 from __future__ import annotations
 
-from django.db.models import Q
+from collections import defaultdict
+
+from django.db.models import CharField, Q
+from django.db.models.functions import Cast
 
 from .branch_derivation import (
+    Answer,
     JournalOwner,
+    Source,
     Target,
+    _chunks,
     agreeing,
+    audit_references,
     bank_behind,
     banks_on_journal,
     customer,
     journal_owner,
+    register_audit_reference,
     register_journal_owner,
     register_target,
+    targets,
     user_branch,
     via,
 )
@@ -35,6 +52,181 @@ CREDIT_NOTE = "vs_finance.CreditNote"
 BANK_ACCOUNT = "vs_finance.BankAccount"
 FIXED_ASSET = "vs_finance.FixedAsset"
 JOURNAL = "vs_finance.JournalEntry"
+AUDIT_LOG = "vs_finance.FinanceAuditLog"
+PLATFORM_AUDIT = "vs_audit.AuditEvent"
+
+#: An emailed document's audit entry names the delivery; the delivery names the document.
+_DELIVERED = {"InvoiceDelivery": INVOICE, "ReceiptDelivery": PAYMENT}
+
+
+def _document_labels() -> dict[str, str]:
+    """``{class name: model label}`` of every backfilled document, as an entry's ``target_type`` names it.
+
+    A class name two apps share names neither, so such an entry is left for the
+    whole tenant rather than guessed.
+    """
+    seen: dict[str, set[str]] = defaultdict(set)
+    for target in targets():
+        if target.has_branch_column and target.model_label not in _AUDIT_FIELDS:
+            seen[target.model.__name__].add(target.model_label)
+    return {name: labels.pop() for name, labels in seen.items() if len(labels) == 1}
+
+
+#: How each audit trail names what an entry is about: ``(type field, id field)``.
+_AUDIT_FIELDS = {
+    AUDIT_LOG: ("target_type", "target_id"),
+    PLATFORM_AUDIT: ("entity_type", "entity_id"),
+}
+
+
+def _entries(model_label, pks):
+    """``(pk, class name, id, metadata)`` of audit rows of either trail.
+
+    The finance trail names its target by class (``Invoice``); the platform
+    trail's copy by label (``vs_finance.Invoice``), and the backfill's own events
+    by their model's label (``vs_procurement.PurchaseOrder``). All read as the
+    class name, which is what :func:`_document_labels` is keyed by.
+    """
+    from django.apps import apps
+
+    type_field, id_field = _AUDIT_FIELDS[model_label]
+    model = apps.get_model(model_label)
+    for chunk in _chunks(pks):
+        rows = model._base_manager.filter(pk__in=chunk).values_list("pk", type_field, id_field, "metadata")
+        for pk, target_type, target_id, metadata in rows:
+            yield pk, str(target_type or "").rsplit(".", 1)[-1], target_id, metadata or {}
+
+
+def _answer(ctx, links: dict[int, tuple[str, int]], label: str) -> Answer:
+    """Each entry's branch from the row ``links`` names, pending where that row has none."""
+    wanted: dict[str, set[int]] = defaultdict(set)
+    for model_label, ref in links.values():
+        wanted[model_label].add(ref)
+    known = {model_label: ctx.branches_of(model_label, refs) for model_label, refs in wanted.items()}
+    found = {
+        pk: (known[model_label][ref], label)
+        for pk, (model_label, ref) in links.items() if ref in known[model_label]
+    }
+    return Answer(found=found, pending=set(links) - found.keys())
+
+
+def _as_id(value):
+    return int(value) if str(value).isdigit() else None
+
+
+def audited_document() -> Source:
+    """The branch of the document an entry's ``target_type``/``target_id`` names."""
+    label = "the document it is about"
+
+    def derive(ctx, model_label, pks):
+        documents = _document_labels()
+        links = {}
+        for pk, target_type, target_id, _metadata in _entries(model_label, pks):
+            ref = _as_id(target_id)
+            if target_type in documents and ref is not None:
+                links[pk] = (documents[target_type], ref)
+        return _answer(ctx, links, label)
+
+    return Source(label, derive)
+
+
+def audited_reference() -> Source:
+    """The branch of the row an entry's metadata names (:func:`register_audit_reference`)."""
+    label = "the record its details name"
+
+    def derive(ctx, model_label, pks):
+        references = audit_references()
+        links = {}
+        for pk, target_type, _target_id, metadata in _entries(model_label, pks):
+            if target_type not in references:
+                continue
+            key, reference_label = references[target_type]
+            ref = _as_id(metadata.get(key))
+            if ref is not None:
+                links[pk] = (reference_label, ref)
+        return _answer(ctx, links, label)
+
+    return Source(label, derive)
+
+
+def delivered_document() -> Source:
+    """The branch of the invoice or receipt an emailed document's entry concerns."""
+    label = "the document it emailed"
+
+    def derive(ctx, model_label, pks):
+        from .models import FinanceDocumentDelivery
+
+        delivery_of = {}
+        for pk, target_type, target_id, _metadata in _entries(model_label, pks):
+            ref = _as_id(target_id)
+            if target_type in _DELIVERED and ref is not None:
+                delivery_of[pk] = (_DELIVERED[target_type], ref)
+        documents = dict(
+            FinanceDocumentDelivery.objects.filter(pk__in={ref for _, ref in delivery_of.values()})
+            .values_list("pk", "document_id")
+        ) if delivery_of else {}
+        links = {
+            pk: (document_label, _as_id(documents.get(ref)))
+            for pk, (document_label, ref) in delivery_of.items()
+            if _as_id(documents.get(ref)) is not None
+        }
+        return _answer(ctx, links, label)
+
+    return Source(label, derive)
+
+
+def _unplaceable_entries() -> Q:
+    """The audit entries the backfill leaves alone: those about the whole tenant.
+
+    Everything whose ``target_type`` no source reads (a setting, a fiscal year,
+    the ledger entity, a vendor contract, a customer's statement), an entry whose
+    reference is missing from its metadata, and every entry about a central
+    payroll run or the tenant's tax return, which are booked per branch share and
+    so are nobody's one branch.
+    """
+    from .models import PayrollRun, TaxFiling
+
+    references = audit_references()
+    readable = set(_document_labels()) | set(references) | set(_DELIVERED)
+    whole = ~Q(target_type__in=sorted(readable))
+    for target_type, (key, _label) in references.items():
+        whole |= Q(target_type=target_type) & ~Q(metadata__has_key=key)
+    for model, target_type in ((PayrollRun, "PayrollRun"), (TaxFiling, "TaxFiling")):
+        whole |= Q(
+            target_type=target_type,
+            target_id__in=model._base_manager.filter(branch__isnull=True)
+            .annotate(ref=Cast("pk", CharField())).values("ref"),
+        )
+    return whole
+
+
+def _unplaceable_events() -> Q:
+    """The platform trail's events the backfill leaves alone.
+
+    Every event of a module other than finance and procurement, and among
+    those, the same entries :func:`_unplaceable_entries` leaves alone, named the
+    way the platform trail names them: ``vs_finance.Invoice`` for the finance
+    trail's copy, the model's label for the backfill's own events.
+    """
+    from .models import PayrollRun, TaxFiling
+
+    documents = _document_labels()
+    references = audit_references()
+    readable = (
+        {f"vs_finance.{name}" for name in documents} | set(documents.values())
+        | {f"vs_finance.{name}" for name in references} | {f"vs_finance.{name}" for name in _DELIVERED}
+    )
+    whole = ~Q(module_key__in=["FINANCE", "PROCUREMENT"]) | ~Q(entity_type__in=sorted(readable))
+    for target_type, (key, _label) in references.items():
+        whole |= Q(entity_type=f"vs_finance.{target_type}") & ~Q(metadata__has_key=key)
+    for model, label in ((PayrollRun, "vs_finance.PayrollRun"), (TaxFiling, "vs_finance.TaxFiling")):
+        whole |= Q(
+            entity_type=label,
+            entity_id__in=model._base_manager.filter(branch__isnull=True)
+            .annotate(ref=Cast("pk", CharField())).values("ref"),
+        )
+    return whole
+
 
 _TARGETS = (
     Target(
@@ -110,6 +302,22 @@ _TARGETS = (
         ),
         order=900,
     ),
+    Target(
+        AUDIT_LOG,
+        (audited_document(), audited_reference(), delivered_document()),
+        order=1000, whole_tenant=_unplaceable_entries,
+    ),
+    Target(
+        PLATFORM_AUDIT,
+        (audited_document(), audited_reference(), delivered_document()),
+        order=1010, whole_tenant=_unplaceable_events, scope_field="tenant",
+    ),
+)
+
+#: Audit entries whose target carries no branch, and where their details name the row that does.
+_AUDIT_REFERENCES = (
+    ("BankStatement", "bank_account_id", BANK_ACCOUNT),
+    ("BankStatementLine", "bank_account_id", BANK_ACCOUNT),
 )
 
 #: Every finance model holding a foreign key to the journal it raised.
@@ -144,3 +352,5 @@ for _target in _TARGETS:
     register_target(_target)
 for _owner in _JOURNAL_OWNERS:
     register_journal_owner(_owner)
+for _reference in _AUDIT_REFERENCES:
+    register_audit_reference(*_reference)

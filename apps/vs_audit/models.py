@@ -300,6 +300,18 @@ class AuditEvent(models.Model):
         metadata (JSONField): Arbitrary context such as IP, job ids, or notes.
         event_at (DateTimeField): Canonical timestamp for the action.
         is_locked (BooleanField): Guards the append-only guarantee.
+        branch (ForeignKey): The branch of the document the event is about, for
+            the finance and procurement events that carry one.
+
+    ``branch`` is set by the emitter that knows the document, never inferred
+    here: the finance trail's copy of an entry takes that entry's branch
+    (:func:`vs_finance.audit.record`). A branch-bound reader sees a finance or
+    procurement event only when it names one of their branches, and one naming
+    no branch only when they read the whole school
+    (:func:`vs_audit.scoping.audit_scope_predicate`). Events of other modules
+    carry no branch and are read as before. Rows are append-only; the one
+    later write is ``manage.py branch_backfill`` filling a blank branch on an
+    old finance or procurement event.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
@@ -412,6 +424,15 @@ class AuditEvent(models.Model):
     # Canonical event time
     event_at = models.DateTimeField(default=timezone.now, db_index=True)
 
+    branch = models.ForeignKey(
+        "vs_tenants.Branch",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="audit_events",
+        help_text="The branch of the document the event is about; null for the whole tenant.",
+    )
+
     # Immutability flag
     is_locked = models.BooleanField(
         default=True,
@@ -428,6 +449,7 @@ class AuditEvent(models.Model):
             models.Index(fields=["severity", "status", "event_at"]),
             models.Index(fields=["tenant", "event_at"]),
             models.Index(fields=["impersonation_session", "event_at"]),
+            models.Index(fields=["tenant", "branch", "event_at"], name="vs_audit_branch_idx"),
         ]
 
     def __str__(self) -> str:

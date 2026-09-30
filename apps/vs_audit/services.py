@@ -208,6 +208,7 @@ def emit_audit_event(
     before_data: dict | None = None,
     diff_data: dict | None = None,
     metadata: dict | None = None,
+    branch=None,
 ):
     """
     Central helper: creates an AuditEvent + upserts EntityAuditTrail.
@@ -220,6 +221,9 @@ def emit_audit_event(
       in vs_exports and vs_tenants forward their own ``tenant=None`` default and
       must not be able to erase the context that way.
     - summary: auto-generated from action_type + entity context when not provided.
+    - branch: the branch (or its id) of the document the event is about, from an
+      emitter that knows it. Never inferred: a finance or procurement event with
+      none is read by whole-school readers only (see ``AuditEvent``).
     - Never raises - audit failures must never block business logic.
     - Returns the created AuditEvent, or None on failure.
 
@@ -272,6 +276,7 @@ def emit_audit_event(
                 before_data=before_data or {},
                 diff_data=diff_data or {},
                 metadata=metadata or {},
+                branch_id=getattr(branch, "pk", branch),
             )
 
             # The proxy middleware uses this request-local marker to avoid adding a

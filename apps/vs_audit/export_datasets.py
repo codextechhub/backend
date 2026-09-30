@@ -44,11 +44,24 @@ def _audit_events(scope):
     screen with ``tenant_slug``, so this reads the predicate directly and never
     ``audit_scope_predicate``. Codex is a tenant like any other here and
     recovers its own rows the same way every school does.
-    """
-    from .models import AuditEvent
-    from .scoping import tenant_event_predicate
 
-    return AuditEvent.objects.filter(tenant_event_predicate(scope.tenant))
+    The branch policy is shared, though: a branch-bound caller exports the
+    finance and procurement events of their own branches only, as the Event
+    Explorer shows them (:func:`vs_audit.scoping.branch_event_predicate`). A
+    scope with no user narrows nothing, as for every other dataset.
+    """
+    from vs_rbac.scoping import transaction_branch_scope_for_user
+
+    from .models import AuditEvent
+    from .scoping import branch_event_predicate, tenant_event_predicate
+
+    events = AuditEvent.objects.filter(tenant_event_predicate(scope.tenant))
+    user = getattr(scope, "user", None)
+    if user is None:
+        return events
+    reach = transaction_branch_scope_for_user(user, tenant=scope.tenant).branch_ids
+    narrowing = branch_event_predicate(reach)
+    return events if narrowing is None else events.filter(narrowing)
 
 
 _SEVERITY = choice_labels("vs_audit.models.AuditSeverity")

@@ -20,11 +20,19 @@ from .base import _ProcBase
 
 
 def _history(entity):
+    """The last ten changes to the entity's procurement settings, newest first.
+
+    Not narrowed to the caller's branches. The settings belong to the whole
+    tenant, so every entry here carries no branch, and a branch-bound reader who
+    may open the settings may see who changed them. The finance audit trail
+    itself (:mod:`vs_finance.views_ops.audit`) is where an entry with no branch
+    is shown to whole-school readers only.
+    """
     rows = (
         FinanceAuditLog.objects.filter(
             entity=entity,
             action=FinanceAuditAction.PROCUREMENT_SETTINGS_UPDATED,
-        ).select_related("actor", "effective_user").order_by("-created_at", "-id")[:10]
+        ).select_related("actor", "effective_user", "branch").order_by("-created_at", "-id")[:10]
     )
     return FinanceAuditLogSerializer(rows, many=True).data
 

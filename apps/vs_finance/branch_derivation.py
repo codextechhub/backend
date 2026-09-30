@@ -121,7 +121,15 @@ class Target:
     is booked per branch through branch shares of its own, such as a central
     payroll run or the tenant's tax return. Giving one of them a branch would
     hand that branch's staff every other branch's shares, so it is not a gap
-    the backfill fills.
+    the backfill fills. It may instead be a function returning the ``Q``, called
+    when an entity is planned, for a target whose rule reads what the other
+    targets registered (the finance audit trail's does).
+
+    ``scope_field`` names how a row reaches the books being planned: ``entity``
+    (the default) for a row of one set of books, ``tenant`` for a row kept per
+    tenant rather than per set of books, such as the platform audit trail's
+    copy of a finance entry. A tenant row is planned with each of its tenant's
+    books, and a row written by an earlier one is simply no longer blank.
     """
 
     model_label: str
@@ -131,6 +139,7 @@ class Target:
     has_branch_column: bool = True
     no_source_note: str = ""
     whole_tenant: object = None
+    scope_field: str = "entity"
 
     @property
     def model(self):
@@ -154,6 +163,7 @@ class JournalOwner:
 
 _TARGETS: dict[str, Target] = {}
 _JOURNAL_OWNERS: dict[tuple[str, str, str | None], JournalOwner] = {}
+_AUDIT_REFERENCES: dict[str, tuple[str, str]] = {}
 _CUSTOMER_SOURCES: dict[str, Callable[["Context", set[int]], dict[int, int]]] = {}
 _discovered = False
 
@@ -166,6 +176,23 @@ def register_target(target: Target) -> None:
 def register_journal_owner(owner: JournalOwner) -> None:
     """Declare a journal-raising model, read by the journal entry's first source."""
     _JOURNAL_OWNERS[(owner.model_label, owner.journal_field, owner.via)] = owner
+
+
+def register_audit_reference(target_type: str, metadata_key: str, model_label: str) -> None:
+    """Declare where an audit entry about ``target_type`` names the document it concerns.
+
+    For an entry whose target carries no branch of its own, the id of the row
+    that does sits in the entry's ``metadata[metadata_key]``, a row of
+    ``model_label``: a stock movement's entry names the item and keeps its store
+    in ``location_id``. The finance audit trail's backfill reads it there.
+    """
+    _AUDIT_REFERENCES[target_type] = (metadata_key, model_label)
+
+
+def audit_references() -> dict[str, tuple[str, str]]:
+    """Every registered audit reference, by the ``target_type`` it applies to."""
+    _discover()
+    return dict(_AUDIT_REFERENCES)
 
 
 def register_customer_source(label: str, resolve) -> None:
@@ -521,11 +548,13 @@ def plan_entity(entity) -> EntityPlan:
     plans: list[TargetPlan] = []
     for target in targets():
         model = target.model
-        rows = model._base_manager.filter(entity=entity)
+        owner = entity.tenant if target.scope_field == "tenant" else entity
+        rows = model._base_manager.filter(**{target.scope_field: owner})
         if target.has_branch_column:
             rows = rows.filter(branch__isnull=True)
         if target.whole_tenant is not None:
-            rows = rows.exclude(target.whole_tenant)
+            whole = target.whole_tenant
+            rows = rows.exclude(whole() if callable(whole) else whole)
         pks = list(rows.order_by("pk").values_list("pk", flat=True))
         plan = TargetPlan(target=target, blank=len(pks))
         plans.append(plan)
@@ -731,6 +760,7 @@ def _audit(plan: EntityPlan, target: Target, pk, label, branch_id, how) -> None:
             "branch_name": branch_name,
             "ledger_entity": plan.entity.code,
         },
+        branch=branch_id,
     )
     if event is None:
         raise BackfillAuditError(

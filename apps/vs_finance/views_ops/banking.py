@@ -425,6 +425,7 @@ class BankStatementLineDetailView(_FinanceBase):
                     before=before,
                     after={"deleted": True},
                     bank_account_id=bank_account.pk,
+                    branch=bank_account.branch_id,
                 )
                 deleted_statement_id = None
             else:
@@ -471,6 +472,7 @@ class BankStatementLineDetailView(_FinanceBase):
                         after=after,
                         bank_account_id=bank_account.pk,
                         deleted_line_id=line_id,
+                        branch=bank_account.branch_id,
                     )
                     deleted_statement_id = None
                 else:
@@ -489,6 +491,7 @@ class BankStatementLineDetailView(_FinanceBase):
                         after={"deleted": True, "lines": []},
                         bank_account_id=bank_account.pk,
                         deleted_line_id=line_id,
+                        branch=bank_account.branch_id,
                     )
                     deleted_statement_id = statement_id
 
@@ -740,6 +743,7 @@ class BankStatementDetailView(_FinanceBase):
                 before=before,
                 after=after,
                 bank_account_id=statement.bank_account_id,
+                branch=statement.bank_account.branch_id,
             )
 
         return success_response(

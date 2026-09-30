@@ -445,6 +445,49 @@ def run_period_depreciation(entity, *, up_to_date, actor_user=None):
         raise
 
 
+def _audit_run_per_branch(entity, groups, row_to_journal, *, actor_user, skipped):
+    """Audit a depreciation run once per branch it posted to, each under that branch.
+
+    A run covers every branch's assets and is booked one journal per period and
+    branch, so its trail is too: Lekki's bursar reads Lekki's charge and never
+    the school's total, which is the sum of the branches' entries. Charges left
+    in a closed year are named on the entry of their asset's branch.
+    """
+    from vs_tenants.models import Branch
+
+    from .models import FixedAsset
+
+    by_branch: dict = {}
+    for (period, branch_id), bucket in groups.items():
+        part = by_branch.setdefault(branch_id, {"rows": [], "journals": [], "periods": set()})
+        part["rows"].extend(bucket["rows"])
+        part["periods"].add(period)
+        part["journals"].append(row_to_journal[bucket["rows"][0].pk].pk)
+    names = dict(Branch.all_objects.filter(pk__in=[b for b in by_branch if b]).values_list("pk", "name"))
+    skipped_branch = dict(
+        FixedAsset.objects.filter(pk__in={item["asset_id"] for item in skipped})
+        .values_list("pk", "branch_id")
+    ) if skipped else {}
+    for branch_id in sorted(by_branch, key=lambda b: names.get(b, "")):
+        part = by_branch[branch_id]
+        rows, journal_ids = part["rows"], sorted(part["journals"])
+        amount = sum(r.amount for r in rows)
+        assets = len({r.asset_id for r in rows})
+        whose = f"{names[branch_id]}'s part of a" if branch_id in names else "a"
+        record(
+            entity=entity, action=FinanceAuditAction.DEPRECIATION_POSTED,
+            actor_user=actor_user, target_type="LedgerEntity", target_id=str(entity.pk),
+            branch=branch_id,
+            message=(
+                f"Posted {whose} {amount} kobo depreciation run across {assets} asset(s) "
+                f"in {len(part['periods'])} period(s)."
+            ),
+            journal_id=journal_ids[0], journal_ids=journal_ids, charges=len(rows),
+            total=amount, assets=assets, period_count=len(part["periods"]),
+            skipped=[item for item in skipped if skipped_branch.get(item["asset_id"]) == branch_id],
+        )
+
+
 @transaction.atomic
 # Transactional compound depreciation run.
 def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
@@ -542,15 +585,8 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
 
     total = sum(r.amount for r in charges)  # Total non-zero depreciation posted.
     period_count = len({period for period, _branch in groups})  # Periods, not journals.
-    record(  # Audit the depreciation run.
-        entity=entity, action=FinanceAuditAction.DEPRECIATION_POSTED,  # Audit action.
-        actor_user=actor_user, target=None, target_type="LedgerEntity",  # Entity-level target.
-        target_id=str(entity.pk),  # Structured target id.
-        message=f"Posted a {total} kobo depreciation run across {len(by_asset)} asset(s) "  # Human-readable summary.
-                f"in {period_count} period(s).",  # Include period count.
-        journal_id=journal_ids[0], journal_ids=journal_ids, charges=len(charges),  # Journal and charge metadata.
-        total=total, assets=len(by_asset), period_count=period_count,  # Aggregate metadata.
-        skipped=skipped,
+    _audit_run_per_branch(
+        entity, groups, row_to_journal, actor_user=actor_user, skipped=skipped,
     )
     return {"journal_id": journal_ids[0], "journal_ids": journal_ids,  # Return primary and all journal ids.
             "period_count": period_count, "total": total,  # Return period count and total.

@@ -1646,10 +1646,17 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
     a proxy also names whom they acted as: ``real_actor_name``,
     ``proxied_user_name`` and the ready ``acted_label`` ("Ada Obi for Chioma
     Okafor") come from :mod:`core.attribution`. Querysets feeding this
-    serializer select ``actor`` and ``effective_user`` together.
+    serializer select ``actor``, ``effective_user`` and ``branch`` together.
+
+    ``branch_id``/``branch_name`` are the branch of the document the entry is
+    about, null for an entry about the whole tenant or written before entries
+    carried a branch. One share of a central payroll run or of the tenant's tax
+    return is its own entry, so a whole-school reader tells the shares apart by
+    this column.
     """
 
     actor = serializers.CharField(source="actor.email", read_only=True, default=None)
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     action_display = serializers.CharField(source="get_action_display", read_only=True)
     real_actor_name = serializers.SerializerMethodField()
     proxied_user_name = serializers.SerializerMethodField()
@@ -1660,7 +1667,7 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
         fields = [
             "id", "action", "action_display", "status", "actor", "target_type",
             "target_id", "document_number", "message", "before", "after", "created_at",
-            "real_actor_name", "proxied_user_name", "acted_label",
+            "real_actor_name", "proxied_user_name", "acted_label", "branch_id", "branch_name",
         ]
 
     def _attribution(self, obj) -> dict:
