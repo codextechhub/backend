@@ -46,35 +46,49 @@ class _ReferenceFixture(_FinanceBranchFixture):
         "finance.report.view",
     )
 
-    def setUp(self):
-        super().setUp()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
 
         # Corona, three branches.
-        self.ikeja_family = self.customer(self.books, "REFI", self.ikeja)
-        self.lekki_family = self.customer(self.books, "REFL", self.lekki)
-        self.shared_family = self.customer(self.books, "REFS", None)
-        self.lekki_fees = self.fee_structure(self.books, "REFLEK", self.lekki)
-        self.shared_fees = self.fee_structure(self.books, "REFALL", None)
+        cls.ikeja_family = cls.customer(cls.books, "REFI", cls.ikeja)
+        cls.lekki_family = cls.customer(cls.books, "REFL", cls.lekki)
+        cls.shared_family = cls.customer(cls.books, "REFS", None)
+        cls.lekki_fees = cls.fee_structure(cls.books, "REFLEK", cls.lekki)
+        cls.shared_fees = cls.fee_structure(cls.books, "REFALL", None)
 
-        self.bursar = self.caller(
-            self.tenant, "ikeja.bursar@example.com", "ref-ikeja", branch=self.ikeja,
+        cls.bursar_user = cls.caller_user(
+            cls.tenant, "ikeja.bursar@example.com", "ref-ikeja", branch=cls.ikeja,
         )
-        self.head = self.caller(self.tenant, "head@example.com", "ref-head")
+        cls.head_user = cls.caller_user(cls.tenant, "head@example.com", "ref-head")
 
         # The single-branch school, where none of this may show.
-        self.solo_family = self.customer(self.solo_books, "SOLOF", self.solo_main)
-        self.solo_shared_family = self.customer(self.solo_books, "SOLOS", None)
-        self.solo_bursar = self.caller(
-            self.solo_tenant, "solo.bursar@example.com", "ref-solo",
-            branch=self.solo_main,
+        cls.solo_family = cls.customer(cls.solo_books, "SOLOF", cls.solo_main)
+        cls.solo_shared_family = cls.customer(cls.solo_books, "SOLOS", None)
+        cls.solo_bursar_user = cls.caller_user(
+            cls.solo_tenant, "solo.bursar@example.com", "ref-solo",
+            branch=cls.solo_main,
         )
 
-    def caller(self, tenant, email, role_key, *, branch=None):
-        user = self.user_for(tenant, email)
-        self.grant(user, *self.KEYS, tenant=tenant, role_key=role_key, branch=branch)
+    def setUp(self):
+        super().setUp()
+        self.bursar = self.client_as(self.bursar_user)
+        self.head = self.client_as(self.head_user)
+        self.solo_bursar = self.client_as(self.solo_bursar_user)
+
+    @classmethod
+    def caller_user(cls, tenant, email, role_key, *, branch=None):
+        user = cls.user_for(tenant, email)
+        cls.grant(user, *cls.KEYS, tenant=tenant, role_key=role_key, branch=branch)
+        return user
+
+    def client_as(self, user):
+        """An API client for *user*, carrying the user as ``acting_user``.
+
+        The client does not expose the user it authenticates as, and one test
+        needs the user itself to ask the scoping layer a question directly.
+        """
         client = TenantAPIClient(user=user)
-        # The client does not expose the user it authenticates as, and one test
-        # needs the user itself to ask the scoping layer a question directly.
         client.acting_user = user
         return client
 
@@ -298,12 +312,13 @@ class FeeRunBillsOnlyWhatTheCallerReachesTests(_ReferenceFixture):
     Lekki's families and nobody else's.
     """
 
-    def setUp(self):
-        super().setUp()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         from vs_finance.models import Account, FeeItem
 
-        revenue = Account.objects.get(entity=self.books, code="4100")
-        for structure in (self.lekki_fees, self.shared_fees):
+        revenue = Account.objects.get(entity=cls.books, code="4100")
+        for structure in (cls.lekki_fees, cls.shared_fees):
             FeeItem.objects.create(
                 structure=structure, line_no=1, description="Tuition",
                 revenue_account=revenue, amount=5_000_000,
@@ -439,19 +454,20 @@ class BulkRunsNarrowToTheCallersReachTests(_ReferenceFixture):
         "finance.dunning.generate", "finance.writeoff.create",
     )
 
-    def setUp(self):
-        super().setUp()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         from vs_finance.dunning import ensure_default_policy
         from vs_finance.models import Account
         from vs_finance.receivables import post_invoice
 
-        ensure_default_policy(self.books)
+        ensure_default_policy(cls.books)
 
-        self.ikeja_bill = self.invoice(self.books, self.ikeja_family, self.ikeja)
-        self.lekki_bill = self.invoice(self.books, self.lekki_family, self.lekki)
-        self.shared_bill = self.invoice(self.books, self.shared_family, None)
-        postable = Account.objects.get(entity=self.books, code="4100")
-        for bill in (self.ikeja_bill, self.lekki_bill, self.shared_bill):
+        cls.ikeja_bill = cls.invoice(cls.books, cls.ikeja_family, cls.ikeja)
+        cls.lekki_bill = cls.invoice(cls.books, cls.lekki_family, cls.lekki)
+        cls.shared_bill = cls.invoice(cls.books, cls.shared_family, None)
+        postable = Account.objects.get(entity=cls.books, code="4100")
+        for bill in (cls.ikeja_bill, cls.lekki_bill, cls.shared_bill):
             bill.lines.update(revenue_account=postable)
             post_invoice(bill)
             bill.refresh_from_db()

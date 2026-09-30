@@ -96,21 +96,6 @@ class _Base(TestCase):
         ):
             call_command("seed_academic_scenarios", only=slug, verbosity=0)
 
-    def test_the_cast_and_this_fixture_name_the_same_schools(self):
-        """A school added to CAST and not here fails EVERY test in this file.
-
-        Asserting the pair keeps the next addition to a single, readable failure
-        rather than several confusing ones.
-        """
-        from schools.vs_schools.models import School
-        from schools.vs_staff.management.commands.seed_staff_scenarios import CAST
-
-        seeded = set(School.objects.values_list("slug", flat=True))
-        self.assertEqual(
-            sorted(set(CAST) - seeded), [],
-            "these are in CAST but not built by this fixture",
-        )
-
     def cast(self):
         """Every school this fixture builds, in CAST order.
 
@@ -129,16 +114,44 @@ class _Base(TestCase):
         return out.getvalue()
 
 
-class IdempotenceTests(_Base):
+class _Seeded(_Base):
+    """The cast after one run of the seeder, shared by every test in the class.
+
+    A run takes several seconds, and these tests only read what it wrote, so it
+    runs once per class. A test that needs a second run makes it itself.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        call_command("seed_staff_scenarios", stdout=StringIO())
+
+
+class CastTests(_Base):
+    def test_the_cast_and_this_fixture_name_the_same_schools(self):
+        """A school added to CAST and not here fails EVERY test in this file.
+
+        Asserting the pair keeps the next addition to a single, readable failure
+        rather than several confusing ones.
+        """
+        from schools.vs_schools.models import School
+        from schools.vs_staff.management.commands.seed_staff_scenarios import CAST
+
+        seeded = set(School.objects.values_list("slug", flat=True))
+        self.assertEqual(
+            sorted(set(CAST) - seeded), [],
+            "these are in CAST but not built by this fixture",
+        )
+
+
+class IdempotenceTests(_Seeded):
     def test_it_builds_something_in_the_first_place(self):
         """Idempotence over an empty result would be trivially true."""
-        self.seed()
         for school in self.cast():
             with self.subTest(school=school.slug):
                 self.assertGreater(_counts(school.tenant)["staff"], 0)
 
     def test_running_it_twice_changes_nothing(self):
-        self.seed()
         first = {s.slug: _counts(s.tenant) for s in self.cast()}
         self.seed()
         self.assertEqual(
@@ -150,7 +163,7 @@ class IdempotenceTests(_Base):
             self.seed(only="not-a-school")
 
 
-class ScenarioCoverageTests(_Base):
+class ScenarioCoverageTests(_Seeded):
     def test_every_employment_status_the_screens_show_has_a_row_behind_it(self):
         """A state with no row is a screen nobody can check.
 
@@ -159,7 +172,6 @@ class ScenarioCoverageTests(_Base):
         while approved leave covers today. The test below is the one that keeps
         the cast able to show it.
         """
-        self.seed()
         present = set(
             StaffProfile.all_objects.filter(tenant=self.multi.tenant)
             .values_list("employment_status", flat=True).distinct(),
@@ -186,7 +198,6 @@ class ScenarioCoverageTests(_Base):
         from schools.vs_staff.services.leave import on_leave_today
         from vs_config.clock import tenant_today
 
-        self.seed()
         away = on_leave_today(self.multi.tenant, today=tenant_today(self.multi.tenant))
         self.assertTrue(away, "nobody in the cast has leave running today")
         for staff in StaffProfile.all_objects.filter(pk__in=away):
@@ -204,7 +215,6 @@ class ScenarioCoverageTests(_Base):
         and which every history screen would then render as a person who left
         for no reason.
         """
-        self.seed()
         for profile in StaffProfile.all_objects.filter(
             tenant=self.multi.tenant,
         ).exclude(employment_status=EmploymentStatus.INVITED):
@@ -223,7 +233,6 @@ class ScenarioCoverageTests(_Base):
         the rule that a registrar belongs to the school rather than to a site
         has nothing to demonstrate it.
         """
-        self.seed()
         self.assertTrue(
             StaffProfile.all_objects.filter(
                 tenant=self.multi.tenant, branch__isnull=True,
@@ -237,7 +246,6 @@ class ScenarioCoverageTests(_Base):
         state a screen is most likely to render wrongly, because it looks
         covered until you ask who is responsible.
         """
-        self.seed()
         rows = TeachingAssignment.all_objects.filter(tenant=self.multi.tenant)
         self.assertTrue(rows.filter(part=TeachingPart.LEAD).exists())
         self.assertTrue(rows.filter(part=TeachingPart.ASSISTANT).exists())
@@ -259,7 +267,6 @@ class ScenarioCoverageTests(_Base):
     def test_a_class_teacher_is_designated(self):
         from schools.vs_academics.models import SchoolClass
 
-        self.seed()
         self.assertTrue(
             SchoolClass.all_objects.filter(
                 tenant=self.multi.tenant, class_teacher__isnull=False,
@@ -275,7 +282,6 @@ class ScenarioCoverageTests(_Base):
         """
         from vs_workflow.models import WorkflowApproverGroup, WorkflowTemplate
 
-        self.seed()
         for school in (self.multi, self.solo_live, self.solo):
             with self.subTest(school=school.slug):
                 self.assertTrue(
@@ -300,7 +306,6 @@ class ScenarioCoverageTests(_Base):
         """
         from vs_rbac.models import TenantUserRoleAssignment
 
-        self.seed()
         tenant = self.multi_live.tenant
 
         def role_keys(job_title):
@@ -329,7 +334,6 @@ class ScenarioCoverageTests(_Base):
         """
         from vs_workflow.models import WorkflowApproverGroup
 
-        self.seed()
         for school in self.cast():
             with self.subTest(school=school.slug):
                 tenant = school.tenant
@@ -356,7 +360,6 @@ class ScenarioCoverageTests(_Base):
                     self.assertNotIn(bursar.user.email, groups["payout-senior-approver"])
 
     def test_leave_exists_in_both_an_approved_and_a_pending_state(self):
-        self.seed()
         statuses = set(
             LeaveRequest.all_objects.filter(tenant=self.multi.tenant)
             .values_list("status", flat=True),
@@ -378,7 +381,6 @@ class ScenarioCoverageTests(_Base):
         value: the posting is absent from what the screens read either way,
         which ``SingleBranchTests`` asserts against the endpoint.
         """
-        self.seed()
         rows = StaffProfile.all_objects.filter(tenant=self.solo_live.tenant)
         self.assertGreater(rows.count(), 0, "the recede case needs a cast")
         branch = self.solo_live.tenant.branches.get()

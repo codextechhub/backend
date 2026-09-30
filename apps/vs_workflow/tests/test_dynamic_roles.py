@@ -117,44 +117,47 @@ class _Fixture(TestCase):
     """Bright Star, with approving roles, a named person and a group - and
     Greenfield next door, whose people and rows must stay out of reach."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         n = next(_counter)
-        self.school = make_school(slug=f"dr-bright-{n}", name="Bright Star")
-        self.branch = make_branch(self.school)
-        self.tenant = self.school.tenant
+        cls.school = make_school(slug=f"dr-bright-{n}", name="Bright Star")
+        cls.branch = make_branch(cls.school)
+        cls.tenant = cls.school.tenant
 
-        self.manager = make_school_admin(self.branch, email=f"dr-manager-{n}@test.com")
-        _grant(self.manager, [PERM_GROUP_CREATE, PERM_GROUP_UPDATE, PERM_GROUP_DELETE, PERM_GROUP_VIEW])
-        self.viewer = make_school_admin(self.branch, email=f"dr-viewer-{n}@test.com")
-        _grant(self.viewer, [PERM_GROUP_VIEW])
-        self.nobody = make_school_admin(self.branch, email=f"dr-nobody-{n}@test.com")
+        cls.manager = make_school_admin(cls.branch, email=f"dr-manager-{n}@test.com")
+        _grant(cls.manager, [PERM_GROUP_CREATE, PERM_GROUP_UPDATE, PERM_GROUP_DELETE, PERM_GROUP_VIEW])
+        cls.viewer = make_school_admin(cls.branch, email=f"dr-viewer-{n}@test.com")
+        _grant(cls.viewer, [PERM_GROUP_VIEW])
+        cls.nobody = make_school_admin(cls.branch, email=f"dr-nobody-{n}@test.com")
 
-        self.bursar_role = make_role(self.tenant, name="Bursar", key="dr-bursar",
-                                     is_system_role=True)
-        self.principal_role = make_role(self.tenant, name="Principal", key="dr-principal",
-                                        is_system_role=True)
-        self.lab_role = make_role(self.tenant, name="Lab technician", key="dr-lab-tech")
-        self.bursar = make_school_admin(self.branch, email=f"dr-bursar-{n}@test.com")
-        self.principal = make_school_admin(self.branch, email=f"dr-principal-{n}@test.com")
-        self.adebayo = make_school_admin(self.branch, email=f"dr-adebayo-{n}@test.com")
-        make_assignment(self.tenant, self.bursar, self.bursar_role)
-        make_assignment(self.tenant, self.principal, self.principal_role)
-        self.science = WorkflowApproverGroup.objects.create(
-            tenant=self.tenant, code="dr-science", name="Science approvers")
+        cls.bursar_role = make_role(cls.tenant, name="Bursar", key="dr-bursar",
+                                    is_system_role=True)
+        cls.principal_role = make_role(cls.tenant, name="Principal", key="dr-principal",
+                                       is_system_role=True)
+        cls.lab_role = make_role(cls.tenant, name="Lab technician", key="dr-lab-tech")
+        cls.bursar = make_school_admin(cls.branch, email=f"dr-bursar-{n}@test.com")
+        cls.principal = make_school_admin(cls.branch, email=f"dr-principal-{n}@test.com")
+        cls.adebayo = make_school_admin(cls.branch, email=f"dr-adebayo-{n}@test.com")
+        make_assignment(cls.tenant, cls.bursar, cls.bursar_role)
+        make_assignment(cls.tenant, cls.principal, cls.principal_role)
+        cls.science = WorkflowApproverGroup.objects.create(
+            tenant=cls.tenant, code="dr-science", name="Science approvers")
         WorkflowApproverGroupMember.objects.create(
-            group=self.science, kind="USER", user=self.adebayo)
+            group=cls.science, kind="USER", user=cls.adebayo)
 
         other = make_school(slug=f"dr-green-{n}", name="Greenfield")
-        self.other_branch = make_branch(other)
-        self.other_tenant = other.tenant
-        self.outsider = make_school_admin(self.other_branch, email=f"dr-outsider-{n}@test.com")
-        make_role(self.other_tenant, name="Bursar", key="dr-bursar", is_system_role=True)
-        self.other_group = WorkflowApproverGroup.objects.create(
-            tenant=self.other_tenant, code="dr-theirs", name="Theirs")
+        cls.other_branch = make_branch(other)
+        cls.other_tenant = other.tenant
+        cls.outsider = make_school_admin(cls.other_branch, email=f"dr-outsider-{n}@test.com")
+        make_role(cls.other_tenant, name="Bursar", key="dr-bursar", is_system_role=True)
+        cls.other_group = WorkflowApproverGroup.objects.create(
+            tenant=cls.other_tenant, code="dr-theirs", name="Theirs")
 
-    def _dynamic_role(self, rules=None, *, code="spend", types=(REFUND,), tenant=None,
+    @classmethod
+    def _dynamic_role(cls, rules=None, *, code="spend", types=(REFUND,), tenant=None,
                       active=True):
-        tenant = tenant or self.tenant
+        tenant = tenant or cls.tenant
         dynamic_role = WorkflowDynamicRole.objects.create(
             tenant=tenant, code=code, name=code.title(), document_types=list(types),
             is_active=active)
@@ -163,7 +166,8 @@ class _Fixture(TestCase):
             tenant=tenant, document_types=list(types), rules=rules))
         return dynamic_role
 
-    def _stage_using(self, dynamic_role, doc_type=REFUND):
+    @staticmethod
+    def _stage_using(dynamic_role, doc_type=REFUND):
         template = _make_template(doc_type=doc_type, code=f"dr-tpl-{next(_counter)}")
         stage = _make_stage(template, code="spend")
         stage.approver_source = "DYNAMIC_ROLE"
@@ -408,23 +412,24 @@ class DynamicRoleApiTests(_Fixture):
 class DynamicRoleResolutionTests(_Fixture):
     """The first rule that holds decides, and the Otherwise row catches the rest."""
 
-    def setUp(self):
-        super().setUp()
-        self.requester = make_school_admin(self.branch, email=f"dr-req-{next(_counter)}@test.com")
-        self._post(self.requester, self.branch)
-        self.dynamic_role = self._dynamic_role([
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.requester = make_school_admin(cls.branch, email=f"dr-req-{next(_counter)}@test.com")
+        cls._post(cls.requester, cls.branch)
+        cls.dynamic_role = cls._dynamic_role([
             {"condition": _amount_over(2_000_000), "target_kind": "ROLE",
              "role_key": "dr-principal"},
             {"condition": {"op": "contains", "field": "requester.role_keys",
                            "value": "dr-lab-tech"},
              "target_kind": "GROUP", "group_code": "dr-science"},
             {"condition": {"all": [
-                {"op": "eq", "field": "requester.branch", "value": str(self.branch.pk)},
+                {"op": "eq", "field": "requester.branch", "value": str(cls.branch.pk)},
                 _amount_over(1_000_000),
-            ]}, "target_kind": "USER", "user": str(self.adebayo.pk)},
+            ]}, "target_kind": "USER", "user": str(cls.adebayo.pk)},
             _otherwise(target_kind="ROLE", role_key="dr-bursar"),
         ])
-        self.stage = self._stage_using(self.dynamic_role)
+        cls.stage = cls._stage_using(cls.dynamic_role)
 
     @staticmethod
     def _post(user, branch):
@@ -620,13 +625,14 @@ class DocumentAudienceTests(_Fixture):
     is offered to both.
     """
 
-    def setUp(self):
-        super().setUp()
-        self.platform = codex_tenant()
-        self.cx_admin = make_vision_user(email=f"dr-cx-{next(_counter)}@codex.test")
-        _grant(self.cx_admin, [PERM_GROUP_CREATE, PERM_GROUP_UPDATE, PERM_GROUP_DELETE, PERM_GROUP_VIEW])
-        self.cx_role = make_role(self.platform, name="CX approver",
-                                 key=f"dr-cx-approver-{next(_counter)}", is_system_role=True)
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.platform = codex_tenant()
+        cls.cx_admin = make_vision_user(email=f"dr-cx-{next(_counter)}@codex.test")
+        _grant(cls.cx_admin, [PERM_GROUP_CREATE, PERM_GROUP_UPDATE, PERM_GROUP_DELETE, PERM_GROUP_VIEW])
+        cls.cx_role = make_role(cls.platform, name="CX approver",
+                                key=f"dr-cx-approver-{next(_counter)}", is_system_role=True)
 
     def _types_offered(self, user, tenant):
         resp = _call(FIELDS, "get", user, tenant, path=BASE + "fields/")

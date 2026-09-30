@@ -80,17 +80,20 @@ urlpatterns = [
 # ── Shared fixtures ────────────────────────────────────────────────────────
 
 class PendingTenantTestBase(TestCase):
-    def setUp(self):
-        self.client = APIClient()
-        self.pending_school = make_school(
+    @classmethod
+    def setUpTestData(cls):
+        cls.pending_school = make_school(
             slug="pending-school", name="Pending School", status="PENDING",
         )
-        self.pending_branch = make_branch(self.pending_school)
-        self.pending_admin = make_school_admin(
-            self.pending_branch, email="pending-admin@test.com",
+        cls.pending_branch = make_branch(cls.pending_school)
+        cls.pending_admin = make_school_admin(
+            cls.pending_branch, email="pending-admin@test.com",
         )
-        self.pending_tenant = self.pending_school.tenant
-        self.pending_tenant.refresh_from_db()
+        cls.pending_tenant = cls.pending_school.tenant
+        cls.pending_tenant.refresh_from_db()
+
+    def setUp(self):
+        self.client = APIClient()
         self.assertEqual(self.pending_tenant.status, Tenant.Status.PENDING)
 
     def _as(self, user):

@@ -25,53 +25,71 @@ from .tests_branch_scope import _FinanceBranchFixture
 
 
 class _BudgetFixture(_FinanceBranchFixture):
-    def setUp(self):
+    """Corona's invoices, Ikeja's and Lekki's plans, and both bursars.
+
+    Built once per class; each bursar's API client is made per test.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
         from vs_finance.budgets import create_budget
 
-        super().setUp()
-        e = self.books
-        self.income = Account.objects.get(entity=e, code="4100")
-        self.posted_invoice(e, self.customer(e, "CIKJ", self.ikeja), self.ikeja)
-        lekki_parent = self.customer(e, "CLEK", self.lekki)
+        super().setUpTestData()
+        e = cls.books
+        cls.income = Account.objects.get(entity=e, code="4100")
+        cls.posted_invoice(e, cls.customer(e, "CIKJ", cls.ikeja), cls.ikeja)
+        lekki_parent = cls.customer(e, "CLEK", cls.lekki)
         for _ in range(3):
-            self.posted_invoice(e, lekki_parent, self.lekki)
+            cls.posted_invoice(e, lekki_parent, cls.lekki)
 
-        self.year = FiscalYear.objects.get(entity=e, year=2026)
-        self.ikeja_plan = create_budget(
-            e, name="Ikeja plan", fiscal_year=self.year, branch=self.ikeja,
-            lines=[self.line(200_000)])
-        self.lekki_plan = create_budget(
-            e, name="Lekki plan", fiscal_year=self.year, branch=self.lekki,
-            lines=[self.line(400_000)])
+        cls.year = FiscalYear.objects.get(entity=e, year=2026)
+        cls.ikeja_plan = create_budget(
+            e, name="Ikeja plan", fiscal_year=cls.year, branch=cls.ikeja,
+            lines=[cls.line(200_000)])
+        cls.lekki_plan = create_budget(
+            e, name="Lekki plan", fiscal_year=cls.year, branch=cls.lekki,
+            lines=[cls.line(400_000)])
 
-        self.adeyemi = self.client_holding(
+        cls.adeyemi_user = cls.user_holding(
             "plan-ikeja@corona.test", "finance.budget.view", "finance.budget.create",
-            "finance.budget.edit", branch=self.ikeja,
+            "finance.budget.edit", branch=cls.ikeja,
         )
-        self.bello = self.client_holding(
+        cls.bello_user = cls.user_holding(
             "plan-hq@corona.test", "finance.budget.view", "finance.budget.create",
             "finance.budget.edit",
         )
 
-    def line(self, amount, account=None):
-        return {"account": account or self.income, "cost_center": None, "period_no": 1, "amount": amount}
+    def setUp(self):
+        super().setUp()
+        self.adeyemi = TenantAPIClient(user=self.adeyemi_user)
+        self.bello = TenantAPIClient(user=self.bello_user)
 
-    def posted_invoice(self, entity, customer, branch):
+    @classmethod
+    def line(cls, amount, account=None):
+        return {"account": account or cls.income, "cost_center": None, "period_no": 1, "amount": amount}
+
+    @classmethod
+    def posted_invoice(cls, entity, customer, branch):
         from vs_finance.receivables import post_invoice
 
-        invoice = self.invoice(entity, customer, branch)
+        invoice = cls.invoice(entity, customer, branch)
         InvoiceLine.objects.filter(invoice=invoice).update(
             revenue_account=Account.objects.get(entity=entity, code="4100"))
         post_invoice(invoice)
         return invoice
 
-    def client_holding(self, email, *keys, branch=None, tenant=None):
-        tenant = tenant or self.tenant
-        user = self.grant(
-            self.user_for(tenant, email), *keys,
+    @classmethod
+    def user_holding(cls, email, *keys, branch=None, tenant=None):
+        tenant = tenant or cls.tenant
+        return cls.grant(
+            cls.user_for(tenant, email), *keys,
             tenant=tenant, role_key=f"role-{email}", branch=branch,
         )
-        return TenantAPIClient(user=user)
+
+    def client_holding(self, email, *keys, branch=None, tenant=None):
+        return TenantAPIClient(
+            user=self.user_holding(email, *keys, branch=branch, tenant=tenant),
+        )
 
     def get(self, client, path, books=None):
         books = books or self.books

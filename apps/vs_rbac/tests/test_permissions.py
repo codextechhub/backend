@@ -159,11 +159,12 @@ class ReadOnlyTests(TestCase):
 class UserHasRBACPermissionTests(TestCase):
     """Tests for the user_has_rbac_permission helper."""
 
-    def setUp(self):
-        self.school = make_school()
-        self.branch = make_branch(self.school)
-        self.perm_view = make_permission("finance.invoice.view")
-        self.perm_approve = make_permission("finance.invoice.approve")
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school()
+        cls.branch = make_branch(cls.school)
+        cls.perm_view = make_permission("finance.invoice.view")
+        cls.perm_approve = make_permission("finance.invoice.approve")
 
     # -- School-scoped users --------------------------------------------------
 
@@ -301,12 +302,15 @@ class UserHasRBACPermissionTests(TestCase):
 class HasRBACPermissionTests(TestCase):
     """Tests for the HasRBACPermission DRF permission class."""
 
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school()
+        cls.branch = make_branch(cls.school)
+        cls.perm_view = make_permission("finance.invoice.view")
+        cls.perm_approve = make_permission("finance.invoice.approve")
+
     def setUp(self):
-        self.school = make_school()
-        self.branch = make_branch(self.school)
         self.perm_class = HasRBACPermission()
-        self.perm_view = make_permission("finance.invoice.view")
-        self.perm_approve = make_permission("finance.invoice.approve")
 
     def _make_view(self, rbac_permission=None):
         view = MagicMock()

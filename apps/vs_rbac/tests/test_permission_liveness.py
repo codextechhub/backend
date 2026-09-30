@@ -26,17 +26,18 @@ KEY = "finance.invoice.approve"
 
 
 class PermissionLivenessTests(TestCase):
-    def setUp(self):
-        self.school = make_school(slug="permission-liveness", name="Riverbank School")
-        self.branch = make_branch(self.school)
-        self.tenant = self.school.tenant
-        self.user = make_staff_user(
-            self.branch, email="ada@permission-liveness.test",
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="permission-liveness", name="Riverbank School")
+        cls.branch = make_branch(cls.school)
+        cls.tenant = cls.school.tenant
+        cls.user = make_staff_user(
+            cls.branch, email="ada@permission-liveness.test",
         )
-        self.permission = make_permission(KEY)
-        self.role = make_role(self.tenant, name="Invoice Approver")
-        make_role_permission(self.role, self.permission)
-        make_assignment(self.tenant, self.user, self.role)
+        cls.permission = make_permission(KEY)
+        cls.role = make_role(cls.tenant, name="Invoice Approver")
+        make_role_permission(cls.role, cls.permission)
+        make_assignment(cls.tenant, cls.user, cls.role)
 
     def _set_active(self, obj, value):
         obj.is_active = value

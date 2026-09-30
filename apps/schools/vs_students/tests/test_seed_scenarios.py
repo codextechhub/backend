@@ -22,6 +22,15 @@ from schools.vs_students.management.commands.seed_student_scenarios import (
 from vs_rbac.tests.helpers import make_branch, make_school, make_school_admin
 
 
+def _seed(only=None):
+    out = StringIO()
+    call_command(
+        "seed_student_scenarios", stdout=out,
+        **({"only": only} if only else {}),
+    )
+    return out.getvalue()
+
+
 def _counts(tenant):
     return {
         "students": Student.all_objects.filter(tenant=tenant).count(),
@@ -31,6 +40,8 @@ def _counts(tenant):
 
 
 class _Base(TestCase):
+    """Five schools in every shape the seeder's cast names, not yet seeded."""
+
     @classmethod
     def setUpTestData(cls):
         cls.multi = make_school(slug="brightfield-lekki", name="Brightfield Schools")
@@ -66,6 +77,24 @@ class _Base(TestCase):
 
         call_command("seed_academic_scenarios", verbosity=0)
 
+    def seed(self, only=None):
+        return _seed(only)
+
+
+class _Seeded(_Base):
+    """The cast after one run of the seeder, shared by every test in the class.
+
+    A run takes tens of seconds, and these tests only read what it wrote, so it
+    runs once per class. A test that needs a second run makes it itself.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        _seed()
+
+
+class CastTests(_Base):
     def test_the_cast_and_this_fixture_name_the_same_schools(self):
         """A school added to CAST and not here fails EVERY test in this file.
 
@@ -83,25 +112,15 @@ class _Base(TestCase):
             "these are in CAST but not built by this fixture",
         )
 
-    def seed(self, only=None):
-        out = StringIO()
-        call_command(
-            "seed_student_scenarios", stdout=out,
-            **({"only": only} if only else {}),
-        )
-        return out.getvalue()
 
-
-class IdempotenceTests(_Base):
+class IdempotenceTests(_Seeded):
     def test_it_builds_something_in_the_first_place(self):
         """Idempotence over an empty result would be trivially true."""
-        self.seed()
         for school in (self.multi, self.solo, self.live):
             with self.subTest(school=school.slug):
                 self.assertGreater(_counts(school.tenant)["students"], 0)
 
     def test_running_it_twice_changes_nothing(self):
-        self.seed()
         first = {s.slug: _counts(s.tenant) for s in (self.multi, self.solo, self.live)}
         self.seed()
         self.assertEqual(
@@ -110,10 +129,9 @@ class IdempotenceTests(_Base):
         )
 
 
-class ScenarioCoverageTests(_Base):
+class ScenarioCoverageTests(_Seeded):
     def test_every_status_the_screens_show_has_a_row_behind_it(self):
         """A state with no row is a screen nobody can check."""
-        self.seed()
         present = set(
             Student.all_objects.values_list("status", flat=True).distinct(),
         )
@@ -133,7 +151,6 @@ class ScenarioCoverageTests(_Base):
         produced one would leave the Guardians screen looking correct against
         data that could not test it.
         """
-        self.seed()
         shared = [
             g for g in Guardian.all_objects.prefetch_related(
                 "student_links__student",
@@ -144,7 +161,6 @@ class ScenarioCoverageTests(_Base):
 
     def test_at_least_one_student_is_on_the_roll_with_no_class(self):
         """So Classes and transfers has something to place."""
-        self.seed()
         self.assertTrue(
             Student.all_objects.filter(
                 status=StudentStatus.ENROLLED,
@@ -152,7 +168,6 @@ class ScenarioCoverageTests(_Base):
         )
 
     def test_the_single_branch_school_puts_every_child_at_its_only_branch(self):
-        self.seed()
         branches = set(
             Student.all_objects.filter(tenant=self.solo.tenant)
             .values_list("branch_id", flat=True),
@@ -161,7 +176,6 @@ class ScenarioCoverageTests(_Base):
 
     def test_a_suspended_student_keeps_their_seat(self):
         """Driven through the state machine, so this could not be faked."""
-        self.seed()
         suspended = Student.all_objects.filter(
             status=StudentStatus.SUSPENDED,
         ).first()
@@ -169,7 +183,6 @@ class ScenarioCoverageTests(_Base):
         self.assertTrue(suspended.enrolments.filter(is_active=True).exists())
 
     def test_a_withdrawn_student_has_released_theirs(self):
-        self.seed()
         withdrawn = Student.all_objects.filter(
             status=StudentStatus.WITHDRAWN,
         ).first()
@@ -198,7 +211,7 @@ class RefusalTests(_Base):
         self.assertIn("brightfield-lekki", str(caught.exception))
 
 
-class HouseholdConsistencyTests(_Base):
+class HouseholdConsistencyTests(_Seeded):
     """A shared guardian must be ONE person, and the same one tomorrow.
 
     The seeder keys a household on the surname, so several students share a
@@ -208,7 +221,6 @@ class HouseholdConsistencyTests(_Base):
     """
 
     def test_a_guardians_honorific_agrees_with_every_relationship(self):
-        self.seed()
         titled = Guardian.all_objects.prefetch_related("student_links").filter(
             full_name__startswith="Mr",
         )
@@ -236,7 +248,6 @@ class HouseholdConsistencyTests(_Base):
         catch. This fails the moment the derivation stops being a pure function
         of the surname.
         """
-        self.seed()
         rows = Guardian.all_objects.filter(
             email__endswith=".household@example.ng",
         ).values_list("email", "phone")

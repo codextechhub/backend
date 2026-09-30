@@ -67,31 +67,34 @@ _roles = itertools.count(1)
 
 
 class _APCorrectionsFixture(_FinanceBranchFixture):
-    """Corona's books, Chuks Stationery, input VAT and a store at Ikeja."""
+    """Corona's books, Chuks Stationery, input VAT and a store at Ikeja, built once per class."""
 
-    def setUp(self):
-        super().setUp()
-        e = self.books
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        e = cls.books
         ProcurementSettings.objects.update_or_create(
             entity=e, defaults={"allow_non_po_invoices": True},
         )
-        self.store = StockLocation.objects.create(
+        cls.store = StockLocation.objects.create(
             entity=e, code="MAIN", name="Main store", is_default=True,
         )
-        self.vendor = Vendor.objects.create(
+        cls.vendor = Vendor.objects.create(
             entity=e, code="CHUKS", name="Chuks Stationery",
-            payable_account=self.acc("2100"), default_expense_account=self.acc("5300"),
+            payable_account=Account.objects.get(entity=e, code="2100"),
+            default_expense_account=Account.objects.get(entity=e, code="5300"),
             kyc_status="VERIFIED",
         )
-        self.vat = TaxCode.objects.create(
+        cls.vat = TaxCode.objects.create(
             entity=e, code="VAT-IN", name="Input VAT 7.5%", rate_bps=750,
-            paid_account=self.acc("1300"),
+            paid_account=Account.objects.get(entity=e, code="1300"),
         )
-        self.period = FiscalPeriod.objects.get(entity=e, period_no=1)
+        cls.period = FiscalPeriod.objects.get(entity=e, period_no=1)
 
     # -- ledger ------------------------------------------------------------- #
 
     def acc(self, code):
+        """The account ``code`` in this test's books, which a test may swap for another school's."""
         return Account.objects.get(entity=self.books, code=code)
 
     def balance(self, code):

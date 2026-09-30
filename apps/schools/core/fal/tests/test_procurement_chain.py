@@ -20,15 +20,20 @@ from .base import FALFixture
 class ProcurementChainTests(FALFixture):
     """Corona buys 100 exercise books from Ojo Stationers, at N250 each."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls._publish_default_ladder()
+        cls.approver = cls.user_for(cls.corona, "approver@corona.test")
+        cls._staff_the_approver_role()
+        cls.vendor = cls._vendor(cls.corona_books, "Ojo Stationers")
+
     def setUp(self):
         super().setUp()
         self.port = DjangoProcurementActionAdapter()
-        self._publish_default_ladder()
-        self.approver = self.user_for(self.corona, "approver@corona.test")
-        self._staff_the_approver_role()
-        self.vendor = self._vendor(self.corona_books, "Ojo Stationers")
 
-    def _publish_default_ladder(self):
+    @classmethod
+    def _publish_default_ladder(cls):
         """Give Corona the default spend ladder, the way a school asks for one.
 
         Books arrive holding a route per document type with no steps in it, because
@@ -38,9 +43,10 @@ class ProcurementChainTests(FALFixture):
         """
         from vs_procurement.approvals import ensure_tenant_approval_templates
 
-        ensure_tenant_approval_templates(self.corona.tenant)
+        ensure_tenant_approval_templates(cls.corona.tenant)
 
-    def _staff_the_approver_role(self):
+    @classmethod
+    def _staff_the_approver_role(cls):
         """Make the approver eligible for the seeded ladder, the way a school does.
 
         The ladder names an approver group, filled here with the role the approver
@@ -54,19 +60,20 @@ class ProcurementChainTests(FALFixture):
         from vs_workflow.models import WorkflowApproverGroup, WorkflowApproverGroupMember
 
         role, _ = TenantRoleTemplate.objects.get_or_create(
-            tenant=self.corona.tenant, key="procurement-checker",
+            tenant=cls.corona.tenant, key="procurement-checker",
             defaults={"name": "Procurement Checker", "status": "ACTIVE",
                       "is_system_role": True},
         )
-        make_assignment(self.corona.tenant, self.approver, role)
+        make_assignment(cls.corona.tenant, cls.approver, role)
         group = WorkflowApproverGroup.all_objects.get(
-            tenant=self.corona.tenant, code=WF_DEFAULT_MANAGER_GROUP,
+            tenant=cls.corona.tenant, code=WF_DEFAULT_MANAGER_GROUP,
         )
         WorkflowApproverGroupMember.objects.get_or_create(
             group=group, kind=GroupMemberKind.ROLE, role=role,
         )
 
-    def _vendor(self, books, name):
+    @classmethod
+    def _vendor(cls, books, name):
         """A supplier the school may actually pay.
 
         KYC verified on purpose: the engine refuses to pay an unverified vendor,
@@ -79,8 +86,8 @@ class ProcurementChainTests(FALFixture):
         return Vendor.objects.create(
             entity_id=books.entity_ref, name=name,
             kyc_status=VendorKycStatus.VERIFIED,
-            payable_account=self.account(books.entity_ref, "2100"),
-            default_expense_account=self.account(books.entity_ref, "5200"),
+            payable_account=cls.account(books.entity_ref, "2100"),
+            default_expense_account=cls.account(books.entity_ref, "5200"),
         )
 
     def _approved_requisition(self):

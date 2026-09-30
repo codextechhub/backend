@@ -31,44 +31,49 @@ AS_OF = datetime.date(2026, 1, 31)
 
 
 class _OverviewFixture(_BranchTenantsFixture, TestCase):
-    def setUp(self):
+    """The school and documents described in the module docstring, built once per class."""
+
+    @classmethod
+    def setUpTestData(cls):
         from .contracts import activate_contract
         from .models import VendorContract
 
-        super().setUp()
-        e = self.multi.entity
-        self.contract = VendorContract.objects.create(
-            entity=e, vendor=self.multi.vendor, reference="CLEAN", title="Cleaning services",
+        super().setUpTestData()
+        e = cls.multi.entity
+        cls.contract = VendorContract.objects.create(
+            entity=e, vendor=cls.multi.vendor, reference="CLEAN", title="Cleaning services",
             start_date=datetime.date(2025, 3, 1), end_date=datetime.date(2026, 2, 20), contract_value=500_000,
         )
-        activate_contract(self.contract)
-        self.chairs = self.order(self.lekki, 10, 10_000)
-        self.receive(self.chairs, 4)
-        self.desks = self.order(self.ikeja, 5, 20_000, contract=self.contract)
-        self.bill(self.desks, self.receive(self.desks, 5), 5, price=22_000)
-        self.lamps = self.order(self.lekki, 4, 5_000)
-        self.bill(self.lamps, self.receive(self.lamps, 2), 3, post=False)
-        self.held = Vendor.objects.create(
-            entity=e, code="HELD", name="Prime Uniforms", payable_account=self.acc(e, "2100"),
-            default_expense_account=self.acc(e, "5300"), kyc_status="VERIFIED",
+        activate_contract(cls.contract)
+        cls.chairs = cls.order(cls.lekki, 10, 10_000)
+        cls.receive(cls.chairs, 4)
+        cls.desks = cls.order(cls.ikeja, 5, 20_000, contract=cls.contract)
+        cls.bill(cls.desks, cls.receive(cls.desks, 5), 5, price=22_000)
+        cls.lamps = cls.order(cls.lekki, 4, 5_000)
+        cls.bill(cls.lamps, cls.receive(cls.lamps, 2), 3, post=False)
+        cls.held = Vendor.objects.create(
+            entity=e, code="HELD", name="Prime Uniforms", payable_account=cls.acc(e, "2100"),
+            default_expense_account=cls.acc(e, "5300"), kyc_status="VERIFIED",
         )
-        uniforms = self.order(self.ikeja, 2, 3_000, vendor=self.held)
-        self.bill(uniforms, self.receive(uniforms, 2), 2)
-        Vendor.objects.filter(pk=self.held.pk).update(on_hold=True)
+        uniforms = cls.order(cls.ikeja, 2, 3_000, vendor=cls.held)
+        cls.bill(uniforms, cls.receive(uniforms, 2), 2)
+        Vendor.objects.filter(pk=cls.held.pk).update(on_hold=True)
 
-    def order(self, branch, qty, price, *, contract=None, vendor=None):
+    @classmethod
+    def order(cls, branch, qty, price, *, contract=None, vendor=None):
         from .purchasing import price_po
 
         po = PurchaseOrder.objects.create(
-            entity=self.multi.entity, vendor=vendor or self.multi.vendor, branch=branch, contract=contract,
+            entity=cls.multi.entity, vendor=vendor or cls.multi.vendor, branch=branch, contract=contract,
             order_date=datetime.date(2026, 1, 5), status="APPROVED",
         )
         PurchaseOrderLine.objects.create(purchase_order=po, line_no=1, description="item", quantity=qty,
-                                         unit_price=price, expense_account=self.acc(self.multi.entity, "5300"))
+                                         unit_price=price, expense_account=cls.acc(cls.multi.entity, "5300"))
         price_po(po)
         return po
 
-    def receive(self, po, qty):
+    @classmethod
+    def receive(cls, po, qty):
         from .purchasing import post_grn
 
         grn = GoodsReceivedNote.objects.create(entity=po.entity, vendor=po.vendor, purchase_order=po,
@@ -79,11 +84,12 @@ class _OverviewFixture(_BranchTenantsFixture, TestCase):
         post_grn(grn)
         return grn
 
-    def bill(self, po, grn, qty, *, price=None, post=True):
+    @classmethod
+    def bill(cls, po, grn, qty, *, price=None, post=True):
         from .models import VendorInvoiceLine
         from .payables import match_vendor_invoice, post_vendor_invoice, price_vendor_invoice
 
-        invoice = self.make_bill(po.entity, po.vendor, [], po=po)
+        invoice = cls.make_bill(po.entity, po.vendor, [], po=po)
         invoice.branch = po.branch
         invoice.save(update_fields=["branch"])
         line = po.lines.first()

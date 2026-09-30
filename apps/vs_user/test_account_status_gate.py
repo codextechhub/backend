@@ -93,23 +93,27 @@ NEVER_APPROVED = (
 class _Fixture(TestCase):
     """One school, and an account in whatever status a test asks for."""
 
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="bright-star", name="Bright Star School")
+        cls.branch = make_branch(cls.school, name="Main Branch", is_main=True)
+        cls.tenant = cls.school.tenant
+
     def setUp(self):
-        self.school = make_school(slug="bright-star", name="Bright Star School")
-        self.branch = make_branch(self.school, name="Main Branch", is_main=True)
-        self.tenant = self.school.tenant
         self._n = 0
         self._admin = None
 
-    def user(self, status, *, email=None, password=PW):
-        self._n += 1
+    @classmethod
+    def _create_user(cls, status, *, email, last_name, password=PW):
+        """An account in *status* at the class's school, read back fresh."""
         user = User.objects.create_user(
-            email=email or f"person{self._n}@bright-star.test",
+            email=email,
             password=password,
             status=status,
             first_name="Test",
-            last_name=f"Person{self._n}",
-            tenant=self.tenant,
-            branch=self.branch,
+            last_name=last_name,
+            tenant=cls.tenant,
+            branch=cls.branch,
         )
         if status == User.Status.LOCKED:
             # A row carrying the LOCKED status is a fossil - no code writes it
@@ -122,6 +126,30 @@ class _Fixture(TestCase):
             )
         return User.objects.get(pk=user.pk)
 
+    def user(self, status, *, email=None, password=PW):
+        self._n += 1
+        return self._create_user(
+            status,
+            email=email or f"person{self._n}@bright-star.test",
+            last_name=f"Person{self._n}",
+            password=password,
+        )
+
+    @classmethod
+    def _create_admin(cls, *, last_name):
+        """Amaka, who may administer the others and holds the reset key."""
+        user = cls._create_user(
+            User.Status.ACTIVE, email="amaka@bright-star.test", last_name=last_name,
+        )
+        role = make_role(cls.tenant, name="Administrator")
+        # update -> the admin reset; create -> the invitation resend. Both
+        # are held, so a refusal in these tests is never about the key.
+        for key in ("platform.team.view", "platform.team.create",
+                    "platform.team.update"):
+            make_role_permission(role, make_permission(key))
+        make_assignment(cls.tenant, user, role)
+        return user
+
     def admin(self):
         """An account that may administer the others, with the reset key.
 
@@ -129,15 +157,8 @@ class _Fixture(TestCase):
         try to create Amaka once per iteration.
         """
         if getattr(self, "_admin", None) is None:
-            user = self.user(User.Status.ACTIVE, email="amaka@bright-star.test")
-            role = make_role(self.tenant, name="Administrator")
-            # update -> the admin reset; create -> the invitation resend. Both
-            # are held, so a refusal in these tests is never about the key.
-            for key in ("platform.team.view", "platform.team.create",
-                        "platform.team.update"):
-                make_role_permission(role, make_permission(key))
-            make_assignment(self.tenant, user, role)
-            self._admin = user
+            self._n += 1
+            self._admin = self._create_admin(last_name=f"Person{self._n}")
         return self._admin
 
     def login(self, user, password=PW):
@@ -374,9 +395,14 @@ class RequestGateTests(_Fixture):
 class AdminPasswordResetStatusTests(_Fixture):
     """Call site 3: the admin-initiated reset."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.amaka = cls._create_admin(last_name="Person1")
+
     def setUp(self):
         super().setUp()
-        self.amaka = self.admin()
+        self._n, self._admin = 1, self.amaka
         self.client = TenantAPIClient(self.amaka)
 
     def post(self, target):
@@ -757,11 +783,19 @@ class RejectedAccountHasNoWayBackTests(_Fixture):
     closing one and leaving another open would leave the grant reachable again.
     """
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.amaka = cls._create_admin(last_name="Person1")
+        cls.target = cls._create_user(
+            User.Status.REJECTED, email="person2@bright-star.test",
+            last_name="Person2",
+        )
+
     def setUp(self):
         super().setUp()
-        self.amaka = self.admin()
+        self._n, self._admin = 2, self.amaka
         self.client = TenantAPIClient(self.amaka)
-        self.target = self.user(User.Status.REJECTED)
 
     def test_cannot_sign_in(self):
         self.assertEqual(self.login(self.target).status_code, 401)

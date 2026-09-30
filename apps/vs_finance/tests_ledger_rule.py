@@ -37,10 +37,16 @@ JUNE_END = datetime.date(2026, 6, 30)
 
 
 class _ReversalFixture(_Phase4FixtureMixin, TestCase):
-    """Books with a year of open periods, and a helper to post a journal."""
+    """Books with a year of open periods, and a helper to post a journal.
 
-    def setUp(self):
-        self.entity, _, self.periods = self.build_books()
+    The books are built once per class. The mixin's builders are instance
+    methods, so ``setUpTestData`` calls them on a throwaway instance.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.entity, _, cls.periods = cls().build_books()
 
     def post(self, pairs, *, date=datetime.date(2026, 1, 15), dimensions=None, source="MANUAL"):
         """Post ``pairs`` of ``(code, debit, credit)``; ``dimensions`` tags every line.

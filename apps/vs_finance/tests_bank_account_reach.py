@@ -28,24 +28,31 @@ JAN = datetime.date(2026, 1, 12)
 _bursars = itertools.count(1)
 
 
-class BankAccountNamedInAPostingTests(_FinanceBranchFixture):
-    """Each money-out route refuses every account but the caller's own branch's."""
+def _bank(entity, name, branch, tag):
+    """A bank account on its own GL account, since BankAccount holds a OneToOne to one."""
+    gl = Account.objects.create(
+        entity=entity, code=f"11{tag}", name=f"Cash {tag}",
+        account_type=Account.objects.get(entity=entity, code="1000").account_type,
+        is_postable=True,
+    )
+    return BankAccount.objects.create(
+        entity=entity, name=name, branch=branch, gl_account=gl,
+    )
 
-    def setUp(self):
-        super().setUp()
-        self.ikeja_bank = self.bank("Ikeja Collections", self.ikeja, "30")
-        self.lekki_bank = self.bank("Lekki Collections", self.lekki, "31")
-        self.shared_bank = self.bank("GTBank Operations", None, "32")
 
-    def bank(self, name, branch, tag):
-        gl = Account.objects.create(
-            entity=self.books, code=f"11{tag}", name=f"Cash {tag}",
-            account_type=Account.objects.get(entity=self.books, code="1000").account_type,
-            is_postable=True,
-        )
-        return BankAccount.objects.create(
-            entity=self.books, name=name, branch=branch, gl_account=gl,
-        )
+class _BankAccountsFixture(_FinanceBranchFixture):
+    """A bank account at Ikeja, one at Lekki, and one not yet given a branch."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ikeja_bank = cls.bank("Ikeja Collections", cls.ikeja, "30")
+        cls.lekki_bank = cls.bank("Lekki Collections", cls.lekki, "31")
+        cls.shared_bank = cls.bank("GTBank Operations", None, "32")
+
+    @classmethod
+    def bank(cls, name, branch, tag):
+        return _bank(cls.books, name, branch, tag)
 
     def bursar(self, *keys):
         """Ikeja's bursar, pinned to Ikeja, holding ``keys``."""
@@ -78,6 +85,10 @@ class BankAccountNamedInAPostingTests(_FinanceBranchFixture):
                     self.assertEqual(refused_count(), 0, f"{path} wrote a row before refusing")
         self.assertBankAccepted(
             self.post(client, path, {**body, "bank_account": self.ikeja_bank.pk}))
+
+
+class BankAccountNamedInAPostingTests(_BankAccountsFixture):
+    """Each money-out route refuses every account but the caller's own branch's."""
 
     # -- refunds ---------------------------------------------------------------- #
 
@@ -358,12 +369,11 @@ class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
 class BranchOnThePickersTests(_FinanceBranchFixture):
     """The screens narrow their bank picker from branch ids the API returns."""
 
-    bank = BankAccountNamedInAPostingTests.bank
-
-    def setUp(self):
-        super().setUp()
-        self.ikeja_bank = self.bank("Ikeja Pick", self.ikeja, "50")
-        self.shared_bank = self.bank("Shared Pick", None, "51")
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ikeja_bank = _bank(cls.books, "Ikeja Pick", cls.ikeja, "50")
+        cls.shared_bank = _bank(cls.books, "Shared Pick", None, "51")
 
     def test_bank_accounts_and_the_documents_that_pay_from_them_carry_their_branch(self):
         from vs_finance.models import ExpenseClaim
@@ -444,7 +454,7 @@ class OneBranchSchoolBankTests(_FinanceBranchFixture):
         self.assertNotIn("Pay it from", str(response.data))
 
 
-class StatementImportBatchesFollowTheirAccountTests(BankAccountNamedInAPostingTests):
+class StatementImportBatchesFollowTheirAccountTests(_BankAccountsFixture):
     """A bank-statement import is read by its bank account's branch, exclusively.
 
     Ikeja's bursar sees the statement imported into Ikeja's account, and neither
@@ -453,27 +463,29 @@ class StatementImportBatchesFollowTheirAccountTests(BankAccountNamedInAPostingTe
     ordinary import with no branch is still the school's.
     """
 
-    def setUp(self):
-        super().setUp()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         from vs_import_data.models import ImportBatch
 
-        self.uploader = self.user_for(self.tenant, "uploader@corona.test")
-        self.batches = {
-            name: self.statement_batch(bank) for name, bank in (
-                ("ikeja", self.ikeja_bank), ("lekki", self.lekki_bank), ("shared", self.shared_bank),
+        cls.uploader = cls.user_for(cls.tenant, "uploader@corona.test")
+        cls.batches = {
+            name: cls.statement_batch(bank) for name, bank in (
+                ("ikeja", cls.ikeja_bank), ("lekki", cls.lekki_bank), ("shared", cls.shared_bank),
             )
         }
-        self.roll = ImportBatch.all_objects.create(
-            tenant=self.tenant, branch=None, uploaded_by=self.uploader,
+        cls.roll = ImportBatch.all_objects.create(
+            tenant=cls.tenant, branch=None, uploaded_by=cls.uploader,
             dataset_type="students", file="imports/roll.csv",
         )
 
-    def statement_batch(self, bank):
+    @classmethod
+    def statement_batch(cls, bank):
         from vs_finance.models import BankStatementImportContext
         from vs_import_data.models import ImportBatch
 
         batch = ImportBatch.all_objects.create(
-            tenant=self.tenant, branch=bank.branch, uploaded_by=self.uploader,
+            tenant=cls.tenant, branch=bank.branch, uploaded_by=cls.uploader,
             dataset_type="bank_statements", file=f"imports/{bank.pk}.csv",
         )
         BankStatementImportContext.objects.create(

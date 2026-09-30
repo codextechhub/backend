@@ -31,43 +31,44 @@ INVOICE = 100_000
 
 
 class _LedgerFixture(_FinanceBranchFixture):
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_finance.receivables import post_invoice, post_payment
 
-        super().setUp()
-        e = self.books
+        super().setUpTestData()
+        e = cls.books
         income = Account.objects.get(entity=e, code="4100")
 
         def posted_invoice(customer, branch):
-            invoice = self.invoice(e, customer, branch)
+            invoice = cls.invoice(e, customer, branch)
             InvoiceLine.objects.filter(invoice=invoice).update(revenue_account=income)
             post_invoice(invoice)
             invoice.refresh_from_db()
             return invoice
 
-        ikeja_parent = self.customer(e, "CIKJ", self.ikeja)
-        self.ikeja_invoice = posted_invoice(ikeja_parent, self.ikeja)
-        lekki_parent = self.customer(e, "CLEK", self.lekki)
-        lekki_invoices = [posted_invoice(lekki_parent, self.lekki) for _ in range(3)]
-        posted_invoice(self.customer(e, "CALL", None), None)
+        ikeja_parent = cls.customer(e, "CIKJ", cls.ikeja)
+        cls.ikeja_invoice = posted_invoice(ikeja_parent, cls.ikeja)
+        lekki_parent = cls.customer(e, "CLEK", cls.lekki)
+        lekki_invoices = [posted_invoice(lekki_parent, cls.lekki) for _ in range(3)]
+        posted_invoice(cls.customer(e, "CALL", None), None)
 
         receipt = Payment.objects.create(
-            entity=e, customer=ikeja_parent, branch=self.ikeja,
+            entity=e, customer=ikeja_parent, branch=cls.ikeja,
             payment_date=datetime.date(2026, 1, 15), amount=60_000,
             deposit_account=Account.objects.get(entity=e, code="1100"),
         )
-        post_payment(receipt, allocations=[(self.ikeja_invoice, 60_000)])
+        post_payment(receipt, allocations=[(cls.ikeja_invoice, 60_000)])
         # Lekki banks 30,000, which must never appear in Ikeja's cash.
         lekki_receipt = Payment.objects.create(
-            entity=e, customer=lekki_parent, branch=self.lekki,
+            entity=e, customer=lekki_parent, branch=cls.lekki,
             payment_date=datetime.date(2026, 1, 16), amount=30_000,
             deposit_account=Account.objects.get(entity=e, code="1100"),
         )
         post_payment(lekki_receipt, allocations=[(lekki_invoices[0], 30_000)])
 
-        self.ikeja_scope = BranchScope(frozenset({self.ikeja.id}), include_shared=False)
-        self.every_branch = BranchScope(
-            frozenset({self.ikeja.id, self.lekki.id, self.yaba.id}), include_shared=False,
+        cls.ikeja_scope = BranchScope(frozenset({cls.ikeja.id}), include_shared=False)
+        cls.every_branch = BranchScope(
+            frozenset({cls.ikeja.id, cls.lekki.id, cls.yaba.id}), include_shared=False,
         )
 
 
@@ -176,20 +177,29 @@ class ChartOfAccountsNarrowsTests(_LedgerFixture):
     must show the same figures, not the whole school's ledger one click away.
     """
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.revenue = Account.objects.get(entity=cls.books, code="4100")
+        cls.cash = Account.objects.get(entity=cls.books, code="1100")
+        cls.ikeja_reader_user = cls.user_holding(
+            "coa-ikeja@corona.test", branch=cls.ikeja)
+        cls.hq_reader_user = cls.user_holding("coa-hq@corona.test")
+
     def setUp(self):
         super().setUp()
-        self.revenue = Account.objects.get(entity=self.books, code="4100")
-        self.cash = Account.objects.get(entity=self.books, code="1100")
-        self.ikeja_reader = self.client_holding(
-            "coa-ikeja@corona.test", branch=self.ikeja)
-        self.hq_reader = self.client_holding("coa-hq@corona.test")
+        self.ikeja_reader = TenantAPIClient(user=self.ikeja_reader_user)
+        self.hq_reader = TenantAPIClient(user=self.hq_reader_user)
+
+    @classmethod
+    def user_holding(cls, email, *, branch=None):
+        return cls.grant(
+            cls.user_for(cls.tenant, email), "finance.account.view",
+            tenant=cls.tenant, role_key=f"role-{email}", branch=branch,
+        )
 
     def client_holding(self, email, *, branch=None):
-        user = self.grant(
-            self.user_for(self.tenant, email), "finance.account.view",
-            tenant=self.tenant, role_key=f"role-{email}", branch=branch,
-        )
-        return TenantAPIClient(user=user)
+        return TenantAPIClient(user=self.user_holding(email, branch=branch))
 
     def chart(self, client):
         response = client.get(

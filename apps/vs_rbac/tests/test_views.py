@@ -132,12 +132,13 @@ class _AuthMixin:
 
 
 class PermissionListCreateViewTests(_AuthMixin, TestCase):
-    def setUp(self):
-        self.vision_user = make_vision_user(super_admin=True)
-        self.school = make_school()
-        self.branch = make_branch(self.school)
-        self.school_admin = make_school_admin(self.branch)
-        self.url = reverse("rbac-permission-list-create")
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(super_admin=True)
+        cls.school = make_school()
+        cls.branch = make_branch(cls.school)
+        cls.school_admin = make_school_admin(cls.branch)
+        cls.url = reverse("rbac-permission-list-create")
 
     def test_create_permission_is_not_an_api_operation(self):
         resp = self._vision_client().post(
@@ -171,11 +172,12 @@ class PermissionListCreateViewTests(_AuthMixin, TestCase):
 
 
 class PermissionDetailViewTests(_AuthMixin, TestCase):
-    def setUp(self):
-        self.vision_user = make_vision_user(super_admin=True)
-        self.permission = make_permission("finance.invoice.approve")
-        self.url = reverse(
-            "rbac-permission-detail", kwargs={"key": self.permission.key},
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(super_admin=True)
+        cls.permission = make_permission("finance.invoice.approve")
+        cls.url = reverse(
+            "rbac-permission-detail", kwargs={"key": cls.permission.key},
         )
 
     def test_update_is_not_an_api_operation_and_keeps_grants(self):
@@ -198,9 +200,10 @@ class PermissionDetailViewTests(_AuthMixin, TestCase):
 
 
 class PermissionVocabularyIdentityTests(_AuthMixin, TestCase):
-    def setUp(self):
-        self.vision_user = make_vision_user(super_admin=True)
-        self.permission = make_permission("finance.invoice.approve")
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(super_admin=True)
+        cls.permission = make_permission("finance.invoice.approve")
 
     def test_vocabulary_changes_are_not_api_operations(self):
         module_url = reverse(
@@ -242,13 +245,14 @@ class PermissionVocabularyIdentityTests(_AuthMixin, TestCase):
 
 
 class PermissionDependencyViewTests(_AuthMixin, TestCase):
-    def setUp(self):
-        self.vision_user = make_vision_user(super_admin=True)
-        self.school = make_school()
-        self.branch = make_branch(self.school)
-        self.school_admin = make_school_admin(self.branch)
-        self.perm_view = make_permission("finance.invoice.view")
-        self.perm_approve = make_permission("finance.invoice.approve")
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(super_admin=True)
+        cls.school = make_school()
+        cls.branch = make_branch(cls.school)
+        cls.school_admin = make_school_admin(cls.branch)
+        cls.perm_view = make_permission("finance.invoice.view")
+        cls.perm_approve = make_permission("finance.invoice.approve")
 
     def test_create_dependency_is_not_an_api_operation(self):
         url = reverse("rbac-permission-dependency-list-create")
@@ -266,14 +270,15 @@ class PermissionDependencyViewTests(_AuthMixin, TestCase):
 # Tenant Role Templates
 # =============================================================================
 class TenantRoleTemplateViewTests(TestCase):
-    def setUp(self):
-        self.school = make_school()
-        self.branch = make_branch(self.school)
-        self.slug = self.school.slug
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school()
+        cls.branch = make_branch(cls.school)
+        cls.slug = cls.school.slug
         # Granted admin can manage roles; ungranted user cannot.
-        self.admin = make_school_admin(self.branch, email="rt-admin@test.com")
-        _grant(self.admin, ROLE_KEYS)
-        self.plain = make_staff_user(self.branch, email="rt-plain@test.com")
+        cls.admin = make_school_admin(cls.branch, email="rt-admin@test.com")
+        _grant(cls.admin, ROLE_KEYS)
+        cls.plain = make_staff_user(cls.branch, email="rt-plain@test.com")
 
     def _list_url(self, slug=None):
         return _q(reverse("rbac-role-list-create", kwargs={"tenant_slug": slug or self.slug}), slug or self.slug)
@@ -826,15 +831,16 @@ class TenantRoleTemplateViewTests(TestCase):
 # Tenant User Role Assignments
 # =============================================================================
 class TenantUserRoleAssignmentViewTests(TestCase):
-    def setUp(self):
-        self.school = make_school()
-        self.branch = make_branch(self.school)
-        self.slug = self.school.slug
-        self.admin = make_school_admin(self.branch, email="asg-admin@test.com")
-        _grant(self.admin, ROLE_KEYS)
-        self.plain = make_staff_user(self.branch, email="asg-plain@test.com")
-        self.staff = make_staff_user(self.branch, email="asg-staff@test.com")
-        self.role = make_role(self.school, name="Teacher")
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school()
+        cls.branch = make_branch(cls.school)
+        cls.slug = cls.school.slug
+        cls.admin = make_school_admin(cls.branch, email="asg-admin@test.com")
+        _grant(cls.admin, ROLE_KEYS)
+        cls.plain = make_staff_user(cls.branch, email="asg-plain@test.com")
+        cls.staff = make_staff_user(cls.branch, email="asg-staff@test.com")
+        cls.role = make_role(cls.school, name="Teacher")
 
     def _list_url(self, slug=None, **params):
         slug = slug or self.slug
@@ -1127,20 +1133,21 @@ class TenantUserRoleAssignmentViewTests(TestCase):
 # Tenant Role Change Requests
 # =============================================================================
 class TenantRoleChangeRequestViewTests(TestCase):
-    def setUp(self):
-        self.school = make_school()
-        self.branch = make_branch(self.school)
-        self.slug = self.school.slug
-        self.admin = make_school_admin(self.branch, email="rcr-admin@test.com")
-        _grant(self.admin, ROLE_KEYS)
-        self.reviewer = make_school_admin(
-            self.branch, email="rcr-reviewer@test.com",
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school()
+        cls.branch = make_branch(cls.school)
+        cls.slug = cls.school.slug
+        cls.admin = make_school_admin(cls.branch, email="rcr-admin@test.com")
+        _grant(cls.admin, ROLE_KEYS)
+        cls.reviewer = make_school_admin(
+            cls.branch, email="rcr-reviewer@test.com",
         )
-        _grant_role_admin(self.reviewer)
-        self.plain = make_staff_user(self.branch, email="rcr-plain@test.com")
-        self.role = make_role(self.school, name="Finance Manager")
-        self.perm_view = make_permission("finance.invoice.view")
-        self.perm_export = make_permission("finance.invoice.export")
+        _grant_role_admin(cls.reviewer)
+        cls.plain = make_staff_user(cls.branch, email="rcr-plain@test.com")
+        cls.role = make_role(cls.school, name="Finance Manager")
+        cls.perm_view = make_permission("finance.invoice.view")
+        cls.perm_export = make_permission("finance.invoice.export")
 
     def _list_url(self, slug=None):
         slug = slug or self.slug
@@ -1381,9 +1388,10 @@ class TenantRoleChangeRequestViewTests(TestCase):
 # Codex (platform) tenant - Vision super admin manages codex roles
 # =============================================================================
 class CodexTenantRoleViewTests(TestCase):
-    def setUp(self):
-        self.super_admin = make_vision_user(super_admin=True)
-        self.plain_vision = make_vision_user(email="plain-vision@test.com")
+    @classmethod
+    def setUpTestData(cls):
+        cls.super_admin = make_vision_user(super_admin=True)
+        cls.plain_vision = make_vision_user(email="plain-vision@test.com")
 
     def _list_url(self):
         return _q(reverse("rbac-role-list-create", kwargs={"tenant_slug": "codex"}), "codex")

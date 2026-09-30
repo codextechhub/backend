@@ -19,17 +19,19 @@ from .tests_branch_scope import _FinanceBranchFixture
 
 
 class _AccessFixture(_FinanceBranchFixture):
-    def setUp(self):
-        super().setUp()
-        e = self.books
-        self.ikeja_customer = self.customer(e, "CIKJ", self.ikeja)
-        self.lekki_customer = self.customer(e, "CLEK", self.lekki)
-        self.shared_customer = self.customer(e, "CALL", None)
-        self.ikeja_invoice = self.posted(self.invoice(e, self.ikeja_customer, self.ikeja))
-        self.lekki_invoice = self.posted(self.invoice(e, self.lekki_customer, self.lekki))
-        self.shared_invoice = self.posted(self.invoice(e, self.shared_customer, None))
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        e = cls.books
+        cls.ikeja_customer = cls.customer(e, "CIKJ", cls.ikeja)
+        cls.lekki_customer = cls.customer(e, "CLEK", cls.lekki)
+        cls.shared_customer = cls.customer(e, "CALL", None)
+        cls.ikeja_invoice = cls.posted(cls.invoice(e, cls.ikeja_customer, cls.ikeja))
+        cls.lekki_invoice = cls.posted(cls.invoice(e, cls.lekki_customer, cls.lekki))
+        cls.shared_invoice = cls.posted(cls.invoice(e, cls.shared_customer, None))
 
-    def posted(self, invoice):
+    @classmethod
+    def posted(cls, invoice):
         """Post ``invoice`` for real, its line pointed at a postable income account."""
         from vs_finance.models import Account, InvoiceLine
         from vs_finance.receivables import post_invoice
@@ -85,18 +87,19 @@ class ARAgingBranchTests(_AccessFixture):
 class AdjustmentListAccessTests(_AccessFixture):
     """Refund rows need the refund key; write-off rows need the write-off key."""
 
-    def setUp(self):
-        super().setUp()
-        e = self.books
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        e = cls.books
         today = datetime.date(2026, 1, 20)
-        self.ikeja_refund = Refund.objects.create(
-            entity=e, customer=self.ikeja_customer, branch=self.ikeja, refund_date=today, amount=5_000,
+        cls.ikeja_refund = Refund.objects.create(
+            entity=e, customer=cls.ikeja_customer, branch=cls.ikeja, refund_date=today, amount=5_000,
         )
-        self.ikeja_writeoff = WriteOffRequest.objects.create(
-            entity=e, invoice=self.ikeja_invoice, branch=self.ikeja, amount=10_000,
+        cls.ikeja_writeoff = WriteOffRequest.objects.create(
+            entity=e, invoice=cls.ikeja_invoice, branch=cls.ikeja, amount=10_000,
         )
-        self.lekki_writeoff = WriteOffRequest.objects.create(
-            entity=e, invoice=self.lekki_invoice, branch=self.lekki, amount=20_000,
+        cls.lekki_writeoff = WriteOffRequest.objects.create(
+            entity=e, invoice=cls.lekki_invoice, branch=cls.lekki, amount=20_000,
         )
 
     def adjustments(self, client):
@@ -144,19 +147,20 @@ class AdjustmentPendingCountTests(_AccessFixture):
     about the same refunds.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_finance.constants import DocumentStatus as S
 
-        super().setUp()
-        e = self.books
+        super().setUpTestData()
+        e = cls.books
         on = datetime.date(2026, 1, 20)
         for status in (S.DRAFT, S.PENDING_APPROVAL, S.POSTED, S.REVERSED, S.CANCELLED):
             Refund.objects.create(
-                entity=e, customer=self.ikeja_customer, branch=self.ikeja,
+                entity=e, customer=cls.ikeja_customer, branch=cls.ikeja,
                 refund_date=on, amount=5_000, status=status,
             )
-        for invoice, status in ((self.ikeja_invoice, S.PENDING_APPROVAL),
-                                (self.lekki_invoice, S.REVERSED)):
+        for invoice, status in ((cls.ikeja_invoice, S.PENDING_APPROVAL),
+                                (cls.lekki_invoice, S.REVERSED)):
             WriteOffRequest.objects.create(
                 entity=e, invoice=invoice, branch=invoice.branch, amount=10_000, status=status,
             )

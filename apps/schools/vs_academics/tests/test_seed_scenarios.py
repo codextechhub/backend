@@ -65,6 +65,17 @@ class _Base(TestCase):
         make_branch(cls.multi_live, name="Lagoon View Main", is_main=True)
         make_branch(cls.multi_live, name="Lagoon View Annex", is_main=False)
 
+    @classmethod
+    def seed(cls, only=None):
+        out = StringIO()
+        call_command(
+            "seed_academic_scenarios", stdout=out,
+            **({"only": only} if only else {}),
+        )
+        return out.getvalue()
+
+
+class CastTests(_Base):
     def test_the_cast_and_this_fixture_name_the_same_schools(self):
         """A school added to CAST and not here fails EVERY test in this file.
 
@@ -84,14 +95,6 @@ class _Base(TestCase):
             sorted(set(CAST) - seeded), [],
             "these are in CAST but not built by this fixture",
         )
-
-    def seed(self, only=None):
-        out = StringIO()
-        call_command(
-            "seed_academic_scenarios", stdout=out,
-            **({"only": only} if only else {}),
-        )
-        return out.getvalue()
 
 
 class IdempotenceTests(_Base):
@@ -131,8 +134,10 @@ class IdempotenceTests(_Base):
 class ShapeTests(_Base):
     """The two shapes exist because one tenant cannot be both."""
 
-    def setUp(self):
-        self.seed()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.seed()
 
     def test_the_multi_branch_school_has_rows_that_are_not_shared(self):
         """Or every scope chip and branch filter would have nothing behind it."""

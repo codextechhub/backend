@@ -33,16 +33,17 @@ INVOICE = 100_000
 class _FamilyFixture(_FinanceBranchFixture):
     KEYS = ("finance.customer.view", "finance.report.view")
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_finance.receivables import post_invoice, post_payment
 
-        super().setUp()
-        e = self.books
+        super().setUpTestData()
+        e = cls.books
         income = Account.objects.get(entity=e, code="4100")
         bank = Account.objects.get(entity=e, code="1100")
 
         def posted_invoice(customer, branch):
-            invoice = self.invoice(e, customer, branch)
+            invoice = cls.invoice(e, customer, branch)
             InvoiceLine.objects.filter(invoice=invoice).update(revenue_account=income)
             post_invoice(invoice)
             invoice.refresh_from_db()
@@ -61,35 +62,42 @@ class _FamilyFixture(_FinanceBranchFixture):
             payment.refresh_from_db()
             return payment
 
-        self.family = self.customer(e, "OKAFOR", None)
-        self.ikeja_invoice = posted_invoice(self.family, self.ikeja)
-        self.lekki_invoice = posted_invoice(self.family, self.lekki)
-        self.school_invoice = posted_invoice(self.family, None)
-        self.ikeja_receipt = receipt(
-            self.family, self.ikeja, 60_000, [(self.ikeja_invoice, 60_000)])
-        self.lekki_receipt = receipt(self.family, self.lekki, 30_000)
+        cls.family = cls.customer(e, "OKAFOR", None)
+        cls.ikeja_invoice = posted_invoice(cls.family, cls.ikeja)
+        cls.lekki_invoice = posted_invoice(cls.family, cls.lekki)
+        cls.school_invoice = posted_invoice(cls.family, None)
+        cls.ikeja_receipt = receipt(
+            cls.family, cls.ikeja, 60_000, [(cls.ikeja_invoice, 60_000)])
+        cls.lekki_receipt = receipt(cls.family, cls.lekki, 30_000)
 
-        self.bursar = self.client_for(
-            self.tenant, "ikeja.bursar@example.com", "reach-ikeja", branch=self.ikeja)
-        self.head = self.client_for(self.tenant, "head@example.com", "reach-head")
+        cls.bursar_user = cls.user_for_keys(
+            cls.tenant, "ikeja.bursar@example.com", "reach-ikeja", branch=cls.ikeja)
+        cls.head_user = cls.user_for_keys(cls.tenant, "head@example.com", "reach-head")
 
         # The single-branch school: a bursar pinned to its only branch.
-        self.solo_family = self.customer(self.solo_books, "SOLOFAM", self.solo_main)
-        solo_invoice = self.invoice(self.solo_books, self.solo_family, self.solo_main)
+        cls.solo_family = cls.customer(cls.solo_books, "SOLOFAM", cls.solo_main)
+        solo_invoice = cls.invoice(cls.solo_books, cls.solo_family, cls.solo_main)
         InvoiceLine.objects.filter(invoice=solo_invoice).update(
-            revenue_account=Account.objects.get(entity=self.solo_books, code="4100"))
+            revenue_account=Account.objects.get(entity=cls.solo_books, code="4100"))
         post_invoice(solo_invoice)
-        self.solo_invoice = solo_invoice
-        self.solo_bursar = self.client_for(
-            self.solo_tenant, "solo.bursar@example.com", "reach-solo",
-            branch=self.solo_main)
+        cls.solo_invoice = solo_invoice
+        cls.solo_bursar_user = cls.user_for_keys(
+            cls.solo_tenant, "solo.bursar@example.com", "reach-solo",
+            branch=cls.solo_main)
 
-    def client_for(self, tenant, email, role_key, *, branch=None):
-        user = self.grant(
-            self.user_for(tenant, email), *self.KEYS,
+    def setUp(self):
+        super().setUp()
+        self.bursar = TenantAPIClient(user=self.bursar_user)
+        self.head = TenantAPIClient(user=self.head_user)
+        self.solo_bursar = TenantAPIClient(user=self.solo_bursar_user)
+
+    @classmethod
+    def user_for_keys(cls, tenant, email, role_key, *, branch=None):
+        """A user holding :attr:`KEYS`, optionally pinned to one branch."""
+        return cls.grant(
+            cls.user_for(tenant, email), *cls.KEYS,
             tenant=tenant, role_key=role_key, branch=branch,
         )
-        return TenantAPIClient(user=user)
 
     def fetch(self, client, path, entity, **params):
         query = "".join(f"&{k}={v}" for k, v in params.items())

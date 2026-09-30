@@ -19,23 +19,24 @@ from .tests_branch_scope import _FinanceBranchFixture
 
 class StatementEmailFollowsTheSendersBranchesTests(_FinanceBranchFixture):
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_finance.models import Account, InvoiceLine
         from vs_finance.receivables import post_invoice
 
-        super().setUp()
-        self.okafor = self.customer(self.books, "COKAF", None)
-        income = Account.objects.get(entity=self.books, code="4100")
-        for branch in (self.ikeja, self.lekki):
-            invoice = self.invoice(self.books, self.okafor, branch)
+        super().setUpTestData()
+        cls.okafor = cls.customer(cls.books, "COKAF", None)
+        income = Account.objects.get(entity=cls.books, code="4100")
+        for branch in (cls.ikeja, cls.lekki):
+            invoice = cls.invoice(cls.books, cls.okafor, branch)
             InvoiceLine.objects.filter(invoice=invoice).update(revenue_account=income)
             post_invoice(invoice)
-        self.adeyemi = self.grant(
-            self.user_for(self.tenant, "adeyemi@corona.test"), "finance.customer.email_statement",
-            tenant=self.tenant, role_key="stmt-ikeja", branch=self.ikeja)
-        self.eze = self.grant(
-            self.user_for(self.tenant, "eze@corona.test"), "finance.customer.email_statement",
-            tenant=self.tenant, role_key="stmt-hq")
+        cls.adeyemi = cls.grant(
+            cls.user_for(cls.tenant, "adeyemi@corona.test"), "finance.customer.email_statement",
+            tenant=cls.tenant, role_key="stmt-ikeja", branch=cls.ikeja)
+        cls.eze = cls.grant(
+            cls.user_for(cls.tenant, "eze@corona.test"), "finance.customer.email_statement",
+            tenant=cls.tenant, role_key="stmt-hq")
 
     def rendered(self, sender):
         from vs_finance.document_email import _render

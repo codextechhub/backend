@@ -19,13 +19,15 @@ KEYS = ("finance.report.view", "finance.invoice.view", "finance.period.view")
 class OneBranchDashboardTests(_FinanceBranchFixture):
     """A pin to the only branch withholds nothing, until a second branch opens."""
 
-    def setUp(self):
-        super().setUp()
-        e = self.solo_books
-        self.posted(self.invoice(e, self.customer(e, "SMAIN", self.solo_main), self.solo_main))
-        self.posted(self.invoice(e, self.customer(e, "SALL", None), None))
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        e = cls.solo_books
+        cls.posted(cls.invoice(e, cls.customer(e, "SMAIN", cls.solo_main), cls.solo_main))
+        cls.posted(cls.invoice(e, cls.customer(e, "SALL", None), None))
 
-    def posted(self, invoice):
+    @classmethod
+    def posted(cls, invoice):
         """Post ``invoice`` through the real service, onto a heading that takes postings."""
         from vs_finance.models import Account, InvoiceLine
         from vs_finance.receivables import post_invoice

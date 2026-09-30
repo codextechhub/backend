@@ -89,10 +89,21 @@ class _PaymentsFixtureMixin:
     The fiscal year is built for the entity's own year so a receipt/payout dated
     today always lands in an OPEN period (the booking date is the entity's
     tenant's day, from ``vs_config.clock.tenant_today``).
+
+    The books are built once per class in ``setUpTestData``: seeding a chart of
+    accounts and twelve periods is the expensive part, and each test rolls back to
+    that state. ``build()`` hands a test its own copies and registers a fresh
+    ``FakeProvider``, which stays per test because the provider registry is
+    process-wide and not rolled back with the database.
     """
 
-    # Prepare or verify the build test path.
-    def build(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls._books = cls._build_books()
+
+    @classmethod
+    def _build_books(cls):
         seed_currencies()
         entity = LedgerEntity.objects.create(
             name="Test Books", code="TBOOK", kind=LedgerEntity.Kind.TENANT,
@@ -125,12 +136,16 @@ class _PaymentsFixtureMixin:
             bank_account_name="Supplier Ltd", bank_account_number="0123456789",
             kyc_status="VERIFIED",
         )
+        return entity, customer, vendor
+
+    def build(self):
+        """Register a fresh Fake provider and return ``(entity, customer, vendor)``."""
         self.fake = FakeProvider(secret="test-secret")
         # Resolve the default provider name and the fake's own name to this instance.
         registry.register("PAYSTACK", self.fake)
         registry.register("FAKE", self.fake)
         self.addCleanup(registry.unregister)
-        return entity, customer, vendor
+        return self._books
 
     def make_processing_payout(self, entity, vendor, *, amount, narration=""):
         """Create an already-dispatched gateway row for confirmation/read-side tests."""
@@ -1371,24 +1386,32 @@ class PaymentEventTests(_PaymentsFixtureMixin, TestCase):
 class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
     """The /v1/payments/ REST surface, authenticated as a Vision super admin."""
 
-    # Prepare or verify the setUp test path.
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         from django.contrib.auth import get_user_model
-        from rest_framework.test import APIClient
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
 
         User = get_user_model()
-        self.user = User.objects.create_user(tenant=_platform_tenant(), 
+        cls.user = User.objects.create_user(
+            tenant=_platform_tenant(),
             email="pay-admin@test.com", password="testpass123",
             status="ACTIVE",
             first_name="Pay", last_name="Admin",
         )
-        role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
-        TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), 
-            user=self.user, role=role, assignment_status="ACTIVE",
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin",
+            defaults={"name": "Super Admin", "status": "ACTIVE"},
         )
+        TenantUserRoleAssignment.objects.create(
+            tenant=Tenant.objects.get(slug="codex"),
+            user=cls.user, role=role, assignment_status="ACTIVE",
+        )
+
+    def setUp(self):
         from core.test_utils import TenantAPIClient
+
         self.client = TenantAPIClient(user=self.user)
 
     # Verify initiate collection endpoint behavior.
@@ -1674,15 +1697,26 @@ class PayoutBatchApprovalTests(TestCase):
     APPROVE_ROLE = "payout-approver"
     APPROVE_GROUP = APPROVE_ROLE
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        """Build the books, the vendor and the requester once for the class.
+
+        Each test rolls back to this state. The Fake provider and the API client
+        are made per test in ``setUp``: the provider registry is process-wide and
+        survives the rollback.
+        """
         import io
         from django.contrib.auth import get_user_model
         from django.core.management import call_command
-        from rest_framework.test import APIClient
+        from django.db.models import Q
         from vs_rbac.models import (
-            TenantRoleTemplate, TenantUserRoleAssignment, TenantRolePermission,
+            Permission,
+            PermissionScope,
+            TenantRolePermission,
+            TenantRoleTemplate,
+            TenantUserRoleAssignment,
         )
-        from vs_tenants.models import Tenant
+        from vs_tenants.models import Branch, Tenant
         from vs_workflow.models import WorkflowTemplate
 
         call_command("seed_payments_permissions", verbosity=0, stdout=io.StringIO())
@@ -1693,26 +1727,26 @@ class PayoutBatchApprovalTests(TestCase):
             document_type="payments.payout_batch",
         ).delete()
 
-        self.User = get_user_model()
-        self.TenantRoleTemplate = TenantRoleTemplate
-        self.TenantRolePermission = TenantRolePermission
-        self.TenantUserRoleAssignment = TenantUserRoleAssignment
+        cls.User = get_user_model()
+        cls.TenantRoleTemplate = TenantRoleTemplate
+        cls.TenantRolePermission = TenantRolePermission
+        cls.TenantUserRoleAssignment = TenantUserRoleAssignment
 
         # A tenant-owned entity with one branch. The workflow scope token is legacy,
         # but approver resolution is tenant-wide for branchless payout batches.
-        self.tenant = Tenant.objects.create(
+        cls.tenant = Tenant.objects.create(
             name="Cedar", slug="cedar-pba", kind=Tenant.Kind.SCHOOL,
             status=Tenant.Status.ACTIVE,
         )
         seed_currencies()
-        self.entity = LedgerEntity.objects.create(
+        cls.entity = LedgerEntity.objects.create(
             name="Cedar Books", code="CDRBK", kind=LedgerEntity.Kind.TENANT,
-            tenant=self.tenant,
+            tenant=cls.tenant,
         )
-        seed_chart_of_accounts(self.entity)
-        today = tenant_today(self.entity.tenant)
+        seed_chart_of_accounts(cls.entity)
+        today = tenant_today(cls.entity.tenant)
         year = FiscalYear.objects.create(
-            entity=self.entity, year=today.year,
+            entity=cls.entity, year=today.year,
             start_date=datetime.date(today.year, 1, 1),
             end_date=datetime.date(today.year, 12, 31),
         )
@@ -1721,41 +1755,29 @@ class PayoutBatchApprovalTests(TestCase):
             end = (datetime.date(today.year, m + 1, 1) if m < 12
                    else datetime.date(today.year + 1, 1, 1)) - datetime.timedelta(days=1)
             FiscalPeriod.objects.create(
-                entity=self.entity, fiscal_year=year, period_no=m,
+                entity=cls.entity, fiscal_year=year, period_no=m,
                 name=f"{today.year}-{m:02d}", start_date=start, end_date=end,
             )
-        self.vendor = Vendor.objects.create(
-            entity=self.entity, code="SUPP1", name="Supplier Ltd",
-            payable_account=Account.objects.get(entity=self.entity, code="2100"),
-            default_expense_account=Account.objects.get(entity=self.entity, code="5300"),
+        cls.vendor = Vendor.objects.create(
+            entity=cls.entity, code="SUPP1", name="Supplier Ltd",
+            payable_account=Account.objects.get(entity=cls.entity, code="2100"),
+            default_expense_account=Account.objects.get(entity=cls.entity, code="5300"),
             bank_name="Guarantee Trust Bank", bank_code="058",
             bank_account_name="Supplier Ltd", bank_account_number="0123456789",
             kyc_status="VERIFIED",
         )
-        self.fake = FakeProvider(secret="test-secret")
-        registry.register("PAYSTACK", self.fake)
-        registry.register("FAKE", self.fake)
-        self.addCleanup(registry.unregister)
 
         # Requester: a tenant user holding every tenant-scoped payments/finance key;
         # approve verbs are excluded so separation-of-duties cases stay meaningful.
-        from vs_tenants.models import Branch
-        from django.db.models import Q
-
-        from vs_rbac.models import (
-            Permission,
-            PermissionScope,
-            TenantRolePermission,
-        )
         branch = Branch.objects.create(
-            tenant=self.tenant, name="Main", is_main=True, status="ACTIVE",
+            tenant=cls.tenant, name="Main", is_main=True, status="ACTIVE",
         )
-        self.requester = self.User.objects.create_user(
+        cls.requester = cls.User.objects.create_user(
             email="req-pba@test.com", password="pw", status="ACTIVE",
             first_name="Req", last_name="Ester", branch=branch,
         )
         ops_role, created = TenantRoleTemplate.objects.get_or_create(
-            tenant=self.tenant, key="payments-ops-all",
+            tenant=cls.tenant, key="payments-ops-all",
             defaults={"name": "Payments Ops (all keys)", "status": "ACTIVE"},
         )
         if created:
@@ -1774,10 +1796,17 @@ class PayoutBatchApprovalTests(TestCase):
                 ignore_conflicts=True,
             )
         TenantUserRoleAssignment.objects.create(
-            tenant=self.tenant, user=self.requester, role=ops_role,
+            tenant=cls.tenant, user=cls.requester, role=ops_role,
             assignment_status="ACTIVE",
         )
+
+    def setUp(self):
         from core.test_utils import TenantAPIClient
+
+        self.fake = FakeProvider(secret="test-secret")
+        registry.register("PAYSTACK", self.fake)
+        registry.register("FAKE", self.fake)
+        self.addCleanup(registry.unregister)
         self.client = TenantAPIClient(user=self.requester)
 
     # --- helpers ----------------------------------------------------------- #
@@ -3518,13 +3547,14 @@ class PayoutApprovalSeedingTests(TestCase):
 
     APPROVE_GROUP = "payout-approver"
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         import io
         from django.core.management import call_command
         from vs_tenants.models import Tenant
 
         call_command("seed_payments_permissions", verbosity=0, stdout=io.StringIO())
-        self.tenant = Tenant.objects.create(
+        cls.tenant = Tenant.objects.create(
             name="Rowan", slug="rowan-seed", kind=Tenant.Kind.ORGANIZATION,
             status=Tenant.Status.ACTIVE,
         )
@@ -4053,18 +4083,20 @@ class FailedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
     only as a database row nobody would look at.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         from django.contrib.auth import get_user_model
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
-        from core.test_utils import TenantAPIClient
 
         from django.core.management import call_command
         call_command("seed_actions", verbosity=0)
         call_command("seed_payments_permissions", verbosity=0)
 
-        self.User = get_user_model()
-        self.user = self.User.objects.create_user(tenant=_platform_tenant(), 
+        cls.User = get_user_model()
+        cls.user = cls.User.objects.create_user(
+            tenant=_platform_tenant(),
             email="webhook-admin@test.com", password="testpass123",
             status="ACTIVE", first_name="Hook", last_name="Admin",
         )
@@ -4072,8 +4104,12 @@ class FailedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
             tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin",
             defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(
-            tenant=Tenant.objects.get(slug="codex"), user=self.user, role=role,
+            tenant=Tenant.objects.get(slug="codex"), user=cls.user, role=role,
             assignment_status="ACTIVE")
+
+    def setUp(self):
+        from core.test_utils import TenantAPIClient
+
         self.client = TenantAPIClient(user=self.user)
 
     def _unprivileged_client(self):
@@ -4232,7 +4268,9 @@ class UnattributedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
 
     LIST_URL = "/v1/payments/webhooks/unattributed/"
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         from django.core.management import call_command
         from django.contrib.auth import get_user_model
         from vs_tenants.models import Tenant
@@ -4240,9 +4278,9 @@ class UnattributedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
         call_command("seed_actions", verbosity=0)
         call_command("seed_payments_permissions", verbosity=0)
 
-        self.User = get_user_model()
-        self.Tenant = Tenant
-        self.codex = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+        cls.User = get_user_model()
+        cls.Tenant = Tenant
+        cls.codex = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
 
     # -- actors ------------------------------------------------------------- #
 
@@ -4501,7 +4539,9 @@ class UnbookedReceiptAlertTests(_PaymentsFixtureMixin, TestCase):
     staff when several fail inside one window.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         from django.core.management import call_command
 
         call_command("seed_actions", verbosity=0)

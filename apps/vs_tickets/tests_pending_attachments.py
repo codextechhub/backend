@@ -11,7 +11,7 @@ a whole, driven through the API for a pending school, is in
 from __future__ import annotations
 
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import SimpleTestCase
 
 from core.uploads import MAX_TICKET_ATTACHMENT_BYTES, TICKET_EXTENSIONS
 
@@ -24,7 +24,7 @@ PNG = bytes.fromhex(
 )
 
 
-class PendingSchoolSurfaceTests(TestCase):
+class PendingSchoolSurfaceTests(SimpleTestCase):
     def test_the_school_desk_is_on_the_pending_surface(self):
         from vs_tickets.views import TicketViewSet
 
@@ -50,7 +50,7 @@ class PendingSchoolSurfaceTests(TestCase):
             )
 
 
-class AttachmentLimitTests(TestCase):
+class AttachmentLimitTests(SimpleTestCase):
     """The limits that make the surface safe to open to a pending school.
 
     They are stronger than a browser ``accept=`` attribute, which is a hint the

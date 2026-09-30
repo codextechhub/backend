@@ -30,23 +30,26 @@ from .tests import grant_school_admin
 
 
 class PendingTenantOnboardingAccessTests(TestCase):
-    def setUp(self):
-        self.school = make_school(
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(
             slug="pending-onboarding", name="Pending Onboarding School",
             status="PENDING",
         )
-        self.tenant = self.school.tenant
-        self.tenant.refresh_from_db()
-        self.assertEqual(self.tenant.status, Tenant.Status.PENDING)
+        cls.tenant = cls.school.tenant
+        cls.tenant.refresh_from_db()
 
-        self.admin = make_school_admin(
-            None, email="pending-onboarding-admin@test.com", tenant=self.tenant,
+        cls.admin = make_school_admin(
+            None, email="pending-onboarding-admin@test.com", tenant=cls.tenant,
         )
         grant_school_admin(
-            self.tenant, self.admin,
+            cls.tenant, cls.admin,
             PERM_PROGRESS_VIEW, PERM_TASK_UPDATE, PERM_GO_LIVE_VIEW,
         )
-        provision_onboarding(self.tenant)
+        provision_onboarding(cls.tenant)
+
+    def setUp(self):
+        self.assertEqual(self.tenant.status, Tenant.Status.PENDING)
 
         token = str(CodeXRefreshToken.for_user(self.admin).access_token)
         self.client = APIClient()

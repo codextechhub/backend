@@ -41,24 +41,25 @@ ACTIVE = TenantUserRoleAssignment.AssignmentStatus.ACTIVE
 
 
 class RoleGrantLadderTests(TestCase):
-    def setUp(self):
-        self.school = make_school(slug="granting", name="Granting School")
-        self.tenant = self.school.tenant
-        self.branch = make_branch(self.school)
-        self.head = make_school_admin(self.branch, email="head@granting.test")
-        self.school_admin = make_role(
-            self.school, name="School Admin", key="school_admin", is_system_role=True,
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="granting", name="Granting School")
+        cls.tenant = cls.school.tenant
+        cls.branch = make_branch(cls.school)
+        cls.head = make_school_admin(cls.branch, email="head@granting.test")
+        cls.school_admin = make_role(
+            cls.school, name="School Admin", key="school_admin", is_system_role=True,
         )
-        make_role_permission(self.school_admin, make_permission("school.roles.approve"))
-        make_assignment(self.school, self.head, self.school_admin)
+        make_role_permission(cls.school_admin, make_permission("school.roles.approve"))
+        make_assignment(cls.school, cls.head, cls.school_admin)
 
-        self.finance_admin = make_role(self.school, name="Finance Admin", key="finance_admin")
+        cls.finance_admin = make_role(cls.school, name="Finance Admin", key="finance_admin")
         make_role_permission(
-            self.finance_admin,
+            cls.finance_admin,
             make_permission("finance.journal.post", is_restricted=True),
         )
-        self.teacher = make_role(self.school, name="Teacher", key="teacher")
-        make_role_permission(self.teacher, make_permission("students.profile.view"))
+        cls.teacher = make_role(cls.school, name="Teacher", key="teacher")
+        make_role_permission(cls.teacher, make_permission("students.profile.view"))
 
     def _grant(self, user=None, role=None, actor=None, **kwargs):
         return grant_role(

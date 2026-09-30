@@ -677,13 +677,8 @@ class RosterReadsItsOwnYearTests(StudentsFixture):
         self.assertEqual(nxt, {"Obi Nextyear"})
 
 
-class SessionLensTests(StudentsFixture):
-    """The roll and the class both belong to a year.
-
-    A student in SSS1 A last year is in SSS2 A this year, and a student enrolled
-    this year was not on last year's roll at all - so "which year" is a real
-    question about students even though status carries no year.
-    """
+class _SessionLensFixture(StudentsFixture):
+    """A student who moved up a year and one only on next year's roll."""
 
     def setUp(self):
         super().setUp()
@@ -722,6 +717,15 @@ class SessionLensTests(StudentsFixture):
     def rows(self, session=None):
         params = {"session": session.pk} if session else None
         return self.get(self.admin, "student-list", params=params).data
+
+
+class SessionLensTests(_SessionLensFixture):
+    """The roll and the class both belong to a year.
+
+    A student in SSS1 A last year is in SSS2 A this year, and a student enrolled
+    this year was not on last year's roll at all - so "which year" is a real
+    question about students even though status carries no year.
+    """
 
     def test_the_roll_differs_between_years(self):
         this_year = {r["full_name"] for r in self.rows(self.year)["data"]}
@@ -770,7 +774,7 @@ class SessionLensTests(StudentsFixture):
         self.assertEqual(response.status_code, 400)
 
 
-class SessionLensReachesEveryListTests(SessionLensTests):
+class SessionLensReachesEveryListTests(_SessionLensFixture):
     """The year narrows the whole section, not the directory alone.
 
     A section where the directory answers about one year and the guardian list

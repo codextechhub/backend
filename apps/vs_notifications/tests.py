@@ -167,44 +167,49 @@ class _NotifFixture(TestCase):
     The event types themselves are not seeded here: migration 0008 installs the
     whole registry, so every database already has them. Templates and platform
     settings still need a call, since nothing installs those.
+
+    All of it is built once per class in ``setUpTestData``, and each test rolls
+    back to that state.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         seed_notification_templates()
         seed_platform_settings()
 
-        self.school_a = School.objects.create(
+        cls.school_a = School.objects.create(
             name="Alpha", slug="alpha-nt", code="ALPNT", status="ACTIVE",
         )
-        self.school_b = School.objects.create(
+        cls.school_b = School.objects.create(
             name="Beta", slug="beta-nt", code="BETNT", status="ACTIVE",
         )
 
         # School-scoped admin in school A, granted the settings permission.
-        self.admin_a = User.objects.create_user(
-            email="admin-a@test.com", password="x", status="ACTIVE", first_name="Ada", last_name="Admin", tenant=self.school_a.tenant,
+        cls.admin_a = User.objects.create_user(
+            email="admin-a@test.com", password="x", status="ACTIVE", first_name="Ada", last_name="Admin", tenant=cls.school_a.tenant,
         )
         _grant_school_permission(
-            self.admin_a, self.school_a, NotificationPermission.ENFORCE_PERMISSIONS,
+            cls.admin_a, cls.school_a, NotificationPermission.ENFORCE_PERMISSIONS,
         )
 
         # A plain school user with no RBAC grants (for 403 tests).
-        self.plain_a = User.objects.create_user(
-            email="plain-a@test.com", password="x", status="ACTIVE", first_name="Peter", last_name="Plain", tenant=self.school_a.tenant,
+        cls.plain_a = User.objects.create_user(
+            email="plain-a@test.com", password="x", status="ACTIVE", first_name="Peter", last_name="Plain", tenant=cls.school_a.tenant,
         )
 
         # A CX super admin (bypasses RBAC; no school → platform scope).
-        self.cx = User.objects.create_user(tenant=_platform_tenant(), 
-            email="cx@test.com", password="x", status="ACTIVE", first_name="Cee", last_name="Ex",
+        cls.cx = User.objects.create_user(
+            tenant=_platform_tenant(), email="cx@test.com", password="x", status="ACTIVE", first_name="Cee", last_name="Ex",
         )
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         role, _ = TenantRoleTemplate.objects.get_or_create(
-            tenant=self.cx.tenant, key="xvs_super_admin",
+            tenant=cls.cx.tenant, key="xvs_super_admin",
             defaults={"name": "XVS Super Admin", "status": "ACTIVE",
                       "is_system_role": True, "is_locked": True},
         )
         TenantUserRoleAssignment.objects.create(
-            tenant=self.cx.tenant, user=self.cx, role=role, assignment_status="ACTIVE",
+            tenant=cls.cx.tenant, user=cls.cx, role=role, assignment_status="ACTIVE",
         )
 
     def _client(self, user):
@@ -2461,10 +2466,12 @@ class TemplateCoverageCheckTests(TestCase):
 
     Event types are not seeded here: migration 0008 installs the whole registry,
     so the test database already has them. Templates are the thing under test,
-    so each case seeds or removes them explicitly.
+    so each case seeds or removes them explicitly, starting from the full set
+    seeded once for the class.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from .services.seed import seed_notification_templates
 
         seed_notification_templates()
@@ -2926,7 +2933,6 @@ class ExportRunReadClearsNotificationTests(_ExportFixture, TestCase):
     """An export notice clears when its run is read or its file taken."""
 
     def setUp(self):
-        self.build()
         self.definition = self.make_definition(owner=self.admin)
         run, _ = export_services.trigger_run(
             definition=self.definition, actor=self.admin,
@@ -2999,7 +3005,6 @@ class TicketReadClearsNotificationTests(TicketFixtureMixin, TestCase):
     """Opening a ticket thread clears the notices about that ticket."""
 
     def setUp(self):
-        self.build_users()
         self.ticket = ticket_svc.create_ticket(
             actor=self.requester, title="Login fails",
             description="I cannot log in.", category="BUG", priority="HIGH",

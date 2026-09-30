@@ -44,6 +44,18 @@ from .voids import (
 
 
 class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
+    """Voiding each AR document unwinds its settlement and its ledger.
+
+    Every test starts from the same books, built once per class as ``ar``
+    (entity, period, customer, VAT code). The mixin's builders are instance
+    methods, so ``setUpTestData`` calls them on a throwaway instance.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ar = cls().build_ar()
+
     def _credit_note(self, entity, customer, *, amount=30000, invoice=None,
                      date=datetime.date(2026, 1, 15), auto_allocate=False):
         note = CreditNote.objects.create(
@@ -60,7 +72,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
         return note
 
     def test_void_payment_unwinds_invoice_and_gl(self):
-        entity, _, customer, _ = self.build_ar()
+        entity, _, customer, _ = self.ar
         invoice = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)])
         post_invoice(invoice)
         plan = PaymentPlan.objects.create(
@@ -91,7 +103,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
             void_payment(payment)
 
     def test_void_payment_reverses_later_allocation_journal(self):
-        entity, _, customer, _ = self.build_ar()
+        entity, _, customer, _ = self.ar
         payment = Payment.objects.create(
             entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 5),
             amount=40000, deposit_account=Account.objects.get(entity=entity, code="1100"),
@@ -118,7 +130,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
         self.assertTrue(reconcile_ar(entity).is_reconciled)
 
     def test_void_credit_note_unwinds_later_allocation(self):
-        entity, _, customer, _ = self.build_ar()
+        entity, _, customer, _ = self.ar
         note = self._credit_note(
             entity, customer, amount=50000, date=datetime.date(2026, 1, 5),
         )
@@ -141,7 +153,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
             void_credit_note(note)
 
     def test_void_credit_note_unwinds_allocation_embedded_in_original_journal(self):
-        entity, _, customer, _ = self.build_ar()
+        entity, _, customer, _ = self.ar
         invoice = self.make_invoice(
             entity, customer, lines=[("4100", 1, 30000, None)],
             date=datetime.date(2026, 1, 5),
@@ -170,7 +182,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
         self.assertTrue(reconcile_ar(entity).is_reconciled)
 
     def test_incomplete_legacy_allocation_link_fails_closed(self):
-        entity, _, customer, _ = self.build_ar()
+        entity, _, customer, _ = self.ar
         payment = Payment.objects.create(
             entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 5),
             amount=40000, deposit_account=Account.objects.get(entity=entity, code="1100"),
@@ -193,7 +205,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
         self.assertIn(payment.document_number, str(caught.exception))
 
     def test_void_refund_restores_source_lot_credit(self):
-        entity, _, customer, _ = self.build_ar()
+        entity, _, customer, _ = self.ar
         payment = Payment.objects.create(
             entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 5),
             amount=30000, deposit_account=Account.objects.get(entity=entity, code="1100"),
@@ -217,7 +229,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
             void_refund(refund)
 
     def test_void_refund_restores_credit_note_source_lot(self):
-        entity, _, customer, _ = self.build_ar()
+        entity, _, customer, _ = self.ar
         note = self._credit_note(
             entity, customer, amount=30000, date=datetime.date(2026, 1, 5),
         )
@@ -242,7 +254,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
         self.assertTrue(reconcile_ar(entity).is_reconciled)
 
     def test_source_documents_require_posted_refund_voided_first(self):
-        entity, _, customer, _ = self.build_ar()
+        entity, _, customer, _ = self.ar
         payment = Payment.objects.create(
             entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 5),
             amount=20000, deposit_account=Account.objects.get(entity=entity, code="1100"),
@@ -257,7 +269,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
             void_payment(payment)
 
     def test_void_concession_and_invoice(self):
-        entity, _, customer, _ = self.build_ar()
+        entity, _, customer, _ = self.ar
         invoice = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)])
         post_invoice(invoice)
         concession = Concession.objects.create(
@@ -281,7 +293,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
             void_invoice(invoice)
 
     def test_invoice_void_refuses_downstream_settlement(self):
-        entity, _, customer, _ = self.build_ar()
+        entity, _, customer, _ = self.ar
         invoice = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)])
         post_invoice(invoice)
         payment = Payment.objects.create(
@@ -293,7 +305,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
             void_invoice(invoice)
 
     def test_raw_reversal_refuses_each_document_journal_but_manual_is_reversible(self):
-        entity, period, customer, _ = self.build_ar()
+        entity, period, customer, _ = self.ar
         invoice = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)])
         post_invoice(invoice)
         payment = Payment.objects.create(
@@ -331,7 +343,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
         from .posting import post_journal
         from .serializers import JournalEntryDetailSerializer
 
-        entity, period, customer, _ = self.build_ar()
+        entity, period, customer, _ = self.ar
         invoice = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)])
         post_invoice(invoice)
 
@@ -349,7 +361,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
         self.assertEqual(manual_action, {"kind": "REVERSE_JOURNAL"})
 
     def test_void_date_cannot_precede_document_or_later_allocation(self):
-        entity, _, customer, _ = self.build_ar()
+        entity, _, customer, _ = self.ar
         payment = Payment.objects.create(
             entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 10),
             amount=40000, deposit_account=Account.objects.get(entity=entity, code="1100"),
@@ -361,7 +373,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
         self.assertEqual(payment.status, DocumentStatus.POSTED)
 
     def test_void_without_date_falls_forward_when_original_period_is_closed(self):
-        entity, january, customer, _ = self.build_ar()
+        entity, january, customer, _ = self.ar
         invoice = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)])
         post_invoice(invoice)
         august = FiscalPeriod.objects.create(
@@ -382,7 +394,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
         self.assertEqual(reversal.period, august)
 
     def test_closed_period_fallback_never_backdates_future_document(self):
-        entity, january, customer, _ = self.build_ar()
+        entity, january, customer, _ = self.ar
         december = FiscalPeriod.objects.create(
             entity=entity, fiscal_year=january.fiscal_year, period_no=12,
             name="Dec 2026", start_date=datetime.date(2026, 12, 1),
@@ -407,7 +419,7 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
         self.assertFalse(hasattr(invoice.journal, "reversed_by"))
 
     def test_reconcile_excludes_2140_credit_and_includes_debit_note_ar(self):
-        entity, _, customer, _ = self.build_ar()
+        entity, _, customer, _ = self.ar
         payment = Payment.objects.create(
             entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 5),
             amount=40000, deposit_account=Account.objects.get(entity=entity, code="1100"),

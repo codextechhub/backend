@@ -32,6 +32,12 @@ from vs_finance.models import EmployeeSalary, PayrollRun
 from .tests_branch_scope import _FinanceBranchFixture
 
 
+def _client(user):
+    from core.test_utils import TenantAPIClient
+
+    return TenantAPIClient(user=user)
+
+
 class _PayrollFixture(_FinanceBranchFixture):
     """The branch fixture plus a roster, payroll grants and the scope setting."""
 
@@ -43,29 +49,34 @@ class _PayrollFixture(_FinanceBranchFixture):
 
     # -- people ---------------------------------------------------------------- #
 
-    def officer(self, tenant, email, role_key, *, branches=()):
+    @classmethod
+    def officer_user(cls, tenant, email, role_key, *, branches=()):
         """A payroll officer pinned to zero, one or several branches.
 
         Several branches means several grants: an assignment carries one branch, so
         "covers Ikeja and Lekki" is two rows rather than one, and that is the shape
         the ambiguous case actually arrives in.
         """
-        from core.test_utils import TenantAPIClient
-
-        user = self.user_for(tenant, email)
+        user = cls.user_for(tenant, email)
         if not branches:
-            self.grant(user, *self.PAYROLL_KEYS, tenant=tenant, role_key=role_key)
+            cls.grant(user, *cls.PAYROLL_KEYS, tenant=tenant, role_key=role_key)
         else:
             for index, branch in enumerate(branches):
-                self.grant(
-                    user, *self.PAYROLL_KEYS, tenant=tenant,
+                cls.grant(
+                    user, *cls.PAYROLL_KEYS, tenant=tenant,
                     role_key=f"{role_key}-{index}", branch=branch,
                 )
-        return TenantAPIClient(user=user)
+        return user
+
+    @classmethod
+    def officer(cls, tenant, email, role_key, *, branches=()):
+        """An API client for :meth:`officer_user`."""
+        return _client(cls.officer_user(tenant, email, role_key, branches=branches))
 
     # -- roster ---------------------------------------------------------------- #
 
-    def salary(self, entity, name, branch=None, *, gross=50_000_00, active=True):
+    @classmethod
+    def salary(cls, entity, name, branch=None, *, gross=50_000_00, active=True):
         return EmployeeSalary.objects.create(
             entity=entity, name=name, branch=branch,
             gross_amount=gross, is_active=active,
@@ -73,7 +84,8 @@ class _PayrollFixture(_FinanceBranchFixture):
 
     # -- the setting ----------------------------------------------------------- #
 
-    def set_scope(self, tenant, value, *, actor=None):
+    @classmethod
+    def set_scope(cls, tenant, value, *, actor=None):
         """Switch a school's payroll scope through the real configuration write.
 
         Through ``set_value`` rather than by writing the row, so every switch in
@@ -127,11 +139,12 @@ class CentralPayrollIsUnchangedTests(_PayrollFixture):
     have passed against the code as it stood before the branch column existed.
     """
 
-    def setUp(self):
-        super().setUp()
-        self.salary(self.books, "Ada Obi")
-        self.salary(self.books, "Bola Lawal")
-        self.salary(self.books, "Chidi Eze")
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.salary(cls.books, "Ada Obi")
+        cls.salary(cls.books, "Bola Lawal")
+        cls.salary(cls.books, "Chidi Eze")
 
     def test_no_school_has_opted_in_by_default(self):
         """The setting exists, and it says CENTRAL until somebody says otherwise."""
@@ -361,15 +374,20 @@ class SwitchingToPerBranchTests(_PayrollFixture):
 class PerBranchRunTests(_PayrollFixture):
     """What a branch run covers once a school has switched."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.salary(cls.books, "Ikeja Teacher", cls.ikeja)
+        cls.salary(cls.books, "Lekki Teacher", cls.lekki)
+        cls.salary(cls.books, "Yaba Teacher", cls.yaba)
+        cls.set_scope(cls.tenant, "PER_BRANCH")
+        cls.bello_user = cls.officer_user(
+            cls.tenant, "pb-ikeja@fin.test", "pb-ikeja", branches=[cls.ikeja],
+        )
+
     def setUp(self):
         super().setUp()
-        self.salary(self.books, "Ikeja Teacher", self.ikeja)
-        self.salary(self.books, "Lekki Teacher", self.lekki)
-        self.salary(self.books, "Yaba Teacher", self.yaba)
-        self.set_scope(self.tenant, "PER_BRANCH")
-        self.bello = self.officer(
-            self.tenant, "pb-ikeja@fin.test", "pb-ikeja", branches=[self.ikeja],
-        )
+        self.bello = _client(self.bello_user)
 
     def test_a_branch_run_covers_only_that_branchs_staff(self):
         response = self.generate(self.bello, self.books)
@@ -471,12 +489,13 @@ class PerBranchRunTests(_PayrollFixture):
 class PerBranchStampingTests(_PayrollFixture):
     """Which branch a run is stamped with, and who may name one."""
 
-    def setUp(self):
-        super().setUp()
-        self.salary(self.books, "Ikeja Teacher", self.ikeja)
-        self.salary(self.books, "Lekki Teacher", self.lekki)
-        self.salary(self.books, "Yaba Teacher", self.yaba)
-        self.set_scope(self.tenant, "PER_BRANCH")
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.salary(cls.books, "Ikeja Teacher", cls.ikeja)
+        cls.salary(cls.books, "Lekki Teacher", cls.lekki)
+        cls.salary(cls.books, "Yaba Teacher", cls.yaba)
+        cls.set_scope(cls.tenant, "PER_BRANCH")
 
     def test_a_pinned_officer_stamps_her_own_branch_without_asking(self):
         bello = self.officer(
@@ -567,16 +586,22 @@ class PerBranchStampingTests(_PayrollFixture):
 class OverlappingRunTests(_PayrollFixture):
     """Two runs covering the same person in one period is a double payment."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.salary(cls.books, "Ikeja Teacher", cls.ikeja)
+        cls.salary(cls.books, "Lekki Teacher", cls.lekki)
+        cls.salary(cls.books, "Yaba Teacher", cls.yaba)
+        cls.set_scope(cls.tenant, "PER_BRANCH")
+        cls.bello_user = cls.officer_user(
+            cls.tenant, "ov-ikeja@fin.test", "ov-ikeja", branches=[cls.ikeja],
+        )
+        cls.hq_user = cls.officer_user(cls.tenant, "ov-hq@fin.test", "ov-hq")
+
     def setUp(self):
         super().setUp()
-        self.salary(self.books, "Ikeja Teacher", self.ikeja)
-        self.salary(self.books, "Lekki Teacher", self.lekki)
-        self.salary(self.books, "Yaba Teacher", self.yaba)
-        self.set_scope(self.tenant, "PER_BRANCH")
-        self.bello = self.officer(
-            self.tenant, "ov-ikeja@fin.test", "ov-ikeja", branches=[self.ikeja],
-        )
-        self.hq = self.officer(self.tenant, "ov-hq@fin.test", "ov-hq")
+        self.bello = _client(self.bello_user)
+        self.hq = _client(self.hq_user)
 
     def test_a_central_run_is_refused_once_a_branch_run_exists(self):
         """The real double-payment attempt, in the order it would happen.
@@ -681,14 +706,19 @@ class OverlappingRunTests(_PayrollFixture):
 class RosterScopingTests(_PayrollFixture):
     """Who may read and who may rewrite a salary row."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ikeja_row = cls.salary(cls.books, "Ikeja Teacher", cls.ikeja)
+        cls.lekki_row = cls.salary(cls.books, "Lekki Teacher", cls.lekki)
+        cls.loose_row = cls.salary(cls.books, "Unassigned Person")
+        cls.bello_user = cls.officer_user(
+            cls.tenant, "rs-ikeja@fin.test", "rs-ikeja", branches=[cls.ikeja],
+        )
+
     def setUp(self):
         super().setUp()
-        self.ikeja_row = self.salary(self.books, "Ikeja Teacher", self.ikeja)
-        self.lekki_row = self.salary(self.books, "Lekki Teacher", self.lekki)
-        self.loose_row = self.salary(self.books, "Unassigned Person")
-        self.bello = self.officer(
-            self.tenant, "rs-ikeja@fin.test", "rs-ikeja", branches=[self.ikeja],
-        )
+        self.bello = _client(self.bello_user)
 
     def test_a_pinned_officer_reads_their_own_rows_only(self):
         """A salary follows its employee's branch; an unassigned one is not theirs."""
@@ -815,11 +845,12 @@ class RosterSelectionTests(_PayrollFixture):
     statement about the function rather than about a screen.
     """
 
-    def setUp(self):
-        super().setUp()
-        self.salary(self.books, "Ikeja Teacher", self.ikeja)
-        self.salary(self.books, "Lekki Teacher", self.lekki)
-        self.salary(self.books, "Unassigned Person")
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.salary(cls.books, "Ikeja Teacher", cls.ikeja)
+        cls.salary(cls.books, "Lekki Teacher", cls.lekki)
+        cls.salary(cls.books, "Unassigned Person")
 
     def test_no_branch_means_the_whole_entity(self):
         from vs_finance.payroll import generate_run_from_roster
@@ -882,12 +913,17 @@ class RunsCarryTheirBranchTests(_PayrollFixture):
     Ikeja's January run from Lekki's, and she is the one who pays them.
     """
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.salary(cls.books, "Ikeja Teacher", cls.ikeja)
+        cls.salary(cls.books, "Lekki Teacher", cls.lekki)
+        cls.salary(cls.books, "Yaba Teacher", cls.yaba)
+        cls.hq_user = cls.officer_user(cls.tenant, "runs-hq@fin.test", "runs-hq")
+
     def setUp(self):
         super().setUp()
-        self.salary(self.books, "Ikeja Teacher", self.ikeja)
-        self.salary(self.books, "Lekki Teacher", self.lekki)
-        self.salary(self.books, "Yaba Teacher", self.yaba)
-        self.hq = self.officer(self.tenant, "runs-hq@fin.test", "runs-hq")
+        self.hq = _client(self.hq_user)
 
     def _runs(self, client=None, query=""):
         response = (client or self.hq).get(
@@ -1034,12 +1070,17 @@ class PayrollScopeIsReadableBySomebodyWhoRunsPayrollTests(_PayrollFixture):
     the school's configuration.
     """
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.salary(cls.books, "Ikeja Teacher", cls.ikeja)
+        cls.salary(cls.books, "Lekki Teacher", cls.lekki)
+        cls.salary(cls.books, "Yaba Teacher", cls.yaba)
+        cls.hq_user = cls.officer_user(cls.tenant, "scope-read@fin.test", "scope-read")
+
     def setUp(self):
         super().setUp()
-        self.salary(self.books, "Ikeja Teacher", self.ikeja)
-        self.salary(self.books, "Lekki Teacher", self.lekki)
-        self.salary(self.books, "Yaba Teacher", self.yaba)
-        self.hq = self.officer(self.tenant, "scope-read@fin.test", "scope-read")
+        self.hq = _client(self.hq_user)
 
     def summary(self):
         response = self.hq.get(

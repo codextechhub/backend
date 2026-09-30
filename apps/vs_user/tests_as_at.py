@@ -33,14 +33,17 @@ def recorded_on(month, day):
 
 
 class PlatformStaffProfileAsAtTests(TestCase):
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         with recorded_on(3, 1):
-            self.person = make_vision_user(
+            cls.person = make_vision_user(
                 email="ada.asat@codex.test", first_name="Ada", last_name="Obi",
             )
-            self.profile = PlatformStaffProfile.objects.create(
-                user=self.person, employee_id="CX-ASAT-1", job_title="Analyst",
+            cls.profile = PlatformStaffProfile.objects.create(
+                user=cls.person, employee_id="CX-ASAT-1", job_title="Analyst",
             )
+
+    def setUp(self):
         self.client = APIClient()
         self.client.force_authenticate(user=self.person)
 
@@ -82,53 +85,56 @@ class OrganisationAsAtTests(TestCase):
     to name the manager and the department of that day, not today's.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_user.models import OrgNode, Position, PositionAssignment
 
         with recorded_on(3, 1):
-            self.person = make_vision_user(
+            cls.person = make_vision_user(
                 email="ada.org@codex.test", first_name="Ada", last_name="Obi",
             )
-            self.grace = make_vision_user(
+            cls.grace = make_vision_user(
                 email="grace.org@codex.test", first_name="Grace", last_name="Eze",
             )
-            self.tunde = make_vision_user(
+            cls.tunde = make_vision_user(
                 email="tunde.org@codex.test", first_name="Tunde", last_name="Bello",
             )
             finance = OrgNode.objects.create(
                 name="Finance", code="ASAT-FIN", kind=OrgNode.Kind.DIVISION,
             )
-            self.payments = OrgNode.objects.create(
+            cls.payments = OrgNode.objects.create(
                 name="Payments", code="ASAT-PAY", kind=OrgNode.Kind.DEPARTMENT, parent=finance,
             )
-            self.treasury = OrgNode.objects.create(
+            cls.treasury = OrgNode.objects.create(
                 name="Treasury", code="ASAT-TRE", kind=OrgNode.Kind.DEPARTMENT, parent=finance,
             )
             head = Position.objects.create(
-                title="Head of Payments", code="ASAT-HEAD", org_node=self.payments,
+                title="Head of Payments", code="ASAT-HEAD", org_node=cls.payments,
             )
-            self.seat = Position.objects.create(
-                title="Analyst", code="ASAT-AN", org_node=self.payments, reports_to=head,
+            cls.seat = Position.objects.create(
+                title="Analyst", code="ASAT-AN", org_node=cls.payments, reports_to=head,
             )
-            self.profile = PlatformStaffProfile.objects.create(
-                user=self.person, employee_id="CX-ORG-1", job_title="Analyst",
-                position=self.seat,
+            cls.profile = PlatformStaffProfile.objects.create(
+                user=cls.person, employee_id="CX-ORG-1", job_title="Analyst",
+                position=cls.seat,
             )
         PositionAssignment.objects.create(
-            user=self.person, position=self.seat, is_primary=True,
+            user=cls.person, position=cls.seat, is_primary=True,
             start_date=dt.date(2026, 3, 1),
         )
         PositionAssignment.objects.create(
-            user=self.grace, position=head, is_primary=True,
+            user=cls.grace, position=head, is_primary=True,
             start_date=dt.date(2026, 3, 1), end_date=dt.date(2026, 3, 10),
         )
         PositionAssignment.objects.create(
-            user=self.tunde, position=head, is_primary=True,
+            user=cls.tunde, position=head, is_primary=True,
             start_date=dt.date(2026, 3, 10),
         )
         with recorded_on(3, 15):
-            self.seat.org_node = self.treasury
-            self.seat.save()
+            cls.seat.org_node = cls.treasury
+            cls.seat.save()
+
+    def setUp(self):
         self.client = APIClient()
         self.client.force_authenticate(user=self.person)
 

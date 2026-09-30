@@ -59,27 +59,30 @@ _roles = itertools.count(1)
 class _LockFixture(_FinanceBranchFixture):
     """Corona's books with an Ikeja operations account on its own ledger."""
 
-    def setUp(self):
-        super().setUp()
-        e = self.books
-        self.ikeja_ledger = Account.objects.create(
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        e = cls.books
+        cls.ikeja_ledger = Account.objects.create(
             entity=e, code="1151", name="Ikeja GTBank",
-            account_type=self.acc("1100").account_type, is_postable=True,
+            account_type=cls.acc("1100").account_type, is_postable=True,
         )
-        self.ikeja_bank = BankAccount.objects.create(
-            entity=e, name="Ikeja GTBank", branch=self.ikeja, gl_account=self.ikeja_ledger,
+        cls.ikeja_bank = BankAccount.objects.create(
+            entity=e, name="Ikeja GTBank", branch=cls.ikeja, gl_account=cls.ikeja_ledger,
         )
 
-    def acc(self, code):
-        return Account.objects.get(entity=self.books, code=code)
+    @classmethod
+    def acc(cls, code):
+        return Account.objects.get(entity=cls.books, code=code)
 
-    def bank(self, code, name, branch):
+    @classmethod
+    def bank(cls, code, name, branch):
         ledger = Account.objects.create(
-            entity=self.books, code=code, name=name,
-            account_type=self.acc("1100").account_type, is_postable=True,
+            entity=cls.books, code=code, name=name,
+            account_type=cls.acc("1100").account_type, is_postable=True,
         )
         return BankAccount.objects.create(
-            entity=self.books, name=name, branch=branch, gl_account=ledger,
+            entity=cls.books, name=name, branch=branch, gl_account=ledger,
         )
 
     def journal(self, pairs, *, source=JournalSource.MANUAL):
@@ -324,12 +327,13 @@ class BankTransferTests(_LockFixture):
         "finance.banktransfer.reverse",
     )
 
-    def setUp(self):
-        super().setUp()
-        self.ikeja_zenith = self.bank("1152", "Ikeja Zenith", self.ikeja)
-        self.lekki_access = self.bank("1153", "Lekki Access", self.lekki)
-        self.shared_uba = self.bank("1154", "School UBA", None)
-        self.shared_fcmb = self.bank("1155", "School FCMB", None)
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ikeja_zenith = cls.bank("1152", "Ikeja Zenith", cls.ikeja)
+        cls.lekki_access = cls.bank("1153", "Lekki Access", cls.lekki)
+        cls.shared_uba = cls.bank("1154", "School UBA", None)
+        cls.shared_fcmb = cls.bank("1155", "School FCMB", None)
 
     def bursar(self, *branches):
         user = self.user_for(self.tenant, f"transfer-{next(_roles)}@corona.test")

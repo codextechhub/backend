@@ -31,32 +31,35 @@ _officers = itertools.count(1)
 class _VendorPaymentFixture(_FinanceBranchFixture):
     """One stationer with an open bill at Ikeja and at Lekki, and a bank at each."""
 
-    def setUp(self):
-        super().setUp()
-        e = self.books
-        self.vendor = Vendor.objects.create(
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        e = cls.books
+        cls.vendor = Vendor.objects.create(
             entity=e, code="STAT", name="Stationer",
             payable_account=Account.objects.get(entity=e, code="2100"), kyc_status="VERIFIED",
         )
-        self.ikeja_bill = self.bill(self.ikeja)
-        self.lekki_bill = self.bill(self.lekki)
-        self.ikeja_bank = self.bank("Ikeja Collections", self.ikeja, "40")
-        self.lekki_bank = self.bank("Lekki Collections", self.lekki, "41")
+        cls.ikeja_bill = cls.bill(cls.ikeja)
+        cls.lekki_bill = cls.bill(cls.lekki)
+        cls.ikeja_bank = cls.bank("Ikeja Collections", cls.ikeja, "40")
+        cls.lekki_bank = cls.bank("Lekki Collections", cls.lekki, "41")
 
-    def bill(self, branch):
+    @classmethod
+    def bill(cls, branch):
         return VendorInvoice.objects.create(
-            entity=self.books, vendor=self.vendor, branch=branch,
+            entity=cls.books, vendor=cls.vendor, branch=branch,
             invoice_date=JAN, due_date=JAN, total=10_000, subtotal=10_000,
             status=DocumentStatus.POSTED, approval_state=ProcApprovalState.APPROVED,
         )
 
-    def bank(self, name, branch, tag):
+    @classmethod
+    def bank(cls, name, branch, tag):
         gl = Account.objects.create(
-            entity=self.books, code=f"11{tag}", name=f"Cash {tag}",
-            account_type=Account.objects.get(entity=self.books, code="1000").account_type,
+            entity=cls.books, code=f"11{tag}", name=f"Cash {tag}",
+            account_type=Account.objects.get(entity=cls.books, code="1000").account_type,
             is_postable=True,
         )
-        return BankAccount.objects.create(entity=self.books, name=name, branch=branch, gl_account=gl)
+        return BankAccount.objects.create(entity=cls.books, name=name, branch=branch, gl_account=gl)
 
     def officer(self, *branches):
         """A procurement officer bound to ``branches``."""

@@ -50,16 +50,17 @@ def _school_admin_role(school):
 
 
 class RoleChangeLadderTests(TestCase):
-    def setUp(self):
-        self.school = make_school(slug="ladder", name="Ladder School")
-        self.branch = make_branch(self.school)
-        self.head = make_school_admin(self.branch, email="head@ladder.test")
-        self.role_admin = _school_admin_role(self.school)
-        make_role_permission(self.role_admin, make_permission("school.roles.approve"))
-        make_assignment(self.school, self.head, self.role_admin)
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="ladder", name="Ladder School")
+        cls.branch = make_branch(cls.school)
+        cls.head = make_school_admin(cls.branch, email="head@ladder.test")
+        cls.role_admin = _school_admin_role(cls.school)
+        make_role_permission(cls.role_admin, make_permission("school.roles.approve"))
+        make_assignment(cls.school, cls.head, cls.role_admin)
 
-        self.target = make_role(self.school, name="Bursar")
-        self.restricted = make_permission("finance.payout.approve", is_restricted=True)
+        cls.target = make_role(cls.school, name="Bursar")
+        cls.restricted = make_permission("finance.payout.approve", is_restricted=True)
 
     def _raise(self, requester=None, key=None):
         return raise_role_change_request(

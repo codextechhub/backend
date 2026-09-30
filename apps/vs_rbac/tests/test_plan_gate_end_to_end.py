@@ -29,7 +29,6 @@ from vs_config.models import ConfigurationDefinition
 from ..models import Permission, PermissionScope
 from ..plan_gate import plan_refusal
 from .helpers import (
-    assert_school_created,
     make_assignment,
     make_role,
     make_role_permission,
@@ -39,7 +38,14 @@ from .helpers import (
 
 
 class OneSchoolMeetsTheWallTests(TestCase):
-    """Bright Star on Basic, reaching for something Basic does not include."""
+    """Bright Star on Basic, reaching for something Basic does not include.
+
+    One Basic school is created for the class through the real onboarding
+    endpoint, with the gate switched on first, and the tests that only ask
+    the gate about it share it. The test about what signing a plan grants
+    creates its own school, so the rows it reads are the ones its own call
+    wrote.
+    """
 
     @classmethod
     def setUpTestData(cls):
@@ -54,23 +60,24 @@ class OneSchoolMeetsTheWallTests(TestCase):
             email="operator@codexng.test", super_admin=True,
         )
         cls.basic = PackagePlan.objects.get(code="basic")
-
-    def setUp(self):
-        definition = ConfigurationDefinition.objects.get(
-            key="platform.entitlements.enforce"
-        )
         set_value(
-            definition=definition, value=True, actor=self.operator,
+            definition=ConfigurationDefinition.objects.get(
+                key="platform.entitlements.enforce"
+            ),
+            value=True, actor=cls.operator,
             tenant=None, branch=None, reason="Demonstrating the gate.",
         )
+        cls.basic_school = cls._create_school("gate-demo-shared", cls.basic)
 
-    def _operator_client(self):
+    @classmethod
+    def _operator_client(cls):
         client = APIClient()
-        client.force_authenticate(user=self.operator)
+        client.force_authenticate(user=cls.operator)
         return client
 
-    def _create_school(self, slug, plan):
-        response = self._operator_client().post(
+    @classmethod
+    def _create_school(cls, slug, plan):
+        response = cls._operator_client().post(
             reverse("school-create"),
             {
                 "name": "Bright Star Academy",
@@ -93,7 +100,8 @@ class OneSchoolMeetsTheWallTests(TestCase):
             },
             format="json",
         )
-        assert_school_created(self, response)
+        if response.status_code != 202 or response.data["data"]["status"] != "SUCCEEDED":
+            raise AssertionError(f"Creating {slug} failed: {response.data}")
         return School.objects.get(slug=slug)
 
     def test_the_plan_a_school_signs_reaches_its_grants(self):
@@ -112,7 +120,7 @@ class OneSchoolMeetsTheWallTests(TestCase):
         )
 
     def test_a_basic_school_is_refused_a_plus_key_and_told_why(self):
-        school = self._create_school("gate-demo-refused", self.basic)
+        school = self.basic_school
         refusal = plan_refusal(["finance.feestructure.generate"], school.tenant)
         self.assertNotEqual(refusal, "", "a Basic school reached a Plus key")
         self.assertIn("Finance", refusal)
@@ -128,7 +136,7 @@ class OneSchoolMeetsTheWallTests(TestCase):
         because the list itself was refused, and the school could see neither
         what it was meant to upload nor why it could not.
         """
-        school = self._create_school("gate-demo-import", self.basic)
+        school = self.basic_school
         for key in (
             "import.templates.view",
             "import.batches.view",
@@ -142,7 +150,7 @@ class OneSchoolMeetsTheWallTests(TestCase):
                 )
 
     def test_the_same_school_keeps_every_core_key(self):
-        school = self._create_school("gate-demo-core", self.basic)
+        school = self.basic_school
         for key in (
             "finance.invoice.create",
             "finance.payment.create",
@@ -167,7 +175,7 @@ class OneSchoolMeetsTheWallTests(TestCase):
 
     def test_the_refusal_reaches_a_real_caller_over_http(self):
         """The whole path, ending at a status code a browser would see."""
-        school = self._create_school("gate-demo-http", self.basic)
+        school = self.basic_school
         # A school arrives from the wizard PENDING, and TenantSurfaceAllowed
         # refuses a pending tenant everything before any other gate is asked.
         # That ordering is right and is why the school is taken live here: the

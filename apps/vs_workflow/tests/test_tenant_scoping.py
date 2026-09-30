@@ -81,16 +81,17 @@ def _rows(resp):
 class _TwoTenants(TestCase):
     """One school we act as, one we must never see."""
 
-    def setUp(self):
-        self.mine = make_school(slug="scope-mine", name="Mine")
-        self.mine_branch = make_branch(self.mine)
-        self.theirs = make_school(slug="scope-theirs", name="Theirs")
-        self.theirs_branch = make_branch(self.theirs)
+    @classmethod
+    def setUpTestData(cls):
+        cls.mine = make_school(slug="scope-mine", name="Mine")
+        cls.mine_branch = make_branch(cls.mine)
+        cls.theirs = make_school(slug="scope-theirs", name="Theirs")
+        cls.theirs_branch = make_branch(cls.theirs)
 
-        self.admin = make_school_admin(self.mine_branch, email="scope-admin@test.com")
-        _grant(self.admin, [PERM_TEMPLATE_VIEW, PERM_INSTANCE_VIEW, PERM_ACTION_REVERSE])
+        cls.admin = make_school_admin(cls.mine_branch, email="scope-admin@test.com")
+        _grant(cls.admin, [PERM_TEMPLATE_VIEW, PERM_INSTANCE_VIEW, PERM_ACTION_REVERSE])
 
-        self.their_user = make_school_admin(self.theirs_branch, email="scope-theirs@test.com")
+        cls.their_user = make_school_admin(cls.theirs_branch, email="scope-theirs@test.com")
 
     def _template(self, tenant, code):
         return WorkflowTemplate.objects.create(

@@ -23,28 +23,43 @@ KEYS = ("procurement.report.view", "procurement.analytics.view", "procurement.ve
 
 
 class _VendorSpendFixture(_OverviewFixture):
+    """The overview school with the chairs billed, a vendor category and three readers.
+
+    The readers' users and grants are built once per class; their API clients and
+    the frozen vendor-screen clock are made per test.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        e = cls.multi.entity
+        grn = GoodsReceivedNote.objects.get(purchase_order=cls.chairs)
+        cls.bill(cls.chairs, grn, 4)
+        cls.stationery = VendorCategory.objects.create(entity=e, code="STAT", name="Stationery")
+        Vendor.objects.filter(pk=cls.multi.vendor.pk).update(category=cls.stationery)
+
+        cls.ikeja_reader_user = cls.reader("ikeja.store@t.com", "spend-ikeja", cls.ikeja)
+        cls.lekki_reader_user = cls.reader("lekki.store@t.com", "spend-lekki", cls.lekki)
+        cls.head_user = cls.reader("head.store@t.com", "spend-head", None)
+
     def setUp(self):
         super().setUp()
-        e = self.multi.entity
-        grn = GoodsReceivedNote.objects.get(purchase_order=self.chairs)
-        self.bill(self.chairs, grn, 4)
-        self.stationery = VendorCategory.objects.create(entity=e, code="STAT", name="Stationery")
-        Vendor.objects.filter(pk=self.multi.vendor.pk).update(category=self.stationery)
-
-        self.ikeja_reader = self.reader("ikeja.store@t.com", "spend-ikeja", self.ikeja)
-        self.lekki_reader = self.reader("lekki.store@t.com", "spend-lekki", self.lekki)
-        self.head = self.reader("head.store@t.com", "spend-head", None)
+        self.ikeja_reader = self.client_as(self.ikeja_reader_user)
+        self.lekki_reader = self.client_as(self.lekki_reader_user)
+        self.head = self.client_as(self.head_user)
 
         clock = mock.patch("vs_procurement.views.vendors.tenant_today", return_value=AS_OF)
         clock.start()
         self.addCleanup(clock.stop)
 
-    def reader(self, email, role_key, branch):
-        client = self.client_for(self.multi_tenant, email)
+    @classmethod
+    def reader(cls, email, role_key, branch):
+        """A user of the school granted every spend key at ``branch``."""
+        user = cls.user_for(cls.multi_tenant, email)
         for key in KEYS:
-            self.grant(client.test_user, key, tenant=self.multi_tenant,
-                       role_key=role_key, branch=branch)
-        return client
+            cls.grant(user, key, tenant=cls.multi_tenant,
+                      role_key=role_key, branch=branch)
+        return user
 
     def fetch(self, client, path):
         response = client.get(f"/v1/procurement/{path}?entity={self.multi.entity.code}")

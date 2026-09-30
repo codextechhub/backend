@@ -48,12 +48,31 @@ changes and row changes share one transaction here:
 Rows must be built through :attr:`historical` models for the rewound app and
 for any app its rewind reached; only apps the rewind left alone keep their
 latest tables.
+
+The rewind itself is cached. Unapplying half the project re-renders the model
+state of every migration it passes, which takes minutes, and every class
+rewinding the same app to the same point would pay it again. Under
+PostgreSQL the first such class rewinds a copy of the test database and saves
+it as a template named after the migration fingerprint (see
+``core/suite_runner.py``), the app and ``BEFORE``; the class, and every later
+run with the same migrations, then works on a fresh clone of that template,
+which takes about a second. The clone is exactly what the rewind produces,
+because it is its output, and it is dropped when the class ends. With
+``XVS_TEST_DB_TEMPLATE=0``, or on another database engine, the class rewinds in
+place as described above.
 """
 from __future__ import annotations
 
-from django.db import connection
+import hashlib
+import os
+
+from django.conf import settings
+from django.db import DEFAULT_DB_ALIAS, connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase
+
+REWOUND_PREFIX = "xvs_test_rw_"
+REWOUND_TEMPLATES_KEPT = 12
 
 
 class RewoundSchemaTestCase(TestCase):
@@ -64,15 +83,30 @@ class RewoundSchemaTestCase(TestCase):
 
     @classmethod
     def setUpClass(cls):
-        super().setUpClass()
+        cls._rewound_clone = None
+        if cls.BEFORE:
+            cls._rewound_clone = _enter_rewound_clone(cls)
+        try:
+            super().setUpClass()
+        except BaseException:
+            _leave_rewound_clone(cls)
+            raise
         if not cls.BEFORE:
             return
         try:
-            cls._settle(cls.BEFORE)
+            if cls._rewound_clone is None:
+                cls._settle(cls.BEFORE)
             cls.historical = cls.historical_apps(cls.BEFORE)
         except BaseException:
             cls.tearDownClass()
             raise
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            super().tearDownClass()
+        finally:
+            _leave_rewound_clone(cls)
 
     @staticmethod
     def _immediate_constraints():
@@ -143,3 +177,72 @@ class RewoundSchemaTestCase(TestCase):
         self._immediate_constraints()
         executor = self._executor()
         executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+# ---------------------------------------------------------------------------
+# The cached rewind
+# ---------------------------------------------------------------------------
+def _point_at(name):
+    """Reconnect the default connection to database *name*."""
+    connection.close()
+    connection.settings_dict["NAME"] = name
+    settings.DATABASES[DEFAULT_DB_ALIAS]["NAME"] = name
+
+
+def _enter_rewound_clone(cls):
+    """Point the connection at a fresh copy of the cached rewind, building it once.
+
+    Returns ``(test database, clone)`` for :func:`_leave_rewound_clone`, or
+    ``None`` where no template can be used, which leaves the class to rewind
+    in place.
+    """
+    if connection.vendor != "postgresql" or os.environ.get("XVS_TEST_DB_TEMPLATE", "1") == "0":
+        return None
+    from core.suite_runner import (
+        _database_exists, _drop_unused, _prune_templates, migration_fingerprint,
+    )
+
+    qn = connection.ops.quote_name
+    main = connection.settings_dict["NAME"]
+    key = hashlib.sha256(
+        f"{migration_fingerprint()}:{cls.APP}:{cls.BEFORE}".encode(),
+    ).hexdigest()[:16]
+    template = REWOUND_PREFIX + key
+    clone, build = f"{main}_rw", f"{main}_rwbuild"
+
+    connection.close()
+    with connection._nodb_cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_lock(hashtext(%s))", [template])
+        try:
+            if not _database_exists(cursor, template):
+                _drop_unused(cursor, qn, build)
+                cursor.execute(f"CREATE DATABASE {qn(build)} TEMPLATE {qn(main)}")
+                try:
+                    _point_at(build)
+                    cls._settle(cls.BEFORE)
+                finally:
+                    _point_at(main)
+                cursor.execute(f"CREATE DATABASE {qn(template)} TEMPLATE {qn(build)}")
+                cursor.execute(
+                    f"ALTER DATABASE {qn(template)} "
+                    "WITH IS_TEMPLATE true ALLOW_CONNECTIONS false"
+                )
+                cursor.execute(f"DROP DATABASE {qn(build)}")
+                _prune_templates(cursor, qn, REWOUND_PREFIX, REWOUND_TEMPLATES_KEPT)
+            _drop_unused(cursor, qn, clone)
+            cursor.execute(f"CREATE DATABASE {qn(clone)} TEMPLATE {qn(template)}")
+        finally:
+            cursor.execute("SELECT pg_advisory_unlock(hashtext(%s))", [template])
+    _point_at(clone)
+    return main, clone
+
+
+def _leave_rewound_clone(cls):
+    """Return the connection to the test database and drop the class's clone."""
+    names, cls._rewound_clone = getattr(cls, "_rewound_clone", None), None
+    if not names:
+        return
+    main, clone = names
+    _point_at(main)
+    with connection._nodb_cursor() as cursor:
+        cursor.execute(f"DROP DATABASE IF EXISTS {connection.ops.quote_name(clone)}")

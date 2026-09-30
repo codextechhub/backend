@@ -30,20 +30,24 @@ from schools.vs_schools.models import School
 
 
 class ProcurementSettingsAPITests(TestCase):
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         seed_currencies()
-        self.school = School.objects.create(
+        cls.school = School.objects.create(
             name="Proc Settings School", slug="proc-settings-school", code="PRSSC", status="ACTIVE",
         )
-        self.entity = LedgerEntity.objects.create(
+        cls.entity = LedgerEntity.objects.create(
             name="Proc Settings Books", code="PRSBK", kind=LedgerEntity.Kind.TENANT,
-            tenant=self.school.tenant,
+            tenant=cls.school.tenant,
         )
-        seed_chart_of_accounts(self.entity)
-        self.user = get_user_model().objects.create_user(
-            email="proc-settings@test.com", password="pw", tenant=self.school.tenant,
+        seed_chart_of_accounts(cls.entity)
+        cls.user = get_user_model().objects.create_user(
+            email="proc-settings@test.com", password="pw", tenant=cls.school.tenant,
             status="ACTIVE", first_name="Proc", last_name="Settings",
         )
+
+    def setUp(self):
         self.client = TenantAPIClient(user=self.user)
         self.url = f"/v1/procurement/settings/?entity={self.entity.code}"
 

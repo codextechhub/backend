@@ -57,23 +57,26 @@ class _RowFixture(TestCase):
     means "any branch" rather than "the ones I hold".
     """
 
-    def setUp(self):
-        self.school = make_school(slug="scope-multi", name="Multi Branch")
-        self.tenant = self.school.tenant
-        self.ikeja = make_branch(self.tenant, name="Ikeja", is_main=False)
-        self.lekki = make_branch(self.tenant, name="Lekki", is_main=False)
-        self.yaba = make_branch(self.tenant, name="Yaba", is_main=True)
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="scope-multi", name="Multi Branch")
+        cls.tenant = cls.school.tenant
+        cls.ikeja = make_branch(cls.tenant, name="Ikeja", is_main=False)
+        cls.lekki = make_branch(cls.tenant, name="Lekki", is_main=False)
+        cls.yaba = make_branch(cls.tenant, name="Yaba", is_main=True)
 
         # The other shape of school: one branch, where the dimension recedes.
-        self.solo_school = make_school(slug="scope-solo", name="Single Branch")
-        self.solo_tenant = self.solo_school.tenant
-        self.solo_main = make_branch(self.solo_tenant, name="Main", is_main=True)
+        cls.solo_school = make_school(slug="scope-solo", name="Single Branch")
+        cls.solo_tenant = cls.solo_school.tenant
+        cls.solo_main = make_branch(cls.solo_tenant, name="Main", is_main=True)
 
-        self.rival_school = make_school(slug="scope-rival", name="Rival Group")
-        self.rival_tenant = self.rival_school.tenant
-        self.rival_ikeja = make_branch(self.rival_tenant, name="Ikeja", is_main=True)
+        cls.rival_school = make_school(slug="scope-rival", name="Rival Group")
+        cls.rival_tenant = cls.rival_school.tenant
+        cls.rival_ikeja = make_branch(cls.rival_tenant, name="Ikeja", is_main=True)
 
-        self.permission = make_permission(BURSAR_KEY)
+        cls.permission = make_permission(BURSAR_KEY)
+
+    def setUp(self):
         #: Only the rows :meth:`row_at` made. Every caller below is *also* a row in
         #: this model (their grant), and those would otherwise drift into the
         #: answers and make the assertions depend on who else the fixture built.

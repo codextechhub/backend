@@ -401,10 +401,11 @@ class SchoolShapeTests(_BackfillFixture):
 class WriteRuleTests(_BackfillFixture):
     """Dry run, idempotence, branched rows, the audit trail and the flagged list."""
 
-    def setUp(self):
-        super().setUp()
-        self.lekki_customer = self.customer(self.books, "C1", self.lekki)
-        self.invoice_row = blank(self.invoice(self.books, self.lekki_customer, None))
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.lekki_customer = cls.customer(cls.books, "C1", cls.lekki)
+        cls.invoice_row = blank(cls.invoice(cls.books, cls.lekki_customer, None))
 
     def test_a_dry_run_writes_nothing(self):
         events = AuditEvent.objects.count()

@@ -15,18 +15,23 @@ from .tests_branch_scope import _FinanceBranchFixture
 
 
 class _PickerFixture(_FinanceBranchFixture):
-    def setUp(self):
-        super().setUp()
-        self.okafor = self.customer(self.books, "COKAF", self.ikeja)
-        self.adeyemi = self.customer(self.books, "CADEY", None)
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.okafor = cls.customer(cls.books, "COKAF", cls.ikeja)
+        cls.adeyemi = cls.customer(cls.books, "CADEY", None)
+
+    @classmethod
+    def user_holding(cls, email, *keys, branches=()):
+        user = cls.user_for(cls.tenant, email)
+        if not branches:
+            cls.grant(user, *keys, tenant=cls.tenant, role_key=f"role-{email}")
+        for n, branch in enumerate(branches):
+            cls.grant(user, *keys, tenant=cls.tenant, role_key=f"role-{email}-{n}", branch=branch)
+        return user
 
     def client_for(self, email, *keys, branches=()):
-        user = self.user_for(self.tenant, email)
-        if not branches:
-            self.grant(user, *keys, tenant=self.tenant, role_key=f"role-{email}")
-        for n, branch in enumerate(branches):
-            self.grant(user, *keys, tenant=self.tenant, role_key=f"role-{email}-{n}", branch=branch)
-        return TenantAPIClient(user=user)
+        return TenantAPIClient(user=self.user_holding(email, *keys, branches=branches))
 
     def rows(self, client, path):
         response = client.get(f"/v1/finance/{path}{'&' if '?' in path else '?'}entity={self.books.code}")
@@ -75,15 +80,16 @@ class LedgerAccountsNameTheirBanksBranchTests(_PickerFixture):
 class PaymentsPickersOfferOnlyWhatTheClerkMayUseTests(_PickerFixture):
     """``?own=true`` lists what a branch clerk may raise a gateway record against."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_procurement.models import Vendor
 
-        super().setUp()
-        payable = Account.objects.get(entity=self.books, code="2100")
-        self.vendors = {
-            code: Vendor.objects.create(entity=self.books, code=code, name=f"Vendor {code}",
+        super().setUpTestData()
+        payable = Account.objects.get(entity=cls.books, code="2100")
+        cls.vendors = {
+            code: Vendor.objects.create(entity=cls.books, code=code, name=f"Vendor {code}",
                                         branch=branch, payable_account=payable)
-            for code, branch in (("VIKJ", self.ikeja), ("VLEK", self.lekki), ("VALL", None))
+            for code, branch in (("VIKJ", cls.ikeja), ("VLEK", cls.lekki), ("VALL", None))
         }
 
     def vendor_rows(self, client, query=""):
@@ -160,17 +166,22 @@ class InvoiceAndPlanRowsCarryTheirOwnBranchTests(_PickerFixture):
     meet the server's refusal. The invoice and the plan name Ikeja themselves.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_finance.models import PaymentPlan
 
-        super().setUp()
-        self.bill = self.invoice(self.books, self.adeyemi, self.ikeja)
-        self.plan = PaymentPlan.objects.create(
-            entity=self.books, branch=self.ikeja, customer=self.adeyemi, invoice=self.bill,
-            start_date=self.bill.invoice_date,
+        super().setUpTestData()
+        cls.bill = cls.invoice(cls.books, cls.adeyemi, cls.ikeja)
+        cls.plan = PaymentPlan.objects.create(
+            entity=cls.books, branch=cls.ikeja, customer=cls.adeyemi, invoice=cls.bill,
+            start_date=cls.bill.invoice_date,
         )
-        self.hq = self.client_for("pick-doc@corona.test", "finance.invoice.view",
-                                  "finance.paymentplan.view")
+        cls.hq_user = cls.user_holding("pick-doc@corona.test", "finance.invoice.view",
+                                       "finance.paymentplan.view")
+
+    def setUp(self):
+        super().setUp()
+        self.hq = TenantAPIClient(user=self.hq_user)
 
     def detail(self, path):
         response = self.hq.get(f"/v1/finance/{path}?entity={self.books.code}")

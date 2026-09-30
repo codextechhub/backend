@@ -33,37 +33,43 @@ KEYS = ("finance.refund.view", "finance.refund.create", "finance.customer.view")
 
 
 class _RefundFixture(_FinanceBranchFixture):
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_finance.receivables import post_payment
 
-        super().setUp()
-        e = self.books
-        self.bank = Account.objects.get(entity=e, code="1100")
-        self.family = self.customer(e, "OKAFOR", None)
+        super().setUpTestData()
+        e = cls.books
+        cls.bank = Account.objects.get(entity=e, code="1100")
+        cls.family = cls.customer(e, "OKAFOR", None)
 
         def receipt(branch, amount, day):
             payment = Payment.objects.create(
-                entity=e, customer=self.family, branch=branch,
+                entity=e, customer=cls.family, branch=branch,
                 payment_date=datetime.date(2026, 1, day), amount=amount,
-                deposit_account=self.bank,
+                deposit_account=cls.bank,
             )
             post_payment(payment, auto_allocate=False)
             payment.refresh_from_db()
             return payment
 
-        self.lekki_receipt = receipt(self.lekki, 20_000, 12)
-        self.ikeja_receipt = receipt(self.ikeja, 30_000, 15)
+        cls.lekki_receipt = receipt(cls.lekki, 20_000, 12)
+        cls.ikeja_receipt = receipt(cls.ikeja, 30_000, 15)
 
-        self.head = self.client_for("head.bursar@example.com", "refund-head")
-        self.ikeja_bursar = self.client_for(
-            "ikeja.bursar@example.com", "refund-ikeja", branch=self.ikeja)
+        cls.head_user = cls.user_with_keys("head.bursar@example.com", "refund-head")
+        cls.ikeja_bursar_user = cls.user_with_keys(
+            "ikeja.bursar@example.com", "refund-ikeja", branch=cls.ikeja)
 
-    def client_for(self, email, role_key, *, branch=None):
-        user = self.grant(
-            self.user_for(self.tenant, email), *KEYS,
-            tenant=self.tenant, role_key=role_key, branch=branch,
+    def setUp(self):
+        super().setUp()
+        self.head = TenantAPIClient(user=self.head_user)
+        self.ikeja_bursar = TenantAPIClient(user=self.ikeja_bursar_user)
+
+    @classmethod
+    def user_with_keys(cls, email, role_key, *, branch=None):
+        return cls.grant(
+            cls.user_for(cls.tenant, email), *KEYS,
+            tenant=cls.tenant, role_key=role_key, branch=branch,
         )
-        return TenantAPIClient(user=user)
 
     def school_wide_receipt(self, amount):
         from vs_finance.receivables import post_payment

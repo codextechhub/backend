@@ -13,40 +13,43 @@ from vs_user.models import LoginSession
 
 
 class LiveSessionSearchTests(TestCase):
-    def setUp(self):
-        self.viewer = make_vision_user(
+    @classmethod
+    def setUpTestData(cls):
+        cls.viewer = make_vision_user(
             email="session.viewer@codex.test",
             super_admin=True,
         )
-        self.school = make_school(
+        cls.school = make_school(
             slug="search-academy",
             name="Search Academy",
         )
-        self.matching_user = make_school_admin(
-            make_branch(self.school),
+        cls.matching_user = make_school_admin(
+            make_branch(cls.school),
             email="ada.session@codex.test",
             first_name="Ada",
             last_name="Lovelace",
         )
-        self.other_user = make_vision_user(
+        cls.other_user = make_vision_user(
             email="grace.session@codex.test",
             first_name="Grace",
             last_name="Hopper",
         )
-        self.matching = LoginSession.objects.create(
-            user=self.matching_user,
-            tenant=self.matching_user.tenant,
+        cls.matching = LoginSession.objects.create(
+            user=cls.matching_user,
+            tenant=cls.matching_user.tenant,
             ip_address="203.0.113.42",
             device_label="Ada's work laptop",
             user_agent="Mozilla/5.0 SearchBrowser/9.1",
         )
         LoginSession.objects.create(
-            user=self.other_user,
-            tenant=self.other_user.tenant,
+            user=cls.other_user,
+            tenant=cls.other_user.tenant,
             ip_address="198.51.100.17",
             device_label="Grace's tablet",
             user_agent="Mozilla/5.0 OtherBrowser/1.0",
         )
+
+    def setUp(self):
         self.client = APIClient()
         self.client.force_authenticate(user=self.viewer)
 

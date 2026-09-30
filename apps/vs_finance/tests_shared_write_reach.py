@@ -262,11 +262,12 @@ class DunningPolicyWriteTests(_SharedWriteFixture):
     MESSAGE = "Only a school-wide administrator can change the dunning policies."
     STAGES = [{"name": "First reminder", "min_days_overdue": 7}]
 
-    def setUp(self):
-        super().setUp()
-        self.policy = DunningPolicy.objects.create(entity=self.books, name="Standard")
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.policy = DunningPolicy.objects.create(entity=cls.books, name="Standard")
         DunningStage.objects.create(
-            policy=self.policy, level=1, name="Nudge", min_days_overdue=3,
+            policy=cls.policy, level=1, name="Nudge", min_days_overdue=3,
         )
 
     def test_a_branch_bound_holder_cannot_create_or_change_one(self):
@@ -310,11 +311,12 @@ class TaxObligationWriteTests(_SharedWriteFixture):
     MESSAGE = "Only a school-wide administrator can change the tax obligations."
     BODY = {"code": "LEVY", "obligation_type": "OTHER", "liability_account": "2300"}
 
-    def setUp(self):
-        super().setUp()
-        self.obligation = TaxObligation.objects.create(
-            entity=self.books, code="TPAYE", name="PAYE", obligation_type="PAYE",
-            liability_account=Account.objects.get(entity=self.books, code="2310"),
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.obligation = TaxObligation.objects.create(
+            entity=cls.books, code="TPAYE", name="PAYE", obligation_type="PAYE",
+            liability_account=Account.objects.get(entity=cls.books, code="2310"),
             filing_day=10,
         )
 
@@ -346,19 +348,20 @@ class TaxFilingWriteTests(_SharedWriteFixture):
 
     MESSAGE = "Only a school-wide administrator can change a school-wide tax filing."
 
-    def setUp(self):
-        super().setUp()
-        self.obligation = TaxObligation.objects.create(
-            entity=self.books, code="TWHT", name="WHT", obligation_type="WHT",
-            liability_account=Account.objects.get(entity=self.books, code="2300"),
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.obligation = TaxObligation.objects.create(
+            entity=cls.books, code="TWHT", name="WHT", obligation_type="WHT",
+            liability_account=Account.objects.get(entity=cls.books, code="2300"),
         )
         gl = Account.objects.create(
-            entity=self.books, code="1150", name="GTBank Operations",
-            account_type=Account.objects.get(entity=self.books, code="1100").account_type,
+            entity=cls.books, code="1150", name="GTBank Operations",
+            account_type=Account.objects.get(entity=cls.books, code="1100").account_type,
             is_postable=True,
         )
-        self.bank = BankAccount.objects.create(
-            entity=self.books, name="GTBank Operations", branch=None, gl_account=gl,
+        cls.bank = BankAccount.objects.create(
+            entity=cls.books, name="GTBank Operations", branch=None, gl_account=gl,
         )
 
     def filing(self, month, *, branch=None, status=TaxFilingStatus.DRAFT):
@@ -753,9 +756,10 @@ class CostCentreWriteTests(_SharedWriteFixture):
 
     MESSAGE = "Only a school-wide administrator can change the cost centres."
 
-    def setUp(self):
-        super().setUp()
-        self.admin_cc = CostCenter.objects.create(entity=self.books, code="ADMIN", name="Admin")
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.admin_cc = CostCenter.objects.create(entity=cls.books, code="ADMIN", name="Admin")
 
     def test_a_branch_bound_holder_cannot_create_one(self):
         response = self.send(self.ngozi, "post", "cost-centers/", body={"code": "SCI", "name": "Science"})
@@ -824,22 +828,23 @@ class DraftJournalPostTests(_SharedWriteFixture):
 class DraftJournalSubmitTests(_SharedWriteFixture):
     """A draft not yet given a branch is submitted only by a whole-school bursar."""
 
-    def setUp(self):
-        super().setUp()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         from vs_workflow.services.roles import ensure_approver_role
         from vs_workflow.services.templates import publish_template
 
         from vs_rbac.models import TenantRoleTemplate
 
-        ensure_approver_role(self.tenant, "journal-checker")
-        checker = make_school_admin(self.ikeja, email="checker@lagoon-shared.example.com")
+        ensure_approver_role(cls.tenant, "journal-checker")
+        checker = make_school_admin(cls.ikeja, email="checker@lagoon-shared.example.com")
         make_assignment(
-            self.lagoon, checker,
-            TenantRoleTemplate.objects.get(tenant=self.tenant, key="journal-checker"),
+            cls.lagoon, checker,
+            TenantRoleTemplate.objects.get(tenant=cls.tenant, key="journal-checker"),
             branch=None,
         )
         publish_template(
-            tenant=self.tenant, branch=None,
+            tenant=cls.tenant, branch=None,
             document_type="finance.journal", code="standard",
             name="Standard journal approval",
             stages_payload=[{

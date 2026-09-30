@@ -388,6 +388,9 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "apps.urls"
 
+# Clones a cached migrated template database; see core/suite_runner.py.
+TEST_RUNNER = "core.suite_runner.XvsTestRunner"
+
 # ---------------------------------------------------------------------------
 # Celery
 # ---------------------------------------------------------------------------

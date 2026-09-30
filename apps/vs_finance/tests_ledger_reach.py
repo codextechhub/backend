@@ -30,20 +30,22 @@ _people = itertools.count(1)
 
 
 class _LedgerReachFixture(_FinanceBranchFixture):
-    def setUp(self):
-        super().setUp()
-        self.ikeja_bank = self.bank("Ikeja Collections", self.ikeja, "40")
-        self.lekki_bank = self.bank("Lekki Collections", self.lekki, "41")
-        self.shared_bank = self.bank("GTBank Operations", None, "42")
-        self.lekki_ledger = self.lekki_bank.gl_account
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ikeja_bank = cls.bank("Ikeja Collections", cls.ikeja, "40")
+        cls.lekki_bank = cls.bank("Lekki Collections", cls.lekki, "41")
+        cls.shared_bank = cls.bank("GTBank Operations", None, "42")
+        cls.lekki_ledger = cls.lekki_bank.gl_account
 
-    def bank(self, name, branch, tag):
+    @classmethod
+    def bank(cls, name, branch, tag):
         gl = Account.objects.create(
-            entity=self.books, code=f"11{tag}", name=f"Cash {tag}",
-            account_type=Account.objects.get(entity=self.books, code="1000").account_type,
+            entity=cls.books, code=f"11{tag}", name=f"Cash {tag}",
+            account_type=Account.objects.get(entity=cls.books, code="1000").account_type,
             is_postable=True,
         )
-        return BankAccount.objects.create(entity=self.books, name=name, branch=branch, gl_account=gl)
+        return BankAccount.objects.create(entity=cls.books, name=name, branch=branch, gl_account=gl)
 
     def person(self, *keys, branch):
         n = next(_people)
@@ -237,6 +239,7 @@ class LedgerOfAnotherBranchOnABranchDocumentTests(_LedgerReachFixture):
             client, path, {**body, field: self.ikeja_bank.gl_account.code}, **extra)
         self.assertNotIn("belongs to Ikeja Branch", str(accepted.data))
         self.assertNotIn("No account", str(accepted.data))
+        return accepted
 
     def test_an_asset_bought_on_another_branchs_bank_ledger(self):
         asset = self.fixed_asset(self.books, "Ikeja Bus", self.ikeja)
@@ -312,12 +315,19 @@ class LedgerOfAnotherBranchOnABranchDocumentTests(_LedgerReachFixture):
         )
 
     def test_a_payment_request_and_a_virtual_account_deposited_into_it(self):
+        """A payment request opens a checkout with the provider, faked here."""
+        from vs_payments.providers import registry
+        from vs_payments.providers.fake import FakeProvider
+
+        registry.register("PAYSTACK", FakeProvider(secret="test-secret"))
+        self.addCleanup(registry.unregister, "PAYSTACK")
         customer = self.customer(self.books, "CPAYR", self.ikeja)
         client = self.okafor("payments.collection.create", "payments.virtual_account.create")
-        self.assertOwnBranchOnly(
+        accepted = self.assertOwnBranchOnly(
             client, "payments/collections/", {"amount": 5_000, "customer": customer.code},
             "deposit_account", noun="payment request", verb="Deposit it into",
         )
+        self.assertIn(accepted.status_code, (200, 201), accepted.data)
         refused = self.post(client, "payments/virtual-accounts/", {
             "customer": customer.code, "deposit_account": self.lekki_ledger.code,
         })

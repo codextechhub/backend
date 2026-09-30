@@ -44,12 +44,13 @@ from .helpers import (
 class _GateFixture(TestCase):
     """A module, its Plus band, and permission keys pointing at each."""
 
-    def setUp(self):
-        self.school = make_school(slug="gate-school")
-        self.tenant = self.school.tenant
-        self.actor = make_vision_user(email="gate-actor@example.com")
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="gate-school")
+        cls.tenant = cls.school.tenant
+        cls.actor = make_vision_user(email="gate-actor@example.com")
 
-        self.enforce = ConfigurationDefinition.objects.create(
+        cls.enforce = ConfigurationDefinition.objects.create(
             key="platform.entitlements.enforce",
             label="Enforce Plan Entitlements",
             description="Test copy of the enforcement switch.",
@@ -58,19 +59,19 @@ class _GateFixture(TestCase):
             allowed_scopes=["platform"],
         )
 
-        self.finance = Capability.objects.create(key="gate-finance", label="Finance")
-        self.plus = Capability.objects.create(
-            key="gate-finance-plus", label="Finance Plus", parent=self.finance,
+        cls.finance = Capability.objects.create(key="gate-finance", label="Finance")
+        cls.plus = Capability.objects.create(
+            key="gate-finance-plus", label="Finance Plus", parent=cls.finance,
             depth=Capability.Depth.PLUS, requires_entitlement=False,
         )
 
-        self.core_key = make_permission(
-            "gatefinance.invoice.view", capability=self.finance,
+        cls.core_key = make_permission(
+            "gatefinance.invoice.view", capability=cls.finance,
         ).key
-        self.plus_key = make_permission(
-            "gatefinance.feestructure.generate", capability=self.plus,
+        cls.plus_key = make_permission(
+            "gatefinance.feestructure.generate", capability=cls.plus,
         ).key
-        self.unmapped_key = make_permission("gatefinance.invoice.generate").key
+        cls.unmapped_key = make_permission("gatefinance.invoice.generate").key
 
     def switch_on(self):
         set_value(

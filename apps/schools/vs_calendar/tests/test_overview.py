@@ -8,8 +8,10 @@ from .base import _Base, _SingleBranchBase
 
 
 class OverviewCountTests(_Base):
-    def setUp(self):
-        self.eze = self.make_teacher("eze@brightfield.test", "Chukwuemeka", "Eze")
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.eze = cls.make_teacher("eze@brightfield.test", "Chukwuemeka", "Eze")
 
     def test_the_counts_include_the_timetable_figures_the_hub_shows(self):
         """FR-007 forbids these; the text predates the timetable half existing."""
@@ -59,8 +61,10 @@ class OverviewCountTests(_Base):
 
 
 class OverviewAlertTests(_Base):
-    def setUp(self):
-        self.eze = self.make_teacher("eze@brightfield.test", "Chukwuemeka", "Eze")
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.eze = cls.make_teacher("eze@brightfield.test", "Chukwuemeka", "Eze")
 
     def _codes(self, user=None, params=None):
         response = self.get(

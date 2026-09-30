@@ -79,23 +79,24 @@ def _override(user, key, mode, **kwargs):
 
 
 class UserPermissionOverrideTests(TestCase):
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         # NB: the school name must not contain any word the self-visibility
         # test scans the /me payload for ("override", "exception", ...).
-        self.school = make_school(slug="ovr-school", name="Riverbank School")
-        self.branch = make_branch(self.school)
-        self.tenant = self.school.tenant
-        self.slug = self.tenant.slug
+        cls.school = make_school(slug="ovr-school", name="Riverbank School")
+        cls.branch = make_branch(cls.school)
+        cls.tenant = cls.school.tenant
+        cls.slug = cls.tenant.slug
 
         # Actor: holds the manage key. Target: holds the role grant under test.
-        self.actor = make_school_admin(self.branch, email="ovr-actor@test.com")
-        self.target = make_staff_user(self.branch, email="ovr-target@test.com")
-        _grant(self.actor, [CREATE_KEY, DELETE_KEY])
-        _grant(self.target, [TARGET_KEY])
+        cls.actor = make_school_admin(cls.branch, email="ovr-actor@test.com")
+        cls.target = make_staff_user(cls.branch, email="ovr-target@test.com")
+        _grant(cls.actor, [CREATE_KEY, DELETE_KEY])
+        _grant(cls.target, [TARGET_KEY])
 
-        self.list_url = reverse(
+        cls.list_url = reverse(
             "rbac-user-permission-override-list-create",
-            kwargs={"tenant_slug": self.slug, "user_id": self.target.pk},
+            kwargs={"tenant_slug": cls.slug, "user_id": cls.target.pk},
         )
 
     def _detail_url(self, override_id, user_id=None):
@@ -518,20 +519,21 @@ class UserPermissionOverrideTests(TestCase):
 class PlatformUserPermissionOverrideTests(TestCase):
     """CX-side namespace: platform.team_overrides.* gates CX team profiles."""
 
-    def setUp(self):
-        self.actor = make_vision_user(email="cx-actor@test.com")
-        self.target = make_vision_user(email="cx-target@test.com")
-        self.tenant = self.actor.tenant
-        self.slug = self.tenant.slug
+    @classmethod
+    def setUpTestData(cls):
+        cls.actor = make_vision_user(email="cx-actor@test.com")
+        cls.target = make_vision_user(email="cx-target@test.com")
+        cls.tenant = cls.actor.tenant
+        cls.slug = cls.tenant.slug
         _grant(
-            self.actor,
+            cls.actor,
             ["platform.team_overrides.create", "platform.team_overrides.delete"],
         )
         make_permission("platform.team.view")
         make_permission(TARGET_KEY)
-        self.url = reverse(
+        cls.url = reverse(
             "rbac-user-permission-override-list-create",
-            kwargs={"tenant_slug": self.slug, "user_id": self.target.pk},
+            kwargs={"tenant_slug": cls.slug, "user_id": cls.target.pk},
         )
 
     def test_platform_key_gates_cx_targets(self):
@@ -575,8 +577,11 @@ class PermissionOverridesAsAtTests(TestCase):
     after, and a day before the account's history is refused.
     """
 
+    @classmethod
+    def setUpTestData(cls):
+        UserPermissionOverrideTests.setUpTestData.__func__(cls)
+
     def setUp(self):
-        UserPermissionOverrideTests.setUp(self)
         import datetime as dt
 
         from zoneinfo import ZoneInfo

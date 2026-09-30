@@ -77,19 +77,20 @@ def _body(resp):
 
 class ApproverGroupApiTests(TestCase):
 
-    def setUp(self):
-        self.school = make_school(slug="grp-api-school", name="Group API School")
-        self.branch = make_branch(self.school)
-        self.tenant = self.school.tenant
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="grp-api-school", name="Group API School")
+        cls.branch = make_branch(cls.school)
+        cls.tenant = cls.school.tenant
 
-        self.manager = make_school_admin(self.branch, email="grp-manager@test.com")
-        _grant(self.manager, [PERM_GROUP_CREATE, PERM_GROUP_UPDATE, PERM_GROUP_DELETE, PERM_GROUP_VIEW])
-        self.viewer = make_school_admin(self.branch, email="grp-viewer@test.com")
-        _grant(self.viewer, [PERM_GROUP_VIEW])
-        self.nobody = make_school_admin(self.branch, email="grp-nobody@test.com")
+        cls.manager = make_school_admin(cls.branch, email="grp-manager@test.com")
+        _grant(cls.manager, [PERM_GROUP_CREATE, PERM_GROUP_UPDATE, PERM_GROUP_DELETE, PERM_GROUP_VIEW])
+        cls.viewer = make_school_admin(cls.branch, email="grp-viewer@test.com")
+        _grant(cls.viewer, [PERM_GROUP_VIEW])
+        cls.nobody = make_school_admin(cls.branch, email="grp-nobody@test.com")
 
-        self.group = WorkflowApproverGroup.objects.create(
-            tenant=self.tenant, code="po-approvers", name="PO Approvers",
+        cls.group = WorkflowApproverGroup.objects.create(
+            tenant=cls.tenant, code="po-approvers", name="PO Approvers",
         )
 
     # ── Authorization ────────────────────────────────────────────────────────
@@ -416,23 +417,24 @@ PREVIEW = WorkflowTemplateViewSet.as_view({"post": "preview_approvers"})
 class DynamicRolePreviewTests(TestCase):
     """The builder can try rules against a sample document before publishing."""
 
-    def setUp(self):
-        self.school = make_school(slug="dyn-prev-school", name="Preview School")
-        self.branch = make_branch(self.school)
-        self.tenant = self.school.tenant
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="dyn-prev-school", name="Preview School")
+        cls.branch = make_branch(cls.school)
+        cls.tenant = cls.school.tenant
 
-        self.builder = make_school_admin(self.branch, email="dyn-builder@test.com")
-        _grant(self.builder, ["workflow.template.view", "workflow.template.update"])
+        cls.builder = make_school_admin(cls.branch, email="dyn-builder@test.com")
+        _grant(cls.builder, ["workflow.template.view", "workflow.template.update"])
 
-        self.officer_role = make_role(self.tenant, name="Finance Officer",
-                                      key="finance-officer", is_system_role=True)
-        self.bursar_role = make_role(self.tenant, name="Bursar", key="bursar", is_system_role=True)
-        self.officer = make_school_admin(self.branch, email="dyn-officer@test.com")
-        self.bursar = make_school_admin(self.branch, email="dyn-bursar@test.com")
-        make_assignment(self.tenant, self.officer, self.officer_role)
-        make_assignment(self.tenant, self.bursar, self.bursar_role)
+        cls.officer_role = make_role(cls.tenant, name="Finance Officer",
+                                     key="finance-officer", is_system_role=True)
+        cls.bursar_role = make_role(cls.tenant, name="Bursar", key="bursar", is_system_role=True)
+        cls.officer = make_school_admin(cls.branch, email="dyn-officer@test.com")
+        cls.bursar = make_school_admin(cls.branch, email="dyn-bursar@test.com")
+        make_assignment(cls.tenant, cls.officer, cls.officer_role)
+        make_assignment(cls.tenant, cls.bursar, cls.bursar_role)
 
-        self.rules = [
+        cls.rules = [
             {"role_key": "finance-officer",
              "condition": {"op": "lt", "field": "amount", "value": 100000}},
             {"role_key": "bursar", "condition": None},
@@ -506,24 +508,25 @@ OVR_BASE = "/v1/workflow/stage-approvers/"
 class StageApproverOverrideApiTests(TestCase):
     """Tenants repoint a central step without cloning the template."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_workflow.models import WorkflowStage, WorkflowTemplate
-        self.school = make_school(slug="ovr-api-school", name="Override School")
-        self.branch = make_branch(self.school)
-        self.tenant = self.school.tenant
+        cls.school = make_school(slug="ovr-api-school", name="Override School")
+        cls.branch = make_branch(cls.school)
+        cls.tenant = cls.school.tenant
 
-        self.admin = make_school_admin(self.branch, email="ovr-admin@test.com")
-        _grant(self.admin, ["workflow.template.update", "workflow.template.view"])
-        self.viewer = make_school_admin(self.branch, email="ovr-viewer@test.com")
-        _grant(self.viewer, ["workflow.template.view"])
+        cls.admin = make_school_admin(cls.branch, email="ovr-admin@test.com")
+        _grant(cls.admin, ["workflow.template.update", "workflow.template.view"])
+        cls.viewer = make_school_admin(cls.branch, email="ovr-viewer@test.com")
+        _grant(cls.viewer, ["workflow.template.view"])
 
-        self.central = WorkflowTemplate.all_objects.create(
+        cls.central = WorkflowTemplate.all_objects.create(
             tenant=None, document_type="OVR_API_DOC", code="central", name="Central")
-        self.stage = WorkflowStage.objects.create(
-            template=self.central, code="approval", label="Approval",
+        cls.stage = WorkflowStage.objects.create(
+            template=cls.central, code="approval", label="Approval",
             approver_source="ROLE", approver_role_key="central-approver")
 
-        make_role(self.tenant, name="Our Approver", key="our-approver", is_system_role=True)
+        make_role(cls.tenant, name="Our Approver", key="our-approver", is_system_role=True)
 
     def _create(self, user=None, **body):
         payload = {"stage": self.stage.pk, "approver_source": "ROLE",

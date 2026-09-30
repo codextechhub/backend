@@ -77,48 +77,164 @@ Two rules follow, and they are separate:
    Test more than one shape of school - a single-branch test proves nothing about
    a multi-branch one.
 
-## Running the test suite on this machine
+## Testing strategy
 
-This box cannot run two suites at once. A parallel run from another session
-starved a running suite until the OS killed it (exit 144, with the machine down
-to roughly 16 MB free). It is not a code failure and retrying the same way just
-repeats it.
+A test run exists to answer a question about the change in front of you. Run
+the smallest set of tests that answers it, and say which set that was.
 
-- **Run one app at a time**, not several app labels in one command, and **never
-  `--parallel`**. Sequential runs survive contention; combined ones get killed.
-- **Always pass a unique `DB_NAME`** - for example
-  `cd apps && DB_NAME=cx_myslice ../cx/bin/python manage.py test <one_app> --settings=apps.settings.local --noinput`.
-  Sessions otherwise share `test_cx_db`, and one recreating it mid-run makes
-  another report phantom failures - 204 of them, once.
-- **In a worktree, use the absolute path to the venv.** `./cx` is gitignored, so
-  it does not exist there, and a relative path produces **empty output with a
-  zero exit code** - which reads exactly like a passing run with no summary.
-- Treat an exit code alone as insufficient evidence. Quote the `Ran N tests` line.
-  If it is missing, the run did not finish and must be repeated.
-- **Iterate with the fast form, verify with the full one.** Tests that rewind
-  the real migration graph or race real transactions are tagged `slow`: the
-  branch migrations in `schools.vs_schools` (`_MigrationHarness`), the
-  user-type and action-token migrations in `vs_user`, and the
-  `TransactionTestCase` concurrency tests. A rewind costs about as long as
-  Django takes to re-render every migration it unapplies, which is minutes when
-  it reaches half the graph. While working, run
-  `--exclude-tag=slow`. **The run you report must be the full one**, without
-  the flag: the excluded classes are exactly the ones exercising migrations and
-  the branch code allocator, so a change touching either would slip past the
-  fast form. Do not use `--keepdb` for the run you report either - it reuses a
-  stale schema and can pass against code it no longer matches, which is the
-  failure that looks like success. Tag new slow classes the same way; the tag
-  is inherited, so a base class needs marking once.
+### Never run the whole suite by reflex
+
+Do not run the entire repository suite automatically after a change. Escalate
+one step at a time, and stop at the first step that covers the change:
+
+1. **The tests for the code you changed.** Before choosing, look at the files
+   you changed and at what imports them
+   (`grep -rn "from vs_finance.posting import" apps/`). Run the specific test
+   class or module by its dotted path:
+   `manage.py test vs_finance.tests_ledger_lock.HandJournalLockTests`. Seconds.
+2. **The affected app**, once those pass: `manage.py test vs_finance`.
+3. **Each dependent app**, when the change can reach it: a shared service, a
+   serializer another app embeds, a signal, a constant or choice used
+   elsewhere, a seed command other apps' tests call. One app per command.
+4. **The full suite**, only at a checkpoint: before finishing a substantial
+   feature, before merging a significant branch, before a release or deploy,
+   after a change to a shared foundation (below), or when the user asks. CI
+   runs it on every push to `main` and every pull request.
+
+**Shared foundations** justify step 3, and sometimes step 4, even for a small
+edit: `core/` (authentication, permission base classes, middleware, storage,
+jobs, the test runner), `vs_rbac` (the evaluator, permission classes, grants,
+field access), `vs_tenants` (tenant and branch resolution and isolation),
+`vs_user` (login, tokens, sessions), `apps/settings/`, a migration or model
+change several apps read, a seed command used across apps, and the shared test
+helpers (`core/test_utils.py`, `vs_rbac/tests/helpers.py`,
+`schools/core/fal/testing.py`, the `tests/base.py` modules). Even there, run
+the targeted tests first and escalate only once they pass.
+
+Documentation-only changes need no test run, and neither do read-only or
+git-only requests (inspect, explain, stage, commit, push): run tests for them
+only when asked.
+
+### Say what you ran
+
+Every summary names the scope that was run and quotes its `Ran N tests` line:
+
+> Validation: `vs_rbac.tests.test_grant_reach` (18 tests) and the `vs_rbac`
+> app (942 tests) passed. The full suite was not run: the change is confined
+> to how grants are serialized.
+
+Never write "all tests pass" unless the full suite ran in this session and
+its `Ran N tests` line is quoted.
+
+### Fixing a bug
+
+1. Write a test that reproduces the bug, or find the one that should have
+   caught it, and watch it fail.
+2. Fix the code. A test that exposes a real defect is answered by fixing the
+   code, never by changing the expected value to match it.
+3. Run that test, then its class or module, then the app, and escalate only
+   as above.
+
+### Writing tests
+
+- **Tests in proportion to risk.** Security first: the permission-denied
+  (403) case, cross-tenant isolation, and more than one shape of school (one
+  branch and several). Then the happy path and each branch of the logic. Do
+  not add a test that repeats coverage an existing test already gives.
+- **The cheapest test that gives the same confidence.** A rule in a service,
+  validator or calculation is tested by calling it. An API test is for what
+  only the API layer does: authentication, permissions, routing, status codes,
+  the response contract. A test that touches no database is a
+  `SimpleTestCase`, which fails loudly if it ever does.
+- **Build shared fixtures in `setUpTestData`, never in `setUp`.** Django
+  rolls every test back to the class fixture and deep-copies class attributes
+  per test, so tests stay isolated while the fixture is built once. `setUp` is
+  only for what must be fresh per test: API clients, `mock.patch`,
+  `override_settings`, clearing thread-local request context, values read off
+  a moving clock. Seed commands (`seed_actions`, `seed_*_permissions`,
+  `seed_config_catalogue`) cost up to a second each, because every row they
+  write emits an audit event: run them once per class, never per test.
+- **The smallest object graph that proves the point.** A test about an
+  invoice needs an entity, a customer and a period, not a provisioned school
+  with staff and a workflow.
+- **Authenticate without a login round-trip.** `core.test_utils.TenantAPIClient`
+  mints a real JWT and asserts the tenant, so requests take the production
+  authentication path. Only authentication tests go through the login
+  endpoint.
+- **No network, no sleeping, no large files.** The runner refuses any
+  connection to a host other than this machine, so fake or patch every
+  external boundary (payment providers go through
+  `vs_payments.providers.http.request_json`). Move time by patching the clock,
+  never with `time.sleep`. Import tests use the smallest file that shows the
+  behaviour.
+- **`TransactionTestCase` only for real commits**: `on_commit`, row locks,
+  concurrent writers. It flushes every table after each test. Set
+  `serialized_rollback = True` (enforced by
+  `core/test_transaction_test_cases.py`) and tag the class `slow`.
+- **Never delete a meaningful regression test to save time.** Make it cheaper
+  instead. A test may be removed only when the behaviour it protects no longer
+  exists, or another test already asserts exactly the same thing; say which in
+  the commit.
+
+### Running tests on this machine
+
+```bash
+cd apps && DB_NAME=cx_myslice ../cx/bin/python manage.py test vs_finance --settings=apps.settings.local --noinput
+```
+
+- **The test database comes from a cached template.** The runner
+  (`core/suite_runner.py`) migrates once per distinct set of migrations, which
+  takes about four minutes, saves the result as a PostgreSQL template, and
+  clones it in about two seconds on every later run. The template is keyed on
+  the migration files and the project modules they import, so a changed
+  migration always gets a fresh one, and every run starts from a pristine copy.
+  `--keepdb` is therefore unnecessary: do not use it, since it reuses the last
+  run's database rather than a clean one. `--fresh-db` migrates from scratch,
+  for a change whose point is that migrations replay (CI's migrate step does
+  this on every push).
+- **One test process at a time per session, and a unique `DB_NAME`.**
+  Sessions otherwise share `test_cx_db`. The runner refuses to replace a test
+  database another run has open (`TestDatabaseInUse`), which is the signal to
+  pick another name, not to retry.
+- **`--parallel 4` only for a full-suite checkpoint, and only on a quiet
+  machine.** The suite is safe to run in parallel (it passes in about 8
+  minutes that way, against about 30 in one process), but this box has run out
+  of memory with several suites and a parallel run going at once (exit 144,
+  roughly 16 MB free). Check `pgrep -fl "manage.py test"` first, and never use
+  it for a single app. CI runs the suite this way on every push. A failing
+  test in a worker is reported by name thanks to `tblib`; if a parallel run
+  ever stops with "cannot pickle 'traceback'", the venv is missing it
+  (`pip install -r requirements.txt`).
+- **In a worktree, use the absolute path to the venv.** `./cx` is gitignored,
+  so it does not exist there, and a relative path produces **empty output with
+  a zero exit code**, which reads exactly like a passing run with no summary.
+  Copy `apps/.env` into the worktree as well.
+- **An exit code alone proves nothing.** Quote the `Ran N tests` line. If it
+  is missing, the run did not finish and must be repeated.
+- **Iterate with `--exclude-tag=slow`, verify without it** when the change
+  touches migrations, the branch code allocator or transaction behaviour. The
+  `slow` classes rewind the real migration graph or race real transactions:
+  the branch migrations in `schools.vs_schools`, the user-type and
+  action-token migrations in `vs_user`, and the `TransactionTestCase`
+  concurrency tests. Tag new slow classes the same way; the tag is inherited.
 - **A migration test subclasses `core.migration_testing.RewoundSchemaTestCase`.**
   It rewinds its app once per class, inside the transaction the class already
-  holds, and PostgreSQL's rollback puts the schema back: nothing is replayed and
-  nothing is flushed. Never rewind in `setUp` and replay the leaves in
-  `tearDown` under `TransactionTestCase` with `serialized_rollback`. That costs
-  a rewind and a full replay per test, and it grows with every migration written
-  afterwards: it had taken `vs_user` to 29 minutes.
-- **Run one test class or method** with the dotted path
-  (`manage.py test schools.vs_schools.tests_update_endpoints.SchoolSlugUpdateTests`)
-  when you are working inside a single file. Seconds, not minutes.
+  holds, and PostgreSQL's rollback puts the schema back. The rewind is cached
+  like the main schema: the first class to rewind an app to a given migration
+  pays for it (a rewind of `vs_user` takes over five minutes) and saves the
+  result as a template, and every later class and run with the same migrations
+  clones it in about a second. Never rewind in `setUp` and replay in
+  `tearDown` under `TransactionTestCase`: that costs a rewind and a full
+  replay per test, and it had taken `vs_user` to 29 minutes.
+- **See where the time goes** with `--slowest 20`, which lists the slowest
+  tests and classes after the run (a class's "setup" is its `setUpTestData`;
+  not available under `--parallel`),
+  or `--timing-report path.json` for every measurement.
+- **Output is buffered**: a passing test's prints are discarded and a failing
+  test's appear in its report. `--no-buffer` prints straight through; `--pdb`
+  implies it.
+- **The full suite** is the same command with no label (about 30 minutes in
+  one process). Run it only at the checkpoints above.
 
 ## Pre-ship review (`ship-check`)
 

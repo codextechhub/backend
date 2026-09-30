@@ -37,9 +37,14 @@ RECEIVED = datetime.date(2026, 1, 5)
 
 
 class _StockFixture:
-    """One entity, its stores, and one item received into each of them."""
+    """One entity, its stores, and one item received into each of them.
 
-    def build_entity(self, code, tenant):
+    The builders are classmethods, so each class builds its school and stock once
+    in ``setUpTestData``; the clients, which carry a token, are made per test.
+    """
+
+    @classmethod
+    def build_entity(cls, code, tenant):
         """An entity with a seeded chart and an open period.
 
         The period is what an issue or an adjustment needs: both post a journal, so
@@ -65,16 +70,18 @@ class _StockFixture:
     def acc(entity, code):
         return Account.objects.get(entity=entity, code=code)
 
-    def store(self, entity, code, name, *, branch=None, is_default=False):
+    @classmethod
+    def store(cls, entity, code, name, *, branch=None, is_default=False):
         return StockLocation.objects.create(
             entity=entity, code=code, name=name, branch=branch, is_default=is_default,
         )
 
-    def item(self, entity, *, code="BOOK", reorder_level=0):
+    @classmethod
+    def item(cls, entity, *, code="BOOK", reorder_level=0):
         return StockItem.objects.create(
             entity=entity, code=code, name="Exercise book",
-            inventory_account=self.acc(entity, "1400"),
-            default_expense_account=self.acc(entity, "5300"),
+            inventory_account=cls.acc(entity, "1400"),
+            default_expense_account=cls.acc(entity, "5300"),
             reorder_level=reorder_level,
         )
 
@@ -104,26 +111,29 @@ class _StockFixture:
 class StockBranchScopeTests(_StockFixture, TestCase):
     """Ikeja holds 300, Lekki 700, and a store not yet given a branch 100 of the same book."""
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         seed_currencies()
-        self.school = make_school(slug="stock-multi", name="Multi Branch Group")
-        self.tenant = self.school.tenant
-        self.lekki = make_branch(self.school, name="Lekki Branch")
-        self.ikeja = make_branch(self.school, name="Ikeja Branch", is_main=False)
+        cls.school = make_school(slug="stock-multi", name="Multi Branch Group")
+        cls.tenant = cls.school.tenant
+        cls.lekki = make_branch(cls.school, name="Lekki Branch")
+        cls.ikeja = make_branch(cls.school, name="Ikeja Branch", is_main=False)
 
-        self.entity = self.build_entity("STKMULTI", self.tenant)
-        self.central = self.store(
-            self.entity, "CENTRAL", "Central store", is_default=True)
-        self.lekki_store = self.store(
-            self.entity, "LEKKI", "Lekki store", branch=self.lekki)
-        self.ikeja_store = self.store(
-            self.entity, "IKEJA", "Ikeja store", branch=self.ikeja)
+        cls.entity = cls.build_entity("STKMULTI", cls.tenant)
+        cls.central = cls.store(
+            cls.entity, "CENTRAL", "Central store", is_default=True)
+        cls.lekki_store = cls.store(
+            cls.entity, "LEKKI", "Lekki store", branch=cls.lekki)
+        cls.ikeja_store = cls.store(
+            cls.entity, "IKEJA", "Ikeja store", branch=cls.ikeja)
 
-        self.book = self.item(self.entity, reorder_level=500)
-        self.receive(self.book, self.central, 100, 50_000)
-        self.receive(self.book, self.lekki_store, 700, 350_000)
-        self.receive(self.book, self.ikeja_store, 300, 150_000)
+        cls.book = cls.item(cls.entity, reorder_level=500)
+        cls.receive(cls.book, cls.central, 100, 50_000)
+        cls.receive(cls.book, cls.lekki_store, 700, 350_000)
+        cls.receive(cls.book, cls.ikeja_store, 300, 150_000)
 
+    def setUp(self):
         self.storekeeper = self.client_for(
             self.tenant, "ikeja-store@test.com", branch=self.ikeja)
         self.head_office = self.client_for(self.tenant, "hq-store@test.com")
@@ -238,18 +248,21 @@ class SingleBranchStockIsUnchangedTests(_StockFixture, TestCase):
     at all.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         seed_currencies()
-        self.school = make_school(slug="stock-flat", name="Single Site School")
-        self.tenant = self.school.tenant
-        self.main = make_branch(self.school, name="Main Branch")
+        cls.school = make_school(slug="stock-flat", name="Single Site School")
+        cls.tenant = cls.school.tenant
+        cls.main = make_branch(cls.school, name="Main Branch")
 
-        self.entity = self.build_entity("STKFLAT", self.tenant)
-        self.main_store = self.store(
-            self.entity, "MAIN", "Main store", branch=self.main, is_default=True)
-        self.book = self.item(self.entity, reorder_level=10)
-        self.receive(self.book, self.main_store, 50, 25_000)
+        cls.entity = cls.build_entity("STKFLAT", cls.tenant)
+        cls.main_store = cls.store(
+            cls.entity, "MAIN", "Main store", branch=cls.main, is_default=True)
+        cls.book = cls.item(cls.entity, reorder_level=10)
+        cls.receive(cls.book, cls.main_store, 50, 25_000)
 
+    def setUp(self):
         self.storekeeper = self.client_for(
             self.tenant, "main-store@test.com", branch=self.main)
 
@@ -313,19 +326,22 @@ class StockMovementComesFromTheCallersStoreTests(_StockFixture, TestCase):
     stock off it is the half that changes the books.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         seed_currencies()
-        self.school = make_school(slug="stock-write", name="Two Branch Group")
-        self.tenant = self.school.tenant
-        self.lekki = make_branch(self.school, name="Lekki Branch")
-        self.ikeja = make_branch(self.school, name="Ikeja Branch", is_main=False)
+        cls.school = make_school(slug="stock-write", name="Two Branch Group")
+        cls.tenant = cls.school.tenant
+        cls.lekki = make_branch(cls.school, name="Lekki Branch")
+        cls.ikeja = make_branch(cls.school, name="Ikeja Branch", is_main=False)
 
-        self.entity = self.build_entity("STKWRITE", self.tenant)
-        self.lekki_store = self.store(
-            self.entity, "LEKKI", "Lekki store", branch=self.lekki, is_default=True)
-        self.book = self.item(self.entity)
-        self.receive(self.book, self.lekki_store, 100, 50_000)
+        cls.entity = cls.build_entity("STKWRITE", cls.tenant)
+        cls.lekki_store = cls.store(
+            cls.entity, "LEKKI", "Lekki store", branch=cls.lekki, is_default=True)
+        cls.book = cls.item(cls.entity)
+        cls.receive(cls.book, cls.lekki_store, 100, 50_000)
 
+    def setUp(self):
         self.storekeeper = self.client_for(
             self.tenant, "ikeja-write@test.com", branch=self.ikeja)
         self.head_office = self.client_for(self.tenant, "hq-write@test.com")
@@ -423,16 +439,18 @@ class StockLocationBranchWriteTests(_StockFixture, TestCase):
     school with one branch nobody is asked.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         seed_currencies()
-        self.school = make_school(slug="stock-stores", name="Store Group")
-        self.tenant = self.school.tenant
-        self.lekki = make_branch(self.school, name="Lekki Branch")
-        self.ikeja = make_branch(self.school, name="Ikeja Branch", is_main=False)
+        cls.school = make_school(slug="stock-stores", name="Store Group")
+        cls.tenant = cls.school.tenant
+        cls.lekki = make_branch(cls.school, name="Lekki Branch")
+        cls.ikeja = make_branch(cls.school, name="Ikeja Branch", is_main=False)
 
-        self.entity = self.build_entity("STKSTORE", self.tenant)
-        self.central = self.store(
-            self.entity, "CENTRAL", "Central store", is_default=True)
+        cls.entity = cls.build_entity("STKSTORE", cls.tenant)
+        cls.central = cls.store(
+            cls.entity, "CENTRAL", "Central store", is_default=True)
 
     def works_at(self, client, *branches):
         """Give the client's user an active grant at each branch named.

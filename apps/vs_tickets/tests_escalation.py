@@ -30,27 +30,30 @@ from .tests import TicketFixtureMixin, _grant
 
 
 class EscalationTests(TicketFixtureMixin, TestCase):
-    def setUp(self):
-        self.build_users()
-        self.client = APIClient()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
 
         # The school's own triage person: tickets.ticket.triage inside their
         # tenant, which is what the visibility rule already keys on.
-        self.school_admin = self.peer
+        cls.school_admin = cls.peer
         _grant(
-            self.school_a,
-            self.school_admin,
+            cls.school_a,
+            cls.school_admin,
             (TicketPermission.TRIAGE, TicketPermission.TRANSITION,
              TicketPermission.ESCALATE, TicketPermission.COMMENT),
             role_name="Alpha Ticket Manager",
         )
 
-        self.ticket = Ticket.objects.create(
+        cls.ticket = Ticket.objects.create(
             title="Projector in Room 3 will not power on",
             description="Tried two sockets.",
-            requester=self.requester,
-            tenant=self.school_a.tenant,
+            requester=cls.requester,
+            tenant=cls.school_a.tenant,
         )
+
+    def setUp(self):
+        self.client = APIClient()
 
     # ── who the ticket belongs to ───────────────────────────────────────────
 
@@ -296,26 +299,29 @@ class TicketOwnershipTests(TicketFixtureMixin, TestCase):
     visible set, and a requester's own ticket always is.
     """
 
-    def setUp(self):
-        self.build_users()
-        self.client = APIClient()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
 
         # Granted deliberately, to show the refusal is about who the caller is
         # and not about a key they were missing.
         _grant(
-            self.school_a, self.requester,
+            cls.school_a, cls.requester,
             (TicketPermission.ASSIGN,), role_name="Alpha Requester Assigner",
         )
         # Re-fetched because the effective permission set is memoised on the
         # instance, and this grant was made after build_users used it.
-        self.school_assigner = User.objects.get(pk=self.requester.pk)
+        cls.school_assigner = User.objects.get(pk=cls.requester.pk)
 
-        self.ticket = Ticket.objects.create(
+        cls.ticket = Ticket.objects.create(
             title="Mr Adeyemi is being investigated over the S3 fees",
             description="Internal, and not CodeX's business.",
-            requester=self.requester,
-            tenant=self.school_a.tenant,
+            requester=cls.requester,
+            tenant=cls.school_a.tenant,
         )
+
+    def setUp(self):
+        self.client = APIClient()
 
     # ── the desk names its own owners ───────────────────────────────────────
 

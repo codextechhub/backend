@@ -35,30 +35,31 @@ def _client(user):
 
 
 class GrantReachTests(TestCase):
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         school = make_school(slug="grant-reach", name="Bright Star School")
-        self.tenant = school.tenant
-        self.slug = self.tenant.slug
-        self.ikeja = make_branch(school, name="Ikeja Branch")
-        self.lekki = make_branch(school, name="Lekki Branch", is_main=False)
+        cls.tenant = school.tenant
+        cls.slug = cls.tenant.slug
+        cls.ikeja = make_branch(school, name="Ikeja Branch")
+        cls.lekki = make_branch(school, name="Lekki Branch", is_main=False)
 
-        self.deputy = make_role(self.tenant, name="Deputy Head", key="deputy-head")
+        cls.deputy = make_role(cls.tenant, name="Deputy Head", key="deputy-head")
         for key in ROLE_KEYS:
-            make_role_permission(self.deputy, make_permission(key))
-        self.teacher = make_role(self.tenant, name="Teacher", key="teacher")
+            make_role_permission(cls.deputy, make_permission(key))
+        cls.teacher = make_role(cls.tenant, name="Teacher", key="teacher")
 
-        self.bello = make_school_admin(self.lekki, email="bello@grant-reach.test")
-        make_assignment(self.tenant, self.bello, self.deputy, branch=self.lekki)
-        self.okafor = make_school_admin(self.ikeja, email="okafor@grant-reach.test")
-        make_assignment(self.tenant, self.okafor, self.deputy, branch=None)
+        cls.bello = make_school_admin(cls.lekki, email="bello@grant-reach.test")
+        make_assignment(cls.tenant, cls.bello, cls.deputy, branch=cls.lekki)
+        cls.okafor = make_school_admin(cls.ikeja, email="okafor@grant-reach.test")
+        make_assignment(cls.tenant, cls.okafor, cls.deputy, branch=None)
 
-        self.tunde = make_school_admin(self.lekki, email="tunde@grant-reach.test")
-        self.sule = make_school_admin(self.ikeja, email="sule@grant-reach.test")
-        self.nwankwo = make_school_admin(
-            None, email="nwankwo@grant-reach.test", tenant=self.tenant,
+        cls.tunde = make_school_admin(cls.lekki, email="tunde@grant-reach.test")
+        cls.sule = make_school_admin(cls.ikeja, email="sule@grant-reach.test")
+        cls.nwankwo = make_school_admin(
+            None, email="nwankwo@grant-reach.test", tenant=cls.tenant,
         )
-        self.registrar_grant = make_assignment(
-            self.tenant, self.nwankwo, self.teacher, branch=None,
+        cls.registrar_grant = make_assignment(
+            cls.tenant, cls.nwankwo, cls.teacher, branch=None,
         )
 
     def _url(self, name="rbac-assignment-list-create", **kwargs):

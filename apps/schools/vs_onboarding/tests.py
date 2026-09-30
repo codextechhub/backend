@@ -138,37 +138,42 @@ class OnboardingFixture(TestCase):
     while it uses this module. If any endpoint here forgot to declare itself
     part of the pending-tenant surface, every test in this file fails with
     TENANT_NOT_LIVE, which is the intended alarm.
+
+    Built once per class in ``setUpTestData``: each test rolls back to this
+    state and works on its own deep copy of the objects.
     """
 
-    def setUp(self):
-        self.school = make_school(
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.school = make_school(
             slug="alpha-school", name="Alpha School", status="PENDING",
         )
-        self.tenant = self.school.tenant
-        self.admin = make_school_admin(
-            None, email="alpha-admin@test.com", tenant=self.tenant,
+        cls.tenant = cls.school.tenant
+        cls.admin = make_school_admin(
+            None, email="alpha-admin@test.com", tenant=cls.tenant,
         )
-        grant_school_admin(self.tenant, self.admin, *SCHOOL_KEYS)
+        grant_school_admin(cls.tenant, cls.admin, *SCHOOL_KEYS)
 
         # A second school, onboarding at the same time. Its rows exist so that
         # their absence from Alpha's answers means something.
-        self.rival = make_school(
+        cls.rival = make_school(
             slug="beta-school", name="Beta School", status="PENDING",
         )
-        self.rival_tenant = self.rival.tenant
-        self.rival_admin = make_school_admin(
-            None, email="beta-admin@test.com", tenant=self.rival_tenant,
+        cls.rival_tenant = cls.rival.tenant
+        cls.rival_admin = make_school_admin(
+            None, email="beta-admin@test.com", tenant=cls.rival_tenant,
         )
-        grant_school_admin(self.rival_tenant, self.rival_admin, *SCHOOL_KEYS)
+        grant_school_admin(cls.rival_tenant, cls.rival_admin, *SCHOOL_KEYS)
 
         # Platform reviewer: explicit grants, not the super-admin bypass, so a
         # 403 in these tests means the permission gate actually ran.
-        self.reviewer = make_vision_user(email="reviewer@codex.test")
-        grant_platform(self.reviewer, *PLATFORM_KEYS)
+        cls.reviewer = make_vision_user(email="reviewer@codex.test")
+        grant_platform(cls.reviewer, *PLATFORM_KEYS)
 
-        self.progress = provision_onboarding(self.tenant, actor=self.admin)
-        self.rival_progress = provision_onboarding(
-            self.rival_tenant, actor=self.rival_admin,
+        cls.progress = provision_onboarding(cls.tenant, actor=cls.admin)
+        cls.rival_progress = provision_onboarding(
+            cls.rival_tenant, actor=cls.rival_admin,
         )
 
     # ── plumbing ──────────────────────────────────────────────────────────
@@ -1880,11 +1885,12 @@ class BranchShapeTests(TestCase):
 class TwoTenantsOnboardingTests(TestCase):
     """Two schools onboarding at once see and affect nothing of each other's."""
 
-    def setUp(self):
-        self.first = make_school(slug="tenant-one", name="One", status="PENDING")
-        self.second = make_school(slug="tenant-two", name="Two", status="PENDING")
-        provision_onboarding(self.first.tenant)
-        provision_onboarding(self.second.tenant)
+    @classmethod
+    def setUpTestData(cls):
+        cls.first = make_school(slug="tenant-one", name="One", status="PENDING")
+        cls.second = make_school(slug="tenant-two", name="Two", status="PENDING")
+        provision_onboarding(cls.first.tenant)
+        provision_onboarding(cls.second.tenant)
 
     def test_their_task_sets_are_separate_rows(self):
         first_ids = set(
@@ -1937,8 +1943,9 @@ class NotificationTests(OnboardingFixture):
     only way to know they line up is to read the rendered body back.
     """
 
-    def setUp(self):
-        super().setUp()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         from vs_notifications.services.seed import (
             seed_notification_templates, seed_platform_settings,
         )
@@ -2055,7 +2062,8 @@ class SeederTests(TestCase):
         call_command("seed_onboarding_permissions", *args, stdout=out, stderr=StringIO())
         return out.getvalue()
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.models import TenantRoleTemplate
 
         call_command("seed_actions", stdout=StringIO())

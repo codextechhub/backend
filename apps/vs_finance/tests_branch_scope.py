@@ -44,36 +44,45 @@ class _FinanceBranchFixture(TestCase):
     Three branches rather than two: with only two, a predicate that quietly means
     "any branch but the one I asked about" still passes. The rival tenant proves
     the narrowing has not weakened the tenant boundary it sits inside.
+
+    The three schools and their books are built once per class in
+    ``setUpTestData``; the single-branch school is there because one branch is
+    the common case, and a grant pinned to the only branch must not start hiding
+    the school-wide rows it shares. Every row and people helper is a
+    classmethod, so a subclass can build its own class fixture with them. API
+    clients are the exception: ``TestCase`` assigns ``self.client`` before each
+    test, so a client lives on the instance and is made in ``setUp``.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.tests.helpers import make_branch, make_school
 
+        super().setUpTestData()
         seed_currencies()
 
-        self.school = make_school(slug="fin-multi", name="Corona Group", status="ACTIVE")
-        self.tenant = self.school.tenant
-        self.ikeja = make_branch(self.school, name="Ikeja Branch")
-        self.lekki = make_branch(self.school, name="Lekki Branch", is_main=False)
-        self.yaba = make_branch(self.school, name="Yaba Branch", is_main=False)
-        self.books = self.build_books("FINMULTI", self.tenant)
+        cls.school = make_school(slug="fin-multi", name="Corona Group", status="ACTIVE")
+        cls.tenant = cls.school.tenant
+        cls.ikeja = make_branch(cls.school, name="Ikeja Branch")
+        cls.lekki = make_branch(cls.school, name="Lekki Branch", is_main=False)
+        cls.yaba = make_branch(cls.school, name="Yaba Branch", is_main=False)
+        cls.books = cls.build_books("FINMULTI", cls.tenant)
 
-        # The other shape of school. One branch is the common case, and a grant
-        # pinned to the only branch there must not start hiding the school-wide
-        # rows that branch shares the school with.
-        self.solo_school = make_school(slug="fin-solo", name="Single Site", status="ACTIVE")
-        self.solo_tenant = self.solo_school.tenant
-        self.solo_main = make_branch(self.solo_school, name="Main Branch")
-        self.solo_books = self.build_books("FINSOLO", self.solo_tenant)
+        # The single-branch shape, where the dimension must recede.
+        cls.solo_school = make_school(slug="fin-solo", name="Single Site", status="ACTIVE")
+        cls.solo_tenant = cls.solo_school.tenant
+        cls.solo_main = make_branch(cls.solo_school, name="Main Branch")
+        cls.solo_books = cls.build_books("FINSOLO", cls.solo_tenant)
 
-        self.rival_school = make_school(slug="fin-rival", name="Rival Group", status="ACTIVE")
-        self.rival_tenant = self.rival_school.tenant
-        self.rival_branch = make_branch(self.rival_school, name="Ikeja Branch")
-        self.rival_books = self.build_books("FINRIVAL", self.rival_tenant)
+        cls.rival_school = make_school(slug="fin-rival", name="Rival Group", status="ACTIVE")
+        cls.rival_tenant = cls.rival_school.tenant
+        cls.rival_branch = make_branch(cls.rival_school, name="Ikeja Branch")
+        cls.rival_books = cls.build_books("FINRIVAL", cls.rival_tenant)
 
     # -- books ---------------------------------------------------------------- #
 
-    def build_books(self, code, tenant):
+    @classmethod
+    def build_books(cls, code, tenant):
         entity = LedgerEntity.objects.create(
             name=f"{code} Books", code=code, kind=LedgerEntity.Kind.TENANT, tenant=tenant,
         )
@@ -90,13 +99,15 @@ class _FinanceBranchFixture(TestCase):
 
     # -- rows ----------------------------------------------------------------- #
 
-    def customer(self, entity, code, branch):
+    @classmethod
+    def customer(cls, entity, code, branch):
         return Customer.objects.create(
             entity=entity, code=code, name=f"Parent {code}", branch=branch,
             receivable_account=Account.objects.get(entity=entity, code="1200"),
         )
 
-    def invoice(self, entity, customer, branch):
+    @classmethod
+    def invoice(cls, entity, customer, branch):
         inv = Invoice.objects.create(
             entity=entity, customer=customer, branch=branch,
             invoice_date=datetime.date(2026, 1, 10),
@@ -108,12 +119,14 @@ class _FinanceBranchFixture(TestCase):
         )
         return inv
 
-    def fee_structure(self, entity, code, branch):
+    @classmethod
+    def fee_structure(cls, entity, code, branch):
         return FeeStructure.objects.create(
             entity=entity, code=code, name=f"Fees {code}", branch=branch,
         )
 
-    def fixed_asset(self, entity, name, branch):
+    @classmethod
+    def fixed_asset(cls, entity, name, branch):
         return FixedAsset.objects.create(
             entity=entity, name=name, branch=branch,
             acquisition_date=datetime.date(2026, 1, 5), useful_life_months=60,
@@ -121,7 +134,8 @@ class _FinanceBranchFixture(TestCase):
 
     # -- people --------------------------------------------------------------- #
 
-    def user_for(self, tenant, email):
+    @classmethod
+    def user_for(cls, tenant, email):
         from django.contrib.auth import get_user_model
 
         return get_user_model().objects.create_user(
@@ -129,7 +143,8 @@ class _FinanceBranchFixture(TestCase):
             status="ACTIVE", first_name="Fin", last_name="Tester",
         )
 
-    def grant(self, user, *keys, tenant, role_key, branch=None):
+    @classmethod
+    def grant(cls, user, *keys, tenant, role_key, branch=None):
         """A real RBAC grant, optionally pinned to one branch.
 
         Through the registry rather than by patching the gate: whether a
@@ -171,12 +186,19 @@ class _FinanceBranchFixture(TestCase):
         "finance.fixedasset.view", "finance.journal.view",
     )
 
-    def reader(self, tenant, email, role_key, *, branch=None):
-        user = self.grant(
-            self.user_for(tenant, email), *self.READ_KEYS,
+    @classmethod
+    def read_user(cls, tenant, email, role_key, *, branch=None):
+        """A user holding :attr:`READ_KEYS`, optionally pinned to one branch."""
+        return cls.grant(
+            cls.user_for(tenant, email), *cls.READ_KEYS,
             tenant=tenant, role_key=role_key, branch=branch,
         )
-        return TenantAPIClient(user=user)
+
+    @classmethod
+    def reader(cls, tenant, email, role_key, *, branch=None):
+        return TenantAPIClient(
+            user=cls.read_user(tenant, email, role_key, branch=branch),
+        )
 
     # -- calling -------------------------------------------------------------- #
 
@@ -190,29 +212,34 @@ class _FinanceBranchFixture(TestCase):
 class BranchPinnedReadsTests(_FinanceBranchFixture):
     """The headline defect, one endpoint family at a time."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        e = cls.books
+        cls.cust_ikeja = cls.customer(e, "CIKJ", cls.ikeja)
+        cls.cust_lekki = cls.customer(e, "CLEK", cls.lekki)
+        cls.cust_shared = cls.customer(e, "CALL", None)
+
+        cls.inv_ikeja = cls.invoice(e, cls.cust_ikeja, cls.ikeja)
+        cls.inv_lekki = cls.invoice(e, cls.cust_lekki, cls.lekki)
+        cls.inv_yaba = cls.invoice(e, cls.cust_shared, cls.yaba)
+        cls.inv_shared = cls.invoice(e, cls.cust_shared, None)
+
+        cls.fee_ikeja = cls.fee_structure(e, "FIKJ", cls.ikeja)
+        cls.fee_lekki = cls.fee_structure(e, "FLEK", cls.lekki)
+        cls.fee_shared = cls.fee_structure(e, "FALL", None)
+
+        cls.asset_ikeja = cls.fixed_asset(e, "Ikeja bus", cls.ikeja)
+        cls.asset_lekki = cls.fixed_asset(e, "Lekki bus", cls.lekki)
+        cls.asset_shared = cls.fixed_asset(e, "Group minibus", None)
+
+        cls.bursar_user = cls.read_user(
+            cls.tenant, "bursar-ikeja@fin.test", "fin-ikeja", branch=cls.ikeja,
+        )
+
     def setUp(self):
         super().setUp()
-        e = self.books
-        self.cust_ikeja = self.customer(e, "CIKJ", self.ikeja)
-        self.cust_lekki = self.customer(e, "CLEK", self.lekki)
-        self.cust_shared = self.customer(e, "CALL", None)
-
-        self.inv_ikeja = self.invoice(e, self.cust_ikeja, self.ikeja)
-        self.inv_lekki = self.invoice(e, self.cust_lekki, self.lekki)
-        self.inv_yaba = self.invoice(e, self.cust_shared, self.yaba)
-        self.inv_shared = self.invoice(e, self.cust_shared, None)
-
-        self.fee_ikeja = self.fee_structure(e, "FIKJ", self.ikeja)
-        self.fee_lekki = self.fee_structure(e, "FLEK", self.lekki)
-        self.fee_shared = self.fee_structure(e, "FALL", None)
-
-        self.asset_ikeja = self.fixed_asset(e, "Ikeja bus", self.ikeja)
-        self.asset_lekki = self.fixed_asset(e, "Lekki bus", self.lekki)
-        self.asset_shared = self.fixed_asset(e, "Group minibus", None)
-
-        self.bursar = self.reader(
-            self.tenant, "bursar-ikeja@fin.test", "fin-ikeja", branch=self.ikeja,
-        )
+        self.bursar = TenantAPIClient(user=self.bursar_user)
 
     def test_the_fee_screen_shows_ikejas_fees_and_the_school_wide_one(self):
         """The brief's own example, and the reason the rule is inclusive.
@@ -332,17 +359,22 @@ class WholeTenantReadsTests(_FinanceBranchFixture):
     working today holds their access this way.
     """
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        e = cls.books
+        cls.cust = cls.customer(e, "CANY", None)
+        cls.rows = {
+            cls.invoice(e, cls.cust, cls.ikeja).id,
+            cls.invoice(e, cls.cust, cls.lekki).id,
+            cls.invoice(e, cls.cust, cls.yaba).id,
+            cls.invoice(e, cls.cust, None).id,
+        }
+        cls.hq_user = cls.read_user(cls.tenant, "hq@fin.test", "fin-hq")
+
     def setUp(self):
         super().setUp()
-        e = self.books
-        self.cust = self.customer(e, "CANY", None)
-        self.rows = {
-            self.invoice(e, self.cust, self.ikeja).id,
-            self.invoice(e, self.cust, self.lekki).id,
-            self.invoice(e, self.cust, self.yaba).id,
-            self.invoice(e, self.cust, None).id,
-        }
-        self.hq = self.reader(self.tenant, "hq@fin.test", "fin-hq")
+        self.hq = TenantAPIClient(user=self.hq_user)
 
     def test_a_whole_tenant_caller_sees_every_branch_and_the_shared_rows(self):
         self.assertEqual(self.ids(self.hq, "invoices/", self.books), self.rows)
@@ -626,27 +658,34 @@ class BankAccountReachedByIdNarrowsTests(_FinanceBranchFixture):
     reached through one.
     """
 
-    def setUp(self):
-        super().setUp()
-        self.ikeja_account = self.bank("Ikeja Collections", self.ikeja, "20")
-        self.lekki_account = self.bank("Lekki Collections", self.lekki, "21")
-        self.shared_account = self.bank("GTBank Operations", None, "22")
-        self.client = TenantAPIClient(user=self.grant(
-            self.user_for(self.tenant, "bursar-ikeja@corona.test"),
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ikeja_account = cls.bank("Ikeja Collections", cls.ikeja, "20")
+        cls.lekki_account = cls.bank("Lekki Collections", cls.lekki, "21")
+        cls.shared_account = cls.bank("GTBank Operations", None, "22")
+        cls.bursar_user = cls.grant(
+            cls.user_for(cls.tenant, "bursar-ikeja@corona.test"),
             "finance.bankaccount.view", "finance.bankaccount.update",
             "finance.bankaccount.import", "finance.bankaccount.reconcile",
-            tenant=self.tenant, role_key="bursar_ikeja", branch=self.ikeja,
-        ))
+            tenant=cls.tenant, role_key="bursar_ikeja", branch=cls.ikeja,
+        )
 
-    def bank(self, name, branch, tag):
+    def setUp(self):
+        super().setUp()
+        self.client = TenantAPIClient(user=self.bursar_user)
+
+    @classmethod
+    def bank(cls, name, branch, tag):
         from vs_finance.models import BankAccount
 
         return BankAccount.objects.create(
-            entity=self.books, name=name, branch=branch,
-            gl_account=self._cash_account(self.books, tag),
+            entity=cls.books, name=name, branch=branch,
+            gl_account=cls._cash_account(cls.books, tag),
         )
 
-    def _cash_account(self, entity, tag):
+    @classmethod
+    def _cash_account(cls, entity, tag):
         """A distinct GL account per bank row: BankAccount holds a OneToOne to one."""
         return Account.objects.create(
             entity=entity, code=f"11{tag}", name=f"Cash {tag}",
@@ -790,21 +829,26 @@ class DocumentEmailNarrowsTests(_FinanceBranchFixture):
         "finance.payment.view", "finance.payment.email",
     )
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ikeja_payer = cls.customer(cls.books, "IKJ-01", cls.ikeja)
+        cls.lekki_payer = cls.customer(cls.books, "LEK-01", cls.lekki)
+        cls.shared_payer = cls.customer(cls.books, "SHR-01", None)
+
+        cls.ikeja_bill = cls.invoice(cls.books, cls.ikeja_payer, cls.ikeja)
+        cls.lekki_bill = cls.invoice(cls.books, cls.lekki_payer, cls.lekki)
+        cls.shared_bill = cls.invoice(cls.books, cls.shared_payer, None)
+
+        cls.bursar_user = cls.grant(
+            cls.user_for(cls.tenant, "bursar-ikeja-email@corona.test"),
+            *cls.EMAIL_KEYS,
+            tenant=cls.tenant, role_key="bursar_ikeja_email", branch=cls.ikeja,
+        )
+
     def setUp(self):
         super().setUp()
-        self.ikeja_payer = self.customer(self.books, "IKJ-01", self.ikeja)
-        self.lekki_payer = self.customer(self.books, "LEK-01", self.lekki)
-        self.shared_payer = self.customer(self.books, "SHR-01", None)
-
-        self.ikeja_bill = self.invoice(self.books, self.ikeja_payer, self.ikeja)
-        self.lekki_bill = self.invoice(self.books, self.lekki_payer, self.lekki)
-        self.shared_bill = self.invoice(self.books, self.shared_payer, None)
-
-        self.client = TenantAPIClient(user=self.grant(
-            self.user_for(self.tenant, "bursar-ikeja-email@corona.test"),
-            *self.EMAIL_KEYS,
-            tenant=self.tenant, role_key="bursar_ikeja_email", branch=self.ikeja,
-        ))
+        self.client = TenantAPIClient(user=self.bursar_user)
 
     def receipt(self, branch):
         from vs_finance.models import Payment
@@ -868,24 +912,30 @@ class TransactionFiguresNarrowTests(_FinanceBranchFixture):
 
     KEYS = ("finance.report.view", "finance.journal.view")
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_finance.posting import create_direct_entry, post_journal
 
-        super().setUp()
-        for branch, amount in ((self.ikeja, 10_000), (self.lekki, 20_000), (None, 40_000)):
+        super().setUpTestData()
+        for branch, amount in ((cls.ikeja, 10_000), (cls.lekki, 20_000), (None, 40_000)):
             entry = create_direct_entry(
-                self.books, lines=[("1100", amount, 0), ("3100", 0, amount)],
+                cls.books, lines=[("1100", amount, 0), ("3100", 0, amount)],
                 date=datetime.date(2026, 1, 10), narration="Capital", branch=branch,
             )
             post_journal(entry)
-        self.adeyemi = TenantAPIClient(user=self.grant(
-            self.user_for(self.tenant, "adeyemi@fin.test"), *self.KEYS,
-            tenant=self.tenant, role_key="figures-ikeja", branch=self.ikeja,
-        ))
-        self.bello = TenantAPIClient(user=self.grant(
-            self.user_for(self.tenant, "bello@fin.test"), *self.KEYS,
-            tenant=self.tenant, role_key="figures-hq",
-        ))
+        cls.adeyemi_user = cls.grant(
+            cls.user_for(cls.tenant, "adeyemi@fin.test"), *cls.KEYS,
+            tenant=cls.tenant, role_key="figures-ikeja", branch=cls.ikeja,
+        )
+        cls.bello_user = cls.grant(
+            cls.user_for(cls.tenant, "bello@fin.test"), *cls.KEYS,
+            tenant=cls.tenant, role_key="figures-hq",
+        )
+
+    def setUp(self):
+        super().setUp()
+        self.adeyemi = TenantAPIClient(user=self.adeyemi_user)
+        self.bello = TenantAPIClient(user=self.bello_user)
 
     def data(self, client, path):
         response = client.get(f"/v1/finance/{path}?entity={self.books.code}")

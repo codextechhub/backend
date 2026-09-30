@@ -77,41 +77,53 @@ class _ExportFixture:
     ``self.analyst`` holds the ordinary export keys plus the finance read key but
     **not** ``exports.sensitive_field.export``, and ``self.outsider`` belongs to a
     different tenant entirely.
+
+    The fixture is built once per class in ``setUpTestData``: seeding the
+    permission catalogue and a chart of accounts is the expensive part, and each
+    test rolls back to this state, so tests still start from the same rows.
+    ``self.today`` is the tenant's date when the class was built, which is the
+    date the invoices carry.
     """
 
-    def build(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.build()
+
+    @classmethod
+    def build(cls):
         call_command("seed_actions", verbosity=0)
         call_command("seed_exports_permissions", verbosity=0)
         call_command("seed_finance_permissions", verbosity=0)
 
-        self.tenant = Tenant.objects.get(slug="codex")
+        cls.tenant = Tenant.objects.get(slug="codex")
         seed_currencies()
-        self.entity = LedgerEntity.objects.create(
+        cls.entity = LedgerEntity.objects.create(
             name="Lekki Books", code="LEKKI", kind=LedgerEntity.Kind.TENANT,
-            tenant=self.tenant,
+            tenant=cls.tenant,
         )
-        seed_chart_of_accounts(self.entity)
-        self.customer = Customer.objects.create(
-            entity=self.entity, code="CUST1", name="Northgate Logistics",
+        seed_chart_of_accounts(cls.entity)
+        cls.customer = Customer.objects.create(
+            entity=cls.entity, code="CUST1", name="Northgate Logistics",
             billing_email="ap@northgate.example",
-            receivable_account=Account.objects.get(entity=self.entity, code="1200"),
+            receivable_account=Account.objects.get(entity=cls.entity, code="1200"),
         )
-        self.today = tenant_today(self.tenant)
+        cls.today = tenant_today(cls.tenant)
         for offset, amount in enumerate((1_240_000_00, 318_500_00, 2_004_750_00, 96_200_00)):
             invoice = Invoice.objects.create(
-                entity=self.entity, customer=self.customer,
-                invoice_date=self.today - datetime.timedelta(days=offset),
-                due_date=self.today + datetime.timedelta(days=30),
+                entity=cls.entity, customer=cls.customer,
+                invoice_date=cls.today - datetime.timedelta(days=offset),
+                due_date=cls.today + datetime.timedelta(days=30),
                 total=amount, subtotal=amount,
             )
             InvoiceLine.objects.create(
                 invoice=invoice,
-                revenue_account=Account.objects.get(entity=self.entity, code="4100"),
+                revenue_account=Account.objects.get(entity=cls.entity, code="4100"),
                 quantity=1, unit_price=amount, net_amount=amount, line_no=1,
             )
 
-        self.admin = self._user("admin@test.com", role="xvs_super_admin")
-        self.analyst = self._user("analyst@test.com", role="exports_analyst", keys=[
+        cls.admin = cls._user("admin@test.com", role="xvs_super_admin")
+        cls.analyst = cls._user("analyst@test.com", role="exports_analyst", keys=[
             ExportPermission.CATALOGUE_VIEW, ExportPermission.DEFINITION_VIEW,
             ExportPermission.DEFINITION_CREATE, ExportPermission.DEFINITION_UPDATE,
             ExportPermission.DEFINITION_DELETE, ExportPermission.DEFINITION_SHARE,
@@ -120,17 +132,17 @@ class _ExportFixture:
             "finance.invoice.view",
         ])
         # No export keys at all - the 403 case.
-        self.stranger = self._user("stranger@test.com", role="no_exports", keys=[])
+        cls.stranger = cls._user("stranger@test.com", role="no_exports", keys=[])
 
-        self.other_tenant = Tenant.objects.create(
+        cls.other_tenant = Tenant.objects.create(
             name="Other Org", slug="other-org", kind=Tenant.Kind.ORGANIZATION,
             status=Tenant.Status.ACTIVE,
         )
         # Holds the export keys legitimately, by grant rather than through the
         # platform bypass. These tests turn on a real key-holder in another tenant
         # still not seeing this tenant's rows, so the key has to be real.
-        self.outsider = self._user(
-            "outsider@test.com", role="exports_analyst", tenant=self.other_tenant,
+        cls.outsider = cls._user(
+            "outsider@test.com", role="exports_analyst", tenant=cls.other_tenant,
             keys=[
                 ExportPermission.CATALOGUE_VIEW, ExportPermission.DEFINITION_VIEW,
                 ExportPermission.DEFINITION_CREATE, ExportPermission.DEFINITION_UPDATE,
@@ -143,7 +155,8 @@ class _ExportFixture:
             ],
         )
 
-    def _user(self, email, *, role, keys=None, tenant=None):
+    @classmethod
+    def _user(cls, email, *, role, keys=None, tenant=None):
         from vs_rbac.models import (
             Permission, TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
         )
@@ -192,9 +205,6 @@ class _ExportFixture:
 class ExportPermissionTests(_ExportFixture, TestCase):
     """No export key means no Export Centre - on every route that changes anything."""
 
-    def setUp(self):
-        self.build()
-
     def test_catalogue_requires_permission(self):
         client = TenantAPIClient(user=self.stranger)
         self.assertEqual(client.get("/v1/exports/catalogue/").status_code, 403)
@@ -226,9 +236,6 @@ class ExportPermissionTests(_ExportFixture, TestCase):
 
 class ExportTenantIsolationTests(_ExportFixture, TestCase):
     """Changing a pk in the URL must never reach another tenant's export."""
-
-    def setUp(self):
-        self.build()
 
     def test_definition_from_another_tenant_is_not_found(self):
         definition = self.make_definition()
@@ -265,7 +272,6 @@ class ExportTenantIsolationTests(_ExportFixture, TestCase):
 # --------------------------------------------------------------------------- #
 class CatalogueAndPreviewTests(_ExportFixture, TestCase):
     def setUp(self):
-        self.build()
         self.client = TenantAPIClient(user=self.admin)
 
     def test_catalogue_lists_modules_including_empty_ones(self):
@@ -384,7 +390,6 @@ class ExportRunTests(_ExportFixture, TestCase):
     """End to end: trigger a run, get a file, get an honest run record."""
 
     def setUp(self):
-        self.build()
         self.client = TenantAPIClient(user=self.admin)
 
     def test_run_references_use_the_tenant_daily_sequence(self):
@@ -612,13 +617,14 @@ class FieldAccessGatesAColumnTests(_ExportFixture, TestCase):
     BANK_COLUMN = "bank_account_number"
     BANK_FIELD = "procurement.vendor.bank_account_number"
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
         from vs_rbac.tests.helpers import install_declared_fields
 
-        self.build()
+        super().setUpTestData()
         call_command("seed_procurement_permissions", verbosity=0)
-        self.field_keys = install_declared_fields("procurement.vendor")
-        self.buyer = self._user("buyer@test.com", role="exports_buyer", keys=[
+        cls.field_keys = install_declared_fields("procurement.vendor")
+        cls.buyer = cls._user("buyer@test.com", role="exports_buyer", keys=[
             ExportPermission.CATALOGUE_VIEW, ExportPermission.RUN_CREATE,
             ExportPermission.RUN_VIEW, ExportPermission.SENSITIVE_EXPORT,
             "procurement.vendor.view",
@@ -678,9 +684,6 @@ class FieldAccessGatesAColumnTests(_ExportFixture, TestCase):
 
 class ExportOmissionAndFailureTests(_ExportFixture, TestCase):
     """The states the design cares most about: partly complete, and failed."""
-
-    def setUp(self):
-        self.build()
 
     def test_sensitive_column_is_omitted_not_silently_dropped(self):
         definition = self.make_definition(
@@ -897,7 +900,6 @@ class ExportOmissionAndFailureTests(_ExportFixture, TestCase):
 # --------------------------------------------------------------------------- #
 class ExportDownloadTests(_ExportFixture, TestCase):
     def setUp(self):
-        self.build()
         self.definition = self.make_definition(owner=self.admin)
         run, _ = services.trigger_run(definition=self.definition, actor=self.admin)
         run.refresh_from_db()
@@ -1037,7 +1039,6 @@ class QueuePositionTests(_ExportFixture, TestCase):
     """A queued run must be able to explain the wait rather than go quiet."""
 
     def setUp(self):
-        self.build()
         self.definition = self.make_definition()
 
     def _queued(self, **kwargs):
@@ -1106,7 +1107,6 @@ class AbandonedRunSweepTests(_ExportFixture, TestCase):
     """
 
     def setUp(self):
-        self.build()
         self.definition = self.make_definition()
 
     def _run(self, *, status, age_hours, **kwargs):
@@ -1229,7 +1229,7 @@ class AbandonedRunSweepTests(_ExportFixture, TestCase):
         )
 
 
-class NotificationRegistryTests(_ExportFixture, TestCase):
+class NotificationRegistryTests(TestCase):
     """send_notification rejects unregistered keys, so a typo silences a notification
     exactly the way an unregistered action_type silences an audit event. Both
     registries get a guard test for the same reason.
@@ -1238,9 +1238,6 @@ class NotificationRegistryTests(_ExportFixture, TestCase):
     ``vs_notifications`` migration 0008, so this test doubles as the proof that
     they do: if that migration ever stops running, this fails rather than every
     export notification quietly turning into a swallowed dispatch error."""
-
-    def setUp(self):
-        self.build()
 
     def test_every_notification_event_key_is_registered(self):
         from vs_notifications.models import NotificationEventType
@@ -1260,9 +1257,12 @@ class DatasetScopeTests(_ExportFixture, TestCase):
 
     AUDIT_DATASET = "audit.events"
 
-    def setUp(self):
-        self.build()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         call_command("seed_platform_permissions", verbosity=0)
+
+    def setUp(self):
         self.client = TenantAPIClient(user=self.admin)
 
     def test_the_catalogue_declares_each_datasets_scope(self):
@@ -1474,7 +1474,6 @@ class AnalyticsSafetyTests(TestCase):
 
 class AnalyticsRecordingTests(_ExportFixture, TestCase):
     def setUp(self):
-        self.build()
         self.client = TenantAPIClient(user=self.admin)
 
     def test_a_run_emits_run_triggered(self):
@@ -1581,7 +1580,6 @@ class AnalyticsRecordingTests(_ExportFixture, TestCase):
 
 class AnalyticsEndpointTests(_ExportFixture, TestCase):
     def setUp(self):
-        self.build()
         self.client = TenantAPIClient(user=self.admin)
 
     def test_the_client_may_report_builder_events(self):
@@ -1703,9 +1701,6 @@ class RetryRuleTests(_ExportFixture, TestCase):
     failed identically - a second wait and a second notification for nothing.
     """
 
-    def setUp(self):
-        self.build()
-
     def _failed_run(self, code):
         definition = self.make_definition()
         run = ExportRun.objects.create(
@@ -1765,9 +1760,6 @@ class RetryRuleTests(_ExportFixture, TestCase):
 
 class DriftReadabilityTests(_ExportFixture, TestCase):
     """The run detail says WHAT changed, without publishing the stored blob."""
-
-    def setUp(self):
-        self.build()
 
     def test_changes_are_sentences_not_ids(self):
         definition = self.make_definition()
@@ -1894,7 +1886,6 @@ class FromScreenTests(_ExportFixture, TestCase):
     """
 
     def setUp(self):
-        self.build()
         self.client = TenantAPIClient(user=self.admin)
 
     def _get(self, query):
@@ -2239,7 +2230,6 @@ class ScheduleLifecycleTests(_ExportFixture, TestCase):
     """Creating, pausing, resuming and dispatching, against the database."""
 
     def setUp(self):
-        self.build()
         self.definition = self.make_definition(owner=self.admin)
         self.client = TenantAPIClient(user=self.admin)
 
@@ -2483,7 +2473,6 @@ class SearchFilterTests(_ExportFixture, TestCase):
     """A search box matches "any of these columns". The export filter must too."""
 
     def setUp(self):
-        self.build()
         self.client = TenantAPIClient(user=self.admin)
         self.window = {
             "id": "invoice_date",

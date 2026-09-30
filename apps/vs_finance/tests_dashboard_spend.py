@@ -23,30 +23,34 @@ from .tests_dashboard_overview import _OverviewFixture
 
 
 class _SpendFixture(_OverviewFixture):
-    def setUp(self):
-        super().setUp()
-        self.facilities = CostCenter.objects.create(entity=self.books, code="FAC", name="Facilities")
-        self.bill(self.ikeja, 30_000, cost_center=self.facilities)
-        self.bill(self.lekki, 10_000)
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.facilities = CostCenter.objects.create(entity=cls.books, code="FAC", name="Facilities")
+        cls.bill(cls.ikeja, 30_000, cost_center=cls.facilities)
+        cls.bill(cls.lekki, 10_000)
 
-    def acct(self, code):
-        return Account.objects.get(entity=self.books, code=code)
+    @classmethod
+    def acct(cls, code):
+        return Account.objects.get(entity=cls.books, code=code)
 
-    def journal(self, branch, lines, date=datetime.date(2026, 1, 20)):
+    @classmethod
+    def journal(cls, branch, lines, date=datetime.date(2026, 1, 20)):
         from vs_finance.posting import post_journal
 
         entry = JournalEntry.objects.create(
-            entity=self.books, branch=branch, date=date, source="BANK",
-            period=FiscalPeriod.objects.get(entity=self.books, period_no=1),
+            entity=cls.books, branch=branch, date=date, source="BANK",
+            period=FiscalPeriod.objects.get(entity=cls.books, period_no=1),
         )
         for n, (code, debit, credit, cc) in enumerate(lines, start=1):
-            JournalLine.objects.create(entry=entry, line_no=n, account=self.acct(code),
+            JournalLine.objects.create(entry=entry, line_no=n, account=cls.acct(code),
                                        debit=debit, credit=credit, cost_center=cc)
         post_journal(entry)
         return entry
 
-    def bill(self, branch, amount, cost_center=None):
-        return self.journal(branch, [("5300", amount, 0, cost_center), ("1100", 0, amount, None)])
+    @classmethod
+    def bill(cls, branch, amount, cost_center=None):
+        return cls.journal(branch, [("5300", amount, 0, cost_center), ("1100", 0, amount, None)])
 
     def view(self, window="month", reader=None):
         return spend_view(self.books, reader=reader or EVERY_BLOCK, window=window, period=self.period)

@@ -25,24 +25,25 @@ from .tests_dashboard_overview import AS_OF, _OverviewFixture
 
 
 class _StockFixture(_OverviewFixture):
-    def setUp(self):
-        super().setUp()
-        e = self.multi.entity
-        self.central = StockLocation.objects.filter(entity=e, is_default=True).first() or StockLocation.objects.create(
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        e = cls.multi.entity
+        cls.central = StockLocation.objects.filter(entity=e, is_default=True).first() or StockLocation.objects.create(
             entity=e, code="CENTRAL", name="Central store", is_default=True)
-        self.lekki_store = StockLocation.objects.create(entity=e, code="LEK", name="Lekki store", branch=self.lekki)
-        self.admin = CostCenter.objects.create(entity=e, code="ADMIN", name="Administration")
-        self.paper = StockItem.objects.create(
+        cls.lekki_store = StockLocation.objects.create(entity=e, code="LEK", name="Lekki store", branch=cls.lekki)
+        cls.admin = CostCenter.objects.create(entity=e, code="ADMIN", name="Administration")
+        cls.paper = StockItem.objects.create(
             entity=e, code="PAPER", name="A4 paper", unit_of_measure="ream", reorder_level=40, reorder_qty=100,
-            inventory_account=self.acc(e, "1400"), default_expense_account=self.acc(e, "5300"),
+            inventory_account=cls.acc(e, "1400"), default_expense_account=cls.acc(e, "5300"),
         )
-        receive_stock(self.paper, quantity=100, value=500_000, movement_date=datetime.date(2026, 1, 2),
-                      location=self.central)
-        receive_stock(self.paper, quantity=10, value=50_000, movement_date=datetime.date(2026, 1, 2),
-                      location=self.lekki_store)
+        receive_stock(cls.paper, quantity=100, value=500_000, movement_date=datetime.date(2026, 1, 2),
+                      location=cls.central)
+        receive_stock(cls.paper, quantity=10, value=50_000, movement_date=datetime.date(2026, 1, 2),
+                      location=cls.lekki_store)
         for day, qty in ((10, 30), (20, 20), (30, 20)):
-            issue_stock(self.paper, quantity=Decimal(qty), movement_date=datetime.date(2026, 1, day),
-                        location=self.central, cost_center=self.admin)
+            issue_stock(cls.paper, quantity=Decimal(qty), movement_date=datetime.date(2026, 1, day),
+                        location=cls.central, cost_center=cls.admin)
 
     def stores(self, branch=None):
         from vs_rbac.scoping import BranchScope

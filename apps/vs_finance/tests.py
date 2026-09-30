@@ -393,10 +393,15 @@ class NumberingTests(TestCase):
 
 # Group tests for G L Fixture Mixin.
 class _GLFixtureMixin:
-    """Builds an entity with a seeded chart, a fiscal year and one open period."""
+    """Builds an entity with a seeded chart, a fiscal year and one open period.
 
-    # Prepare or verify the build ledger test path.
-    def build_ledger(self, *, period_status=PeriodStatus.OPEN):
+    The builders are classmethods, so a class whose tests all start from the same
+    books can build them once in ``setUpTestData``; a test that needs another
+    variant (a CLOSED period, say) still calls the builder itself.
+    """
+
+    @classmethod
+    def build_ledger(cls, *, period_status=PeriodStatus.OPEN):
         seed_currencies()
         entity = LedgerEntity.objects.create(
             name="Test Books", code="TBOOK", kind=LedgerEntity.Kind.TENANT,
@@ -413,13 +418,13 @@ class _GLFixtureMixin:
         )
         return entity, period
 
-    # Prepare or verify the make entry test path.
     #: Source of the journals :meth:`make_entry` builds. A class whose journals stand
     #: in for bank receipts and payments sets ``BANK``: a ``MANUAL`` journal may not
     #: touch a bank account's ledger (``vs_finance.control_accounts``).
     journal_source = "MANUAL"
 
-    def make_entry(self, entity, period, pairs, *, date=datetime.date(2026, 1, 15), source=None):
+    @classmethod
+    def make_entry(cls, entity, period, pairs, *, date=datetime.date(2026, 1, 15), source=None):
         """pairs: list of (account_code, debit_kobo, credit_kobo).
 
         ``source`` names the document the journal stands in for when it touches an
@@ -427,7 +432,7 @@ class _GLFixtureMixin:
         """
         entry = JournalEntry.objects.create(
             entity=entity, date=date, period=period, narration="test",
-            source=source or self.journal_source,
+            source=source or cls.journal_source,
         )
         for i, (code, dr, cr) in enumerate(pairs, start=1):
             acc = Account.objects.get(entity=entity, code=code)
@@ -929,11 +934,17 @@ class FiscalCalendarPermissionTests(TestCase):
 
 # Group tests for Chart Of Accounts Tests.
 class ChartOfAccountsTests(_GLFixtureMixin, TestCase):
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ledger = cls.build_ledger()
+
     # Verify seed creates five roots and links parents behavior.
     def test_seed_creates_five_roots_and_links_parents(self):
         from vs_finance.constants import IFRSLine
 
-        entity, _ = self.build_ledger()
+        entity, _ = self.ledger
         roots = Account.objects.filter(entity=entity, parent__isnull=True)
         self.assertEqual(
             set(roots.values_list("account_type", flat=True)),
@@ -952,7 +963,7 @@ class ChartOfAccountsTests(_GLFixtureMixin, TestCase):
 
     # Verify normal balance derived and contra flips behavior.
     def test_normal_balance_derived_and_contra_flips(self):
-        entity, _ = self.build_ledger()
+        entity, _ = self.ledger
         cash = Account.objects.get(entity=entity, code="1100")
         self.assertEqual(cash.normal_balance, NormalBalance.DEBIT)
         accum_dep = Account.objects.get(entity=entity, code="1900")
@@ -962,7 +973,7 @@ class ChartOfAccountsTests(_GLFixtureMixin, TestCase):
 
     # Verify seed is idempotent behavior.
     def test_seed_is_idempotent(self):
-        entity, _ = self.build_ledger()
+        entity, _ = self.ledger
         before = Account.objects.filter(entity=entity).count()
         seed_chart_of_accounts(entity)
         self.assertEqual(Account.objects.filter(entity=entity).count(), before)
@@ -1074,9 +1085,15 @@ class PostingTests(_GLFixtureMixin, TestCase):
 
 # Group tests for Trial Balance Tests.
 class TrialBalanceTests(_GLFixtureMixin, TestCase):
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ledger = cls.build_ledger()
+
     # Verify trial balance balances behavior.
     def test_trial_balance_balances(self):
-        entity, period = self.build_ledger()
+        entity, period = self.ledger
         # Two transactions: cash sale, and a salary payment.
         post_journal(self.make_entry(entity, period, [("1100", 100000, 0), ("4100", 0, 100000)]))
         post_journal(self.make_entry(entity, period, [("5200", 25000, 0), ("1100", 0, 25000)]))
@@ -1092,7 +1109,7 @@ class TrialBalanceTests(_GLFixtureMixin, TestCase):
 
     # Verify empty ledger trivially balances behavior.
     def test_empty_ledger_trivially_balances(self):
-        entity, _ = self.build_ledger()
+        entity, _ = self.ledger
         tb = trial_balance(entity)
         self.assertTrue(tb.is_balanced)
         self.assertEqual(tb.rows, [])
@@ -1102,7 +1119,7 @@ class TrialBalanceTests(_GLFixtureMixin, TestCase):
         """A period-scoped TB is the running balance *through* that period; the
         all-periods TB is the cumulative all-time balance - never a sum that
         double-counts across periods."""
-        entity, jan = self.build_ledger()
+        entity, jan = self.ledger
         feb = FiscalPeriod.objects.create(
             entity=entity, fiscal_year=jan.fiscal_year, period_no=2, name="Feb 2026",
             start_date=datetime.date(2026, 2, 1), end_date=datetime.date(2026, 2, 28),
@@ -1122,9 +1139,15 @@ class TrialBalanceTests(_GLFixtureMixin, TestCase):
 
 # Group tests for Finance Audit Tests.
 class FinanceAuditTests(_GLFixtureMixin, TestCase):
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ledger = cls.build_ledger()
+
     # Verify post writes authoritative audit row behavior.
     def test_post_writes_authoritative_audit_row(self):
-        entity, period = self.build_ledger()
+        entity, period = self.ledger
         entry = self.make_entry(entity, period, [("1100", 40000, 0), ("4100", 0, 40000)])
         post_journal(entry)
 
@@ -1138,7 +1161,7 @@ class FinanceAuditTests(_GLFixtureMixin, TestCase):
 
     # Verify reversal writes reversed audit row behavior.
     def test_reversal_writes_reversed_audit_row(self):
-        entity, period = self.build_ledger()
+        entity, period = self.ledger
         entry = self.make_entry(entity, period, [("1100", 40000, 0), ("4100", 0, 40000)])
         post_journal(entry)
         reversal = reverse_journal(entry)
@@ -1158,7 +1181,7 @@ class FinanceAuditTests(_GLFixtureMixin, TestCase):
     # Verify rejected post records failure durably behavior.
     def test_rejected_post_records_failure_durably(self):
         # An unbalanced post rolls back, but the rejection audit must survive.
-        entity, period = self.build_ledger()
+        entity, period = self.ledger
         entry = self.make_entry(entity, period, [("1100", 40000, 0), ("4100", 0, 30000)])
         with self.assertRaises(UnbalancedJournalError):
             post_journal(entry)
@@ -1173,7 +1196,7 @@ class FinanceAuditTests(_GLFixtureMixin, TestCase):
 
     # Verify audit log is append only behavior.
     def test_audit_log_is_append_only(self):
-        entity, period = self.build_ledger()
+        entity, period = self.ledger
         entry = self.make_entry(entity, period, [("1100", 1000, 0), ("4100", 0, 1000)])
         post_journal(entry)
         log = FinanceAuditLog.objects.filter(target_id=str(entry.pk)).first()
@@ -1189,7 +1212,7 @@ class FinanceAuditTests(_GLFixtureMixin, TestCase):
         # triggers (Postgres) must still block them. A normal INSERT keeps working.
         from django.db import Error, transaction
 
-        entity, period = self.build_ledger()
+        entity, period = self.ledger
         entry = self.make_entry(entity, period, [("1100", 1000, 0), ("4100", 0, 1000)])
         post_journal(entry)  # writes an audit row via a normal INSERT
         qs = FinanceAuditLog.objects.filter(target_id=str(entry.pk))
@@ -1216,9 +1239,9 @@ class FinanceAuditTests(_GLFixtureMixin, TestCase):
 class _ARFixtureMixin(_GLFixtureMixin):
     """A ledger plus a customer wired to the AR control account and a VAT tax code."""
 
-    # Prepare or verify the build ar test path.
-    def build_ar(self, *, period_status=PeriodStatus.OPEN):
-        entity, period = self.build_ledger(period_status=period_status)
+    @classmethod
+    def build_ar(cls, *, period_status=PeriodStatus.OPEN):
+        entity, period = cls.build_ledger(period_status=period_status)
         ar_control = Account.objects.get(entity=entity, code="1200")
         vat_output = Account.objects.get(entity=entity, code="2200")
         customer = Customer.objects.create(
@@ -1231,8 +1254,8 @@ class _ARFixtureMixin(_GLFixtureMixin):
         )
         return entity, period, customer, vat
 
-    # Build or verify the make invoice test path.
-    def make_invoice(self, entity, customer, *, lines, date=datetime.date(2026, 1, 10),
+    @classmethod
+    def make_invoice(cls, entity, customer, *, lines, date=datetime.date(2026, 1, 10),
                      due=datetime.date(2026, 1, 25)):
         """lines: list of (revenue_code, quantity, unit_price_kobo, tax_code_or_None)."""
         inv = Invoice.objects.create(
@@ -1379,9 +1402,15 @@ class ARReconciliationTests(_ARFixtureMixin, TestCase):
 
 # Group tests for Credit Note Tests.
 class CreditNoteTests(_ARFixtureMixin, TestCase):
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ar_ledger = cls.build_ar()
+
     # Verify credit note posts reverses ar and applies to invoice behavior.
     def test_credit_note_posts_reverses_ar_and_applies_to_invoice(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, vat)])
         post_invoice(inv)  # total 107,500 (Dr AR)
 
@@ -1417,7 +1446,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
 
     # Verify debit note increases ar and cannot be allocated behavior.
     def test_debit_note_increases_ar_and_cannot_be_allocated(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         note = CreditNote.objects.create(
             entity=entity, customer=customer, kind=CreditNoteKind.DEBIT,
             note_date=datetime.date(2026, 1, 20), reason="Under-billed",
@@ -1456,7 +1485,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
         # The reported bug: a debit note with no invoice, then a larger receipt. The
         # receipt must settle the debit note (not leave it dangling) and book only the
         # true excess as customer credit.
-        entity, period, customer, _ = self.build_ar()
+        entity, period, customer, _ = self.ar_ledger
         bank = Account.objects.get(entity=entity, code="1100")
         note = self._post_debit_note(
             entity, customer, amount=20000, date=datetime.date(2026, 1, 10))
@@ -1488,7 +1517,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
     # Verify explicit receipt allocation to debit note behavior.
     def test_explicit_receipt_allocation_to_debit_note(self):
         # An explicit allocation plan can target a debit note directly.
-        entity, period, customer, _ = self.build_ar()
+        entity, period, customer, _ = self.ar_ledger
         bank = Account.objects.get(entity=entity, code="1100")
         note = self._post_debit_note(
             entity, customer, amount=20000, date=datetime.date(2026, 1, 10))
@@ -1509,7 +1538,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
     def test_stored_credit_settles_debit_note(self):
         # A receipt posted before the debit note leaves stored credit; allocating it
         # later drains the credit onto the open debit note.
-        entity, period, customer, _ = self.build_ar()
+        entity, period, customer, _ = self.ar_ledger
         bank = Account.objects.get(entity=entity, code="1100")
         pay = Payment.objects.create(
             entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 5),
@@ -1537,7 +1566,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
     # Verify receipt allocates across invoice and debit note oldest first behavior.
     def test_receipt_allocates_across_invoice_and_debit_note_oldest_first(self):
         # Mixed open items settle oldest-first regardless of document type.
-        entity, period, customer, _ = self.build_ar()
+        entity, period, customer, _ = self.ar_ledger
         bank = Account.objects.get(entity=entity, code="1100")
         note = self._post_debit_note(
             entity, customer, amount=30000, date=datetime.date(2026, 1, 8))
@@ -1562,7 +1591,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
     def test_credit_note_revenue_line_carries_cost_centre_to_gl(self):
         from .models import CostCenter
 
-        entity, period, customer, _ = self.build_ar()
+        entity, period, customer, _ = self.ar_ledger
         pri = CostCenter.objects.create(entity=entity, code="PRI", name="Primary")
         note = CreditNote.objects.create(
             entity=entity, customer=customer, kind=CreditNoteKind.CREDIT,
@@ -1582,7 +1611,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
     def test_overpayment_books_excess_as_customer_credit(self):
         # A receipt larger than the invoice settles AR and books the excess as a
         # customer-credit liability (2140) - AR never carries a credit balance.
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         bank = Account.objects.get(entity=entity, code="1100")
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
         post_invoice(inv)
@@ -1606,7 +1635,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
     # Verify apply stored credit reclasses to ar behavior.
     def test_apply_stored_credit_reclasses_to_ar(self):
         # Stored customer credit applied to a later invoice moves 2140 → AR.
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         bank = Account.objects.get(entity=entity, code="1100")
         pay = Payment.objects.create(
             entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 15),
@@ -1627,7 +1656,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
     # Verify refund draws down customer credit behavior.
     def test_refund_draws_down_customer_credit(self):
         # A refund pays out a credit balance: Dr 2140 (customer credit), Cr bank.
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         bank = Account.objects.get(entity=entity, code="1100")
         pay = Payment.objects.create(
             entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 15),
@@ -1652,7 +1681,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
 
     # Verify refund capped at available credit behavior.
     def test_refund_capped_at_available_credit(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         bank = Account.objects.get(entity=entity, code="1100")
         refund = Refund.objects.create(
             entity=entity, customer=customer, refund_date=datetime.date(2026, 1, 18),
@@ -1663,7 +1692,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
 
     # Verify write off clears balance as bad debt behavior.
     def test_write_off_clears_balance_as_bad_debt(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
         post_invoice(inv)  # 100,000 outstanding
 
@@ -1683,7 +1712,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
 
     # Verify write off rejected when nothing outstanding behavior.
     def test_write_off_rejected_when_nothing_outstanding(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)])
         post_invoice(inv)
         bank = Account.objects.get(entity=entity, code="1100")
@@ -1750,6 +1779,12 @@ class ConcessionTests(_ARFixtureMixin, TestCase):
 
 # Group tests for Payment Plan Tests.
 class PaymentPlanTests(_ARFixtureMixin, TestCase):
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ar_ledger = cls.build_ar()
+
     # Verify split amount is integer exact behavior.
     def test_split_amount_is_integer_exact(self):
         parts = split_amount(100000, 3)
@@ -1758,7 +1793,7 @@ class PaymentPlanTests(_ARFixtureMixin, TestCase):
 
     # Verify plan builds dated installments and tracks settlement behavior.
     def test_plan_builds_dated_installments_and_tracks_settlement(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
         post_invoice(inv)  # 100,000 outstanding
 
@@ -1811,7 +1846,7 @@ class PaymentPlanTests(_ARFixtureMixin, TestCase):
     # Verify receipt auto refreshes linked plan behavior.
     def test_receipt_auto_refreshes_linked_plan(self):
         # A receipt advances the plan on its own - no manual refresh_plan_progress call.
-        entity, period, customer, _ = self.build_ar()
+        entity, period, customer, _ = self.ar_ledger
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
         post_invoice(inv)
         plan = PaymentPlan.objects.create(
@@ -1838,7 +1873,7 @@ class PaymentPlanTests(_ARFixtureMixin, TestCase):
     def test_pre_plan_waiver_does_not_pre_settle_installments(self):
         """A waiver applied before the plan reduces the spread total but must NOT count
         as an installment payment - the first installment stays fully PENDING."""
-        entity, period, customer, _ = self.build_ar()
+        entity, period, customer, _ = self.ar_ledger
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 3225000, None)])
         post_invoice(inv)  # ₦3,225,000 outstanding
 
@@ -1893,7 +1928,7 @@ class PaymentPlanTests(_ARFixtureMixin, TestCase):
 
     # Verify build rejects mismatched explicit amounts behavior.
     def test_build_rejects_mismatched_explicit_amounts(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         plan = PaymentPlan.objects.create(
             entity=entity, customer=customer,
             start_date=datetime.date(2026, 1, 10), frequency="WEEKLY",
@@ -1904,7 +1939,7 @@ class PaymentPlanTests(_ARFixtureMixin, TestCase):
 
     # Verify activate requires a built schedule behavior.
     def test_activate_requires_a_built_schedule(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         plan = PaymentPlan.objects.create(
             entity=entity, customer=customer,
             start_date=datetime.date(2026, 1, 10), frequency="MONTHLY",
@@ -1915,7 +1950,7 @@ class PaymentPlanTests(_ARFixtureMixin, TestCase):
 
     # Verify cancel marks plan cancelled behavior.
     def test_cancel_marks_plan_cancelled(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         plan = PaymentPlan.objects.create(
             entity=entity, customer=customer,
             start_date=datetime.date(2026, 1, 10), frequency="MONTHLY",
@@ -1992,9 +2027,15 @@ class CustomerStatementTests(_ARFixtureMixin, TestCase):
 
 # Group tests for Dunning Tests.
 class DunningTests(_ARFixtureMixin, TestCase):
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ar_ledger = cls.build_ar()
+
     # Verify ensure default policy is idempotent with a ladder behavior.
     def test_ensure_default_policy_is_idempotent_with_a_ladder(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         p1 = ensure_default_policy(entity)
         p2 = ensure_default_policy(entity)
         self.assertEqual(p1.pk, p2.pk)
@@ -2006,7 +2047,7 @@ class DunningTests(_ARFixtureMixin, TestCase):
 
     # Verify generate advances one rung lowest unissued first behavior.
     def test_generate_advances_one_rung_lowest_unissued_first(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         ensure_default_policy(entity)
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)],
                                 due=datetime.date(2026, 1, 25))
@@ -2028,7 +2069,7 @@ class DunningTests(_ARFixtureMixin, TestCase):
 
     # Verify generate escalates one rung per run date behavior.
     def test_generate_escalates_one_rung_per_run_date(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         ensure_default_policy(entity)
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)],
                                 due=datetime.date(2026, 1, 25))
@@ -2047,7 +2088,7 @@ class DunningTests(_ARFixtureMixin, TestCase):
 
     # Verify generate is idempotent per run date behavior.
     def test_generate_is_idempotent_per_run_date(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         ensure_default_policy(entity)
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 80000, None)],
                                 due=datetime.date(2026, 1, 25))
@@ -2063,7 +2104,7 @@ class DunningTests(_ARFixtureMixin, TestCase):
 
     # Verify not yet due invoice is skipped behavior.
     def test_not_yet_due_invoice_is_skipped(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         ensure_default_policy(entity)
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)],
                                 due=datetime.date(2026, 1, 25))
@@ -2073,7 +2114,7 @@ class DunningTests(_ARFixtureMixin, TestCase):
 
     # Verify settled invoice marks notice resolved and no new one behavior.
     def test_settled_invoice_marks_notice_resolved_and_no_new_one(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         ensure_default_policy(entity)
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)],
                                 due=datetime.date(2026, 1, 25))
@@ -2094,7 +2135,7 @@ class DunningTests(_ARFixtureMixin, TestCase):
 
     # Verify mark sent then cancel lifecycle behavior.
     def test_mark_sent_then_cancel_lifecycle(self):
-        entity, period, customer, vat = self.build_ar()
+        entity, period, customer, vat = self.ar_ledger
         ensure_default_policy(entity)
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 60000, None)],
                                 due=datetime.date(2026, 1, 25))
@@ -2120,8 +2161,8 @@ class DunningTests(_ARFixtureMixin, TestCase):
 class _Phase4FixtureMixin(_GLFixtureMixin):
     """A ledger with a full year of monthly periods and a bank account on 1100."""
 
-    # Prepare or verify the build books test path.
-    def build_books(self, *, period_status=PeriodStatus.OPEN):
+    @classmethod
+    def build_books(cls, *, period_status=PeriodStatus.OPEN):
         seed_currencies()
         entity = LedgerEntity.objects.create(
             name="Test Books", code="TBOOK", kind=LedgerEntity.Kind.TENANT,
@@ -2143,8 +2184,8 @@ class _Phase4FixtureMixin(_GLFixtureMixin):
             ))
         return entity, year, periods
 
-    # Prepare or verify the make bank test path.
-    def make_bank(self, entity, *, gl_code="1100"):
+    @classmethod
+    def make_bank(cls, entity, *, gl_code="1100"):
         return BankAccount.objects.create(
             entity=entity, name="GTBank Operations",
             gl_account=Account.objects.get(entity=entity, code=gl_code),
@@ -2153,11 +2194,17 @@ class _Phase4FixtureMixin(_GLFixtureMixin):
 
 # Group tests for Bank Reconciliation Tests.
 class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
+
     journal_source = "BANK"
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.books = cls.build_books()
 
     # Verify import is idempotent on external id behavior.
     def test_import_is_idempotent_on_external_id(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         rows = [
             {"txn_date": datetime.date(2026, 1, 5), "amount": 50000, "external_id": "A1"},
@@ -2172,7 +2219,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
 
     # Verify reimport without external id is held back as suspected behavior.
     def test_reimport_without_external_id_is_held_back_as_suspected(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         rows = [{"txn_date": datetime.date(2026, 1, 5), "amount": -1500,
                  "description": "Monthly fee"}]
@@ -2191,7 +2238,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
 
     # Verify identical lines in one fresh batch are both kept behavior.
     def test_identical_lines_in_one_fresh_batch_are_both_kept(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         # Two genuinely identical same-day charges in one upload → both imported.
         rows = [
@@ -2204,7 +2251,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
 
     # Verify auto reconcile leaves ambiguous ties unmatched behavior.
     def test_auto_reconcile_leaves_ambiguous_ties_unmatched(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         # Two GL cash inflows of +50,000 on the same date - a statement line of +50,000
         # has two equally-good candidates, so auto-match must leave it for a human.
@@ -2224,7 +2271,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         from vs_finance.banking import group_match, unmatch_line, _unmatched_gl_lines
         from vs_finance.exceptions import BankReconciliationError
 
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         # Two receipts of 30,000 and 20,000 land as one 50,000 bank settlement line.
         e1 = self.make_entry(entity, periods[0], [("1100", 30000, 0), ("4100", 0, 30000)],
@@ -2262,7 +2309,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         from vs_finance.banking import split_match, unmatch_line, _unmatched_gl_lines
         from vs_finance.exceptions import BankReconciliationError
 
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         # One 50,000 ledger movement the bank reported as two lines (30k + 20k).
         entry = self.make_entry(entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)],
@@ -2293,7 +2340,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         from vs_finance.banking import split_match
         from vs_finance.exceptions import BankReconciliationError
 
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         entry = self.make_entry(entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)])
         post_journal(entry)
@@ -2310,7 +2357,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         from vs_finance.exceptions import BankReconciliationError
         from vs_finance.constants import BankLineStatus
 
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         _, lines, _ = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 5), "amount": 10000, "description": "Opening"}])
@@ -2330,7 +2377,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
     def test_auto_reconcile_group_sums_gl_lines_to_one_bank_line(self):
         from vs_finance.banking import auto_reconcile, _unmatched_gl_lines
 
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         # Two receipts (30k + 20k) land as one 50,000 bank settlement line - no single
         # GL line equals 50,000, but their sum does.
@@ -2364,7 +2411,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         from vs_finance.banking import group_match
         from vs_finance.exceptions import BankReconciliationError
 
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         e1 = self.make_entry(entity, periods[0], [("1100", 30000, 0), ("4100", 0, 30000)])
         e2 = self.make_entry(entity, periods[0], [("1100", 20000, 0), ("4100", 0, 20000)])
@@ -2378,7 +2425,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
 
     # Verify auto reconcile matches by amount and date behavior.
     def test_auto_reconcile_matches_by_amount_and_date(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         # A cash inflow of +50,000 posted on 2026-01-15.
         post_journal(self.make_entry(
@@ -2400,7 +2447,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
 
     # Verify manual match rejects amount mismatch behavior.
     def test_manual_match_rejects_amount_mismatch(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         entry = self.make_entry(
             entity, periods[0], [("1100", 30000, 0), ("4100", 0, 30000)],
@@ -2421,7 +2468,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
 
     # Verify post bank adjustment books charge and matches behavior.
     def test_post_bank_adjustment_books_charge_and_matches(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         line = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 20), "amount": -1500,
@@ -2443,7 +2490,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         # closed. Import and match post nothing so neither is blocked, but the
         # adjustment was pinned to the line's date and 409'd with no way out - the
         # date was not selectable anywhere in the UI.
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         line = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 20), "amount": -1500,
@@ -2466,7 +2513,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
     # Verify an open line still books on its own date behavior.
     def test_adjustment_in_an_open_month_still_books_on_the_line_date(self):
         # The fallback must not change the ordinary case.
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         line = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 20), "amount": -1500},
@@ -2480,7 +2527,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
 
     # Verify an explicit posting date is honoured behavior.
     def test_explicit_posting_date_is_honoured(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         line = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 20), "amount": -1500},
@@ -2496,7 +2543,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
     def test_explicit_posting_date_in_a_closed_period_is_refused(self):
         # An operator's explicit choice is used as given: the guard rejects it with
         # a message they can act on, rather than being silently moved elsewhere.
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         line = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 20), "amount": -1500},
@@ -2511,7 +2558,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
     def test_adjustment_pre_dates_only_when_every_later_period_is_shut(self):
         # Booking earlier than the bank's own date is the last resort, taken only
         # because pre-dating beats leaving the line permanently unbookable.
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         line = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 6, 15), "amount": -1500},
@@ -2531,7 +2578,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
     def test_adjustment_fails_closed_when_no_period_is_open(self):
         # No open period anywhere means nothing can post; there is no date to fall
         # back to and inventing one would be worse than refusing.
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         line = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 20), "amount": -1500},
@@ -2549,7 +2596,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         # period from the statement line.
         from vs_finance.banking import unmatch_line
 
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         line = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 20), "amount": -1500},
@@ -2568,7 +2615,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
 
     # Verify adjustment rejects already matched line behavior.
     def test_adjustment_rejects_already_matched_line(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         line = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 20), "amount": -1500},
@@ -2579,7 +2626,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
 
     # Verify import groups lines under a statement behavior.
     def test_import_groups_lines_under_a_statement(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         statement, lines, _ = import_statement_lines(
             bank, [
@@ -2599,7 +2646,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         from vs_finance.models import BankReconciliation
         from vs_finance.constants import BankStatementStatus
 
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         post_journal(self.make_entry(
             entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)],
@@ -2618,6 +2665,12 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
 
 # Group tests for Expense Claim Tests.
 class ExpenseClaimTests(_Phase4FixtureMixin, TestCase):
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.books = cls.build_books()
+
     # Support the make claim workflow.
     def _make_claim(self, entity, *, lines):
         claim = ExpenseClaim.objects.create(
@@ -2633,7 +2686,7 @@ class ExpenseClaimTests(_Phase4FixtureMixin, TestCase):
 
     # Verify post raises liability with input vat behavior.
     def test_post_raises_liability_with_input_vat(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         vat = TaxCode.objects.create(
             entity=entity, code="VAT", name="VAT 7.5%", rate_bps=750,
             paid_account=Account.objects.get(entity=entity, code="1300"),
@@ -2655,7 +2708,7 @@ class ExpenseClaimTests(_Phase4FixtureMixin, TestCase):
 
     # Verify settle partial then full behavior.
     def test_settle_partial_then_full(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         claim = self._make_claim(entity, lines=[("5500", 1, 100000, None)])
         post_expense_claim(claim)
@@ -2675,7 +2728,7 @@ class ExpenseClaimTests(_Phase4FixtureMixin, TestCase):
 
     # Verify cannot post empty claim behavior.
     def test_cannot_post_empty_claim(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         claim = ExpenseClaim.objects.create(
             entity=entity, claimant_name="Nobody",
             claim_date=datetime.date(2026, 1, 10),
@@ -2685,7 +2738,7 @@ class ExpenseClaimTests(_Phase4FixtureMixin, TestCase):
 
     # Verify void reverses journal and cancels unreimbursed claim behavior.
     def test_void_reverses_journal_and_cancels_unreimbursed_claim(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         claim = self._make_claim(entity, lines=[("5500", 1, 100000, None)])
         post_expense_claim(claim)
         journal = claim.journal
@@ -2700,7 +2753,7 @@ class ExpenseClaimTests(_Phase4FixtureMixin, TestCase):
 
     # Verify void refused once reimbursed behavior.
     def test_void_refused_once_reimbursed(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         claim = self._make_claim(entity, lines=[("5500", 1, 100000, None)])
         post_expense_claim(claim)
@@ -2711,7 +2764,7 @@ class ExpenseClaimTests(_Phase4FixtureMixin, TestCase):
 
     # Verify void refused on draft behavior.
     def test_void_refused_on_draft(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         claim = self._make_claim(entity, lines=[("5500", 1, 100000, None)])
         with self.assertRaises(ExpenseClaimError):
             void_expense_claim(claim)  # a draft is rejected, not voided
@@ -2778,6 +2831,12 @@ class CostCenterPropagationTests(_Phase4FixtureMixin, _ARFixtureMixin, TestCase)
 
 # Group tests for Petty Cash Tests.
 class PettyCashTests(_Phase4FixtureMixin, TestCase):
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.books = cls.build_books()
+
     # Support the make fund workflow.
     def _make_fund(self, entity, *, name="Front Desk", float_amount=5000000, gl_code="1110"):
         return PettyCashFund.objects.create(
@@ -2802,7 +2861,7 @@ class PettyCashTests(_Phase4FixtureMixin, TestCase):
 
     # Verify establish moves cash from bank to tin behavior.
     def test_establish_moves_cash_from_bank_to_tin(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         fund = self._make_fund(entity, float_amount=5000000)
         entry = establish_fund(
@@ -2818,7 +2877,7 @@ class PettyCashTests(_Phase4FixtureMixin, TestCase):
 
     # Verify establish rejects non positive behavior.
     def test_establish_rejects_non_positive(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         fund = self._make_fund(entity)
         with self.assertRaises(PettyCashError):
@@ -2826,7 +2885,7 @@ class PettyCashTests(_Phase4FixtureMixin, TestCase):
 
     # Verify voucher posts expense and lowers balance behavior.
     def test_voucher_posts_expense_and_lowers_balance(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         fund = self._make_fund(entity, float_amount=5000000)
         establish_fund(fund, bank_account=bank, amount=5000000, date=datetime.date(2026, 1, 1))
@@ -2850,7 +2909,7 @@ class PettyCashTests(_Phase4FixtureMixin, TestCase):
 
     # Verify overdraw guard uses live gl and resyncs mirror behavior.
     def test_overdraw_guard_uses_live_gl_and_resyncs_mirror(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         fund = self._make_fund(entity, float_amount=50000)
         establish_fund(fund, bank_account=bank, amount=50000, date=datetime.date(2026, 1, 1))
@@ -2868,7 +2927,7 @@ class PettyCashTests(_Phase4FixtureMixin, TestCase):
 
     # Verify void voucher reverses journal and returns cash behavior.
     def test_void_voucher_reverses_journal_and_returns_cash(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         fund = self._make_fund(entity, float_amount=5000000)
         establish_fund(fund, bank_account=bank, amount=5000000, date=datetime.date(2026, 1, 1))
@@ -2888,7 +2947,7 @@ class PettyCashTests(_Phase4FixtureMixin, TestCase):
 
     # Verify void refused on draft voucher behavior.
     def test_void_refused_on_draft_voucher(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         fund = self._make_fund(entity)
         draft = self._make_voucher(fund, lines=[("5500", 1, 10000, None)])
         with self.assertRaises(PettyCashError):
@@ -2896,7 +2955,7 @@ class PettyCashTests(_Phase4FixtureMixin, TestCase):
 
     # Verify voucher overdraw is blocked and audited behavior.
     def test_voucher_overdraw_is_blocked_and_audited(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         fund = self._make_fund(entity, float_amount=50000)
         establish_fund(fund, bank_account=bank, amount=50000, date=datetime.date(2026, 1, 1))
@@ -2917,7 +2976,7 @@ class PettyCashTests(_Phase4FixtureMixin, TestCase):
 
     # Verify replenish restores float by default behavior.
     def test_replenish_restores_float_by_default(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         fund = self._make_fund(entity, float_amount=5000000)
         establish_fund(fund, bank_account=bank, amount=5000000, date=datetime.date(2026, 1, 1))
@@ -2935,7 +2994,7 @@ class PettyCashTests(_Phase4FixtureMixin, TestCase):
 
     # Verify replenish with nothing to top up is rejected behavior.
     def test_replenish_with_nothing_to_top_up_is_rejected(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         fund = self._make_fund(entity, float_amount=5000000)
         establish_fund(fund, bank_account=bank, amount=5000000, date=datetime.date(2026, 1, 1))
@@ -2944,7 +3003,7 @@ class PettyCashTests(_Phase4FixtureMixin, TestCase):
 
     # Verify fund status flags low balance behavior.
     def test_fund_status_flags_low_balance(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         fund = self._make_fund(entity, float_amount=1000000)
         establish_fund(fund, bank_account=bank, amount=1000000, date=datetime.date(2026, 1, 1))
@@ -2960,6 +3019,12 @@ class PettyCashTests(_Phase4FixtureMixin, TestCase):
 
 # Group tests for Tax Filing Tests.
 class TaxFilingTests(_Phase4FixtureMixin, TestCase):
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.books = cls.build_books()
+
     # Support the vat obligation workflow.
     def _vat_obligation(self, entity):
         # The fixture seeds a VAT obligation already; reuse it idempotently.
@@ -3019,7 +3084,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
     # Verify prepare defaults due date from filing day behavior.
     def test_prepare_defaults_due_date_from_filing_day(self):
         # filing_day defaults to 21 → day 21 of the month after period_end.
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         ob = self._vat_obligation(entity)
         filing = prepare_filing(
             ob, period_start=datetime.date(2026, 6, 1),
@@ -3029,7 +3094,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
     # Verify prepare clamps due day to short following month behavior.
     def test_prepare_clamps_due_day_to_short_following_month(self):
         # period_end March 31 → April (30 days); filing_day 31 clamps to Apr 30.
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         ob = self._vat_obligation(entity)
         ob.filing_day = 31
         ob.save(update_fields=["filing_day"])
@@ -3040,7 +3105,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
     # Verify prepare respects explicit due date behavior.
     def test_prepare_respects_explicit_due_date(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         ob = self._vat_obligation(entity)
         filing = prepare_filing(
             ob, period_start=datetime.date(2026, 6, 1),
@@ -3050,7 +3115,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
     # Verify prepare vat nets input against output behavior.
     def test_prepare_vat_nets_input_against_output(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         ob = self._vat_obligation(entity)
         self._accrue_output_vat(entity, periods[0], net=1000000, vat=75000)
         self._accrue_input_vat(entity, periods[0], net=400000, vat=30000)
@@ -3064,7 +3129,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
     # Verify prepare is idempotent for same period behavior.
     def test_prepare_is_idempotent_for_same_period(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         ob = self._vat_obligation(entity)
         self._accrue_output_vat(entity, periods[0], net=1000000, vat=75000)
         a = prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
@@ -3076,7 +3141,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
     # Verify overlapping period is rejected behavior.
     def test_overlapping_period_is_rejected(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         ob = self._wht_obligation(entity)
         self._accrue_wht(entity, periods[0], amount=50000)
         prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
@@ -3088,7 +3153,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
     # Verify adjacent non overlapping period is accepted behavior.
     def test_adjacent_non_overlapping_period_is_accepted(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         ob = self._wht_obligation(entity)
         self._accrue_wht(entity, periods[0], amount=50000)
         jan = prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
@@ -3101,7 +3166,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
     # Verify file nets input vat then pay clears liability behavior.
     def test_file_nets_input_vat_then_pay_clears_liability(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         ob = self._vat_obligation(entity)
         self._accrue_output_vat(entity, periods[0], net=1000000, vat=75000)
@@ -3130,7 +3195,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
     # Verify wht filing no recoverable pays full behavior.
     def test_wht_filing_no_recoverable_pays_full(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         ob = self._wht_obligation(entity)
         self._accrue_wht(entity, periods[0], amount=50000)
@@ -3162,7 +3227,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
     # Verify partial remittance behavior.
     def test_partial_remittance(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         ob = self._wht_obligation(entity)
         self._accrue_wht(entity, periods[0], amount=50000)
@@ -3181,7 +3246,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
     # Verify file with penalty books expense and raises due behavior.
     def test_file_with_penalty_books_expense_and_raises_due(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         ob = self._wht_obligation(entity)
         self._accrue_wht(entity, periods[0], amount=50000)
         filing = prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
@@ -3201,7 +3266,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
     # Verify pay before file is rejected and audited behavior.
     def test_pay_before_file_is_rejected_and_audited(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         ob = self._wht_obligation(entity)
         self._accrue_wht(entity, periods[0], amount=50000)
@@ -3221,7 +3286,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
     # Verify unfile reverses netting journal and reverts to draft behavior.
     def test_unfile_reverses_netting_journal_and_reverts_to_draft(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         ob = self._vat_obligation(entity)
         self._accrue_output_vat(entity, periods[0], net=1000000, vat=75000)
         self._accrue_input_vat(entity, periods[0], net=400000, vat=30000)
@@ -3249,7 +3314,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
     # Verify unfile refused once any payment made behavior.
     def test_unfile_refused_once_any_payment_made(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         ob = self._wht_obligation(entity)
         self._accrue_wht(entity, periods[0], amount=50000)
@@ -3265,7 +3330,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
     # Verify unfile refused on draft behavior.
     def test_unfile_refused_on_draft(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         ob = self._wht_obligation(entity)
         self._accrue_wht(entity, periods[0], amount=50000)
         filing = prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
@@ -3275,7 +3340,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
     # Verify outstanding obligations reports net behavior.
     def test_outstanding_obligations_reports_net(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         ob = self._vat_obligation(entity)
         self._accrue_output_vat(entity, periods[0], net=1000000, vat=75000)
         self._accrue_input_vat(entity, periods[0], net=400000, vat=30000)
@@ -3287,7 +3352,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
     # Verify seed creates four nigerian obligations behavior.
     def test_seed_creates_four_nigerian_obligations(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         # seed_chart_of_accounts (run by the fixture) seeds obligations too.
         rows = TaxObligation.objects.filter(entity=entity).order_by("code")
         self.assertEqual(
@@ -3307,6 +3372,12 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
 
 # Group tests for Payroll Tests.
 class PayrollTests(_Phase4FixtureMixin, TestCase):
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.books = cls.build_books()
+
     # Support the make run workflow.
     def _make_run(self, entity, *, lines):
         run = PayrollRun.objects.create(
@@ -3321,7 +3392,7 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
 
     # Verify accrual posts balanced with statutory liabilities behavior.
     def test_accrual_posts_balanced_with_statutory_liabilities(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         run = self._make_run(entity, lines=[
             ("Ada", 300000, 30000, 15000),   # net 255,000
             ("Bola", 200000, 20000, 10000),  # net 170,000
@@ -3343,7 +3414,7 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
     def test_accrual_splits_gross_salary_by_cost_centre(self):
         from .models import CostCenter
 
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         pri = CostCenter.objects.create(entity=entity, code="PRI", name="Primary")
         sec = CostCenter.objects.create(entity=entity, code="SEC", name="Secondary")
         run = PayrollRun.objects.create(
@@ -3365,7 +3436,7 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
 
     # Verify disburse clears net payable behavior.
     def test_disburse_clears_net_payable(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         run = self._make_run(entity, lines=[("Ada", 300000, 30000, 15000)])
         post_payroll(run)
@@ -3379,7 +3450,7 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
 
     # Verify negative net is rejected behavior.
     def test_negative_net_is_rejected(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         run = self._make_run(entity, lines=[("Greedy", 100000, 80000, 30000)])  # net -10,000
         with self.assertRaises(PayrollError):
             post_payroll(run)
@@ -3388,7 +3459,7 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
 
     # Verify cannot pay unposted run behavior.
     def test_cannot_pay_unposted_run(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         run = self._make_run(entity, lines=[("Ada", 300000, 30000, 15000)])
         with self.assertRaises(PayrollError):
@@ -3396,7 +3467,7 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
 
     # Verify cancel draft run marks cancelled behavior.
     def test_cancel_draft_run_marks_cancelled(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         run = self._make_run(entity, lines=[("Ada", 300000, 30000, 15000)])
         cancel_payroll_run(run)
         run.refresh_from_db()
@@ -3405,7 +3476,7 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
 
     # Verify void posted run reverses accrual behavior.
     def test_void_posted_run_reverses_accrual(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         run = self._make_run(entity, lines=[("Ada", 300000, 30000, 15000)])
         post_payroll(run)
         run.refresh_from_db()
@@ -3419,7 +3490,7 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
 
     # Verify void refused once paid behavior.
     def test_void_refused_once_paid(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         run = self._make_run(entity, lines=[("Ada", 300000, 30000, 15000)])
         post_payroll(run)
@@ -3430,9 +3501,15 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
 
 # Group tests for Budget Tests.
 class BudgetTests(_Phase4FixtureMixin, TestCase):
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.books = cls.build_books()
+
     # Verify approve locks lines against edits behavior.
     def test_approve_locks_lines_against_edits(self):
-        entity, year, _ = self.build_books()
+        entity, year, _ = self.books
         budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Plan")
         salaries = Account.objects.get(entity=entity, code="5200")
         add_budget_line(budget, account=salaries, period_no=1, amount=60000)
@@ -3445,7 +3522,7 @@ class BudgetTests(_Phase4FixtureMixin, TestCase):
 
     # Verify period no must be in range behavior.
     def test_period_no_must_be_in_range(self):
-        entity, year, _ = self.build_books()
+        entity, year, _ = self.books
         budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Plan")
         salaries = Account.objects.get(entity=entity, code="5200")
         with self.assertRaises(BudgetError):
@@ -3455,7 +3532,7 @@ class BudgetTests(_Phase4FixtureMixin, TestCase):
         from vs_finance.budgets import set_budget_lines
         from vs_finance.seed import seed_fiscal_year
 
-        entity, year, _ = self.build_books()
+        entity, year, _ = self.books
         FiscalPeriod.objects.filter(fiscal_year=year).delete()
         _, quarters = seed_fiscal_year(
             entity,
@@ -3495,7 +3572,7 @@ class BudgetTests(_Phase4FixtureMixin, TestCase):
         from vs_finance.budgets import delete_budget
         from vs_finance.models import BudgetLine
 
-        entity, year, _ = self.build_books()
+        entity, year, _ = self.books
         budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Plan")
         salaries = Account.objects.get(entity=entity, code="5200")
         add_budget_line(budget, account=salaries, period_no=1, amount=60000)
@@ -3510,7 +3587,7 @@ class BudgetTests(_Phase4FixtureMixin, TestCase):
     def test_delete_approved_budget_refuses(self):
         from vs_finance.budgets import delete_budget
 
-        entity, year, _ = self.build_books()
+        entity, year, _ = self.books
         budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Plan")
         approve_budget(budget)
         with self.assertRaises(BudgetError):
@@ -3518,7 +3595,7 @@ class BudgetTests(_Phase4FixtureMixin, TestCase):
 
     # Verify budget vs actual variance behavior.
     def test_budget_vs_actual_variance(self):
-        entity, year, periods = self.build_books()
+        entity, year, periods = self.books
         budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Plan")
         salaries = Account.objects.get(entity=entity, code="5200")
         add_budget_line(budget, account=salaries, period_no=1, amount=60000)
@@ -3537,7 +3614,7 @@ class BudgetTests(_Phase4FixtureMixin, TestCase):
 
     # Verify budget vs actual scoped to period behavior.
     def test_budget_vs_actual_scoped_to_period(self):
-        entity, year, periods = self.build_books()
+        entity, year, periods = self.books
         budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Plan")
         salaries = Account.objects.get(entity=entity, code="5200")
         add_budget_line(budget, account=salaries, period_no=1, amount=60000)
@@ -3554,7 +3631,7 @@ class BudgetTests(_Phase4FixtureMixin, TestCase):
 
     # Verify budget monthly matrix builds per account cells behavior.
     def test_budget_monthly_matrix_builds_per_account_cells(self):
-        entity, year, periods = self.build_books()
+        entity, year, periods = self.books
         budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Plan")
         salaries = Account.objects.get(entity=entity, code="5200")
         add_budget_line(budget, account=salaries, period_no=1, amount=60000)
@@ -3580,6 +3657,12 @@ class BudgetTests(_Phase4FixtureMixin, TestCase):
 
 # Group tests for Fixed Asset Tests.
 class FixedAssetTests(_Phase4FixtureMixin, TestCase):
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.books = cls.build_books()
+
     # Support the make asset workflow.
     def _make_asset(self, entity, *, cost=1100000, salvage=0, life=11,
                     acq=datetime.date(2026, 1, 1)):
@@ -3590,7 +3673,7 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
 
     # Verify acquire capitalises and builds schedule behavior.
     def test_acquire_capitalises_and_builds_schedule(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         asset = self._make_asset(entity)
         acquire_asset(asset, bank_account=bank)
@@ -3606,7 +3689,7 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
     # Verify declining balance schedule front loads and lands on salvage behavior.
     def test_declining_balance_schedule_front_loads_and_lands_on_salvage(self):
         from vs_finance.constants import DepreciationMethod
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         asset = self._make_asset(entity, cost=1200000, salvage=200000, life=12)
         asset.method = DepreciationMethod.DECLINING_BALANCE
         asset.save(update_fields=["method"])
@@ -3627,7 +3710,7 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
 
     # Verify schedule remainder lands on last period behavior.
     def test_schedule_remainder_lands_on_last_period(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         asset = self._make_asset(entity, cost=1000000, salvage=0, life=3)
         build_depreciation_schedule(asset)
         amounts = [r.amount for r in asset.schedule.all()]
@@ -3637,7 +3720,7 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
 
     # Verify post depreciation runs and completes behavior.
     def test_post_depreciation_runs_and_completes(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         asset = self._make_asset(entity, cost=1100000, salvage=0, life=11)
         acquire_asset(asset, bank_account=bank)
@@ -3655,7 +3738,7 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
 
     # Verify run period depreciation posts one compound journal behavior.
     def test_run_period_depreciation_posts_one_compound_journal(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         a1 = self._make_asset(entity, cost=1100000, salvage=0, life=11)
         a2 = self._make_asset(entity, cost=2200000, salvage=0, life=11)
@@ -3675,7 +3758,7 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
 
     # Verify run period depreciation spanning two periods posts two journals behavior.
     def test_run_period_depreciation_spanning_two_periods_posts_two_journals(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         asset = self._make_asset(entity, cost=1100000, salvage=0, life=11)
         acquire_asset(asset, bank_account=bank)
@@ -3701,7 +3784,7 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
     def test_run_period_depreciation_without_fiscal_period_raises_typed_error(self):
         # Schedule charges extending past the last seeded period (FY2026 only) must
         # surface a DepreciationError naming the date, not an AttributeError/500.
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         # Acquired June 2026, 11 monthly charges → Jul 2026 … May 2027; no FY2027 exists.
         asset = self._make_asset(entity, cost=1100000, salvage=0, life=11,
@@ -3714,7 +3797,7 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
 
     # Verify run period depreciation single period returns one journal behavior.
     def test_run_period_depreciation_single_period_returns_one_journal(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         asset = self._make_asset(entity, cost=1100000, salvage=0, life=11)
         acquire_asset(asset, bank_account=bank)
@@ -3725,7 +3808,7 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
 
     # Verify dispose asset books proceeds and gain loss behavior.
     def test_dispose_asset_books_proceeds_and_gain_loss(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         asset = self._make_asset(entity, cost=1100000, salvage=0, life=11)
         acquire_asset(asset, bank_account=bank)
@@ -3746,7 +3829,7 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
 
     # Verify post depreciation on draft asset is rejected behavior.
     def test_post_depreciation_on_draft_asset_is_rejected(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         asset = self._make_asset(entity)  # DRAFT - never acquired
         self.assertEqual(asset.asset_status, AssetStatus.DRAFT)
         with self.assertRaises(DepreciationError):
@@ -3754,7 +3837,7 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
 
     # Verify cannot rebuild schedule after posting behavior.
     def test_cannot_rebuild_schedule_after_posting(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         asset = self._make_asset(entity)
         acquire_asset(asset, bank_account=bank)
@@ -3765,7 +3848,7 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
     # Verify dispose blocked when due depreciation unposted behavior.
     def test_dispose_blocked_when_due_depreciation_unposted(self):
         # A charge due Feb 1 2026 is still unposted; disposing Mar 1 must refuse.
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         asset = self._make_asset(entity, cost=1100000, salvage=0, life=11)
         acquire_asset(asset, bank_account=bank)
@@ -3778,7 +3861,7 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
 
     # Verify dispose succeeds after posting due depreciation behavior.
     def test_dispose_succeeds_after_posting_due_depreciation(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         asset = self._make_asset(entity, cost=1100000, salvage=0, life=11)
         acquire_asset(asset, bank_account=bank)
@@ -3794,7 +3877,7 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
     def test_dispose_ignores_future_dated_unposted_charges(self):
         # Disposing on the acquisition date: every charge (Feb+) is future-dated and may
         # be orphaned (life cut short), so the disposal is allowed.
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         asset = self._make_asset(entity, cost=1100000, salvage=0, life=11)
         acquire_asset(asset, bank_account=bank)
@@ -3807,9 +3890,15 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
 
 # Group tests for Period Close Tests.
 class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.books = cls.build_books()
+
     # Verify checklist passes on clean ledger behavior.
     def test_checklist_passes_on_clean_ledger(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         post_journal(self.make_entry(
             entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)],
         ))
@@ -3822,7 +3911,7 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
 
     # Verify close reopen and lock cycle behavior.
     def test_close_reopen_and_lock_cycle(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         jan = periods[0]
         post_journal(self.make_entry(
             entity, jan, [("1100", 50000, 0), ("4100", 0, 50000)],
@@ -3846,7 +3935,7 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
 
     # Verify reopen closed period returns to open behavior.
     def test_reopen_closed_period_returns_to_open(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         jan = periods[0]
         close_period(entity, jan)
         jan.refresh_from_db()
@@ -3857,7 +3946,7 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
 
     # Verify lock closed period seals it behavior.
     def test_lock_closed_period_seals_it(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         jan = periods[0]
         close_period(entity, jan)
         lock_period(entity, jan)
@@ -3865,7 +3954,7 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(jan.status, PeriodStatus.LOCKED)
 
     def test_final_period_cannot_lock_before_fiscal_year_close(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         december = periods[-1]
         close_period(entity, december)
         with self.assertRaises(PeriodCloseError):
@@ -3875,7 +3964,7 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
 
     # Verify lock refuses non closed period behavior.
     def test_lock_refuses_non_closed_period(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         jan = periods[0]  # still OPEN
         with self.assertRaises(PeriodCloseError):
             lock_period(entity, jan)
@@ -3884,7 +3973,7 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
 
     # Verify reopen refuses locked period behavior.
     def test_reopen_refuses_locked_period(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         jan = periods[0]
         close_period(entity, jan)
         lock_period(entity, jan)
@@ -3893,13 +3982,13 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
 
     # Verify soft close allows depreciation auto posting behavior.
     def test_soft_close_allows_depreciation_auto_posting(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         period, _ = close_period(entity, periods[0], soft=True)
         self.assertEqual(period.status, PeriodStatus.SOFT_CLOSED)
 
     # Verify blocking failure requires force behavior.
     def test_blocking_failure_requires_force(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         jan = periods[0]
         # Post straight into the AR control with no sub-ledger invoice → control != sub-ledger.
         ar = Account.objects.get(entity=entity, code="1200")
@@ -3920,7 +4009,7 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
 
     # Verify extra checks are injected behavior.
     def test_extra_checks_are_injected(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         calls = []
 
         # Prepare or verify the failing check test path.
@@ -3946,7 +4035,7 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
             registered_close_checks,
         )
 
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         seen = []
 
         def contributed(entity_arg, period_arg):
@@ -3970,7 +4059,7 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
         from vs_finance import close as close_mod
         from vs_finance.close import close_checklist, register_close_check
 
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
 
         def exploding(entity_arg, period_arg):
             raise RuntimeError("subledger unavailable")
@@ -3990,7 +4079,7 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
         from vs_finance import close as close_mod
         from vs_finance.close import ChecklistItem, close_checklist, register_close_check
 
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         runs = []
 
         def counted(entity_arg, period_arg):
@@ -4018,6 +4107,11 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
       * pays 120,000 cash salaries (operating outflow)
     """
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.books = cls.build_books()
+
     # Support the seed activity workflow.
     def _seed_activity(self, entity, period):
         """Four bank movements, posted as the bank documents they stand in for."""
@@ -4036,7 +4130,7 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
 
     # Verify income statement nets revenue less expense behavior.
     def test_income_statement_nets_revenue_less_expense(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         self._seed_activity(entity, periods[0])
 
         pnl = income_statement(entity, period=periods[0])
@@ -4049,7 +4143,7 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
 
     # Verify income statement aggregates all periods when unscoped behavior.
     def test_income_statement_aggregates_all_periods_when_unscoped(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         # Revenue split across two months.
         post_journal(self.make_entry(
             entity, periods[0], [("1100", 100000, 0), ("4100", 0, 100000)],
@@ -4064,7 +4158,7 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
 
     # Verify balance sheet balances with unclosed net income behavior.
     def test_balance_sheet_balances_with_unclosed_net_income(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         self._seed_activity(entity, periods[0])
 
         bs = balance_sheet(entity)
@@ -4078,7 +4172,7 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
 
     # Verify cash flow reconciles and classifies behavior.
     def test_cash_flow_reconciles_and_classifies(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         self.make_bank(entity)  # 1100 is also a mapped bank account
         self._seed_activity(entity, periods[0])
 
@@ -4094,7 +4188,7 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
     # Verify balance sheet sections group by ifrs and balance behavior.
     def test_balance_sheet_sections_group_by_ifrs_and_balance(self):
         from .reports import balance_sheet_sections
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         self._seed_activity(entity, periods[0])
 
         bs = balance_sheet_sections(entity)
@@ -4121,7 +4215,7 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
         # Accumulated depreciation is a contra-asset (credit balance). It must REDUCE
         # PP&E and keep the sheet balanced - not be added to assets.
         from .reports import balance_sheet_sections
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         p = periods[0]
         post_journal(self.make_entry(entity, p, [("1100", 1000000, 0), ("3100", 0, 1000000)]))  # capital
         post_journal(self.make_entry(entity, p, [("1500", 400000, 0), ("1100", 0, 400000)]))     # buy equipment
@@ -4137,7 +4231,7 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
 
     # Verify cash flow ignores non cash journals behavior.
     def test_cash_flow_ignores_non_cash_journals(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         # An accrual that never touches cash (Dr expense, Cr payable) must not move cash.
         post_journal(self.make_entry(
             entity, periods[0], [("5300", 50000, 0), ("2100", 0, 50000)], source="PURCHASE",
@@ -4149,7 +4243,7 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
 
     # Verify cash flow breaks activities into line items behavior.
     def test_cash_flow_breaks_activities_into_line_items(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         self._seed_activity(entity, periods[0])
 
         cf = cash_flow_statement(entity)
@@ -4248,13 +4342,18 @@ class IncomeStatementCompareTests(_Phase4FixtureMixin, TestCase):
 class ChangesInEquityTests(_Phase4FixtureMixin, TestCase):
     """The statement of changes in equity over a two-month, two-component scenario."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.books = cls.build_books()
+
     # Support the col workflow.
     def _col(self, soce, key):
         return next(c for c in soce.columns if c.key == key)
 
     # Verify single period splits capital from profit behavior.
     def test_single_period_splits_capital_from_profit(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         # Jan: 1,000,000 capital + 180,000 net income (300k rev − 120k salaries).
         post_journal(self.make_entry(
             entity, periods[0], [("1100", 1000000, 0), ("3100", 0, 1000000)],
@@ -4286,7 +4385,7 @@ class ChangesInEquityTests(_Phase4FixtureMixin, TestCase):
 
     # Verify period carries opening and books distribution behavior.
     def test_period_carries_opening_and_books_distribution(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         # January.
         post_journal(self.make_entry(
             entity, periods[0], [("1100", 1000000, 0), ("3100", 0, 1000000)],
@@ -4340,7 +4439,7 @@ class ChangesInEquityTests(_Phase4FixtureMixin, TestCase):
 
     # Verify unscoped reconciles to balance sheet equity behavior.
     def test_unscoped_reconciles_to_balance_sheet_equity(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         post_journal(self.make_entry(
             entity, periods[0], [("1100", 1000000, 0), ("3100", 0, 1000000)],
             date=datetime.date(2026, 1, 5),
@@ -4359,7 +4458,7 @@ class ChangesInEquityTests(_Phase4FixtureMixin, TestCase):
     def test_unscoped_excludes_future_fiscal_periods(self):
         from django.utils import timezone as django_timezone
 
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         post_journal(self.make_entry(
             entity, periods[0], [("1100", 1000000, 0), ("3100", 0, 1000000)],
             date=datetime.date(2026, 1, 5),
@@ -4391,6 +4490,11 @@ class ChangesInEquityTests(_Phase4FixtureMixin, TestCase):
 class StatutoryPackTests(_Phase4FixtureMixin, TestCase):
     """The IFRS-for-SMEs statutory pack regroups the chart onto presentation lines."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.books = cls.build_books()
+
     # Support the seed activity workflow.
     def _seed_activity(self, entity, period):
         """Four bank movements, posted as the bank documents they stand in for."""
@@ -4417,7 +4521,7 @@ class StatutoryPackTests(_Phase4FixtureMixin, TestCase):
 
     # Verify sofp regroups chart onto ifrs lines behavior.
     def test_sofp_regroups_chart_onto_ifrs_lines(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         self._seed_activity(entity, periods[0])
 
         pack = statutory_pack(entity)
@@ -4438,7 +4542,7 @@ class StatutoryPackTests(_Phase4FixtureMixin, TestCase):
 
     # Verify income statement maps to ifrs lines behavior.
     def test_income_statement_maps_to_ifrs_lines(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         self._seed_activity(entity, periods[0])
 
         pack = statutory_pack(entity)
@@ -4451,7 +4555,7 @@ class StatutoryPackTests(_Phase4FixtureMixin, TestCase):
 
     # Verify companion statements ride along and reconcile behavior.
     def test_companion_statements_ride_along_and_reconcile(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         self.make_bank(entity)
         self._seed_activity(entity, periods[0])
 
@@ -4464,7 +4568,7 @@ class StatutoryPackTests(_Phase4FixtureMixin, TestCase):
 
     # Verify unmapped account falls back to type default behavior.
     def test_unmapped_account_falls_back_to_type_default(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         # A custom asset account with no explicit IFRS line.
         Account.objects.create(
             entity=entity, code="1250", name="Prepayments",
@@ -4486,24 +4590,29 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     (so these tests exercise routing/serialisation, not the RBAC matrix itself).
     """
 
-    # Prepare or verify the setUp test path.
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        """The books and a platform super admin, built once for the class."""
         from django.contrib.auth import get_user_model
-        from rest_framework.test import APIClient
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
 
+        super().setUpTestData()
         User = get_user_model()
-        self.user = User.objects.create_user(tenant=_platform_tenant(), 
+        cls.user = User.objects.create_user(tenant=_platform_tenant(), 
             email="fin-admin@test.com", password="testpass123",
             status="ACTIVE",
             first_name="Finance", last_name="Admin",
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), 
-            user=self.user, role=role, assignment_status="ACTIVE",
+            user=cls.user, role=role, assignment_status="ACTIVE",
         )
+        cls.books = cls.build_books()
+
+    def setUp(self):
         from core.test_utils import TenantAPIClient
+
         self.client = TenantAPIClient(user=self.user)
 
     # Support the create claim workflow.
@@ -4515,7 +4624,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
                         "quantity": 1, "unit_price": 100000}]}, format="json")
 
     def test_start_fiscal_year_provisions_periods_and_rejects_duplicates(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         response = self.client.post(
             f"/v1/finance/fiscal-years/?entity={entity.code}",
             {"year": 2027, "start_month": 1, "fiscal_start_day": 1,
@@ -4577,7 +4686,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify expense claim reject only from draft behavior.
     def test_expense_claim_reject_only_from_draft(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         created = self._create_claim(entity)
         self.assertEqual(created.status_code, 201, created.content)
         cid = created.json()["data"]["id"]
@@ -4592,7 +4701,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     def test_expense_line_receipt_upload_and_remove(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
 
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         created = self._create_claim(entity)
         cid = created.json()["data"]["id"]
         line_id = created.json()["data"]["lines"][0]["id"]
@@ -4613,7 +4722,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify petty cash register and spent week behavior.
     def test_petty_cash_register_and_spent_week(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         bank = self.make_bank(entity)
         fund = PettyCashFund.objects.create(
             entity=entity, name="Front Desk", custodian_name="Lola",
@@ -4645,7 +4754,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         from vs_finance.constants import InvoiceSource
         from vs_finance.models import Customer, Invoice
 
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         resp = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
             {"code": "OPENC", "name": "Backdated Co", "opening_balance": 5000000,
@@ -4665,7 +4774,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         from vs_finance.constants import InvoiceSource
         from vs_finance.models import Customer, Invoice
 
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         resp = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
             {"code": "OPENEQ", "name": "Opening Equity Co", "opening_balance": 5000000,
@@ -4681,7 +4790,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify employee salary roster generates a run behavior.
     def test_employee_salary_roster_generates_a_run(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         for nm, g, p, pe in [("Ada Obi", 50000000, 7500000, 4000000),
                              ("Bola Lawal", 30000000, 4500000, 2400000)]:
             r = self.client.post(
@@ -4706,7 +4815,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify salary structure derives paye pension and net from gross behavior.
     def test_salary_structure_derives_paye_pension_and_net_from_gross(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         # A structure: Basic 40% of gross, Housing 30%, Transport 30% (earnings);
         # PAYE 7% of gross, Pension 8% of basic (deductions).
         struct = self.client.post(
@@ -4763,7 +4872,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify budget list enriched and heatmap endpoint behavior.
     def test_budget_list_enriched_and_heatmap_endpoint(self):
-        entity, year, periods = self.build_books()
+        entity, year, periods = self.books
         budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Plan")
         salaries = Account.objects.get(entity=entity, code="5200")
         add_budget_line(budget, account=salaries, period_no=1, amount=60000)
@@ -4787,7 +4896,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify budget create with lines autocode and draft edit behavior.
     def test_budget_create_with_lines_autocode_and_draft_edit(self):
-        entity, year, _ = self.build_books()
+        entity, year, _ = self.books
         # Create a budget WITH lines in one call; it gets an auto code.
         resp = self.client.post(
             f"/v1/finance/budgets/?entity={entity.code}",
@@ -4840,7 +4949,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify bank account detail reports metrics and transactions behavior.
     def test_bank_account_detail_reports_metrics_and_transactions(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         # A +50,000 cash inflow on the cash account (book balance moves).
         post_journal(self.make_entry(
@@ -4867,7 +4976,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify bank book lines and complete reconciliation behavior.
     def test_bank_book_lines_and_complete_reconciliation(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         # Two posted cash movements (the "book" side).
         post_journal(self.make_entry(
@@ -4901,7 +5010,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify unmatch drops pairing and reverses adjustment behavior.
     def test_unmatch_drops_pairing_and_reverses_adjustment(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         bank = self.make_bank(entity)
         # 1) A plain match: post a +50,000 cash line, import + auto-match it.
         post_journal(self.make_entry(
@@ -4937,7 +5046,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify bank account patch updates settings and primary behavior.
     def test_bank_account_patch_updates_settings_and_primary(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         a = self.make_bank(entity)
         b = BankAccount.objects.create(
             entity=entity, name="Access Collections",
@@ -4954,7 +5063,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Support the seed workflow.
     def _seed(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         post_journal(self.make_entry(
             entity, periods[0], [("1100", 1000000, 0), ("3100", 0, 1000000)],
         ))
@@ -5080,7 +5189,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(cash.name, "Cash & Bank (main)")
 
     def test_non_postable_account_detail_rolls_up_descendant_summaries(self):
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         asset_root = Account.objects.get(entity=entity, code="1000")
         header = Account.objects.create(
             entity=entity, code="1600", name="Investments",
@@ -5144,7 +5253,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     # Verify direct entry endpoint posts capital journal behavior.
     def test_direct_entry_endpoint_posts_capital_journal(self):
         # The honest way capital/equity enters: a posted journal, not magic.
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         resp = self.client.post(
             f"/v1/finance/direct-entries/?entity={entity.code}",
             {"narration": "Capital injection",
@@ -5170,7 +5279,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify direct entry rejects unbalanced behavior.
     def test_direct_entry_rejects_unbalanced(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         resp = self.client.post(
             f"/v1/finance/direct-entries/?entity={entity.code}",
             {"lines": [{"account": "1100", "debit": 5000000000},
@@ -5183,7 +5292,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     def test_direct_entry_carries_cost_centre_to_gl(self):
         from .models import CostCenter
 
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         CostCenter.objects.create(entity=entity, code="PRI", name="Primary")
         resp = self.client.post(
             f"/v1/finance/direct-entries/?entity={entity.code}",
@@ -5199,7 +5308,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify direct entry rejects unknown cost centre behavior.
     def test_direct_entry_rejects_unknown_cost_centre(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         resp = self.client.post(
             f"/v1/finance/direct-entries/?entity={entity.code}",
             {"lines": [{"account": "5300", "debit": 100000, "cost_center": "NOPE"},
@@ -5212,7 +5321,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     def test_customer_opening_balance_posts_opening_invoice(self):
         from .models import Invoice
 
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         created = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
             {"code": "OPN1", "name": "Opening Co", "opening_balance": 500000,
@@ -5239,7 +5348,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     def test_customer_summary_and_status_filter(self):
         """The summary aggregates over ALL customers (accurate while the list paginates),
         and the list's derived-status filter narrows server-side to the matching rows."""
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         # An opening balance makes this customer OVERDUE-or-ACTIVE with a receivable.
         self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
@@ -5265,7 +5374,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual([r["code"] for r in active["data"]], ["SUMA"])
 
     def test_refund_availability_only_lists_customers_with_unreserved_credit(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         receivable = Account.objects.get(entity=entity, code="1200")
         bank = Account.objects.get(entity=entity, code="1100")
         eligible = Customer.objects.create(
@@ -5298,7 +5407,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(adjustments["kpis"]["refundable_credit"], 70000)
 
     def test_refund_create_rejects_amount_above_available_credit(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         receivable = Account.objects.get(entity=entity, code="1200")
         bank = Account.objects.get(entity=entity, code="1100")
         bank_account = self.make_bank(entity)
@@ -5328,7 +5437,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(accepted.json()["data"]["amount"], 50000)
 
     def test_batch_refunds_post_atomically_and_reject_partial_success(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         receivable = Account.objects.get(entity=entity, code="1200")
         bank_gl = Account.objects.get(entity=entity, code="1100")
         bank_account = self.make_bank(entity)
@@ -5380,7 +5489,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(Refund.objects.filter(entity=entity).count(), 2)
 
     def test_batch_write_offs_post_each_invoice(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         receivable = Account.objects.get(entity=entity, code="1200")
         customer = Customer.objects.create(
             entity=entity, code="BWRO", name="Batch Write-off",
@@ -5434,7 +5543,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     def test_batch_post_requires_create_and_post_permissions(
         self, has_permission, _is_super_admin,
     ):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         has_permission.side_effect = (
             lambda _user, key, **_kwargs: key == "finance.refund.create"
         )
@@ -5455,7 +5564,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify payment summary totals and counts behavior.
     def test_payment_summary_totals_and_counts(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         c = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
             {"code": "PSUM", "name": "Payer", "billing_email": "billing@payer.test",
@@ -5474,7 +5583,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     def test_receipt_largest_first_allocation(self):
         from .models import Invoice
 
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         c = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
             {"code": "ALC", "name": "Alloc Co", "billing_email": "billing@alloc.test",
@@ -5500,7 +5609,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify receipt rejects unknown allocation strategy behavior.
     def test_receipt_rejects_unknown_allocation_strategy(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         c = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
             {"code": "BAD", "name": "Bad Co", "billing_email": "billing@bad.test",
@@ -5542,7 +5651,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify customer crud and invoice filter behavior.
     def test_customer_crud_and_invoice_filter(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         # Create - receivable account defaults to 1200.
         resp = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
@@ -5576,7 +5685,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify fee structure generates posted invoices behavior.
     def test_fee_structure_generates_posted_invoices(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
             {"code": "stu1", "name": "Student One", "billing_email": "student1@payer.test",
@@ -5629,7 +5738,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         """
         import datetime as _dt
 
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         made = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
             {"code": "stu9", "name": "Student Nine",
@@ -5686,7 +5795,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify fee generation explains a customer's missing AR setup.
     def test_fee_generation_explains_missing_customer_receivable_account(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         Customer.objects.create(
             entity=entity, code="STU-014", name="Student Fourteen",
             receivable_account=None,
@@ -5716,7 +5825,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     # Verify fee structure applies to defaults filters and edits behavior.
     def test_fee_structure_applies_to_defaults_filters_and_edits(self):
         """`applies_to` defaults to CUSTOMER, is filterable, and PATCHable."""
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
 
         # Default when omitted = CUSTOMER.
         cust = self.client.post(
@@ -5765,7 +5874,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         the name rather than serialised: a statement reading
         ``FEE:JSS1-TUITION-2026-27`` says which template billed the child.
         """
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
 
         created = self.client.post(
             f"/v1/finance/fee-structures/?entity={entity.code}",
@@ -5778,7 +5887,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(created.json()["data"]["code"], "JSS1-TUITION-2026-27")
 
     def test_a_second_structure_of_the_same_name_is_suffixed_not_refused(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         body = {"name": "Boarding", "items": [
             {"code": "BOARD", "description": "Boarding",
              "revenue_account": "4100", "amount": 5000000},
@@ -5799,7 +5908,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         reference on every invoice that does not match the school's own records,
         so the clash is still an error rather than a silent correction.
         """
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         body = {"code": "fs-mine", "name": "Mine", "items": [
             {"code": "X", "description": "X", "revenue_account": "4100",
              "amount": 100},
@@ -5816,7 +5925,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         """The suffix eats into the base rather than overflowing past 32."""
         from vs_finance.models.ar import FeeStructure
 
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         long_name = "Senior Secondary Boarding And Transport Combined Levy"
         FeeStructure.objects.create(
             entity=entity, code=FeeStructure.generate_code(entity, long_name),
@@ -5828,7 +5937,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertTrue(second.endswith("-2"), second)
 
     def test_a_duplicate_without_a_code_derives_one_too(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         source = self.client.post(
             f"/v1/finance/fee-structures/?entity={entity.code}",
             {"name": "Day Fees", "items": [
@@ -5844,7 +5953,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(cloned.json()["data"]["code"], "DAY-FEES-COPY")
 
     def test_fee_structure_lines_carry_code_optional_and_tax_breakdown(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         vat = TaxCode.objects.create(
             entity=entity, code="VAT", name="VAT 7.5%", rate_bps=750,
             collected_account=Account.objects.get(entity=entity, code="2200"))
@@ -5870,7 +5979,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify fee structure detail reports usage and can be duplicated behavior.
     def test_fee_structure_detail_reports_usage_and_can_be_duplicated(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
             {"code": "stu1", "name": "Student One", "billing_email": "student1@payer.test",
@@ -5910,7 +6019,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     # Verify fee structure generate blocked for non customer behavior.
     def test_fee_structure_generate_blocked_for_non_customer(self):
         """Only CUSTOMER structures can raise AR invoices."""
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
             {"code": "stu1", "name": "Student One", "billing_email": "student1@payer.test",
@@ -6272,22 +6381,27 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
     siblings aggregate over **all** rows so header KPIs stay accurate.
     """
 
-    # Prepare or verify the setUp test path.
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        """The books and a platform super admin, built once for the class."""
         from django.contrib.auth import get_user_model
-        from rest_framework.test import APIClient
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
 
+        super().setUpTestData()
         User = get_user_model()
-        self.user = User.objects.create_user(tenant=_platform_tenant(), 
+        cls.user = User.objects.create_user(tenant=_platform_tenant(), 
             email="ops-admin@test.com", password="testpass123",
             status="ACTIVE", first_name="Ops", last_name="Admin",
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), 
-            user=self.user, role=role, assignment_status="ACTIVE")
+            user=cls.user, role=role, assignment_status="ACTIVE")
+        cls.books = cls.build_books()
+
+    def setUp(self):
         from core.test_utils import TenantAPIClient
+
         self.client = TenantAPIClient(user=self.user)
 
     # Support the claim workflow.
@@ -6302,7 +6416,7 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
 
     # Verify expense list paginates and summary aggregates all rows behavior.
     def test_expense_list_paginates_and_summary_aggregates_all_rows(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         self._claim(entity, unit_price=100000)
         self._claim(entity, unit_price=300000)
 
@@ -6322,7 +6436,7 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
 
     # Verify ops summary endpoints handle empty books behavior.
     def test_ops_summary_endpoints_handle_empty_books(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         for path, keys in (
             ("expense-claims", {"open", "month_total", "avg", "awaiting"}),
             # payroll_scope rides along so the payroll screen knows whether to
@@ -6351,7 +6465,7 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
 
     # Verify audit log lists and never leaks metadata behavior.
     def test_audit_log_lists_and_never_leaks_metadata(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         self._audit(entity, before={"status": "DRAFT"}, after={"status": "POSTED"},
                     document_number="JE-9")
         resp = self.client.get(f"/v1/finance/audit-logs/?entity={entity.code}")
@@ -6368,7 +6482,7 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
     # Verify audit log filters behavior.
     def test_audit_log_filters(self):
         from django.utils import timezone
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         self._audit(entity, action=FinanceAuditAction.JOURNAL_POSTED,
                     status=FinanceAuditStatus.SUCCESS,
                     created_at=timezone.make_aware(datetime.datetime(2026, 1, 5, 9, 0)))
@@ -6389,7 +6503,7 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
 
     # Verify audit log scoped to entity behavior.
     def test_audit_log_scoped_to_entity(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         other = LedgerEntity.objects.create(
             name="Other Books", code="OTHER", kind=LedgerEntity.Kind.TENANT)
         self._audit(entity, document_number="MINE")
@@ -6399,7 +6513,7 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
 
     # Verify audit facets return present options only behavior.
     def test_audit_facets_return_present_options_only(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         self._audit(entity, action=FinanceAuditAction.JOURNAL_POSTED, target_type="JournalEntry")
         self._audit(entity, action=FinanceAuditAction.PAYMENT_POSTED, target_type="Payment")
         # Two rows share JOURNAL_POSTED - the facet must still be de-duplicated
@@ -7167,6 +7281,11 @@ class FinanceMigrationStateTests(TestCase):
 class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
     """POST /finance/invoices/ raises (and posts) a manual invoice, gated on create."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ar_ledger = cls.build_ar()
+
     # Support the super admin workflow.
     def _super_admin(self, email):
         from django.contrib.auth import get_user_model
@@ -7195,7 +7314,7 @@ class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
     def test_create_posts_invoice_with_tax(self):
         import json
         from vs_finance.constants import DocumentStatus
-        entity, _period, _customer, vat = self.build_ar()
+        entity, _period, _customer, vat = self.ar_ledger
         u = self._super_admin("inv-create@test.com")
         resp = self._post(entity, u, {
             "customer": "CUST1", "invoice_date": "2026-01-10", "due_date": "2026-01-25",
@@ -7214,7 +7333,7 @@ class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
     # Verify a mixed two-line invoice posts and taxes only the selected line.
     def test_create_posts_multiple_lines_when_one_has_tax(self):
         import json
-        entity, _period, _customer, _vat = self.build_ar()
+        entity, _period, _customer, _vat = self.ar_ledger
         u = self._super_admin("inv-multi-tax@test.com")
         resp = self._post(entity, u, {
             "customer": "CUST1", "invoice_date": "2026-01-10",
@@ -7238,7 +7357,7 @@ class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
     # Verify an unusable output-tax mapping is reported on the affected line.
     def test_create_rejects_tax_without_output_account_at_line(self):
         import json
-        entity, _period, _customer, vat = self.build_ar()
+        entity, _period, _customer, vat = self.ar_ledger
         vat.collected_account = None
         vat.save(update_fields=["collected_account", "updated_at"])
         u = self._super_admin("inv-missing-output-tax@test.com")
@@ -7265,7 +7384,7 @@ class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
     def test_create_draft_when_post_false(self):
         import json
         from vs_finance.constants import DocumentStatus
-        entity, _p, _c, _vat = self.build_ar()
+        entity, _p, _c, _vat = self.ar_ledger
         u = self._super_admin("inv-draft@test.com")
         resp = self._post(entity, u, {
             "customer": "CUST1", "invoice_date": "2026-01-10", "post": False,
@@ -7280,7 +7399,7 @@ class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
     # Verify create requires permission behavior.
     def test_create_requires_permission(self):
         from django.contrib.auth import get_user_model
-        entity, _p, _c, _vat = self.build_ar()
+        entity, _p, _c, _vat = self.ar_ledger
         # A plain active user with no super-admin role lacks finance.invoice.create.
         u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
             email="inv-nobody@test.com", password="x", status="ACTIVE", first_name="No", last_name="Perm")
@@ -7293,7 +7412,7 @@ class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
 
     # Verify create rejects empty lines behavior.
     def test_create_rejects_empty_lines(self):
-        entity, _p, _c, _vat = self.build_ar()
+        entity, _p, _c, _vat = self.ar_ledger
         u = self._super_admin("inv-empty@test.com")
         resp = self._post(entity, u, {"customer": "CUST1", "invoice_date": "2026-01-10", "lines": []})
         self.assertEqual(resp.status_code, 400)
@@ -7411,6 +7530,11 @@ class InvoicePayRemindEndpointTests(_ARFixtureMixin, TestCase):
 class CustomerEndpointTests(_ARFixtureMixin, TestCase):
     """Customer list balance/status, enriched detail/statement, and receipt."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ar_ledger = cls.build_ar()
+
     # Support the super admin workflow.
     def _super_admin(self, email):
         from django.contrib.auth import get_user_model
@@ -7425,7 +7549,7 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
 
     # Support the fixture workflow.
     def _fixture(self):
-        entity, _period, customer, vat = self.build_ar()
+        entity, _period, customer, vat = self.ar_ledger
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, vat)])  # total 107500
         post_invoice(inv)
         return entity, customer, inv
@@ -7435,7 +7559,7 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         from rest_framework.test import APIRequestFactory, force_authenticate
         from vs_finance.views_ar import CustomerListCreateView
 
-        entity, _period, _customer, _vat = self.build_ar()
+        entity, _period, _customer, _vat = self.ar_ledger
         user = self._super_admin("cust-create@test.com")
         req = APIRequestFactory().post(
             f"/v1/finance/customers/?entity={entity.code}",
@@ -7461,7 +7585,7 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         from rest_framework.test import APIRequestFactory, force_authenticate
         from vs_finance.views_ar import CustomerListCreateView
 
-        entity, _period, _customer, _vat = self.build_ar()
+        entity, _period, _customer, _vat = self.ar_ledger
         user = self._super_admin("cust-contact-validation@test.com")
         invalid_payloads = (
             {"name": "Missing Contacts"},
@@ -7549,7 +7673,7 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         from rest_framework.test import APIRequestFactory, force_authenticate
         from vs_finance.views_ar import CustomerDetailView
 
-        entity, _period, customer, _vat = self.build_ar()
+        entity, _period, customer, _vat = self.ar_ledger
         invoice = self.make_invoice(
             entity, customer, lines=[("4100", 1, 100000, None)])
         post_invoice(invoice)
@@ -7643,7 +7767,7 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         # Owe ₦79 (older) + ₦56; pay ₦90 → ₦79 fully + ₦11, leaving ₦45 on the 2nd.
         from rest_framework.test import APIRequestFactory, force_authenticate
         from vs_finance.views_ar import CustomerReceiptView
-        entity, _period, customer, _vat = self.build_ar()
+        entity, _period, customer, _vat = self.ar_ledger
         a = self.make_invoice(entity, customer, lines=[("4100", 1, 7900, None)])  # ₦79, older
         post_invoice(a)
         b = self.make_invoice(entity, customer, lines=[("4100", 1, 5600, None)])  # ₦56
@@ -7665,6 +7789,11 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
 # Group tests for Receipt Allocation Endpoint Tests.
 class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
     """Receipts list/detail and explicit (and auto) allocation to open invoices."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ar_ledger = cls.build_ar()
 
     # Support the super admin workflow.
     def _super_admin(self, email):
@@ -7695,7 +7824,7 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
         import json
         from rest_framework.test import APIRequestFactory, force_authenticate
         from vs_finance.views_ar import PaymentListView
-        entity, _p, customer, _v = self.build_ar()
+        entity, _p, customer, _v = self.ar_ledger
         self._unallocated_receipt(entity, customer, 9000)
         u = self._super_admin("rcpt-list@test.com")
         req = APIRequestFactory().get("/v1/finance/payments/", {"entity": entity.code})
@@ -7712,7 +7841,7 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
         import json
         from rest_framework.test import APIRequestFactory, force_authenticate
         from vs_finance.views_ar import PaymentDetailView
-        entity, _p, customer, _v = self.build_ar()
+        entity, _p, customer, _v = self.ar_ledger
         a = self.make_invoice(entity, customer, lines=[("4100", 1, 7900, None)]); post_invoice(a)
         p = self._unallocated_receipt(entity, customer, 9000)
         u = self._super_admin("rcpt-detail@test.com")
@@ -7729,7 +7858,7 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
         import json
         from rest_framework.test import APIRequestFactory, force_authenticate
         from vs_finance.views_ar import PaymentAllocateView
-        entity, _p, customer, _v = self.build_ar()
+        entity, _p, customer, _v = self.ar_ledger
         a = self.make_invoice(entity, customer, lines=[("4100", 1, 7900, None)]); post_invoice(a)
         b = self.make_invoice(entity, customer, lines=[("4100", 1, 5600, None)]); post_invoice(b)
         p = self._unallocated_receipt(entity, customer, 9000)
@@ -7750,7 +7879,7 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
         from django.contrib.auth import get_user_model
         from rest_framework.test import APIRequestFactory, force_authenticate
         from vs_finance.views_ar import PaymentAllocateView
-        entity, _p, customer, _v = self.build_ar()
+        entity, _p, customer, _v = self.ar_ledger
         a = self.make_invoice(entity, customer, lines=[("4100", 1, 7900, None)]); post_invoice(a)
         p = self._unallocated_receipt(entity, customer, 9000)
         u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
@@ -7771,6 +7900,11 @@ class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
     Mirrors :class:`CostCenterPropagationTests` but for the second axis - the
     ``{axis: value}`` map carried on a journal line and the report that buckets by it.
     """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.books = cls.build_books()
 
     # Support the axis workflow.
     def _axis(self, entity, *, code="FUND", values=("GRANT-A", "INTERNAL")):
@@ -7797,7 +7931,7 @@ class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
     # Verify resolve accepts allowed value behavior.
     def test_resolve_accepts_allowed_value(self):
         from vs_finance.views_ops import _resolve_dimensions
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         self._axis(entity)
         self.assertEqual(
             _resolve_dimensions(entity, {"FUND": "GRANT-A"}), {"FUND": "GRANT-A"})
@@ -7805,7 +7939,7 @@ class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
     # Verify resolve blank yields empty map behavior.
     def test_resolve_blank_yields_empty_map(self):
         from vs_finance.views_ops import _resolve_dimensions
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         self.assertEqual(_resolve_dimensions(entity, None), {})
         self.assertEqual(_resolve_dimensions(entity, ""), {})
         self.assertEqual(_resolve_dimensions(entity, {}), {})
@@ -7814,7 +7948,7 @@ class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
     def test_resolve_rejects_unknown_axis(self):
         from rest_framework.exceptions import ValidationError
         from vs_finance.views_ops import _resolve_dimensions
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         self._axis(entity)
         with self.assertRaises(ValidationError):
             _resolve_dimensions(entity, {"NOPE": "GRANT-A"})
@@ -7823,7 +7957,7 @@ class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
     def test_resolve_rejects_value_not_in_allowlist(self):
         from rest_framework.exceptions import ValidationError
         from vs_finance.views_ops import _resolve_dimensions
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         self._axis(entity)
         with self.assertRaises(ValidationError):
             _resolve_dimensions(entity, {"FUND": "GRANT-Z"})
@@ -7832,7 +7966,7 @@ class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
     def test_resolve_axis_with_no_values_rejects_all(self):
         from rest_framework.exceptions import ValidationError
         from vs_finance.views_ops import _resolve_dimensions
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         self._axis(entity, code="EMPTY", values=())
         with self.assertRaises(ValidationError):
             _resolve_dimensions(entity, {"EMPTY": "anything"})
@@ -7841,7 +7975,7 @@ class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
     def test_resolve_is_tenant_scoped(self):
         from rest_framework.exceptions import ValidationError
         from vs_finance.views_ops import _resolve_dimensions
-        entity_a, _, _ = self.build_books()
+        entity_a, _, _ = self.books
         # A second tenant with its own FUND axis must not leak into entity A.
         entity_b = LedgerEntity.objects.create(
             name="Other Books", code="OBOOK", kind=LedgerEntity.Kind.TENANT)
@@ -7854,7 +7988,7 @@ class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
     def test_direct_entry_carries_dimensions_into_gl_and_reversal(self):
         from vs_finance.posting import reverse_journal
         from vs_finance.views_ops import _resolve_dimensions
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         self._axis(entity)
         dims = _resolve_dimensions(entity, {"FUND": "GRANT-A"})
         entry = self._spend(entity, amount=100000, dimensions=dims)
@@ -7871,7 +8005,7 @@ class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
         from vs_finance.models import CostCenter
         from vs_finance.reports import analytics_slice
         from vs_finance.views_ops import _resolve_dimensions
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         self._axis(entity)
         pri = CostCenter.objects.create(entity=entity, code="PRI", name="Primary")
         self._spend(entity, amount=100000, cost_center=pri,
@@ -7896,7 +8030,7 @@ class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
     def test_slice_period_scoping(self):
         from vs_finance.reports import analytics_slice
         from vs_finance.views_ops import _resolve_dimensions
-        entity, _, periods = self.build_books()
+        entity, _, periods = self.books
         self._axis(entity)
         self._spend(entity, amount=100000,
                     dimensions=_resolve_dimensions(entity, {"FUND": "GRANT-A"}),
@@ -7912,7 +8046,7 @@ class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
     # Verify slice empty books has no rows behavior.
     def test_slice_empty_books_has_no_rows(self):
         from vs_finance.reports import analytics_slice
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         self._axis(entity)
         sl = analytics_slice(entity, axis="FUND")
         self.assertEqual(sl.rows, [])
@@ -7923,27 +8057,32 @@ class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
 class DimensionAnalyticsAPITests(_Phase4FixtureMixin, TestCase):
     """The dimensions CRUD + analytics-slice REST surface."""
 
-    # Prepare or verify the setUp test path.
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        """The books and a platform super admin, built once for the class."""
         from django.contrib.auth import get_user_model
-        from rest_framework.test import APIClient
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
 
+        super().setUpTestData()
         User = get_user_model()
-        self.user = User.objects.create_user(tenant=_platform_tenant(), 
+        cls.user = User.objects.create_user(tenant=_platform_tenant(), 
             email="dim-admin@test.com", password="testpass123",
             status="ACTIVE", first_name="Dim", last_name="Admin",
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), 
-            user=self.user, role=role, assignment_status="ACTIVE")
+            user=cls.user, role=role, assignment_status="ACTIVE")
+        cls.books = cls.build_books()
+
+    def setUp(self):
         from core.test_utils import TenantAPIClient
+
         self.client = TenantAPIClient(user=self.user)
 
     # Verify dimension crud persists and dedupes values behavior.
     def test_dimension_crud_persists_and_dedupes_values(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         r = self.client.post(
             f"/v1/finance/dimensions/?entity={entity.code}",
             {"code": "FUND", "name": "Fund",
@@ -7959,7 +8098,7 @@ class DimensionAnalyticsAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify dimension rejects blank value behavior.
     def test_dimension_rejects_blank_value(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         r = self.client.post(
             f"/v1/finance/dimensions/?entity={entity.code}",
             {"code": "FUND", "allowed_values": ["GRANT-A", "  "]}, format="json")
@@ -7970,7 +8109,7 @@ class DimensionAnalyticsAPITests(_Phase4FixtureMixin, TestCase):
         from vs_finance.posting import post_direct_entry
         from vs_finance.views_ops import _resolve_dimensions
         from vs_finance.models import Dimension
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         Dimension.objects.create(
             entity=entity, code="FUND", name="Fund", allowed_values=["GRANT-A"])
         post_direct_entry(
@@ -7991,7 +8130,7 @@ class DimensionAnalyticsAPITests(_Phase4FixtureMixin, TestCase):
 
     # Verify analytics slice requires valid axis behavior.
     def test_analytics_slice_requires_valid_axis(self):
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         missing = self.client.get(
             f"/v1/finance/reports/analytics-slice/?entity={entity.code}")
         self.assertEqual(missing.status_code, 400)
@@ -8004,7 +8143,7 @@ class DimensionAnalyticsAPITests(_Phase4FixtureMixin, TestCase):
         from django.contrib.auth import get_user_model
         from rest_framework.test import APIRequestFactory, force_authenticate
         from vs_finance.views import AnalyticsSliceView
-        entity, _, _ = self.build_books()
+        entity, _, _ = self.books
         u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
             email="dim-noperm@test.com", password="x", status="ACTIVE", first_name="No", last_name="Perm")
         req = APIRequestFactory().get(
@@ -8078,49 +8217,52 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
     #: Approver resolution reads role assignments, not permission grants.
     APPROVE_ROLE = "checker-role"
 
-    # Prepare or verify the setUp test path.
+    @classmethod
+    def setUpTestData(cls):
+        """A school-owned ledger and a requester holding every finance key there.
+
+        The entity belongs to a school so ``document.school`` resolves and the
+        engine's SCHOOL-scoped approver resolution has a pool to draw from; only
+        that school's users may address it. The approver permission key is seeded
+        first so the RBAC grant FK resolves.
+        """
+        import io
+
+        from django.core.management import call_command
+
+        call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
+
+        cls.school = School.objects.create(name="Greenfield", slug="greenfield-jaw", code="GRNJAW", status="ACTIVE")
+        seed_currencies()
+        cls.entity = LedgerEntity.objects.create(
+            name="Greenfield Books", code="GRNBK", kind=LedgerEntity.Kind.TENANT,
+            tenant=cls.school.tenant,
+        )
+        seed_chart_of_accounts(cls.entity)
+        cls.year = FiscalYear.objects.create(
+            entity=cls.entity, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        cls.period = FiscalPeriod.objects.create(
+            entity=cls.entity, fiscal_year=cls.year, period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+            status=PeriodStatus.OPEN,
+        )
+        cls.requester = _school_finance_requester(cls.school, "req-jaw@test.com")
+
     def setUp(self):
         from django.contrib.auth import get_user_model
-        from rest_framework.test import APIClient
         from vs_rbac.models import (
             TenantRoleTemplate, TenantUserRoleAssignment, TenantRolePermission,
         )
-        from vs_tenants.models import Tenant
 
-        # The approver permission key must exist for the RBAC grant FK to resolve.
-        import io
-        from django.core.management import call_command
-        call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
+        from core.test_utils import TenantAPIClient
 
         self.User = get_user_model()
         self.School = School
         self.TenantRoleTemplate = TenantRoleTemplate
         self.TenantRolePermission = TenantRolePermission
         self.TenantUserRoleAssignment = TenantUserRoleAssignment
-
-        # A school-owned entity, so document.school resolves to a real school and the
-        # engine's SCHOOL-scoped approver resolution has a pool to draw from.
-        self.school = School.objects.create(name="Greenfield", slug="greenfield-jaw", code="GRNJAW", status="ACTIVE")
-        seed_currencies()
-        self.entity = LedgerEntity.objects.create(
-            name="Greenfield Books", code="GRNBK", kind=LedgerEntity.Kind.TENANT,
-            tenant=self.school.tenant,
-        )
-        seed_chart_of_accounts(self.entity)
-        self.year = FiscalYear.objects.create(
-            entity=self.entity, year=2026,
-            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
-        )
-        self.period = FiscalPeriod.objects.create(
-            entity=self.entity, fiscal_year=self.year, period_no=1, name="Jan 2026",
-            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
-            status=PeriodStatus.OPEN,
-        )
-
-        # Requester: a school user holding every finance key at this school
-        # (the entity is school-owned, so only its tenant may address it).
-        self.requester = _school_finance_requester(self.school, "req-jaw@test.com")
-        from core.test_utils import TenantAPIClient
         self.client = TenantAPIClient(user=self.requester)
 
     # --- fixtures ---------------------------------------------------------- #
@@ -8494,53 +8636,56 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     #: Approver resolution reads role assignments, not permission grants.
     APPROVE_ROLE = "refund-checker-role"
 
-    # Prepare or verify the setUp test path.
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        """A school-owned ledger, a customer, and a requester holding every finance key.
+
+        The entity belongs to a school so ``refund.school`` resolves and the
+        engine's SCHOOL-scoped approver resolution has a pool to draw from; only
+        that school's users may address it. The approver permission key is seeded
+        first so the RBAC grant FK resolves.
+        """
         import io
-        from django.contrib.auth import get_user_model
+
         from django.core.management import call_command
-        from rest_framework.test import APIClient
+
+        call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
+
+        cls.school = School.objects.create(name="Riverside", slug="riverside-raw", code="RVRAW", status="ACTIVE")
+        seed_currencies()
+        cls.entity = LedgerEntity.objects.create(
+            name="Riverside Books", code="RVRBK", kind=LedgerEntity.Kind.TENANT,
+            tenant=cls.school.tenant,
+        )
+        seed_chart_of_accounts(cls.entity)
+        cls.year = FiscalYear.objects.create(
+            entity=cls.entity, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        cls.period = FiscalPeriod.objects.create(
+            entity=cls.entity, fiscal_year=cls.year, period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+            status=PeriodStatus.OPEN,
+        )
+        cls.bank = Account.objects.get(entity=cls.entity, code="1100")
+        cls.customer = Customer.objects.create(
+            entity=cls.entity, code="CUSTR", name="Payer Ltd",
+            receivable_account=Account.objects.get(entity=cls.entity, code="1200"),
+        )
+        cls.requester = _school_finance_requester(cls.school, "req-raw@test.com")
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
         from vs_rbac.models import (
             TenantRoleTemplate, TenantUserRoleAssignment, TenantRolePermission,
         )
-        from vs_tenants.models import Tenant
 
-        # The approver permission key must exist for the RBAC grant FK to resolve.
-        call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
+        from core.test_utils import TenantAPIClient
 
         self.User = get_user_model()
         self.TenantRoleTemplate = TenantRoleTemplate
         self.TenantRolePermission = TenantRolePermission
         self.TenantUserRoleAssignment = TenantUserRoleAssignment
-
-        # A school-owned entity, so refund.school resolves to a real school and the
-        # engine's SCHOOL-scoped approver resolution has a pool to draw from.
-        self.school = School.objects.create(name="Riverside", slug="riverside-raw", code="RVRAW", status="ACTIVE")
-        seed_currencies()
-        self.entity = LedgerEntity.objects.create(
-            name="Riverside Books", code="RVRBK", kind=LedgerEntity.Kind.TENANT,
-            tenant=self.school.tenant,
-        )
-        seed_chart_of_accounts(self.entity)
-        self.year = FiscalYear.objects.create(
-            entity=self.entity, year=2026,
-            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
-        )
-        self.period = FiscalPeriod.objects.create(
-            entity=self.entity, fiscal_year=self.year, period_no=1, name="Jan 2026",
-            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
-            status=PeriodStatus.OPEN,
-        )
-        self.bank = Account.objects.get(entity=self.entity, code="1100")
-        self.customer = Customer.objects.create(
-            entity=self.entity, code="CUSTR", name="Payer Ltd",
-            receivable_account=Account.objects.get(entity=self.entity, code="1200"),
-        )
-
-        # Requester: a school user holding every finance key at this school
-        # (the entity is school-owned, so only its tenant may address it).
-        self.requester = _school_finance_requester(self.school, "req-raw@test.com")
-        from core.test_utils import TenantAPIClient
         self.client = TenantAPIClient(user=self.requester)
 
     # --- fixtures ---------------------------------------------------------- #
@@ -8815,50 +8960,53 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     #: Approver resolution reads role assignments, not permission grants.
     APPROVE_ROLE = "writeoff-checker-role"
 
-    # Prepare or verify the setUp test path.
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        """A school-owned ledger, a customer, and a requester holding every finance key.
+
+        The entity belongs to a school so ``write_off_request.school`` resolves to
+        a real school; only that school's users may address it.
+        """
         import io
-        from django.contrib.auth import get_user_model
+
         from django.core.management import call_command
-        from rest_framework.test import APIClient
+
+        call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
+
+        cls.school = School.objects.create(name="Lakeside", slug="lakeside-woa", code="LKSWO", status="ACTIVE")
+        seed_currencies()
+        cls.entity = LedgerEntity.objects.create(
+            name="Lakeside Books", code="LKSBK", kind=LedgerEntity.Kind.TENANT,
+            tenant=cls.school.tenant,
+        )
+        seed_chart_of_accounts(cls.entity)
+        cls.year = FiscalYear.objects.create(
+            entity=cls.entity, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        cls.period = FiscalPeriod.objects.create(
+            entity=cls.entity, fiscal_year=cls.year, period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+            status=PeriodStatus.OPEN,
+        )
+        cls.customer = Customer.objects.create(
+            entity=cls.entity, code="CUSTW", name="Debtor Ltd",
+            receivable_account=Account.objects.get(entity=cls.entity, code="1200"),
+        )
+        cls.requester = _school_finance_requester(cls.school, "req-woa@test.com")
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
         from vs_rbac.models import (
             TenantRoleTemplate, TenantUserRoleAssignment, TenantRolePermission,
         )
-        from vs_tenants.models import Tenant
 
-        call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
+        from core.test_utils import TenantAPIClient
 
         self.User = get_user_model()
         self.TenantRoleTemplate = TenantRoleTemplate
         self.TenantRolePermission = TenantRolePermission
         self.TenantUserRoleAssignment = TenantUserRoleAssignment
-
-        # School-owned entity, so write_off_request.school resolves to a real school.
-        self.school = School.objects.create(name="Lakeside", slug="lakeside-woa", code="LKSWO", status="ACTIVE")
-        seed_currencies()
-        self.entity = LedgerEntity.objects.create(
-            name="Lakeside Books", code="LKSBK", kind=LedgerEntity.Kind.TENANT,
-            tenant=self.school.tenant,
-        )
-        seed_chart_of_accounts(self.entity)
-        self.year = FiscalYear.objects.create(
-            entity=self.entity, year=2026,
-            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
-        )
-        self.period = FiscalPeriod.objects.create(
-            entity=self.entity, fiscal_year=self.year, period_no=1, name="Jan 2026",
-            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
-            status=PeriodStatus.OPEN,
-        )
-        self.customer = Customer.objects.create(
-            entity=self.entity, code="CUSTW", name="Debtor Ltd",
-            receivable_account=Account.objects.get(entity=self.entity, code="1200"),
-        )
-
-        # Requester: a school user holding every finance key at this school
-        # (the entity is school-owned, so only its tenant may address it).
-        self.requester = _school_finance_requester(self.school, "req-woa@test.com")
-        from core.test_utils import TenantAPIClient
         self.client = TenantAPIClient(user=self.requester)
 
     # --- fixtures ---------------------------------------------------------- #
@@ -9162,39 +9310,41 @@ class DunningNotificationTests(_GLFixtureMixin, TestCase):
     behave. Notifications are school-scoped, so these use a school-owned entity.
     """
 
-    # Prepare or verify the setUp test path.
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        """A school-owned ledger with notification event types, templates and channel settings seeded.
+
+        The test database starts without templates, so the ``get_or_create`` seed
+        picks up the extended overdue template.
+        """
         from vs_notifications.services.seed import (
             seed_event_types, seed_notification_templates, seed_school_settings,
         )
 
-        # Seed the notification event types + default templates (fresh test DB, so the
-        # get_or_create seed picks up the extended overdue template), then the school's
-        # channel settings.
         seed_event_types()
         seed_notification_templates()
 
-        self.school = School.objects.create(name="Maplewood", slug="maplewood-dnt", code="MPLDN", status="ACTIVE")
-        seed_school_settings(self.school)
+        cls.school = School.objects.create(name="Maplewood", slug="maplewood-dnt", code="MPLDN", status="ACTIVE")
+        seed_school_settings(cls.school)
 
         seed_currencies()
-        self.entity = LedgerEntity.objects.create(
+        cls.entity = LedgerEntity.objects.create(
             name="Maplewood Books", code="MPLBK", kind=LedgerEntity.Kind.TENANT,
-            tenant=self.school.tenant,
+            tenant=cls.school.tenant,
         )
-        seed_chart_of_accounts(self.entity)
-        self.year = FiscalYear.objects.create(
-            entity=self.entity, year=2026,
+        seed_chart_of_accounts(cls.entity)
+        cls.year = FiscalYear.objects.create(
+            entity=cls.entity, year=2026,
             start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
         )
-        self.period = FiscalPeriod.objects.create(
-            entity=self.entity, fiscal_year=self.year, period_no=1, name="Jan 2026",
+        cls.period = FiscalPeriod.objects.create(
+            entity=cls.entity, fiscal_year=cls.year, period_no=1, name="Jan 2026",
             start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
             status=PeriodStatus.OPEN,
         )
-        self.customer = Customer.objects.create(
-            entity=self.entity, code="CUSTD", name="Debtor Ltd",
-            receivable_account=Account.objects.get(entity=self.entity, code="1200"),
+        cls.customer = Customer.objects.create(
+            entity=cls.entity, code="CUSTD", name="Debtor Ltd",
+            receivable_account=Account.objects.get(entity=cls.entity, code="1200"),
             billing_email="debtor@example.com",
         )
 
@@ -9386,34 +9536,35 @@ class InvoiceNotificationTests(_GLFixtureMixin, TestCase):
     with or without a school) and must NEVER break the underlying money posting.
     """
 
-    # Prepare or verify the setUp test path.
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        """A school-owned ledger with notification event types, templates and channel settings seeded."""
         from vs_notifications.services.seed import (
             seed_event_types, seed_notification_templates, seed_school_settings,
         )
         seed_event_types()
         seed_notification_templates()
-        self.school = School.objects.create(name="Birchwood", slug="birchwood-int", code="BRCIN", status="ACTIVE")
-        seed_school_settings(self.school)
+        cls.school = School.objects.create(name="Birchwood", slug="birchwood-int", code="BRCIN", status="ACTIVE")
+        seed_school_settings(cls.school)
         seed_currencies()
-        self.entity = LedgerEntity.objects.create(
+        cls.entity = LedgerEntity.objects.create(
             name="Birchwood Books", code="BRCBK", kind=LedgerEntity.Kind.TENANT,
-            tenant=self.school.tenant,
+            tenant=cls.school.tenant,
         )
-        seed_chart_of_accounts(self.entity)
-        self.year = FiscalYear.objects.create(
-            entity=self.entity, year=2026,
+        seed_chart_of_accounts(cls.entity)
+        cls.year = FiscalYear.objects.create(
+            entity=cls.entity, year=2026,
             start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
         )
-        self.period = FiscalPeriod.objects.create(
-            entity=self.entity, fiscal_year=self.year, period_no=1, name="Jan 2026",
+        cls.period = FiscalPeriod.objects.create(
+            entity=cls.entity, fiscal_year=cls.year, period_no=1, name="Jan 2026",
             start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
             status=PeriodStatus.OPEN,
         )
-        self.bank = Account.objects.get(entity=self.entity, code="1100")
-        self.customer = Customer.objects.create(
-            entity=self.entity, code="CUSTI", name="Payer Ltd",
-            receivable_account=Account.objects.get(entity=self.entity, code="1200"),
+        cls.bank = Account.objects.get(entity=cls.entity, code="1100")
+        cls.customer = Customer.objects.create(
+            entity=cls.entity, code="CUSTI", name="Payer Ltd",
+            receivable_account=Account.objects.get(entity=cls.entity, code="1200"),
             billing_email="payer@example.com",
         )
 
@@ -9623,6 +9774,11 @@ class InvoiceNotificationTests(_GLFixtureMixin, TestCase):
 class YearEndCloseTests(_GLFixtureMixin, TestCase):
     """The formal fiscal-year close: zero P&L into Retained Earnings, seal the year."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ledger = cls.build_ledger()
+
     def _soft_close(self, period):
         period.status = PeriodStatus.SOFT_CLOSED
         period.save(update_fields=["status"])
@@ -9630,7 +9786,7 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
     def test_close_year_rolls_profit_to_retained_earnings(self):
         from vs_finance.close import close_fiscal_year
 
-        entity, jan = self.build_ledger()
+        entity, jan = self.ledger
         # Revenue ₦1,000 and expense ₦400 → net profit ₦600 (all in kobo).
         post_journal(self.make_entry(entity, jan, [("1100", 100000, 0), ("4100", 0, 100000)]))
         post_journal(self.make_entry(entity, jan, [("5200", 40000, 0), ("1100", 0, 40000)]))
@@ -9661,7 +9817,7 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
     def test_close_year_can_post_after_final_period_is_hard_closed(self):
         from vs_finance.close import close_fiscal_year
 
-        entity, jan = self.build_ledger()
+        entity, jan = self.ledger
         post_journal(self.make_entry(entity, jan, [("1100", 100000, 0), ("4100", 0, 100000)]))
         jan.status = PeriodStatus.CLOSED
         jan.save(update_fields=["status"])
@@ -9678,7 +9834,7 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
     def test_close_year_rolls_loss_to_retained_earnings(self):
         from vs_finance.close import close_fiscal_year
 
-        entity, jan = self.build_ledger()
+        entity, jan = self.ledger
         # Revenue ₦400, expense ₦1,000 → net loss ₦600.
         post_journal(self.make_entry(entity, jan, [("1100", 40000, 0), ("4100", 0, 40000)]))
         post_journal(self.make_entry(entity, jan, [("5200", 100000, 0), ("1100", 0, 100000)]))
@@ -9696,7 +9852,7 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         from vs_finance.close import close_fiscal_year
         from vs_finance.exceptions import PeriodCloseError
 
-        entity, jan = self.build_ledger()
+        entity, jan = self.ledger
         post_journal(self.make_entry(entity, jan, [("1100", 100000, 0), ("4100", 0, 100000)]))
         self._soft_close(jan)
         close_fiscal_year(entity, jan.fiscal_year)
@@ -9707,7 +9863,7 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         from vs_finance.close import close_fiscal_year
         from vs_finance.exceptions import PeriodCloseError
 
-        entity, jan = self.build_ledger()  # Jan left OPEN.
+        entity, jan = self.ledger  # Jan left OPEN.
         post_journal(self.make_entry(entity, jan, [("1100", 100000, 0), ("4100", 0, 100000)]))
         with self.assertRaises(PeriodCloseError):
             close_fiscal_year(entity, jan.fiscal_year)
@@ -9722,7 +9878,7 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
     def test_close_year_with_no_pl_activity_posts_no_journal(self):
         from vs_finance.close import close_fiscal_year
 
-        entity, jan = self.build_ledger()
+        entity, jan = self.ledger
         # Only a balance-sheet entry (capital injection) - no income/expense.
         post_journal(self.make_entry(entity, jan, [("1100", 500000, 0), ("3100", 0, 500000)]))
         self._soft_close(jan)
@@ -9771,11 +9927,17 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
     - so these cases cover the whole class, not just the refund that surfaced it.
     """
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ledger = cls._ledger()
+
     # --- fixtures ---------------------------------------------------------- #
 
-    def _ledger(self):
+    @classmethod
+    def _ledger(cls):
         """An AR ledger with two open periods, so backdating stays period-legal."""
-        entity, period = self.build_ledger()
+        entity, period = cls.build_ledger()
         FiscalPeriod.objects.create(
             entity=entity, fiscal_year=period.fiscal_year, period_no=2, name="Feb 2026",
             start_date=datetime.date(2026, 2, 1), end_date=datetime.date(2026, 2, 28),
@@ -9812,7 +9974,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
 
     def test_refund_cannot_be_dated_before_the_credit_arrives(self):
         """The reported bug, reduced: credit on 9 Feb, refund dated 1 Feb."""
-        entity, _period, customer = self._ledger()
+        entity, _period, customer = self.ledger
         self._receipt(entity, customer, amount=45000, date=datetime.date(2026, 2, 9))
 
         refund = self._draft_refund(
@@ -9829,7 +9991,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
 
     def test_refund_on_or_after_the_credit_date_still_posts(self):
         """The guard must not break the ordinary payout it is protecting."""
-        entity, _period, customer = self._ledger()
+        entity, _period, customer = self.ledger
         receipt = self._receipt(entity, customer, amount=45000, date=datetime.date(2026, 2, 9))
 
         refund = self._draft_refund(
@@ -9847,7 +10009,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
 
     def test_refund_records_which_credit_it_drained(self):
         """FIFO attribution: the older receipt is emptied before the newer is touched."""
-        entity, _period, customer = self._ledger()
+        entity, _period, customer = self.ledger
         first = self._receipt(entity, customer, amount=30000, date=datetime.date(2026, 1, 5))
         second = self._receipt(entity, customer, amount=30000, date=datetime.date(2026, 1, 20))
 
@@ -9867,7 +10029,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
 
     def test_refunded_credit_cannot_be_allocated_again(self):
         """Refunded cash has left 2140 and must not be reclassified back onto AR."""
-        entity, _period, customer = self._ledger()
+        entity, _period, customer = self.ledger
         receipt = self._receipt(entity, customer, amount=45000, date=datetime.date(2026, 1, 5))
         post_refund(self._draft_refund(
             entity, customer, amount=45000, date=datetime.date(2026, 1, 6)))
@@ -9881,7 +10043,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
         self.assertEqual(invoice.balance_due, 45000)
 
     def test_credit_availability_is_measured_as_at_a_date(self):
-        entity, _period, customer = self._ledger()
+        entity, _period, customer = self.ledger
         self._receipt(entity, customer, amount=45000, date=datetime.date(2026, 2, 9))
 
         self.assertEqual(
@@ -9893,7 +10055,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
     # --- write-offs and concessions ---------------------------------------- #
 
     def test_write_off_cannot_predate_its_invoice(self):
-        entity, _period, customer = self._ledger()
+        entity, _period, customer = self.ledger
         invoice = self.make_invoice(
             entity, customer, lines=[("4100", 1, 50000, None)],
             date=datetime.date(2026, 2, 10), due=datetime.date(2026, 2, 20))
@@ -9907,7 +10069,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
         self.assertEqual(invoice.balance_due, 50000)
 
     def test_write_off_on_the_invoice_date_is_allowed(self):
-        entity, _period, customer = self._ledger()
+        entity, _period, customer = self.ledger
         invoice = self.make_invoice(
             entity, customer, lines=[("4100", 1, 50000, None)],
             date=datetime.date(2026, 2, 10), due=datetime.date(2026, 2, 20))
@@ -9918,7 +10080,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
         self.assertEqual(invoice.balance_due, 0)
 
     def test_concession_cannot_predate_its_invoice(self):
-        entity, _period, customer = self._ledger()
+        entity, _period, customer = self.ledger
         invoice = self.make_invoice(
             entity, customer, lines=[("4100", 1, 50000, None)],
             date=datetime.date(2026, 2, 10), due=datetime.date(2026, 2, 20))
@@ -9939,7 +10101,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
     # --- liability settlements -------------------------------------------- #
 
     def test_expense_reimbursement_cannot_predate_the_claim(self):
-        entity, _period, _customer = self._ledger()
+        entity, _period, _customer = self.ledger
         bank = self._bank(entity)
         claim = ExpenseClaim.objects.create(
             entity=entity, claimant_name="Jane Staff",
@@ -9964,7 +10126,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
         self.assertEqual(claim.journal_id, accrual_journal_id)
 
     def test_expense_reimbursement_on_the_claim_date_is_allowed(self):
-        entity, _period, _customer = self._ledger()
+        entity, _period, _customer = self.ledger
         bank = self._bank(entity)
         claim = ExpenseClaim.objects.create(
             entity=entity, claimant_name="Jane Staff",
@@ -9984,7 +10146,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
         self.assertEqual(claim.payment_status, InvoicePaymentStatus.PAID)
 
     def test_payroll_disbursement_cannot_predate_the_run(self):
-        entity, _period, _customer = self._ledger()
+        entity, _period, _customer = self.ledger
         bank = self._bank(entity)
         run = PayrollRun.objects.create(
             entity=entity, pay_date=datetime.date(2026, 2, 10), period_label="Feb 2026",
@@ -10005,7 +10167,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
         self.assertIsNone(run.bank_account_id)
 
     def test_payroll_disbursement_on_the_run_date_is_allowed(self):
-        entity, _period, _customer = self._ledger()
+        entity, _period, _customer = self.ledger
         bank = self._bank(entity)
         run = PayrollRun.objects.create(
             entity=entity, pay_date=datetime.date(2026, 2, 10), period_label="Feb 2026",
@@ -10024,7 +10186,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
         self.assertIsNotNone(run.disbursement_journal_id)
 
     def test_tax_remittance_cannot_predate_the_filing(self):
-        entity, jan, _customer = self._ledger()
+        entity, jan, _customer = self.ledger
         bank = self._bank(entity)
         obligation = TaxObligation.objects.create(
             entity=entity, code="WHT-DATE", name="Withholding Tax",
@@ -10053,7 +10215,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
         self.assertEqual(filing.filed_at, datetime.date(2026, 2, 10))
 
     def test_tax_remittance_on_the_filing_date_is_allowed(self):
-        entity, jan, _customer = self._ledger()
+        entity, jan, _customer = self.ledger
         bank = self._bank(entity)
         obligation = TaxObligation.objects.create(
             entity=entity, code="WHT-DATE", name="Withholding Tax",
@@ -10083,7 +10245,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
 
     def test_receipt_does_not_settle_an_invoice_raised_later(self):
         """A prepayment: the cash stays in 2140 instead of crediting AR early."""
-        entity, _jan, customer = self._ledger()
+        entity, _jan, customer = self.ledger
         feb = FiscalPeriod.objects.get(entity=entity, period_no=2)
         invoice = self.make_invoice(
             entity, customer, lines=[("4100", 1, 50000, None)],
@@ -10109,7 +10271,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
 
     def test_explicit_allocation_to_a_later_invoice_is_refused(self):
         """Auto-allocation may skip silently; a target the user named may not be."""
-        entity, _period, customer = self._ledger()
+        entity, _period, customer = self.ledger
         invoice = self.make_invoice(
             entity, customer, lines=[("4100", 1, 50000, None)],
             date=datetime.date(2026, 2, 10), due=datetime.date(2026, 2, 20))
@@ -10127,7 +10289,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
 
     def test_applying_older_credit_to_a_newer_invoice_books_on_the_later_date(self):
         """Legitimate prepayment: allowed, but the reclass lands in the invoice's period."""
-        entity, jan, customer = self._ledger()
+        entity, jan, customer = self.ledger
         feb = FiscalPeriod.objects.get(entity=entity, period_no=2)
         receipt = self._receipt(entity, customer, amount=50000, date=datetime.date(2026, 1, 5))
 
@@ -10161,9 +10323,15 @@ class HistoricalARReportingTests(_ARFixtureMixin, TestCase):
     GL, so it disagreed with itself whenever a future-dated document existed.
     """
 
-    def _ledger(self):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.ledger = cls._ledger()
+
+    @classmethod
+    def _ledger(cls):
         """A ledger with Jan, Feb and Mar open, so movements can span months."""
-        entity, jan = self.build_ledger()
+        entity, jan = cls.build_ledger()
         for period_no, name, start, end in (
             (2, "Feb 2026", datetime.date(2026, 2, 1), datetime.date(2026, 2, 28)),
             (3, "Mar 2026", datetime.date(2026, 3, 1), datetime.date(2026, 3, 31)),
@@ -10200,7 +10368,7 @@ class HistoricalARReportingTests(_ARFixtureMixin, TestCase):
 
     def test_aging_at_a_past_date_still_shows_a_since_settled_invoice(self):
         """The headline case: paid in March must not erase what was owed in January."""
-        entity, customer = self._ledger()
+        entity, customer = self.ledger
         self._invoice(entity, customer, amount=500000,
                       date=datetime.date(2026, 1, 5), due=datetime.date(2026, 1, 15))
         self._receipt(entity, customer, amount=500000, date=datetime.date(2026, 3, 20))
@@ -10213,7 +10381,7 @@ class HistoricalARReportingTests(_ARFixtureMixin, TestCase):
         self.assertEqual(ar_aging(entity).total_outstanding, 0)
 
     def test_aging_at_a_past_date_excludes_a_later_invoice(self):
-        entity, customer = self._ledger()
+        entity, customer = self.ledger
         self._invoice(entity, customer, amount=100000, date=datetime.date(2026, 1, 5))
         self._invoice(entity, customer, amount=700000, date=datetime.date(2026, 3, 4))
 
@@ -10223,7 +10391,7 @@ class HistoricalARReportingTests(_ARFixtureMixin, TestCase):
 
     def test_the_same_cutoff_survives_a_later_settlement(self):
         """Run it, settle, run it again - an "as at" figure must be reproducible."""
-        entity, customer = self._ledger()
+        entity, customer = self.ledger
         self._invoice(entity, customer, amount=250000, date=datetime.date(2026, 1, 10))
         cutoff = datetime.date(2026, 1, 31)
         before = ar_aging(entity, as_of=cutoff).total_outstanding
@@ -10233,7 +10401,7 @@ class HistoricalARReportingTests(_ARFixtureMixin, TestCase):
         self.assertEqual(ar_aging(entity, as_of=cutoff).total_outstanding, before)
 
     def test_a_partly_settled_invoice_ages_by_what_was_owed_on_each_date(self):
-        entity, customer = self._ledger()
+        entity, customer = self.ledger
         self._invoice(entity, customer, amount=300000, date=datetime.date(2026, 1, 10))
         self._receipt(entity, customer, amount=120000, date=datetime.date(2026, 2, 10))
 
@@ -10243,7 +10411,7 @@ class HistoricalARReportingTests(_ARFixtureMixin, TestCase):
             ar_aging(entity, as_of=datetime.date(2026, 2, 28)).total_outstanding, 180000)
 
     def test_credit_received_later_does_not_net_down_an_earlier_date(self):
-        entity, customer = self._ledger()
+        entity, customer = self.ledger
         self._invoice(entity, customer, amount=200000, date=datetime.date(2026, 1, 10))
         # Standalone receipt with no open invoice to settle → sits as customer credit.
         self._receipt(entity, customer, amount=90000, date=datetime.date(2026, 3, 2),
@@ -10256,7 +10424,7 @@ class HistoricalARReportingTests(_ARFixtureMixin, TestCase):
     # --- reconciliation ------------------------------------------------------ #
 
     def test_reconciliation_balances_at_a_historical_cutoff(self):
-        entity, customer = self._ledger()
+        entity, customer = self.ledger
         self._invoice(entity, customer, amount=400000, date=datetime.date(2026, 1, 10))
         self._receipt(entity, customer, amount=150000, date=datetime.date(2026, 2, 5))
 
@@ -10266,7 +10434,7 @@ class HistoricalARReportingTests(_ARFixtureMixin, TestCase):
 
     def test_reconciliation_holds_with_a_document_dated_after_the_cutoff(self):
         """The trap that made a one-sided date filter worse than no filter at all."""
-        entity, customer = self._ledger()
+        entity, customer = self.ledger
         self._invoice(entity, customer, amount=400000, date=datetime.date(2026, 1, 10))
         self._invoice(entity, customer, amount=999000, date=datetime.date(2026, 3, 15))
 
@@ -10278,7 +10446,7 @@ class HistoricalARReportingTests(_ARFixtureMixin, TestCase):
 
     def test_statement_aging_matches_its_own_closing_balance(self):
         """The aging block used to contradict the running balance printed above it."""
-        entity, customer = self._ledger()
+        entity, customer = self.ledger
         self._invoice(entity, customer, amount=500000, date=datetime.date(2026, 1, 5))
         self._receipt(entity, customer, amount=500000, date=datetime.date(2026, 3, 20))
 
@@ -10290,7 +10458,7 @@ class HistoricalARReportingTests(_ARFixtureMixin, TestCase):
 
     def test_each_settlement_is_its_own_dated_row(self):
         """Two tranches against one invoice credit AR twice, so they are two rows."""
-        entity, customer = self._ledger()
+        entity, customer = self.ledger
         invoice = self._invoice(entity, customer, amount=300000,
                                 date=datetime.date(2026, 1, 10))
         first = self._receipt(entity, customer, amount=100000,
@@ -10310,7 +10478,7 @@ class HistoricalARReportingTests(_ARFixtureMixin, TestCase):
 
     def test_stored_credit_applied_later_is_dated_at_the_application(self):
         """Credit sits unapplied until it is used; the aging must show that gap."""
-        entity, customer = self._ledger()
+        entity, customer = self.ledger
         receipt = self._receipt(entity, customer, amount=500000,
                                 date=datetime.date(2026, 1, 5), auto_allocate=False)
         invoice = self._invoice(entity, customer, amount=500000,
@@ -10328,7 +10496,7 @@ class HistoricalARReportingTests(_ARFixtureMixin, TestCase):
     # --- dunning ------------------------------------------------------------- #
 
     def test_a_dunning_run_for_a_past_date_ignores_a_later_settlement(self):
-        entity, customer = self._ledger()
+        entity, customer = self.ledger
         self._invoice(entity, customer, amount=200000,
                       date=datetime.date(2026, 1, 5), due=datetime.date(2026, 1, 10))
         self._receipt(entity, customer, amount=200000, date=datetime.date(2026, 3, 20))
@@ -10340,7 +10508,7 @@ class HistoricalARReportingTests(_ARFixtureMixin, TestCase):
 
     def test_a_dunning_run_today_is_unaffected_by_the_rebuild(self):
         """The daily path must behave exactly as before."""
-        entity, customer = self._ledger()
+        entity, customer = self.ledger
         self._invoice(entity, customer, amount=200000,
                       date=datetime.date(2026, 1, 5), due=datetime.date(2026, 1, 10))
         self._receipt(entity, customer, amount=200000, date=datetime.date(2026, 3, 20))
@@ -10359,8 +10527,14 @@ class VoidedDocumentHistoryTests(_ARFixtureMixin, TestCase):
     later movement, and the statement has to show both.
     """
 
-    def _ledger(self):
-        entity, jan = self.build_ledger()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.history = cls._setup()
+
+    @classmethod
+    def _ledger(cls):
+        entity, jan = cls.build_ledger()
         FiscalPeriod.objects.create(
             entity=entity, fiscal_year=jan.fiscal_year, period_no=2, name="Feb 2026",
             start_date=datetime.date(2026, 2, 1), end_date=datetime.date(2026, 2, 28),
@@ -10372,12 +10546,13 @@ class VoidedDocumentHistoryTests(_ARFixtureMixin, TestCase):
         )
         return entity, customer
 
-    def _setup(self):
+    @classmethod
+    def _setup(cls):
         """A ₦5,000 invoice on 5 Jan, settled by a receipt on 20 Jan."""
         from vs_finance.reports import customer_account_movements  # noqa: F401
 
-        entity, customer = self._ledger()
-        invoice = self.make_invoice(
+        entity, customer = cls._ledger()
+        invoice = cls.make_invoice(
             entity, customer, lines=[("4100", 1, 500000, None)],
             date=datetime.date(2026, 1, 5), due=datetime.date(2026, 1, 5))
         post_invoice(invoice)
@@ -10392,7 +10567,7 @@ class VoidedDocumentHistoryTests(_ARFixtureMixin, TestCase):
         """The headline case: January's statement must not move when February voids."""
         from vs_finance.voids import void_payment
 
-        _entity, customer, _invoice, payment = self._setup()
+        _entity, customer, _invoice, payment = self.history
         january = customer_statement(customer, end_date=datetime.date(2026, 1, 31))
         before = january.closing_balance
         self.assertEqual(before, 0)  # invoice raised and settled within January
@@ -10408,7 +10583,7 @@ class VoidedDocumentHistoryTests(_ARFixtureMixin, TestCase):
         from vs_finance.reports import VOID_MOVEMENT_TYPE
         from vs_finance.voids import void_payment
 
-        _entity, customer, _invoice, payment = self._setup()
+        _entity, customer, _invoice, payment = self.history
         void_payment(payment, date=datetime.date(2026, 2, 10))
 
         february = customer_statement(customer, end_date=datetime.date(2026, 2, 28))
@@ -10425,7 +10600,7 @@ class VoidedDocumentHistoryTests(_ARFixtureMixin, TestCase):
         """Both sides of a fully-voided pair net out, at every date after the void."""
         from vs_finance.voids import void_invoice, void_payment
 
-        _entity, customer, invoice, payment = self._setup()
+        _entity, customer, invoice, payment = self.history
         void_payment(payment, date=datetime.date(2026, 2, 10))
         void_invoice(invoice, date=datetime.date(2026, 2, 10))
 
@@ -10437,7 +10612,7 @@ class VoidedDocumentHistoryTests(_ARFixtureMixin, TestCase):
         """History keeps it; the open-receivables view must not."""
         from vs_finance.voids import void_invoice, void_payment
 
-        entity, customer, invoice, payment = self._setup()
+        entity, customer, invoice, payment = self.history
         void_payment(payment, date=datetime.date(2026, 2, 10))
         void_invoice(invoice, date=datetime.date(2026, 2, 10))
 
@@ -10451,7 +10626,7 @@ class VoidedDocumentHistoryTests(_ARFixtureMixin, TestCase):
         from vs_finance.reports import customer_account_movements
         from vs_finance.voids import void_payment
 
-        _entity, customer, _invoice, payment = self._setup()
+        _entity, customer, _invoice, payment = self.history
         void_payment(payment, date=datetime.date(2026, 2, 10))
 
         # Five document queries (one per type) plus one bulk reversal lookup.
@@ -10662,43 +10837,51 @@ class AdjustmentThresholdGateTests(TestCase):
     goes through the endpoint or the gate, never the stage rows.
     """
 
-    # Prepare or verify the setUp test path.
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        """One school, its seeded books and ladder, and a requester, shared by the class.
+
+        Each test runs inside its own savepoint, so a document a test posts is
+        gone before the next one starts.
+        """
         import io
 
         from django.core.management import call_command
         from schools.vs_schools.models import School
 
-        from core.test_utils import TenantAPIClient
         from vs_finance.approvals import ensure_tenant_approval_templates
 
         call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
         seed_currencies()
 
-        self.school = School.objects.create(
+        cls.school = School.objects.create(
             name="Threshold High", slug="threshold-high", code="THRHI", status="ACTIVE")
-        self.entity = LedgerEntity.objects.create(
+        cls.entity = LedgerEntity.objects.create(
             name="Threshold Books", code="THRBK", kind=LedgerEntity.Kind.TENANT,
-            tenant=self.school.tenant,
+            tenant=cls.school.tenant,
         )
-        seed_chart_of_accounts(self.entity)
+        seed_chart_of_accounts(cls.entity)
         year = FiscalYear.objects.create(
-            entity=self.entity, year=2026,
+            entity=cls.entity, year=2026,
             start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
         )
         FiscalPeriod.objects.create(
-            entity=self.entity, fiscal_year=year, period_no=1, name="Jan 2026",
+            entity=cls.entity, fiscal_year=year, period_no=1, name="Jan 2026",
             start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
             status=PeriodStatus.OPEN,
         )
-        self.bank = Account.objects.get(entity=self.entity, code="1100")
-        self.customer = Customer.objects.create(
-            entity=self.entity, code="CUSTT", name="Thresholder Ltd",
-            receivable_account=Account.objects.get(entity=self.entity, code="1200"),
+        cls.bank = Account.objects.get(entity=cls.entity, code="1100")
+        cls.customer = Customer.objects.create(
+            entity=cls.entity, code="CUSTT", name="Thresholder Ltd",
+            receivable_account=Account.objects.get(entity=cls.entity, code="1200"),
         )
-        ensure_tenant_approval_templates(self.school.tenant)
+        ensure_tenant_approval_templates(cls.school.tenant)
 
-        self.requester = _school_finance_requester(self.school, "req-thr@test.com")
+        cls.requester = _school_finance_requester(cls.school, "req-thr@test.com")
+
+    def setUp(self):
+        from core.test_utils import TenantAPIClient
+
         self.client = TenantAPIClient(user=self.requester)
 
     # --- fixtures ---------------------------------------------------------- #
@@ -11053,13 +11236,17 @@ class AdjustmentBatchConfirmationTests(TestCase):
     held to the same confirmation and leaves the same hundred records.
     """
 
-    def setUp(self):
+    @classmethod
+    def setUpTestData(cls):
+        """Bright Star's books, a bursar holding every finance key, and two posted invoices.
+
+        The adjustment routes are published empty, which is approval-undecided.
+        """
         import io
 
         from django.core.management import call_command
         from schools.vs_schools.models import School
 
-        from core.test_utils import TenantAPIClient
         from vs_finance.approvals import ensure_tenant_approval_templates
 
         call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
@@ -11067,38 +11254,43 @@ class AdjustmentBatchConfirmationTests(TestCase):
 
         school = School.objects.create(
             name="Bright Star School", slug="bright-star-batch", code="BSBAT", status="ACTIVE")
-        self.entity = LedgerEntity.objects.create(
+        cls.entity = LedgerEntity.objects.create(
             name="Bright Star Books", code="BSBBK", kind=LedgerEntity.Kind.TENANT,
             tenant=school.tenant,
         )
-        seed_chart_of_accounts(self.entity)
+        seed_chart_of_accounts(cls.entity)
         year = FiscalYear.objects.create(
-            entity=self.entity, year=2026,
+            entity=cls.entity, year=2026,
             start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
         )
         FiscalPeriod.objects.create(
-            entity=self.entity, fiscal_year=year, period_no=1, name="Jan 2026",
+            entity=cls.entity, fiscal_year=year, period_no=1, name="Jan 2026",
             start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
             status=PeriodStatus.OPEN,
         )
-        self.customer = Customer.objects.create(
-            entity=self.entity, code="CBATCH", name="Okafor Family",
-            receivable_account=Account.objects.get(entity=self.entity, code="1200"),
+        cls.customer = Customer.objects.create(
+            entity=cls.entity, code="CBATCH", name="Okafor Family",
+            receivable_account=Account.objects.get(entity=cls.entity, code="1200"),
         )
         ensure_tenant_approval_templates(school.tenant, with_default_stages=False)
 
-        self.bursar = _school_finance_requester(school, "bursar-batch@test.com")
-        self.client = TenantAPIClient(user=self.bursar)
-        self.invoices = [self._invoice(amount) for amount in (70_000, 90_000)]
+        cls.bursar = _school_finance_requester(school, "bursar-batch@test.com")
+        cls.invoices = [cls._invoice(amount) for amount in (70_000, 90_000)]
 
-    def _invoice(self, amount):
+    def setUp(self):
+        from core.test_utils import TenantAPIClient
+
+        self.client = TenantAPIClient(user=self.bursar)
+
+    @classmethod
+    def _invoice(cls, amount):
         invoice = Invoice.objects.create(
-            entity=self.entity, customer=self.customer,
+            entity=cls.entity, customer=cls.customer,
             invoice_date=datetime.date(2026, 1, 10), due_date=datetime.date(2026, 1, 20),
         )
         InvoiceLine.objects.create(
             invoice=invoice, line_no=1, quantity=1, unit_price=amount,
-            revenue_account=Account.objects.get(entity=self.entity, code="4100"),
+            revenue_account=Account.objects.get(entity=cls.entity, code="4100"),
         )
         post_invoice(invoice)
         return invoice
@@ -11324,18 +11516,17 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
 
     @classmethod
     def setUpTestData(cls):
-        """Seed the registries these sends depend on, once for the whole class.
+        """Seed the registries these sends depend on, and the AR books, once for the class.
 
-        NotificationEventType rows now arrive with the database (vs_notifications
+        NotificationEventType rows arrive with the database (vs_notifications
         migration 0008), so nothing here has to install them. The templates do not:
         without them a send would render nothing, and these tests would exercise a
         swallowed failure rather than the real dispatch path. Permission rows carry
         module/resource/action FKs, so they come from the real seeder too rather than
         being invented row by row.
 
-        Class-level and stdout-captured deliberately: per-test seeding ran these
-        commands 13 times over and buried the results under hundreds of lines of
-        seeder output, which is exactly what makes a failing run unreadable.
+        The seeders' output is captured, since hundreds of lines of it would bury a
+        failing run's report.
         """
         super().setUpTestData()
         import io
@@ -11345,6 +11536,7 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
         quiet = io.StringIO()
         call_command("seed_notification_templates", verbosity=0, stdout=quiet)
         call_command("seed_finance_permissions", verbosity=0, stdout=quiet)
+        cls.ar_ledger = cls.build_ar()
 
     def _user(self, email, *, keys=None, tenant_slug="codex"):
         """A user holding exactly ``keys``, or a super admin when keys is None."""
@@ -11412,7 +11604,7 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
     def test_send_without_the_key_is_forbidden(self):
         from vs_finance.views_document_email import InvoiceEmailView
 
-        entity, _period, customer, _vat = self.build_ar()
+        entity, _period, customer, _vat = self.ar_ledger
         customer.billing_email = "payer@example.com"
         customer.save(update_fields=["billing_email"])
         invoice = self._posted_invoice(entity, customer)
@@ -11427,7 +11619,7 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
     def test_reading_the_preview_needs_the_send_key(self):
         from vs_finance.views_document_email import InvoiceEmailView
 
-        entity, _period, customer, _vat = self.build_ar()
+        entity, _period, customer, _vat = self.ar_ledger
         invoice = self._posted_invoice(entity, customer)
         user = self._user("view-only@test.com", keys=["finance.invoice.view"])
 
@@ -11440,7 +11632,7 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
     def test_another_entitys_invoice_is_not_reachable(self):
         from vs_finance.views_document_email import InvoiceEmailView
 
-        entity, _period, customer, _vat = self.build_ar()
+        entity, _period, customer, _vat = self.ar_ledger
         customer.billing_email = "payer@example.com"
         customer.save(update_fields=["billing_email"])
         invoice = self._posted_invoice(entity, customer)
@@ -11458,7 +11650,7 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
     def test_retry_needs_the_key_for_that_document_kind(self):
         from vs_finance.views_document_email import FinanceDeliveryRetryView
 
-        entity, _period, customer, _vat = self.build_ar()
+        entity, _period, customer, _vat = self.ar_ledger
         customer.billing_email = "payer@example.com"
         customer.save(update_fields=["billing_email"])
         invoice = self._posted_invoice(entity, customer)
@@ -11487,7 +11679,7 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
 
         from vs_finance.views_document_email import InvoiceEmailView
 
-        entity, _period, customer, _vat = self.build_ar()
+        entity, _period, customer, _vat = self.ar_ledger
         customer.billing_email = "payer@example.com"
         customer.save(update_fields=["billing_email"])
         invoice = self._posted_invoice(entity, customer)
@@ -11520,7 +11712,7 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
     def test_a_customer_without_a_billing_email_is_refused_with_a_reason(self):
         from vs_finance.views_document_email import InvoiceEmailView
 
-        entity, _period, customer, _vat = self.build_ar()
+        entity, _period, customer, _vat = self.ar_ledger
         customer.billing_email = ""
         customer.save(update_fields=["billing_email"])
         invoice = self._posted_invoice(entity, customer)
@@ -11535,7 +11727,7 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
     def test_preview_reports_why_it_cannot_send(self):
         from vs_finance.views_document_email import InvoiceEmailView
 
-        entity, _period, customer, _vat = self.build_ar()
+        entity, _period, customer, _vat = self.ar_ledger
         customer.billing_email = ""
         customer.save(update_fields=["billing_email"])
         invoice = self._posted_invoice(entity, customer)
@@ -11550,7 +11742,7 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
     def test_a_draft_invoice_cannot_be_emailed(self):
         from vs_finance.views_document_email import InvoiceEmailView
 
-        entity, _period, customer, _vat = self.build_ar()
+        entity, _period, customer, _vat = self.ar_ledger
         customer.billing_email = "payer@example.com"
         customer.save(update_fields=["billing_email"])
         draft = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
@@ -11568,7 +11760,7 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
 
         from vs_finance.views_document_email import CustomerStatementEmailView
 
-        entity, _period, customer, _vat = self.build_ar()
+        entity, _period, customer, _vat = self.ar_ledger
         customer.billing_email = "payer@example.com"
         customer.save(update_fields=["billing_email"])
         self._posted_invoice(entity, customer)
@@ -11595,7 +11787,7 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
 
         from vs_finance.views_document_email import FinanceDeliveryRetryView
 
-        entity, _period, customer, _vat = self.build_ar()
+        entity, _period, customer, _vat = self.ar_ledger
         customer.billing_email = "payer@example.com"
         customer.save(update_fields=["billing_email"])
         invoice = self._posted_invoice(entity, customer)
@@ -11623,7 +11815,7 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
     def test_only_a_failed_delivery_can_be_retried(self):
         from vs_finance.views_document_email import FinanceDeliveryRetryView
 
-        entity, _period, customer, _vat = self.build_ar()
+        entity, _period, customer, _vat = self.ar_ledger
         customer.billing_email = "payer@example.com"
         customer.save(update_fields=["billing_email"])
         invoice = self._posted_invoice(entity, customer)
@@ -11645,7 +11837,7 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
     def test_posting_an_invoice_records_the_automatic_copy(self):
         from django.test import override_settings
 
-        entity, _period, customer, _vat = self.build_ar()
+        entity, _period, customer, _vat = self.ar_ledger
         customer.billing_email = "payer@example.com"
         customer.save(update_fields=["billing_email"])
 
@@ -11661,7 +11853,7 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
     def test_a_delivery_failure_never_rolls_back_the_posting(self):
         from unittest.mock import patch
 
-        entity, _period, customer, _vat = self.build_ar()
+        entity, _period, customer, _vat = self.ar_ledger
         customer.billing_email = "payer@example.com"
         customer.save(update_fields=["billing_email"])
 

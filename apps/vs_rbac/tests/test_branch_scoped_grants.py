@@ -48,25 +48,26 @@ class _BranchGrantFixture(TestCase):
     branch and role so nothing can pass by matching on a name.
     """
 
-    def setUp(self):
-        self.school = make_school(slug="grant-multi", name="Multi Branch")
-        self.tenant = self.school.tenant
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="grant-multi", name="Multi Branch")
+        cls.tenant = cls.school.tenant
         # Yaba carries the main flag, not Ikeja: these tests suspend Ikeja to
         # withdraw a grant, and a school's *main* branch may not leave service
         # at all (Branch._assert_may_leave_service). Which branch is canonical
         # is irrelevant to every assertion below.
-        self.ikeja = make_branch(self.tenant, name="Ikeja", is_main=False)
-        self.lekki = make_branch(self.tenant, name="Lekki", is_main=False)
-        self.yaba = make_branch(self.tenant, name="Yaba", is_main=True)
+        cls.ikeja = make_branch(cls.tenant, name="Ikeja", is_main=False)
+        cls.lekki = make_branch(cls.tenant, name="Lekki", is_main=False)
+        cls.yaba = make_branch(cls.tenant, name="Yaba", is_main=True)
 
-        self.flat_school = make_school(slug="grant-flat", name="Single Site")
-        self.flat_tenant = self.flat_school.tenant
+        cls.flat_school = make_school(slug="grant-flat", name="Single Site")
+        cls.flat_tenant = cls.flat_school.tenant
 
-        self.rival_school = make_school(slug="grant-rival", name="Rival Group")
-        self.rival_tenant = self.rival_school.tenant
-        self.rival_ikeja = make_branch(self.rival_tenant, name="Ikeja", is_main=True)
+        cls.rival_school = make_school(slug="grant-rival", name="Rival Group")
+        cls.rival_tenant = cls.rival_school.tenant
+        cls.rival_ikeja = make_branch(cls.rival_tenant, name="Ikeja", is_main=True)
 
-        self.permission = make_permission(BURSAR_KEY)
+        cls.permission = make_permission(BURSAR_KEY)
 
     def role_granting(self, tenant, name):
         role = make_role(tenant, name=name)
@@ -303,16 +304,17 @@ class WholeTenantGrantReachTests(_BranchGrantFixture):
     rather than narrows.
     """
 
-    def setUp(self):
-        super().setUp()
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         # The third shape of school, and the commonest one: exactly one branch.
         # A multi-branch school proves the grant reaches every site; this one
         # proves the answer stays "the whole tenant" rather than becoming
         # "the id of the only branch", which would put a branch filter on every
         # query in a school that has no branch dimension to speak of.
-        self.solo_school = make_school(slug="grant-solo", name="One Site School")
-        self.solo_tenant = self.solo_school.tenant
-        self.solo_branch = make_branch(self.solo_tenant, name="Main", is_main=True)
+        cls.solo_school = make_school(slug="grant-solo", name="One Site School")
+        cls.solo_tenant = cls.solo_school.tenant
+        cls.solo_branch = make_branch(cls.solo_tenant, name="Main", is_main=True)
 
     def test_a_whole_tenant_holder_with_a_home_posting_sees_every_branch(self):
         """Mrs Adebayo: Finance Officer for the school, staff record says Ikeja."""
