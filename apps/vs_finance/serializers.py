@@ -1332,12 +1332,27 @@ class PayrollRunBranchSerializer(serializers.ModelSerializer):
 
 
 class PayrollRunSerializer(serializers.ModelSerializer):
-    """A payroll run. ``branch_shares`` is empty unless the run posted one journal
-    per branch, when it lists each branch's figures, journals and payment."""
+    """A payroll run, whole or as the reader's branches' part of it.
+
+    ``branch_shares`` is empty unless the run posted one journal per branch,
+    when it lists each branch's figures, journals and payment.
+
+    A central run (``branch_id`` null) covers every branch's staff. A
+    branch-bound reader reaches one only through their own branch's share, and
+    is shown that part alone: their branches' lines and shares, totals summed
+    from those lines, and a status that follows their shares, so Lekki's bursar
+    reads Lekki's January as paid once Lekki's staff are paid. Nothing another
+    branch is paid can be read back out of a figure. ``partial_view`` says the
+    response is such a part. The reader's reach is ``context["branch_ids"]``
+    (``None`` for the whole tenant); without it, the reach of
+    ``context["request"]``'s caller, so a response built without either key
+    is narrowed rather than whole.
+    """
 
     lines = PayrollLineSerializer(many=True, read_only=True)
     branch_shares = PayrollRunBranchSerializer(many=True, read_only=True)
     net_total_naira = serializers.SerializerMethodField()
+    partial_view = serializers.SerializerMethodField()
     # Which branch the run covers; null is a central run over every branch.
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     # Statutory liability accounts the run credited (set on post) - let the FE match the
@@ -1355,10 +1370,61 @@ class PayrollRunSerializer(serializers.ModelSerializer):
             "paye_payable_account", "paye_payable_account_id",
             "pension_payable_account", "pension_payable_account_id",
             "journal_id", "disbursement_journal_id", "branch_shares", "lines",
+            "partial_view",
         ]
 
     def get_net_total_naira(self, obj) -> str:
         return format_naira(obj.net_total)
+
+    def get_partial_view(self, obj) -> bool:
+        return self._part_reach(obj) is not None
+
+    def _part_reach(self, obj):
+        """The reader's branch ids when ``obj`` is a central run shown in part, else None."""
+        if obj.branch_id is not None:
+            return None
+        if "branch_ids" in self.context:
+            reach = self.context["branch_ids"]
+        else:
+            from vs_rbac.scoping import caller_branch_ids
+
+            request = self.context.get("request")
+            reach = caller_branch_ids(request) if request is not None else None
+        return None if reach is None else frozenset(reach)
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        reach = self._part_reach(obj)
+        if reach is None:
+            return data
+        return _narrow_run(data, obj, reach)
+
+
+def _narrow_run(data, obj, reach):
+    """``data`` for the central run ``obj`` cut down to the branches in ``reach``."""
+    from .constants import PayrollRunStatus
+
+    lines = [line for line in obj.lines.all() if line.branch_id in reach]
+    kept = {line.pk for line in lines}
+    shares = [share for share in obj.branch_shares.all() if share.branch_id in reach]
+    net = sum(line.net_amount for line in lines)
+    data.update({
+        "lines": [row for row in data["lines"] if row["id"] in kept],
+        "branch_shares": [row for row in data["branch_shares"] if row["branch_id"] in reach],
+        "gross_total": sum(line.gross_amount for line in lines),
+        "paye_total": sum(line.paye_amount for line in lines),
+        "pension_total": sum(line.pension_amount for line in lines),
+        "net_total": net,
+        "net_total_naira": format_naira(net),
+    })
+    statuses = {share.status for share in shares}
+    if statuses:
+        data["run_status"] = next(
+            (only for only in (PayrollRunStatus.PAID, PayrollRunStatus.CANCELLED)
+             if statuses == {only}),
+            PayrollRunStatus.POSTED,
+        )
+    return data
 
 
 class SalaryComponentSerializer(serializers.ModelSerializer):
