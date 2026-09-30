@@ -110,3 +110,42 @@ class PaymentsPickersOfferOnlyWhatTheClerkMayUseTests(_PickerFixture):
         self.assertEqual(rows["VIKJ"]["branch_id"], self.ikeja.pk)
         self.assertIsNone(rows["VALL"]["branch_id"])
         self.assertEqual(set(self.vendor_rows(clerk, "&own=true")), {"VIKJ"})
+
+
+class ACustomerNamesItsOwnBranchTests(_PickerFixture):
+    """A reader covering several branches files a new customer under one of hers."""
+
+    def create(self, client, **body):
+        return client.post(f"/v1/finance/customers/?entity={self.books.code}", {
+            "name": "Parent New", "billing_email": "parent@example.com",
+            "billing_phone": "08030000000", **body,
+        }, format="json")
+
+    def test_a_two_branch_reader_names_one_of_her_branches(self):
+        both = self.client_for("cust-both@corona.test", "finance.customer.create",
+                               branches=[self.ikeja, self.lekki])
+
+        response = self.create(both, branch=self.lekki.pk)
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(Customer.objects.get(code=response.data["data"]["code"]).branch_id, self.lekki.pk)
+
+    def test_she_may_not_name_a_branch_she_does_not_work_in(self):
+        both = self.client_for("cust-both2@corona.test", "finance.customer.create",
+                               branches=[self.ikeja, self.lekki])
+
+        self.assertEqual(self.create(both, branch=self.yaba.pk).status_code, 403)
+
+    def test_naming_none_asks_her_which(self):
+        both = self.client_for("cust-both3@corona.test", "finance.customer.create",
+                               branches=[self.ikeja, self.lekki])
+
+        self.assertEqual(self.create(both).status_code, 400)
+
+    def test_a_whole_school_reader_may_leave_it_shared(self):
+        hq = self.client_for("cust-hq@corona.test", "finance.customer.create")
+
+        response = self.create(hq)
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertIsNone(Customer.objects.get(code=response.data["data"]["code"]).branch_id)
