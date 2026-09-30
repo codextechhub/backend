@@ -232,7 +232,7 @@ class RfqAmendmentCreateView(_ProcBase):
         if "deadline" in request.data:
             rfq.response_due_at = serializers.DateTimeField().run_validation(request.data.get("deadline"))
             rfq.response_due_date = rfq.response_due_at.astimezone(
-                vendor_portal._entity_timezone(entity),
+                vendor_portal._rfq_zone(rfq),
             ).date()
         rfq.save(update_fields=["version", "response_due_at", "response_due_date", "updated_at"])
         if "lines" in request.data:
