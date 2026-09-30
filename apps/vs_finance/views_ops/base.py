@@ -75,18 +75,12 @@ def _raised_branch(request, entity, body, *, field="branch",
 
 
 def _inherited_branch_id(request, *sources, field="branch"):
-    """:func:`vs_rbac.scoping.inherited_branch_id`, in finance's inclusive reading.
+    """:func:`vs_rbac.scoping.inherited_branch_id`, for the transactions a row continues.
 
-    ``include_shared=True`` is spelled out rather than left to the shared default
-    (which is procurement's exclusive reading): a source with no branch is shared
-    across the school, so a branch-pinned caller may continue its chain, and the
-    row she creates stays school-wide because the chain decides, not the caller.
-    Without it, an Ikeja bursar could see a school-wide customer in her list and
-    then be refused when she tried to record that customer's receipt.
+    A branch-bound caller may continue only a source of their own branches, and
+    sources from two branches are a 400.
     """
-    return _rbac_inherited_branch_id(
-        request, *sources, field=field, include_shared=True,
-    )
+    return _rbac_inherited_branch_id(request, *sources, field=field)
 
 
 # --------------------------------------------------------------------------- #

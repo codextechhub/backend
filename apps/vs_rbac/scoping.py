@@ -28,8 +28,9 @@ Read in order, first match wins::
 
 The last line applies to whichever arm answered. Harbour Primary has one
 branch, Main, and its bursar holds her role pinned to Main. Every row Harbour
-has is a Main row or a shared one, so the pin says nothing a whole-tenant grant
-would not: she reads the tenant-level figures, changes shared records and
+has is a Main row, a shared record, or a transaction still waiting to be given
+its branch, and all of them are Main's, so the pin says nothing a whole-tenant
+grant would not: she reads the tenant-level figures, changes shared records and
 grants roles across the tenant exactly as an unpinned bursar does. The day
 Harbour opens a second branch the same grant narrows to Main again, on the next
 request, because a shared row then binds a branch she does not work in. A
@@ -467,22 +468,31 @@ def branch_reach_payload(user, tenant=None) -> dict:
 # --------------------------------------------------------------------------- #
 #
 # :func:`visible_branch_ids` answers "which branches?" and stops there. Every
-# caller then has to render that answer against its own model, and rendering it
-# is where the two ways of getting it wrong live:
+# caller then has to render that answer against its own model, and a NULL branch
+# means one of two different things depending on what the row is:
 #
-#   * forgetting to render it at all - the gate holds, the narrowing never
-#     happens, and a "Bursar at Ikeja" reads Lekki's and Yaba's rows;
-#   * rendering it as ``branch_id IN (...)`` and nothing else - which silently
-#     drops every row whose branch is NULL.
+#   * **Shared records and configuration** - a customer, a vendor, a fee
+#     structure, the chart of accounts, a catalogue item, a cost centre, a role
+#     grant, a workflow template, a notification setting. A NULL branch means
+#     *every branch*: the school publishes the row once and each branch uses it.
+#     Hiding it from a branch-pinned caller looks like missing data rather than a
+#     permission error, so this reading is inclusive, and it is the default of
+#     :class:`BranchScope`, :func:`branch_q` and :func:`branch_visible`.
+#   * **Transactions** - every document (invoice, receipt, credit note, refund,
+#     journal, payroll run, requisition, order, vendor bill, vendor payment) and
+#     the containers that hold a branch's money or stock (a bank account, a
+#     petty-cash fund, a store). There is no school-wide transaction: every
+#     school has at least one real branch and every transaction names one. A
+#     NULL branch on a transaction is a row that has not been given its branch
+#     yet, not a scope of its own, so a branch-pinned caller never sees it and a
+#     whole-school caller does, and can give it one. This reading is exclusive,
+#     and it is spelled once, in :func:`transaction_branch_scope` and its
+#     siblings, so no call site chooses it for itself.
 #
-# The second is the dangerous one, because a NULL branch does not mean "this row
-# has no branch yet". It means **shared across the whole tenant**: a fee
-# structure the school publishes for every branch, a vendor every branch buys
-# from, a journal that belongs to the books rather than to a site. Hiding those
-# from a branch-pinned caller looks like missing data, not like a permission
-# error, so nobody reports it as a security bug and nobody reports it as a bug
-# at all. Hence :class:`BranchScope`, whose default is inclusive, and whose
-# exclusive form has to be asked for by name.
+# Getting a transaction wrong in the inclusive direction is a leak: Mrs Adeyemi
+# works at Ikeja only, and an unbranched refund of 250,000 raised before the
+# school opened Lekki would sit in her list with no way to tell whose it is.
+# Hence the exclusive transaction helpers, which every transaction read uses.
 
 
 class BranchScope:
@@ -500,19 +510,15 @@ class BranchScope:
 
     ``True`` (the default, "inclusive")
         A row with no branch is shared across the tenant and stays visible to a
-        branch-pinned caller. This is what the column means for ledger entities,
-        academic structure, master data and anything a school publishes once for
-        every branch, and it is the right default: getting it wrong in this
-        direction only ever shows a caller something they were entitled to
-        anyway.
+        branch-pinned caller. This is what the column means for master data,
+        academic structure and configuration: anything a school publishes once
+        for every branch.
 
     ``False`` ("exclusive")
-        Only the caller's own branches. Correct where a NULL branch means "the
-        institution as a whole" and is a scope in its own right that a
-        site-pinned person is deliberately not in - which is how
-        :mod:`vs_procurement` reads it for spend documents, and how ``M11``
-        specifies ``Student.branch`` (declared non-null, so the question cannot
-        arise there at all).
+        Only the caller's own branches. The reading for every transaction, where
+        a NULL branch is a row not yet given its branch rather than a scope. A
+        transaction read does not pass this itself; it asks
+        :func:`transaction_branch_scope`, which does.
 
     A whole-tenant caller, including one pinned to a tenant's only branch, is
     not narrowed in either mode, and :meth:`filter` then
@@ -689,8 +695,43 @@ def branch_visible(request, qs, prefix: str = "", *, field: str = "branch",
     )
 
 
+def transaction_branch_scope_for_user(user, *, tenant=None) -> BranchScope:
+    """The exclusive narrowing every transaction read uses, for code holding a user.
+
+    A branch-bound caller sees exactly their own branches' transactions and none
+    without a branch; a whole-tenant caller, including one pinned to a tenant's
+    only branch, is not narrowed and so still reaches an unbranched row to give it
+    its branch. See the section comment above for why a transaction's NULL branch
+    is not shared.
+    """
+    return branch_scope_for_user(user, include_shared=False, tenant=tenant)
+
+
+def transaction_branch_scope(request) -> BranchScope:
+    """:func:`transaction_branch_scope_for_user` for the caller behind *request*."""
+    return transaction_branch_scope_for_user(getattr(request, "user", None))
+
+
+def transaction_branch_q(request, prefix: str = "", *, field: str = "branch"):
+    """The caller's transaction narrowing as a ``Q`` (see :func:`transaction_branch_scope`).
+
+    Renders to an empty ``Q()`` for a whole-tenant caller, like :func:`branch_q`.
+    """
+    return transaction_branch_scope(request).q(prefix, field=field)
+
+
+def transaction_branch_q_for_user(user, prefix: str = "", *, field: str = "branch"):
+    """:func:`transaction_branch_q` for code that holds a user rather than a request."""
+    return transaction_branch_scope_for_user(user).q(prefix, field=field)
+
+
+def transaction_branch_visible(request, qs, prefix: str = "", *, field: str = "branch"):
+    """Narrow a queryset of transactions to the caller behind *request*."""
+    return transaction_branch_scope(request).filter(qs, prefix, field=field)
+
+
 # --------------------------------------------------------------------------- #
-# Reading is inclusive; changing is not                                       #
+# Reading a shared record is inclusive; changing it is not                    #
 # --------------------------------------------------------------------------- #
 #
 # A branch-bound caller reads their own branches' rows AND the shared ones,
@@ -698,6 +739,8 @@ def branch_visible(request, qs, prefix: str = "", *, field: str = "branch",
 # They may not change a shared row: every other branch relies on it, and a
 # correction made from Ikeja reaches Lekki's screens with nobody at Lekki
 # knowing. The rule below is that asymmetry, in one place, for every module.
+# Transactions are not shared rows and never reach this question: a branch-bound
+# caller cannot read one without a branch in the first place.
 
 #: "The caller's scope has not been looked up yet", distinct from
 #: :data:`WHOLE_TENANT`, which is itself ``None``.
@@ -827,18 +870,18 @@ class WholeTenantWriteMixin:
 # ways a row can get one:
 #
 #   * it **starts** a chain, and captures the branch the person creating it works
-#     in (:func:`raised_branch`);
+#     in (:func:`raised_transaction_branch` for a transaction,
+#     :func:`raised_branch` for a shared record);
 #   * it **continues** a chain, and takes the branch from the row it continues and
 #     from nothing else (:func:`inherited_branch_id`).
 #
-# Both were procurement's, written per document type and then generalised there;
-# they now live here because finance needs the identical rules and a second copy
-# of "which branch does this belong to" is how two modules come to disagree about
-# the same school. Procurement keeps its local names as one-line adapters over
-# these, so there is one implementation of each rule on the platform.
+# One implementation of each rule serves every module, so finance and
+# procurement cannot come to disagree about which branch a row belongs to; each
+# app keeps its local names as one-line adapters over these.
 #
-# An absent branch remains a real, valid answer everywhere below - the row belongs
-# to the tenant as a whole - and is never coerced or rejected.
+# The two halves differ on an absent branch. A shared record may be raised with
+# none, which means every branch. A transaction may not: it is always raised for
+# a real branch, and a chain carries exactly one branch from end to end.
 
 
 def sole_caller_branch_id(request) -> Optional[int]:
@@ -852,8 +895,9 @@ def sole_caller_branch_id(request) -> Optional[int]:
     A caller in a tenant with one branch works in that branch whatever their
     grants say, so it is the answer for them even though their reach is the
     whole tenant. :func:`raised_branch` does not default from this for a
-    whole-tenant caller: it files an unnamed row as the tenant's, exactly as
-    it does for an unpinned one.
+    whole-tenant caller, because a shared record raised without a branch belongs
+    to every branch; :func:`raised_transaction_branch` does, because a
+    transaction always has one.
     """
     ids = caller_branch_ids(request)
     if ids is None:
@@ -898,37 +942,31 @@ def resolve_branch(tenant, ref, field: str = "branch"):
 
 def raised_branch(request, tenant, body, *, field: str = "branch",
                   shared_when_ambiguous: bool = False):
-    """The branch a newly created row belongs to, from the caller and the body.
+    """The branch a newly created shared record belongs to, from the caller and the body.
+
+    For a record where no branch is a first-class answer meaning every branch: a
+    customer, a vendor, a fee structure. A transaction asks
+    :func:`raised_transaction_branch` instead, which answers ``None`` only for a
+    tenant with no branch at all.
 
     A caller bound to one branch always creates for that branch; naming a
     different one is refused rather than silently retargeted. A caller who is not
-    bound at all may name any branch belonging to *tenant*, or leave it out -
-    leaving it out means the row belongs to the tenant as a whole and is a valid
-    answer, not missing data. A caller pinned to a tenant's only branch is not
-    bound (see the module docstring), so at Harbour Primary the pinned bursar
-    and the unpinned one file the same row the same way: tenant-wide when they
-    name no branch, Main when they name it.
+    bound at all may name any branch belonging to *tenant*, or leave it out,
+    which files the record for every branch. A caller pinned to a tenant's only
+    branch is not bound (see the module docstring), so at Harbour Primary the
+    pinned bursar and the unpinned one file the same record the same way.
 
     ``shared_when_ambiguous`` decides the one case in between: a caller bound to
     **several** branches who names none.
 
     ``False`` (the default)
-        Ask them. There is no obvious default, and guessing one is worse than a
-        400: a bursar covering Ikeja and Lekki who raises an invoice has raised
-        it for one of them, and filing it as tenant-wide would leave it visible
-        to every branch for the life of the row, with nothing later in the chain
-        able to narrow it again. Naming a branch outside their own set is refused
+        Ask them with a 400. Naming a branch outside their own set is refused
         exactly as a single-branch caller's would be.
 
     ``True``
-        File it as shared across the tenant. Correct only where tenant-wide is a
-        first-class answer for that kind of row rather than an accident - a fee
-        template a school publishes once for every branch, the bank account the
-        whole school pays into - and where forcing a choice would make a
-        genuinely shared thing invisible to every branch but one.
-
-    The distinction is about the *row*, not the caller, so it is a property of the
-    call site and is spelled out there.
+        File it for every branch. Correct where forcing a choice would make a
+        genuinely shared record, such as a fee template a school publishes once,
+        invisible to every branch but one.
     """
     from rest_framework.exceptions import PermissionDenied, ValidationError
 
@@ -960,41 +998,111 @@ def raised_branch(request, tenant, body, *, field: str = "branch",
     return chosen
 
 
-def inherited_branch_id(request, *sources, field: str = "branch",
-                        include_shared: bool = False) -> Optional[int]:
-    """The branch id a downstream row takes from the source(s) it continues.
+def raised_transaction_branch(request, tenant, body, *, field: str = "branch"):
+    """The branch a newly raised transaction belongs to, for every school.
+
+    A transaction always names a real branch. Who decides it:
+
+    * a caller bound to one branch raises for that branch, and naming another is
+      refused (403), as :func:`raised_branch` refuses it;
+    * a caller bound to several must name one of theirs (400 when they name none);
+    * a whole-tenant caller may name any branch of *tenant*. Naming none is
+      answered by the tenant's only branch when it has exactly one, so Harbour
+      Primary's bursar is never asked which branch she means, and is a 400 when
+      it has several: Mr Bello, the school-wide bursar at a school with Ikeja
+      and Lekki, raising a refund without saying whose, has raised it for one of
+      them, and filing it under neither would hide it from both branches' staff.
+
+    The one ``None`` is a tenant with no branch at all, which no school is: the
+    platform's own books, kept by the console, have no branch to name.
+    """
+    from rest_framework.exceptions import ValidationError
+
+    from vs_tenants.models import Branch
+
+    raw = body.get(field) if hasattr(body, "get") else None
+    if caller_branch_ids(request) is WHOLE_TENANT and raw in (None, ""):
+        ids = list(Branch.all_objects.filter(tenant=tenant).values_list("pk", flat=True)[:2])
+        if not ids:
+            return None
+        if len(ids) > 1:
+            raise ValidationError(
+                {field: "Name the branch this is for; the school has more than one."},
+            )
+        return resolve_branch(tenant, ids[0], field)
+    return raised_branch(request, tenant, body, field=field)
+
+
+def same_transaction_branch(tenant, *branch_ids) -> bool:
+    """Whether transactions carrying *branch_ids* (ids or Branch rows) belong to one branch.
+
+    Equal ids always do. A transaction not yet given a branch belongs, at a tenant
+    with exactly one branch, to that branch, because it can belong to no other:
+    Harbour Primary's receipt raised for Main settles its invoice raised before
+    invoices carried a branch, and is paid out of its bank account from the same
+    time. At a tenant with several, an unbranched transaction matches only another
+    unbranched one, so nothing of Ikeja's is settled against, or paid from, a row
+    whose branch nobody has decided. *tenant* may be a tenant or its id, and is
+    read only when an unbranched id meets a branched one.
+    """
+    ids = {getattr(b, "pk", b) for b in branch_ids}
+    if len(ids) <= 1:
+        return True
+    if None not in ids:
+        return False
+    only = only_branch_id(tenant)
+    return len({only if b is None else b for b in ids}) == 1
+
+
+def transaction_branch_match_q(tenant, branch_id, prefix: str = "", *, field: str = "branch"):
+    """A ``Q`` for the transactions :func:`same_transaction_branch` pairs with *branch_id*."""
+    from django.db.models import Q
+
+    branch_id = getattr(branch_id, "pk", branch_id)
+    unbranched = Q(**{f"{prefix}{field}__isnull": True})
+    only = only_branch_id(tenant)
+    if branch_id is None:
+        return unbranched if only is None else unbranched | Q(**{f"{prefix}{field}_id": only})
+    own = Q(**{f"{prefix}{field}_id": branch_id})
+    return own | unbranched if only == branch_id else own
+
+
+def inherited_branch_id(request, *sources, field: str = "branch") -> Optional[int]:
+    """The branch id a downstream transaction takes from the source(s) it continues.
 
     The chain decides, not the request: once a source row exists its branch is the
-    answer, and no request body, header or query parameter may override it.
-    Sources that disagree (a payment settling invoices from two branches) resolve
-    to the tenant as a whole. The only check left is that the caller is entitled to
-    work in the resulting scope at all - a branch-bound user may not continue
-    another branch's chain.
+    answer, and no request body, header or query parameter may override it. A
+    chain carries one branch, so sources from two branches are refused with a
+    400 rather than resolved to either: a payment settling one Ikeja bill and one
+    Lekki bill would be booked to one branch while clearing the other's debt.
 
-    ``include_shared`` is the same fork :class:`BranchScope` draws, and it must be
-    the same answer in both halves or a caller can see a row they may not build on:
+    The only check left is that the caller is entitled to work in the resulting
+    branch: a branch-bound caller may not continue another branch's chain, nor a
+    source that has not yet been given a branch, which they cannot read either
+    (:func:`transaction_branch_scope`). A whole-tenant caller continuing an
+    unbranched source gets ``None``, so the new row joins the one it continues
+    and both are given their branch together.
 
-    ``False`` (the default)
-        A source with no branch belongs to the institution as a whole, which is a
-        scope of its own that a branch-pinned caller is not in, so they may not
-        continue it either. This is :mod:`vs_procurement`'s reading of spend.
+    Sources are compared by :func:`same_transaction_branch`, so at a tenant with
+    one branch a source raised before transactions carried a branch continues
+    into that branch.
 
-    ``True``
-        A source with no branch is shared across the tenant, so a branch-pinned
-        caller may continue it - and the row they create stays tenant-wide, because
-        the chain, not the caller, decides. This is the platform reading, and the
-        one :mod:`vs_finance` takes: an Ikeja bursar can see a school-wide customer
-        in her list, so she must be able to record that customer's receipt.
+    A source is a row whose branch the new row must take. A shared record with no
+    branch (a customer every branch bills) has none to give, so a document raised
+    against it alone takes its branch from :func:`raised_transaction_branch`.
     """
-    from rest_framework.exceptions import PermissionDenied
+    from rest_framework.exceptions import PermissionDenied, ValidationError
 
     known = {getattr(s, f"{field}_id") for s in sources if s is not None}
-    branch_id = known.pop() if len(known) == 1 else None
+    if not same_transaction_branch(getattr(request.user, "tenant_id", None), *known):
+        raise ValidationError({field: (
+            "These documents belong to different branches. "
+            "Handle each branch's documents separately."
+        )})
+    branch_id = next((b for b in known if b is not None), None)
     ids = caller_branch_ids(request)
     if ids is None:
         return branch_id
-    if branch_id is None and include_shared:
-        return None
     if branch_id not in ids:
         raise PermissionDenied("This document belongs to another branch.")
     return branch_id
