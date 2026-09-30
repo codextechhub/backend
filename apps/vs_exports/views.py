@@ -39,6 +39,7 @@ from .constants import (
     AuditAction,
     ExportFormat,
     DownloadOutcome,
+    FileAccessKind,
     ExportPermission,
     FORMAT_MEDIA,
     RunTrigger,
@@ -818,6 +819,9 @@ class FileDownloadView(_ExportBase):
     rbac_permission = ExportPermission.FILE_DOWNLOAD
 
     def get(self, request, pk):
+        return self.serve(request, pk, kind=FileAccessKind.DOWNLOAD)
+
+    def serve(self, request, pk, *, kind):
         run_ids = self.visible_runs().values_list("pk", flat=True)
         file = ExportFile.objects.filter(
             pk=pk, run_id__in=run_ids,
@@ -828,25 +832,38 @@ class FileDownloadView(_ExportBase):
         ip = get_client_ip(request) or ""
         allowed, reason = services.authorise_download(file, request.user, self.tenant)
         if not allowed:
-            services.log_download(
-                file, request.user, outcome=DownloadOutcome.REFUSED, reason=reason, ip=ip,
+            services.log_file_access(
+                file, request.user, kind=kind, outcome=DownloadOutcome.REFUSED,
+                reason=reason, ip=ip,
             )
             raise PermissionDenied(_refusal_message(reason, file))
 
-        services.log_download(
-            file, request.user, outcome=DownloadOutcome.ALLOWED, ip=ip,
+        services.log_file_access(
+            file, request.user, kind=kind, outcome=DownloadOutcome.ALLOWED, ip=ip,
         )
         acknowledge_record(
             request.user, family=RecordFamily.EXPORT_RUN, value=file.run_id,
         )
+        if kind == FileAccessKind.VIEW and request.query_params.get("details") == "1":
+            return success_response("File available.", {
+                "name": file.name, "format": file.format, "size_bytes": file.size_bytes,
+            })
         from django.core.files.storage import default_storage
 
         with default_storage.open(file.storage_name, "rb") as handle:
             body = handle.read()
         content_type = FORMAT_MEDIA.get(file.format, ("bin", "application/octet-stream"))[1]
         response = HttpResponse(body, content_type=content_type)
-        response["Content-Disposition"] = f'attachment; filename="{file.name}"'
+        disposition = "inline" if kind == FileAccessKind.VIEW else "attachment"
+        response["Content-Disposition"] = f'{disposition}; filename="{file.name}"'
         return response
+
+
+class FilePreviewView(FileDownloadView):
+    """Read an available export under the download permission and log a view."""
+
+    def get(self, request, pk):
+        return self.serve(request, pk, kind=FileAccessKind.VIEW)
 
 
 # Turn a refusal reason into the sentence the downloader reads.
@@ -873,7 +890,7 @@ def _refusal_message(reason, file) -> str:
 
 
 class FileDownloadLogView(_ExportBase):
-    """``GET /v1/exports/files/<pk>/downloads/`` - who took it, and who was refused."""
+    """``GET /v1/exports/files/<pk>/downloads/`` - views and downloads."""
 
     rbac_permission = ExportPermission.RUN_VIEW
 

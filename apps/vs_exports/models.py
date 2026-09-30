@@ -32,6 +32,7 @@ from django.utils import timezone
 from .constants import (
     DownloadOutcome,
     DownloadRefusal,
+    FileAccessKind,
     ExportFormat,
     FailureCode,
     FILE_RETENTION_DAYS,
@@ -539,7 +540,7 @@ class ExportFile(TimeStampedModel):
 
 
 class ExportDownload(models.Model):
-    """Every download attempt on a file - allowed and refused alike.
+    """Every file view or download attempt, allowed and refused alike.
 
     Refusals are logged because "who tried and was told no" is exactly the question a
     compliance review asks, and a refusal that leaves no trace cannot be answered.
@@ -555,6 +556,9 @@ class ExportDownload(models.Model):
     at = models.DateTimeField(auto_now_add=True)
     ip_address = models.CharField(max_length=45, blank=True, default="")
     outcome = models.CharField(max_length=8, choices=DownloadOutcome.choices)
+    access_kind = models.CharField(
+        max_length=8, choices=FileAccessKind.choices, default=FileAccessKind.DOWNLOAD,
+    )
     refusal_reason = models.CharField(
         max_length=24, choices=DownloadRefusal.choices, blank=True, default="",
     )
