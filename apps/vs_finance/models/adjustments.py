@@ -630,15 +630,28 @@ class PaymentPlan(FinanceDocument):
             models.Index(fields=["entity", "start_date"]),
         ]
 
+    def _installment_sum(self, field: str) -> int:
+        """Sum ``field`` over this plan's installments, in kobo.
+
+        A plan read with ``prefetch_related("installments")`` sums the rows it
+        already holds, so a list of plans costs no query per plan for its totals.
+        Any other plan asks the database, which sees installments updated since
+        the plan was loaded.
+        """
+        prefetched = getattr(self, "_prefetched_objects_cache", {}).get("installments")
+        if prefetched is not None:
+            return sum(getattr(row, field) for row in prefetched)
+        return self.installments.aggregate(s=models.Sum(field))["s"] or 0
+
     @property
     def scheduled_total(self) -> int:
         """Sum of the installment amounts (should equal ``total_amount`` once built)."""
-        return self.installments.aggregate(s=models.Sum("amount"))["s"] or 0
+        return self._installment_sum("amount")
 
     @property
     def settled_total(self) -> int:
         """Sum settled across installments, in kobo."""
-        return self.installments.aggregate(s=models.Sum("amount_settled"))["s"] or 0
+        return self._installment_sum("amount_settled")
 
     @property
     def outstanding_total(self) -> int:
