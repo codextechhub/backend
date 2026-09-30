@@ -193,14 +193,19 @@ def record_unapproved_post(document, *, actor_user, reason: str, tenant=None):
     the platform audit trail instead, where a school's own auditor and CodeX
     both already look, and it names the person rather than the system - the
     whole point is that somebody decided this.
+
+    The event names the document's own branch, so a branch-bound auditor reads
+    it for their branch's documents only (:func:`vs_audit.scoping.branch_event_predicate`).
     """
     from vs_audit.services import emit_audit_event
 
+    _, branch = document_scope(document, default_tenant=tenant)
     return emit_audit_event(
         module_key="WORKFLOW",
         action_type="POSTED_WITHOUT_APPROVAL",
         actor_user=actor_user,
         tenant=tenant,
+        branch=branch,
         entity_type=type(document).__name__,
         entity_id=str(getattr(document, "pk", "")),
         entity_label=str(document),

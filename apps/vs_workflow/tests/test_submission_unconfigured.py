@@ -143,3 +143,31 @@ class StagelessTemplateSubmissionTests(TestCase):
             ApprovalNotConfiguredError.error_code, "APPROVAL_NOT_CONFIGURED",
         )
         self.assertEqual(ApprovalNotConfiguredError.http_status, 409)
+
+
+class UnapprovedPostNamesItsBranchTests(TestCase):
+    """The record of a post with no approval names the document's own branch.
+
+    Lagoon View's Ikeja payout goes out before anyone builds its approval steps.
+    The record of that says Ikeja, so the Lekki bursar auditing their own branch
+    never reads it, while the proprietor does.
+    """
+
+    def test_the_event_carries_the_documents_branch(self):
+        from types import SimpleNamespace
+
+        from vs_rbac.tests.helpers import make_branch, make_school, make_school_admin
+        from vs_workflow.services.resolution import record_unapproved_post
+
+        school = make_school(slug="lagoon-unapproved", name="Lagoon View")
+        ikeja = make_branch(school, name="Ikeja Branch")
+        document = SimpleNamespace(
+            pk=41, tenant=school.tenant, branch=ikeja, workflow_document_type="TEST_DOC",
+        )
+
+        event = record_unapproved_post(
+            document, actor_user=make_school_admin(ikeja), reason="No ladder yet.",
+            tenant=school.tenant,
+        )
+
+        self.assertEqual(event.branch_id, ikeja.pk)

@@ -70,21 +70,28 @@ BRANCH_READ_MODULES = ("FINANCE", "PROCUREMENT")
 
 
 def branch_event_predicate(branch_ids):
-    """The ``Q`` confining a branch-bound reader's finance and procurement events.
+    """The ``Q`` confining a branch-bound reader to their branches' events.
 
     ``branch_ids`` is the reader's reach (:func:`vs_rbac.scoping.caller_branch_ids`),
-    ``None`` for a whole-school reader, who gets no predicate at all. A finance
-    or procurement event is a copy of a finance trail entry and is read the way
-    that entry is (:func:`vs_rbac.scoping.transaction_branch_q`): only when it
-    names one of the reader's branches, so an event naming no branch is
-    whole-school only. Lagoon View's Lekki bursar, holding the audit-view key,
-    reads "Disbursed Lekki Branch's net wages" and never Ikeja's, nor an old
-    "Accrued payroll" event carrying the whole school's salaries. Events of
-    every other module carry no branch and are left as they were.
+    ``None`` for a whole-school reader, who gets no predicate at all.
+
+    An event that names a branch is about a document of that branch, whichever
+    module wrote it, and is read only by that branch's readers. A finance or
+    procurement event is a copy of a finance trail entry and is read the way
+    that entry is (:func:`vs_rbac.scoping.transaction_branch_q`), so one naming
+    no branch is whole-school only. Every other event naming no branch (a
+    sign-in, a role change) belongs to no document and is read as it always was.
+
+    Lagoon View's Lekki bursar, holding the audit-view key, reads "Disbursed
+    Lekki Branch's net wages" and never Ikeja's, nor an old "Accrued payroll"
+    event carrying the whole school's salaries, nor the record that an Ikeja
+    payout went out without approval.
     """
     if branch_ids is None:
         return None
-    return ~Q(module_key__in=BRANCH_READ_MODULES) | Q(branch_id__in=tuple(sorted(branch_ids)))
+    return (
+        Q(branch__isnull=True) & ~Q(module_key__in=BRANCH_READ_MODULES)
+    ) | Q(branch_id__in=tuple(sorted(branch_ids)))
 
 
 def audit_scope_predicate(request):
