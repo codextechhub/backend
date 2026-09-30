@@ -50,9 +50,28 @@ Two rules follow, and they are separate:
    Where a school has one branch, the control is absent, not disabled. Where it
    has several, branch appears wherever it changes meaning.
 
-   **A null branch means "shared across the school", never "no branches exist".**
-   That is a deliberate, first-class value (see academic structure and procurement
-   documents), and it keeps its meaning however many branches a school has.
+   **A null branch means "every branch" on a shared record, and "not yet given a
+   branch" on a transaction. It never means "no branches exist".**
+   - Shared records and configuration keep null as a first-class value meaning
+     every branch: a customer, a vendor, a fee structure, the chart of accounts,
+     a catalogue item, a cost centre, academic structure, role grants, workflow
+     templates and groups, notification settings and `vs_config` values. They are
+     read inclusively (`vs_rbac.scoping.branch_q`).
+   - There is no school-wide transaction. Every document (invoice, receipt,
+     credit note, refund, journal, payroll run, requisition, order, vendor bill,
+     vendor payment) and every container of a branch's money or stock (bank
+     account, petty-cash fund, store) names one real branch. Raise one with
+     `raised_transaction_branch`, which answers null only for books with no
+     branch at all (the platform's); continue one with `inherited_branch_id`,
+     which refuses sources from two branches. Read them with
+     `transaction_branch_q` / `transaction_branch_scope`: a branch-bound reader
+     sees only her own branches' transactions, and a transaction still carrying
+     a null branch is visible only to a whole-school reader. A document is paid
+     only from its own branch's bank account, and settles only documents of its
+     own branch. The one exception is a central payroll run, which covers every
+     branch's staff in one journal until that journal is split per branch.
+   - At a school with one branch, a transaction not yet given a branch is that
+     branch's (`same_transaction_branch`), so the dimension recedes there.
 
    Test more than one shape of school - a single-branch test proves nothing about
    a multi-branch one.
