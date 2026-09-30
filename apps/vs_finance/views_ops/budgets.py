@@ -193,7 +193,7 @@ class _BudgetActionBase(_FinanceBase):
         is her own branches', and hers to change.
         """
         entity = resolve_entity(request)
-        budget = _reader_scope(request).filter(
+        budget = transaction_branch_scope(request).filter(
             Budget.objects.filter(entity=entity, pk=pk)
         ).select_related("fiscal_year", "branch", "entity__tenant").first()
         if budget is None:
