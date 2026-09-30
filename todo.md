@@ -342,7 +342,7 @@ MUST SAY:
   branches; an entry about the whole books reads "School-wide" ("Entity-wide" in
   the console).
 
-### D90. Fees become income over the period they cover, doubtful debts are provided for, and deposits are held, not earned (hash pending, 2026-09-30)
+### D90. Fees become income over the period they cover, doubtful debts are provided for, and deposits are held, not earned (73e91d27, 2026-09-30)
 MODULES: M17 billing and invoicing, M19 finance and accounting, M20 adjustments and
 concessions, M18 payments and collections (deposit refunds), M04 roles and
 permissions, MRD.
