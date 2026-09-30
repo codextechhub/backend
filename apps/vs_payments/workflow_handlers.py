@@ -114,13 +114,13 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
         approver's inbox, and approving or rejecting it answers 404.
         """
         from vs_finance.models import LedgerEntity
-        from vs_rbac.scoping import branch_scope_for_user
+        from vs_rbac.scoping import transaction_branch_scope_for_user
 
         from .reach import PaymentsReach
 
         if tenant is None:
             return None
-        scope = branch_scope_for_user(user, include_shared=True, tenant=tenant)
+        scope = transaction_branch_scope_for_user(user, tenant=tenant)
         if not scope.is_narrowed:
             return None
         hidden = set()

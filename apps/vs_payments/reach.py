@@ -1,20 +1,20 @@
-"""Which gateway records a caller may read or act on: their branches' and the school-wide.
+"""Which gateway records a caller may read or act on: their own branches'.
 
 No gateway table carries a branch of its own. Each record hangs on a finance or
-procurement row that does, and takes its reach from that row, with the same
-inclusive reading finance gives those rows (the caller's own branches plus the
-school-wide ones, :func:`vs_rbac.scoping.branch_scope` with
-``include_shared=True``):
+procurement row that does, and takes its reach from that row, read exclusively
+as every transaction is (:func:`vs_rbac.scoping.transaction_branch_scope`): a
+branch-bound caller reaches the records of their own branches only, and never
+one whose row has not been given a branch. A whole-school caller reaches them
+all, and can see what still needs a branch.
 
 * a **collection** on the branch it belongs to
   (:func:`vs_payments.services.collection_branch_id`): its invoice's when it
   names one, else its customer's. The Okafor family is filed under Ikeja and
   pays a Lekki invoice online; the money is Lekki's, so Lekki's clerk reaches
-  that collection and Ikeja's does not. A collection naming neither is
-  school-wide;
+  that collection and Ikeja's does not;
 * a **virtual account** on its customer;
 * a **payout** on the vendor it pays (a loose ``vendor_source_id``, since this app
-  does not hard-FK procurement); a payout naming no vendor is school-wide;
+  does not hard-FK procurement);
 * a **payout batch** on every line in it: one line paying a vendor outside reach
   withholds the whole batch, because its detail lists every line;
 * a **gateway action** (the transactions log) on the record whose reference it
@@ -36,7 +36,9 @@ from django.db.models.fields.json import KeyTextTransform
 from django.db.models.functions import Cast
 from rest_framework.exceptions import NotFound
 
-from vs_rbac.scoping import BranchScope, branch_scope, branch_scope_for_user
+from vs_rbac.scoping import (
+    BranchScope, transaction_branch_scope, transaction_branch_scope_for_user,
+)
 
 from .models import (
     CollectionIntent,
@@ -62,19 +64,19 @@ class PaymentsReach:
     __slots__ = ("entity", "scope")
 
     def __init__(self, entity, scope: BranchScope):
-        if not scope.include_shared:
-            raise ValueError("Gateway records read branches inclusively.")
+        if scope.is_narrowed and scope.include_shared:
+            raise ValueError("Gateway records read branches exclusively.")
         self.entity = entity
         self.scope = scope
 
     @classmethod
     def for_request(cls, request, entity) -> "PaymentsReach":
-        return cls(entity, branch_scope(request, include_shared=True))
+        return cls(entity, transaction_branch_scope(request))
 
     @classmethod
     def for_user(cls, user, entity) -> "PaymentsReach":
-        return cls(entity, branch_scope_for_user(
-            user, include_shared=True, tenant=getattr(entity, "tenant", None)))
+        return cls(entity, transaction_branch_scope_for_user(
+            user, tenant=getattr(entity, "tenant", None)))
 
     @property
     def is_narrowed(self) -> bool:
@@ -101,7 +103,7 @@ class PaymentsReach:
         )
 
     def _payout_hidden(self):
-        """True for a payout whose vendor another branch keeps to itself."""
+        """True for a payout whose vendor is not one of this caller's branches'."""
         vendor = self._hidden_vendors().filter(_pk_text=OuterRef("vendor_source_id"))
         return Q(vendor_source_type=VENDOR_SOURCE) & Exists(vendor)
 

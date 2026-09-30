@@ -481,9 +481,9 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
     A gateway receipt carries a branch exactly as a counter receipt does: its
     invoice's, or its customer's when it names none
     (:func:`collection_branch_id`). Without one the online path, which is how
-    most parents actually pay, leaves every receipt school-wide while the
-    invoice it settles sits in a branch, splitting one family's ledger across
-    two scopes.
+    most parents actually pay, would leave every receipt without a branch while
+    the invoice it settles sits in one, splitting one family's ledger across two
+    scopes.
 
     A receipt cannot settle an invoice that is not raised yet: crediting AR
     before the invoice debits it drives the control negative for the gap, and
@@ -611,19 +611,25 @@ def collection_branch_id(*, customer=None, invoice=None):
 
     Money paid against an invoice belongs to the branch that raised it, wherever the
     family is filed. The Okafor family is filed under Ikeja and pays a Lekki invoice
-    online: the receipt is Lekki's, deposits into Lekki's bank or a school-wide one,
-    and clears the Lekki invoice. A collection naming no invoice (a top-up, a
-    virtual account deposit) belongs to the customer's branch. ``None`` is
-    school-wide.
+    online: the receipt is Lekki's, deposits into Lekki's bank, and clears the
+    Lekki invoice. A collection naming no invoice (a top-up, a virtual account
+    deposit) belongs to the customer's branch, and for a customer every branch
+    shares, to the tenant's only branch when it has one. ``None`` is left only
+    for such a customer at a tenant with several branches, where nothing on the
+    collection says whose the money is.
 
     The collection create route checks its deposit account against this branch,
     :func:`_book_receipt` books the receipt to it, and
     :class:`vs_payments.reach.PaymentsReach` gives the collection to the staff of
     that branch, so the three cannot disagree.
     """
+    from vs_rbac.scoping import only_branch_id
+
     if invoice is not None:
         return invoice.branch_id
-    return getattr(customer, "branch_id", None)
+    if customer is None:
+        return None
+    return customer.branch_id or only_branch_id(customer.entity.tenant_id)
 
 
 # Support the book receipt workflow.

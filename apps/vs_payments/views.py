@@ -38,7 +38,7 @@ from vs_rbac.permissions import (
     IsAuthenticatedAndActive,
     IsVisionStaff,
 )
-from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
+from vs_rbac.scoping import transaction_branch_q
 
 from . import reconciliation, services, webhooks
 from .reach import PaymentsReach
@@ -88,9 +88,11 @@ def _entity_obj(request, entity, model, ref, field):
     """Fetch ``model`` within ``entity`` and the caller's branches by pk or ``code``.
 
     Codes resolve too, because the UI pickers emit them. A row with a branch is
-    found only when it is the caller's own branch's or school-wide, the reach the
-    finance customer resolver uses, so Ikeja's clerk naming a Lekki customer or
-    invoice gets the same 400 as for one that does not exist."""
+    found only when it is one of the caller's own branches', read exclusively as
+    :class:`~vs_payments.reach.PaymentsReach` reads the gateway record created
+    against it: a clerk never creates a record she then cannot open. Ikeja's
+    clerk naming a Lekki customer or invoice, or one not yet given a branch, gets
+    the same 400 as for one that does not exist."""
     if model is Account:
         # A ledger account is named through finance's resolver, which also applies
         # the caller's bank reach; this lookup does not know the caller.
@@ -99,7 +101,7 @@ def _entity_obj(request, entity, model, ref, field):
         return None
     qs = model.objects.filter(entity=entity)
     if any(getattr(f, "name", None) == "branch" for f in model._meta.get_fields()):
-        qs = qs.filter(branch_q(request, include_shared=True))
+        qs = qs.filter(transaction_branch_q(request))
     has_code = any(getattr(f, "name", None) == "code" for f in model._meta.get_fields())  # Check whether the model exposes a code field.
     obj = None  # Hold the resolved object if any lookup succeeds.
     if str(ref).isdigit():  # Numeric refs might be pks or codes.
@@ -161,8 +163,10 @@ def _required_idempotency_key(request) -> str:
 def _payout_vendor(request, entity, reference):
     """Resolve a vendor by id or code inside the selected entity and the caller's branches.
 
-    A vendor another branch keeps to itself answers like one that does not exist,
-    the reach procurement's own vendor resolver applies.
+    Read exclusively, as :class:`~vs_payments.reach.PaymentsReach` reads the payout
+    through its vendor: a vendor of another branch, or one every branch shares,
+    answers like one that does not exist, so a clerk never raises a payout she
+    then cannot open.
     """
     from django.db.models import Q
     from vs_procurement.models import Vendor
@@ -173,7 +177,7 @@ def _payout_vendor(request, entity, reference):
     lookup = Q(code=raw) | Q(pk=raw) if raw.isdigit() else Q(code=raw)
     vendor = (
         Vendor.objects.filter(entity=entity)
-        .filter(branch_q(request, include_shared=True)).filter(lookup).first()
+        .filter(transaction_branch_q(request)).filter(lookup).first()
     )
     if vendor is None:
         raise ValidationError({"vendor": "No such vendor in this entity."})
@@ -241,7 +245,7 @@ class CollectionListCreateView(APIView):
         
         invoice = _entity_obj(request, entity, Invoice, body.get("invoice"), "invoice")
         customer = _collection_payer(request, entity, body.get("customer"), invoice)
-        # Deposit into the branch the receipt is booked to, or a school-wide bank.
+        # Deposit into the branch the receipt is booked to.
         deposit = _resolve_account(
             request, entity, body.get("deposit_account"), "deposit_account",
             document_branch=services.collection_branch_id(customer=customer, invoice=invoice),
@@ -388,7 +392,8 @@ class VirtualAccountListCreateView(APIView):
             raise ValidationError({"customer": "A customer is required."})
         deposit = _resolve_account(
             request, entity, request.data.get("deposit_account"), "deposit_account",
-            document_branch=customer.branch_id, noun="virtual account", verb="Deposit it into")
+            document_branch=services.collection_branch_id(customer=customer),
+            noun="virtual account", verb="Deposit it into")
         va = services.create_virtual_account(  # Delegate provisioning to the service layer.
             entity=entity, customer=customer, provider=request.data.get("provider"),
             deposit_account=deposit, bank_code=request.data.get("bank_code", ""),
