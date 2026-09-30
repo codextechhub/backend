@@ -269,13 +269,8 @@ class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
             self.bursar("finance.payrollrun.pay"), f"finance/payroll-runs/{run.pk}/pay/", {},
         )
 
-    def test_a_tax_payment(self):
-        """A return whose only share is Yaba's is outside her reach, so she may not pay it.
-
-        She covers Ikeja and Lekki. The school's return names no branch and its
-        only share is Yaba's, so whichever account she names, her Ikeja one, her
-        Lekki one or the school-wide one, the return is not found for her.
-        """
+    def tax_return(self, *branches):
+        """The school's January return, filed with no branch and a N500 share per branch."""
         from vs_finance.models import TaxFiling, TaxFilingShare, TaxObligation
 
         filing = TaxFiling.objects.create(
@@ -283,11 +278,34 @@ class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
             obligation=TaxObligation.objects.filter(entity=self.books).first(),
             period_start=datetime.date(2026, 1, 1), period_end=datetime.date(2026, 1, 31),
             filing_status="FILED", filed_at=datetime.date(2026, 1, 5),
-            gross_liability=50_000, amount_due=50_000,
+            gross_liability=50_000 * len(branches), amount_due=50_000 * len(branches),
         )
-        TaxFilingShare.objects.create(
-            filing=filing, branch=self.yaba, gross_liability=50_000, amount_due=50_000,
+        for branch in branches:
+            TaxFilingShare.objects.create(
+                filing=filing, branch=branch, gross_liability=50_000, amount_due=50_000,
+            )
+        return filing
+
+    def test_a_tax_payment(self):
+        """Ikeja's share of the school's return is paid from Ikeja's account only.
+
+        The return names no branch; she reaches it through its Ikeja share.
+        """
+        filing = self.tax_return(self.ikeja, self.yaba)
+        self.assertEachBank(
+            self.bursar("finance.tax.pay"), f"finance/tax-filings/{filing.pk}/pay/",
+            {"pay_date": JAN.isoformat(), "branch": self.ikeja.pk},
         )
+        self.assertEqual(filing.shares.get(branch=self.ikeja).amount_paid, 50_000)
+        self.assertEqual(filing.shares.get(branch=self.yaba).amount_paid, 0)
+
+    def test_a_tax_return_with_no_share_of_hers_is_not_found(self):
+        """A return whose only share is Yaba's is outside her reach, so she may not pay it.
+
+        She covers Ikeja and Lekki. Whichever account she names, her Ikeja one,
+        her Lekki one or the unbranched one, the return is not found for her.
+        """
+        filing = self.tax_return(self.yaba)
         client = self.bursar("finance.tax.pay")
         for bank in (self.ikeja_bank, self.lekki_bank, self.shared_bank):
             with self.subTest(bank=bank.name):

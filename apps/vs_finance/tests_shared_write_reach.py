@@ -8,10 +8,12 @@ refusal is a 403 ``SHARED_RECORD_READ_ONLY`` with nothing written. The warning
 that the calendar is running out goes only to the people who could open the
 next year.
 
-A journal or a tax filing with no branch is a transaction not yet given its
-branch, not a shared record: a branch-bound bursar cannot read it, so posting,
-submitting, reversing, filing or paying it answers 404, as another branch's
-does. A direct entry starts a chain, so it takes its branch from the person
+A journal with no branch is a transaction not yet given its branch, not a
+shared record: a branch-bound bursar cannot read it, so posting, submitting or
+reversing it answers 404, as another branch's does. The school's tax return
+names no branch because it is booked per branch: Ngozi reaches it through
+Lekki's share, reads and pays only that share, and may not file, un-file or
+reverse the whole return (403). A return with no Lekki share is a 404 to her. A direct entry starts a chain, so it takes its branch from the person
 raising it: a branch-bound bursar's entry is her branch's, and hers to reverse,
 and a whole-school bursar at a school with several branches names one.
 
@@ -540,6 +542,29 @@ class TaxFilingWriteTests(_SharedWriteFixture):
 
         self.assertEqual(outstanding(self.ngozi), (30_000, 30_000))
         self.assertEqual(outstanding(self.adaeze), (87_000, 87_000))
+
+    def test_a_branch_bound_holder_reaches_a_split_return_but_cannot_unfile_it(self):
+        """Ngozi opens the return through Lekki's share; un-filing it moves Ikeja's too."""
+        filing = self.split_return()
+
+        response = self.send(self.ngozi, "post", f"tax-filings/{filing.pk}/unfile/")
+
+        self.assert_refused(response, self.MESSAGE)
+        filing.refresh_from_db()
+        self.assertEqual(filing.filing_status, TaxFilingStatus.FILED)
+
+    def test_a_return_with_no_share_of_hers_is_not_listed_for_her(self):
+        """A return not yet given a branch or any share is the whole school's to place."""
+        split = self.split_return()
+        unshared = self.filing(1)
+
+        def listed(user):
+            return {row["id"] for row in self.send(user, "get", "tax-filings/").json()["data"]}
+
+        self.assertEqual(listed(self.ngozi), {split.pk})
+        self.assertEqual(listed(self.adaeze), {split.pk, unshared.pk})
+        detail = self.send(self.ngozi, "get", f"tax-filings/{unshared.pk}/")
+        self.assertEqual(detail.status_code, 404, detail.json())
 
     def test_a_branch_bound_holder_cannot_reverse_a_remittance(self):
         from .tax_filing import pay_filing
