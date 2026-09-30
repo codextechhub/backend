@@ -834,6 +834,12 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
         The invoice pks are dropped rather than returned. They stop existing when
         the block exits, and handing back identifiers for rows nobody can fetch is
         the kind of honest-looking answer that costs an afternoon.
+
+        Every charge line carries the linked term's first and last day as its
+        service period, or the session's for a structure billing the whole year.
+        Second Term fees billed in December for a term that starts in January are
+        therefore deferred income in December and revenue month by month from
+        January; a term already under way is billed as revenue on the day.
         """
         from vs_finance import fees
         from vs_finance.models import Customer
@@ -908,10 +914,15 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
                 session_end=link.session.end_date,
             )
 
+            # The fees pay for the term's teaching (the session's, for a whole-year
+            # fee), so those dates are the service period. The engine gets plain
+            # dates and defers what is billed before they start.
+            taught = link.term if link.term_id else link.session
             invoices = fees.generate_invoices(
                 structure, to_bill, actor_user=effective_user,
                 invoice_date=invoice_date, due_date=due_date,
                 billing_period=link.period_key, billing_period_label=link.label,
+                service_start=taught.start_date, service_end=taught.end_date,
             ) if to_bill else []
 
             return InvoiceGenerationResult(

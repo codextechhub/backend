@@ -7,6 +7,7 @@ from django.db import models, transaction
 
 from ..constants import (
     RECEIPT_METHOD_CHOICES,
+    ChargeKind,
     DocType,
     FeeAppliesTo,
     InvoicePaymentStatus,
@@ -148,12 +149,25 @@ class Invoice(FinanceDocument):
     The database refuses settlement beyond the total and negative settlement, so a
     settlement path that misses its lock fails the request instead of clearing a
     bill twice.
+
+    ``customer`` is who owes the bill. ``beneficiary`` is set when that customer
+    pays on behalf of somebody else: a sponsor or an employer is a customer of its
+    own, billed for the service another customer receives. The revenue is earned
+    and collected from the payer, so the bill sits on the payer's account and
+    statement, which names the beneficiary on each such line; the beneficiary's
+    own account is not charged.
     """
 
     DOC_TYPE = DocType.INVOICE
 
     customer = models.ForeignKey(
         Customer, on_delete=models.PROTECT, related_name="invoices",
+    )
+    beneficiary = models.ForeignKey(
+        Customer, on_delete=models.PROTECT, related_name="invoices_paid_by_others",
+        null=True, blank=True,
+        help_text="The customer this bill pays for, when the customer billed is a payer "
+                  "such as a sponsor or an employer.",
     )
     invoice_date = models.DateField()
     due_date = models.DateField(null=True, blank=True)
@@ -297,6 +311,17 @@ class InvoiceLine(TimeStampedModel):
     ``net_amount`` (kobo) is ``quantity × unit_price`` and ``tax_amount`` is computed
     from the line's :class:`TaxCode` at post time; both are stored so the invoice
     total is a simple, auditable sum and never re-derived inconsistently.
+
+    ``service_start`` / ``service_end`` are the dates the line's service is given
+    over, supplied by whoever raised the bill as plain dates. A ``CHARGE`` line whose
+    service starts after the invoice date is not revenue yet: posting credits the
+    deferred-income liability and schedules its release month by month
+    (:mod:`vs_finance.deferred_income`). A line with no service period, or one
+    whose period has already begun, is revenue on the invoice date.
+
+    A ``DEPOSIT`` line is refundable money held for the customer: it credits the
+    deposits-held liability whatever ``revenue_account`` says, and posting opens a
+    :class:`~vs_finance.models.CustomerDeposit` for it.
     """
 
     invoice = models.ForeignKey(
@@ -321,10 +346,31 @@ class InvoiceLine(TimeStampedModel):
     )
     dimensions = models.JSONField(default=dict, blank=True)
     line_no = models.PositiveSmallIntegerField(default=0)
+    kind = models.CharField(
+        max_length=8, choices=ChargeKind.choices, default=ChargeKind.CHARGE,
+    )
+    service_start = models.DateField(
+        null=True, blank=True,
+        help_text="First day of the service this line bills for.",
+    )
+    service_end = models.DateField(
+        null=True, blank=True,
+        help_text="Last day of the service this line bills for.",
+    )
 
     class Meta:
         ordering = ["invoice", "line_no", "id"]
         indexes = [models.Index(fields=["invoice"]), models.Index(fields=["revenue_account"])]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(service_start__isnull=True, service_end__isnull=True)
+                    | models.Q(service_start__isnull=False, service_end__isnull=False,
+                               service_end__gte=models.F("service_start"))
+                ),
+                name="ck_finance_invoiceline_service_period",
+            ),
+        ]
 
     @property
     def line_total(self) -> int:
@@ -581,7 +627,12 @@ class FeeStructure(TimeStampedModel):
 
 
 class FeeItem(TimeStampedModel):
-    """One charge line of a :class:`FeeStructure` → a GL revenue account (+ optional tax)."""
+    """One charge line of a :class:`FeeStructure` → a GL revenue account (+ optional tax).
+
+    ``kind`` ``DEPOSIT`` marks a refundable deposit: it is billed like any line but
+    credits the deposits-held liability, never revenue, so ``revenue_account`` on a
+    deposit item names that liability.
+    """
 
     structure = models.ForeignKey(
         FeeStructure, on_delete=models.CASCADE, related_name="items",
@@ -603,6 +654,10 @@ class FeeItem(TimeStampedModel):
         default=False,
         help_text="An opt-in charge: billed only to the customers assigned to it "
                   "(FeeItemAssignment). A required line bills every customer the run bills.")
+    kind = models.CharField(
+        max_length=8, choices=ChargeKind.choices, default=ChargeKind.CHARGE,
+        help_text="CHARGE is income; DEPOSIT is a refundable deposit held for the customer.",
+    )
     line_no = models.PositiveSmallIntegerField(default=0)
 
     class Meta:

@@ -587,7 +587,9 @@ class WriteOffHandler(_FinancePostOnApprove):
                 f"only a posted invoice can be written off.",
             )
 
-        when = document.write_off_date or invoice.invoice_date  # Effective write-off date.
+        from .credit_notes import write_off_date_for
+
+        when = write_off_date_for(invoice, document.write_off_date)  # Effective write-off date.
         ensure_on_or_after(  # A debt cannot be conceded before it is owed.
             subject=f"Write-off {document.document_number or document.pk}", subject_date=when,
             source=f"invoice {invoice.document_number or invoice.pk}",
@@ -638,7 +640,7 @@ class WriteOffHandler(_FinancePostOnApprove):
         invoice = document.invoice
         return document_details(fields_section("Write-off details", [
             ("Customer", invoice.customer.code),
-            ("Date", document.write_off_date or invoice.invoice_date),
+            ("Date", document.write_off_date or "The day it is approved"),
             ("Reason", document.reason),
             ("Narration", document.narration),
             ("Write-off account", str(document.write_off_account or "Default")),
@@ -899,6 +901,69 @@ class CustomerCreditTransferHandler(_FinancePostOnApprove):
             ("Amount", format_naira(document.amount)),
             ("Reason", document.reason or "-"),
         ]))
+
+
+@register_handler("finance.doubtful_debt_provision")
+class DoubtfulDebtProvisionHandler(_FinancePostOnApprove):
+    """Approval handler for a :class:`~vs_finance.models.DoubtfulDebtProvision` run.
+
+    The run names no branch, so its route is the tenant's. The default
+    ``_mark_approved`` (flip to APPROVED) is what the posting service accepts. The
+    approver sees the figures as worked out when the run was raised; posting works
+    them out again, because receipts and write-offs made meanwhile change what the
+    allowance must be.
+    """
+    noun = "Doubtful-debt provision"
+
+    @property
+    def document_model(self):
+        from .models import DoubtfulDebtProvision
+        return DoubtfulDebtProvision
+
+    def preflight(self, document) -> None:
+        from .provisions import check_provision
+
+        check_provision(document)
+
+    def post(self, document, *, actor_user) -> None:
+        from .provisions import post_provision
+
+        post_provision(document, actor_user=actor_user)
+
+    def summary(self, document) -> dict:
+        return {
+            "title": document.document_number or str(document.pk),
+            "subtitle": "Doubtful-debt provision",
+            "fields": [
+                {"label": "Aged to", "value": document.as_of.isoformat()},
+                {"label": "Allowance required", "value": format_naira(document.required_total)},
+                {"label": "Change to the allowance", "value": format_naira(document.movement_total)},
+            ],
+            "link": _console_document_id_link("/finance/receivables/provisions", document),
+        }
+
+    def details(self, document) -> dict:
+        lines = document.lines.select_related("branch")
+        return document_details(
+            fields_section("Provision details", [
+                ("Aged to", document.as_of),
+                ("Narration", document.narration or "-"),
+            ]),
+            table_section(
+                "By branch",
+                [("branch", "Branch"), ("required", "Required"),
+                 ("current", "Held"), ("movement", "Change")],
+                [
+                    {
+                        "branch": line.branch.name if line.branch_id else "No branch",
+                        "required": format_naira(line.required),
+                        "current": format_naira(line.current),
+                        "movement": format_naira(line.movement),
+                    }
+                    for line in lines
+                ],
+            ),
+        )
 
 
 @register_handler("finance.expense_claim")

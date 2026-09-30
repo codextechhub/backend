@@ -26,6 +26,7 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("1100", "Cash & Bank", AccountType.ASSET, True, False),  # Main cash/bank account.
     ("1110", "Petty Cash", AccountType.ASSET, True, False),  # Petty cash account.
     ("1200", "Accounts Receivable", AccountType.ASSET, True, False),  # AR control account.
+    ("1290", "Allowance for Doubtful Debts", AccountType.ASSET, True, True),  # Contra-asset against 1200.
     # Vendor advances is the asset mirror of 2140 Customer Credit, numbered to match
     # it (x140 = "counterparty prepayment control"). Money paid to a vendor before
     # their bill exists cannot sit in AP: AP is a liability and a debit balance there
@@ -41,6 +42,8 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("2100", "Accounts Payable", AccountType.LIABILITY, True, False),  # AP control account.
     ("2140", "Customer Credit", AccountType.LIABILITY, True, False),  # Customer credits liability.
     ("2150", "GR/IR Clearing", AccountType.LIABILITY, True, False),  # Goods-received/invoice-received clearing.
+    ("2160", "Deferred Income", AccountType.LIABILITY, True, False),  # Billed ahead of the service period.
+    ("2170", "Customer Deposits Held", AccountType.LIABILITY, True, False),  # Refundable deposits.
     ("2200", "Output VAT (Payable)", AccountType.LIABILITY, True, False),  # Output VAT payable.
     ("2300", "WHT Payable", AccountType.LIABILITY, True, False),  # Withholding tax payable.
     ("2310", "PAYE Payable", AccountType.LIABILITY, True, False),  # PAYE payable.
@@ -54,6 +57,8 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     # Income  # Income root and default revenue accounts.
     ("4000", "Income", AccountType.INCOME, False, False),  # Income section header.
     ("4100", "Operating Revenue", AccountType.INCOME, True, False),  # Primary operating revenue.
+    ("4810", "Bad Debts Recovered", AccountType.INCOME, True, False),  # Written-off debt later paid.
+    ("4820", "Forfeited Deposits", AccountType.INCOME, True, False),  # Deposits unclaimed past the limit.
     ("4900", "Sales Returns & Allowances", AccountType.INCOME, True, True),  # Contra-revenue returns account.
     ("4910", "Discounts & Concessions", AccountType.INCOME, True, True),  # Contra-revenue discounts account.
     # Expenses  # Expense root and default expense accounts.
@@ -63,6 +68,7 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("5160", "Purchase Price Variance", AccountType.EXPENSE, True, False),  # Invoice-vs-receipt price variance.
     ("5200", "Salaries & Wages", AccountType.EXPENSE, True, False),  # Payroll expense account.
     ("5300", "General & Administrative", AccountType.EXPENSE, True, False),  # General admin expense.
+    ("5350", "Bad Debts", AccountType.EXPENSE, True, False),  # Write-offs and doubtful-debt provisions.
     ("5400", "Depreciation Expense", AccountType.EXPENSE, True, False),  # Depreciation expense.
     ("5500", "Bank Charges", AccountType.EXPENSE, True, False),  # Bank charges expense.
 ]
@@ -99,6 +105,7 @@ DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory present
     # Assets  # Default asset presentation mappings.
     "1100": IFRSLine.CASH, "1110": IFRSLine.CASH,  # Cash and petty cash.
     "1200": IFRSLine.TRADE_RECEIVABLES,  # Accounts receivable.
+    "1290": IFRSLine.TRADE_RECEIVABLES,  # Allowance nets against the receivables it covers.
     # "Trade and other receivables" carries supplier advances under IFRS for SMEs,
     # and it mirrors 2140 presenting inside "trade and other payables".
     "1240": IFRSLine.TRADE_RECEIVABLES,  # Advances paid to vendors.
@@ -107,6 +114,7 @@ DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory present
     "1500": IFRSLine.PPE, "1900": IFRSLine.PPE,  # PPE and accumulated depreciation.
     # Liabilities  # Default liability presentation mappings.
     "2100": IFRSLine.TRADE_PAYABLES, "2140": IFRSLine.TRADE_PAYABLES, "2150": IFRSLine.TRADE_PAYABLES,  # AP-like balances.
+    "2160": IFRSLine.DEFERRED_INCOME, "2170": IFRSLine.TRADE_PAYABLES,  # Fees in advance, deposits.
     "2200": IFRSLine.CURRENT_TAX_PAYABLE, "2300": IFRSLine.CURRENT_TAX_PAYABLE,  # Tax payables.
     "2310": IFRSLine.EMPLOYEE_PAYABLES, "2320": IFRSLine.EMPLOYEE_PAYABLES,  # Employee statutory payables.
     "2330": IFRSLine.EMPLOYEE_PAYABLES, "2400": IFRSLine.TRADE_PAYABLES,  # Wages and reimbursements.
@@ -114,21 +122,25 @@ DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory present
     "3100": IFRSLine.SHARE_CAPITAL, "3200": IFRSLine.RETAINED_EARNINGS,  # Equity accounts.
     # Income  # Default revenue presentation mappings.
     "4100": IFRSLine.REVENUE, "4900": IFRSLine.REVENUE, "4910": IFRSLine.REVENUE,  # Revenue and contra-revenue.
+    "4810": IFRSLine.OTHER_INCOME, "4820": IFRSLine.OTHER_INCOME,  # Recoveries and forfeitures.
     # Expenses  # Default expense presentation mappings.
     "5100": IFRSLine.COST_OF_SALES, "5150": IFRSLine.COST_OF_SALES, "5160": IFRSLine.COST_OF_SALES,
     "5200": IFRSLine.ADMIN_EXPENSES, "5300": IFRSLine.ADMIN_EXPENSES,  # Admin expenses.
+    "5350": IFRSLine.ADMIN_EXPENSES,  # Bad debts.
     "5400": IFRSLine.ADMIN_EXPENSES, "5500": IFRSLine.FINANCE_COSTS,  # Depreciation and finance costs.
 }
 
 #: parent_code by child_code - wires the tree after the flat create.
 _PARENTS = {  # Parent account code by child account code.
-    "1100": "1000", "1110": "1000", "1200": "1000", "1240": "1000", "1300": "1000",  # Asset children.
+    "1100": "1000", "1110": "1000", "1200": "1000", "1290": "1000", "1240": "1000",  # Asset children.
+    "1300": "1000",
     "1400": "1000", "1500": "1000", "1900": "1000",  # More asset children.
-    "2100": "2000", "2140": "2000", "2150": "2000", "2200": "2000", "2300": "2000",  # Liability children.
+    "2100": "2000", "2140": "2000", "2150": "2000", "2160": "2000", "2170": "2000",  # Liability children.
+    "2200": "2000", "2300": "2000",
     "2310": "2000", "2320": "2000", "2330": "2000", "2400": "2000",  # More liability children.
     "3100": "3000", "3200": "3000",  # Equity children.
-    "4100": "4000", "4900": "4000", "4910": "4000",  # Income children.
-    "5100": "5000", "5150": "5000", "5160": "5000", "5200": "5000", "5300": "5000",
+    "4100": "4000", "4810": "4000", "4820": "4000", "4900": "4000", "4910": "4000",  # Income children.
+    "5100": "5000", "5150": "5000", "5160": "5000", "5200": "5000", "5300": "5000", "5350": "5000",
     "5400": "5000", "5500": "5000",  # More expense children.
 }
 

@@ -138,8 +138,23 @@ FINANCE_RESOURCES = [
                                                 ("submit", "SENSITIVE")]),
     # Bad-debt write-offs are now a first-class approvable document (WriteOffRequest);
     # the existing finance.invoice.writeoff key still gates the invoice entry point.
+    # ``reverse`` recovers a written-off debt from a later receipt: it reinstates the
+    # written-off amount and books recovery income.
     ("writeoff",     "bad-debt write-offs",    [("view", "NORMAL"), ("create", "SENSITIVE"),
-                                                ("post", "CRITICAL"), ("submit", "SENSITIVE")]),
+                                                ("post", "CRITICAL"), ("submit", "SENSITIVE"),
+                                                ("reverse", "CRITICAL")]),
+    # ``run`` releases deferred income due to revenue for every branch at once;
+    # ``reverse`` undoes a month's releases while it is open.
+    ("deferredincome", "deferred income",      [("view", "NORMAL"), ("run", "CRITICAL"),
+                                                ("reverse", "CRITICAL")]),
+    # A provision run sets the allowance for doubtful debts for every branch and is
+    # approved like the other receivable adjustments.
+    ("provision",    "doubtful-debt provisions", [("view", "NORMAL"), ("create", "SENSITIVE"),
+                                                ("submit", "SENSITIVE"), ("post", "CRITICAL")]),
+    # ``settle`` returns a customer's deposits as credit or sets them against their
+    # bills; ``run`` takes deposits unclaimed past the limit to income.
+    ("deposit",      "customer deposits",      [("view", "NORMAL"), ("settle", "CRITICAL"),
+                                                ("run", "CRITICAL")]),
     ("tax",          "tax filings",            [("view", "NORMAL"), ("file", "SENSITIVE"),
                                                 ("pay", "CRITICAL"), ("create", "SENSITIVE"),
                                                 ("update", "SENSITIVE")]),

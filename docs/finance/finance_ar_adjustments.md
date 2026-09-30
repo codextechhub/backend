@@ -8,8 +8,8 @@ charges them more, or recognises that a balance won't be collected - without
 editing the original invoice (which is immutable once posted).
 
 Routes (mounted at `/v1/finance/`): `credit-notes/…`, `refunds/…`,
-`invoices/<pk>/write-off/`, `ar-adjustments/`, `concessions/…`,
-`credit-transfers/…`.
+`invoices/<pk>/write-off/`, `write-offs/…` (including `write-offs/<pk>/recover/`),
+`ar-adjustments/`, `concessions/…`, `credit-transfers/…`, `provisions/…`.
 
 > **Adjacent:** the AR core (customers, invoices, receipts) is `finance_invoicing_ar`;
 > installment plans are `finance_payment_plans`. Concessions live in the same model
@@ -27,7 +27,14 @@ Routes (mounted at `/v1/finance/`): `credit-notes/…`, `refunds/…`,
 - **`Concession`** (`models/adjustments.py:228`): a non-cash reduction of a
   *specific* invoice's balance; `kind` ∈ {DISCOUNT, WAIVER, SCHOLARSHIP}.
 - **Write-off**: recognising bad debt on an invoice, raised as a
-  `WriteOffRequest` document and posted by `write_off_invoice` (§6).
+  `WriteOffRequest` document and posted by `write_off_invoice` (§6). It uses the
+  **allowance for doubtful debts** its branch holds before it touches expense, and
+  is dated the day it posts unless given a date, never the bill's date.
+- **`DoubtfulDebtProvision`** (`models/accruals.py`): a run, raised for every
+  branch at once, that ages what is owed and sets each branch's allowance for
+  doubtful debts to the policy's rates (§6). Approved like the other adjustments.
+- **`WriteOffRecovery`** (`models/accruals.py`): a written-off debt paid after all.
+  The receipt reinstates the written-off amount and books recovery income (§6).
 - **`CustomerCreditTransfer`** (`models/adjustments.py`): moves one customer's
   unapplied credit to another customer, the only way money crosses between
   customers. Always approved by a second person; there is no direct post (§6).
@@ -57,12 +64,16 @@ Routes (mounted at `/v1/finance/`): `credit-notes/…`, `refunds/…`,
 | `Concession` | `:228` | `customer`, `invoice`, `kind`, `amount`, `allowance_account?`, `journal` | single amount, no lines; the invoice must be the customer's |
 | `CustomerCreditTransfer` | `models/adjustments.py` | `from_customer`, `to_customer`, `transfer_date`, `amount`, `reason`, `receipt` | the destination's credit-transfer receipt carries the GL effect |
 | `CustomerCreditTransferDraw` | `models/adjustments.py` | `transfer`, `payment` or `note`, `amount` | which source lots a transfer drew; bumps their `transferred_amount` |
+| `WriteOffRequest` | `models/adjustments.py` | `invoice`, `amount`, `write_off_account?`, `write_off_date?`, `allowance_used`, `recovered_amount`, `journal` | a blank amount is the whole balance and is stamped with what was cleared when it posts |
+| `WriteOffRecovery` | `models/accruals.py` | `write_off`, `payment`, `amount`, `journal`, `reversed_at` | one recovery of written-off debt from a receipt |
+| `DoubtfulDebtProvision` | `models/accruals.py` | `as_of`, `narration`, `required_total`, `movement_total`, `policy_snapshot`, `status` | no branch: a run for every branch |
+| `DoubtfulDebtProvisionLine` | `models/accruals.py` | `provision`, `branch`, `required`, `current`, `movement`, `bands`, `journal` | one branch's figures and journal |
 
 - Money is kobo. `CreditNote`/`Refund`/`Concession` all extend `FinanceDocument`
   (entity scope, numbered, `status`, `created_by`).
-- **No `WriteOff` model** - write-offs exist only as a journal and a
-  `FinanceAuditLog` row (`action=INVOICE_WRITTEN_OFF`); the AR-adjustments list
-  reconstructs them from that log (`_writeoff_rows`, `views_ar.py:1058`).
+- A write-off is a `WriteOffRequest` document; the AR-adjustments list also reads
+  the `INVOICE_WRITTEN_OFF` audit rows for write-offs posted before the document
+  existed (`_writeoff_rows`).
 
 ## 3. Endpoint map
 
@@ -80,7 +91,13 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 | `POST /refunds/` | `finance.refund.create` | Create a **draft** refund, capped at currently unreserved credit | `customer`, `refund_date`, `amount`, `method?`, `bank_account?` | `201` `RefundSerializer` |
 | `GET /refunds/<pk>/` | `finance.refund.view` | One refund | - | detail |
 | `POST /refunds/<pk>/post/` | `finance.refund.post` | Pay it out (capped at customer credit) | - | `RefundSerializer` |
-| `POST /invoices/<pk>/write-off/` | `finance.invoice.writeoff` | Write off bad debt | `amount?` (default full balance), `write_off_account?`, `write_off_date?`, `narration?` | `InvoiceSerializer` |
+| `POST /invoices/<pk>/write-off/` | `finance.invoice.writeoff` | Write off bad debt, dated the day it posts unless `write_off_date` is given | `amount?` (default full balance), `write_off_account?`, `write_off_date?`, `narration?` | `InvoiceSerializer` |
+| `POST /write-offs/<pk>/recover/` | `finance.writeoff.reverse` | Recover a written-off debt from a later receipt of the same customer and branch | `payment` (id or number), `amount?` (default the smaller of its credit and what is left written off) | recovery + `WriteOffRequestSerializer` |
+| `GET /provisions/` | `finance.provision.view` | Provision runs (paginated); a branch-bound reader sees none, as runs name no branch | - | paginated `DoubtfulDebtProvisionSerializer` |
+| `POST /provisions/` | `finance.provision.create` | Raise a **draft** run with its figures worked out. Whole-tenant only (403 `SHARED_RECORD_READ_ONLY` otherwise) | `as_of`, `narration?` | `201` run with per-branch `lines` |
+| `GET /provisions/<pk>/` | `finance.provision.view` | One run | - | detail |
+| `POST /provisions/<pk>/submit/` | `finance.provision.submit` | Submit for approval (`finance.doubtful_debt_provision`); posts on final approval | - | run + `approval` block |
+| `POST /provisions/<pk>/post/` | `finance.provision.post` | Post directly where no approval step stops it; with an empty route it needs `confirm_without_approval` (recorded) | `confirm_without_approval?`, `reason?` | run |
 | `GET /ar-adjustments/` | `finance.refund.view` | Unified refunds + write-offs + KPIs (paginated) | - | `{rows, kpis, pagination}` |
 | `GET /concessions/` | `finance.concession.view` | List (paginated). Query: `kind`, `customer`, `search` | - | paginated `ConcessionSerializer` |
 | `POST /concessions/` | `finance.concession.create` | Create a **draft** concession | `customer`, `invoice`, `kind?`, `concession_date`, `amount`, `allowance_account?`, `reason?` | `201` `ConcessionSerializer` |
@@ -106,6 +123,12 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
   A concession and its invoice are locked and re-read before posting, so a double
   click posts once.
 - **Write-off:** a `WriteOffRequest` `DRAFT` → `POSTED`, locked the same way.
+  Recovered in parts by later receipts (`recovered_amount`); voiding a receipt that
+  funded a recovery writes that part off again.
+- **Provision run:** `DRAFT` → `PENDING_APPROVAL` (submit) → `APPROVED` → `POSTED`,
+  or `DRAFT` → `POSTED` directly where no step applies. Its figures are worked out
+  again when it posts, because receipts and write-offs made while it waited change
+  what the allowance must be.
 - **Customer credit transfer:** `DRAFT` → `PENDING_APPROVAL` (submit) →
   `APPROVED` → `POSTED` (`post_customer_credit_transfer`, run by the approval) →
   `REVERSED` (void). The seeded route (`finance.customer_credit_transfer`) has one
@@ -166,16 +189,55 @@ only the true excess lands in `2140`. The sub-ledger record is a `DebitNoteAlloc
 Dr  customer credit (2140)   amount
 Cr  bank / deposit           amount
 ```
-**Write-off** (`_write_off_invoice_atomic`, `credit_notes.py:413`):
+**Write-off** (`_write_off_invoice_atomic`, `credit_notes.py`):
 ```
-Dr  bad-debt expense (5300)  amount
-Cr  receivable (AR control)  amount        + invoice.amount_credited += amount
+Dr  deferred income (2160)            part of the bill's income not yet released
+Dr  allowance for doubtful debts (1290)  up to what the invoice's branch holds
+Dr  bad debts (5350)                  the rest
+Cr  receivable (AR control)           amount   + invoice.amount_credited += amount
 ```
+The date is `write_off_date`, or the day it posts at the invoice's branch: Mr Obi's
+debt approved for write-off in March 2029 is a 2029 loss, whatever year he was
+billed. `allowance_used` records the allowance's share.
+
+**Recovery** (`recover_write_off`, `credit_notes.py`) - on the receipt's date, which
+may not be before the write-off:
+```
+Dr  receivable (AR control)       amount     + invoice.amount_credited −= amount
+Cr  bad debts recovered (4810)    amount
+```
+then the receipt's credit is applied to the bill as any allocation is
+(`Dr 2140 / Cr AR`), so the net effect is recovery income for money received and no
+customer credit. Voiding the receipt reverses the reinstatement and writes the
+amount off again.
+
+**Doubtful-debt provision** (`provisions.py`) - on `as_of`, per branch: every bill
+and debit note still owed is aged from its due date (its own date when it has
+none) and provided for at the rate of the highest policy band it has passed
+(default 25% over 180 days, 50% over 365, 100% over 730); the movement is the
+required allowance less the one the branch holds in the ledger:
+```
+Dr  bad debts (5350)                    movement      (raising)
+Cr  allowance for doubtful debts (1290) movement
+```
+or the reverse where the allowance is more than needed. One journal per branch
+whose allowance moves, each naming its branch.
+
 **Concession** (`_post_concession_atomic`, `installments.py`):
 ```
-Dr  discounts & allowances (4910)  amount
+Dr  deferred income (2160)         part of the bill's income not yet released
+Dr  discounts & allowances (4910)  the rest
 Cr  receivable (AR control)        amount  + invoice.amount_credited += amount
 ```
+
+**Adjusting a deferred bill.** A CREDIT note naming a bill, a concession and a
+write-off each take back the bill's unreleased deferred income first, latest months
+first (`deferred_income.plan_unwind`): Tunde withdraws in February and the March and
+April shares are the ones he will not receive. The note debits deferred income in
+place of revenue for that part; the rest debits revenue as before. Voiding the note
+or concession restores what it took back, to be released when its month comes.
+Voiding the invoice itself cancels its waiting shares and takes the revenue already
+released back out (`Dr revenue / Cr 2160` on the void date).
 The allowance account must be revenue (usually contra) or expense, and a write-off
 account an expense or contra-revenue account (`accounts.require_account_kind`).
 
@@ -231,7 +293,15 @@ concession_date}` → draft; `post/` → `Dr 4910 500000 / Cr 1200 500000`, invo
   invoices; settle/credit first so `2140` holds the balance.
 - **A credit transfer needs its route staffed.** Books arrive with the transfer
   route empty; submission is refused until the tenant adds approvers (or runs
-  `seed_finance_approvals`).
+  `seed_finance_approvals`). The provision route arrives empty the same way.
+- **An undated write-off posts today.** A write-off is dated when it is made, so its
+  day needs an open period; pass `write_off_date` to book it elsewhere.
+- **A receipt from before the write-off is not a recovery.** Money that arrived
+  before the debt was written off is applied to the debt, not recovered from it.
+- **The allowance is per branch.** A write-off draws only on its own branch's
+  allowance, and a provision run sizes each branch's from that branch's debts.
+- **Written-off debt is not a separate statement line.** The statement shows the
+  bill and what settled it; the write-off clears it without a movement of its own.
 - **DEBIT note `allocate/` → 400** ("a debit note increases the receivable"). This
   only blocks the credit-note *allocate* verb (which reduces another invoice). A DEBIT
   note is instead **settled by a receipt** - `post_payment`/`allocate_payment` pick it
@@ -247,6 +317,8 @@ concession_date}` → draft; `post/` → `Dr 4910 500000 / Cr 1200 500000`, invo
 
 - Verbs split per action: `finance.creditnote.{view,create,post,allocate}`,
   `finance.refund.{view,create,post}`, `finance.invoice.writeoff`,
+  `finance.writeoff.{view,create,submit,post,reverse}` (`reverse` recovers),
+  `finance.provision.{view,create,submit,post}` (runs are whole-tenant),
   `finance.concession.{view,create,post}`,
   `finance.credittransfer.{view,create,submit,reverse}` (no post key: approval is
   the only route). The combined `ar-adjustments/` reuses `finance.refund.view`.
@@ -260,14 +332,17 @@ concession_date}` → draft; `post/` → `Dr 4910 500000 / Cr 1200 500000`, invo
 | File | Responsibility |
 |---|---|
 | `models/adjustments.py` | `CreditNote`(+`Line`,`Allocation`), `DebitNoteAllocation`, `Refund`, `Concession` |
-| `credit_notes.py` | price/post/allocate credit notes, `post_refund`, `write_off_invoice` |
+| `credit_notes.py` | price/post/allocate credit notes, `post_refund`, `write_off_invoice`, `allowance_available`, `recover_write_off` |
+| `provisions.py` | `required_allowance`, `held_allowance`, `prepare_provision`, `post_provision` |
+| `deferred_income.py` | `plan_unwind` / `apply_unwind` / `restore_unwinds` used by notes, concessions, write-offs and voids |
+| `views_accruals.py` | provision and recovery routes |
 | `receivables.py` | receipt allocation over invoices **+ DEBIT notes** (`_build_invoice_plan`, `_apply_payment_subledger`), `customer_credit_balance` |
 | `installments.py` | `post_concession` |
 | `credit_transfers.py` | `check_transfer`, `post_customer_credit_transfer`, `void_customer_credit_transfer` |
 | `approvals.py` | `cumulative_adjustment_amount`, `require_second_person`, the seeded routes |
 | `views_ar.py` | credit-note / refund / write-off / ar-adjustments / concession views |
 | `serializers.py` | `CreditNoteSerializer`, `RefundSerializer`, `ConcessionSerializer` |
-| `constants.py` | `CreditNoteKind`, `ConcessionKind`, `CUSTOMER_CREDIT_CODE` (2140), `BAD_DEBT_EXPENSE_CODE` (5300), `DISCOUNTS_ALLOWED_CODE` (4910) |
+| `constants.py` | `CreditNoteKind`, `ConcessionKind`, `CUSTOMER_CREDIT_CODE` (2140), `BAD_DEBT_EXPENSE_CODE` (5350), `DISCOUNTS_ALLOWED_CODE` (4910) |
 
 ## 11. Test coverage & gaps
 
@@ -278,6 +353,12 @@ invoice), `ConcessionTests` (discount reduces invoice, posts to allowances).
 approval route, the missing post route), credit notes naming a bill, cumulative
 approval and the second person.
 
+`tests_accruals.py`: provision runs per branch (raising and releasing), a write-off
+drawing on the allowance and dated when made, recovery (income, AR reconciled as at
+the receipt date, undone by voiding the receipt), a receipt older than the
+write-off refused, credit notes, concessions and write-offs of a deferred bill, and
+the whole-tenant and empty-route gates on a provision run.
+
 Worth asserting if not already:
 - **403** per verb; **cross-tenant** note/refund/concession id → 404.
 - Refund **capped** at customer credit (over-refund → 400) and books `Dr 2140 / Cr bank`.
@@ -286,7 +367,7 @@ Worth asserting if not already:
   bug: DN 20k + receipt 40k → DN PAID, 20k customer credit),
   `test_explicit_receipt_allocation_to_debit_note`, `test_stored_credit_settles_debit_note`,
   `test_receipt_allocates_across_invoice_and_debit_note_oldest_first`.
-- Write-off `Dr 5300 / Cr AR`, bumps `amount_credited`, full-balance default + the
+- Write-off `Dr 5350 / Cr AR`, bumps `amount_credited`, full-balance default + the
   "exceeds balance" guard; appears in `ar-adjustments/`.
 - Concession exceeding `balance_due` → 400; refreshes the invoice's payment plan.
 - Empty-list shape on a fresh entity.

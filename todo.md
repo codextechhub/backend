@@ -342,6 +342,48 @@ MUST SAY:
   branches; an entry about the whole books reads "School-wide" ("Entity-wide" in
   the console).
 
+### D90. Fees become income over the period they cover, doubtful debts are provided for, and deposits are held, not earned (hash pending, 2026-09-30)
+MODULES: M17 billing and invoicing, M19 finance and accounting, M20 adjustments and
+concessions, M18 payments and collections (deposit refunds), M04 roles and
+permissions, MRD.
+From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF).
+MUST SAY:
+- Deferred fee income (M17, M19). Invoice lines carry a service period
+  (service_start, service_end), which the FAL fills from the term, or the session
+  for a whole-year fee. A bill whose service period has not started credits
+  Deferred income (2160, mapping DEFERRED_INCOME, a current liability) and is
+  released to revenue by month: SPREAD_MONTHLY (default, equal whole-kobo shares,
+  remainder in the last month) or AT_PERIOD_START, per the entity's receivables
+  policy; never on billing. Release runs on demand and as a period-close step (a
+  month cannot close with its share unreleased), one journal per branch, and is
+  reversible with an open month. Credit notes, concessions, write-offs and voids of
+  a deferred bill unwind the unreleased part first.
+- Bad-debt provision (M19, M20). Receivables policy provision_bands (default 25%
+  over 180 days, 50% over 365, 100% over 730) set by a whole-tenant caller. A
+  provision run computes each branch's required allowance from aging, is approved
+  through its own route, recomputes at posting, and posts one journal per branch to
+  Allowance for doubtful debts (1290, contra-asset) and Bad debts (5350). Write-offs
+  draw on the allowance and are dated when posted, never backdated; a written-off
+  debt paid later is recovered to Bad debts recovered (4810), and voiding that
+  receipt writes it off again.
+- Caution deposits (M17, M18). A fee item flagged as a refundable deposit posts to
+  Deposits held (2170), never revenue. On deactivation the deposit becomes
+  refundable credit, or is set against unpaid bills only when
+  deposits_offset_unpaid_bills is on (default off). Unclaimed deposits become
+  Forfeited deposit income (4820) after unclaimed_deposit_years (default 6) by an
+  on-demand run.
+- Payers (M17). An invoice can be billed to a payer customer (sponsor or employer)
+  on behalf of a beneficiary customer; the payer's statement names the
+  beneficiary. A tenant's own scholarship stays a concession.
+- Routes under /v1/finance/: deferred-income/ (+ release, reverse), provisions/ (+
+  submit, post), write-offs/<id>/recover/, deposits/ (+ release, forfeit),
+  settings/receivables/. Keys finance.deferredincome.*, finance.provision.*,
+  finance.deposit.*, finance.writeoff.reverse. Migrations vs_finance 0043, 0044
+  (0044 adds the six accounts to existing charts, skipping codes already used).
+- Needs Attention: a tenant whose chart already used one of the new codes keeps its
+  account on that mapping until repointed; a family paying for several children
+  as one payer is not built; FinPro lacks these screens.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

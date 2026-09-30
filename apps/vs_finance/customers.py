@@ -18,7 +18,8 @@ customer is written to the finance audit log with its before and after values.
 
 **Deactivating** a customer (one who has left) takes them out of every fee run and
 every "bill all active" selection while their debt, documents and place in debtor
-lists stay exactly as they were. It is reversible.
+lists stay exactly as they were, and opens the claim on any refundable deposit they
+hold (:func:`vs_finance.deposits.on_customer_left`). It is reversible.
 """
 from __future__ import annotations
 
@@ -150,5 +151,11 @@ def set_customer_active(customer, active: bool, *, actor_user=None, reason: str 
                  else f"Deactivated customer {locked.code}; it is billed no more."),
         reason=reason or "",
     )
+    from .deposits import on_customer_left, on_customer_returned
+
+    if active:  # A returning customer's deposits are held for them again.
+        on_customer_returned(locked)
+    else:  # A departing customer's deposits become theirs to claim.
+        on_customer_left(locked, actor_user=actor_user)
     customer.is_active = locked.is_active
     return customer

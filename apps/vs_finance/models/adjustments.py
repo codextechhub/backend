@@ -516,11 +516,16 @@ class WriteOffRequest(FinanceDocument):
             it to the invoice's full outstanding balance at post time.
         write_off_account: Expense account debited; defaults to the entity's bad-debt
             account (CoA ``5300``) inside the service when left null.
-        write_off_date: Accounting date for the write-off journal (defaults to the
-            invoice date inside the service when null).
+        write_off_date: Accounting date for the write-off journal. Null means the day
+            it posts at the invoice's branch: a debt is written off when the
+            decision is made, never backdated to the bill.
         narration: Optional narration carried onto the journal.
         reason: Optional free-text reason for the write-off (governance/audit).
         journal: The bad-debt :class:`JournalEntry` once posted.
+        allowance_used: The part of the write-off charged to the allowance for
+            doubtful debts rather than to expense, in kobo.
+        recovered_amount: Kobo of this write-off since paid and reinstated by a
+            :class:`~vs_finance.models.WriteOffRecovery`.
     """
 
     DOC_TYPE = DocType.WRITE_OFF
@@ -548,6 +553,12 @@ class WriteOffRequest(FinanceDocument):
     journal = models.ForeignKey(
         "JournalEntry", on_delete=models.PROTECT, related_name="write_off_requests",
         null=True, blank=True,
+    )
+    allowance_used = MoneyField(
+        help_text="Part of the write-off charged to the allowance for doubtful debts, in kobo.",
+    )
+    recovered_amount = MoneyField(
+        help_text="Kobo of this write-off since paid and reinstated, in kobo.",
     )
 
     class Meta(FinanceDocument.Meta):

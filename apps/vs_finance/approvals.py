@@ -127,6 +127,8 @@ def approval_required(document) -> bool:
 #:
 #: Refunds and write-offs are always gated: one moves cash out, the other concedes
 #: income, and neither has a size at which a second pair of eyes stops being worth it.
+#: So is a doubtful-debt provision run, which moves the year's bad-debt expense for
+#: every branch at once.
 #: A customer credit transfer is always gated too: it moves one customer's money to
 #: another customer, which is the act a family disputes. Concessions and credit notes
 #: are gated only above a threshold, because a ₦2,000 goodwill allowance should not
@@ -140,6 +142,8 @@ _ADJUSTMENT_TEMPLATES = {
     "finance.credit_note": ("credit note", "Credit-note approval", True),
     "finance.customer_credit_transfer": (
         "customer credit transfer", "Customer credit transfer approval", False),
+    "finance.doubtful_debt_provision": (
+        "doubtful-debt provision", "Doubtful-debt provision approval", False),
 }
 
 
@@ -256,6 +260,7 @@ _ADJUSTMENT_SUBMIT_KEYS = {
     "concession": ("concessions", "submit", "SENSITIVE"),
     "creditnote": ("credit/debit notes", "submit", "SENSITIVE"),
     "credittransfer": ("customer credit transfers", "submit", "SENSITIVE"),
+    "provision": ("doubtful-debt provisions", "submit", "SENSITIVE"),
 }
 
 
@@ -340,11 +345,13 @@ def ensure_adjustment_submit_permissions():
 def _adjustment_models():
     """The finance documents these ladders route, keyed by their workflow type."""
     from .models import (
-        Concession, CreditNote, CustomerCreditTransfer, Refund, WriteOffRequest,
+        Concession, CreditNote, CustomerCreditTransfer, DoubtfulDebtProvision, Refund,
+        WriteOffRequest,
     )
 
     return {m.workflow_document_type: m for m in
-            (Refund, WriteOffRequest, Concession, CreditNote, CustomerCreditTransfer)}
+            (Refund, WriteOffRequest, Concession, CreditNote, CustomerCreditTransfer,
+             DoubtfulDebtProvision)}
 
 
 def _stages_payload(*, amount_field, threshold, gated, approver_group_code,

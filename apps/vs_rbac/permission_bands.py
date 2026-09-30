@@ -134,12 +134,17 @@ RESOURCE_BANDS = {
     ("finance", "invoice"): CORE,
     ("finance", "payment"): CORE,
     ("finance", "report"): CORE,
+    # Core: every fee billed before its service period is deferred at posting, so
+    # every school that bills must be able to release it.
+    ("finance", "deferredincome"): CORE,
     ("finance", "feestructure"): PLUS,
     ("finance", "creditnote"): PLUS,
     ("finance", "refund"): PLUS,
     ("finance", "writeoff"): PLUS,
     ("finance", "concession"): PLUS,
     ("finance", "credittransfer"): PLUS,
+    ("finance", "provision"): PLUS,
+    ("finance", "deposit"): PLUS,
     ("finance", "paymentplan"): PLUS,
     ("finance", "dunning"): PLUS,
     ("finance", "bankaccount"): PLUS,

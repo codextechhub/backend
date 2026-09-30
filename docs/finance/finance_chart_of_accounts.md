@@ -64,6 +64,45 @@ Routes covered (mounted at `/v1/finance/`):
   `SOFT_CLOSED` (admins/auto only) → `CLOSED` (reversible re-open) → `LOCKED`
   (sealed, e.g. after statutory filing).
 
+### Account roles (mappings)
+
+Services never hard-code an account for a role. They resolve it through
+`account_mappings.resolve_mapped_account(entity, key)`: the entity's
+`FinanceAccountMapping` override when it has one (set on
+`settings/account-mappings/`, whole-tenant writes only), else the seeded default
+code. The account found must be active, postable and of the expected type, or the
+posting is refused with the missing account named.
+
+| Key | Default | Type | Used for |
+|---|---|---|---|
+| `CASH_BANK` | 1100 Cash & Bank | asset | primary cash account |
+| `ACCOUNTS_RECEIVABLE` | 1200 Accounts Receivable | asset | customer AR control |
+| `DOUBTFUL_DEBT_ALLOWANCE` | 1290 Allowance for Doubtful Debts | asset (contra, credit balance) | set by provision runs, used by write-offs |
+| `VENDOR_ADVANCE` | 1240 Vendor Advances | asset | money paid to a vendor before their bill |
+| `INVENTORY_ASSET` | 1400 Inventory | asset | stock |
+| `ACCOUNTS_PAYABLE` | 2100 Accounts Payable | liability | vendor AP control |
+| `CUSTOMER_CREDIT` | 2140 Customer Credit | liability | unapplied receipts, overpayments, credit notes |
+| `GRIR_CLEARING` | 2150 GR/IR Clearing | liability | goods received, not yet billed |
+| `DEFERRED_INCOME` | 2160 Deferred Income | liability (current) | invoice lines billed before their service period, until released |
+| `DEPOSITS_HELD` | 2170 Customer Deposits Held | liability | refundable deposits until returned or forfeited |
+| `OUTPUT_VAT` | 2200 Output VAT | liability | sales tax |
+| `WHT_PAYABLE` | 2300 WHT Payable | liability | supplier withholding |
+| `RETAINED_EARNINGS` | 3200 Retained Earnings | equity | year-end close, opening balances |
+| `BAD_DEBT_RECOVERED` | 4810 Bad Debts Recovered | income | written-off debt later paid |
+| `FORFEITED_DEPOSIT_INCOME` | 4820 Forfeited Deposits | income | deposits unclaimed past the entity's limit |
+| `INVENTORY_ADJUSTMENT` | 5150 Inventory Adjustments | expense | stock-count differences |
+| `PURCHASE_PRICE_VARIANCE` | 5160 Purchase Price Variance | expense | receipt-to-bill price differences |
+| `BAD_DEBT_EXPENSE` | 5350 Bad Debts | expense | write-offs beyond the allowance, provision movements |
+| `BANK_CHARGES` | 5500 Bank Charges | expense | bank reconciliation adjustments |
+
+The six accounts behind the receivables accruals (1290, 2160, 2170, 4810, 4820,
+5350) are part of the starter chart. Books whose chart was seeded before them
+receive them from migration `0044_receivables_accruals_data`, except where the
+books already use one of those codes for something else: there the role must be
+pointed at the right account on the mappings screen before it is first used.
+2160 presents on the statement of financial position as **deferred income**, a
+current liability (`IFRSLine.DEFERRED_INCOME`); 1290 nets into trade receivables.
+
 ## 3. Endpoint map
 
 All require `?entity=<id|code>` **except** `GET/POST /entities/` (the entity list

@@ -1701,8 +1701,8 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
         self.assertEqual(inv.amount_credited, 100000)
         self.assertEqual(inv.balance_due, 0)
         self.assertEqual(inv.payment_status, InvoicePaymentStatus.PAID)
-        # Dr bad-debt expense (5300), Cr AR.
-        exp_bal = AccountBalance.objects.get(account__code="5300", period=period)
+        # Dr bad-debt expense (5350 Bad Debts), Cr AR.
+        exp_bal = AccountBalance.objects.get(account__code="5350", period=period)
         self.assertEqual(exp_bal.debit_total, 100000)
         self.assertTrue(
             FinanceAuditLog.objects.filter(
@@ -9287,8 +9287,10 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         from vs_finance.models import WriteOffRequest
 
         inv = self._posted_invoice()
+        # Dated inside the fixture's only period; undated, it posts on today's date.
         resp = self.client.post(
-            f"/v1/finance/invoices/{inv.pk}/write-off/?entity={self.entity.code}", {}, format="json")
+            f"/v1/finance/invoices/{inv.pk}/write-off/?entity={self.entity.code}",
+            {"write_off_date": "2026-01-20"}, format="json")
         self.assertEqual(resp.status_code, 200, resp.content)
         # No template → posts directly; the invoice is written off as before.
         wor = WriteOffRequest.objects.get(invoice=inv)

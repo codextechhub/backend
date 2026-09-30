@@ -93,6 +93,7 @@ class DocType(models.TextChoices):
     BANK_TRANSACTION = "BT", "Bank Transaction"
     BANK_TRANSFER = "BX", "Transfer Between Own Accounts"
     CUSTOMER_CREDIT_TRANSFER = "CT", "Customer Credit Transfer"
+    DOUBTFUL_DEBT_PROVISION = "DP", "Doubtful-debt Provision"
 
 # Define Account Type values.
 class AccountType(models.TextChoices):
@@ -154,6 +155,50 @@ class FeeAppliesTo(models.TextChoices):
     VENDOR = "VENDOR", "Vendor"
     STAFF = "STAFF", "Staff"
     GENERAL = "GENERAL", "General"
+
+
+class ChargeKind(models.TextChoices):
+    """What a fee item or invoice line bills: a charge earned, or money held for the customer.
+
+    A ``CHARGE`` is income: it credits its revenue account, or the deferred-income
+    liability while its service period has not begun. A ``DEPOSIT`` is refundable
+    money the entity holds (a caution deposit): it credits the deposits-held
+    liability and is never revenue, is kept per customer as a
+    :class:`~vs_finance.models.CustomerDeposit`, and leaves that liability only
+    when it is returned, set against unpaid bills, or forfeited as unclaimed.
+    """
+    CHARGE = "CHARGE", "Charge"
+    DEPOSIT = "DEPOSIT", "Refundable deposit"
+
+
+class RevenueRecognitionMethod(models.TextChoices):
+    """How an invoice line billed ahead of its service period becomes revenue.
+
+    Both apply only to a line whose service period starts after the invoice date;
+    a line with no service period, or one whose period has already begun, is
+    revenue on the invoice date. There is deliberately no "on billing" choice.
+
+    ``SPREAD_MONTHLY`` recognises an equal share in each calendar month the service
+    period touches, in whole kobo, with the remainder in the last month.
+    ``AT_PERIOD_START`` recognises all of it in the month the service period starts.
+    """
+    SPREAD_MONTHLY = "SPREAD_MONTHLY", "Spread evenly over each month of the service period"
+    AT_PERIOD_START = "AT_PERIOD_START", "All in the month the service period starts"
+
+
+class DeferredIncomeStatus(models.TextChoices):
+    """Where one month's share of deferred income stands."""
+    PENDING = "PENDING", "Waiting to be released"
+    RELEASED = "RELEASED", "Released to revenue"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class DepositStatus(models.TextChoices):
+    """Where a customer's refundable deposit stands."""
+    HELD = "HELD", "Held"
+    RELEASED = "RELEASED", "Returned or set against bills"
+    FORFEITED = "FORFEITED", "Forfeited as unclaimed"
+    CANCELLED = "CANCELLED", "Cancelled with its invoice"
 
 
 #: Default natural balance for each account root (before any contra flip).
@@ -523,6 +568,12 @@ class FinanceAuditAction(models.TextChoices):
     CUSTOMER_OPENING_POSTED = "CUSTOMER_OPENING_POSTED", "Customer opening invoice posted"
     CREDIT_TRANSFER_POSTED = "CREDIT_TRANSFER_POSTED", "Customer credit transfer posted"
     CREDIT_TRANSFER_REVERSED = "CREDIT_TRANSFER_REVERSED", "Customer credit transfer reversed"
+    DEFERRED_INCOME_RELEASED = "DEFERRED_INCOME_RELEASED", "Deferred income released"
+    DEFERRED_RELEASE_REVERSED = "DEFERRED_RELEASE_REVERSED", "Deferred income release reversed"
+    PROVISION_POSTED = "PROVISION_POSTED", "Doubtful-debt provision posted"
+    WRITE_OFF_RECOVERED = "WRITE_OFF_RECOVERED", "Written-off debt recovered"
+    DEPOSIT_RELEASED = "DEPOSIT_RELEASED", "Customer deposit released"
+    DEPOSITS_FORFEITED = "DEPOSITS_FORFEITED", "Unclaimed deposits forfeited"
     RECEIPT_PARKED_AS_CREDIT = "RECEIPT_PARKED_AS_CREDIT", "Receipt parked as customer credit"
     DUNNING_RUN_GENERATED = "DUNNING_RUN_GENERATED", "Dunning run generated"
     DUNNING_NOTICE_SENT = "DUNNING_NOTICE_SENT", "Dunning notice marked sent"
@@ -540,6 +591,9 @@ class FinanceAuditAction(models.TextChoices):
     )
     FINANCE_CALENDAR_SETTINGS_UPDATED = (
         "FIN_CALENDAR_SETTINGS_UPDATED", "Finance calendar settings updated"
+    )
+    FINANCE_RECEIVABLES_SETTINGS_UPDATED = (
+        "FIN_RECEIVABLES_SETTINGS_UPDATED", "Finance receivables settings updated"
     )
     PROCUREMENT_SETTINGS_UPDATED = "PROCUREMENT_SETTINGS_UPDATED", "Procurement settings updated"
     # Procure-to-Pay. The vendor/PO/GRN documents live in vs_procurement,
@@ -718,6 +772,7 @@ class IFRSLine(models.TextChoices):
     LONG_TERM_BORROWINGS = "LONG_TERM_BORROWINGS", "Long-term borrowings"
     # Statement of Financial Position - current liabilities.
     TRADE_PAYABLES = "TRADE_PAYABLES", "Trade and other payables"
+    DEFERRED_INCOME = "DEFERRED_INCOME", "Deferred income"
     CURRENT_TAX_PAYABLE = "CURRENT_TAX_PAYABLE", "Current tax payable"
     EMPLOYEE_PAYABLES = "EMPLOYEE_PAYABLES", "Employee benefit obligations"
     SHORT_TERM_BORROWINGS = "SHORT_TERM_BORROWINGS", "Short-term borrowings"
@@ -764,7 +819,7 @@ OPERATING_REVENUE_CODE = "4100"          # Operating revenue (income) - generic 
 CASH_BANK_CODE = "1100"                  # Cash & bank (the cash-flow statement's cash line)
 SALES_RETURNS_CODE = "4900"              # Sales returns (contra-revenue) - credit notes default here
 DISCOUNTS_ALLOWED_CODE = "4910"          # Discounts & allowances (contra-revenue) - concessions default here
-BAD_DEBT_EXPENSE_CODE = "5300"           # Bad-debt / general expense - write-offs default here
+BAD_DEBT_EXPENSE_CODE = "5350"           # Bad debts (expense) - write-offs and provisions default here
 CUSTOMER_CREDIT_CODE = "2140"            # Customer credit balances (liability) - overpayments / unapplied credit / refundable
 
 
@@ -785,6 +840,11 @@ class AccountMappingKey(models.TextChoices):
     INVENTORY_ASSET = "INVENTORY_ASSET", "Inventory asset"
     INVENTORY_ADJUSTMENT = "INVENTORY_ADJUSTMENT", "Inventory adjustment"
     PURCHASE_PRICE_VARIANCE = "PURCHASE_PRICE_VARIANCE", "Purchase price variance"
+    DEFERRED_INCOME = "DEFERRED_INCOME", "Deferred income"
+    DEPOSITS_HELD = "DEPOSITS_HELD", "Customer deposits held"
+    DOUBTFUL_DEBT_ALLOWANCE = "DOUBTFUL_DEBT_ALLOWANCE", "Allowance for doubtful debts"
+    BAD_DEBT_RECOVERED = "BAD_DEBT_RECOVERED", "Bad debts recovered"
+    FORFEITED_DEPOSIT_INCOME = "FORFEITED_DEPOSIT_INCOME", "Forfeited deposits income"
 
 #: Reserved code for CodeX's own platform set of books (the operator's entity).
 #: An uppercase identifier (like all entity codes); the display name is "CodeX".

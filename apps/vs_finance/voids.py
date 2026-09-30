@@ -121,7 +121,12 @@ def _void_invoice_atomic(invoice, *, actor_user=None, date=None):
             "(and cancel its installment plan) first.",
         )
 
+    from .deferred_income import cancel_invoice_schedule
+    from .deposits import cancel_invoice_deposits
+
+    cancel_invoice_deposits(invoice)
     reversal = _reverse(invoice.journal, invoice, actor_user=actor_user, date=date)
+    released_back = cancel_invoice_schedule(invoice, reversal=reversal, actor_user=actor_user)
     invoice.status = DocumentStatus.REVERSED
     invoice.save(update_fields=["status", "updated_at"])
     record(
@@ -129,6 +134,7 @@ def _void_invoice_atomic(invoice, *, actor_user=None, date=None):
         actor_user=actor_user, target=invoice,
         message=f"Voided invoice {invoice.document_number}.",
         journal_id=invoice.journal_id, reversal_id=reversal.pk,
+        released_revenue_journal_id=getattr(released_back, "pk", None),
     )
     return invoice
 
@@ -219,6 +225,7 @@ def _void_payment_atomic(payment, *, actor_user=None, date=None, transfer=None):
         note.amount_paid = max(0, note.amount_paid - allocation.amount)
         note.refresh_settlement_status(save=False)
         note.save(update_fields=["amount_paid", "settlement_status", "updated_at"])
+    recoveries = _undo_write_off_recoveries(payment, invoices, actor_user=actor_user, date=date)
 
     payment.allocated_amount = 0
     payment.status = DocumentStatus.REVERSED
@@ -229,8 +236,41 @@ def _void_payment_atomic(payment, *, actor_user=None, date=None, transfer=None):
         message=f"Voided receipt {payment.document_number}.",
         journal_id=payment.journal_id, reversal_id=reversal.pk,
         allocation_reversals=[link.journal_id for link in allocation_journals],
+        write_off_recoveries_reversed=recoveries,
     )
     return payment
+
+
+def _undo_write_off_recoveries(payment, invoices, *, actor_user, date):
+    """Write a debt off again when the receipt that recovered it is voided.
+
+    A recovery reinstated the written-off amount and booked recovery income on the
+    strength of this receipt. With the receipt gone, the reinstatement journal is
+    reversed and the amount returns to the bill as written off, so the income and
+    the debt go back to where they stood before the money arrived. Returns the
+    recovery ids undone.
+    """
+    from django.utils import timezone
+
+    from .models import Invoice, WriteOffRecovery
+
+    undone = []
+    for recovery in (WriteOffRecovery.objects.select_for_update()
+                     .filter(payment=payment, reversed_at__isnull=True)
+                     .select_related("write_off", "journal").order_by("pk")):
+        _reverse(recovery.journal, recovery, actor_user=actor_user, date=date)
+        write_off = recovery.write_off
+        invoice = invoices.get(write_off.invoice_id) or Invoice.objects.select_for_update().get(
+            pk=write_off.invoice_id)
+        invoice.amount_credited += recovery.amount
+        invoice.refresh_payment_status(save=False)
+        invoice.save(update_fields=["amount_credited", "payment_status", "updated_at"])
+        write_off.recovered_amount = max(0, write_off.recovered_amount - recovery.amount)
+        write_off.save(update_fields=["recovered_amount", "updated_at"])
+        recovery.reversed_at = timezone.now()
+        recovery.save(update_fields=["reversed_at", "updated_at"])
+        undone.append(recovery.pk)
+    return undone
 
 
 def void_credit_note(note, *, actor_user=None, date=None):
@@ -298,6 +338,11 @@ def _void_credit_note_atomic(note, *, actor_user=None, date=None):
     for link in reversed(allocation_journals):
         _reverse(link.journal, note, actor_user=actor_user, date=date)
     reversal = _reverse(note.journal, note, actor_user=actor_user, date=date)
+    from .deferred_income import restore_unwinds
+    from .deposits import restore_released_deposits
+
+    restore_unwinds(note.journal)  # Deferred income the note took back waits again.
+    restore_released_deposits(note)  # Deposits the note returned are held again.
 
     for allocation in allocations:
         invoice = invoices[allocation.invoice_id]
@@ -381,6 +426,9 @@ def _void_concession_atomic(concession, *, actor_user=None, date=None):
     invoice = Invoice.objects.select_for_update().get(pk=concession.invoice_id)
 
     reversal = _reverse(concession.journal, concession, actor_user=actor_user, date=date)
+    from .deferred_income import restore_unwinds
+
+    restore_unwinds(concession.journal)  # Deferred income the concession took back waits again.
     invoice.amount_credited = max(0, invoice.amount_credited - concession.amount)
     invoice.refresh_payment_status(save=False)
     invoice.save(update_fields=["amount_credited", "payment_status", "updated_at"])

@@ -16,7 +16,7 @@ from django.db import transaction
 
 from vs_config.clock import branch_today
 
-from .constants import DocumentStatus
+from .constants import ChargeKind, DocumentStatus
 from .exceptions import FinanceError, PostingError
 from .receivables import post_invoice
 
@@ -53,7 +53,8 @@ def already_billed_customer_ids(structure, customer_ids, billing_period: str = "
 # Handle the generate invoices workflow.
 def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
                       actor_user=None, branch=None, billing_period="",
-                      billing_period_label=""):  # Generate posted invoices from a fee structure.
+                      billing_period_label="", service_start=None,
+                      service_end=None):  # Generate posted invoices from a fee structure.
     """Raise one posted invoice per customer from ``structure``'s fee items.
 
     ``customers`` is an iterable of :class:`~vs_finance.models.Customer`. Returns the list
@@ -93,6 +94,11 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
     An omitted ``invoice_date`` is today at the branch each invoice is raised
     for, so a family billed at a branch that keeps its own time zone is billed on
     that branch's day, and its due date counts from it.
+
+    ``service_start`` / ``service_end`` are the dates the billed service runs over,
+    stamped on every charge line (a deposit is held, not earned, so its lines carry
+    none). A run billed before the service starts posts deferred income that is
+    released month by month (:mod:`vs_finance.deferred_income`). Both or neither.
     """
     from .models import FeeItemAssignment, FeeStructure, Invoice, InvoiceLine
 
@@ -104,6 +110,10 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
         raise PostingError(f"Fee structure {structure.code} has no items to bill.")
     if not structure.is_active:  # Inactive structures must not be billed.
         raise PostingError(f"Fee structure {structure.code} is inactive.")
+    if (service_start is None) != (service_end is None):
+        raise PostingError("A service period needs both its first and its last day.")
+    if service_start is not None and service_end < service_start:
+        raise PostingError("A service period cannot end before it starts.")
 
     due_after = None
     if due_date is None:  # Never leave it null: null is not a deadline, it is never overdue.
@@ -159,6 +169,9 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
                 revenue_account=item.revenue_account,  # Copy the revenue posting account.
                 quantity=1, unit_price=item.amount,  # Bill one unit at the configured kobo amount.
                 tax_code=item.tax_code,  # Copy configured output tax code.
+                kind=item.kind,
+                service_start=None if item.kind == ChargeKind.DEPOSIT else service_start,
+                service_end=None if item.kind == ChargeKind.DEPOSIT else service_end,
             )
         post_invoice(invoice, actor_user=actor_user)  # Price, validate, and post the invoice to AR/GL.
         invoice.refresh_from_db()

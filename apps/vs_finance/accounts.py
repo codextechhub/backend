@@ -60,7 +60,7 @@ _ACCOUNT_ROLES = {
     "receivable": ({"ASSET"}, False, "a receivable (asset) account", "1200 Accounts receivable"),
     "allowance": ({"INCOME", "EXPENSE"}, True,
                   "a contra-revenue or expense account", "4910 Discounts & concessions"),
-    "write_off": ({"EXPENSE"}, True, "an expense account", "5300 Bad debts"),
+    "write_off": ({"EXPENSE"}, True, "an expense account", "5350 Bad debts"),
 }
 
 

@@ -53,6 +53,7 @@ APPROVAL_TYPES = {
     "finance.concession": ("concession", "concessions"),
     "finance.credit_note": ("credit or debit note", "credit or debit notes"),
     "finance.customer_credit_transfer": ("customer credit transfer", "customer credit transfers"),
+    "finance.doubtful_debt_provision": ("doubtful-debt provision", "doubtful-debt provisions"),
     "finance.expense_claim": ("expense claim", "expense claims"),
     "finance.journal": ("journal", "journals"),
     "finance.bank_transaction": ("bank transaction", "bank transactions"),
