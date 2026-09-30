@@ -155,16 +155,24 @@ def record_action(instance_id, actor, action: str, comment: str = "") -> Workflo
 
     Separation of duties is checked here as well as at approver resolution,
     not instead of it: the eligible list is frozen when the stage activates,
-    and a requester who was a legitimate approver at that moment must not be
-    let through by a snapshot written before the engine knew who would submit.
+    and a snapshot can name somebody the document's rule now keeps off it (one
+    written before the engine knew who would submit, or before the handler
+    had a rule of its own).
+
+    Both checks ask the same question, ``approvers.approval_conflict_ids``:
+    the document's handler names who may not decide it, and a handler with no
+    rule of its own leaves it to everyone who raised the document. So a leave
+    request refuses the person taking the leave, whoever filed it, and lets the
+    administrator who filed it for a colleague vote; a refund refuses whoever
+    raised it.
 
     The check compares people, not identities. The voter is both the person
     named on the vote and, under a proxy (an impersonation session), the real
-    person at the keyboard; the requester is everyone
-    ``approvers.requester_ids`` counts. So Ada, who raised a refund as herself,
-    is refused when she proxies Chioma and approves it, while Ada proxying
-    Chioma to approve a refund Bola raised is an ordinary vote. The document
-    types whose handlers allow self-approval are exempt from the whole check.
+    person at the keyboard, and either one in the conflict set refuses the
+    vote. So Ada, who raised a refund as herself, is refused when she proxies
+    Chioma and approves it, while Ada proxying Chioma to approve a refund Bola
+    raised is an ordinary vote. The document types whose handlers allow
+    self-approval are exempt from the whole check.
 
     The one-vote rule counts people the same way. A vote is refused when the
     stage attempt already holds a live vote either in the named voter's name or
@@ -184,11 +192,13 @@ def record_action(instance_id, actor, action: str, comment: str = "") -> Workflo
             raise InvalidInstanceStateError("Instance is RETURNED. Wait for resubmission.")
         # Separation of duties, counted on real people.
         if not approvers_service.requester_may_self_approve(instance):
-            requesters = approvers_service.requester_ids(instance)
             voters = {actor.pk, approvers_service.real_person_id(actor)}
-            if requesters & voters:
+            conflicted = voters & approvers_service.approval_conflict_ids(instance)
+            if conflicted:
+                raised = conflicted & approvers_service.requester_ids(instance)
+                why = "you raised it" if raised else "it is about you"
                 raise RequesterCannotApproveError(
-                    "Requesters cannot approve their own documents.")
+                    f"You cannot decide this request, because {why}.")
 
         si = _active_stage_instance(instance)
         snap = _check_eligibility(si, actor)
@@ -226,14 +236,31 @@ def record_action(instance_id, actor, action: str, comment: str = "") -> Workflo
                 return routing_service._terminate_rejected(instance, actor, comment)
             return routing_service._return_to_requester(instance, actor, comment, si.stage_id)
 
-        # Approval advances only after the stage's configured threshold is met.
-        if _stage_fully_approved(si):
-            si.status = WorkflowStageStatus.APPROVED
-            si.resolved_at = timezone.now()
-            si.save(update_fields=["status", "resolved_at"])
-            audit_service.write(instance, AuditEventType.STAGE_APPROVED, stage_instance=si)
-            routing_service.advance_instance(instance, current_attempt=si.attempt)
+        complete_stage_if_approved(instance, si)
         return instance
+
+
+# Close a stage whose threshold is met and move the workflow on.
+def complete_stage_if_approved(instance: WorkflowInstance,
+                               stage_instance: WorkflowStageInstance) -> bool:
+    """Approve the stage and advance the instance when the threshold is met.
+
+    The one path from "enough people have approved" to the next stage. A vote
+    reaches it, and so does a change to who approves: under a stage everyone
+    must approve, removing the last person still to decide leaves everyone
+    remaining already approved, and the stage completes exactly as if that
+    last vote had just been cast. Returns whether it completed.
+
+    The caller holds the instance lock.
+    """
+    if not _stage_fully_approved(stage_instance):
+        return False
+    stage_instance.status = WorkflowStageStatus.APPROVED
+    stage_instance.resolved_at = timezone.now()
+    stage_instance.save(update_fields=["status", "resolved_at"])
+    audit_service.write(instance, AuditEventType.STAGE_APPROVED, stage_instance=stage_instance)
+    routing_service.advance_instance(instance, current_attempt=stage_instance.attempt)
+    return True
 
 
 # Let the requester stop a non-terminal workflow they submitted.

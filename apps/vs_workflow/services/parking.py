@@ -170,6 +170,33 @@ class ResolutionCache:
     def __init__(self):
         self._holders: dict = {}
         self._overrides: dict = {}
+        self._assigned: set | None = None
+
+    def prime_assignments(self, stage_instances) -> None:
+        """Learn, in one query, which of these stages an administrator chose approvers for.
+
+        A stage with an advance choice resolves from that choice rather than
+        from its role or group, so the memoised holder lookup does not describe
+        it. Priming keeps that check to one query for a whole page; an unprimed
+        cache asks per stage instead.
+        """
+        from vs_workflow.models import WorkflowStageAssignment
+
+        pairs = {(row.instance_id, row.stage_id) for row in stage_instances}
+        self._assigned = set(
+            WorkflowStageAssignment.objects.filter(
+                instance_id__in={instance_id for instance_id, _ in pairs},
+            ).values_list("instance_id", "stage_id")
+        ) & pairs
+
+    def _has_assignment(self, stage, instance) -> bool:
+        if self._assigned is not None:
+            return (instance.pk, stage.pk) in self._assigned
+        from vs_workflow.models import WorkflowStageAssignment
+
+        return WorkflowStageAssignment.objects.filter(
+            instance_id=instance.pk, stage_id=stage.pk,
+        ).exists()
 
     def _override_for(self, stage, tenant):
         """Memoised tenant override for this stage, or None.
@@ -194,6 +221,9 @@ class ResolutionCache:
         if stage.approver_source not in (
             ApproverSource.ROLE, ApproverSource.WORKFLOW_GROUP,
         ):
+            return None
+        # An administrator's advance choice for this request replaces the source.
+        if self._has_assignment(stage, instance):
             return None
         # A tenant may have repointed this stage at its own role or group, in
         # which case the stage's own configuration is not what will resolve.
@@ -252,6 +282,9 @@ class ResolutionCache:
         holders = self._holder_ids(stage, instance)
         if holders is None:
             return True
+        # Nobody holds it: no conflict lookup, so a parked page costs no query per row.
+        if not holders:
+            return False
         if approvers_service.requester_may_self_approve(instance):
             return bool(holders)
         return bool(holders - approvers_service.approval_conflict_ids(instance))
@@ -332,7 +365,10 @@ def repair_stages(stage_instances, document_types=None) -> int:
     ``stage_instances`` must carry their ``stage`` and ``instance`` (see
     :func:`empty_active_stages`, which selects both).
     """
+    stage_instances = list(stage_instances)
     cache = ResolutionCache()
+    if stage_instances:
+        cache.prime_assignments(stage_instances)
     repaired = 0
     for row in stage_instances:
         # One unrepairable stage must not abort the pass. This runs on the read

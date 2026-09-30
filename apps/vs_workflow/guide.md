@@ -710,7 +710,12 @@ All endpoints are under `/v1/workflow/`.
 
 | Method | URL | Permission | Description |
 |--------|-----|------------|-------------|
-| `GET` | `/instances/` | `workflow.instance.view` | List instances. Supports `?document_type=`, `?status=`, `?requested_by=`, `?template_code=`. Read-only: there is no generic `POST` (see Step 5). |
+| `GET` | `/instances/` | `workflow.instance.view` | List instances. Supports `?document_type=`, `?status=` (one or comma-separated), `?requested_by=`, `?request_for=`, `?waiting_on=`, `?stage=`, `?waiting_longer_than=` (days), `?submitted_from=` / `?submitted_to=` (dates, in the tenant's time zone), `?branch=`, `?search=`, `?template_code=`, all combined with AND. Each row adds `request_for`, `waiting_on`, `waiting_since`, `stage_position` and `branch`. Read-only: there is no generic `POST` (see Step 5). |
+| `GET` | `/instances/filter-options/?document_type=` | `workflow.instance.view` | The approval stages a request of that type can be waiting on, for the `stage` filter. |
+| `GET` | `/instances/{id}/approvers/` | `workflow.approvers.assign` | Every approval stage of the request (DONE, ACTIVE, UPCOMING) with who approves it, plus the change history. |
+| `POST` | `/instances/{id}/approvers/` | `workflow.approvers.assign` | Set the complete list for one stage. Body: `{ "stage", "approvers": [user ids], "reason" }`. The waiting stage changes now; a stage still to come keeps the choice for when it opens. |
+| `POST` | `/instances/{id}/approvers/reset/` | `workflow.approvers.assign` | Drop a stage's advance choice. Body: `{ "stage", "reason" }`. |
+| `POST` | `/instances/replace-approver/` | `workflow.approvers.assign` | Replace one person with another on 1 to 200 requests, skipping any that cannot change. Body: `{ "from_user", "to_user", "instance_ids", "reason" }`. |
 | `GET` | `/instances/{id}/` | `workflow.instance.view` | Full detail including stage history and audit log. |
 | `POST` | `/instances/` | `workflow.instance.submit` | Submit a document for approval. |
 | `POST` | `/instances/{id}/withdraw/` | Authenticated | Requester withdraws their own submission. |
@@ -737,10 +742,10 @@ All endpoints are under `/v1/workflow/`.
 | Method | URL | Permission | Description |
 |--------|-----|------------|-------------|
 | `GET` | `/delegations/` | Authenticated | Lists delegations. Admins see all; others see only their own. |
-| `POST` | `/delegations/` | Authenticated | Create a delegation. Requester is automatically the delegator. |
+| `POST` | `/delegations/` | Authenticated | Create a delegation. The caller is the delegator unless they name a `delegator`, which needs `workflow.approvers.assign`. One that starts at once reaches the requests already waiting on the delegator (`applied_to_waiting`); one that starts later reaches them when it starts. |
 | `PUT/PATCH` | `/delegations/{id}/` | Authenticated | Update a delegation (own only, or admin). |
 | `DELETE` | `/delegations/{id}/` | Authenticated | Delete a delegation. |
-| `POST` | `/delegations/{id}/revoke/` | Authenticated | Revoke (soft-delete) a delegation. |
+| `POST` | `/delegations/{id}/revoke/` | Authenticated | Revoke (soft-delete) a delegation, taking its delegate off the requests still waiting on them and putting back a delegator an exclusive delegation had taken off. |
 
 ---
 

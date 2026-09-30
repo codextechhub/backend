@@ -55,6 +55,10 @@ class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
         document = instance.document
         return {document.staff.user_id} if document is not None else None
 
+    def request_for_user_id(self, document):
+        """The member of staff taking the leave, whoever filed it."""
+        return document.staff.user_id
+
     condition_fields = (
         ConditionField("document.leave_type", "Leave type", "document",
                        ConditionFieldType.CHOICE, tuple(LeaveType.choices)),

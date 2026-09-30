@@ -70,6 +70,13 @@ WORKFLOW_RESOURCES = [
             ("reverse", "Reverse a recorded approver action (admin override)", True),
         ],
     ),
+    (
+        "approvers",
+        "Who approves requests already under way",
+        [
+            ("assign", "Change who approves requests, and set delegations for other people", True),
+        ],
+    ),
 ]
 
 PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
@@ -80,7 +87,8 @@ _PLATFORM_ROLE_NAMES = {"xvs_super_admin": "XVS Super Admin", "xvs_platform_admi
 #:
 #: The split follows who is answerable for what. School Admin gets the write
 #: keys because deciding who signs off the school's money is the head's call
-#: and there is nobody else in a school to make it. Finance Admin and
+#: and there is nobody else in a school to make it. That includes moving a
+#: request that is already waiting to somebody else when its approver is away. Finance Admin and
 #: Procurement Admin read the rules governing their own documents, since seeing
 #: which ladder governs a purchase order is part of running procurement and
 #: changing it is not. Branch Admin sees instances only: a branch admin answers
@@ -96,6 +104,7 @@ SCHOOL_ROLE_DEFAULTS = {
         "workflow.group.view", "workflow.group.create",
         "workflow.group.update", "workflow.group.delete",
         "workflow.instance.view", "workflow.instance.cancel",
+        "workflow.approvers.assign",
     ],
     "finance_admin": [
         "workflow.template.view", "workflow.instance.view", "workflow.group.view",

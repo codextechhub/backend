@@ -214,3 +214,69 @@ class ApprovalNotConfiguredError(WorkflowError):
         "review it."
     )
     http_status = 409
+
+
+class ReassignmentError(WorkflowError):
+    """A change to who approves a request that the rules refuse.
+
+    400 rather than the 422 most engine errors carry: each is the answer to one
+    value the administrator chose (a person, a stage, a reason), and the message
+    names it in plain words so the screen can show it as it stands.
+    """
+
+    error_code = "REASSIGNMENT_REFUSED"
+    default_message = "That change to the approvers cannot be made."
+    http_status = 400
+
+
+class ApproverAlreadyVotedError(ReassignmentError):
+    """Removing somebody whose decision on the stage's current attempt stands.
+
+    Taking them off would leave a vote on the record from a person the stage no
+    longer lists. Reversing the vote is its own action, with its own reason.
+    """
+
+    error_code = "APPROVER_ALREADY_VOTED"
+    default_message = "This person has already decided this stage, so they cannot be removed."
+
+
+class ApproverConflictError(ReassignmentError):
+    """Adding a person the document's own rule keeps from deciding it."""
+
+    error_code = "APPROVER_CONFLICT"
+    default_message = "This person cannot approve this request."
+
+
+class ApproverOutOfReachError(ReassignmentError):
+    """Adding somebody who is not an active member here, or not in the request's branch."""
+
+    error_code = "APPROVER_OUT_OF_REACH"
+    default_message = "This person cannot approve requests here."
+
+
+class StageEmptyError(ReassignmentError):
+    """A list that would leave a stage with too few people to finish it."""
+
+    error_code = "STAGE_EMPTY"
+    default_message = "A stage must keep at least one approver."
+
+
+class StageNotChangeableError(ReassignmentError):
+    """A stage that has finished, is not part of this request, or is not an approval."""
+
+    error_code = "STAGE_NOT_CHANGEABLE"
+    default_message = "This stage's approvers can no longer be changed."
+
+
+class InstanceNotOpenError(ReassignmentError):
+    """A request that has finished, so nobody is waiting to decide it."""
+
+    error_code = "INSTANCE_NOT_OPEN"
+    default_message = "This request is finished, so its approvers cannot be changed."
+
+
+class ReasonRequiredError(ReassignmentError):
+    """A change without a reason, or with one too long to keep."""
+
+    error_code = "REASON_REQUIRED"
+    default_message = "Say why the approvers are changing."

@@ -785,6 +785,24 @@ def _build_default_templates() -> dict:
             ),
         },
 
+        # ── workflow.approver_removed ───────────────────────────────────────
+        ("workflow.approver_removed", C.IN_APP): {
+            "subject": "{{ document_title }} no longer needs your approval",
+            "body": "Somebody else will decide it at {{ stage_name }}.",
+        },
+        ("workflow.approver_removed", C.EMAIL): {
+            "subject": "No action needed: {{ document_type }} moved to another approver",
+            "body": (
+                "A document that was waiting for your decision no longer needs it.\n\n"
+                "Document type: {{ document_type }}\n"
+                "Title: {{ document_title }}\n"
+                "Stage: {{ stage_name }}\n\n"
+                "It has been passed to somebody else to decide, so there is nothing "
+                "for you to do.\n\n"
+                "CodeX Vision"
+            ),
+        },
+
         # ── billing.invoice_issued ──────────────────────────────────────────
         # NB: billing.* events are fired by the domain-neutral vs_finance ledger,
         # which knows a generic {{ customer_name }} (the billing party) - not a

@@ -544,12 +544,79 @@ def _self_approval_only_when_alone(instance: WorkflowInstance) -> bool:
     return bool(getattr(handler, "self_approval_only_when_alone", False))
 
 
+def stage_assignment_for(stage: WorkflowStage, instance: WorkflowInstance):
+    """The administrator's advance choice of approvers for this stage of this request, or None.
+
+    An unsaved instance (the approver preview's stand-in) has no request behind
+    it, so it has no assignment either.
+    """
+    from vs_workflow.models import WorkflowStageAssignment
+
+    if instance.pk is None or instance._state.adding:
+        return None
+    return (WorkflowStageAssignment.objects
+            .filter(instance_id=instance.pk, stage_id=stage.pk)
+            .prefetch_related("approvers").first())
+
+
+def may_decide(user, instance: WorkflowInstance, conflicts=None) -> bool:
+    """Whether the document's own conflict rule lets *user* decide it.
+
+    ``conflicts`` is :func:`approval_conflict_ids` when the caller already
+    holds it. A type that lets its requester self-approve lets everybody pass
+    here; whether it prefers somebody else when there is anybody is a question
+    about the whole list, and :func:`resolve_approvers` asks it there.
+    """
+    if requester_may_self_approve(instance):
+        return True
+    if conflicts is None:
+        conflicts = approval_conflict_ids(instance)
+    return getattr(user, "pk", user) not in conflicts
+
+
+def active_delegations(instance: WorkflowInstance, delegator_ids, *, conflicts=None,
+                       now=None) -> list:
+    """The delegations that put a delegate beside each of *delegator_ids* on this request now.
+
+    Active means started, not yet ended and not revoked; a delegation naming a
+    document type covers only that type. Its delegate must be somebody who may
+    decide this document (:func:`may_decide`) and an active member of the
+    request's tenant (:func:`_tenant_members`): a delegation row is scoped to a
+    tenant, but nothing constrains the user it names, so it could otherwise
+    hand authority to an outsider.
+
+    The single definition shared by stage activation and by the reassignment
+    service, which expands delegations for a person added to a waiting stage,
+    so a delegate joins the same way whichever path put their delegator there.
+    """
+    delegator_ids = {getattr(d, "pk", d) for d in delegator_ids if d is not None}
+    if not delegator_ids:
+        return []
+    now = now or timezone.now()
+    if conflicts is None:
+        conflicts = approval_conflict_ids(instance)
+    delegations = list(ApprovalDelegation.objects.filter(
+        tenant_id=instance.tenant_id,
+        starts_at__lte=now, ends_at__gte=now,
+        revoked_at__isnull=True,
+        delegator_id__in=delegator_ids,
+    ).filter(
+        Q(document_type="") | Q(document_type=instance.document_type),
+    ).select_related("delegator", "delegate").order_by("starts_at", "pk"))
+    delegations = [d for d in delegations if may_decide(d.delegate, instance, conflicts)]
+    contained_ids = {
+        u.pk for u in _tenant_members([d.delegate for d in delegations], instance.tenant_id)
+    }
+    return [d for d in delegations if d.delegate_id in contained_ids]
+
+
 def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[EligibleApprover]:
     """Build the full eligible approver list for a stage at the moment it activates.
 
-    A tenant override wins first, if the tenant has recorded one for this
-    stage. Otherwise the base approver set comes from the stage's
-    `approver_source`:
+    An administrator's advance choice for this stage of this request
+    (:class:`~vs_workflow.models.WorkflowStageAssignment`) wins first. Then a
+    tenant override, if the tenant has recorded one for this stage. Otherwise
+    the base approver set comes from the stage's `approver_source`:
       - ROLE (default): holders of the stage's role key, resolved inside the
         requesting tenant so one central template serves everybody.
       - WORKFLOW_GROUP: the resolved membership of the named approver group,
@@ -602,9 +669,17 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     delegates too: an approver may hand their authority to a colleague, never
     across a tenant boundary, and a delegation row cannot buy an outsider the
     eligibility the sources above are forbidden to give them directly.
+
+    An assignment is a source like the others and passes through every step
+    after dispatch, so a person chosen in advance who has since left, or who
+    has become the document's own conflict, is dropped at activation exactly
+    as a role holder would be.
     """
-    override = stage_override_for(stage, instance.tenant)
-    if override is not None:
+    assignment = stage_assignment_for(stage, instance)
+    override = None if assignment is not None else stage_override_for(stage, instance.tenant)
+    if assignment is not None:
+        base_users = list(assignment.approvers.all())
+    elif override is not None:
         base_users = _override_base_users(override, stage, instance)
     elif stage.approver_source == ApproverSource.ROLE:
         base_users = _role_base_users(stage, instance)
@@ -637,29 +712,11 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     ):
         base_users = others
 
-    base_ids = {u.pk for u in base_users}
-
-    now = timezone.now()
-    # Delegations only apply while active, unrevoked, and matching this document type.
-    delegations = list(ApprovalDelegation.objects.filter(
-        tenant=instance.tenant,
-        starts_at__lte=now, ends_at__gte=now,
-        revoked_at__isnull=True,
-        delegator_id__in=base_ids,
-    ).filter(
-        Q(document_type="") | Q(document_type=instance.document_type),
-    ).select_related("delegator", "delegate"))
-    if not requester_may_self_approve(instance):
-        delegations = [d for d in delegations if d.delegate_id not in conflicts]
-
-    # The second door, running the same filter. See the docstring.
-    contained_delegate_ids = {
-        u.pk for u in _tenant_members(
-            [d.delegate for d in delegations], instance.tenant_id,
-        )
-    }
-    # Ahead of excluded_delegators on purpose. See the docstring.
-    delegations = [d for d in delegations if d.delegate_id in contained_delegate_ids]
+    # The second door, running the same filter, ahead of excluded_delegators.
+    # See the docstring.
+    delegations = active_delegations(
+        instance, {u.pk for u in base_users}, conflicts=conflicts,
+    )
 
     result: List[EligibleApprover] = []
     seen = set()

@@ -10,9 +10,11 @@ WorkflowStage         - one node (APPROVAL or BRANCH).
 WorkflowRoutePath     - directed edge between stages, optionally condition-guarded.
 WorkflowInstance      - one running execution against one business document.
 WorkflowStageInstance - per-instance, per-stage lifecycle record.
-WorkflowStageApprover - audit-grade snapshot of who was eligible when a stage activated.
+WorkflowStageApprover - who may act on a stage attempt right now.
 WorkflowStageAction   - every recorded approver vote, including reversals.
 ApprovalDelegation    - date-ranged delegation of approval authority.
+WorkflowStageAssignment - an administrator's choice of approvers for a stage not yet open.
+WorkflowApproverChange  - append-only history of people added to or taken off a stage.
 WorkflowAuditLog      - append-only structured event log.
 """
 
@@ -25,6 +27,7 @@ from django.db.models import Q
 
 from vs_rbac.managers import TenantAwareManager
 from vs_workflow.constants import (
+    ApproverChangeKind,
     ApproverScope,
     ApproverSource,
     AuditEventType,
@@ -721,6 +724,9 @@ class WorkflowInstance(models.Model):
         document_details: Versioned display layout snapshotted for an in-place review.
         status: Current lifecycle status (see WorkflowInstanceStatus).
         requested_by: The user who submitted the document for approval.
+        request_for: The person the document is about, when its type names one
+            (``BaseWorkflowHandler.request_for_user_id``). Null for every type
+            that does not, which is most of them.
         current_stage: The stage the engine is currently waiting on. Null when terminal.
         state_version: Incremented on every status transition; useful for stale-read detection.
     """
@@ -744,6 +750,8 @@ class WorkflowInstance(models.Model):
                               default=WorkflowInstanceStatus.DRAFT)
     requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
                                      related_name="submitted_workflow_instances")
+    request_for = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+                                    null=True, blank=True, related_name="+")
     current_stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT,
                                       null=True, blank=True, related_name="+")
     submitted_at = models.DateTimeField(null=True, blank=True)
@@ -807,14 +815,23 @@ class WorkflowStageInstance(models.Model):
 
 
 class WorkflowStageApprover(models.Model):
-    """Point-in-time snapshot of who was eligible to act on a stage at activation.
+    """Who may act on a stage attempt right now.
 
-    Rows are written when a stage is activated and are not amended while it runs.
-    This preserves the eligible approver list as it existed at that exact moment,
-    even if RBAC roles change later. Active delegation entries are expanded and
+    Rows are written when a stage is activated, from the eligible list as it
+    stood at that moment, so later role or org-chart changes do not move a
+    stage that is already waiting. Active delegation entries are expanded and
     included here as separate rows with on_behalf_of set. A stage the engine
     activates again on the same attempt, after a reversal rolled it back, is a
     fresh run and gets a fresh snapshot in place of the old one.
+
+    Three deliberate acts change the rows of a waiting stage, and nothing else
+    does: an administrator changing who approves it, a delegation starting or
+    being revoked while it waits (:mod:`vs_workflow.services.reassignment`),
+    and the parking repair filling a stage that activated with nobody
+    (:mod:`vs_workflow.services.parking`). The first two record every row they
+    add or remove in :class:`WorkflowApproverChange`, so this table keeps
+    meaning "who may act now" while the history of how it got there is kept
+    beside it.
 
     Attributes:
         stage_instance: The stage activation this snapshot belongs to.
@@ -923,6 +940,12 @@ class ApprovalDelegation(models.Model):
         exclusive: If True, the delegator is removed from the eligible list for the duration -
             only the delegate can approve, not both.
         revoked_at: Set when an admin or the delegator manually revokes the delegation early.
+        created_by: Who set the delegation up: the delegator, or an administrator
+            acting for them.
+        applied_at: When the delegation reached the requests already waiting on
+            the delegator. Stamped at creation for one that starts at once, and
+            by the periodic sweep for one that starts later; null until then.
+            Stages that activate while it runs pick it up at activation either way.
     """
     id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
     tenant = models.ForeignKey(
@@ -941,6 +964,9 @@ class ApprovalDelegation(models.Model):
     reason = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     revoked_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name="+")
+    applied_at = models.DateTimeField(null=True, blank=True)
 
     objects = TenantAwareManager()
     all_objects = models.Manager()
@@ -951,7 +977,106 @@ class ApprovalDelegation(models.Model):
         indexes = [
             models.Index(fields=["delegator", "starts_at", "ends_at"]),
             models.Index(fields=["delegate", "starts_at", "ends_at"]),
+            # The sweep that applies delegations once they start.
+            models.Index(fields=["starts_at"], name="wf_delegation_unapplied_idx",
+                         condition=Q(applied_at__isnull=True, revoked_at__isnull=True)),
         ]
+
+
+class WorkflowStageAssignment(models.Model):
+    """An administrator's choice of who approves one stage of one request, made before it opens.
+
+    Read by :func:`vs_workflow.services.approvers.resolve_approvers` in place of
+    the stage's own approver source, and then put through the same containment,
+    conflict and delegation steps as every other source. Because every path that
+    fills a stage (first activation, re-activation after a return, the parking
+    repair) resolves through that one function, each of them honours it, and it
+    stays in force for as long as the request runs.
+
+    It changes only who approves: the advance rule, routing and the rejection
+    policy stay with the template. A change made to the stage once it is active
+    edits the live list and leaves this row as it is.
+
+    Attributes:
+        instance: The request.
+        stage: The template stage the choice applies to.
+        approvers: The people chosen, in their own right; their delegates join
+            them when the stage opens.
+        reason: Why the administrator chose them.
+        set_by: The administrator who made the choice most recently.
+        set_at: When they made it.
+    """
+
+    id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
+    instance = models.ForeignKey(WorkflowInstance, on_delete=models.CASCADE,
+                                 related_name="stage_assignments")
+    stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name="+")
+    approvers = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name="+")
+    reason = models.CharField(max_length=500)
+    set_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                               related_name="+")
+    set_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["instance", "stage"],
+                                    name="uniq_stage_assignment_per_instance"),
+        ]
+
+
+class WorkflowApproverChange(models.Model):
+    """One person added to, or taken off, a stage of one request. Append-only.
+
+    The live list is :class:`WorkflowStageApprover` (for a stage that is
+    waiting) or :class:`WorkflowStageAssignment` (for one that has not opened),
+    and both are edited in place so every reader of them keeps working. This is
+    the record of how they came to say what they say: who was removed, who was
+    added, on which stage, why, by whom and when.
+
+    A swap is one row naming both people. Adding somebody without removing
+    anybody, or the reverse, leaves the other side null. A delegate who joins
+    or leaves with somebody else carries that person in ``on_behalf_of``.
+
+    Attributes:
+        kind: What caused the change (see ApproverChangeKind).
+        stage: The template stage whose approvers changed.
+        stage_instance: The stage attempt, for a change to a waiting stage;
+            null for a stage that had not opened.
+        removed_user: The person taken off, if anybody was.
+        added_user: The person put on, if anybody was.
+        on_behalf_of: Who the added or removed person acts for, when they are
+            a delegate.
+        delegation: The delegation behind a DELEGATION_* change.
+        reason: The administrator's reason, or the delegation's.
+        changed_by: The person who made the change: an administrator, or
+            whoever created or revoked the delegation. Null for the periodic
+            sweep that applies a delegation once it starts.
+        changed_at: When the change was made.
+    """
+
+    id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
+    instance = models.ForeignKey(WorkflowInstance, on_delete=models.PROTECT,
+                                 related_name="approver_changes")
+    kind = models.CharField(max_length=30, choices=ApproverChangeKind.choices)
+    stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name="+")
+    stage_instance = models.ForeignKey(WorkflowStageInstance, on_delete=models.PROTECT,
+                                       null=True, blank=True, related_name="+")
+    removed_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                     null=True, blank=True, related_name="+")
+    added_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                   null=True, blank=True, related_name="+")
+    on_behalf_of = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                     null=True, blank=True, related_name="+")
+    delegation = models.ForeignKey(ApprovalDelegation, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name="+")
+    reason = models.TextField(blank=True, default="")
+    changed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                   null=True, blank=True, related_name="+")
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["instance", "changed_at"])]
+        ordering = ["-changed_at"]
 
 
 class WorkflowAuditLog(models.Model):

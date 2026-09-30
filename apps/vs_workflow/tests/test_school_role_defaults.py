@@ -34,6 +34,7 @@ WORKFLOW_KEYS = [
     "workflow.group.view", "workflow.group.create",
     "workflow.group.update", "workflow.group.delete",
     "workflow.instance.view", "workflow.instance.cancel",
+    "workflow.approvers.assign",
 ]
 
 

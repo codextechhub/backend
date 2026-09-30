@@ -68,6 +68,28 @@ class AuditEventType(models.TextChoices):
     APPROVER_ACTED            = "APPROVER_ACTED",            "An approver recorded a vote"
     ACTION_REVERSED           = "ACTION_REVERSED",           "Admin reversed an approver action"
     ROUTE_EVALUATED           = "ROUTE_EVALUATED",           "Route recomputed at stage transition"
+    APPROVERS_CHANGED         = "APPROVERS_CHANGED",         "Admin changed who approves the active stage"
+    APPROVERS_ASSIGNED        = "APPROVERS_ASSIGNED",        "Admin chose who approves a stage before it opens"
+    APPROVERS_ASSIGNMENT_RESET = "APPROVERS_ASSIGNMENT_RESET", "Admin removed a stage's advance choice of approvers"
+    DELEGATION_APPLIED        = "DELEGATION_APPLIED",        "A delegate joined a waiting stage"
+    DELEGATION_WITHDRAWN      = "DELEGATION_WITHDRAWN",      "A revoked delegation left a waiting stage"
+
+
+class ApproverChangeKind(models.TextChoices):
+    """What caused one row of a request's approver change history.
+
+    ACTIVE_STAGE and UPCOMING_ASSIGNMENT are an administrator editing one
+    request's list; BULK_REPLACE is the same edit made across many requests at
+    once. ASSIGNMENT_RESET drops an advance choice so the stage resolves its
+    approvers normally. The two delegation kinds are a delegation reaching, or
+    leaving, a stage that was already waiting when it started or was revoked.
+    """
+    ACTIVE_STAGE        = "ACTIVE_STAGE",        "Active stage changed"
+    UPCOMING_ASSIGNMENT = "UPCOMING_ASSIGNMENT", "Stage assigned before it opens"
+    ASSIGNMENT_RESET    = "ASSIGNMENT_RESET",    "Advance assignment removed"
+    BULK_REPLACE        = "BULK_REPLACE",        "Person replaced across requests"
+    DELEGATION_APPLIED  = "DELEGATION_APPLIED",  "Delegation reached a waiting stage"
+    DELEGATION_REVOKED  = "DELEGATION_REVOKED",  "Revoked delegation left a waiting stage"
 
 # Stage categories used by routing.
 class StageKind(models.TextChoices):
@@ -178,6 +200,10 @@ PERM_GROUP_CREATE    = "workflow.group.create"
 PERM_GROUP_UPDATE    = "workflow.group.update"
 PERM_GROUP_DELETE    = "workflow.group.delete"
 PERM_GROUP_VIEW      = "workflow.group.view"
+# Change who approves requests already under way, and set a delegation on
+# somebody else's behalf. ``assign`` rather than ``manage``: broad ``manage``
+# actions were retired in favour of the operation they conceal.
+PERM_APPROVERS_ASSIGN = "workflow.approvers.assign"
 
 # Notification event keys
 # Notification event keys emitted for workflow lifecycle transitions.
@@ -191,11 +217,12 @@ NOTIF_EVENT_REJECTED        = "workflow.rejected"
 NOTIF_EVENT_WITHDRAWN       = "workflow.withdrawn"
 NOTIF_EVENT_CANCELLED       = "workflow.cancelled"
 NOTIF_EVENT_FINAL_APPROVED  = "workflow.final_approved"
+NOTIF_EVENT_APPROVER_REMOVED = "workflow.approver_removed"
 NOTIF_EVENT_KEYS = [
     NOTIF_EVENT_SUBMITTED, NOTIF_EVENT_STAGE_ACTIVATED, NOTIF_EVENT_STAGE_APPROVED,
     NOTIF_EVENT_STAGE_REJECTED, NOTIF_EVENT_RETURNED, NOTIF_EVENT_APPROVED,
     NOTIF_EVENT_REJECTED, NOTIF_EVENT_WITHDRAWN, NOTIF_EVENT_CANCELLED,
-    NOTIF_EVENT_FINAL_APPROVED,
+    NOTIF_EVENT_FINAL_APPROVED, NOTIF_EVENT_APPROVER_REMOVED,
 ]
 
 # The lifecycle points the engine actually emits (routing.py). The other keys
@@ -206,6 +233,7 @@ NOTIF_WIRED_EVENT_KEYS = [
     NOTIF_EVENT_RETURNED,          # → requester
     NOTIF_EVENT_REJECTED,          # → requester
     NOTIF_EVENT_FINAL_APPROVED,    # → requester
+    NOTIF_EVENT_APPROVER_REMOVED,  # → a person taken off a waiting stage
 ]
 
 # Condition operators (fixed set)

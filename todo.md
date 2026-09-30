@@ -132,6 +132,56 @@ MUST SAY:
 - Needs Attention: transfers between branches and paying petty cash back to the
   bank have no document yet; FinPro lacks the new screens and journal actions.
 
+### D85. Admins change who approves a waiting request, in advance or in bulk, and delegate for others (hash pending, 2026-09-30)
+MODULES: M07 workflow and approval engine, M04 roles and permissions (new key), M08
+notifications and delivery (new event), M12 staff management (leave request), MRD.
+MUST SAY:
+- Manage Approvals (M07). The admin request list (GET /v1/workflow/instances/) takes
+  optional filters, applied only when set and combined: document_type, status (one
+  or a comma list), requested_by, request_for, waiting_on, stage,
+  waiting_longer_than (days), submitted_from/submitted_to, branch (within reach),
+  search. Rows add request_for, waiting_on (with on_behalf_of), waiting_since,
+  stage_position and branch. GET /instances/filter-options/?document_type= lists
+  a type's stages. Screen named "Manage Approvals" in both frontends.
+- Changing approvers (M07). GET/POST /instances/<id>/approvers/ shows every stage
+  (done, waiting, upcoming with a preview) and sets a stage's complete approver
+  list: on the waiting stage it edits the live list; on a stage not yet open it
+  stores an advance assignment (WorkflowStageAssignment) that resolve_approvers
+  uses when the stage opens, after a return and in parking repair.
+  POST /instances/<id>/approvers/reset/ drops an assignment. POST
+  /instances/replace-approver/ swaps one person for another across up to 200
+  requests, skipping (with a reason) those it cannot change. Rules: reason
+  required; new approver must be an active member of the tenant who reaches the
+  request's branch and is not in the document's conflict set; someone who has
+  voted cannot be removed; a stage keeps at least one approver (a quorum stage
+  keeps its quorum); only in-progress requests (and returned ones, for upcoming
+  stages) change; an "everyone must approve" stage completes when a removal leaves
+  only approvals. Every change is kept in WorkflowApproverChange and the audit
+  log. Migrations vs_workflow 0022, 0023.
+- Delegations (M07). An admin may create a delegation on someone else's behalf
+  (optional delegator) and sees and revokes every delegation in the tenant. A
+  delegation reaches requests already waiting on the delegator when it starts
+  (at once, or by the vs_workflow.apply_started_delegations beat task every 5
+  minutes); revoking or deleting it takes the delegate off waiting requests they
+  have not decided and puts an exclusively-delegating delegator back. Rows carry
+  created_by and applied_at. Needs Attention: editing a delegation's dates or
+  delegate does not move waiting requests; an expired delegation keeps its places.
+- Separation of duties at vote time (M07, M12). The vote check uses the
+  document's own conflict rule, as approver resolution does: the person on leave
+  can never decide their leave (even if frozen onto an older request), and an
+  admin who filed it for them may.
+- Who a request is for (M07, M12). WorkflowInstance.request_for, set from the
+  handler hook request_for_user_id; only leave requests name one (the staff
+  member). Existing leave requests backfilled (vs_staff 0013).
+- New key (M04): workflow.approvers.assign ("Change who approves requests, and set
+  delegations for other people"), granted to School Admin by
+  seed_workflow_permissions. Frontend code 600511.
+- New event (M08): workflow.approver_removed ("no longer needs your approval"),
+  in-app and email; approvers added to a waiting stage get the usual
+  workflow.stage_activated notice.
+- Deploy: run seed_workflow_permissions (or seed_all_permissions) and the
+  notification seeds (event types, templates, settings).
+
 ### D86. Receipts settle only what they may, credit applies itself, fee runs bill once, and leavers stop being billed (58c30eb0, 2026-09-30)
 MODULES: M17 billing and invoicing, M18 payments and collections, M20 adjustments
 and concessions, M19 finance and accounting, M11 student management (the

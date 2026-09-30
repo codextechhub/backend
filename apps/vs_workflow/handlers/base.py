@@ -58,6 +58,19 @@ class BaseWorkflowHandler:
         """
         return None
 
+    def request_for_user_id(self, document: Any) -> Optional[int]:
+        """The id of the person this document is about, or None.
+
+        Stored on the instance at submission as ``request_for``, so the
+        administrators' list can be filtered by it without loading any document.
+        Only a type whose document is plainly about one person answers, and
+        that person is who the document names, not who raised it: an
+        administrator can file a colleague's absence, and the absence is the
+        colleague's. Every other type keeps the default, and its requests never
+        match the filter.
+        """
+        return None
+
     #: The fields of this document type a Dynamic Role condition may test,
     #: beyond those every document has - its amount and branch, and the person
     #: who raised it. Each is a :class:`~vs_workflow.conditions.fields.ConditionField`

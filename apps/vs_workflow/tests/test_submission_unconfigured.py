@@ -66,6 +66,7 @@ class StagelessTemplateSubmissionTests(TestCase):
         handler.resolve_default_template_code.return_value = "default"
         handler.get_document_summary.return_value = {}
         handler.get_document_details.return_value = {}
+        handler.request_for_user_id.return_value = None
         from contextlib import ExitStack
 
         stack = ExitStack()

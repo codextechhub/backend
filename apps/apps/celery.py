@@ -58,6 +58,15 @@ app.conf.beat_schedule = {
         "schedule": crontab(minute="*/15"),
     },
 
+    # --- vs_workflow (delegations) ---------------------------------------
+    # A delegation set up in advance reaches the requests already waiting on
+    # its delegator when it starts; one that starts at once is applied as it is
+    # created. Idempotent, so a missed window only delays the handover.
+    "workflow-apply-started-delegations": {
+        "task": "vs_workflow.apply_started_delegations",
+        "schedule": crontab(minute="*/5"),
+    },
+
     # --- vs_finance (dunning) --------------------------------------------
     # Daily: generate the day's overdue reminders and dispatch every PENDING
     # notice. Idempotent per (invoice, level) and per run date.

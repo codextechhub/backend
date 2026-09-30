@@ -122,6 +122,7 @@ def submit_for_approval(document, requested_by, *,
             document_content_type=ct, document_object_id=str(document.pk),
             document_type=document_type, status=WorkflowInstanceStatus.SUBMITTED,
             requested_by=requested_by, submitted_at=timezone.now(),
+            request_for_id=handler.request_for_user_id(document),
             document_summary=document_summary, document_details=document_details,
         )
         audit_service.write(instance, AuditEventType.INSTANCE_SUBMITTED, actor=requested_by,

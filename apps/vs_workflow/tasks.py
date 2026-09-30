@@ -53,3 +53,17 @@ def dispatch_notification(*, instance_id: str, event_key: str,
         logger.info("vs_notifications not installed; notification skipped for %s", event_key)
     except Exception:
         logger.exception("Notification dispatch failed for event %s", event_key)
+
+
+# Carry delegations that have started to the requests already waiting on their delegator.
+@shared_task(name="vs_workflow.apply_started_delegations")
+def apply_started_delegations() -> int:
+    """Reach waiting requests with every delegation that has started since the last run.
+
+    A delegation that starts when it is created reaches them at once; this is
+    for one set up in advance. Idempotent: a request already carrying the
+    delegate is left alone, so a repeated or overlapping run seats nobody twice.
+    """
+    from vs_workflow.services.reassignment import apply_started_delegations as apply
+
+    return apply()

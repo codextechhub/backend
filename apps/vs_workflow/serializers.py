@@ -419,6 +419,120 @@ class WorkflowInstanceListSerializer(serializers.ModelSerializer):
         return title if isinstance(title, str) else ""
 
 
+class WorkflowInstanceAdminRowSerializer(WorkflowInstanceListSerializer):
+    """One row of the administrators' list of every request, with who it waits on.
+
+    Only ``GET /workflow/instances/`` uses it: the personal queues keep the
+    plain row. Every value is read from what the view prefetched
+    (``approval_stages`` on the template, ``waiting_stage_instances`` on the
+    instance, with their approvers and live votes), so a page costs the same
+    number of queries however many rows it holds.
+
+    ``waiting_on`` lists everybody holding an undecided place on the active
+    stage's current attempt, delegates included; it is empty, and
+    ``waiting_since`` null, when the request is not waiting on a stage.
+    ``stage_position`` is the current stage's place among the template's live
+    approval stages, counted from 1.
+    """
+
+    request_for = serializers.SerializerMethodField()
+    waiting_on = serializers.SerializerMethodField()
+    waiting_since = serializers.SerializerMethodField()
+    stage_position = serializers.SerializerMethodField()
+    branch = serializers.SerializerMethodField()
+
+    class Meta(WorkflowInstanceListSerializer.Meta):
+        fields = WorkflowInstanceListSerializer.Meta.fields + [
+            "request_for", "waiting_on", "waiting_since", "stage_position", "branch",
+        ]
+
+    @staticmethod
+    def _waiting_stage(obj):
+        if obj.status != "IN_PROGRESS" or obj.current_stage_id is None:
+            return None
+        found = [si for si in getattr(obj, "waiting_stage_instances", [])
+                 if si.stage_id == obj.current_stage_id]
+        return max(found, key=lambda si: si.attempt) if found else None
+
+    def get_request_for(self, obj):
+        from vs_workflow.services.reassignment import person
+
+        return person(obj.request_for)
+
+    def get_waiting_on(self, obj):
+        from vs_workflow.services.reassignment import person
+
+        si = self._waiting_stage(obj)
+        if si is None:
+            return []
+        decided = set()
+        for action in si.live_actions:
+            if action.attempt == si.attempt:
+                decided.add(action.actor_id)
+                if action.proxied_by_id:
+                    decided.add(action.proxied_by_id)
+        return [
+            {**person(snap.user), "on_behalf_of": person(snap.on_behalf_of)}
+            for snap in si.eligible_approvers.all()
+            if snap.attempt == si.attempt and snap.user_id not in decided
+        ]
+
+    def get_waiting_since(self, obj):
+        si = self._waiting_stage(obj)
+        if si is None or si.activated_at is None:
+            return None
+        return serializers.DateTimeField().to_representation(si.activated_at)
+
+    def get_stage_position(self, obj):
+        if obj.current_stage_id is None:
+            return None
+        stages = getattr(obj.template, "approval_stages", None)
+        if stages is None:
+            return None
+        ids = [s.pk for s in stages]
+        if obj.current_stage_id not in ids:
+            return None
+        return {"index": ids.index(obj.current_stage_id) + 1, "total": len(ids)}
+
+    def get_branch(self, obj):
+        if obj.branch_id is None:
+            return None
+        return {"id": obj.branch_id, "name": obj.branch.name}
+
+
+class StageApproversWriteSerializer(serializers.Serializer):
+    """``POST /workflow/instances/{id}/approvers/``: the complete list for one stage.
+
+    The reason is checked by the service rather than here, so a missing or
+    over-long one answers with its own code (``REASON_REQUIRED``).
+    """
+
+    stage = serializers.CharField(max_length=8)
+    approvers = serializers.ListField(child=serializers.IntegerField(min_value=1),
+                                      allow_empty=True, max_length=100)
+    reason = serializers.CharField(required=False, allow_blank=True, default="",
+                                   trim_whitespace=False)
+
+
+class StageAssignmentResetSerializer(serializers.Serializer):
+    """``POST /workflow/instances/{id}/approvers/reset/``."""
+
+    stage = serializers.CharField(max_length=8)
+    reason = serializers.CharField(required=False, allow_blank=True, default="",
+                                   trim_whitespace=False)
+
+
+class ReplaceApproverSerializer(serializers.Serializer):
+    """``POST /workflow/instances/replace-approver/``: one person for another, on 1 to 200 requests."""
+
+    from_user = serializers.IntegerField(min_value=1)
+    to_user = serializers.IntegerField(min_value=1)
+    instance_ids = serializers.ListField(child=serializers.CharField(max_length=8),
+                                         min_length=1, max_length=200)
+    reason = serializers.CharField(required=False, allow_blank=True, default="",
+                                   trim_whitespace=False)
+
+
 class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
     stage_instances = WorkflowStageInstanceReadSerializer(many=True, read_only=True)
     audit_logs      = WorkflowAuditLogReadSerializer(many=True, read_only=True)
@@ -543,22 +657,34 @@ class ApprovalDelegationSerializer(
         tenant_lookup="tenant",
         not_found=USER_NOT_FOUND,
     )
+    # Optional, and only on create: the caller is the delegator unless they
+    # name somebody else, which the view allows only an administrator.
+    delegator = TenantScopedRelatedField(
+        queryset=get_user_model().objects.all(),
+        tenant_lookup="tenant",
+        not_found=USER_NOT_FOUND,
+        required=False,
+    )
     # Blank for a delegation that covers every document type.
     document_type_label = serializers.SerializerMethodField()
+    created_by = serializers.SerializerMethodField()
 
     class Meta:
         model = ApprovalDelegation
         fields = [
             "id", "delegator", "delegate", "starts_at", "ends_at",
             "document_type", "document_type_label", "exclusive", "reason",
-            "created_at", "revoked_at",
+            "created_at", "created_by", "revoked_at",
         ]
-        # delegator is set from request.user in the view's perform_create - it
-        # must be read-only so DRF validation doesn't require the client to send it.
-        read_only_fields = ["id", "delegator", "created_at", "revoked_at"]
+        read_only_fields = ["id", "created_at", "created_by", "revoked_at"]
 
     def get_document_type_label(self, obj) -> str:
         return document_type_label(obj.document_type)
+
+    def get_created_by(self, obj):
+        from vs_workflow.services.reassignment import person
+
+        return person(obj.created_by)
 
     def validate(self, attrs):
         """Fallback tenancy check on the delegate, and a real document type.
@@ -576,6 +702,17 @@ class ApprovalDelegationSerializer(
         delegate = attrs.get("delegate") or getattr(self.instance, "delegate", None)
         if delegate is not None and getattr(delegate, "tenant_id", None) != tenant.pk:
             raise serializers.ValidationError({"delegate": USER_NOT_FOUND})
+
+        # Whose approvals a delegation hands over is fixed once it exists.
+        if self.instance is not None:
+            attrs.pop("delegator", None)
+        request = self.context.get("request")
+        delegator = (attrs.get("delegator") or getattr(self.instance, "delegator", None)
+                     or getattr(request, "user", None))
+        if delegate is not None and delegator is not None and delegate.pk == delegator.pk:
+            raise serializers.ValidationError({
+                "delegate": "Choose somebody other than the person handing over their approvals.",
+            })
 
         # Blank covers every type. Anything else must be a type this tenant
         # raises, because the engine matches it exactly and a typo would save a

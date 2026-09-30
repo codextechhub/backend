@@ -2,6 +2,7 @@
 
 from collections import defaultdict
 
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status, mixins
@@ -27,6 +28,8 @@ from vs_rbac.scoping import (
 from vs_tenants.models import Tenant
 from vs_rbac.permissions import user_has_rbac_permission
 
+from core.response import success_response
+
 from vs_workflow.conditions.fields import document_type_label
 from vs_workflow.exceptions import TemplateInvalidError, UnknownPositionError
 from vs_workflow.constants import (
@@ -34,8 +37,9 @@ from vs_workflow.constants import (
     PERM_TEMPLATE_VIEW,
     PERM_INSTANCE_VIEW, PERM_INSTANCE_CANCEL,
     PERM_ACTION_REVERSE, PERM_GROUP_CREATE, PERM_GROUP_DELETE,
-    PERM_GROUP_UPDATE, PERM_GROUP_VIEW,
-    ApproverSource, GroupMemberKind, OrganogramTarget,
+    PERM_GROUP_UPDATE, PERM_GROUP_VIEW, PERM_APPROVERS_ASSIGN,
+    ApproverSource, GroupMemberKind, OrganogramTarget, StageKind,
+    WorkflowInstanceStatus, WorkflowStageStatus,
 )
 from vs_workflow.models import (
     ApprovalDelegation, WorkflowApproverGroup, WorkflowApproverGroupMember,
@@ -49,13 +53,16 @@ from vs_workflow.serializers import (
     StageActionWriteSerializer,
     WorkflowApproverGroupMemberWriteSerializer, WorkflowApproverGroupSerializer,
     WorkflowStageApproverOverrideSerializer,
-    WorkflowInstanceDetailSerializer, WorkflowInstanceListSerializer,
+    WorkflowInstanceAdminRowSerializer, WorkflowInstanceDetailSerializer,
+    WorkflowInstanceListSerializer, ReplaceApproverSerializer,
+    StageApproversWriteSerializer, StageAssignmentResetSerializer,
     WorkflowTemplatePublishSerializer, WorkflowTemplateReadSerializer,
 )
 from vs_workflow.services import actions as actions_svc
 from vs_workflow.services import comparison as comparison_svc
 from vs_workflow.services import dynamic_roles as dynamic_roles_svc
 from vs_workflow.services import my_queue as my_queue_svc
+from vs_workflow.services import reassignment as reassignment_svc
 from vs_workflow.services import release as release_svc
 from vs_workflow.services import templates as templates_svc
 from vs_workflow.services.approvers import (
@@ -100,6 +107,10 @@ STAGE_OTHER_BRANCH = (
 DELEGATION_NOT_YOURS = (
     "Only the person who handed over their approvals, or an administrator, can "
     "change this delegation."
+)
+DELEGATION_FOR_SOMEBODY_ELSE = (
+    "Only an administrator who can change who approves requests can set up a "
+    "delegation for somebody else."
 )
 DELEGATION_SHARED = (
     "This delegation belongs to somebody whose approvals reach beyond your "
@@ -637,8 +648,10 @@ class WorkflowInstanceViewSet(
     def get_permissions(self):
         if self.action == "cancel":
             self.rbac_permission = PERM_INSTANCE_CANCEL
-        elif self.action == "list":
+        elif self.action in ("list", "filter_options"):
             self.rbac_permission = PERM_INSTANCE_VIEW
+        elif self.action in ("approvers", "reset_approvers", "replace_approver"):
+            self.rbac_permission = PERM_APPROVERS_ASSIGN
         elif self.action == "retrieve":
             # Object-level access below also admits the requester and the frozen
             # approver snapshot. Those people need the decision surface without
@@ -650,31 +663,151 @@ class WorkflowInstanceViewSet(
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_serializer_class(self):
-        return WorkflowInstanceDetailSerializer if self.action == "retrieve" else WorkflowInstanceListSerializer
+        if self.action == "retrieve":
+            return WorkflowInstanceDetailSerializer
+        if self.action == "list":
+            return WorkflowInstanceAdminRowSerializer
+        return WorkflowInstanceListSerializer
 
-    def get_queryset(self):
-        # Instance lists are tenant-scoped before any user-supplied filters apply.
-        qs = (WorkflowInstance.all_objects
-              .filter(branch_q(self.request, include_shared=True),
-                      tenant=self.get_tenant())
-              .select_related("template", "current_stage")
-              .prefetch_related("stage_instances__stage", "stage_instances__actions",
-                                "stage_instances__eligible_approvers", "audit_logs")
-              .order_by("-updated_at", "-created_at"))
+    def _reachable(self):
+        """Every request this caller may reach by id: their tenant, their branches, visible documents.
+
+        The one scope every read and write on this viewset starts from, so an
+        administrator can never reach another tenant's request, or one outside
+        their branches, by naming its id.
+        """
+        qs = WorkflowInstance.all_objects.filter(
+            branch_q(self.request, include_shared=True), tenant=self.get_tenant(),
+        )
         # A document its own module keeps from this reader is absent here too, so
         # its detail, approve and reject answer 404.
-        qs = exclude_hidden_documents(qs, self.request.user, self.get_tenant())
+        return exclude_hidden_documents(qs, self.request.user, self.get_tenant())
+
+    def get_queryset(self):
+        qs = (self._reachable()
+              .select_related("template", "current_stage")
+              .order_by("-updated_at", "-created_at"))
         if self.action == "retrieve":
-            # Names for the approval timeline's "who did it" labels.
+            # The stage history, and names for the timeline's "who did it" labels.
             qs = qs.prefetch_related(
+                "stage_instances__stage", "stage_instances__eligible_approvers",
                 "stage_instances__actions__actor", "stage_instances__actions__proxied_by",
                 "audit_logs__actor", "audit_logs__effective_user",
             )
+        elif self.action == "list":
+            qs = self._filter_list(self._with_waiting_on(qs))
+        return qs
+
+    @staticmethod
+    def _with_waiting_on(qs):
+        """Everything the administrators' row reads, fetched once per page."""
+        from django.db.models import Prefetch
+
+        live_actions = WorkflowStageAction.objects.filter(
+            reversed_at__isnull=True, is_reversal_of__isnull=True,
+        ).only("id", "stage_instance_id", "actor_id", "proxied_by_id", "attempt")
+        waiting = (WorkflowStageInstance.objects
+                   .filter(status=WorkflowStageStatus.ACTIVE)
+                   .prefetch_related(
+                       Prefetch("eligible_approvers",
+                                queryset=WorkflowStageApprover.objects
+                                .select_related("user", "on_behalf_of")
+                                .order_by("recorded_at", "pk")),
+                       Prefetch("actions", queryset=live_actions, to_attr="live_actions"),
+                   ))
+        approval_stages = (WorkflowStage.objects
+                           .filter(kind=StageKind.APPROVAL, retired_at__isnull=True)
+                           .order_by("order", "pk").only("id", "template_id", "order"))
+        return qs.select_related("branch", "request_for").prefetch_related(
+            Prefetch("template__stages", queryset=approval_stages, to_attr="approval_stages"),
+            Prefetch("stage_instances", queryset=waiting, to_attr="waiting_stage_instances"),
+        )
+
+    def _filter_list(self, qs):
+        """Apply the list's query parameters. Each is optional and they combine with AND.
+
+        An unreadable value (a date that is not one, a count of days that is
+        not a whole number) is refused with a 400 naming the parameter, rather
+        than silently ignored and answered with every request.
+        """
+        from datetime import date, datetime, time, timedelta
+
+        from django.db.models import Exists, F, OuterRef
+        from rest_framework.exceptions import ValidationError
+
+        from vs_config.clock import tenant_zone
+
         p = self.request.query_params
-        if p.get("document_type"): qs = qs.filter(document_type=p["document_type"])
-        if p.get("status"):        qs = qs.filter(status=p["status"])
-        if p.get("requested_by"):  qs = qs.filter(requested_by_id=p["requested_by"])
-        if p.get("template_code"): qs = qs.filter(template__code=p["template_code"])
+
+        def whole(name, minimum=0):
+            try:
+                value = int(p[name])
+            except (TypeError, ValueError):
+                raise ValidationError({name: "Give a whole number."})
+            if value < minimum:
+                raise ValidationError({name: f"Give a whole number of at least {minimum}."})
+            return value
+
+        def day(name):
+            try:
+                return date.fromisoformat(p[name])
+            except ValueError:
+                raise ValidationError({name: "Give a date as YYYY-MM-DD."})
+
+        if p.get("document_type"):
+            qs = qs.filter(document_type=p["document_type"])
+        if p.get("status"):
+            statuses = [s.strip() for s in p["status"].split(",") if s.strip()]
+            qs = qs.filter(status__in=statuses)
+        if p.get("requested_by"):
+            qs = qs.filter(requested_by_id=whole("requested_by", 1))
+        if p.get("request_for"):
+            qs = qs.filter(request_for_id=whole("request_for", 1))
+        if p.get("template_code"):
+            qs = qs.filter(template__code=p["template_code"])
+        if p.get("stage"):
+            qs = qs.filter(current_stage_id=p["stage"])
+        if p.get("branch"):
+            qs = qs.filter(branch_id=whole("branch", 1))
+        if p.get("search"):
+            term = p["search"].strip()
+            qs = qs.filter(
+                Q(document_summary__title__icontains=term)
+                | Q(document_object_id__icontains=term)
+                | Q(pk=term)
+            )
+        if p.get("waiting_on"):
+            user_id = whole("waiting_on", 1)
+            voted = WorkflowStageAction.objects.filter(
+                Q(actor_id=user_id) | Q(proxied_by_id=user_id),
+                stage_instance=OuterRef("stage_instance"), attempt=OuterRef("attempt"),
+                reversed_at__isnull=True, is_reversal_of__isnull=True,
+            )
+            places = (WorkflowStageApprover.objects
+                      .filter(user_id=user_id,
+                              stage_instance__status=WorkflowStageStatus.ACTIVE,
+                              attempt=F("stage_instance__attempt"))
+                      .exclude(Exists(voted))
+                      .values("stage_instance__instance_id"))
+            qs = qs.filter(status=WorkflowInstanceStatus.IN_PROGRESS, pk__in=places)
+        if p.get("waiting_longer_than"):
+            opened_before = timezone.now() - timedelta(days=whole("waiting_longer_than"))
+            qs = qs.filter(
+                Exists(WorkflowStageInstance.objects.filter(
+                    instance=OuterRef("pk"), stage=OuterRef("current_stage"),
+                    status=WorkflowStageStatus.ACTIVE, activated_at__lt=opened_before,
+                )),
+                status=WorkflowInstanceStatus.IN_PROGRESS,
+            )
+        if p.get("submitted_from") or p.get("submitted_to"):
+            zone = tenant_zone(self.get_tenant())
+            if p.get("submitted_from"):
+                start = datetime.combine(day("submitted_from"), time.min, tzinfo=zone)
+                qs = qs.filter(submitted_at__gte=start)
+            if p.get("submitted_to"):
+                end = datetime.combine(day("submitted_to") + timedelta(days=1), time.min,
+                                       tzinfo=zone)
+                qs = qs.filter(submitted_at__lt=end)
         return qs
 
     def retrieve(self, request, *args, **kwargs):
@@ -817,6 +950,108 @@ class WorkflowInstanceViewSet(
         return Response(WorkflowInstanceDetailSerializer(
             instance, context=self.get_serializer_context(),
         ).data)
+
+    @action(detail=False, methods=["get"], url_path="filter-options")
+    def filter_options(self, request):
+        """GET - the stages a request of one document type can be waiting on, for the list's filter.
+
+        The approval stages of the templates this tenant runs that type under:
+        its own active templates within the caller's branches, the shared
+        template where the tenant has not adjusted it, and any template one of
+        its requests is still running on. Empty when no ``document_type`` is
+        given.
+
+        docstring-name: Approval request filter options
+        """
+        document_type = request.query_params.get("document_type") or ""
+        if not document_type:
+            return success_response(data={"stages": []})
+        tenant = self.get_tenant()
+        own = (WorkflowTemplate.all_objects
+               .filter(branch_q(request, include_shared=True),
+                       tenant=tenant, document_type=document_type, is_active=True))
+        own_codes = set(own.values_list("code", flat=True))
+        shared = (WorkflowTemplate.all_objects
+                  .filter(tenant__isnull=True, document_type=document_type, is_active=True)
+                  .exclude(code__in=own_codes))
+        running = self._reachable().filter(document_type=document_type).values("template_id")
+        template_ids = (set(own.values_list("pk", flat=True))
+                        | set(shared.values_list("pk", flat=True))
+                        | set(running.values_list("template_id", flat=True)))
+        stages = (WorkflowStage.objects
+                  .filter(template_id__in=template_ids, kind=StageKind.APPROVAL)
+                  .select_related("template")
+                  .order_by("template__code", "order", "pk"))
+        return success_response(data={"stages": [
+            {"id": str(s.pk), "label": s.label, "template_code": s.template.code}
+            for s in stages
+        ]})
+
+    @action(detail=True, methods=["get", "post"])
+    def approvers(self, request, pk=None):
+        """GET, POST - who approves each stage of this request, and change it.
+
+        GET lists every approval stage: those decided, the one waiting, and
+        those still to come, with the change history. POST sets the complete
+        list of people for one stage (``stage``, ``approvers``, ``reason``):
+        the waiting stage changes now, a stage still to come keeps the choice
+        for when it opens. Answers with the same body as GET. Refusals carry
+        ``APPROVER_ALREADY_VOTED``, ``APPROVER_CONFLICT``,
+        ``APPROVER_OUT_OF_REACH``, ``STAGE_EMPTY``, ``STAGE_NOT_CHANGEABLE``,
+        ``INSTANCE_NOT_OPEN`` or ``REASON_REQUIRED``.
+
+        docstring-name: Approval request approvers
+        """
+        instance = self.get_object()
+        if request.method == "POST":
+            body = StageApproversWriteSerializer(data=request.data)
+            body.is_valid(raise_exception=True)
+            reassignment_svc.set_stage_approvers(
+                instance.pk, stage_id=body.validated_data["stage"],
+                user_ids=body.validated_data["approvers"],
+                reason=body.validated_data["reason"], actor=request.user,
+            )
+            instance = self._reachable().get(pk=instance.pk)
+        return success_response(data=reassignment_svc.approver_overview(instance))
+
+    @action(detail=True, methods=["post"], url_path="approvers/reset")
+    def reset_approvers(self, request, pk=None):
+        """POST - drop a stage's advance choice of approvers, so it resolves normally when it opens.
+
+        docstring-name: Reset a stage's approvers
+        """
+        instance = self.get_object()
+        body = StageAssignmentResetSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        reassignment_svc.reset_stage_assignment(
+            instance.pk, stage_id=body.validated_data["stage"],
+            reason=body.validated_data["reason"], actor=request.user,
+        )
+        instance = self._reachable().get(pk=instance.pk)
+        return success_response(data=reassignment_svc.approver_overview(instance))
+
+    @action(detail=False, methods=["post"], url_path="replace-approver")
+    def replace_approver(self, request):
+        """POST - hand everything waiting on one person to another, across many requests.
+
+        Each request is changed on its own: one that cannot be changed (the
+        person has already decided it, the new person cannot approve it, it is
+        out of the caller's reach) is skipped with the reason, never failing
+        the rest.
+
+        docstring-name: Replace an approver across requests
+        """
+        body = ReplaceApproverSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        ids = [str(i) for i in body.validated_data["instance_ids"]]
+        reachable = set(self._reachable().filter(pk__in=ids).values_list("pk", flat=True))
+        outcome = reassignment_svc.replace_approver(
+            ids, from_user_id=body.validated_data["from_user"],
+            to_user_id=body.validated_data["to_user"],
+            reason=body.validated_data["reason"], actor=request.user,
+            tenant=self.get_tenant(), reachable_ids=reachable,
+        )
+        return success_response(data=outcome)
 
 
 class WorkflowNotificationSettingView(APIView):
@@ -1379,6 +1614,16 @@ class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
     to, by name, so the person filling the form picks "Leave request" rather
     than typing ``leave.request``.
 
+    An administrator (``workflow.template.update`` or
+    ``workflow.approvers.assign``) sees every delegation in the tenant and may
+    revoke any of them for a person within their branches; with
+    ``workflow.approvers.assign`` they may also create one on somebody else's
+    behalf by naming the ``delegator``. A delegation that starts at once
+    reaches the requests already waiting on its delegator as it is created,
+    and the create response says how many (``applied_to_waiting``); one that
+    starts later reaches them when it starts. Revoking one takes its delegate
+    off the requests still waiting on them.
+
     docstring-name: Approval delegations
     """
     serializer_class = ApprovalDelegationSerializer
@@ -1390,20 +1635,58 @@ class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
         # is how a delegation could name somebody in another tenant.
         return super().get_serializer_context() | {"tenant": self.get_tenant()}
 
+    def _is_delegation_admin(self) -> bool:
+        user, tenant = self.request.user, self.get_tenant()
+        return any(
+            user_has_rbac_permission(user, key, tenant=tenant)
+            for key in (PERM_TEMPLATE_UPDATE, PERM_APPROVERS_ASSIGN)
+        )
+
     def get_queryset(self):
         user = self.request.user
-        qs = ApprovalDelegation.all_objects.filter(tenant=self.get_tenant())
-        if not user_has_rbac_permission(user, PERM_TEMPLATE_UPDATE, tenant=user.tenant):
+        qs = (ApprovalDelegation.all_objects.filter(tenant=self.get_tenant())
+              .select_related("created_by"))
+        if not self._is_delegation_admin():
             # Non-admin users can only see delegations they created or receive.
             qs = qs.filter(Q(delegator=user) | Q(delegate=user))
         return qs.order_by("-starts_at")
 
+    def create(self, request, *args, **kwargs):
+        response = super().create(request, *args, **kwargs)
+        response.data["applied_to_waiting"] = self._applied_to_waiting
+        return response
+
     def perform_create(self, serializer):
-        # Delegations are always created by the current user within the active
-        # tenant scope. get_tenant() rather than request.tenant directly, so the
-        # tenant the delegate was resolved inside and the tenant stored on the row
-        # are the same expression and cannot drift into disagreeing.
-        serializer.save(tenant=self.get_tenant(), delegator=self.request.user)
+        """Save the delegation, and carry it at once to the requests waiting on its delegator.
+
+        The caller is the delegator unless they name somebody else, which needs
+        ``workflow.approvers.assign`` and a delegator whose approvals stay
+        within the caller's branches. get_tenant() rather than request.tenant
+        directly, so the tenant the delegate was resolved inside and the tenant
+        stored on the row are the same expression and cannot drift into
+        disagreeing.
+        """
+        from rest_framework.exceptions import PermissionDenied
+        from vs_rbac.grant_reach import assert_caller_may_change_person
+
+        user = self.request.user
+        delegator = serializer.validated_data.get("delegator") or user
+        if delegator.pk != user.pk:
+            if not user_has_rbac_permission(user, PERM_APPROVERS_ASSIGN, tenant=self.get_tenant()):
+                raise PermissionDenied(DELEGATION_FOR_SOMEBODY_ELSE)
+            assert_caller_may_change_person(
+                user, self.get_tenant(), delegator, message=DELEGATION_SHARED,
+            )
+        with transaction.atomic():
+            delegation = serializer.save(
+                tenant=self.get_tenant(), delegator=delegator, created_by=user,
+            )
+            now = timezone.now()
+            self._applied_to_waiting = 0
+            if delegation.starts_at <= now <= delegation.ends_at:
+                self._applied_to_waiting = reassignment_svc.apply_delegation(
+                    delegation, actor=user, now=now,
+                )
 
     @action(detail=False, methods=["get"], url_path="document-types")
     def document_types(self, request):
@@ -1426,8 +1709,9 @@ class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
 
         A delegation is its delegator's own. Its delegate is excluded on
         purpose, since extending one's own borrowed authority is exactly what
-        must not be possible. An administrator holding template update may
-        change it only for somebody whose approvals stay inside their branches
+        must not be possible. An administrator holding template update or
+        approvers assign may change it only for somebody whose approvals stay
+        inside their branches
         (:func:`vs_rbac.grant_reach.assert_caller_may_change_person`).
         """
         from rest_framework.exceptions import PermissionDenied
@@ -1436,7 +1720,7 @@ class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
         user = self.request.user
         if delegation.delegator_id == user.pk:
             return
-        if not user_has_rbac_permission(user, PERM_TEMPLATE_UPDATE, tenant=self.request.tenant):
+        if not self._is_delegation_admin():
             raise PermissionDenied(DELEGATION_NOT_YOURS)
         assert_caller_may_change_person(
             user, self.request.tenant, delegation.delegator, message=DELEGATION_SHARED,
@@ -1447,14 +1731,30 @@ class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
         serializer.save()
 
     def perform_destroy(self, instance):
+        """Delete a delegation, taking its delegate off the requests still waiting on them first."""
         self._assert_may_change(instance)
-        instance.delete()
+        with transaction.atomic():
+            if instance.revoked_at is None:
+                instance.revoked_at = timezone.now()
+                instance.save(update_fields=["revoked_at"])
+                reassignment_svc.withdraw_delegation(instance, actor=self.request.user)
+            instance.delete()
 
     @action(detail=True, methods=["post"])
     def revoke(self, request, pk=None):
+        """POST - end a delegation now, and take its delegate off the requests still waiting on them.
+
+        Where the delegate has already decided a request, that decision
+        stands. Where an exclusive delegation had taken the delegator off, the
+        delegator is put back.
+        """
         delegation = self.get_object()
         self._assert_may_change(delegation)
-        # Revocation is timestamped instead of deleting the delegation record.
-        delegation.revoked_at = timezone.now()
-        delegation.save(update_fields=["revoked_at"])
-        return Response(ApprovalDelegationSerializer(delegation).data)
+        with transaction.atomic():
+            # Revocation is timestamped instead of deleting the delegation record.
+            delegation.revoked_at = timezone.now()
+            delegation.save(update_fields=["revoked_at"])
+            reassignment_svc.withdraw_delegation(delegation, actor=request.user)
+        return Response(ApprovalDelegationSerializer(
+            delegation, context=self.get_serializer_context(),
+        ).data)

@@ -49,6 +49,7 @@ _ALREADY_TITLED = {
     "workflow.final_approved",
     "finance.fiscal_calendar_expiring",
     "procurement.quotation_submitted",
+    "workflow.approver_removed",
 }
 
 

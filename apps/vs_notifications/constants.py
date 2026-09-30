@@ -400,6 +400,18 @@ EVENT_TYPE_REGISTRY = [
         "default_enabled": True,
         "is_active": False,  # engine has no escalation emitter yet
     },
+    {
+        "key": "workflow.approver_removed",
+        "label": "Approval no longer needs you",
+        "description": (
+            "Fires when an administrator, or a revoked delegation, takes you off "
+            "an approval that was waiting for your decision."
+        ),
+        "source_module": "vs_workflow",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "branch_scoped": True,
+    },
 
     # ── Finance & Billing (vs_billing) ─────────────────────────────────────
 

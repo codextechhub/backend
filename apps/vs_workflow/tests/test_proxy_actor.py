@@ -222,7 +222,7 @@ class ProxySeparationOfDutiesTests(TestCase):
             self.approve(instance, self.chioma)
 
         self.assertEqual(ctx.exception.message,
-                         "Requesters cannot approve their own documents.")
+                         "You cannot decide this request, because you raised it.")
         self.assertFalse(WorkflowStageAction.objects.filter(stage_instance=si).exists())
 
     def test_chioma_herself_approves_adas_request(self):

@@ -243,12 +243,16 @@ class InstanceScopingTests(_TwoTenants):
         over its own scoped queryset. Asserted through the router rather than by
         checking the class, because re-adding a ``create`` method is exactly the
         regression this catches.
+
+        ``head`` is left out of the comparison: DRF adds it to the route's
+        action map as a mirror of ``get`` the first time the route serves a
+        request, so whether it is present depends on which tests ran first.
         """
         from django.urls import resolve
 
         match = resolve("/v1/workflow/instances/")
         self.assertNotIn("post", match.func.actions)
-        self.assertEqual(set(match.func.actions), {"get"})
+        self.assertEqual(set(match.func.actions) - {"head"}, {"get"})
 
     def test_my_submissions_excludes_other_tenants(self):
         """A user acting in one tenant sees only that tenant's own submissions."""

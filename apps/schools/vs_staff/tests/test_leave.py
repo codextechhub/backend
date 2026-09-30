@@ -233,24 +233,32 @@ class FilingTests(LeaveFixture):
             ).exists(),
         )
 
-    def test_the_person_who_filed_it_cannot_approve_it(self):
+    def test_a_person_who_filed_their_own_leave_cannot_approve_it(self):
         """The engine's own rule, and this module must not route around it.
 
-        An administrator filing their own leave and then approving it would be
+        A member of staff filing their own leave and then approving it would be
         the whole separation undone in two clicks, which is exactly why leave
-        runs on the engine rather than on a status column here.
+        runs on the engine rather than on a status column here. The vote is
+        refused even when a snapshot already names them as an approver.
         """
         from vs_workflow.exceptions import RequesterCannotApproveError
+        from vs_workflow.models import WorkflowStageApprover, WorkflowStageInstance
         from vs_workflow.services import actions
 
-        self.post(self.admin, "staff-leave", self.body(), pk=self.eze.pk)
+        response = self.post(self.eze.user, "staff-leave", self.body(), pk=self.eze.pk)
+        self.assertEqual(response.status_code, 201, response.data)
         row = LeaveRequest.all_objects.get(staff=self.eze)
         instance = WorkflowInstance.all_objects.get(
             document_type="schools.leave_request",
             document_object_id=str(row.pk),
         )
-        with self.assertRaises(RequesterCannotApproveError):
-            actions.record_action(instance.id, self.admin, "APPROVED", "")
+        si = WorkflowStageInstance.objects.get(instance=instance, status="ACTIVE")
+        WorkflowStageApprover.objects.create(
+            stage_instance=si, user=self.eze.user, attempt=si.attempt,
+        )
+        with self.assertRaises(RequesterCannotApproveError) as caught:
+            actions.record_action(instance.id, self.eze.user, "APPROVED", "")
+        self.assertIn("because you raised it", caught.exception.message)
 
     def test_a_status_in_the_request_body_is_ignored(self):
         """The one rule the whole design of this depends on.
@@ -637,3 +645,82 @@ class ReversalTests(LeaveFixture):
         self.assertIsNone(
             LeaveRequestWorkflowHandler().reversal_block_reason(None),
         )
+
+
+class WhoTheRequestIsForTests(LeaveFixture):
+    """A leave request names the person taking the leave, and the engine keeps them off it.
+
+    The administrators' list of approval requests filters by that person, and a
+    change of approver can never put them on their own absence.
+    """
+
+    def file(self):
+        response = self.post(self.admin, "staff-leave", self.body(), pk=self.eze.pk)
+        self.assertEqual(response.status_code, 201, response.data)
+        row = LeaveRequest.all_objects.get(staff=self.eze)
+        return WorkflowInstance.all_objects.get(
+            document_type="schools.leave_request", document_object_id=str(row.pk),
+        )
+
+    def test_the_request_names_the_person_on_leave_not_who_filed_it(self):
+        instance = self.file()
+        self.assertEqual(instance.request_for_id, self.eze.user_id)
+        self.assertEqual(instance.requested_by_id, self.admin.pk)
+
+    def test_the_person_on_leave_cannot_be_made_its_approver(self):
+        from vs_workflow.exceptions import ApproverConflictError
+        from vs_workflow.services import reassignment
+
+        instance = self.file()
+        with self.assertRaises(ApproverConflictError) as caught:
+            reassignment.set_stage_approvers(
+                instance.pk, stage_id=instance.current_stage_id,
+                user_ids=[self.eze.user_id], reason="Cover while away", actor=self.admin,
+            )
+        self.assertIn("because it is about them", caught.exception.message)
+
+    def freeze_into_snapshot(self, instance, user):
+        """Name *user* on the waiting stage, as a snapshot taken before the rule did."""
+        from vs_workflow.models import WorkflowStageApprover, WorkflowStageInstance
+
+        si = WorkflowStageInstance.objects.get(instance=instance, status="ACTIVE")
+        WorkflowStageApprover.objects.create(stage_instance=si, user=user, attempt=si.attempt)
+
+    def test_the_person_on_leave_named_in_a_snapshot_cannot_vote(self):
+        from vs_workflow.exceptions import RequesterCannotApproveError
+        from vs_workflow.models import WorkflowStageAction
+        from vs_workflow.services import actions
+
+        instance = self.file()
+        self.freeze_into_snapshot(instance, self.eze.user)
+        with self.assertRaises(RequesterCannotApproveError) as caught:
+            actions.record_action(instance.id, self.eze.user, "APPROVED", "")
+        self.assertIn("because it is about you", caught.exception.message)
+        self.assertFalse(
+            WorkflowStageAction.objects.filter(stage_instance__instance=instance).exists())
+
+    def test_the_admin_who_filed_it_for_a_colleague_may_vote(self):
+        from vs_workflow.models import WorkflowApproverGroupMember, WorkflowStageAction
+        from vs_workflow.services import actions
+
+        WorkflowApproverGroupMember.objects.create(
+            group=self.leave_group, kind="USER", user=self.admin,
+        )
+        instance = self.file()
+        actions.record_action(instance.id, self.admin, "APPROVED", "")
+        self.assertTrue(WorkflowStageAction.objects.filter(
+            stage_instance__instance=instance, actor=self.admin, action="APPROVED",
+        ).exists())
+
+    def test_requests_filed_before_it_was_kept_are_filled_in(self):
+        from importlib import import_module
+
+        from django.apps import apps as django_apps
+
+        instance = self.file()
+        WorkflowInstance.all_objects.filter(pk=instance.pk).update(request_for=None)
+        migration = import_module(
+            "schools.vs_staff.migrations.0013_a_leave_request_names_who_it_is_for")
+        migration.name_the_person_on_leave(django_apps, None)
+        instance.refresh_from_db()
+        self.assertEqual(instance.request_for_id, self.eze.user_id)

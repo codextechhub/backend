@@ -140,6 +140,10 @@ class ListDestination:
 
 
 _WORKFLOW_APPROVAL_KEYS = ("workflow.stage_activated", "workflow.escalated")
+# Sent to somebody taken off a waiting approval. The request is no longer
+# theirs to open, so it points at their approvals list rather than at a record
+# that would answer them with a 404.
+_WORKFLOW_RELEASED_KEYS = ("workflow.approver_removed",)
 
 RECORD_DESTINATIONS = (
     RecordDestination(
@@ -156,7 +160,8 @@ RECORD_DESTINATIONS = (
     ),
     RecordDestination(
         family=RecordFamily.WORKFLOW_INSTANCE,
-        keys=EventKeys(prefix="workflow.", excluded=_WORKFLOW_APPROVAL_KEYS),
+        keys=EventKeys(prefix="workflow.",
+                       excluded=_WORKFLOW_APPROVAL_KEYS + _WORKFLOW_RELEASED_KEYS),
         id_key="workflow_instance_id",
         route="/workflow/my-submissions/{id}",
     ),
@@ -209,6 +214,7 @@ LIST_DESTINATIONS = (
     ListDestination(route="/procurement/sourcing/quotations", prefixes=("procurement.quotation_submitted",)),
     ListDestination(route="/procurement", prefixes=("procurement.",)),
     ListDestination(route="/tasks", prefixes=("todo.",)),
+    ListDestination(route="/workflow/approvals", prefixes=_WORKFLOW_RELEASED_KEYS),
 )
 
 
