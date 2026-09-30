@@ -10,9 +10,14 @@ from core.response import success_response
 
 from rest_framework.exceptions import ValidationError
 
-from django.db.models import Count
+from django.db.models import Count, Q
 from vs_rbac.scoping import transaction_branch_q
-from vs_rbac.scoping import caller_may_use_branch
+from vs_rbac.scoping import (
+    assert_caller_may_change,
+    caller_branch_ids,
+    caller_may_use_branch,
+    shared_write_refusal,
+)
 from vs_rbac.scoping import resolve_branch as _resolve_branch
 
 from ..constants import SalaryCalcMethod, SalaryComponentKind, StatutoryType
@@ -52,6 +57,48 @@ from vs_rbac.scoping import only_branch_id, transaction_branch_scope
 
 
 UNASSIGNED_REFS = ("unassigned", "none", "null")
+
+#: What a refused write to a whole-school run names.
+SHARED_RUN = "a payroll run for the whole school"
+
+
+def _runs_in_reach(request, entity):
+    """The runs the caller may open: their branches' own, and central ones through their share.
+
+    A run is a transaction, read by its own branch exclusively
+    (:func:`vs_rbac.scoping.transaction_branch_q`). A central run names no
+    branch because it covers every branch's staff and is booked per branch:
+    each :class:`PayrollRunBranch` names one, and that share is the branch's
+    money. So a branch-bound reader reaches a central run through a share of
+    one of their branches, or through its one journal when every line it pays
+    is booked to one of their branches, and is shown only that part
+    (:class:`vs_finance.serializers.PayrollRunSerializer`). Lagoon View pays
+    Ikeja's and Lekki's staff in one January run: Lekki's bursar opens it and
+    sees Lekki's staff and Lekki's totals. A central run with no share of
+    theirs, and a central draft, which has no shares until it posts, are not
+    found for them, as another branch's run is. A whole-tenant reader is not
+    narrowed.
+    """
+    from ..models import PayrollRunBranch
+
+    qs = PayrollRun.objects.filter(entity=entity)
+    reach = caller_branch_ids(request)
+    if reach is None:
+        return qs
+    ids = tuple(sorted(reach))
+    shared_through = PayrollRunBranch.objects.filter(branch_id__in=ids).values("run_id")
+    return qs.filter(
+        Q(branch_id__in=ids)
+        | Q(branch__isnull=True, pk__in=shared_through)
+        | Q(branch__isnull=True, journal__branch_id__in=ids),
+    )
+
+
+def _run_data(request, run):
+    """``run`` serialized for the caller, narrowed to their branches' part of a central run."""
+    return PayrollRunSerializer(
+        run, context={"request": request, "branch_ids": caller_branch_ids(request)},
+    ).data
 
 
 def _run_bank_account(request, entity, ref, run_branch):
@@ -150,14 +197,15 @@ class PayrollRunListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = PayrollRun.objects.filter(
-            transaction_branch_q(request), entity=entity,
-        ).select_related("branch").prefetch_related("lines__branch", "branch_shares__branch")
+        qs = _runs_in_reach(request, entity).select_related("branch").prefetch_related(
+            "lines__branch", "branch_shares__branch")
         if (status_val := request.query_params.get("run_status")):
             qs = qs.filter(run_status=status_val)
         qs = _filter_by_branch(qs, request, entity)
         return self.paginate(
-            request, qs.order_by("-pay_date", "-id"), PayrollRunSerializer)
+            request, qs.order_by("-pay_date", "-id"), PayrollRunSerializer,
+            context={"request": request, "branch_ids": caller_branch_ids(request)},
+        )
 
     @transaction.atomic
     # Handle POST requests for this endpoint.
@@ -201,7 +249,7 @@ class PayrollRunListCreateView(_FinanceBase):
         run.refresh_from_db()
         return success_response(
             f"Payroll run {run.document_number} created.",
-            data=PayrollRunSerializer(run, context={"request": request}).data, status=201,
+            data=_run_data(request, run), status=201,
         )
 
 
@@ -213,6 +261,11 @@ class PayrollRunSummaryView(_FinanceBase):
     journal per branch reads POSTED until its last share is paid, so it counts
     its unpaid shares, not its whole net: once Ikeja's share of January is paid,
     only Lekki's is still awaiting payment.
+
+    A branch-bound reader's figures are their branches' part alone
+    (:func:`_runs_in_reach`): the runs they reach, their shares of what is
+    unpaid, and their own staff on the latest run. Nothing another branch is
+    paid reaches them, even summed into a total.
 
     docstring-name: Payroll runs
     """
@@ -228,17 +281,28 @@ class PayrollRunSummaryView(_FinanceBase):
         from ..models import PayrollRunBranch
 
         entity = resolve_entity(request)
-        runs = PayrollRun.objects.filter(transaction_branch_q(request), entity=entity)
+        reach = caller_branch_ids(request)
+        runs = _runs_in_reach(request, entity)
         posted = runs.filter(run_status=PayrollRunStatus.POSTED)
         unsplit = posted.exclude(Exists(PayrollRunBranch.objects.filter(run=OuterRef("pk"))))
         unpaid_shares = PayrollRunBranch.objects.filter(
             run__in=posted, status=PayrollRunStatus.POSTED)
+        if reach is not None:
+            unpaid_shares = unpaid_shares.filter(branch_id__in=tuple(sorted(reach)))
         to_pay = (
             unsplit.aggregate(net=Coalesce(Sum("net_total"), 0))["net"]
             + unpaid_shares.aggregate(net=Coalesce(Sum("net_total"), 0))["net"]
         )
         agg = {"runs": runs.count(), "to_pay": to_pay}
         latest = runs.order_by("-pay_date", "-id").first()
+        employees, net = 0, 0
+        if latest is not None:
+            latest_lines = latest.lines.all()
+            if reach is not None and latest.branch_id is None:
+                latest_lines = latest_lines.filter(branch_id__in=tuple(sorted(reach)))
+            figures = latest_lines.aggregate(
+                count=Count("id"), net=Coalesce(Sum("net_amount"), 0))
+            employees, net = figures["count"], figures["net"]
         from ..payroll import payroll_scope
 
         return success_response(
@@ -252,23 +316,38 @@ class PayrollRunSummaryView(_FinanceBase):
                 # the school's configuration.
                 "payroll_scope": payroll_scope(entity),
                 "runs": agg["runs"],
-                "employees": latest.lines.count() if latest else 0,
-                "net": latest.net_total if latest else 0,
+                "employees": employees,
+                "net": net,
                 "to_pay": agg["to_pay"],
             },
         )
 
 
-# Define Payroll Action Base values.
 class _PayrollActionBase(_FinanceBase):
-    # Support the run workflow.
+    """Resolve one run in the caller's reach; on a write, one they may change.
+
+    A central run is reached by a branch-bound reader through their branch's
+    share and shown narrowed to it (:func:`_runs_in_reach`). Posting, paying
+    and voiding it act on every branch's share at once, so they need
+    whole-tenant reach: a branch-bound caller is refused with a 403
+    ``SHARED_RECORD_READ_ONLY`` before anything is posted. A branch run of one
+    of the caller's branches is theirs to change.
+    """
+
     def _run(self, request, pk):
+        from rest_framework.permissions import SAFE_METHODS
+
         entity = resolve_entity(request)
-        run = PayrollRun.objects.filter(
-            transaction_branch_q(request), entity=entity, pk=pk,
-        ).select_related("branch", "journal").first()
+        run = _runs_in_reach(request, entity).filter(pk=pk).select_related(
+            "branch", "journal").prefetch_related(
+            "lines__branch", "branch_shares__branch").first()
         if run is None:
             raise NotFound("Payroll run not found for this entity.")
+        if request.method not in SAFE_METHODS:
+            assert_caller_may_change(
+                request.user, getattr(request, "tenant", None), (run.branch_id,),
+                message=shared_write_refusal(SHARED_RUN),
+            )
         return entity, run
 
 
@@ -280,9 +359,7 @@ class PayrollRunDetailView(_PayrollActionBase):
     # Handle GET requests for this endpoint.
     def get(self, request, pk):
         _, run = self._run(request, pk)
-        return success_response(
-            "Payroll run retrieved.", data=PayrollRunSerializer(run, context={"request": request}).data,
-        )
+        return success_response("Payroll run retrieved.", data=_run_data(request, run))
 
 
 # Group endpoint behavior for Payroll Run Post View.
@@ -299,7 +376,7 @@ class PayrollRunPostView(_PayrollActionBase):
         run.refresh_from_db()
         return success_response(
             f"Payroll run {run.document_number} accrued.",
-            data=PayrollRunSerializer(run, context={"request": request}).data,
+            data=_run_data(request, run),
         )
 
 
@@ -344,7 +421,7 @@ class PayrollRunPayView(_PayrollActionBase):
         run.refresh_from_db()
         return success_response(
             f"Payroll run {run.document_number} disbursed.",
-            data=PayrollRunSerializer(run, context={"request": request}).data,
+            data=_run_data(request, run),
         )
 
 
@@ -365,7 +442,7 @@ class PayrollRunCancelView(_PayrollActionBase):
         run.refresh_from_db()
         return success_response(
             f"Payroll run {run.document_number} cancelled.",
-            data=PayrollRunSerializer(run, context={"request": request}).data,
+            data=_run_data(request, run),
         )
 
 
@@ -616,7 +693,7 @@ class PayrollRunGenerateView(_FinanceBase):
         )
         return success_response(
             f"Payroll run {run.document_number} generated from {run.lines.count()} employee(s).",
-            data=PayrollRunSerializer(run, context={"request": request}).data, status=201,
+            data=_run_data(request, run), status=201,
         )
 
 
