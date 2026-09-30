@@ -44,6 +44,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from vs_config.display import format_date
+
 from ..constants import (
     WARN_INVIGILATOR_DOUBLE_BOOKED,
     WARN_ROOM_DOUBLE_BOOKED,
@@ -196,7 +198,7 @@ def grid_clashes(tenant, session, school_class, *, visible):
 
 # ── Exams ──────────────────────────────────────────────────────────────────
 
-def exam_slot_warnings(slot, *, visible, queryset=None):
+def exam_slot_warnings(slot, *, visible, queryset=None, tenant=None):
     """Room and invigilator clashes for one paper.
 
     A class sitting two papers in one sitting is not here: it is refused by the
@@ -206,8 +208,12 @@ def exam_slot_warnings(slot, *, visible, queryset=None):
     invigilator between two adjacent rooms - and nothing in the platform records
     how many candidates a paper has or how many rooms a person can supervise, so
     refusing either would be refusing on a guess.
+
+    The sitting's date is written in *tenant*'s date format; a caller holding
+    the tenant passes it, else it is read from the slot.
     """
     out = []
+    tenant = tenant if tenant is not None else slot.tenant
     others = queryset if queryset is not None else list(
         ExamSlot.objects.filter(
             tenant_id=slot.tenant_id, exam_id=slot.exam_id,
@@ -216,7 +222,7 @@ def exam_slot_warnings(slot, *, visible, queryset=None):
         .exclude(pk=slot.pk)
         .select_related("school_class", "room", "invigilator"),
     )
-    when = f"{slot.exam_date:%d %b %Y} {Sitting(slot.sitting).label.lower()} sitting"
+    when = f"{format_date(slot.exam_date, tenant)} {Sitting(slot.sitting).label.lower()} sitting"
 
     for other in others:
         if slot.room_id and other.room_id == slot.room_id:
@@ -283,7 +289,7 @@ def exam_clashes(tenant, exam, *, visible):
         for slot in group:
             for warning in exam_slot_warnings(
                 slot, visible=visible,
-                queryset=[r for r in group if r.pk != slot.pk],
+                queryset=[r for r in group if r.pk != slot.pk], tenant=tenant,
             ):
                 key = (warning.code, tuple(sorted(warning.slot_ids)))
                 if key in seen:

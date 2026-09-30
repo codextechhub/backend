@@ -32,6 +32,7 @@ from core.response import success_response
 from schools.vs_academics.services.words import term_word
 from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
+from vs_config.display import format_date_range
 
 from ..constants import (
     PERM_CALENDAR_CREATE,
@@ -56,13 +57,9 @@ from ..services.scoping import (
 from .base import CalendarViewMixin
 
 
-def _fmt(day) -> str:
-    """A date the way the product writes it: 12 Sep 2025."""
-    return f"{day.day} {day:%b %Y}"
-
-
-def _range(start, end) -> str:
-    return _fmt(start) if start == end else f"{_fmt(start)} - {_fmt(end)}"
+def _range(start, end, tenant) -> str:
+    """A span of days as the school's screens write it: "27 - 31 Oct 2025"."""
+    return format_date_range(start, end, tenant)
 
 
 class _EventBase(CalendarViewMixin):
@@ -137,7 +134,7 @@ class _EventBase(CalendarViewMixin):
         if start < session.start_date or end > session.end_date:
             raise EventOutsideSession(
                 f"This date is outside {session.name} "
-                f"({_range(session.start_date, session.end_date)}).",
+                f"({_range(session.start_date, session.end_date, self.tenant)}).",
                 session=session.name,
             )
 
@@ -166,7 +163,7 @@ class _EventBase(CalendarViewMixin):
                 "code": WARN_EVENT_OVERLAP,
                 "detail": (
                     f"This overlaps {overlap.name} "
-                    f"({_range(overlap.start_date, overlap.end_date)}), which "
+                    f"({_range(overlap.start_date, overlap.end_date, self.tenant)}), which "
                     f"is the same type and scope."
                 ),
             })

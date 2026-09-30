@@ -33,6 +33,8 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field as dc_field
 
+from vs_config.display import format_date
+
 from .models import CalendarEvent, CalendarEventAudience, EventType
 
 #: Column headers, as target_field names, that this dataset reads. The template
@@ -135,9 +137,9 @@ def _as_date(raw: str):
         return None
 
 
-def _fmt(day) -> str:
-    """A date the way the product writes it: 12 Sep 2025."""
-    return f"{day.day} {day:%b %Y}"
+def _fmt(day, tenant) -> str:
+    """A date in the school's date format: 12 Sep 2025, 12/09/2025 or 2025-09-12."""
+    return format_date(day, tenant)
 
 
 # ── the resolver ─────────────────────────────────────────────────────────────
@@ -210,8 +212,8 @@ def resolve_row(payload: dict, *, tenant, session, batch_branch, multi_branch,
         if row.end_date < row.start_date:
             row.issues.append(RowIssue(
                 "business_rule",
-                f"This event ends on {_fmt(row.end_date)}, before it starts on "
-                f"{_fmt(row.start_date)}. A one-day event repeats the same date "
+                f"This event ends on {_fmt(row.end_date, tenant)}, before it starts on "
+                f"{_fmt(row.start_date, tenant)}. A one-day event repeats the same date "
                 f"in both columns.",
                 "end_date", str(row.end_date),
             ))
@@ -225,7 +227,7 @@ def resolve_row(payload: dict, *, tenant, session, batch_branch, multi_branch,
             row.issues.append(RowIssue(
                 "business_rule",
                 f"This is outside {session.name} "
-                f"({_fmt(session.start_date)} to {_fmt(session.end_date)}), so "
+                f"({_fmt(session.start_date, tenant)} to {_fmt(session.end_date, tenant)}), so "
                 f"it belongs to a different school year.",
                 "start_date", str(row.start_date),
             ))
@@ -537,7 +539,7 @@ def validate_calendar_events_import_batch(import_batch) -> list[dict]:
             record(row_number, RowIssue(
                 "duplicate_record",
                 f"Row {earlier} already has '{resolved.name}' starting on "
-                f"{_fmt(resolved.start_date)}.",
+                f"{_fmt(resolved.start_date, tenant)}.",
                 "name", resolved.name,
             ))
             continue
@@ -547,7 +549,7 @@ def validate_calendar_events_import_batch(import_batch) -> list[dict]:
             record(row_number, RowIssue(
                 "duplicate_record",
                 f"'{resolved.name}' is already on this calendar starting "
-                f"{_fmt(resolved.start_date)}. This row will be skipped.",
+                f"{_fmt(resolved.start_date, tenant)}. This row will be skipped.",
                 "name", resolved.name, severity="warning",
             ))
             continue

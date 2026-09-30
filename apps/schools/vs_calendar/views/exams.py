@@ -30,6 +30,7 @@ from core.response import success_response
 from schools.vs_academics.services.academic_rules import read_term_word
 from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
+from vs_config.display import format_date, format_date_range
 
 from ..constants import (
     PERM_EXAM_CREATE,
@@ -277,7 +278,7 @@ class _ExamScoped(CalendarViewMixin):
         if not (event.start_date <= data["exam_date"] <= event.end_date):
             raise ExamOutsideExamPeriod(
                 f"This date is outside {event.name} "
-                f"({event.start_date:%d %b %Y} - {event.end_date:%d %b %Y}).",
+                f"({format_date_range(event.start_date, event.end_date, self.tenant)}).",
                 exam_period=event.name,
             )
         school_class = _visible_classes(self).filter(
@@ -327,7 +328,7 @@ class _ExamScoped(CalendarViewMixin):
             raise ClassAlreadySitting(
                 f"{school_class.name} is already sitting "
                 f"{sitting_hit.subject.name} in the "
-                f"{data['exam_date']:%d %b %Y} "
+                f"{format_date(data['exam_date'], self.tenant)} "
                 f"{sitting_hit.get_sitting_display().lower()} sitting. A class "
                 f"can only sit one paper at a time - move one of them to "
                 f"another sitting.",
@@ -398,7 +399,8 @@ class ExamSlotListCreateView(_ExamScoped, generics.ListCreateAPIView):
             row, context=self.get_serializer_context(),
         ).data
         payload["warnings"] = [
-            w.as_dict() for w in exam_slot_warnings(row, visible=self.visible)
+            w.as_dict()
+            for w in exam_slot_warnings(row, visible=self.visible, tenant=self.tenant)
         ]
         return success_response(
             f"{school_class.name} {data['subject'].name} scheduled.",
@@ -478,7 +480,9 @@ class ExamSlotPreviewView(_ExamScoped, APIView):
                 if row.pk != exclude_pk
             ]
 
-        warnings = exam_slot_warnings(draft, visible=self.visible, queryset=queryset)
+        warnings = exam_slot_warnings(
+            draft, visible=self.visible, queryset=queryset, tenant=self.tenant,
+        )
         return success_response(data={
             "refusal": None,
             "warnings": [w.as_dict() for w in warnings],
@@ -559,7 +563,8 @@ class ExamSlotDetailView(_ExamScoped, generics.RetrieveUpdateDestroyAPIView):
             row, context=self.get_serializer_context(),
         ).data
         payload["warnings"] = [
-            w.as_dict() for w in exam_slot_warnings(row, visible=self.visible)
+            w.as_dict()
+            for w in exam_slot_warnings(row, visible=self.visible, tenant=self.tenant)
         ]
         return success_response(f"{school_class.name} {row.subject.name} updated.", payload)
 

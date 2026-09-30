@@ -14,6 +14,7 @@ from django.utils import timezone
 
 from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_config.clock import branch_today
+from vs_config.display import format_date
 from vs_audit.services import emit_audit_event
 
 from ..constants import (
@@ -153,7 +154,8 @@ def transition(
 
     summary = (
         f"{student.full_name} moved from {StudentStatus(from_status).label} to "
-        f"{StudentStatus(to_status).label} on {effective_date}."
+        f"{StudentStatus(to_status).label} on "
+        f"{format_date(effective_date, student.tenant)}."
     )
     if destination_school:
         summary += f" Destination: {destination_school}."

@@ -32,6 +32,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Prefetch, Q
 from vs_config.clock import branch_today
+from vs_config.display import format_date
 
 from ..constants import NON_HOLDING_STATUSES, OFF_ROLL_STATUSES, OrgUnitKind
 from ..exceptions import NotEligibleForPost
@@ -131,8 +132,10 @@ class StaffOrganogramService:
             later = [row for row in current if row.start_date > start]
             if later:
                 raise NotEligibleForPost(
-                    f"Their current primary post started on {later[0].start_date}, "
-                    f"after {start}. Start the new appointment on or after that day.",
+                    f"Their current primary post started on "
+                    f"{format_date(later[0].start_date, staff.tenant)}, after "
+                    f"{format_date(start, staff.tenant)}. Start the new "
+                    f"appointment on or after that day.",
                 )
             for row in current:
                 row.end_date = start
@@ -158,8 +161,9 @@ class StaffOrganogramService:
         end = end_date or branch_today(assignment.tenant, assignment.staff.branch_id)
         if end < assignment.start_date:
             raise NotEligibleForPost(
-                f"This appointment started on {assignment.start_date}, so it cannot "
-                f"end before then.",
+                f"This appointment started on "
+                f"{format_date(assignment.start_date, assignment.tenant)}, so it "
+                f"cannot end before then.",
             )
         assignment.end_date = end
         assignment.save(update_fields=["end_date", "updated_at"])

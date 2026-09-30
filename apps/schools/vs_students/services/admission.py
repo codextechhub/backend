@@ -41,6 +41,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
 from vs_config.clock import branch_today
+from vs_config.display import format_date
 
 from ..constants import CFG_CONFIRM_DOCUMENTS, DocumentType, StudentStatus
 from ..exceptions import DocumentsMissing, NotAnApplicant, StudentSettingNotRegistered
@@ -422,12 +423,13 @@ def move_to_stage(student, stage, *, actor, offer_expires_on=None, reason=""):
     reason = (reason or "").strip()
     from_name = before.name if before is not None else "no stage"
     to_name = stage.name if stage is not None else "no stage"
+    until = format_date(expires, locked.tenant)
     if not same:
         summary = f"{locked.full_name} moved from {from_name} to {to_name}."
         if expires is not None:
-            summary += f" Offer open until {expires}."
+            summary += f" Offer open until {until}."
     elif expires is not None:
-        summary = f"{locked.full_name}'s offer at {to_name} is open until {expires}."
+        summary = f"{locked.full_name}'s offer at {to_name} is open until {until}."
     else:
         summary = f"{locked.full_name}'s offer at {to_name} has no last day."
     if reason:
