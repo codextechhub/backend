@@ -37,7 +37,8 @@ class TenantAwareManagerIsolationTests(TestCase):
         clear_current_tenant()
 
     def test_no_context_returns_everything(self):
-        self.assertEqual(Branch.objects.count(), 2)
+        self.assertEqual(Branch.objects.count(), Branch.all_objects.count())
+        self.assertTrue({self.branch_a, self.branch_b} <= set(Branch.objects.all()))
 
     def test_tenant_context_scopes_default_manager(self):
         set_current_tenant(self.school_a.tenant)
@@ -54,7 +55,7 @@ class TenantAwareManagerIsolationTests(TestCase):
 
     def test_all_objects_is_unscoped(self):
         set_current_tenant(self.school_a.tenant)
-        self.assertEqual(Branch.all_objects.count(), 2)
+        self.assertTrue({self.branch_a, self.branch_b} <= set(Branch.all_objects.all()))
 
 
 class DirectTenantFieldIsolationTests(TestCase):

@@ -14,13 +14,18 @@ the tenant owns no other branch.
 
 Idempotent: nothing happens where codex is absent (a database built without
 the platform seed) or already owns a branch (a database where one was created
-by hand). The reverse leaves the branch in place, because by then transactions
-name it and removing it would strand them.
+by hand).
+
+It depends on vs_schools 0004, the migration that let a branch exist outside a
+school: codex is not a school, and before 0004 every branch needed one. The
+reverse removes Lagos only while nothing names it (a freshly built database, or
+a rewind past 0004), and otherwise leaves it, because transactions naming it
+would be stranded.
 
 Run ``branch_backfill --tenant codex --apply`` after this migration to give the
 platform books' existing rows their branch.
 """
-from django.db import migrations
+from django.db import IntegrityError, migrations, transaction
 from django.utils import timezone
 
 CODEX_SLUG = "codex"
@@ -58,12 +63,45 @@ def create_lagos_branch(apps, schema_editor):
     )
 
 
+def remove_unused_lagos_branch(apps, schema_editor):
+    """Remove Lagos while nothing names it; leave it where anything does.
+
+    The database decides, not the migration state: mid-rewind that state lists
+    relations whose tables or columns an earlier step has already dropped. The
+    delete runs in a savepoint and the foreign keys are checked at once; any row
+    still pointing at the branch fails the check and the savepoint rolls back.
+    """
+    Tenant = apps.get_model("vs_tenants", "Tenant")
+    Branch = apps.get_model("vs_tenants", "Branch")
+    BranchLifecycle = apps.get_model("vs_tenants", "BranchLifecycle")
+
+    codex = Tenant.objects.filter(slug=CODEX_SLUG, kind="PLATFORM").first()
+    if codex is None:
+        return
+    connection = schema_editor.connection
+    branch_table = connection.ops.quote_name(Branch._meta.db_table)
+    lifecycle_table = connection.ops.quote_name(BranchLifecycle._meta.db_table)
+    branch_ids = list(
+        Branch.objects.filter(tenant=codex, name=BRANCH_NAME).values_list("pk", flat=True)
+    )
+    for branch_id in branch_ids:
+        try:
+            with transaction.atomic(using=connection.alias):
+                with connection.cursor() as cursor:
+                    cursor.execute(f"DELETE FROM {lifecycle_table} WHERE branch_id = %s", [branch_id])
+                    cursor.execute(f"DELETE FROM {branch_table} WHERE id = %s", [branch_id])
+                connection.check_constraints()
+        except IntegrityError:
+            continue
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
         ("vs_tenants", "0010_remove_branch__type"),
+        ("vs_schools", "0004_branch_drop_school"),
     ]
 
     operations = [
-        migrations.RunPython(create_lagos_branch, migrations.RunPython.noop),
+        migrations.RunPython(create_lagos_branch, remove_unused_lagos_branch),
     ]
