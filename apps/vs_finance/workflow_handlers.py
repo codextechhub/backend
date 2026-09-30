@@ -218,6 +218,22 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
                 doc.status = DocumentStatus.PENDING_APPROVAL  # Back under review.
                 doc.save(update_fields=["status", "updated_at"])
 
+    # Keep another branch's document, and one with no branch, from a branch approver.
+    def hidden_document_ids(self, user, tenant):
+        """This type's documents outside ``user``'s transaction reach.
+
+        A finance document is a transaction, read by its own branch exclusively,
+        so its approval is too: the Lekki approver on the refund ladder does not
+        see an Ikeja refund's approval, nor a journal's raised before journals
+        named a branch (see
+        :func:`vs_workflow.services.visibility.documents_outside_transaction_reach`).
+        """
+        from vs_workflow.services.visibility import documents_outside_transaction_reach
+
+        return documents_outside_transaction_reach(
+            self.document_model.objects.filter(entity__tenant=tenant), user, tenant,
+        )
+
     # --- document-type hooks (subclasses implement) ------------------------- #
     # pragma: no cover - abstract  # Subclasses validate without writes.
     def preflight(self, document) -> None:

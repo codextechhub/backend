@@ -2,8 +2,10 @@
 
 **Rows narrow to the caller's branches, inclusively**, which is what
 ``views._filter_by_branch`` and the three ``branch_q(include_shared=True)`` call
-sites beside it already do. An export and the screen it mirrors must not answer
-differently.
+sites beside it already do, and without the instances whose document its own module
+keeps from the caller (:func:`vs_workflow.services.visibility.exclude_hidden_documents`),
+as the approval screens leave them out. An export and the screen it mirrors must not
+answer differently.
 
 
 Registered from :meth:`vs_workflow.apps.VsWorkflowConfig.ready`. Tenant-scoped: an
@@ -38,10 +40,17 @@ def _instances(scope):
     # it, so a branch user must still see the tenant-wide approvals. Reading it
     # exclusively empties the list whenever the tenant publishes at tenant
     # level, which is the normal case.
-    return narrow_to_caller_branches(
+    from .services.visibility import exclude_hidden_documents
+
+    qs = narrow_to_caller_branches(
         WorkflowInstance.objects.filter(tenant=scope.tenant),
         scope, inclusive=True,
     )
+    user = getattr(scope, "user", None)
+    if user is None:
+        return qs
+    # A document its own module keeps from this caller is absent here too.
+    return exclude_hidden_documents(qs, user, scope.tenant)
 
 
 # Register every workflow dataset. Called once from AppConfig.ready().

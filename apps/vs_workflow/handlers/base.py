@@ -139,16 +139,18 @@ class BaseWorkflowHandler:
         """The ids of this type's documents ``user`` may not see in ``tenant``, or None.
 
         The engine narrows approvals by the branch each instance is filed under,
-        which is the document's own ``branch``. A document whose reach is not one
-        branch answers here instead: a payout batch has no branch, and is hidden
-        from a reader when one of its lines pays a vendor another branch keeps to
-        itself. Every approval read goes through
+        which is the document's own ``branch``, and reads an instance with no
+        branch as the school's. A document whose reach is not that answers here
+        instead: a payout batch has no branch, and is hidden from a reader when one
+        of its lines pays a vendor another branch keeps to itself; a transaction
+        is read by its own branch exclusively
+        (:func:`vs_workflow.services.visibility.documents_outside_transaction_reach`). Every approval read goes through
         :func:`vs_workflow.services.visibility.exclude_hidden_documents`, so a
         hidden document is absent from the inbox, the instance list and the
         dashboards, and a 404 on its instance, its approve and its reject.
 
-        Ids are strings, as ``WorkflowInstance.document_object_id`` holds them.
-        None (the default) hides nothing.
+        Ids are strings, as ``WorkflowInstance.document_object_id`` holds them,
+        or a queryset of them. None (the default) hides nothing.
         """
         return None
 
