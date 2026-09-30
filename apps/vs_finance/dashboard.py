@@ -23,8 +23,8 @@ reader's branches and the school-wide rows, the same rows their lists show. The
 ledger figures (cash, receivables, payables, net income) are read from the same
 journals through :mod:`vs_finance.branch_ledger`, so they agree with the
 reader's own income statement and balance sheet. Two blocks stay school-wide
-only: revenue against budget, because a budget is the school's plan and has no
-branch, and the period close, which is a school-wide act.
+only: revenue against budget, which sets the whole ledger against the roll-up of
+every branch's plan, and the period close, which is a school-wide act.
 """
 from __future__ import annotations
 
@@ -317,28 +317,22 @@ def _payable_account_ids(entity) -> set:
 def _revenue_vs_budget(entity, fiscal_year) -> dict:
     """Income and expense of ``fiscal_year`` against the school's plan for it.
 
-    The actuals are the same year the plan covers (the dashboard's anchor year),
-    read from its ordinary periods, so an earlier year never counts towards this
-    year's plan and a closed year still shows what it earned.
+    The school's plan is the roll-up of every branch's
+    (:func:`vs_finance.reports.budget_rollup`). The actuals are the same year the
+    plan covers (the dashboard's anchor year), read from its ordinary periods, so
+    an earlier year never counts towards this year's plan and a closed year still
+    shows what it earned.
     """
-    from .reports import budget_vs_actual, income_statement
+    from .reports import budget_rollup, income_statement, rollup_name
 
     pnl = income_statement(entity, fiscal_year=fiscal_year)  # The anchor year's result.
     rev_actual, exp_actual = pnl.total_income, pnl.total_expense  # Actual P&L totals.
 
-    budget = None  # Optional approved/latest budget.
-    if fiscal_year is not None:  # Budget lookup requires a fiscal year.
-        from .models import Budget
-
-        budget = (  # The school's latest plan; branch plans cover part of the ledger.
-            Budget.objects.filter(entity=entity, fiscal_year=fiscal_year, branch__isnull=True)
-            .order_by("-approved_at", "-id")
-            .first()
-        )
+    rollup = budget_rollup(entity, fiscal_year) if fiscal_year is not None else None
+    has_budget = bool(rollup and rollup.budgets)
     rev_plan = exp_plan = 0  # Budget totals default to zero.
-    if budget is not None:  # Compute plan totals when a budget exists.
-        rep = budget_vs_actual(budget)  # Reuse budget-vs-actual report rows.
-        for r in rep.rows:  # Sum budget by P&L account type.
+    if has_budget:
+        for r in rollup.rows:  # Sum budget by P&L account type.
             if r.account_type == AccountType.INCOME:  # Income budget row.
                 rev_plan += r.budget  # Add revenue plan.
             elif r.account_type == AccountType.EXPENSE:  # Expense budget row.
@@ -352,8 +346,8 @@ def _revenue_vs_budget(entity, fiscal_year) -> dict:
     net_actual = rev_actual - exp_actual  # Actual net income.
     net_plan = rev_plan - exp_plan  # Planned net income.
     return {  # Return budget block.
-        "has_budget": budget is not None,  # UI flag.
-        "budget_name": getattr(budget, "name", None),  # Budget display name.
+        "has_budget": has_budget,  # UI flag.
+        "budget_name": rollup_name(rollup.budgets) if has_budget else None,
         "revenue": line(rev_actual, rev_plan),  # Revenue actual vs plan.
         "expense": line(exp_actual, exp_plan),  # Expense actual vs plan.
         "net": {"actual": _m(net_actual), "delta_pct": _pct_change(net_actual, net_plan)},  # Net actual and plan delta.

@@ -349,6 +349,7 @@ def bank_accounts(entity) -> list[dict]:
 def budget_lines(entity, revenue_vs_budget: dict | None, fiscal_year, as_of) -> dict | None:
     """The school's plan line by line: income, then the largest spending lines.
 
+    The plan is the roll-up of every branch's (:func:`vs_finance.reports.budget_rollup`).
     Adds to the headline revenue-vs-budget block the three biggest expense lines
     and how much of the fiscal year has gone, so "93% used" can be read against
     "75% of the year gone".
@@ -356,14 +357,9 @@ def budget_lines(entity, revenue_vs_budget: dict | None, fiscal_year, as_of) -> 
     if revenue_vs_budget is None or fiscal_year is None or not revenue_vs_budget.get("has_budget"):
         return None
     from .constants import AccountType
-    from .models import Budget
-    from .reports import budget_vs_actual
+    from .reports import budget_rollup, rollup_name
 
-    budget = (
-        Budget.objects.filter(entity=entity, fiscal_year=fiscal_year, branch__isnull=True)
-        .order_by("-approved_at", "-id").first()
-    )
-    report = budget_vs_actual(budget)
+    report = budget_rollup(entity, fiscal_year)
     expense = sorted(
         (r for r in report.rows if r.account_type == AccountType.EXPENSE and r.budget),
         key=lambda r: -r.budget,
@@ -380,7 +376,10 @@ def budget_lines(entity, revenue_vs_budget: dict | None, fiscal_year, as_of) -> 
         })
     span = (fiscal_year.end_date - fiscal_year.start_date).days or 1
     gone = min(max((as_of - fiscal_year.start_date).days, 0), span)
-    return {"budget_name": budget.name, "year_elapsed_pct": round(gone * 100 / span), "lines": lines}
+    return {
+        "budget_name": rollup_name(report.budgets),
+        "year_elapsed_pct": round(gone * 100 / span), "lines": lines,
+    }
 
 
 # --------------------------------------------------------------------------- #

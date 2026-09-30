@@ -1293,11 +1293,12 @@ class Budget(TimeStampedModel):
     ledger's actuals. Approval **locks** the figures so the plan can't be quietly
     rewritten to flatter the variance.
 
-    ``branch`` makes it one branch's plan, measured against the journals raised
-    in that branch alone; empty, it is the school's plan, measured against the
-    whole ledger. A branch plan leaves out school-wide entries because those are
-    the school plan's to measure: counting them in every branch's plan would
-    charge each branch the whole school's shared spend.
+    ``branch`` is the branch whose plan this is, measured against the journals
+    raised in that branch alone, and the school's plan for a year is the roll-up
+    of its branches' (:func:`vs_finance.reports.rolled_up_budgets`). Every budget
+    is raised for a branch (:func:`vs_rbac.scoping.raised_transaction_branch`);
+    one with none predates that rule, is measured against the whole ledger, and
+    is read only by a whole-school reader.
     """
 
     entity = models.ForeignKey(

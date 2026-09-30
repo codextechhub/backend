@@ -1346,11 +1346,11 @@ class BudgetLineSerializer(serializers.ModelSerializer):
 
 
 class BudgetSerializer(serializers.ModelSerializer):
-    """A budget, with whose plan it is and whether the reader may change it.
+    """A budget, with the branch it belongs to and whether the reader may change it.
 
-    ``branch_id`` is empty for the school's own plan. ``can_manage`` answers for
-    the request's reader: a branch-bound reader may read the school's plan but
-    not change it (see :func:`vs_rbac.scoping.caller_may_change`).
+    ``branch_id`` is empty only on a budget raised before every budget named a
+    branch, which only a whole-school reader reaches. ``can_manage`` answers for
+    the request's reader (see :func:`vs_rbac.scoping.caller_may_change`).
     """
 
     fiscal_year = serializers.IntegerField(source="fiscal_year.year", read_only=True)
