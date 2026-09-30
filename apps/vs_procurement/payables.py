@@ -32,6 +32,7 @@ from typing import NamedTuple
 from django.db import transaction
 from django.db.models import F
 
+from vs_config.display import format_date
 from vs_finance.audit import record, record_rejection
 from vs_finance.constants import (
     AccountType,
@@ -678,6 +679,7 @@ def _build_vendor_bill_plan(payment, allocations, *, as_of=None, bill_scope=None
     if allocations is not None:  # Explicit allocations always win over auto-allocation.
         plan = list(allocations)  # Normalize the iterable to a list.
         if as_of is not None:  # A named bill must already exist on the settling date.
+            tenant = payment.entity.tenant
             for invoice, _requested in plan:
                 bill_date = accounting_date(invoice)
                 ensure_on_or_after(
@@ -686,9 +688,10 @@ def _build_vendor_bill_plan(payment, allocations, *, as_of=None, bill_scope=None
                     source=f"bill {describe(invoice, 'the vendor invoice')}",
                     source_date=bill_date,
                     remedy=(
-                        f"Either date the payment {bill_date} or later, or leave it "
-                        f"unallocated and apply it once the bill is raised."
+                        f"Either date the payment {format_date(bill_date, tenant)} or later, "
+                        f"or leave it unallocated and apply it once the bill is raised."
                     ),
+                    tenant=tenant,
                 )
         return plan  # Explicit plan passed its date checks.
 

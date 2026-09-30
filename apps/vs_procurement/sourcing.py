@@ -17,6 +17,7 @@ from vs_finance.constants import FinanceAuditAction
 from vs_finance.money import format_naira
 from vs_finance.receivables import compute_line_net, compute_tax
 from vs_config.clock import branch_today
+from vs_config.display import format_date
 
 from .constants import QuotationStatus, RfqStatus
 from .exceptions import SourcingError
@@ -405,7 +406,8 @@ def award_quotation(
     ):
         raise SourcingError(
             f"Quotation {quotation.document_number} validity lapsed on "
-            f"{quotation.valid_until:%Y-%m-%d}; it cannot be awarded.",
+            f"{format_date(quotation.valid_until, quotation.entity.tenant)}; "
+            f"it cannot be awarded.",
         )
 
     if quotation.vendor.entity_id != quotation.entity_id:

@@ -21,6 +21,7 @@ from core.uploads import validate_upload
 from vs_finance.documents import _issuer_block
 from vs_notifications.notify import UnregisteredRecipient, send_notification
 from vs_config.clock import branch_today, branch_zone
+from vs_config.display import format_datetime
 from vs_tenants.context import reset_current_tenant, set_current_tenant
 
 from . import sourcing
@@ -80,11 +81,24 @@ def ensure_exact_deadline(rfq: RequestForQuotation) -> None:
     rfq.save(update_fields=["response_due_at", "updated_at"])
 
 
+def _vendor_moment(instant, rfq) -> str:
+    """*instant* as a vendor reads it: the RFQ's wall clock, with the zone named.
+
+    Read in the zone :func:`_rfq_zone` answers (the RFQ's branch, else the
+    tenant's) and written in the tenant's date format and clock
+    (:mod:`vs_config.display`): "29 Sep 2026, 11:59 pm WAT". The zone is
+    named because a vendor sits outside the school and cannot be assumed to
+    share its clock.
+    """
+    return format_datetime(instant, rfq.entity.tenant, branch=rfq.branch_id, with_zone=True)
+
+
 def format_deadline(invitation: RfqInvitation) -> str:
+    """The invitation's deadline for the vendor, or "No deadline"."""
     deadline = invitation.deadline
     if deadline is None:
         return "No deadline"
-    return deadline.astimezone(_rfq_zone(invitation.rfq)).strftime("%d %b %Y, %I:%M %p %Z")
+    return _vendor_moment(deadline, invitation.rfq)
 
 
 def invitation_url(raw_token: str) -> str:
@@ -601,7 +615,7 @@ def submit(invitation: RfqInvitation, email: str, raw_token: str) -> dict:
         context = _recipient_context(invitation, recipient) | {
             "quotation_number": quote.document_number,
             "revision": revision,
-            "submitted_at": now.astimezone(_rfq_zone(invitation.rfq)).strftime("%d %b %Y, %I:%M %p %Z"),
+            "submitted_at": _vendor_moment(now, invitation.rfq),
         }
         transaction.on_commit(lambda: _safe_notify(
             event_key="procurement.quotation_receipt", context=context,
