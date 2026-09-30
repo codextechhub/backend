@@ -18,6 +18,58 @@ TWO TRAPS, BOTH ALREADY MET HERE:
 
 LATEST BASES ON 2026-09-30: MRD v2.96, M01 v1.30, M03 v1.20, M04 v1.31, M05 v1.8, M06 v1.6, M07 v1.23, M08 v1.14, M09 v2.14, M10 v1.7, M11 v2.13, M12 v2.16, M13 v2.13, M14 v3.6, M17 v1.8, M18 v1.14, M19 v1.13, M20 v1.7, M21 v1.7, M22 v1.15, M23 v1.15, M24 v1.5, M25 v1.3, M26 v1.4, M30 v1.4, M31 v1.10. Recheck on the day.
 
+### D83. Everything the server prints reads the school's date format, clock and zone (64574046, 0fedbda1, 86504d5c, 2ba493d4, c1777f3f, 3d3b02cd, e89c27c5, 7328c3bc, fdc54aa6, cee9cf2f, acd88d77, 53833b04, 2026-09-30)
+MODULES: M06 configuration and capability, M01 school and branch management
+(settings), M17 billing and invoicing, M18 payments and collections, M19
+finance and accounting, M20 adjustments and concessions, M22 procurement, M23
+purchase orders delivery and AP, M26 reporting and exports, M07 workflow and
+approval engine, M08 notifications and delivery, M09 school onboarding, M03
+identity (password reset), M11 student management, M12 staff management, M14
+calendar and timetables, M05 audit (record history), MRD. Closes the gap D78
+left open. Contract in docs/config/config_tenant_clock.md section 5.
+- vs_config.display prints for people: format_date, format_datetime,
+  format_time, format_month ("Sep 2026" in every format), format_date_range,
+  each taking the tenant and, for an instant, the branch whose zone applies;
+  template library display_dates. Output matches school-fe src/lib/dates.ts
+  ("29 Sep 2026, 2:30 pm" / "29/09/2026, 14:30"). A calendar date is never
+  shifted; a naive timestamp is UTC.
+- Follow the setting: printed invoice and receipt, their PDFs, statement PDF
+  and export, finance emails (invoice, receipt, statement, credit/debit note,
+  dunning), fiscal calendar warning, PO PDF and email, RFQ deadline and
+  quotation receipt (the RFQ's zone kept and named, "WAT"), settlement export,
+  unbooked-receipts digest, task-review email, onboarding emails, password
+  reset expiry (the person's branch zone, named), export files in people mode
+  (dates, date-times in the school's zone, and a new time kind for bell and
+  exam times), filter sentences, schedule descriptions, the expiry refusal,
+  report subtitles' as-at date, month labels ("Sep 2026", was "Sep 26"), and
+  every refusal and warning sentence that names a date (backdated postings and
+  their remedies, fiscal year gaps and closing date, depreciation, refunds,
+  tax filings, write-offs, exams, events, calendar import, period overlap
+  (was always 12-hour), leave overlap, organogram, history as-at, admission
+  and status summaries, contracts).
+- Approval cards: summaries and details stay stored ISO and are written in
+  the tenant's format each time they are read.
+- Stays ISO: JSON fields, system-mode export columns, file-name tokens (now
+  read on the school's clock: a download at 00:30 Lagos is named for that day),
+  audit metadata, document numbers, import instructions.
+- Stored copies are not rewritten: the PDF kept on a finance document delivery
+  and an export's file keep the format they were made in.
+- FIX: the settlement report dates confirmations on the school's day (a
+  payment confirmed 00:30 Lagos on 1 Oct is October's); onboarding days
+  remaining count the school's days; a configuration audit export and write-off
+  activity rows use the school's day; an RFQ amendment that moves the deadline
+  no longer returns 500.
+MUST SAY: M06 the formatting contract beside the display settings; M01 that
+documents follow the display settings (remove the "do not read the format or
+the clock yet" limitation and the MRD gap D78 listed); M17, M18, M19, M20, M22,
+M23 that documents, emails and refusals print in the school's format, a
+vendor's deadline in the RFQ's zone named, and the settlement day rule; M26
+people versus system rendering including times and the file-name clock; M07
+approval cards reworded on read; M08 that notification contexts carry
+formatted dates; M09 onboarding email times and day counting; M03 the reset
+expiry line; M11, M12, M14, M05 the refusal wording. MRD: remove the D78
+documents gap.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
