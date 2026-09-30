@@ -5,12 +5,12 @@ branches' plans rather than a document of its own.
 
 * A budget is read with the transaction scope
   (:func:`vs_rbac.scoping.transaction_branch_scope`): a branch-bound reader sees
-  and changes only her own branches' budgets, and one not yet given a branch
+  and changes only their own branches' budgets, and one not yet given a branch
   (raised before every budget named one) only a whole-school reader sees.
 * A budget is measured against its own branch's journals, so whoever can read it
   sees its actuals and variance in full.
 * A new budget names its branch (:func:`vs_rbac.scoping.raised_transaction_branch`):
-  a branch-bound reader's is filed to her branch, a whole-school reader at a
+  a branch-bound reader's is filed to their branch, a whole-school reader at a
   school with several branches names one, and a school with one branch files it
   to that branch without asking.
 * ``budgets/rollup/`` is the school total: the reader's branches' plans for a year
@@ -50,7 +50,7 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 def _reader_scope(request):
-    """The reader's reach over budgets: her own branches' only."""
+    """The reader's reach over budgets: their own branches' only."""
     return transaction_branch_scope(request)
 
 
@@ -189,8 +189,8 @@ class _BudgetActionBase(_FinanceBase):
         """The budget, if it is in the reader's reach, for a read or a write alike.
 
         Another branch's budget, and one not yet given a branch, answers 404 to a
-        branch-bound reader, so its existence is not confirmed. What she can reach
-        is her own branches', and hers to change.
+        branch-bound reader, so its existence is not confirmed. What they can reach
+        is their own branches', and theirs to change.
         """
         entity = resolve_entity(request)
         budget = transaction_branch_scope(request).filter(
@@ -382,7 +382,7 @@ class BudgetRollupView(_FinanceBase):
     Each branch contributes its approved budget for the year, else its latest
     draft (:func:`vs_finance.reports.rolled_up_budgets`), and the sum is set
     against the reader's own journals. A whole-school reader gets the school's
-    total; a branch-bound reader gets her own branches'. ``budgets`` lists the
+    total; a branch-bound reader gets their own branches'. ``budgets`` lists the
     plans summed, so the screen can say what the total is made of.
 
     docstring-name: Budget school total

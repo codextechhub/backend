@@ -55,7 +55,7 @@ class ARAgingBranchTests(_AccessFixture):
     def aging(self, client, suffix=""):
         return client.get(f"/v1/finance/reports/ar-aging/?entity={self.books.code}{suffix}")
 
-    def test_a_branch_reader_sees_her_branchs_debts_only(self):
+    def test_a_branch_reader_sees_their_branchs_debts_only(self):
         """The school-wide customer's debt carries no branch, so it is not Ikeja's to age."""
         client = self.client_holding("aging-ikeja@corona.test", "finance.report.view", branch=self.ikeja)
         data = self.aging(client).data["data"]

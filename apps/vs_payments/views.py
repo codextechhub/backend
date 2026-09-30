@@ -90,7 +90,7 @@ def _entity_obj(request, entity, model, ref, field):
     Codes resolve too, because the UI pickers emit them. A row with a branch is
     found only when it is one of the caller's own branches', read exclusively as
     :class:`~vs_payments.reach.PaymentsReach` reads the gateway record created
-    against it: a clerk never creates a record she then cannot open. Ikeja's
+    against it: a clerk never creates a record they then cannot open. Ikeja's
     clerk naming a Lekki customer or invoice, or one not yet given a branch, gets
     the same 400 as for one that does not exist."""
     if model is Account:
@@ -195,7 +195,7 @@ def _payout_vendor(request, entity, reference):
 
     Read exclusively, as :class:`~vs_payments.reach.PaymentsReach` reads the payout
     through its vendor: a vendor of another branch, or one every branch shares,
-    answers like one that does not exist, so a clerk never raises a payout she
+    answers like one that does not exist, so a clerk never raises a payout they
     then cannot open.
     """
     from django.db.models import Q

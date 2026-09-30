@@ -293,7 +293,7 @@ def _resolve_bank_account(request, entity, ref, field="bank_account", *, require
       Lekki's money nor confirms the account exists.
     * **The document's own branch.** A document is paid only from an account of
       its own branch (:func:`require_own_branch_bank`). Mrs Okafor covers Ikeja
-      and Lekki, so she can see Lekki's account, but an Ikeja refund paid from it
+      and Lekki, so they can see Lekki's account, but an Ikeja refund paid from it
       would leave Ikeja's books owing and Lekki's short; that is a 400 naming the
       branch to pay it from.
 

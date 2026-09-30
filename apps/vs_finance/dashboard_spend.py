@@ -34,7 +34,7 @@ Access follows the other tabs. The cash, bank, payroll and tax blocks are the
 school's money as a whole, so only readers who see the whole school get them.
 Spending, budgets, expense claims, petty cash and fixed assets answer under the
 reader's branches. Every budget belongs to a branch, so a branch-bound reader
-sees her own branches' plans, each measured against its branch's journals.
+sees their own branches' plans, each measured against its branch's journals.
 """
 from __future__ import annotations
 
@@ -316,7 +316,7 @@ def budgets(entity, fiscal_year, as_of, scope=UNNARROWED) -> dict | None:
     """This year's plans in the reader's reach, and how much of each is spent.
 
     Budgets are read as the budgets screen reads them, with the transaction scope:
-    a branch-bound reader sees her own branches' plans, and one not yet given a
+    a branch-bound reader sees their own branches' plans, and one not yet given a
     branch only a whole-school reader sees.
     """
     from .models import Budget

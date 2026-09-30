@@ -217,7 +217,7 @@ def _statement_scope(delivery):
     A statement says what the screen its sender reads says
     (:class:`vs_finance.views_ar.CustomerStatementView`). Mrs Adeyemi, the Ikeja
     bursar, emails the Okafor family a statement of their Ikeja fees and payments,
-    not of their Lekki ones, which she cannot read; the whole-school bursar's
+    not of their Lekki ones, which they cannot read; the whole-school bursar's
     statement covers the family's whole account. The sender is the delivery's
     ``requested_by``, so a retry covers the branches of whoever retries it. A
     delivery nobody requested (an automatic one) covers the whole account.

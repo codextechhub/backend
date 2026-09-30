@@ -2,7 +2,7 @@
 
 **Rows narrow to the caller's branches, as the screens they mirror do.** Orders,
 vendor bills and requisitions are transactions (``inclusive=False``): a
-branch-pinned buyer exports her own branches' documents only, never one not yet
+branch-pinned buyer exports their own branches' documents only, never one not yet
 given a branch. The vendor master is a shared record (``inclusive=True``): a
 vendor every branch buys from is in every branch's file, as it is on the vendor
 screen. See :mod:`vs_rbac.scoping` for the two readings.

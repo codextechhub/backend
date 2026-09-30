@@ -454,9 +454,9 @@ def _require_every_line_placed(run, placed) -> None:
     """Refuse to post while any line has no branch, naming who.
 
     Corona runs one payroll for Ikeja, Lekki and Yaba. If Mr Okon, a driver, has
-    no branch on his salary row, nobody can say whose salary cost he is or whose
-    bank pays him, and guessing would book him to a branch that never employed
-    him. So the run stops, names him, and posts once he is placed.
+    no branch on their salary row, nobody can say whose salary cost they are or whose
+    bank pays them, and guessing would book them to a branch that never employed
+    them. So the run stops, names them, and posts once they are placed.
     """
     missing = [line for line, branch_id in placed.items() if branch_id is _UNASSIGNED]
     if not missing:

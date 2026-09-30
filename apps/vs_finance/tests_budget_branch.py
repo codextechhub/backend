@@ -4,11 +4,11 @@ Corona has Ikeja, Lekki and Yaba. Ikeja invoices 100,000 kobo of operating
 revenue and Lekki 300,000. Ikeja plans 200,000 and Lekki 400,000.
 
 * Mrs Adeyemi, the Ikeja bursar, reads and changes Ikeja's plan only. Lekki's
-  plan, and a plan raised before every budget named a branch, answer 404 to her.
+  plan, and a plan raised before every budget named a branch, answer 404 to them.
 * Ikeja's plan is measured against Ikeja's journals: 100,000 of 200,000.
 * Mr Bello, the whole-school bursar, sees every plan, and the school total is
   600,000 planned against the whole ledger's 400,000.
-* A new plan names its branch: Mr Bello names one (400 if he names none), Mrs
+* A new plan names its branch: Mr Bello names one (400 if they name none), Mrs
   Adeyemi's is Ikeja's without asking, and Harbour Primary, with one branch,
   never has to say.
 """
@@ -93,7 +93,7 @@ class _BudgetFixture(_FinanceBranchFixture):
 class BranchReadersSeeTheirOwnBudgetsTests(_BudgetFixture):
     """Budgets are read exclusively, like every other money record."""
 
-    def test_a_branch_reader_lists_only_her_branchs_budget(self):
+    def test_a_branch_reader_lists_only_their_branchs_budget(self):
         old = self.unbranched_plan()
         body = self.get(self.adeyemi, "budgets/")
 
@@ -101,7 +101,7 @@ class BranchReadersSeeTheirOwnBudgetsTests(_BudgetFixture):
         self.assertEqual([row["id"] for row in body["data"]], [self.ikeja_plan.id])
         self.assertNotIn(old.id, [row["id"] for row in body["data"]])
 
-    def test_her_budget_carries_its_actuals_in_full(self):
+    def test_their_budget_carries_its_actuals_in_full(self):
         row = self.get(self.adeyemi, "budgets/")["data"][0]
 
         self.assertEqual(row["actual_ytd"], 100_000)
@@ -126,7 +126,7 @@ class BranchReadersSeeTheirOwnBudgetsTests(_BudgetFixture):
         self.assertEqual(
             {row["id"] for row in body["data"]}, {self.ikeja_plan.id, self.lekki_plan.id, old.id})
 
-    def test_the_variance_of_her_own_budget_is_whole(self):
+    def test_the_variance_of_their_own_budget_is_whole(self):
         data = self.get(self.adeyemi, f"budgets/{self.ikeja_plan.pk}/variance/")["data"]
 
         self.assertEqual(data["total_budget"]["kobo"], 200_000)
@@ -136,7 +136,7 @@ class BranchReadersSeeTheirOwnBudgetsTests(_BudgetFixture):
 
 class RaisingABudgetNamesItsBranchTests(_BudgetFixture):
 
-    def test_a_branch_reader_files_to_her_branch(self):
+    def test_a_branch_reader_files_to_their_branch(self):
         response = self.post(self.adeyemi, "budgets/", {"name": "Ikeja capex", "fiscal_year": 2026})
 
         self.assertEqual(response.status_code, 201, response.data)
@@ -226,7 +226,7 @@ class SchoolTotalTests(_BudgetFixture):
         self.assertEqual({b["id"] for b in data["budgets"]}, {self.ikeja_plan.id, self.lekki_plan.id})
         self.assertFalse(data["narrowed"])
 
-    def test_a_branch_readers_total_is_her_branchs_plan(self):
+    def test_a_branch_readers_total_is_their_branchs_plan(self):
         data = self.get(self.adeyemi, "budgets/rollup/")["data"]
 
         self.assertEqual(data["total_budget"]["kobo"], 200_000)

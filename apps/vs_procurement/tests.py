@@ -12787,12 +12787,12 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_unbranched_rows_are_left_out_and_not_even_counted(self, _permission):
-        """A branch-bound caller's reports hold her own branches' documents and nothing else.
+        """A branch-bound caller's reports hold their own branches' documents and nothing else.
 
         The 200,000 raised before documents carried a branch has not been given one
-        yet, so it belongs to no branch she works in. It is neither summed nor
+        yet, so it belongs to no branch they work in. It is neither summed nor
         counted: even a count would tell Lekki's officer that something exists
-        outside her branch, and that is the whole-school bursar's to see and fix.
+        outside their branch, and that is the whole-school bursar's to see and fix.
         """
         spend = self.report(self.lekki_client, "spend-analysis")
         self.assertEqual(spend["total_gross"]["kobo"], 500_000)
@@ -12912,7 +12912,7 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
         self.assertEqual(self.report(client, "grir-aging")["total_open"]["kobo"], 0)
         self.assertEqual(self.report(client, "cycle-time")["end_to_end_count"], 0)
         self.assertEqual(self.report(client, "grir-lines")["rows"], [])
-        # Nothing outside her branch is summed or counted.
+        # Nothing outside their branch is summed or counted.
         self.assertNotIn("unassigned_excluded_count", spend)
 
     def test_every_report_endpoint_still_requires_permission(self):

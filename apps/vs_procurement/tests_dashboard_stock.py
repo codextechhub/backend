@@ -66,7 +66,7 @@ class LowStockTests(_StockFixture):
         self.assertEqual(row.days_left, int(Decimal(40) / (Decimal(70) / 30)))
         self.assertEqual(row.suggested, Decimal(100))
 
-    def test_a_lekki_storekeeper_reads_her_own_store_only(self):
+    def test_a_lekki_storekeeper_reads_their_own_store_only(self):
         issue_stock(self.paper, quantity=Decimal(10), movement_date=datetime.date(2026, 1, 30), location=self.central)
         ikeja_store = StockLocation.objects.create(entity=self.multi.entity, code="IKJ", name="Ikeja store",
                                                    branch=self.ikeja)

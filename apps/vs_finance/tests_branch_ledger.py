@@ -171,7 +171,7 @@ class BranchReportEndpointTests(_LedgerFixture):
 class ChartOfAccountsNarrowsTests(_LedgerFixture):
     """The chart's balances and an account's lines follow the reader's statements.
 
-    The Ikeja bursar's income statement shows Ikeja's revenue alone. Her chart of
+    The Ikeja bursar's income statement shows Ikeja's revenue alone. Their chart of
     accounts, the account drawer and the account's activity
     must show the same figures, not the whole school's ledger one click away.
     """

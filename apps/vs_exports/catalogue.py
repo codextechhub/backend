@@ -272,7 +272,7 @@ def narrow_to_caller_branches(queryset, scope, *, field="branch", inclusive=True
     * ``True`` - the row is a shared record or configuration, and one with no
       branch belongs to every branch: a customer, a vendor, a catalogue item.
     * ``False`` - the row is a transaction: every document, in every module. A
-      branch-pinned caller exports her own branches' rows only, never one not
+      branch-pinned caller exports their own branches' rows only, never one not
       yet given a branch, exactly as
       :func:`vs_rbac.scoping.transaction_branch_scope` reads it on screen.
 

@@ -1412,7 +1412,7 @@ class EmployeeSalary(TimeStampedModel):
     ``branch`` is the branch the employee works in. It decides who a branch run
     covers (:func:`vs_finance.payroll.roster_for`), which branch's journal a
     central run books the pay to, and who may read the row: the roster is read
-    exclusively, like every money record, so a branch officer sees her own
+    exclusively, like every money record, so a branch officer sees their own
     branch's staff only.
 
     Null does **not** mean "shared across the school". Head office is a branch

@@ -6,7 +6,7 @@ out to a vendor Lekki keeps to itself, any more than the finance screens let
 her. Nor may she see, count or change Lekki's collections, virtual accounts,
 payouts or their log. Every gateway record takes its reach from the row it hangs
 on, read exclusively: a record whose customer, invoice, vendor or bank carries no
-branch is not hers either, because nothing says whose money it is. Each is
+branch is not theirs either, because nothing says whose money it is. Each is
 answered exactly as a record that does not exist, while Ikeja's own behave as
 before, and a reader who covers the whole school sees everything.
 """
@@ -299,7 +299,7 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
 
     Corona's books hold a gateway record for each of Ikeja, Lekki and one whose row
     carries no branch, on every screen. Ikeja's clerk sees Ikeja's and counts only
-    those; a Lekki record is a 404 to her, on reading it and on changing it, and
+    those; a Lekki record is a 404 to them, on reading it and on changing it, and
     nothing changes. The bursar, who covers the whole school, sees all of them
     exactly as before.
     """
@@ -608,7 +608,7 @@ class PayoutBatchApprovalsStayWithinReachTests(_FinanceBranchFixture):
     Mrs Bello is Ikeja's bursar and is named on Corona's payout approver group, so
     the approval route puts her on every batch; a batch has no branch of its own.
     One batch pays an Ikeja vendor, another pays a Lekki vendor and one every
-    branch shares. The payout screens already keep the second from her. The approval inbox,
+    branch shares. The payout screens already keep the second from them. The approval inbox,
     the instance behind it and its approve and reject answer the same way, while
     the head bursar, who covers the whole school, sees and decides both.
     """

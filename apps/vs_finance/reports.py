@@ -1180,7 +1180,7 @@ def rolled_up_budgets(entity, fiscal_year, scope=None) -> list:
     beside an approved plan is not counted twice.
 
     ``scope`` (a :class:`vs_rbac.scoping.BranchScope`) is the reader's reach over
-    transactions: a branch-bound reader's roll-up is her own branches' plans, and
+    transactions: a branch-bound reader's roll-up is their own branches' plans, and
     a whole-school reader's is every branch's. A budget not yet given a branch
     predates that rule and was raised as the whole school's plan, so it is counted
     only for a whole-school reader and only in a year no branch has planned,
@@ -1220,7 +1220,7 @@ def budget_rollup(entity, fiscal_year, *, scope=None, period_no=None) -> BudgetV
     Plans are :func:`rolled_up_budgets`; actuals are the reader's own journals
     (:func:`vs_finance.branch_ledger.ledger_balances`), so a whole-school reader
     measures every branch's plan against the whole ledger and a branch-bound
-    reader measures her branches' plans against her branches' journals. The
+    reader measures their branches' plans against their branches' journals. The
     report has no ``budget_id``: it is no one budget.
     """
     from .branch_ledger import ledger_balances

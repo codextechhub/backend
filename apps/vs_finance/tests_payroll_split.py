@@ -6,8 +6,8 @@ run's salary cost is Ikeja's and Lekki's own, so posting books two accrual
 journals, one naming each branch, and each branch's net wages leave that
 branch's bank account. Cancelling reverses each journal on its own.
 
-Mr Okon, a driver with no branch on his salary row, stops the run from posting
-until somebody says whose driver he is. Harbour Primary, with one branch, posts
+Mr Okon, a driver with no branch on their salary row, stops the run from posting
+until somebody says whose driver they are. Harbour Primary, with one branch, posts
 one journal exactly as before.
 """
 from __future__ import annotations

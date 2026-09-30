@@ -691,7 +691,7 @@ class BankAccountReachedByIdNarrowsTests(_FinanceBranchFixture):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["data"]["name"], "Ikeja Collections")
 
-    def test_an_account_not_yet_given_a_branch_does_not_open_from_her_site(self):
+    def test_an_account_not_yet_given_a_branch_does_not_open_from_their_site(self):
         """A bank account holds one branch's money, so an unbranched one is nobody's yet."""
         response = self.call("GET", f"bank-accounts/{self.shared_account.pk}/")
 
@@ -862,7 +862,7 @@ class TransactionFiguresNarrowTests(_FinanceBranchFixture):
     """Mrs Adeyemi's statements and summaries add up Ikeja's journals and nothing else.
 
     Three posted journals: 10,000 at Ikeja, 20,000 at Lekki, and 40,000 raised before
-    journals carried a branch. Her trial balance and journal summary count the
+    journals carried a branch. Their trial balance and journal summary count the
     10,000 alone; Mr Bello, who covers the whole school, still counts all 70,000.
     """
 
@@ -892,10 +892,10 @@ class TransactionFiguresNarrowTests(_FinanceBranchFixture):
         self.assertEqual(response.status_code, 200, response.data)
         return response.data["data"]
 
-    def test_her_trial_balance_counts_ikejas_journal_only(self):
+    def test_their_trial_balance_counts_ikejas_journal_only(self):
         self.assertEqual(self.data(self.adeyemi, "reports/trial-balance/")["total_debit"]["kobo"], 10_000)
         self.assertEqual(self.data(self.bello, "reports/trial-balance/")["total_debit"]["kobo"], 70_000)
 
-    def test_her_journal_summary_counts_ikejas_journal_only(self):
+    def test_their_journal_summary_counts_ikejas_journal_only(self):
         self.assertEqual(self.data(self.adeyemi, "journals/summary/")["posted_total"]["kobo"], 10_000)
         self.assertEqual(self.data(self.bello, "journals/summary/")["posted_total"]["kobo"], 70_000)

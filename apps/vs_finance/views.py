@@ -1507,7 +1507,7 @@ class JournalSubmitView(APIView):
     handler's ``on_approved`` posting. Only meaningful when a template exists for
     ``finance.journal`` at this journal's scope (see :func:`approvals.approval_required`).
 
-    A branch-bound caller reaches only her own branches' journals; another
+    A branch-bound caller reaches only their own branches' journals; another
     branch's, or one not yet given a branch, answers 404 and nothing is submitted.
 
     docstring-name: Submit a journal for approval
@@ -1550,7 +1550,7 @@ class JournalPostView(APIView):
     as posted without approval (:func:`vs_finance.approvals.guard_direct_post`).
     With no template at all, the draft posts directly.
 
-    A branch-bound caller reaches only her own branches' journals; another
+    A branch-bound caller reaches only their own branches' journals; another
     branch's, or one not yet given a branch, answers 404 before the approval guard
     runs, and nothing is posted.
 
@@ -1584,7 +1584,7 @@ class JournalPostView(APIView):
 class JournalReverseView(APIView):
     """POST /finance/journals/<id>/reverse/?entity= - reverse a posted journal.
 
-    A branch-bound caller reaches only her own branches' journals; another
+    A branch-bound caller reaches only their own branches' journals; another
     branch's, or one not yet given a branch, answers 404 and nothing is posted.
 
     docstring-name: Reverse a journal entry
@@ -1651,7 +1651,7 @@ class DirectEntryCreateView(APIView):
 
     A direct entry starts a chain, so its branch comes from the caller under the
     platform rule (:func:`vs_rbac.scoping.raised_transaction_branch`). Ikeja's
-    bursar, bound to Ikeja alone, files it at Ikeja whether or not she names the
+    bursar, bound to Ikeja alone, files it at Ikeja whether or not they name the
     branch. A caller bound to Ikeja and Lekki, or a whole-school caller at a
     school with several branches, names one (400 otherwise). At a school with
     one branch the entry takes it without asking. The approval route is chosen

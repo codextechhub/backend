@@ -139,8 +139,8 @@ class RefundCreationTests(_RefundFixture):
         self.assertIn("branch", response.data["error"]["detail"])
         self.assertFalse(Refund.objects.filter(customer=self.family).exists())
 
-    def test_a_branch_bursar_raises_a_shared_familys_refund_at_her_branch(self):
-        """Naming no branch for a family every branch shares gives her own branch's refund."""
+    def test_a_branch_bursar_raises_a_shared_familys_refund_at_their_branch(self):
+        """Naming no branch for a family every branch shares gives their own branch's refund."""
         self.school_wide_receipt(15_000)
 
         response = self.create(self.ikeja_bursar, 10_000)

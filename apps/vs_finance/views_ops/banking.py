@@ -1257,7 +1257,7 @@ def _transaction_or_404(request, entity, pk):
 def _transactions_in_reach(request, entity):
     """Bank transactions read as every transaction is: by their own branch, exclusively.
 
-    A branch-bound bursar sees her branches' transactions and none that has not
+    A branch-bound bursar sees their branches' transactions and none that has not
     been given a branch (:func:`vs_rbac.scoping.transaction_branch_q`).
     """
     return BankTransaction.objects.filter(transaction_branch_q(request), entity=entity)

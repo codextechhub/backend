@@ -154,7 +154,7 @@ class CentralPayrollIsUnchangedTests(_PayrollFixture):
         """A run for all staff is the whole school's, so a branch officer is refused.
 
         Mrs Bello is granted Bursar at Ikeja. A run covering Corona's whole roster
-        would show her Lekki's and Yaba's pay, and it names no branch, so she could
+        would show them Lekki's and Yaba's pay, and it names no branch, so they could
         not open it once raised.
         """
         bello = self.officer(
@@ -690,8 +690,8 @@ class RosterScopingTests(_PayrollFixture):
             self.tenant, "rs-ikeja@fin.test", "rs-ikeja", branches=[self.ikeja],
         )
 
-    def test_a_pinned_officer_reads_her_own_rows_only(self):
-        """A salary follows its employee's branch; an unassigned one is not hers."""
+    def test_a_pinned_officer_reads_their_own_rows_only(self):
+        """A salary follows its employee's branch; an unassigned one is not theirs."""
         response = self.bello.get(
             f"/v1/finance/employee-salaries/?entity={self.books.code}",
         )

@@ -65,7 +65,7 @@ Two rules follow, and they are separate:
      branch at all (the platform's); continue one with `inherited_branch_id`,
      which refuses sources from two branches. Read them with
      `transaction_branch_q` / `transaction_branch_scope`: a branch-bound reader
-     sees only her own branches' transactions, and a transaction still carrying
+     sees only their own branches' transactions, and a transaction still carrying
      a null branch is visible only to a whole-school reader. A document is paid
      only from its own branch's bank account, and settles only documents of its
      own branch. A central payroll run covers every branch's staff, so it names

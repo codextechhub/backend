@@ -81,9 +81,9 @@ def _refuse_central_run_for_branch_caller(request, entity) -> None:
     """A run covering every branch's staff is raised only by a whole-school caller.
 
     Mrs Bello keeps Ikeja's payroll at Corona. A run for all staff would put
-    Lekki's and Yaba's salaries in front of her, and it names no branch, so once
-    raised it would be out of her reach anyway. At a school with one branch her
-    grant covers the whole school and she is not refused.
+    Lekki's and Yaba's salaries in front of them, and it names no branch, so once
+    raised it would be out of their reach anyway. At a school with one branch their
+    grant covers the whole school and they are not refused.
     """
     from rest_framework.exceptions import PermissionDenied
 
@@ -366,11 +366,11 @@ class PayrollRunCancelView(_PayrollActionBase):
 # --------------------------------------------------------------------------- #
 
 def _salary_rows(request, entity):
-    """The salary rows the caller may read: her own branches' staff only.
+    """The salary rows the caller may read: their own branches' staff only.
 
     A salary follows its employee's branch, read exclusively like every money
     record (:func:`vs_rbac.scoping.transaction_branch_q`). Mrs Bello keeps Lekki's
-    payroll, so she sees Lekki's teachers' pay and never an Ikeja teacher's, nor
+    payroll, so they see Lekki's teachers' pay and never an Ikeja teacher's, nor
     the pay of somebody nobody has given a branch yet: that row could be anyone's,
     and placing it is the whole-school bursar's job, who sees every row.
     """
@@ -440,7 +440,7 @@ class EmployeeSalaryListCreateView(_FinanceBase):
     Rows are read by the employee's branch, exclusively (:func:`_salary_rows`).
     A new row names its branch as a transaction does
     (:func:`vs_rbac.scoping.raised_transaction_branch`): a pinned officer's hire
-    is hers, a whole-school bursar at a school with several branches names one,
+    is theirs, a whole-school bursar at a school with several branches names one,
     and a school with one branch files it there without asking. A row with no
     branch at a school with several stops the payroll run it is on from posting,
     so none is created.

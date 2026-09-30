@@ -3,7 +3,7 @@
 Corona keeps a collection account at Ikeja and at Lekki, and a GTBank operations
 account opened before bank accounts carried a branch, each backed by its own
 ledger account. Ikeja's bursar cannot name Lekki's bank account, or the
-unbranched one, on a payment, so she must not be able to name their ledgers by
+unbranched one, on a payment, so they must not be able to name their ledgers by
 code either: as a receipt's deposit account, an
 asset's credit account, a bank adjustment's counter account, a direct entry's
 line, a payout's source, a vendor's account, or by editing the ledger account
@@ -87,7 +87,7 @@ class ResolverTests(_LedgerReachFixture):
             with self.subTest(code=account.code):
                 self.assertEqual(self.resolve(ikeja, account.code), account)
 
-    def test_the_ledger_of_a_bank_not_yet_given_a_branch_is_unknown_to_her(self):
+    def test_the_ledger_of_a_bank_not_yet_given_a_branch_is_unknown_to_them(self):
         ikeja = self.person("finance.payment.create", branch=self.ikeja)
         with self.assertRaises(ValidationError):
             self.resolve(ikeja, self.shared_bank.gl_account.code)
@@ -266,7 +266,7 @@ class LedgerOfAnotherBranchOnABranchDocumentTests(_LedgerReachFixture):
         )
 
     def test_a_shared_customers_receipt_lands_in_its_own_branchs_bank(self):
-        """The receipt takes the branch she names, and deposits only there."""
+        """The receipt takes the branch they name, and deposits only there."""
         customer = self.customer(self.books, "CRALL", None)
         body = {"amount": 5_000, "payment_date": JAN.isoformat(),
                 "deposit_account": self.lekki_ledger.code}

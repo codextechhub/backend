@@ -3,7 +3,7 @@
 Corona runs Ikeja, Lekki and Yaba, and keeps a collection account at each
 branch, plus a GTBank operations account opened before accounts carried a
 branch. Ikeja's bursar sees Ikeja's account only: a bank account holds one
-branch's money, and one not yet given a branch is nobody's to her. Every route
+branch's money, and one not yet given a branch is nobody's to them. Every route
 that moves money out of a named account (refunds singly and in batches,
 expense-claim reimbursements, tax payments, asset purchases and sales, petty-cash
 floats and top-ups, payroll runs and their payment, vendor payments) resolves
@@ -211,7 +211,7 @@ class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
     Mrs Okafor is bursar at both Ikeja and Lekki, so Lekki's account is in her
     bank list. An Ikeja document paid from it would leave Ikeja owing and Lekki
     short, so it is refused with a 400 naming the branch, not hidden as a 404.
-    The account not yet given a branch is outside her reach altogether (404).
+    The account not yet given a branch is outside their reach altogether (404).
     """
 
     MESSAGE = "belongs to Ikeja Branch. Pay it from an Ikeja Branch account."
@@ -289,7 +289,7 @@ class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
     def test_a_tax_payment(self):
         """Ikeja's share of the school's return is paid from Ikeja's account only.
 
-        The return names no branch; she reaches it through its Ikeja share.
+        The return names no branch; they reach it through its Ikeja share.
         """
         filing = self.tax_return(self.ikeja, self.yaba)
         self.assertEachBank(
@@ -299,11 +299,11 @@ class DocumentPaidFromItsOwnBranchTests(BankAccountNamedInAPostingTests):
         self.assertEqual(filing.shares.get(branch=self.ikeja).amount_paid, 50_000)
         self.assertEqual(filing.shares.get(branch=self.yaba).amount_paid, 0)
 
-    def test_a_tax_return_with_no_share_of_hers_is_not_found(self):
-        """A return whose only share is Yaba's is outside her reach, so she may not pay it.
+    def test_a_tax_return_with_no_share_of_theirs_is_not_found(self):
+        """A return whose only share is Yaba's is outside their reach, so they may not pay it.
 
-        She covers Ikeja and Lekki. Whichever account she names, her Ikeja one,
-        her Lekki one or the unbranched one, the return is not found for her.
+        They cover Ikeja and Lekki. Whichever account they name, their Ikeja one,
+        their Lekki one or the unbranched one, the return is not found for them.
         """
         filing = self.tax_return(self.yaba)
         client = self.bursar("finance.tax.pay")
@@ -449,7 +449,7 @@ class StatementImportBatchesFollowTheirAccountTests(BankAccountNamedInAPostingTe
 
     Ikeja's bursar sees the statement imported into Ikeja's account, and neither
     Lekki's nor the one imported into the GTBank account nobody has given a
-    branch. A student roll uploaded for the whole school stays visible to her: an
+    branch. A student roll uploaded for the whole school stays visible to them: an
     ordinary import with no branch is still the school's.
     """
 
@@ -492,7 +492,7 @@ class StatementImportBatchesFollowTheirAccountTests(BankAccountNamedInAPostingTe
         return set(ImportBatch.all_objects.filter(
             batch_branch_q(request), tenant=self.tenant).values_list("pk", flat=True))
 
-    def test_a_branch_bursar_reads_only_her_accounts_statement_imports(self):
+    def test_a_branch_bursar_reads_only_their_accounts_statement_imports(self):
         ikeja = self.grant(self.user_for(self.tenant, "imp-ikeja@corona.test"),
                            "finance.bankaccount.import", tenant=self.tenant,
                            role_key="imp-ikeja", branch=self.ikeja)

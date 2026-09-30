@@ -118,7 +118,7 @@ from .views_ops import (
 # (invoices, receipts, notes, refunds, concessions, plans, write-offs, dunning
 # notices) is a transaction and is read exclusively
 # (:func:`vs_rbac.scoping.transaction_branch_q`): a branch-bound caller reaches
-# her own branches' documents only, and never one not yet given a branch.
+# their own branches' documents only, and never one not yet given a branch.
 #
 # A row in another branch answers with exactly the same "no ... matches" message
 # as one that does not exist, so a code cannot be used to discover that another

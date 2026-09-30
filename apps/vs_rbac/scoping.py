@@ -30,7 +30,7 @@ The last line applies to whichever arm answered. Harbour Primary has one
 branch, Main, and its bursar holds her role pinned to Main. Every row Harbour
 has is a Main row, a shared record, or a transaction still waiting to be given
 its branch, and all of them are Main's, so the pin says nothing a whole-tenant
-grant would not: she reads the tenant-level figures, changes shared records and
+grant would not: they read the tenant-level figures, changes shared records and
 grants roles across the tenant exactly as an unpinned bursar does. The day
 Harbour opens a second branch the same grant narrows to Main again, on the next
 request, because a shared row then binds a branch she does not work in. A
@@ -491,7 +491,7 @@ def branch_reach_payload(user, tenant=None) -> dict:
 #
 # Getting a transaction wrong in the inclusive direction is a leak: Mrs Adeyemi
 # works at Ikeja only, and an unbranched refund of 250,000 raised before the
-# school opened Lekki would sit in her list with no way to tell whose it is.
+# school opened Lekki would sit in their list with no way to tell whose it is.
 # Hence the exclusive transaction helpers, which every transaction read uses.
 
 
@@ -1008,7 +1008,7 @@ def raised_transaction_branch(request, tenant, body, *, field: str = "branch"):
     * a caller bound to several must name one of theirs (400 when they name none);
     * a whole-tenant caller may name any branch of *tenant*. Naming none is
       answered by the tenant's only branch when it has exactly one, so Harbour
-      Primary's bursar is never asked which branch she means, and is a 400 when
+      Primary's bursar is never asked which branch they mean, and is a 400 when
       it has several: Mr Bello, the school-wide bursar at a school with Ikeja
       and Lekki, raising a refund without saying whose, has raised it for one of
       them, and filing it under neither would hide it from both branches' staff.

@@ -164,7 +164,7 @@ class BudgetAndAccessTests(_SpendFixture):
         item = self.view()["budgets"]["items"][0]
         self.assertEqual((item["plan"]["kobo"], item["used"]["kobo"], item["pct"]), (80_000, 40_000, 50.0))
 
-    def test_a_branch_reader_sees_only_her_branchs_plan(self):
+    def test_a_branch_reader_sees_only_their_branchs_plan(self):
         self.plan()
         self.plan(self.ikeja)
         self.plan(self.lekki)

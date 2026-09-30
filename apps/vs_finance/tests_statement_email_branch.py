@@ -1,8 +1,8 @@
-"""A statement emailed by a branch bursar covers her branches' documents only.
+"""A statement emailed by a branch bursar covers their branches' documents only.
 
 The Okafor family is shared by every branch at Corona: Ikeja bills them 1,000 and
 Lekki 1,000. Mrs Adeyemi, the Ikeja bursar, reads their statement on screen as
-Ikeja's 1,000, and the statement she emails them says the same. Mr Eze, the
+Ikeja's 1,000, and the statement they email them says the same. Mr Eze, the
 whole-school bursar, sends the whole account: 2,000.
 """
 from __future__ import annotations
@@ -50,7 +50,7 @@ class StatementEmailFollowsTheSendersBranchesTests(_FinanceBranchFixture):
         _pdf, context, _name, branch = _render(delivery)
         return context, branch
 
-    def test_a_branch_bursars_statement_is_her_branchs_account(self):
+    def test_a_branch_bursars_statement_is_their_branchs_account(self):
         context, branch = self.rendered(self.adeyemi)
 
         self.assertEqual(context["total_charges"], "₦1,000.00")

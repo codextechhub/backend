@@ -219,7 +219,7 @@ class TransactionScopeTests(_RowFixture):
     """A transaction with no branch is seen only by a whole-school caller.
 
     Mrs Adeyemi works at Ikeja only. A refund nobody has given a branch could be
-    Lekki's as easily as Ikeja's, so it stays out of her lists; Mr Bello, the
+    Lekki's as easily as Ikeja's, so it stays out of their lists; Mr Bello, the
     school-wide bursar, sees it and can give it its branch.
     """
 
@@ -238,7 +238,7 @@ class TransactionScopeTests(_RowFixture):
             .values_list("id", flat=True)
         )
 
-    def test_a_branch_bound_caller_sees_only_her_own_branch(self):
+    def test_a_branch_bound_caller_sees_only_their_own_branch(self):
         adeyemi = self.pinned_at(self.tenant, "x-adeyemi@scope.test", self.ikeja)
 
         seen = self.seen(adeyemi)
@@ -616,7 +616,7 @@ class RaisedTransactionBranchTests(_RowFixture):
             self.request_for(user), tenant or self.tenant, body or {},
         )
 
-    def test_a_pinned_caller_gets_her_own_branch_without_naming_it(self):
+    def test_a_pinned_caller_gets_their_own_branch_without_naming_it(self):
         adeyemi = self.pinned_at(self.tenant, "rt-one@t.com", self.ikeja)
 
         self.assertEqual(self.raised(adeyemi), self.ikeja)
@@ -704,7 +704,9 @@ class InheritedBranchRuleTests(_RowFixture):
             self.inherited(user, self.source_at(self.lekki))
 
     def test_an_unbranched_source_is_continued_only_by_a_whole_school_caller(self):
-        """She cannot read it, so she cannot build on it; Mr Bello can, and it stays unbranched."""
+        """They cannot read it, so they cannot build on it; Mr Bello can, and it
+        stays unbranched.
+        """
         from rest_framework.exceptions import PermissionDenied
 
         adeyemi = self.pinned_at(self.tenant, "inh-shared@t.com", self.ikeja)

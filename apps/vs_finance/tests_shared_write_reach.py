@@ -13,8 +13,9 @@ shared record: a branch-bound bursar cannot read it, so posting, submitting or
 reversing it answers 404, as another branch's does. The school's tax return
 names no branch because it is booked per branch: Ngozi reaches it through
 Lekki's share, reads and pays only that share, and may not file, un-file or
-reverse the whole return (403). A return with no Lekki share is a 404 to her. A direct entry starts a chain, so it takes its branch from the person
-raising it: a branch-bound bursar's entry is her branch's, and hers to reverse,
+reverse the whole return (403). A return with no Lekki share is a 404 to them.
+A direct entry starts a chain, so it takes its branch from the person
+raising it: a branch-bound bursar's entry is their branch's, and theirs to reverse,
 and a whole-school bursar at a school with several branches names one.
 
 Lagoon View runs Ikeja and Lekki. Adaeze is the bursar for the whole school.
@@ -553,7 +554,7 @@ class TaxFilingWriteTests(_SharedWriteFixture):
         filing.refresh_from_db()
         self.assertEqual(filing.filing_status, TaxFilingStatus.FILED)
 
-    def test_a_return_with_no_share_of_hers_is_not_listed_for_her(self):
+    def test_a_return_with_no_share_of_theirs_is_not_listed_for_them(self):
         """A return not yet given a branch or any share is the whole school's to place."""
         split = self.split_return()
         unshared = self.filing(1)
@@ -682,8 +683,8 @@ class ChartOfAccountsWriteTests(_SharedWriteFixture):
         plain.refresh_from_db()
         self.assertEqual(plain.name, before)
 
-    def test_the_ledger_of_a_bank_not_yet_given_a_branch_is_not_hers_to_name(self):
-        """A bank account holds one branch's money; until it has a branch it is nobody's to her."""
+    def test_the_ledger_of_a_bank_not_yet_given_a_branch_is_not_theirs_to_name(self):
+        """A bank account holds one branch's money; until it has a branch it is nobody's to them."""
         unbranched_bank = self.bank_ledger("1160", None)
         response = self.rename(self.ngozi, unbranched_bank, "Renamed")
         self.assertEqual(response.status_code, 404, response.data)

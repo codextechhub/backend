@@ -362,8 +362,8 @@ class SharedWhenAmbiguousTests(_WriteFixture):
             self.solo_main.pk,
         )
 
-    def test_a_payroll_run_from_a_two_branch_officer_names_one_of_hers(self):
-        """A run for all staff is a whole-school caller's, so she is asked which branch.
+    def test_a_payroll_run_from_a_two_branch_officer_names_one_of_theirs(self):
+        """A run for all staff is a whole-school caller's, so they are asked which branch.
 
         Naming none would raise a run covering every branch's staff, which only a
         caller covering the whole school raises; ``tests_payroll_split`` holds that

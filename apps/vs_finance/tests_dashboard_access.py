@@ -84,7 +84,7 @@ class FinanceDashboardAccessTests(_FinanceBranchFixture):
 
     # -- a branch bursar ------------------------------------------------------ #
 
-    def test_a_branch_bursar_sees_her_branchs_figures_only(self):
+    def test_a_branch_bursar_sees_their_branchs_figures_only(self):
         client = self.client_holding(
             "bursar-ikeja@corona.test",
             "finance.invoice.view", "finance.payment.view", "finance.report.view",

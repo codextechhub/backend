@@ -183,7 +183,7 @@ class FinanceReadingTests(_Base):
         names = {c.name for c in self.rows("finance.customers", self.lekki_head)}
         self.assertEqual(names, {"Shared Payer", "Lekki Payer"})
 
-    def test_a_branch_callers_transaction_exports_hold_her_branch_only(self):
+    def test_a_branch_callers_transaction_exports_hold_their_branch_only(self):
         """The head of Lekki exports Lekki's invoices and receipts, not Ikeja's, not unbranched ones.
 
         The school-level caller still gets every row, the unbranched ones included,

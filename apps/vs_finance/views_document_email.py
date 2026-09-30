@@ -13,7 +13,7 @@ front of somebody who administers a different site, and then in their inbox.
 
 Invoices and receipts are transactions, read exclusively
 (:func:`vs_rbac.scoping.transaction_branch_q`): a branch-bound caller sends only
-her own branches' documents, and never one not yet given a branch.
+their own branches' documents, and never one not yet given a branch.
 
 The services in :mod:`vs_finance.document_email` own recipients, rendering, queueing
 and outcome; these views only resolve, authorize and translate.

@@ -133,7 +133,7 @@ class StockBranchScopeTests(_StockFixture, TestCase):
 
     # -- balances ------------------------------------------------------------ #
 
-    def test_a_storekeeper_reads_her_own_store_only(self, _perm):
+    def test_a_storekeeper_reads_their_own_store_only(self, _perm):
         response = self.storekeeper.get(self.url("stock-balances/"))
 
         self.assertEqual(response.status_code, 200, response.data)
@@ -385,7 +385,7 @@ class StockMovementComesFromTheCallersStoreTests(_StockFixture, TestCase):
         self.assertEqual(
             response.data["data"]["movement"]["location_code"], "IKEJA")
 
-    def test_a_store_not_yet_given_a_branch_is_not_hers_to_issue_from(self, _perm):
+    def test_a_store_not_yet_given_a_branch_is_not_theirs_to_issue_from(self, _perm):
         """Nothing says whose shelf it is, so a branch storekeeper does not draw on it."""
         shared = self.build_entity("STKSHARE", self.tenant)
         central = self.store(shared, "CENTRAL", "Central store", is_default=True)

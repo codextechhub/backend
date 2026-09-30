@@ -13,7 +13,7 @@ Ikeja's own accounts (Zenith to GTBank) is a transfer; money between Ikeja's and
 Lekki's accounts is an inter-branch transfer, which is not built, and is refused.
 
 Both are transactions, so they follow the branch rules every transaction does. A
-branch-bound bursar reads and moves only her own branches' money, and an account
+branch-bound bursar reads and moves only their own branches' money, and an account
 not yet given a branch, at a school with several, moves nothing at all: nobody
 can say whose money it holds. At a school with one branch such an account is that
 branch's.

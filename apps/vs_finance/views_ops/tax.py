@@ -50,17 +50,17 @@ FILING_PREFETCH = ("shares__branch", "remittances__branch", "remittances__bank_a
 
 
 def _filings_in_reach(request, entity):
-    """The returns the caller may open: her branches' own, and the tenant's through her shares.
+    """The returns the caller may open: their branches' own, and the tenant's through their shares.
 
     A return is a transaction, read by its own branch exclusively
     (:func:`vs_rbac.scoping.transaction_branch_q`). The tenant's one return names
     no branch because it is booked per branch: each :class:`TaxFilingShare` names
     one, and that share is the branch's money. So a branch-bound reader reaches a
-    tenant return through a share of one of her branches, and is shown only those
+    tenant return through a share of one of their branches, and is shown only those
     shares (:func:`_filing_data`). Lagoon View's March WHT return has an Ikeja
     share and a Lekki share: Ngozi at Lekki opens it and sees Lekki's N300. A
-    return with no share of hers, and one not yet given a branch or any share,
-    is not found for her, as another branch's is. A whole-tenant reader is not
+    return with no share of theirs, and one not yet given a branch or any share,
+    is not found for them, as another branch's is. A whole-tenant reader is not
     narrowed.
     """
     from ..models import TaxFilingShare
@@ -341,9 +341,9 @@ class _TaxFilingActionBase(_FinanceBase):
     """Resolve one filing in the caller's reach; on a write, one they may change.
 
     A filing with no branch is the tenant's one return, reached by a
-    branch-bound reader through a share of one of her branches and shown
+    branch-bound reader through a share of one of their branches and shown
     narrowed to those shares (:func:`_filings_in_reach`, :func:`_filing_data`);
-    one with no share of hers is a 404. Filing, un-filing and reversing a remittance change
+    one with no share of theirs is a 404. Filing, un-filing and reversing a remittance change
     the whole return, so they need whole-tenant reach: a branch-bound caller is
     refused with a 403 ``SHARED_RECORD_READ_ONLY`` before anything is posted.
     Paying (``shares_only``) touches one branch's share, and the service refuses

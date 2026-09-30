@@ -4,7 +4,7 @@ Corona has Ikeja, Lekki and Yaba. The Okafor family is filed under Ikeja and the
 Adeyemi family is shared by every branch. A form raising a document against the
 Okafors takes Ikeja without asking, and one against the Adeyemis asks which
 branch; a deposit picker on an Ikeja receipt offers Ikeja's collection ledger, not
-Lekki's; a branch clerk's payments pickers offer only what she may use.
+Lekki's; a branch clerk's payments pickers offer only what they may use.
 """
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ class PaymentsPickersOfferOnlyWhatTheClerkMayUseTests(_PickerFixture):
 
 
 class ACustomerNamesItsOwnBranchTests(_PickerFixture):
-    """A reader covering several branches files a new customer under one of hers."""
+    """A reader covering several branches files a new customer under one of theirs."""
 
     def create(self, client, **body):
         return client.post(f"/v1/finance/customers/?entity={self.books.code}", {
@@ -121,7 +121,7 @@ class ACustomerNamesItsOwnBranchTests(_PickerFixture):
             "billing_phone": "08030000000", **body,
         }, format="json")
 
-    def test_a_two_branch_reader_names_one_of_her_branches(self):
+    def test_a_two_branch_reader_names_one_of_their_branches(self):
         both = self.client_for("cust-both@corona.test", "finance.customer.create",
                                branches=[self.ikeja, self.lekki])
 
@@ -130,13 +130,13 @@ class ACustomerNamesItsOwnBranchTests(_PickerFixture):
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(Customer.objects.get(code=response.data["data"]["code"]).branch_id, self.lekki.pk)
 
-    def test_she_may_not_name_a_branch_she_does_not_work_in(self):
+    def test_they_may_not_name_a_branch_they_do_not_work_in(self):
         both = self.client_for("cust-both2@corona.test", "finance.customer.create",
                                branches=[self.ikeja, self.lekki])
 
         self.assertEqual(self.create(both, branch=self.yaba.pk).status_code, 403)
 
-    def test_naming_none_asks_her_which(self):
+    def test_naming_none_asks_them_which(self):
         both = self.client_for("cust-both3@corona.test", "finance.customer.create",
                                branches=[self.ikeja, self.lekki])
 

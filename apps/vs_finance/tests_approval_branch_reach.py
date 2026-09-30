@@ -76,7 +76,7 @@ class JournalApprovalsFollowTheJournalsBranchTests(_FinanceBranchFixture):
     def ids(self, *names):
         return {str(self.journals[name].pk) for name in names}
 
-    def test_each_branch_approver_sees_only_her_branchs_journal(self):
+    def test_each_branch_approver_sees_only_their_branchs_journal(self):
         self.assertEqual(self.inbox(self.bello), self.ids("ikeja"))
         self.assertEqual(self.inbox(self.tola), self.ids("lekki"))
 

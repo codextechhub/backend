@@ -294,7 +294,7 @@ class FeeRunBillsOnlyWhatTheCallerReachesTests(_ReferenceFixture):
     Two bounds, and each is asserted for both forms of the body (``all_active``
     and a named list): the caller's branch reach, and the structure's own
     branch. Corona's Ikeja bursar reaches Ikeja's families and the ones every
-    branch shares, whose bills she raises at Ikeja; a Lekki price list bills
+    branch shares, whose bills they raise at Ikeja; a Lekki price list bills
     Lekki's families and nobody else's.
     """
 
@@ -463,7 +463,7 @@ class BulkRunsNarrowToTheCallersReachTests(_ReferenceFixture):
                    .values_list("invoice_id", flat=True))
 
     def test_a_pinned_bursars_dunning_run_chases_only_her_reach(self):
-        """Ikeja's bill only: the unbranched one is not hers to chase."""
+        """Ikeja's bill only: the unbranched one is not theirs to chase."""
         response = self.post(self.bursar, "dunning/generate/", self.books, {"as_of": "2026-01-31"})
 
         self.assertEqual(response.status_code, 200, response.data)

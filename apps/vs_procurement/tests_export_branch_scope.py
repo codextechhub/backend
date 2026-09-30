@@ -2,7 +2,7 @@
 
 A vendor is a shared record: one every branch buys from carries no branch and
 is in every branch's file, as it is on the vendor screen. Orders, bills and
-requisitions are transactions: a branch-pinned buyer exports her own branches'
+requisitions are transactions: a branch-pinned buyer exports their own branches'
 documents only, never one not yet given a branch. An export that disagreed with
 its own screen would be the bug this narrowing exists to prevent.
 

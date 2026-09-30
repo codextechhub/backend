@@ -2,7 +2,7 @@
 
 **Rows narrow to the caller's branches, as the screen each dataset mirrors
 does.** Invoices, invoice lines, postings, receipts and expense claims are
-transactions (``inclusive=False``): a branch-bound caller exports her own
+transactions (``inclusive=False``): a branch-bound caller exports their own
 branches' rows only, never one not yet given a branch. Customers are shared
 records (``inclusive=True``): one the school shares across every branch stays in
 every branch's file. An export and the screen it mirrors must not answer
