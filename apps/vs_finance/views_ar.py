@@ -356,7 +356,7 @@ class CustomerListCreateView(_FinanceBase):
         scope = transaction_branch_scope(request)
         qs = Customer.objects.filter(
             branch_q(request, include_shared=True), entity=entity,
-        ).select_related("receivable_account")
+        ).select_related("receivable_account", "branch")
         if (search := request.query_params.get("search")):
             from django.db.models import Q
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))

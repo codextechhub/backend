@@ -362,8 +362,15 @@ class DirectEntryCreateSerializer(serializers.Serializer):
 
 
 class CustomerSerializer(serializers.ModelSerializer):
-    """Read shape for a customer / payer (the AR sub-ledger party)."""
+    """Read shape for a customer / payer (the AR sub-ledger party).
 
+    ``branch_id`` is the branch the customer is filed under, or empty for one
+    every branch shares. A document raised against a filed customer takes its
+    branch; one raised against a shared customer names its own, so a form asks
+    for a branch only when this is empty.
+    """
+
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     receivable_account_code = serializers.CharField(
         source="receivable_account.code", read_only=True, default=None)
     receivable_account_name = serializers.CharField(
@@ -376,6 +383,7 @@ class CustomerSerializer(serializers.ModelSerializer):
             "id", "code", "name", "billing_email", "billing_phone", "billing_address",
             "receivable_account_code", "receivable_account_name", "opening_balance",
             "opening_balance_naira", "source_type", "source_id", "is_active",
+            "branch_id", "branch_name",
         ]
 
     def get_opening_balance_naira(self, obj) -> str:
