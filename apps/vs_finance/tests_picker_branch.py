@@ -149,3 +149,73 @@ class ACustomerNamesItsOwnBranchTests(_PickerFixture):
 
         self.assertEqual(response.status_code, 201, response.data)
         self.assertIsNone(Customer.objects.get(code=response.data["data"]["code"]).branch_id)
+
+
+class InvoiceAndPlanRowsCarryTheirOwnBranchTests(_PickerFixture):
+    """A payment form narrows its deposit picker by the document's branch.
+
+    Ikeja raises an invoice for the Adeyemis, whom every branch shares, and
+    spreads it over a payment plan. The customer names no branch, so a form
+    reading the customer's would offer Lekki's bank account for the payment and
+    meet the server's refusal. The invoice and the plan name Ikeja themselves.
+    """
+
+    def setUp(self):
+        from vs_finance.models import PaymentPlan
+
+        super().setUp()
+        self.bill = self.invoice(self.books, self.adeyemi, self.ikeja)
+        self.plan = PaymentPlan.objects.create(
+            entity=self.books, branch=self.ikeja, customer=self.adeyemi, invoice=self.bill,
+            start_date=self.bill.invoice_date,
+        )
+        self.hq = self.client_for("pick-doc@corona.test", "finance.invoice.view",
+                                  "finance.paymentplan.view")
+
+    def detail(self, path):
+        response = self.hq.get(f"/v1/finance/{path}?entity={self.books.code}")
+        self.assertEqual(response.status_code, 200, getattr(response, "data", None))
+        return response.json()["data"]
+
+    def test_an_ikeja_invoice_for_a_shared_customer_reads_ikeja(self):
+        rows = {row["id"]: row for row in self.rows(self.hq, "invoices/")}
+
+        self.assertEqual((rows[self.bill.pk]["branch_id"], rows[self.bill.pk]["branch_name"]),
+                         (self.ikeja.pk, "Ikeja Branch"))
+        self.assertEqual(self.detail(f"invoices/{self.bill.pk}/")["invoice"]["branch_id"],
+                         self.ikeja.pk)
+
+    def test_its_payment_plan_reads_ikeja_too(self):
+        rows = {row["id"]: row for row in self.rows(self.hq, "payment-plans/")}
+
+        self.assertEqual((rows[self.plan.pk]["branch_id"], rows[self.plan.pk]["branch_name"]),
+                         (self.ikeja.pk, "Ikeja Branch"))
+        self.assertEqual(self.detail(f"payment-plans/{self.plan.pk}/")["branch_id"], self.ikeja.pk)
+
+    def test_the_branch_costs_no_extra_query_per_row(self):
+        """Three rows from three branches cost what one row costs.
+
+        Measured against a one-row list rather than a fixed number, so the
+        assertion cannot drift when unrelated middleware adds a query of its own.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from vs_finance.models import PaymentPlan
+
+        for path in ("invoices/", "payment-plans/"):
+            self.rows(self.hq, path)
+        with CaptureQueriesContext(connection) as invoices_once:
+            self.rows(self.hq, "invoices/")
+        with CaptureQueriesContext(connection) as plans_once:
+            self.rows(self.hq, "payment-plans/")
+
+        for branch in (self.lekki, self.yaba):
+            bill = self.invoice(self.books, self.adeyemi, branch)
+            PaymentPlan.objects.create(entity=self.books, branch=branch, customer=self.adeyemi,
+                                       invoice=bill, start_date=bill.invoice_date)
+
+        with self.assertNumQueries(len(invoices_once)):
+            self.assertEqual(len(self.rows(self.hq, "invoices/")), 3)
+        with self.assertNumQueries(len(plans_once)):
+            self.assertEqual(len(self.rows(self.hq, "payment-plans/")), 3)

@@ -14,7 +14,7 @@ from __future__ import annotations
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import F, Q, prefetch_related_objects
 from django.http import HttpResponse
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
@@ -1469,6 +1469,8 @@ class FeeStructureGenerateView(_FinanceBase):
             actor_user=request.user,
             branch=shared_customers_branch,
         )
+        # One query each for the rows' customers and branches, not one per invoice.
+        prefetch_related_objects(invoices, "customer", "branch")
         return success_response(
             f"{len(invoices)} invoice(s) generated from {structure.code}.",
             data={
@@ -3198,7 +3200,7 @@ class PaymentPlanListCreateView(_FinanceBase):
         entity = resolve_entity(request)
         qs = (
             PaymentPlan.objects.filter(transaction_branch_q(request), entity=entity)
-            .select_related("customer", "invoice").prefetch_related("installments")
+            .select_related("customer", "invoice", "branch").prefetch_related("installments")
         )
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(plan_status=status_val)
@@ -3261,7 +3263,8 @@ class _PaymentPlanActionBase(_FinanceBase):
     def _plan(self, request, pk):
         entity = resolve_entity(request)
         plan = PaymentPlan.objects.filter(
-            transaction_branch_q(request), entity=entity, pk=pk).first()
+            transaction_branch_q(request), entity=entity, pk=pk,
+        ).select_related("customer", "invoice", "branch").first()
         if plan is None:
             raise NotFound("Payment plan not found for this entity.")
         return entity, plan

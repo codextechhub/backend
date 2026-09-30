@@ -1087,7 +1087,7 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
 
         qs = Invoice.objects.filter(
             transaction_branch_q(self.request), entity=entity,
-        ).select_related("customer")
+        ).select_related("customer", "branch")
         params = self.request.query_params
         if (status_val := params.get("status")):
             qs = qs.filter(status=status_val)
@@ -1249,7 +1249,7 @@ class InvoiceDetailView(APIView):
             Invoice.objects.filter(
                 transaction_branch_q(request), entity=entity, pk=pk,
             )
-            .select_related("customer", "journal")
+            .select_related("customer", "journal", "branch")
             .prefetch_related(
                 "lines__revenue_account", "lines__tax_code",
                 "allocations__payment__journal__lines__account",

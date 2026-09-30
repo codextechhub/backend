@@ -491,16 +491,27 @@ class FeeStructureSerializer(serializers.ModelSerializer):
 
 
 class InvoiceSerializer(serializers.ModelSerializer):
+    """Read shape for a sales invoice.
+
+    ``branch_id`` is the invoice's own branch, which is not always its
+    customer's: an invoice raised against a customer every branch shares names
+    the branch that raised it. A receipt against the invoice takes that branch
+    and is deposited only into that branch's bank accounts, so a payment form
+    narrows its deposit picker by this rather than by the customer's.
+    """
+
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     settled_amount = serializers.IntegerField(read_only=True)
     balance_due = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
 
     class Meta:
         model = Invoice
         fields = [
             "id", "document_number", "customer_id", "customer_code", "customer_name",
+            "branch_id", "branch_name",
             "invoice_date", "due_date", "status", "payment_status",
             "subtotal", "tax_total", "total", "total_naira",
             "amount_paid", "amount_credited", "settled_amount", "balance_due",
@@ -691,6 +702,13 @@ class PaymentPlanInstallmentSerializer(serializers.ModelSerializer):
 
 
 class PaymentPlanSerializer(serializers.ModelSerializer):
+    """Read shape for a payment plan and its instalments.
+
+    ``branch_id`` is the plan's own branch: its invoice's when it spreads one,
+    otherwise its customer's or the one named for a shared customer. An
+    instalment payment is deposited only into that branch's bank accounts.
+    """
+
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     invoice_number = serializers.CharField(
@@ -701,11 +719,13 @@ class PaymentPlanSerializer(serializers.ModelSerializer):
     outstanding_total = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
     installments = PaymentPlanInstallmentSerializer(many=True, read_only=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
 
     class Meta:
         model = PaymentPlan
         fields = [
             "id", "document_number", "customer_id", "customer_code", "customer_name",
+            "branch_id", "branch_name",
             "invoice_id", "invoice_number", "plan_status", "start_date", "frequency",
             "installment_count", "total_amount", "total_naira",
             "baseline_settled", "scheduled_total", "settled_total", "outstanding_total",
