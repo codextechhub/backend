@@ -2889,6 +2889,21 @@ class BackgroundJobActionUrlTests(SimpleTestCase):
         )
 
 
+class ProcurementQuotationActionUrlTests(SimpleTestCase):
+    """A buyer alert opens quotations without treating the list as a read receipt."""
+
+    def test_submitted_quote_links_to_quotation_list(self):
+        notification = SimpleNamespace(
+            event_type=SimpleNamespace(key="procurement.quotation_submitted"),
+            metadata={"quotation_id": 42},
+        )
+        self.assertEqual(
+            notification_action_url(notification),
+            "/procurement/sourcing/quotations",
+        )
+        self.assertIsNone(notification_route_q("/procurement/sourcing/quotations"))
+
+
 # ---------------------------------------------------------------------------
 # Reading the record clears the notification
 # ---------------------------------------------------------------------------

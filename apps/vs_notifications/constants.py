@@ -187,6 +187,15 @@ EVENT_TYPE_REGISTRY = [
         "is_transactional": True,
     },
     {
+        "key": "procurement.quotation_submitted",
+        "label": "Vendor quotation submitted",
+        "description": "Alerts authorized buyers when a vendor submits or revises a quotation.",
+        "source_module": "vs_procurement",
+        "supported_channels": [ChannelChoices.IN_APP],
+        "default_enabled": True,
+        "branch_scoped": True,
+    },
+    {
         "key": "procurement.rfq_amended",
         "label": "Vendor RFQ amendment",
         "description": "Notifies a vendor that an issued RFQ changed.",

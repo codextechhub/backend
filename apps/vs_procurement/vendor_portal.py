@@ -6,7 +6,7 @@ import json
 import logging
 import secrets
 from datetime import date, datetime, time, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
@@ -21,6 +21,7 @@ from core.uploads import validate_upload
 from vs_finance.documents import _issuer_block
 from vs_notifications.notify import UnregisteredRecipient, send_notification
 from vs_config.clock import branch_today, branch_zone
+from vs_tenants.context import reset_current_tenant, set_current_tenant
 
 from . import sourcing
 from .constants import QuotationLineResponse, QuotationStatus, RfqInvitationStatus, RfqStatus
@@ -478,9 +479,17 @@ def save_draft(invitation: RfqInvitation, email: str, body: dict) -> dict:
             response_type = str(row.get("response_type") or QuotationLineResponse.QUOTED)
             if response_type not in QuotationLineResponse.values:
                 raise ValidationError({"response_type": "Choose quoted, alternative, or no-bid."})
-            quantity = Decimal(str(row.get("quantity") or rfq_line.quantity))
-            if quantity <= 0:
-                raise ValidationError({"quantity": "Quantity must be greater than zero."})
+            if response_type == QuotationLineResponse.NO_BID:
+                quantity = Decimal(0)
+            else:
+                try:
+                    quantity = Decimal(str(row.get("quantity", rfq_line.quantity)))
+                except (InvalidOperation, TypeError):
+                    raise ValidationError({"quantity": "Enter a valid quantity offered."})
+                if not quantity.is_finite() or quantity <= 0:
+                    raise ValidationError({"quantity": "Quantity offered must be greater than zero."})
+                if quantity > Decimal("9999999.9999") or quantity != quantity.quantize(Decimal("0.0001")):
+                    raise ValidationError({"quantity": "Quantity offered must fit seven digits and four decimal places."})
             price = 0 if response_type == QuotationLineResponse.NO_BID else _money(
                 row.get("unit_price"), "unit_price",
             )
@@ -513,6 +522,53 @@ def _snapshot(quote: VendorQuotation, revision: int, invitation: RfqInvitation) 
         for row in quote.attachments.filter(revision=revision).order_by("id")
     ]
     return json.loads(json.dumps(data, cls=DjangoJSONEncoder))
+
+
+def _notify_quotation_buyer(rfq_id: int, quotation_id: int, revision: int) -> None:
+    """Alert the RFQ owner after a firm vendor response commits.
+
+    Only a current quotation reader may receive the alert. If the owner has lost
+    access or the RFQ has no owner, readers of the RFQ's branch receive it instead.
+    Delivery errors leave the submitted quotation and vendor receipt intact.
+    """
+    try:
+        from vs_rbac.evaluator import has_permission, resolve_users_with_permission
+
+        rfq = RequestForQuotation.objects.select_related(
+            "entity__tenant", "branch", "created_by",
+        ).get(pk=rfq_id)
+        quote = VendorQuotation.objects.select_related("vendor").get(pk=quotation_id, rfq=rfq)
+        tenant = rfq.entity.tenant
+        creator = rfq.created_by
+        if (
+            creator is not None and creator.is_active and creator.tenant_id == tenant.pk
+            and has_permission(creator, "procurement.quotation.view", tenant=tenant, branch=rfq.branch)
+        ):
+            recipients = [creator]
+        else:
+            recipients = list(resolve_users_with_permission(
+                tenant=tenant, branch=rfq.branch,
+                permission_key="procurement.quotation.view",
+            ))
+        if not recipients:
+            logger.warning("No authorized buyer can receive quotation %s", quote.pk)
+            return
+
+        send_notification(
+            event_key="procurement.quotation_submitted",
+            context={
+                "vendor_name": quote.vendor.name,
+                "quotation_number": quote.document_number,
+                "rfq_number": rfq.document_number,
+                "revision": revision,
+            },
+            recipients=recipients,
+            tenant=tenant,
+            branch=rfq.branch,
+            metadata={"rfq_id": rfq.pk, "quotation_id": quote.pk, "revision": revision},
+        )
+    except Exception:
+        logger.exception("Could not notify buyer about quotation %s", quotation_id)
 
 
 @transaction.atomic
@@ -552,6 +608,7 @@ def submit(invitation: RfqInvitation, email: str, raw_token: str) -> dict:
             invitation=invitation, recipients=[recipient],
             raw_token=raw_token,
         ))
+    transaction.on_commit(lambda: _notify_quotation_buyer(invitation.rfq_id, quote.pk, revision))
     return form_payload(invitation)
 
 
@@ -607,6 +664,12 @@ def validate_attachment(upload) -> tuple[str, str]:
 
 @transaction.atomic
 def add_attachment(invitation: RfqInvitation, email: str, upload) -> dict:
+    """Store vendor evidence under the RFQ's tenant for authenticated buyer reads.
+
+    Token-verified portal requests have no authenticated tenant context. Database
+    storage needs that context when it saves the bytes, then the caller's context
+    is restored so this write cannot scope another request's work.
+    """
     invitation = _locked_invitation(invitation)
     if is_deadline_passed(invitation):
         raise ValidationError({"deadline": "The quotation deadline has passed."})
@@ -617,8 +680,12 @@ def add_attachment(invitation: RfqInvitation, email: str, upload) -> dict:
     if quote.attachments.filter(revision=revision).count() >= MAX_ATTACHMENTS_PER_REVISION:
         raise ValidationError({"file": "A quotation may have up to five attachments."})
     name, content_type = validate_attachment(upload)
-    VendorQuotationAttachment.objects.create(
-        quotation=quote, revision=revision, file=upload, original_name=name,
-        content_type=content_type, size=upload.size, uploaded_by_email=email,
-    )
+    tenant_token = set_current_tenant(invitation.rfq.entity.tenant)
+    try:
+        VendorQuotationAttachment.objects.create(
+            quotation=quote, revision=revision, file=upload, original_name=name,
+            content_type=content_type, size=upload.size, uploaded_by_email=email,
+        )
+    finally:
+        reset_current_tenant(tenant_token)
     return form_payload(invitation)

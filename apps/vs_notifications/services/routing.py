@@ -206,6 +206,7 @@ LIST_DESTINATIONS = (
     # of them is sent to staff. It names the family that exists all the same:
     # a rule written against a key no event uses is a rule nobody can test.
     ListDestination(route="/finance", prefixes=("billing.", "payments.")),
+    ListDestination(route="/procurement/sourcing/quotations", prefixes=("procurement.quotation_submitted",)),
     ListDestination(route="/procurement", prefixes=("procurement.",)),
     ListDestination(route="/tasks", prefixes=("todo.",)),
 )

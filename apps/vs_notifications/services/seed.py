@@ -378,6 +378,10 @@ def _build_default_templates() -> dict:
             "cta_label": "View submitted quotation",
             "cta_url": "{{ invitation_url }}",
         },
+        ("procurement.quotation_submitted", C.IN_APP): {
+            "subject": "Quotation {{ quotation_number }} received",
+            "body": "{{ vendor_name }} submitted revision {{ revision }} for {{ rfq_number }}. Review the quotation before making an award.",
+        },
         ("procurement.rfq_amended", C.EMAIL): {
             "subject": (
                 "{% if response_required == 'Yes' %}Action required: {% endif %}"

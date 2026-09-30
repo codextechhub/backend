@@ -392,6 +392,105 @@ class VendorQuotationPortalTests(_P2PFixtureMixin, TestCase):
             submit(self.invitation, self.vendor.email, raw)
         self.assertTrue(second.is_active)
 
+    def test_vendor_can_offer_less_than_requested_and_no_bid_offers_zero(self):
+        from vs_procurement.vendor_portal import save_draft
+
+        self._verified()
+        second = RfqLine.objects.create(
+            rfq=self.rfq, description="Toner", quantity=4,
+            expense_account=self.acc(self.entity, "5300"), line_no=2,
+        )
+        payload = save_draft(self.invitation, self.vendor.email, {
+            "lines": [
+                {"rfq_line": self.line.pk, "response_type": "QUOTED", "quantity": "1", "unit_price": 100_000},
+                {"rfq_line": second.pk, "response_type": "NO_BID", "quantity": "4", "unit_price": 0},
+            ],
+        })
+        lines = {line["rfq_line_id"]: line for line in payload["quotation"]["lines"]}
+        self.assertEqual(lines[self.line.pk]["quantity"], "1.0000")
+        self.assertEqual(lines[second.pk]["quantity"], "0.0000")
+        self.assertEqual(payload["quotation"]["total"], 100_000)
+
+    def test_invalid_offered_quantity_cannot_turn_into_requested_quantity(self):
+        from rest_framework.exceptions import ValidationError
+        from vs_procurement.vendor_portal import save_draft
+
+        self._verified()
+        for quantity in ("", "NaN", "0", "-1", "1.00001"):
+            with self.subTest(quantity=quantity):
+                with self.assertRaises(ValidationError):
+                    save_draft(self.invitation, self.vendor.email, {
+                        "lines": [{
+                            "rfq_line": self.line.pk, "response_type": "QUOTED",
+                            "quantity": quantity, "unit_price": 100_000,
+                        }],
+                    })
+        self.assertFalse(VendorQuotationLine.objects.filter(quotation__rfq=self.rfq).exists())
+
+    def test_submitted_vendor_quote_notifies_the_authorized_rfq_creator(self):
+        from django.contrib.auth import get_user_model
+        from vs_notifications.models import Notification
+        from vs_notifications.services.seed import seed_notification_templates
+        from vs_procurement.vendor_portal import save_draft, submit
+
+        buyer = get_user_model().objects.create_user(
+            email="rfq-buyer@test.com", password="pw", tenant=self.entity.tenant,
+            status="ACTIVE", first_name="Buyer", last_name="Tester",
+        )
+        self.rfq.created_by = buyer
+        self.rfq.save(update_fields=["created_by", "updated_at"])
+        seed_notification_templates()
+        raw, _ = self._verified()
+        save_draft(self.invitation, self.vendor.email, {
+            "lines": [{
+                "rfq_line": self.line.pk, "response_type": "QUOTED",
+                "quantity": "1", "unit_price": 100_000,
+            }],
+        })
+        with patch("vs_rbac.evaluator.has_permission", return_value=True), \
+             patch("vs_procurement.vendor_portal._safe_notify"):
+            with self.captureOnCommitCallbacks(execute=True):
+                submit(self.invitation, self.vendor.email, raw)
+
+        alerts = Notification.all_objects.filter(
+            event_type__key="procurement.quotation_submitted", recipient=buyer,
+        )
+        self.assertEqual(set(alerts.values_list("channel", flat=True)), {"in_app"})
+        self.assertEqual(alerts.count(), 1)
+        self.assertEqual(alerts.first().metadata["rfq_id"], self.rfq.pk)
+        self.assertNotIn(raw, " ".join(alerts.values_list("body", flat=True)))
+
+    def test_removed_creator_uses_authorized_reviewers_without_cross_tenant_alert(self):
+        from django.contrib.auth import get_user_model
+        from vs_procurement.vendor_portal import _notify_quotation_buyer
+
+        other_tenant = _platform_tenant() if self.entity.tenant.slug != "codex" else None
+        if other_tenant is None:
+            from vs_tenants.models import Tenant
+            other_tenant = Tenant.objects.create(
+                name="Other Buyer", slug="another-rfq-tenant", kind=Tenant.Kind.SCHOOL,
+            )
+        foreign_creator = get_user_model().objects.create_user(
+            email="foreign-rfq-buyer@test.com", password="pw", tenant=other_tenant,
+            status="ACTIVE", first_name="Foreign", last_name="Buyer",
+        )
+        reviewer = get_user_model().objects.create_user(
+            email="reviewer@test.com", password="pw", tenant=self.entity.tenant,
+            status="ACTIVE", first_name="Quote", last_name="Reviewer",
+        )
+        self.rfq.created_by = foreign_creator
+        self.rfq.save(update_fields=["created_by", "updated_at"])
+        quotation = VendorQuotation.objects.create(
+            entity=self.entity, rfq=self.rfq, vendor=self.vendor,
+            quote_date=timezone.localdate(),
+        )
+        with patch("vs_rbac.evaluator.resolve_users_with_permission", return_value=[reviewer]) as resolve, \
+             patch("vs_procurement.vendor_portal.send_notification") as send:
+            _notify_quotation_buyer(self.rfq.pk, quotation.pk, 1)
+        self.assertEqual(send.call_args.kwargs["recipients"], [reviewer])
+        self.assertEqual(resolve.call_args.kwargs["tenant"], self.entity.tenant)
+        self.assertEqual(resolve.call_args.kwargs["permission_key"], "procurement.quotation.view")
+
     def test_latest_amendment_must_be_acknowledged_before_submission(self):
         from rest_framework.exceptions import ValidationError
         from vs_procurement.vendor_portal import acknowledge_amendment, save_draft, submit
@@ -524,6 +623,81 @@ class VendorQuotationPortalTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(
             deliver.call_args.kwargs["replacements"],
             replacements,
+        )
+
+    def test_portal_attachment_link_cannot_open_a_buyer_managed_file(self):
+        from vs_procurement.models import VendorQuotationAttachment
+
+        raw, session = self._verified()
+        buyer_quote = VendorQuotation.objects.create(
+            entity=self.entity, rfq=self.rfq, vendor=self.vendor,
+            quote_date=timezone.localdate(), vendor_managed=False,
+        )
+        attachment = VendorQuotationAttachment.objects.create(
+            quotation=buyer_quote, revision=1, file="buyer-private.png",
+            original_name="buyer-private.png", content_type="image/png", size=12,
+        )
+        response = self.client.get(
+            f"/v1/procurement/public/rfqs/{raw}/attachments/{attachment.pk}/",
+            HTTP_X_RFQ_SESSION=session,
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_portal_upload_binds_evidence_to_the_buyers_tenant(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from core.models import StoredFile
+        from vs_procurement.models import VendorQuotationAttachment
+        from vs_tenants.context import get_current_tenant
+
+        raw, session = self._verified()
+        before = get_current_tenant()
+        upload = SimpleUploadedFile("sample.png", b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        response = self.client.post(
+            f"/v1/procurement/public/rfqs/{raw}/attachments/",
+            {"file": upload}, HTTP_X_RFQ_SESSION=session,
+        )
+        self.assertEqual(response.status_code, 201)
+        attachment = VendorQuotationAttachment.objects.get(quotation__rfq=self.rfq)
+        stored = StoredFile.objects.get(name=attachment.file.name)
+        self.assertEqual(stored.tenant_id, self.entity.tenant_id)
+        self.assertEqual(stored.owner_object_id, str(attachment.pk))
+        self.assertEqual(get_current_tenant(), before)
+
+    def test_vendor_media_backfill_repairs_only_unscoped_bound_evidence(self):
+        import importlib
+        from types import SimpleNamespace
+        from django.apps import apps as django_apps
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from django.db import connection
+        from core.models import StoredFile
+        from vs_procurement.vendor_portal import add_attachment
+        from vs_procurement.models import VendorQuotationAttachment
+
+        self._verified()
+        add_attachment(
+            self.invitation, self.vendor.email,
+            SimpleUploadedFile("legacy.png", b"\x89PNG\r\n\x1a\n" + b"0" * 64),
+        )
+        attachment = VendorQuotationAttachment.objects.get(quotation__rfq=self.rfq)
+        StoredFile.objects.filter(name=attachment.file.name).update(
+            tenant=None, owner_object_id="not-the-attachment",
+        )
+        migration = importlib.import_module(
+            "vs_procurement.migrations.0038_backfill_vendor_quotation_media_tenant",
+        )
+        migration.backfill_vendor_quotation_media_tenant(
+            django_apps, SimpleNamespace(connection=connection),
+        )
+        self.assertIsNone(StoredFile.objects.get(name=attachment.file.name).tenant_id)
+        StoredFile.objects.filter(name=attachment.file.name).update(
+            owner_object_id=str(attachment.pk),
+        )
+        migration.backfill_vendor_quotation_media_tenant(
+            django_apps, SimpleNamespace(connection=connection),
+        )
+        self.assertEqual(
+            StoredFile.objects.get(name=attachment.file.name).tenant_id,
+            self.entity.tenant_id,
         )
 
     def test_expired_invitation_blocks_draft_but_preserves_existing_data(self):

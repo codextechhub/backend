@@ -153,7 +153,7 @@ class PublicRfqAttachmentDownloadView(_PublicRfqView):
         invitation, _ = self.verified(request, token)
         attachment = VendorQuotationAttachment.objects.filter(
             pk=attachment_id, quotation__rfq=invitation.rfq,
-            quotation__vendor=invitation.vendor,
+            quotation__vendor=invitation.vendor, quotation__vendor_managed=True,
         ).first()
         if attachment is None:
             raise NotFound("Attachment not found.")
