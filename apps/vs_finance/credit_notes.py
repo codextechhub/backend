@@ -13,8 +13,15 @@ The postings raised here:
   supplementary invoice, so never applied to reduce another invoice.
 * **Refund** (``Dr AR control, Cr bank``) - hand cash back for an over-paid credit
   balance, restoring the receivable.
-* **Write-off** (``Dr bad-debt expense, Cr AR control``) - concede an uncollectable
-  receivable; clears the invoice's balance via ``amount_credited``.
+* **Write-off** (``Dr allowance for doubtful debts / bad-debt expense, Cr AR
+  control``) - concede an uncollectable receivable, drawing on the allowance the
+  provision runs have set first; clears the invoice's balance via
+  ``amount_credited``. A written-off debt later paid is reinstated and booked as
+  recovery income (:func:`recover_write_off`).
+
+A credit note or write-off of a bill whose income is still deferred gives back the
+unreleased part first: it debits deferred income rather than revenue or expense
+for that part (:func:`vs_finance.deferred_income.plan_unwind`).
 
 All amounts are integer kobo; tax uses the same ``ROUND_HALF_UP`` discipline as
 :mod:`vs_finance.receivables`.
@@ -38,6 +45,7 @@ from .constants import (
     JournalSource,
 )
 from .chronology import ANY_BRANCH
+from .deferred_income import apply_unwind, plan_unwind
 from .exceptions import FinanceError, PostingError
 from .money import format_naira
 from .posting import post_journal, resolve_period
@@ -208,6 +216,7 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
             tax_objs[tax_acc.id] = tax_acc  # Store tax account object.
 
     line_no = 0  # Journal line counter.
+    unwind_plan = []  # Deferred income a credit note takes back.
     if is_debit:  # Debit note charges the customer more.
         # Dr AR (gross), Cr revenue + Cr output tax - a supplementary charge.  # Mirror of invoice posting.
         line_no += 1  # First line is AR debit.
@@ -235,7 +244,21 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
         # Dr revenue/returns + Dr output tax - give value back. The credit settles
         # invoices (Cr AR) for the applied portion; the unapplied remainder becomes a
         # customer-credit liability (Cr 2140) so AR never carries a credit balance.  # Keep AR non-negative.
+        # A bill whose income is still deferred gives back the unreleased part first.
+        unwind_plan = plan_unwind(note.invoice, note.subtotal) if note.invoice_id else []
+        to_unwind = sum(take for _entry, take in unwind_plan)
+        if to_unwind:
+            line_no += 1
+            JournalLine.objects.create(
+                entry=entry, debit=to_unwind, credit=0, line_no=line_no,
+                account=resolve_mapped_account(
+                    note.entity, AccountMappingKey.DEFERRED_INCOME, label="deferred income"),
+                description="Deferred income given back",
+            )
         for (acc_id, cc_id), amount in revenue_by_key.items():  # Emit grouped revenue/return debits.
+            covered = min(amount, to_unwind)  # Already debited to deferred income.
+            to_unwind -= covered
+            amount -= covered
             if amount == 0:  # Skip empty groups.
                 continue
             line_no += 1  # Advance line number.
@@ -276,6 +299,8 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
             )
 
     post_journal(entry, actor_user=actor_user)  # Validate and post note journal.
+    if not is_debit and unwind_plan:
+        apply_unwind(unwind_plan, adjustment_entry=entry)
 
     note.journal = entry  # Link note to journal.
     note.status = DocumentStatus.POSTED  # Mark note posted.
@@ -627,10 +652,16 @@ def write_off_invoice(invoice, *, amount=None, write_off_account=None,
                       write_off_date=None, narration="", actor_user=None):  # Public wrapper for invoice write-off.
     """Write off an uncollectable invoice balance as bad debt.
 
-    Posts ``Dr bad-debt expense, Cr AR control`` for ``amount`` (defaulting to the
-    full outstanding balance) and clears that much of the invoice via
-    ``amount_credited``. ``write_off_account`` defaults to the entity's bad-debt /
-    general expense account (CoA ``5300``).
+    Clears ``amount`` (defaulting to the full outstanding balance) of the invoice via
+    ``amount_credited`` and credits AR control for it. The debit side takes, in
+    order: the part of the bill's income still deferred (``Dr deferred income``,
+    since income never recognised is not a loss), then the allowance for doubtful
+    debts its branch holds (``Dr allowance``), then bad-debt expense for the rest
+    (``write_off_account``, or the entity's bad-debt account).
+
+    ``write_off_date`` defaults to the day it posts at the invoice's branch. A debt
+    is written off when somebody decides it is lost, never on the date it was
+    billed: the board approving Mr Obi's debt in March 2029 books the loss in 2029.
     """
     try:  # Atomic worker performs bad-debt posting.
         return _write_off_invoice_atomic(  # Write off invoice balance.
@@ -645,6 +676,34 @@ def write_off_invoice(invoice, *, amount=None, write_off_account=None,
         raise
 
 
+def allowance_available(entity, branch_id) -> int:
+    """The allowance for doubtful debts one branch holds, in kobo (never below zero).
+
+    Read from the ledger: every posted line on the allowance account whose journal
+    belongs to the branch (:func:`vs_rbac.scoping.transaction_branch_match_q`, so at
+    a tenant with one branch the journals not yet given a branch count as its own).
+    """
+    from django.db.models import Sum
+
+    from vs_rbac.scoping import transaction_branch_match_q
+
+    from .branch_ledger import ledger_lines
+
+    account = resolve_mapped_account(entity, AccountMappingKey.DOUBTFUL_DEBT_ALLOWANCE,
+                                     label="allowance for doubtful debts")
+    totals = ledger_lines(entity).filter(
+        transaction_branch_match_q(entity.tenant_id, branch_id, "entry__"), account=account,
+    ).aggregate(debit=Sum("debit"), credit=Sum("credit"))
+    return max(0, int(totals["credit"] or 0) - int(totals["debit"] or 0))
+
+
+def write_off_date_for(invoice, write_off_date=None):
+    """The date a write-off posts on: the one given, else today at the invoice's branch."""
+    from vs_config.clock import branch_today
+
+    return write_off_date or branch_today(invoice.entity.tenant, invoice.branch_id)
+
+
 @transaction.atomic
 # Support the write off invoice atomic workflow.
 def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
@@ -652,7 +711,9 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
     """Write off under a lock on the invoice, so its balance is read once and held.
 
     A write-off and a receipt landing on the same bill at the same moment would
-    otherwise each read the full balance and together settle it twice.
+    otherwise each read the full balance and together settle it twice. The returned
+    journal carries ``write_off_amounts`` (what was cleared and how much of it the
+    allowance took) for the request that posted it.
     """
     from .accounts import require_account_kind
     from .models import Invoice, JournalEntry, JournalLine
@@ -686,7 +747,7 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
         invoice.entity, AccountMappingKey.BAD_DEBT_EXPENSE, label="bad-debt expense",  # Resolve bad-debt expense account.
     )
     require_account_kind(expense, "write_off", entity=invoice.entity)  # Bad debt is an expense.
-    when = write_off_date or invoice.invoice_date  # Default write-off date to invoice date.
+    when = write_off_date_for(invoice, write_off_date)  # The day the loss is recognised.
     # A debt cannot be conceded before it is owed: writing off on a date earlier than
     # the invoice credits AR before the invoice ever debited it.
     from .chronology import ensure_on_or_after
@@ -697,6 +758,10 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
         remedy=f"Date the write-off {format_date(invoice.invoice_date, invoice.entity.tenant)} or later.",
         tenant=invoice.entity.tenant,
     )
+    unwind_plan = plan_unwind(invoice, amount)  # Income never recognised is not a loss.
+    unwound = sum(take for _entry, take in unwind_plan)
+    from_allowance = min(amount - unwound, allowance_available(invoice.entity, invoice.branch_id))
+    expensed = amount - unwound - from_allowance
     period = resolve_period(invoice.entity, when)  # Resolve write-off period.
     entry = JournalEntry.objects.create(
         entity=invoice.entity, branch=invoice.branch,  # Scope entity and optional branch.
@@ -704,15 +769,31 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
         narration=narration or f"Write-off {invoice.document_number or ''}".strip(),  # Narration.
         created_by=actor_user,  # Posting actor.
     )
-    JournalLine.objects.create(
-        entry=entry, account=expense, debit=amount, credit=0,  # Dr bad debt.
-        description=f"Bad debt: {customer.code}", line_no=1,  # Label and order.
+    debits = (
+        (unwound, lambda: resolve_mapped_account(
+            invoice.entity, AccountMappingKey.DEFERRED_INCOME, label="deferred income"),
+         f"Deferred income written off: {customer.code}"),
+        (from_allowance, lambda: resolve_mapped_account(
+            invoice.entity, AccountMappingKey.DOUBTFUL_DEBT_ALLOWANCE,
+            label="allowance for doubtful debts"),
+         f"Allowance used: {customer.code}"),
+        (expensed, lambda: expense, f"Bad debt: {customer.code}"),
     )
+    line_no = 0
+    for value, account, description in debits:
+        if value:
+            line_no += 1
+            JournalLine.objects.create(
+                entry=entry, account=account(), debit=value, credit=0,
+                description=description, line_no=line_no,
+            )
     JournalLine.objects.create(
         entry=entry, account=ar_account, debit=0, credit=amount,  # Cr receivables.
-        description=f"AR write-off: {customer.code}", line_no=2,  # Label and order.
+        description=f"AR write-off: {customer.code}", line_no=line_no + 1,  # Label and order.
     )
     post_journal(entry, actor_user=actor_user)  # Validate and post write-off journal.
+    if unwind_plan:
+        apply_unwind(unwind_plan, adjustment_entry=entry)
 
     invoice.amount_credited += amount  # Increase non-cash settlement.
     invoice.refresh_payment_status(save=False)  # Recompute invoice payment status.
@@ -728,7 +809,9 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
                 f"for {customer.code}.",  # Customer context.
         journal_id=entry.pk, amount=amount, balance_after=invoice.balance_due,  # Journal and balance metadata.
         narration=narration or "", customer_code=customer.code, customer_name=customer.name,  # Extra audit context.
+        deferred_unwound=unwound, allowance_used=from_allowance, expensed=expensed,
     )
+    entry.write_off_amounts = {"amount": amount, "allowance_used": from_allowance}
     return entry  # Return posted write-off journal.
 
 
@@ -768,6 +851,135 @@ def post_write_off_request(wor, *, actor_user=None):
 
         locked.journal = entry  # Link request to write-off journal.
         locked.status = DocumentStatus.POSTED  # Mark request posted.
-        locked.save(update_fields=["journal", "status", "updated_at"])
+        locked.amount = entry.write_off_amounts["amount"]  # A blank amount is what was cleared.
+        locked.allowance_used = entry.write_off_amounts["allowance_used"]
+        locked.write_off_date = entry.date
+        locked.save(update_fields=[
+            "journal", "status", "amount", "allowance_used", "write_off_date", "updated_at",
+        ])
     wor.journal, wor.status = locked.journal, locked.status
+    wor.amount, wor.allowance_used = locked.amount, locked.allowance_used
+    wor.write_off_date = locked.write_off_date
     return wor  # Return posted request.
+
+
+def recover_write_off(write_off, payment, *, amount=None, actor_user=None):
+    """Apply a receipt to a debt written off earlier, booking the recovery as income.
+
+    Wrapper recording a durable rejection on failure; see
+    :func:`_recover_write_off_atomic`.
+    """
+    try:
+        return _recover_write_off_atomic(write_off, payment, amount=amount, actor_user=actor_user)
+    except FinanceError as exc:
+        record_rejection(
+            entity=write_off.entity, action=FinanceAuditAction.WRITE_OFF_RECOVERED,
+            exc=exc, actor_user=actor_user, target=write_off,
+        )
+        raise
+
+
+@transaction.atomic
+def _recover_write_off_atomic(write_off, payment, *, amount=None, actor_user=None):
+    """Reinstate ``amount`` of a posted write-off and settle it from ``payment``'s credit.
+
+    Mr Obi's N850,000 was written off in 2029; in 2030 he pays N300,000, which
+    lands as credit because his bill reads settled. Recovering it reinstates
+    N300,000 of the bill (``Dr AR, Cr bad debts recovered``) on the receipt's date
+    and applies the receipt to it (``Dr customer credit, Cr AR``). The school shows
+    N300,000 of recovery income, not N300,000 it owes him.
+
+    The receipt must be the bill's customer's, of the bill's branch, posted, dated
+    no earlier than the write-off, and still hold the credit. ``amount`` defaults
+    to the smaller of the credit and what is left written off. Returns the
+    :class:`~vs_finance.models.WriteOffRecovery`.
+    """
+    from vs_rbac.scoping import same_transaction_branch
+
+    from .models import (
+        Invoice, JournalEntry, JournalLine, Payment, WriteOffRecovery, WriteOffRequest,
+    )
+    from .receivables import allocate_payment
+
+    write_off = WriteOffRequest.objects.select_for_update(of=("self",)).get(pk=write_off.pk)
+    payment = Payment.objects.select_for_update(of=("self",)).get(pk=payment.pk)
+    invoice = Invoice.objects.select_for_update(of=("self",)).select_related(
+        "customer", "entity__tenant").get(pk=write_off.invoice_id)
+    if write_off.status != DocumentStatus.POSTED or write_off.journal_id is None:
+        raise PostingError(
+            f"Write-off {write_off.document_number} is '{write_off.status}'; only a "
+            f"posted write-off can be recovered.",
+        )
+    if payment.status != DocumentStatus.POSTED:
+        raise PostingError(f"Receipt {payment.document_number} is not posted.")
+    if payment.customer_id != invoice.customer_id:
+        raise PostingError(
+            f"Receipt {payment.document_number} is not {invoice.customer.code}'s, so it "
+            f"cannot pay their written-off debt.",
+        )
+    if not same_transaction_branch(invoice.entity.tenant_id, payment.branch_id, invoice.branch_id):
+        raise PostingError(
+            f"Receipt {payment.document_number} and invoice {invoice.document_number} "
+            f"belong to different branches; a receipt settles only its own branch's bills.",
+        )
+    written_on = write_off.journal.date
+    if payment.payment_date < written_on:
+        raise PostingError(
+            f"Receipt {payment.document_number} is dated before the write-off "
+            f"({format_date(written_on, invoice.entity.tenant)}); a debt written off "
+            f"after the money arrived is settled by applying the money, not recovered.",
+        )
+    outstanding = int(write_off.amount) - int(write_off.recovered_amount)
+    credit = payment.credit_remaining
+    amount = min(outstanding, credit) if amount in (None, "") else int(amount)
+    if amount <= 0:
+        raise PostingError("There is nothing to recover: no written-off balance or no credit.")
+    if amount > outstanding:
+        raise PostingError(
+            f"Only {format_naira(outstanding)} of write-off {write_off.document_number} "
+            f"is left to recover.",
+        )
+    if amount > credit:
+        raise PostingError(
+            f"Receipt {payment.document_number} holds {format_naira(credit)} of credit, "
+            f"less than {format_naira(amount)}.",
+        )
+
+    customer = invoice.customer
+    journal = JournalEntry.objects.create(
+        entity=invoice.entity, branch=invoice.branch, date=payment.payment_date,
+        period=resolve_period(invoice.entity, payment.payment_date),
+        source=JournalSource.SALES, created_by=actor_user,
+        narration=f"Recovery of written-off {invoice.document_number}",
+        reference=payment.document_number,
+    )
+    JournalLine.objects.create(
+        entry=journal, account=customer.receivable_account, debit=amount, credit=0,
+        description=f"AR reinstated: {customer.code}", line_no=1,
+    )
+    JournalLine.objects.create(
+        entry=journal, debit=0, credit=amount, line_no=2,
+        account=resolve_mapped_account(invoice.entity, AccountMappingKey.BAD_DEBT_RECOVERED,
+                                       label="bad debts recovered"),
+        description=f"Bad debt recovered: {customer.code}",
+    )
+    post_journal(journal, actor_user=actor_user)
+    invoice.amount_credited -= amount  # The written-off part is owed again...
+    invoice.refresh_payment_status(save=False)
+    invoice.save(update_fields=["amount_credited", "payment_status", "updated_at"])
+    recovery = WriteOffRecovery.objects.create(
+        write_off=write_off, payment=payment, amount=amount, journal=journal,
+        created_by=actor_user,
+    )
+    allocate_payment(payment, allocations=[(invoice, amount)], actor_user=actor_user)  # ...and paid.
+    write_off.recovered_amount += amount
+    write_off.save(update_fields=["recovered_amount", "updated_at"])
+    record(
+        entity=invoice.entity, action=FinanceAuditAction.WRITE_OFF_RECOVERED,
+        actor_user=actor_user, target=write_off,
+        message=(f"Recovered {amount} kobo of written-off invoice {invoice.document_number} "
+                 f"from receipt {payment.document_number}."),
+        journal_id=journal.pk, amount=amount, payment_id=payment.pk,
+        invoice_id=invoice.pk, customer_code=customer.code,
+    )
+    return recovery

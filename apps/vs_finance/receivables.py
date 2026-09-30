@@ -7,7 +7,10 @@ the General Ledger and never mention students, parents or fees. A billing *sourc
 
 The two postings this layer raises:
 
-* **Invoice** → ``Dr receivable control, Cr revenue (per line), Cr output tax``.
+* **Invoice** → ``Dr receivable control, Cr revenue (per line), Cr output tax``. A
+  line billed before its service period starts credits deferred income instead
+  (:mod:`vs_finance.deferred_income`), and a refundable-deposit line credits
+  deposits held (:mod:`vs_finance.deposits`).
 * **Payment** → ``Dr bank/cash, Cr receivable control`` - then the cash is *allocated*
   across invoices (a sub-ledger act with no further GL effect).
 
@@ -28,6 +31,7 @@ from .audit import record, record_rejection
 from .chronology import ANY_BRANCH
 from .constants import (
     AccountMappingKey,
+    ChargeKind,
     DocumentStatus,
     FinanceAuditAction,
     InvoicePaymentStatus,
@@ -36,6 +40,7 @@ from .constants import (
 from .exceptions import (
     FinanceError, PostingError, SettlementBranchError, SettlementTargetError,
 )
+from .deferred_income import defers, schedule_line
 from .posting import post_journal, resolve_period
 
 
@@ -153,12 +158,24 @@ def _post_invoice_atomic(invoice, *, actor_user=None):
     revenue_objs: dict[tuple[int, int | None], tuple] = {}  # Keep the account/cost-center objects for each key.
     tax_by_account: dict[int, int] = defaultdict(int)  # Aggregate output tax by tax account.
     tax_objs: dict[int, object] = {}  # Keep the tax account objects for each key.
+    deferred_lines, deposit_lines = [], []
     for line in invoice.lines.select_related(
         "revenue_account", "tax_code__collected_account", "cost_center",
     ):
-        key = (line.revenue_account_id, line.cost_center_id)  # Group revenue by account and cost center.
-        revenue_by_key[key] += line.net_amount  # Accumulate the net line amount into the group.
-        revenue_objs[key] = (line.revenue_account, line.cost_center)  # Keep the objects needed when creating journal lines.
+        if line.kind == ChargeKind.DEPOSIT:  # Money held for the customer, never revenue.
+            if line.tax_amount:
+                raise PostingError(
+                    f"Line '{line.description or line.pk}' is a refundable deposit and "
+                    f"carries no tax; give it an exempt or zero-rated tax code.",
+                )
+            deposit_lines.append(line)
+            continue
+        if defers(line, invoice.invoice_date):  # Earned over a service period still to come.
+            deferred_lines.append(line)
+        else:
+            key = (line.revenue_account_id, line.cost_center_id)  # Group revenue by account and cost center.
+            revenue_by_key[key] += line.net_amount  # Accumulate the net line amount into the group.
+            revenue_objs[key] = (line.revenue_account, line.cost_center)  # Keep the objects needed when creating journal lines.
         if line.tax_amount:  # Only tax-bearing lines contribute to output tax.
             tax_acc = line.tax_code.collected_account if line.tax_code_id else None  # Resolve the output tax account.
             if tax_acc is None:  # A taxable line must have a collected account.
@@ -178,6 +195,24 @@ def _post_invoice_atomic(invoice, *, actor_user=None):
             entry=entry, account=revenue_account, debit=0, credit=amount,
             description="Revenue", cost_center=cost_center, line_no=line_no,
         )
+    deferred_total = sum(int(line.net_amount) for line in deferred_lines)
+    if deferred_total:  # Billed ahead of its service: a liability until each month is earned.
+        line_no += 1
+        JournalLine.objects.create(
+            entry=entry, debit=0, credit=deferred_total, line_no=line_no,
+            account=resolve_mapped_account(
+                invoice.entity, AccountMappingKey.DEFERRED_INCOME, label="deferred income"),
+            description="Deferred income",
+        )
+    deposit_total = sum(int(line.net_amount) for line in deposit_lines)
+    if deposit_total:  # Refundable deposits held for the customer.
+        line_no += 1
+        JournalLine.objects.create(
+            entry=entry, debit=0, credit=deposit_total, line_no=line_no,
+            account=resolve_mapped_account(
+                invoice.entity, AccountMappingKey.DEPOSITS_HELD, label="customer deposits held"),
+            description=f"Deposits held: {customer.code}",
+        )
     for acc_id, amount in tax_by_account.items():  # Emit one output-tax line per tax account.
         line_no += 1  # Advance the journal line number.
         JournalLine.objects.create(
@@ -186,6 +221,17 @@ def _post_invoice_atomic(invoice, *, actor_user=None):
         )
 
     post_journal(entry, actor_user=actor_user)  # Validate and mark the journal as posted.
+
+    if deferred_lines:  # Each deferred line's monthly shares, fixed at posting.
+        from .receivables_policy import resolve_receivables_policy
+
+        method = resolve_receivables_policy(invoice.entity).revenue_recognition
+        for line in deferred_lines:
+            schedule_line(invoice, line, method=method)
+    if deposit_lines:  # One deposit record per deposit line.
+        from .deposits import open_deposits
+
+        open_deposits(invoice, deposit_lines)
 
     invoice.journal = entry  # Link the invoice to the posted journal.
     invoice.status = DocumentStatus.POSTED  # Mark the invoice as posted.

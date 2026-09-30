@@ -295,13 +295,16 @@ def _transition(period, new_status, *, actor_user, action, message, **metadata):
 @transaction.atomic
 # Handle the close period workflow.
 def close_period(entity, period, *, actor_user=None, soft=False, force=False,
-                 run_depreciation=True, extra_checks=None, reason=None):  # Close or soft-close a fiscal period.
+                 run_depreciation=True, extra_checks=None, reason=None,
+                 release_deferred=True):  # Close or soft-close a fiscal period.
     """Close ``period`` after running (and optionally enforcing) the checklist.
 
     ``soft`` transitions OPEN → SOFT_CLOSED (auto-postings still allowed); otherwise it
     transitions OPEN/SOFT_CLOSED → CLOSED. ``run_depreciation`` posts due depreciation
-    first. Blocking checklist failures raise :class:`PeriodCloseError` unless ``force``.
-    Returns the period.
+    first, and ``release_deferred`` releases the deferred income due by the period's
+    end (:func:`vs_finance.deferred_income.release_deferred_income`), both before the
+    checklist runs. Blocking checklist failures raise :class:`PeriodCloseError` unless
+    ``force``. Returns the period.
 
     ``force`` needs a ``reason`` (:func:`require_reason`), asked for up front so a
     forced request without one is refused before depreciation posts anything. The
@@ -333,6 +336,12 @@ def close_period(entity, period, *, actor_user=None, soft=False, force=False,
 
     if run_depreciation:  # Close can auto-post due depreciation.
         run_period_depreciation(entity, period, actor_user=actor_user)  # Post depreciation before checklist.
+    if release_deferred:  # Income earned in the month leaves deferred income.
+        from .deferred_income import release_deferred_income
+
+        release_deferred_income(
+            entity, up_to=period.end_date, actor_user=actor_user, allow_restricted=True,
+        )
 
     checklist = close_checklist(entity, period, extra_checks=extra_checks)  # Run close integrity checks.
     if not checklist.passed and not force:  # Blocking failures stop the close unless forced.

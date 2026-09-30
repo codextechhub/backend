@@ -25,11 +25,21 @@ ACCOUNT_MAPPING_SPECS = {
     AccountMappingKey.OUTPUT_VAT: ("2200", AccountType.LIABILITY),
     AccountMappingKey.WHT_PAYABLE: ("2300", AccountType.LIABILITY),
     AccountMappingKey.RETAINED_EARNINGS: ("3200", AccountType.EQUITY),
-    AccountMappingKey.BAD_DEBT_EXPENSE: ("5300", AccountType.EXPENSE),
+    AccountMappingKey.BAD_DEBT_EXPENSE: ("5350", AccountType.EXPENSE),
     AccountMappingKey.BANK_CHARGES: ("5500", AccountType.EXPENSE),
     AccountMappingKey.INVENTORY_ASSET: ("1400", AccountType.ASSET),
     AccountMappingKey.INVENTORY_ADJUSTMENT: ("5150", AccountType.EXPENSE),
     AccountMappingKey.PURCHASE_PRICE_VARIANCE: ("5160", AccountType.EXPENSE),
+    # Fees billed before their service period starts wait here until each month
+    # they belong to releases them to revenue.
+    AccountMappingKey.DEFERRED_INCOME: ("2160", AccountType.LIABILITY),
+    # Refundable deposits are money held for the customer, never revenue.
+    AccountMappingKey.DEPOSITS_HELD: ("2170", AccountType.LIABILITY),
+    # A contra-asset, typed ASSET like 1900 Accumulated Depreciation: it carries a
+    # credit balance that nets against the receivables it provides for.
+    AccountMappingKey.DOUBTFUL_DEBT_ALLOWANCE: ("1290", AccountType.ASSET),
+    AccountMappingKey.BAD_DEBT_RECOVERED: ("4810", AccountType.INCOME),
+    AccountMappingKey.FORFEITED_DEPOSIT_INCOME: ("4820", AccountType.INCOME),
 }
 
 DEFAULT_CODE_TO_MAPPING_KEY = {

@@ -501,9 +501,12 @@ def _written_off_by_invoice(queryset, as_of) -> dict[int, int]:
     A :class:`WriteOffRequest` may carry a blank ``amount`` meaning "the whole
     outstanding balance", which is only resolved at posting time - so the request row
     is not a reliable source for how much was cleared. The journal it raised is: its
-    credit to the customer's receivable control is exactly what left AR.
+    credit to the customer's receivable control is exactly what left AR. A recovery
+    effective by the cutoff (:class:`~vs_finance.models.WriteOffRecovery`) put part of
+    it back, and the receipt that paid it is counted as a cash allocation, so it is
+    taken off here.
     """
-    from .models import JournalLine
+    from .models import JournalLine, WriteOffRecovery
 
     requests = list(
         _effective_on(queryset, as_of)
@@ -525,6 +528,11 @@ def _written_off_by_invoice(queryset, as_of) -> dict[int, int]:
             (row["journal_id"], row["invoice__customer__receivable_account_id"]), 0)
         if amount:
             written[row["invoice_id"]] = written.get(row["invoice_id"], 0) + amount
+    for row in (_effective_on(
+            WriteOffRecovery.objects.filter(write_off__in=queryset), as_of)
+            .values("write_off__invoice_id").annotate(amount=Sum("amount"))):
+        invoice_id = row["write_off__invoice_id"]
+        written[invoice_id] = written.get(invoice_id, 0) - int(row["amount"] or 0)
     return written
 
 
@@ -859,7 +867,8 @@ def customer_account_movements(
     live = (DocumentStatus.POSTED, DocumentStatus.REVERSED)
     narrow = (scope or UNNARROWED).filter
     if invoices is None:
-        invoices = narrow(Invoice.objects.filter(customer=customer, status__in=live))
+        invoices = narrow(Invoice.objects.filter(customer=customer, status__in=live)
+                          .select_related("beneficiary"))
     if credit_notes is None:
         credit_notes = narrow(CreditNote.objects.filter(customer=customer, status__in=live))
     if refunds is None:
@@ -872,9 +881,12 @@ def customer_account_movements(
     # (date, type_order, doc_type, number, description, debit, credit, journal_id).
     rows: list = []
     for inv in invoices:
+        description = inv.narration or "Invoice"
+        if inv.beneficiary_id:  # A payer's bill names who it pays for.
+            description = f"{description} (for {inv.beneficiary.name})"
         rows.append((
             inv.invoice_date, 0, "Invoice", inv.document_number,
-            inv.narration or "Invoice", inv.total, 0, inv.journal_id,
+            description, inv.total, 0, inv.journal_id,
         ))
     for note in credit_notes:
         if note.kind == CreditNoteKind.DEBIT:
@@ -2229,7 +2241,7 @@ def _ifrs_sofp_sections():
         ("non_current_liabilities", "Non-current liabilities",
          [IFRSLine.LONG_TERM_BORROWINGS]),
         ("current_liabilities", "Current liabilities",
-         [IFRSLine.TRADE_PAYABLES, IFRSLine.CURRENT_TAX_PAYABLE,
+         [IFRSLine.TRADE_PAYABLES, IFRSLine.DEFERRED_INCOME, IFRSLine.CURRENT_TAX_PAYABLE,
           IFRSLine.EMPLOYEE_PAYABLES, IFRSLine.SHORT_TERM_BORROWINGS]),
     ]
 

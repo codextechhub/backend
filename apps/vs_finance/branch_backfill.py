@@ -289,6 +289,8 @@ _TARGETS = (
     Target("vs_finance.PayrollRun", (), order=50, whole_tenant=Q(branch__isnull=True)),
     # A return with no branch is the tenant's one return, booked per branch share.
     Target("vs_finance.TaxFiling", (), order=50, whole_tenant=Q(branch__isnull=True)),
+    # A provision run is raised for every branch and booked one journal per branch line.
+    Target("vs_finance.DoubtfulDebtProvision", (), order=50, whole_tenant=Q(branch__isnull=True)),
     Target(
         "vs_finance.Budget", (), order=50,
         no_source_note="every budget belongs to a branch; an administrator decides which",
@@ -346,6 +348,16 @@ _JOURNAL_OWNERS = (
     JournalOwner("vs_finance.BankStatementLine", "adjusting_journal", via="bank_account", via_label=BANK_ACCOUNT),
     JournalOwner("vs_finance.CustomerCreditAllocationJournal", "journal", via="payment", via_label=PAYMENT),
     JournalOwner("vs_finance.CustomerCreditAllocationJournal", "journal", via="note", via_label=CREDIT_NOTE),
+    JournalOwner("vs_finance.DeferredIncomeRelease", "journal"),
+    JournalOwner("vs_finance.DeferredIncomeEntry", "void_journal"),
+    # The adjusting journal belongs to its credit note, concession or write-off; the
+    # share it took back is on the same bill, so of the same branch.
+    JournalOwner("vs_finance.DeferredIncomeUnwind", "adjustment_entry",
+                 via="entry", via_label="vs_finance.DeferredIncomeEntry"),
+    JournalOwner("vs_finance.DoubtfulDebtProvisionLine", "journal"),
+    JournalOwner("vs_finance.WriteOffRecovery", "journal",
+                 via="write_off", via_label="vs_finance.WriteOffRequest"),
+    JournalOwner("vs_finance.DepositForfeiture", "journal"),
 )
 
 for _target in _TARGETS:

@@ -36,6 +36,11 @@ class VsFinanceConfig(AppConfig):
         from .close import register_year_close_check
 
         register_year_close_check(depreciation_posted_for_year)
+        # A month cannot close with deferred income due in it still unreleased.
+        from .close import register_close_check
+        from .deferred_income import deferred_income_close_check
+
+        register_close_check(deferred_income_close_check)
         from .provisioning import register_entity_provisioner
         from .provisioning_hooks import provision_adjustment_approvals
 

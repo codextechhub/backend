@@ -54,9 +54,10 @@ ACCOUNT_MAPPING_CONSUMERS = {
         "Receives year-end profit or loss and approved opening-balance equity.",
     ),
     AccountMappingKey.BAD_DEBT_EXPENSE: _consumer(
-        "Receivable write-offs",
-        "vs_finance.credit_notes",
-        "Posts approved customer-balance write-offs to expense.",
+        "Receivable write-offs and doubtful-debt provisions",
+        "vs_finance.credit_notes; vs_finance.provisions",
+        "Posts the part of a write-off the allowance does not cover, and each "
+        "provision run's movement in the allowance.",
     ),
     AccountMappingKey.BANK_CHARGES: _consumer(
         "Bank reconciliation adjustments",
@@ -77,6 +78,33 @@ ACCOUNT_MAPPING_CONSUMERS = {
         "Vendor invoice matching",
         "vs_finance.account_mappings.resolve_default_code_mapping",
         "Routes permitted receipt-to-invoice price differences.",
+    ),
+    AccountMappingKey.DEFERRED_INCOME: _consumer(
+        "Deferred income",
+        "vs_finance.receivables; vs_finance.deferred_income",
+        "Holds invoiced amounts whose service period has not started, until each "
+        "month's share is released to revenue.",
+    ),
+    AccountMappingKey.DEPOSITS_HELD: _consumer(
+        "Customer deposits",
+        "vs_finance.receivables; vs_finance.deposits",
+        "Holds refundable deposits billed to customers until they are returned, set "
+        "against bills or forfeited.",
+    ),
+    AccountMappingKey.DOUBTFUL_DEBT_ALLOWANCE: _consumer(
+        "Doubtful-debt provision",
+        "vs_finance.provisions; vs_finance.credit_notes",
+        "Carries the allowance each provision run sets and each write-off uses.",
+    ),
+    AccountMappingKey.BAD_DEBT_RECOVERED: _consumer(
+        "Bad-debt recovery",
+        "vs_finance.credit_notes.recover_write_off",
+        "Receives the income when a written-off debt is later paid.",
+    ),
+    AccountMappingKey.FORFEITED_DEPOSIT_INCOME: _consumer(
+        "Unclaimed deposits",
+        "vs_finance.deposits.forfeit_unclaimed_deposits",
+        "Receives deposits left unclaimed past the entity's limit.",
     ),
 }
 
@@ -145,6 +173,32 @@ BANKING_SETTING_CONSUMERS = {
         "Petty cash monitoring",
         "vs_finance.views_ops.pettycash",
         "Determines when a live petty-cash balance is flagged for replenishment.",
+    ),
+}
+
+
+RECEIVABLES_SETTING_CONSUMERS = {
+    "revenue_recognition": _consumer(
+        "Deferred income",
+        "vs_finance.deferred_income.schedule_line",
+        "Decides how an invoice line billed before its service period becomes revenue: "
+        "spread over each month of the period, or all in the month it starts.",
+    ),
+    "provision_bands": _consumer(
+        "Doubtful-debt provision",
+        "vs_finance.provisions.required_allowance",
+        "Sets the share of each overdue balance the allowance must cover, by age.",
+    ),
+    "deposits_offset_unpaid_bills": _consumer(
+        "Customer deposits",
+        "vs_finance.deposits.on_customer_left",
+        "Allows a departing customer's deposit to settle their unpaid bills before "
+        "the rest is returned.",
+    ),
+    "unclaimed_deposit_years": _consumer(
+        "Customer deposits",
+        "vs_finance.deposits.forfeit_unclaimed_deposits",
+        "Years after a customer leaves before an unclaimed deposit may be taken to income.",
     ),
 }
 

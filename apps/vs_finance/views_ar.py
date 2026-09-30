@@ -1160,7 +1160,13 @@ def _build_fee_items(request, structure, entity, raw_items):
     An item sent with a tax code keeps it. One sent without takes the entity's
     exempt VAT code (:func:`vs_finance.seed.exempt_vat_code`), so every fee item
     states its VAT treatment and the tenant changes it where a fee is taxable.
+
+    An item of ``kind`` DEPOSIT is a refundable deposit. Its account is always the
+    entity's deposits-held liability, whatever the request names, so a deposit can
+    never be billed to revenue by picking the wrong account.
     """
+    from .account_mappings import resolve_mapped_account
+    from .constants import AccountMappingKey, ChargeKind
     from .seed import exempt_vat_code
 
     if not raw_items:
@@ -1169,18 +1175,29 @@ def _build_fee_items(request, structure, entity, raw_items):
         amount = _money(item.get("amount"), f"items[{i}].amount")
         if amount <= 0:
             raise ValidationError({f"items[{i}].amount": "A positive amount is required."})
+        kind = str(item.get("kind") or ChargeKind.CHARGE).upper()
+        if kind not in ChargeKind.values:
+            raise ValidationError(
+                {f"items[{i}].kind": f"Use one of {', '.join(ChargeKind.values)}."})
+        account = (
+            resolve_mapped_account(entity, AccountMappingKey.DEPOSITS_HELD,
+                                   label="customer deposits held")
+            if kind == ChargeKind.DEPOSIT else
+            _resolve_account(request, entity, item.get("revenue_account"),
+                             f"items[{i}].revenue_account", required=True)
+        )
         FeeItem.objects.create(
             structure=structure, line_no=item.get("line_no", i),
             code=str(item.get("code", "")).strip()[:32],
             description=str(item.get("description", "")).strip() or f"Fee {i}",
-            revenue_account=_resolve_account(
-                request, entity, item.get("revenue_account"), f"items[{i}].revenue_account", required=True),
+            revenue_account=account,
             amount=amount,
             tax_code=_resolve_tax(
                 entity, item.get("tax_code"), f"items[{i}].tax_code",
                 usage="sales",
             ) or exempt_vat_code(entity),
             is_optional=bool(item.get("is_optional", False)),
+            kind=kind,
         )
 
 
@@ -1397,7 +1414,7 @@ class FeeStructureDuplicateView(_FinanceBase):
                 structure=clone, line_no=item.line_no, code=item.code,
                 description=item.description, revenue_account=item.revenue_account,
                 amount=item.amount, tax_code=item.tax_code or exempt_vat_code(entity),
-                is_optional=item.is_optional,
+                is_optional=item.is_optional, kind=item.kind,
             )
         clone.refresh_from_db()
         return success_response(
@@ -1425,7 +1442,9 @@ class FeeStructureGenerateView(_FinanceBase):
     """POST - raise a posted invoice per customer from this fee structure.
 
     Body: ``{customers:[code|id, ...]}`` or ``{all_active:true}``; optional
-    ``invoice_date``, ``due_date`` (ISO). Returns the invoices created.
+    ``invoice_date``, ``due_date``, and ``service_start`` with ``service_end`` (ISO)
+    for the period the fees pay for, which defers income billed before it starts.
+    Returns the invoices created.
 
     Who can be billed is bounded twice, and both bounds hold for both forms of
     the body:
@@ -1465,6 +1484,12 @@ class FeeStructureGenerateView(_FinanceBase):
         # None dates each invoice on its own branch's day (see generate_invoices).
         invoice_date = _date(body.get("invoice_date"), "invoice_date")
         due_date = _date(body.get("due_date"), "due_date")
+        service_start = _date(body.get("service_start"), "service_start")
+        service_end = _date(body.get("service_end"), "service_end")
+        if (service_start is None) != (service_end is None):
+            raise ValidationError({"service_end": "Give both service dates, or neither."})
+        if service_start is not None and service_end < service_start:
+            raise ValidationError({"service_end": "The service period ends before it starts."})
         if body.get("all_active"):
             qs = _branch_visible(request, Customer.objects.filter(entity=entity, is_active=True))
             if structure.branch_id:  # A branch price list bills only that branch.
@@ -1493,6 +1518,8 @@ class FeeStructureGenerateView(_FinanceBase):
             due_date=due_date,
             actor_user=request.user,
             branch=shared_customers_branch,
+            service_start=service_start,
+            service_end=service_end,
         )
         # One query each for the rows' customers and branches, not one per invoice.
         prefetch_related_objects(invoices, "customer", "branch")

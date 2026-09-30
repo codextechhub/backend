@@ -30,7 +30,10 @@ from .models import (
     Currency,
     Customer,
     CustomerCreditTransfer,
+    CustomerDeposit,
     Dimension,
+    DoubtfulDebtProvision,
+    DoubtfulDebtProvisionLine,
     DepreciationSchedule,
     DunningNotice,
     DunningPolicy,
@@ -427,7 +430,7 @@ class FeeItemSerializer(serializers.ModelSerializer):
         model = FeeItem
         fields = [
             "id", "line_no", "code", "description", "revenue_account_code",
-            "amount", "amount_naira", "tax_code_value", "is_optional",
+            "amount", "amount_naira", "tax_code_value", "is_optional", "kind",
         ]
 
     def get_amount_naira(self, obj) -> str:
@@ -507,11 +510,17 @@ class InvoiceSerializer(serializers.ModelSerializer):
     balance_due = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    # Set when the customer billed pays for somebody else (a sponsor or employer).
+    beneficiary_code = serializers.CharField(
+        source="beneficiary.code", read_only=True, default=None)
+    beneficiary_name = serializers.CharField(
+        source="beneficiary.name", read_only=True, default=None)
 
     class Meta:
         model = Invoice
         fields = [
             "id", "document_number", "customer_id", "customer_code", "customer_name",
+            "beneficiary_id", "beneficiary_code", "beneficiary_name",
             "branch_id", "branch_name",
             "invoice_date", "due_date", "status", "payment_status",
             "subtotal", "tax_total", "total", "total_naira",
@@ -645,7 +654,7 @@ class WriteOffRequestSerializer(ApprovalGatedMixin, serializers.ModelSerializer)
             "id", "document_number", "status", "invoice_id", "invoice_number",
             "customer_code", "customer_name", "amount", "amount_naira",
             "write_off_account_id", "write_off_date", "narration", "reason",
-            "journal_id", "approval_required",
+            "journal_id", "approval_required", "allowance_used", "recovered_amount",
         ]
 
     def get_amount_naira(self, obj) -> str:
@@ -1732,3 +1741,53 @@ class FinanceDocumentDeliverySerializer(serializers.ModelSerializer):
         from .constants import FinanceDeliveryStatus
 
         return obj.status == FinanceDeliveryStatus.FAILED
+
+
+class DoubtfulDebtProvisionLineSerializer(serializers.ModelSerializer):
+    """One branch's figures in a provision run."""
+
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+
+    class Meta:
+        model = DoubtfulDebtProvisionLine
+        fields = [
+            "branch_id", "branch_name", "required", "current", "movement", "bands",
+            "journal_id",
+        ]
+
+
+class DoubtfulDebtProvisionSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
+    """A doubtful-debt provision run and its per-branch lines."""
+
+    lines = DoubtfulDebtProvisionLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = DoubtfulDebtProvision
+        fields = [
+            "id", "document_number", "status", "as_of", "narration", "required_total",
+            "movement_total", "policy_snapshot", "lines", "approval_required",
+            "created_at",
+        ]
+
+
+class CustomerDepositSerializer(serializers.ModelSerializer):
+    """A customer's refundable deposit and where it stands."""
+
+    customer_code = serializers.CharField(source="customer.code", read_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    invoice_number = serializers.CharField(source="invoice.document_number", read_only=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    release_note_number = serializers.CharField(
+        source="release_note.document_number", read_only=True, default=None)
+    amount_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CustomerDeposit
+        fields = [
+            "id", "customer_id", "customer_code", "customer_name", "branch_id",
+            "branch_name", "invoice_id", "invoice_number", "amount", "amount_naira",
+            "status", "claim_opened_on", "release_note_number", "forfeiture_id",
+        ]
+
+    def get_amount_naira(self, obj) -> str:
+        return format_naira(obj.amount)

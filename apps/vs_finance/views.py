@@ -1022,8 +1022,13 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
         """Create a manual invoice from ``{customer, invoice_date, lines:[...]}``.
 
         Each line: ``{revenue_account, description?, quantity?, unit_price, tax_code?,
-        cost_center?}`` (unit_price in kobo). Posts the AR journal unless
-        ``post=false`` (saved as a priced draft). Mirrors the fee-run path.
+        cost_center?, kind?, service_start?, service_end?}`` (unit_price in kobo).
+        ``kind`` DEPOSIT bills a refundable deposit; a service period starting after
+        the invoice date defers the line's income. ``beneficiary`` (a customer code
+        or id) bills ``customer`` as the payer for somebody else, such as a sponsor
+        paying for a child; the invoice then takes the beneficiary's branch when the
+        payer has none. Posts the AR journal unless ``post=false`` (saved as a
+        priced draft). Mirrors the fee-run path.
         """
         from django.db import transaction
         from .models import InvoiceLine
@@ -1050,12 +1055,20 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
             )
 
         customer = _resolve_customer(request, entity, body.get("customer"))
+        beneficiary = _resolve_customer(
+            request, entity, body.get("beneficiary"), "beneficiary", required=False)
+        if beneficiary is not None and beneficiary.pk == customer.pk:
+            raise ValidationError(
+                {"beneficiary": "A customer cannot pay for itself as a beneficiary."})
+        # The payer's branch; else the beneficiary's (the service is given there); else the raiser's.
+        branch_source = customer if customer.branch_id or beneficiary is None else beneficiary
+        parsed_lines = [_invoice_line_fields(ln, i) for i, ln in enumerate(lines, start=1)]
         with transaction.atomic():
             invoice = Invoice.objects.create(
                 entity=entity,
                 customer=customer,
-                # The customer's branch, or the raiser's for a customer every branch shares.
-                branch_id=_customer_document_branch_id(request, entity, body, customer),
+                beneficiary=beneficiary,
+                branch_id=_customer_document_branch_id(request, entity, body, branch_source),
                 invoice_date=invoice_date,
                 due_date=due_date,
                 currency=_resolve_currency(body.get("currency")),
@@ -1079,6 +1092,9 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
                     ),
                     cost_center=_resolve_cost_center(
                         entity, ln.get("cost_center"), f"lines[{i}].cost_center"),
+                    kind=parsed_lines[i - 1]["kind"],
+                    service_start=parsed_lines[i - 1]["service_start"],
+                    service_end=parsed_lines[i - 1]["service_end"],
                 )
             if should_post:
                 post_invoice(invoice, actor_user=request.user)
@@ -1116,6 +1132,33 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
             qs = (qs.filter(customer__code=str(customer).upper()) if not str(customer).isdigit()
                   else qs.filter(customer_id=int(customer)))
         return qs.order_by("-invoice_date", "-id")
+
+
+def _invoice_line_fields(line, index):
+    """A manual invoice line's ``kind`` and service period, validated.
+
+    A service period is both dates or neither, and never ends before it starts; a
+    refundable deposit is held rather than earned, so it carries none.
+    """
+    from .constants import ChargeKind
+    from .views_ops import _date
+
+    kind = str(line.get("kind") or ChargeKind.CHARGE).upper()
+    if kind not in ChargeKind.values:
+        raise ValidationError(
+            {f"lines[{index}].kind": f"Use one of {', '.join(ChargeKind.values)}."})
+    start = _date(line.get("service_start"), f"lines[{index}].service_start")
+    end = _date(line.get("service_end"), f"lines[{index}].service_end")
+    if (start is None) != (end is None):
+        raise ValidationError(
+            {f"lines[{index}].service_end": "Give both service dates, or neither."})
+    if start is not None and end < start:
+        raise ValidationError(
+            {f"lines[{index}].service_end": "The service period ends before it starts."})
+    if kind == ChargeKind.DEPOSIT and start is not None:
+        raise ValidationError(
+            {f"lines[{index}].service_start": "A refundable deposit has no service period."})
+    return {"kind": kind, "service_start": start, "service_end": end}
 
 
 # Support the invoice bucket workflow.
@@ -1302,9 +1345,15 @@ class InvoiceDetailView(APIView):
                 "tax_code": ln.tax_code.code if ln.tax_code_id else None,
                 "tax_amount": _money(ln.tax_amount),
                 "line_total": _money(ln.net_amount + ln.tax_amount),
+                "kind": ln.kind,
+                "service_start": ln.service_start.isoformat() if ln.service_start else None,
+                "service_end": ln.service_end.isoformat() if ln.service_end else None,
             }
             for ln in inv.lines.all()
         ]
+        from .deferred_income import invoice_deferred_totals
+
+        deferred = invoice_deferred_totals(inv)
 
         # Cash receipts allocated to this invoice - kept as `payments` for existing
         # consumers; also fed into the unified `settlements` list below.
@@ -1451,6 +1500,10 @@ class InvoiceDetailView(APIView):
                     "due_date": inv.due_date.isoformat() if inv.due_date else None,
                 },
                 "lines": lines,
+                "deferred_income": {
+                    "pending": _money(deferred["pending"]),
+                    "released": _money(deferred["released"]),
+                },
                 "payments": payments,
                 "settlements": settlements,
                 "gl_postings": gl_postings,

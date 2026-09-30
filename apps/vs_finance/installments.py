@@ -328,7 +328,10 @@ def _post_concession_atomic(concession, *, actor_user=None):
          expense; and above the entity's second-person threshold the person who
          raised it may not post it (:func:`vs_finance.approvals.require_second_person`).
       3. **Post the journal** (``Dr discounts & allowances, Cr AR control``) to clear
-         that much of the invoice.
+         that much of the invoice. Where the bill's income is still deferred, the
+         unreleased part is reduced first (``Dr deferred income``), so a discount on
+         service still to come lowers the income those months will release rather
+         than this month's.
       4. **Finalise.** Link the journal, flip status to POSTED, update the invoice's
          ``amount_credited`` and refresh any live payment plan, then write a
          CONCESSION_POSTED audit record. Returns the updated ``concession``.
@@ -404,15 +407,34 @@ def _post_concession_atomic(concession, *, actor_user=None):
         narration=concession.reason or f"{label} {concession.document_number or ''}".strip(),  # Narration from reason/kind.
         reference=concession.reference, created_by=actor_user,  # External reference and actor.
     )
-    JournalLine.objects.create(
-        entry=entry, account=allowance, debit=amount, credit=0,  # Dr allowance.
-        description=f"{label}: {customer.code}", line_no=1,  # Line label and order.
-    )
+    from .account_mappings import resolve_mapped_account
+    from .constants import AccountMappingKey
+    from .deferred_income import apply_unwind, plan_unwind
+
+    unwind_plan = plan_unwind(invoice, amount)  # Income not yet recognised is reduced first.
+    unwound = sum(take for _entry, take in unwind_plan)
+    line_no = 0
+    if unwound:
+        line_no += 1
+        JournalLine.objects.create(
+            entry=entry, debit=unwound, credit=0, line_no=line_no,
+            account=resolve_mapped_account(
+                concession.entity, AccountMappingKey.DEFERRED_INCOME, label="deferred income"),
+            description=f"{label} of deferred income: {customer.code}",
+        )
+    if amount - unwound:
+        line_no += 1
+        JournalLine.objects.create(
+            entry=entry, account=allowance, debit=amount - unwound, credit=0,  # Dr allowance.
+            description=f"{label}: {customer.code}", line_no=line_no,  # Line label and order.
+        )
     JournalLine.objects.create(
         entry=entry, account=ar_account, debit=0, credit=amount,  # Cr receivables.
-        description=f"AR {label.lower()}: {customer.code}", line_no=2,  # Line label and order.
+        description=f"AR {label.lower()}: {customer.code}", line_no=line_no + 1,  # Line label and order.
     )
     post_journal(entry, actor_user=actor_user)  # Validate and post concession journal.
+    if unwind_plan:
+        apply_unwind(unwind_plan, adjustment_entry=entry)
 
     concession.allowance_account = allowance  # Persist account used.
     concession.journal = entry  # Link concession to journal.

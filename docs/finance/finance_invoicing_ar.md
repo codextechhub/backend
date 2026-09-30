@@ -9,7 +9,9 @@ Routes covered (mounted at `/v1/finance/`): `customers/`, `customers/<pk>/`,
 `customers/<pk>/receipt/`, `customers/opening/`, `invoices/`, `invoices/summary/`,
 `invoices/<pk>/`, `invoices/<pk>/pay/`, `invoices/<pk>/remind/`, `payments/`,
 `payments/<pk>/`, `payments/<pk>/allocate/`, `fee-structures/…`,
-`fee-structures/<pk>/items/<item>/assignments/`.
+`fee-structures/<pk>/items/<item>/assignments/`, `deferred-income/`,
+`deferred-income/release/`, `deferred-income/reverse/`, `deposits/`,
+`deposits/release/`, `deposits/forfeit/`, `settings/receivables/`.
 
 > **Adjacent slices** (not here): credit notes, refunds, write-offs, concessions →
 > `finance_ar_adjustments`; installment plans → `finance_payment_plans`; reminders
@@ -25,7 +27,14 @@ Routes covered (mounted at `/v1/finance/`): `customers/`, `customers/<pk>/`,
   customer is the detail behind that control.
 - An **`Invoice`** (`models/ar.py:85`) is a sales document. Posting raises the AR
   journal **Dr receivable / Cr revenue / Cr output tax** and links it via
-  `journal`.
+  `journal`. A line billed before its **service period** starts credits
+  **deferred income** instead of revenue, and a **refundable-deposit** line
+  credits **deposits held** (§6).
+- A **payer** is a customer billed for somebody else's service: a sponsor or an
+  employer. The invoice is raised against the payer and names the other
+  customer as its `beneficiary`; revenue is earned and collected from the payer,
+  and the payer's statement names the beneficiary on the line. A tenant's own
+  scholarship stays a concession (a discount, `finance_ar_adjustments`).
 - A **`Payment`** (`models/ar.py:219`) is a customer **receipt** - money in,
   settling one or more **open AR items** (invoices **and** posted DEBIT notes, which
   debit AR the same way); overflow becomes customer credit.
@@ -51,11 +60,18 @@ Routes covered (mounted at `/v1/finance/`): `customers/`, `customers/<pk>/`,
 |---|---|---|---|
 | `Customer` | `models/ar.py` | `code`, `name`, billing\_*, `receivable_account`, `opening_balance`, `source_type`/`source_id` (loose strings, **not** FKs), `is_active` | `unique(entity, code)`; `unique(entity, source_type, source_id)` where a source is set |
 | `Invoice` | `models/ar.py` | `customer`, `invoice_date`, `due_date`, `source`, `subtotal`/`tax_total`/`total`, `amount_paid`, `amount_credited`, `status`, `payment_status`, `journal`, `billing_key`, `billing_period`, `billing_period_label` | **two status axes** (below); check constraints keep `0 <= amount_paid + amount_credited <= total`; `billing_key` unique per customer among live invoices |
-| `InvoiceLine` | `models/ar.py:176` | `revenue_account`, `quantity`, `unit_price`, `tax_code`, `net_amount`, `tax_amount`, `cost_center`, `dimensions` | net/tax stored, not re-derived |
+| `InvoiceLine` | `models/ar.py` | `revenue_account`, `quantity`, `unit_price`, `tax_code`, `net_amount`, `tax_amount`, `cost_center`, `dimensions`, `kind` (`CHARGE`/`DEPOSIT`), `service_start`/`service_end` | net/tax stored, not re-derived; a service period is both dates or neither and never ends before it starts (check constraint) |
+| `Invoice.beneficiary` | `models/ar.py` | optional FK to `Customer` | set when the customer billed pays for somebody else |
+| `DeferredIncomeEntry` | `models/accruals.py` | `invoice`, `line`, `revenue_account`, `cost_center`, `recognition_date`, `amount`, `unwound_amount`, `released_amount`, `status` (`PENDING`/`RELEASED`/`CANCELLED`), `release`, `void_journal` | one month's share of a deferred line |
+| `DeferredIncomeRelease` | `models/accruals.py` | `branch`, `journal`, `amount`, `reversed_at` | one release journal (one branch, one month) |
+| `DeferredIncomeUnwind` | `models/accruals.py` | `entry`, `adjustment_entry`, `amount`, `restored` | what a credit note, concession or write-off took back before release |
+| `CustomerDeposit` | `models/accruals.py` | `customer`, `invoice`, `line`, `branch`, `amount`, `status` (`HELD`/`RELEASED`/`FORFEITED`/`CANCELLED`), `claim_opened_on`, `release_note`, `forfeiture` | one refundable deposit billed |
+| `DepositForfeiture` | `models/accruals.py` | `branch`, `journal`, `amount` | one branch's unclaimed deposits taken to income by one run |
+| `FinanceReceivablesPolicy` | `models/accruals.py` | `revenue_recognition`, `provision_bands`, `deposits_offset_unpaid_bills`, `unclaimed_deposit_years` | one per entity; defaults when absent |
 | `Payment` | `models/ar.py` | `customer`, `payment_date`, `method`, `amount`, `allocated_amount`, `refunded_amount`, `transferred_amount`, `deposit_account`, `journal` | receipt; `allocated + refunded + transferred <= amount` is a check constraint; method `CREDIT_TRANSFER` marks a credit-transfer receipt |
 | `PaymentAllocation` | `models/ar.py:268` | `payment`, `invoice`, `amount` | the receipt↔invoice link |
 | `DebitNoteAllocation` | `models/adjustments.py:182` | `payment`, `note`, `amount` | the receipt↔DEBIT-note link (bumps `CreditNote.amount_paid`) |
-| `FeeStructure` / `FeeItem` | `models/ar.py` | billing catalogue → invoices | `applies_to` gates AR generation; `FeeItem.is_optional` bills only assigned customers |
+| `FeeStructure` / `FeeItem` | `models/ar.py` | billing catalogue → invoices | `applies_to` gates AR generation; `FeeItem.is_optional` bills only assigned customers; `FeeItem.kind` `DEPOSIT` bills a refundable deposit |
 | `FeeItemAssignment` | `models/ar.py` | `item`, `customer` | who takes an optional item; `unique(item, customer)` |
 
 - **Money is kobo.** `total = subtotal + tax_total`; `settled = amount_paid +
@@ -78,16 +94,23 @@ All require `?entity=<id|code>`. Gate: `IsAuthenticatedAndActive & HasRBACPermis
 | `GET /customers/<pk>/` | `finance.customer.view` | Customer detail + ledger | - | detail |
 | `POST /customers/<pk>/receipt/` | `finance.payment.create` | Record a receipt, auto-allocate | `amount`, `payment_date`, `deposit_account`, `method?`, `auto_allocate?`, `allocation_strategy?` (`oldest`\|`largest`) | `201` `{allocated, unallocated}` |
 | `GET /invoices/` | `finance.invoice.view` | List. Query: `status`, `payment_status`, `bucket` (draft/issued/partial/paid/overdue), `search`, `customer` | - | paginated `InvoiceSerializer` |
-| `POST /invoices/` | `finance.invoice.create` | Manual invoice; **posts** unless `post=false` (priced draft) | `customer`, `invoice_date`, `lines:[{revenue_account, quantity?, unit_price, tax_code?, cost_center?}]`, `post?` | `201` `InvoiceSerializer` |
+| `POST /invoices/` | `finance.invoice.create` | Manual invoice; **posts** unless `post=false` (priced draft). With `beneficiary`, the customer is billed as the payer for that customer; the invoice takes the payer's branch, else the beneficiary's, else the raiser's | `customer`, `beneficiary?`, `invoice_date`, `lines:[{revenue_account, quantity?, unit_price, tax_code?, cost_center?, kind?, service_start?, service_end?}]`, `post?` | `201` `InvoiceSerializer` (with `beneficiary_id/code/name`) |
 | `GET /invoices/summary/` | `finance.invoice.view` | KPIs, status counts, 12-month series | - | `success_response` |
-| `GET /invoices/<pk>/` | `finance.invoice.view` | Full invoice: lines, allocations, GL, reminders | - | detail |
+| `GET /invoices/<pk>/` | `finance.invoice.view` | Full invoice: lines (with `kind` and service period), `deferred_income` (`pending`, `released`), allocations, GL, reminders | - | detail |
 | `POST /invoices/<pk>/pay/` | `finance.payment.create` | Receipt settling **this** invoice | `amount`, `payment_date`, `deposit_account`, `method?`, … | `201` `InvoiceSerializer` |
 | `POST /invoices/<pk>/remind/` | `finance.dunning.send` | Raise a dunning reminder → `finance_dunning` | `message?` | `DunningNoticeSerializer` |
 | `GET /payments/` | `finance.payment.view` | Posted receipts + allocation state (**paginated**). Query: `status` (ALLOCATED/PARTIAL/UNALLOCATED, filtered in-DB), `method`, `customer`, `search` | - | paginated `PaymentSerializer` |
 | `GET /payments/<pk>/` | `finance.payment.view` | Receipt + allocations + open-invoice **and open-debit-note** candidates + GL | - | detail |
 | `POST /payments/<pk>/allocate/` | `finance.payment.allocate` | Apply stored customer credit to open AR items | `allocations:[{invoice\|debit_note, amount}]` **or** `auto_allocate:true` (+ `allocation_strategy?`) | `PaymentSerializer` |
 | `GET/POST /fee-structures/…` | `finance.feestructure.view`/`.create` | Billing catalogue CRUD | - | `FeeStructureSerializer` |
-| `POST /fee-structures/<pk>/generate/` | `finance.feestructure.generate` | One **posted** invoice per customer; skips a customer already billed from the structure, and an inactive one (`all_active` never selects them) | `customers:[…]` or `all_active:true`, `invoice_date?`, `due_date?` | `201` invoices |
+| `POST /fee-structures/<pk>/generate/` | `finance.feestructure.generate` | One **posted** invoice per customer; skips a customer already billed from the structure, and an inactive one (`all_active` never selects them). A service period is stamped on every charge line | `customers:[…]` or `all_active:true`, `invoice_date?`, `due_date?`, `service_start?` + `service_end?` | `201` invoices |
+| `GET /deferred-income/` | `finance.deferredincome.view` | Deferred income waiting, released, and due per month, in the caller's branches | - | `{pending, released, by_month}` |
+| `POST /deferred-income/release/` | `finance.deferredincome.run` | Release every share due by `up_to` (default today, never later); idempotent. Whole-tenant callers only (403 `SHARED_RECORD_READ_ONLY` otherwise) | `up_to?` | releases |
+| `POST /deferred-income/reverse/` | `finance.deferredincome.reverse` | Reverse the releases dated in an **open** period. Whole-tenant only | `period` (id) | `{reversed}` |
+| `GET /deposits/` | `finance.deposit.view` | Refundable deposits in the caller's branches (**paginated**). Query: `customer`, `status` | - | paginated `CustomerDepositSerializer` |
+| `POST /deposits/release/` | `finance.deposit.settle` | Release a customer's held deposits as credit, or with `offset` against their unpaid bills (policy permitting). The caller must reach every branch holding one | `customer`, `offset?` | credit notes |
+| `POST /deposits/forfeit/` | `finance.deposit.run` | Take deposits unclaimed past the policy's limit to income. Whole-tenant only | `as_of?` | forfeitures + skipped |
+| `GET/PATCH /settings/receivables/` | `finance.settings.view`/`.update` | The receivables policy; writes whole-tenant only | any of `revenue_recognition`, `provision_bands`, `deposits_offset_unpaid_bills`, `unclaimed_deposit_years` | settings, consumers, history |
 | `GET/POST/DELETE /fee-structures/<pk>/items/<item>/assignments/` | `finance.feestructure.view`/`.edit` | Who takes one optional item; a required item takes no assignments (400) | `customers:[…]` | assigned customers |
 
 > **Field note:** invoice/receipt creation reads `unit_price`×`quantity` and
@@ -114,7 +137,20 @@ bill as it posts.
 audited). A deactivated customer is billed by no fee run and no `all_active`
 selection; their documents, balance and debtor-list entry stay as they are. The
 owner layer deactivates a child's account when the child leaves the roll and
-reactivates it on readmission.
+reactivates it on readmission. Deactivating opens the claim on the customer's
+held deposits (`claim_opened_on`, the start of the unclaimed-deposit clock) and,
+where the policy sets deposits against unpaid bills and the customer leaves
+owing, releases them against those bills at once (§6). Reactivating stops the
+clock.
+
+**Deferred income share:** `PENDING` → `RELEASED` (by a release run or the period
+close) → back to `PENDING` if that month's releases are reversed while it is open.
+`PENDING` → `CANCELLED` when an adjustment takes all of it back or the invoice is
+voided.
+
+**Deposit:** `HELD` → `RELEASED` (returned as credit or set against bills) /
+`FORFEITED` (unclaimed past the limit) / `CANCELLED` (its invoice voided). Voiding
+the release credit note puts it back to `HELD`.
 
 ## 5. Calculations
 
@@ -139,13 +175,53 @@ Derived reads: `balance_due = total − amount_paid − amount_credited`;
 
 ## 6. What posting does to the ledger
 
-**Invoice posting** - `_post_invoice_atomic` (`receivables.py:95`), atomic, only a
+**Invoice posting** - `_post_invoice_atomic` (`receivables.py`), atomic, only a
 `DRAFT` with a positive total and a customer that has an AR control:
 ```
 Dr  receivable (AR control)        invoice.total          ← gross, unallocated
 Cr  revenue (per account+cost_centre)  Σ net              ← P&L, carries cost centre
+Cr  deferred income (2160)         Σ net of lines billed before their service period
+Cr  deposits held (2170)           Σ net of DEPOSIT lines
 Cr  output tax (per tax account)       Σ tax
 ```
+A `CHARGE` line whose `service_start` is after the invoice date is **deferred**: its
+net goes to the deferred-income mapping and `schedule_line`
+(`deferred_income.py`) writes its monthly shares under the entity's
+`revenue_recognition`: `SPREAD_MONTHLY` (the default) gives each calendar month the
+service period touches an equal whole-kobo share, the remainder in the last month,
+the first recognised on the service start and each later one on the first of its
+month; `AT_PERIOD_START` recognises all of it on the service start. There is no "on
+billing" option: a line with no service period, or one whose period has already
+begun, is revenue on the invoice date. Output tax is due on the invoice and is
+never deferred. A `DEPOSIT` line credits the deposits-held mapping whatever its
+`revenue_account` says, carries no tax (refused if it would) and no service period,
+and opens a `CustomerDeposit`.
+
+**Releasing deferred income** - `release_deferred_income` moves every share
+recognised on or before a date to revenue, one journal per branch per month, dated
+at that month's end (or the run's date in the current month; a share whose month
+is closed is released in the run's month):
+```
+Dr  deferred income (2160)         Σ open shares
+Cr  revenue (per account+cost_centre)  per share
+```
+It runs on demand (`deferred-income/release/`) and as a step of period close, and a
+month cannot close while a share recognised in it is unreleased (the
+`deferred_income_released` close check). It is idempotent. The releases dated in a
+period are reversed with `reverse_deferred_release` while that period is open;
+their shares wait to be released again. Greenfield bills Second Term (6 January to
+4 April 2027) on 10 December 2026 at N150,000: December holds a N150,000 liability
+and no income, and January to April each release N37,500.
+
+**Deposits** - `release_deposits` (`deposits.py`) raises one CREDIT note per branch
+against the deposits-held account (`Dr 2170`). It settles the part of each deposit
+its own bill never collected first (a deposit never paid is cancelled, not
+refunded), then, with `offset`, the customer's other unpaid bills of that branch,
+oldest first; the rest is customer credit (`2140`) that the refund route pays out.
+`offset` needs the policy's `deposits_offset_unpaid_bills` (off by default).
+`forfeit_unclaimed_deposits` takes deposits still held `unclaimed_deposit_years`
+(default 6) after their customer left to income, `Dr 2170 / Cr 4820`, one journal
+per branch; a deposit whose own bill still owes money is skipped and listed.
 Then `post_journal` (all the `finance_journals_posting` guards apply), link
 `invoice.journal`, stamp `POSTED`, `refresh_payment_status`, audit. A
 `FinanceError` writes a **durable rejection** row and re-raises (`receivables.py:78`).
@@ -242,6 +318,19 @@ the receipt shows `allocation_status:"PARTIAL"` (`unallocated_amount` 12500).
 
 ## 8. Gotchas / known limitations
 
+- **A service period decides when income is earned, not the invoice date.** The
+  owner layer stamps a term's (or a whole-year fee's session's) dates on every fee
+  line it bills, so a term billed before it starts is deferred. A manual invoice or
+  a fee run from the finance screen is deferred only when it is given a service
+  period.
+- **The recognition method applies to lines posted after it changes.** A line
+  already scheduled keeps its schedule.
+- **A deferred invoice is owed in full from its invoice date.** Deferral changes
+  where the credit goes, not the receivable: ageing, dunning and collections read it
+  as before.
+- **Deposits are held, not earned.** A deposit item's account is always the
+  deposits-held liability; a revenue account cannot be picked for it.
+
 - **Credit pays new bills by default.** An entity that holds money on account on
   purpose turns `auto_apply_customer_credit` off in its document settings; credit
   then waits for a manual allocation, and dunning still does not chase what it
@@ -295,7 +384,11 @@ supports `oldest`|`largest`; receipts settle DEBIT notes (2026-07-05)._
 |---|---|
 | `models/ar.py` | `Customer`, `Invoice`, `InvoiceLine`, `Payment`, `PaymentAllocation`, `FeeStructure`/`FeeItem` |
 | `receivables.py` | pricing (`compute_line_net`/`compute_tax`/`price_invoice`), `post_invoice`, `apply_customer_credit`, `post_payment`, `allocate_payment`, the settlement guards |
-| `fees.py` | `generate_invoices` (fee structure → posted invoices), billing keys |
+| `fees.py` | `generate_invoices` (fee structure → posted invoices, service period on charge lines), billing keys |
+| `deferred_income.py` | schedules, release and its reversal, unwinding by adjustments and voids, the close check |
+| `deposits.py` | deposits opened at posting, release, the leaver path, forfeiture |
+| `receivables_policy.py` | the receivables policy: read, validate, update |
+| `views_accruals.py` | deferred income, deposits, provisions, write-off recovery and the policy screen |
 | `customers.py` | customer edits (fixed fields, audit), deactivation |
 | `opening_balances.py` | `books_went_live`, opening customer invoices and their import |
 | `collected.py` | the one definition of billed and collected, shared with the owner layer |
@@ -314,6 +407,16 @@ Added with the §8 fixes (in `FinanceAPITests`): opening-balance posts the
 `Dr 1200 / Cr 4100` opening invoice and surfaces in the paginated customer list;
 largest-first receipt clears the bigger invoice first; an unknown
 `allocation_strategy` → 400.
+
+`tests_accruals.py` covers deferred income (posting, the spread and its remainder,
+start-of-period recognition, release per branch per month and its idempotency, the
+close step and check, reversal with the open month, unwinding by credit notes,
+concessions, write-offs and voids), deposits (held, returned, cancelled when never
+paid, offset against bills with the policy, a bill carrying the deposit settled
+once, forfeited after the limit, voids), the payer and beneficiary, and the
+whole-tenant gates on the runs and the policy, at a two-branch and a one-branch
+school. `schools.core.fal.tests.test_service_period` covers the owner layer
+stamping a term's or a session's dates.
 
 `tests_ar_guards.py` covers the receivables guards: settlement targets and
 constraints, credit transfers, credit applied to new bills, dunning cover, credit

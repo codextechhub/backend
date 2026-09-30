@@ -7,6 +7,21 @@ endpoint expects ``?entity=<id or code>`` - except the **global** currency/FX ro
 """
 from django.urls import path
 
+from .views_accruals import (
+    CustomerDepositForfeitView,
+    CustomerDepositListView,
+    CustomerDepositReleaseView,
+    DeferredIncomeReleaseView,
+    DeferredIncomeReverseView,
+    DeferredIncomeView,
+    DoubtfulDebtProvisionDetailView,
+    DoubtfulDebtProvisionListCreateView,
+    DoubtfulDebtProvisionPostView,
+    DoubtfulDebtProvisionSubmitView,
+    FinanceReceivablesSettingsView,
+    WriteOffRecoverView,
+)
+
 from .views import (
     AccountActivityView,
     AccountDetailView,
@@ -234,6 +249,8 @@ urlpatterns = [
          name="finance-banking-settings"),
     path("settings/calendar/", FinanceCalendarSettingsView.as_view(),
          name="finance-calendar-settings"),
+    path("settings/receivables/", FinanceReceivablesSettingsView.as_view(),
+         name="finance-receivables-settings"),
     path("accounts/", AccountListCreateView.as_view(), name="finance-account-list"),
     path("accounts/<int:pk>/activity/", AccountActivityView.as_view(), name="finance-account-activity"),
     path("accounts/<int:pk>/", AccountDetailView.as_view(), name="finance-account-detail"),
@@ -300,6 +317,27 @@ urlpatterns = [
     path("write-offs/<int:pk>/", WriteOffRequestDetailView.as_view(), name="finance-writeoff-detail"),
     path("write-offs/<int:pk>/submit/", WriteOffRequestSubmitView.as_view(), name="finance-writeoff-submit"),
     path("write-offs/<int:pk>/post/", WriteOffRequestPostView.as_view(), name="finance-writeoff-post"),
+    path("write-offs/<int:pk>/recover/", WriteOffRecoverView.as_view(),
+         name="finance-writeoff-recover"),
+    # Receivables accruals - deferred income, doubtful-debt provision, deposits
+    path("deferred-income/", DeferredIncomeView.as_view(), name="finance-deferred-income"),
+    path("deferred-income/release/", DeferredIncomeReleaseView.as_view(),
+         name="finance-deferred-income-release"),
+    path("deferred-income/reverse/", DeferredIncomeReverseView.as_view(),
+         name="finance-deferred-income-reverse"),
+    path("provisions/", DoubtfulDebtProvisionListCreateView.as_view(),
+         name="finance-provision-list"),
+    path("provisions/<int:pk>/", DoubtfulDebtProvisionDetailView.as_view(),
+         name="finance-provision-detail"),
+    path("provisions/<int:pk>/submit/", DoubtfulDebtProvisionSubmitView.as_view(),
+         name="finance-provision-submit"),
+    path("provisions/<int:pk>/post/", DoubtfulDebtProvisionPostView.as_view(),
+         name="finance-provision-post"),
+    path("deposits/", CustomerDepositListView.as_view(), name="finance-deposit-list"),
+    path("deposits/release/", CustomerDepositReleaseView.as_view(),
+         name="finance-deposit-release"),
+    path("deposits/forfeit/", CustomerDepositForfeitView.as_view(),
+         name="finance-deposit-forfeit"),
     path("invoices/<int:pk>/write-off/", InvoiceWriteOffView.as_view(), name="finance-invoice-writeoff"),
     path("ar-adjustments/batch/", ARAdjustmentBatchView.as_view(), name="finance-ar-adjustment-batch"),
     path("ar-adjustments/", ARAdjustmentListView.as_view(), name="finance-ar-adjustments"),
