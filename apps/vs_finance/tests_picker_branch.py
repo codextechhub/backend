@@ -51,3 +51,22 @@ class CustomerRowsCarryTheirBranchTests(_PickerFixture):
         data = hq.get(f"/v1/finance/customers/COKAF/?entity={self.books.code}").json()["data"]
 
         self.assertEqual(data["customer"]["branch_id"], self.ikeja.pk)
+
+
+class LedgerAccountsNameTheirBanksBranchTests(_PickerFixture):
+    """A deposit picker narrows ledger accounts to the document's branch's banks."""
+
+    def test_each_ledger_account_names_the_branch_of_the_bank_behind_it(self):
+        cash_type = Account.objects.get(entity=self.books, code="1000").account_type
+        ikeja_gl = Account.objects.create(entity=self.books, code="11811", name="Ikeja Collections",
+                                          account_type=cash_type, is_postable=True)
+        bank = BankAccount.objects.create(entity=self.books, name="Ikeja Collections",
+                                          branch=self.ikeja, gl_account=ikeja_gl)
+        hq = self.client_for("pick-gl@corona.test", "finance.customer.view")
+
+        rows = {row["code"]: row for row in self.rows(hq, "accounts/?with_tags=true")}
+
+        self.assertEqual(rows["11811"]["bank_account_id"], bank.pk)
+        self.assertEqual(rows["11811"]["bank_branch_id"], self.ikeja.pk)
+        self.assertIsNone(rows["4100"]["bank_account_id"])
+        self.assertIsNone(rows["4100"]["bank_branch_id"])

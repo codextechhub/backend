@@ -368,7 +368,8 @@ class AccountListCreateView(WholeTenantWriteMixin, EntityScopedListMixin, generi
         )
 
     def entity_qs(self, entity):
-        qs = Account.objects.filter(entity=entity).select_related("parent").order_by("code")
+        qs = Account.objects.filter(entity=entity).select_related(
+            "parent", "bank_account").order_by("code")
         params = self.request.query_params
         if self._with_balance() and not _reader_scope(self.request).is_narrowed:
             from django.db.models import F, Sum

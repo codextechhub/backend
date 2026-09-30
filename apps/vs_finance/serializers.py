@@ -179,7 +179,19 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
 
 
 class AccountSerializer(serializers.ModelSerializer):
+    """A chart-of-accounts row.
+
+    ``bank_account_id`` and ``bank_branch_id`` name the bank account behind a
+    ledger account and that account's branch, empty for an account no bank
+    account backs. A document is deposited into, or paid from, its own branch's
+    bank only, so a deposit picker offering ledger accounts narrows by
+    ``bank_branch_id`` to the document's branch instead of offering Lekki's
+    collection ledger on an Ikeja receipt and meeting the refusal on save.
+    """
+
     parent_code = serializers.CharField(source="parent.code", read_only=True, default=None)
+    bank_account_id = serializers.SerializerMethodField()
+    bank_branch_id = serializers.SerializerMethodField()
     # Net GL balance signed to the account's normal balance - populated from the
     # ``_bal_dr``/``_bal_cr`` annotations the chart-of-accounts view adds.
     balance = serializers.SerializerMethodField()
@@ -191,8 +203,23 @@ class AccountSerializer(serializers.ModelSerializer):
         fields = [
             "id", "code", "name", "account_type", "normal_balance",
             "is_contra", "is_postable", "is_active", "parent_id", "parent_code",
-            "subtype", "balance", "tag",
+            "subtype", "balance", "tag", "bank_account_id", "bank_branch_id",
         ]
+
+    @staticmethod
+    def _bank(obj):
+        from django.core.exceptions import ObjectDoesNotExist
+
+        try:
+            return obj.bank_account
+        except ObjectDoesNotExist:
+            return None
+
+    def get_bank_account_id(self, obj):
+        return getattr(self._bank(obj), "pk", None)
+
+    def get_bank_branch_id(self, obj):
+        return getattr(self._bank(obj), "branch_id", None)
 
     def get_balance(self, obj):
         from .constants import NormalBalance
