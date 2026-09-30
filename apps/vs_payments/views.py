@@ -150,10 +150,14 @@ def _collection_deposit(request, entity, ref, *, customer, invoice=None, noun):
     several, and no invoice), the account decides it: Mr Bello's top-up for the
     Adeyemi family, deposited into Lekki's collection account, is Lekki's money.
     Such a collection must therefore name an account that is a branch's, or its
-    receipt would be booked to no branch at all.
+    receipt would be booked to no branch at all. Books with no branch (the
+    platform's) have none to name and are not asked.
     """
+    from vs_tenants.models import Branch
+
     branch_id = services.collection_branch_id(customer=customer, invoice=invoice)
-    if branch_id is not None or customer is None:
+    has_branches = Branch.all_objects.filter(tenant_id=entity.tenant_id).exists()
+    if branch_id is not None or customer is None or not has_branches:
         return _resolve_account(
             request, entity, ref, "deposit_account",
             document_branch=branch_id, noun=noun, verb="Deposit it into")
