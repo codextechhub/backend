@@ -1610,7 +1610,17 @@ class _UserPermissionOverrideBase(TenantScopedRBACMixin):
     history_noun = "this person's permission exceptions"
 
     def list(self, request, *args, **kwargs):
-        """The live list, or with ``?as_at=`` the list as it stood that day."""
+        """The live list, or with ``?as_at=`` the list as it stood that day.
+
+        Either way the envelope carries ``can_change_exceptions`` beside
+        ``data``: whether the reader's branch reach lets them add or lift an
+        exception on this person (:func:`_can_change_exceptions`).
+        """
+        response = self._list(request, *args, **kwargs)
+        response.data["can_change_exceptions"] = self._can_change_exceptions()
+        return response
+
+    def _list(self, request, *args, **kwargs):
         from vs_history.as_at import parse_as_at
 
         as_at = parse_as_at(request)
@@ -1628,6 +1638,18 @@ class _UserPermissionOverrideBase(TenantScopedRBACMixin):
         response.data["as_at"] = as_at.date.isoformat()
         response.data["history_starts"] = starts.isoformat()
         return response
+
+    def _can_change_exceptions(self) -> bool:
+        """Whether the reader's reach covers this person, by the rule a write enforces.
+
+        :func:`vs_rbac.grant_reach.caller_may_change_person`, the check
+        :meth:`_reject_outside_reach` makes. The permission key and the
+        self-ban are separate: a screen already knows both.
+        """
+        from .grant_reach import caller_may_change_person
+
+        target = getattr(self, "_target", None) or self.get_target_user()
+        return caller_may_change_person(self.request.user, self.tenant, target)
 
     def _rows_at(self, as_at):
         """The target's exceptions in this tenant as they stood, newest first.
@@ -1674,7 +1696,16 @@ class _UserPermissionOverrideBase(TenantScopedRBACMixin):
         return getattr(self.request, "actor_user", None) or self.request.user
 
     def get_target_user(self):
+        """The person in the URL, or 404 when the caller may not see them.
+
+        Somebody in another tenant, and somebody a branch-bound caller cannot
+        see (posted only to branches outside theirs,
+        :func:`vs_rbac.grant_reach.caller_may_read_person`), both read as
+        nobody, on every verb.
+        """
         from django.contrib.auth import get_user_model
+
+        from .grant_reach import caller_may_read_person
 
         user = (
             get_user_model().objects
@@ -1682,9 +1713,7 @@ class _UserPermissionOverrideBase(TenantScopedRBACMixin):
             .filter(pk=self.kwargs.get("user_id"), tenant=self.tenant)
             .first()
         )
-        if user is None:
-            # Non-enumerating: a user in another tenant is indistinguishable
-            # from a user that does not exist.
+        if user is None or not caller_may_read_person(self.request.user, self.tenant, user):
             raise NotFound("No user matches the requested context.")
         return user
 
@@ -1942,11 +1971,19 @@ def _field_order(field):
     )
 
 
-def _role_block(role) -> dict:
+def _role_block(role, request, tenant) -> dict:
+    """The role a Field Access response is about, with the reader's ``can_edit``.
+
+    ``can_edit`` is the reach rule a PATCH enforces
+    (:func:`vs_rbac.grant_reach.caller_may_define`), not the permission key.
+    """
+    from .grant_reach import caller_may_define
+
     return {
         "key": role.key,
         "name": role.name,
         "branch_name": role.branch.name if role.branch_id else None,
+        "can_edit": caller_may_define(request.user, tenant, role),
     }
 
 
@@ -2112,7 +2149,7 @@ class RoleFieldAccessView(TenantScopedRBACMixin, APIView):
 
         return success_response(
             message="Data retrieved successfully",
-            data={"role": _role_block(role), "fields": entries},
+            data={"role": _role_block(role, request, self.tenant), "fields": entries},
         )
 
     def patch(self, request, *args, **kwargs):
@@ -2241,7 +2278,7 @@ class RoleFieldAccessView(TenantScopedRBACMixin, APIView):
         ]
         return success_response(
             message="Field access updated.",
-            data={"role": _role_block(locked), "fields": entries},
+            data={"role": _role_block(locked, request, self.tenant), "fields": entries},
         )
 
     def _audit(self, *, action_type, switch, role, field, entity_id, before, after,

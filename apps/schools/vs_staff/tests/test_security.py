@@ -356,6 +356,43 @@ class PermissionOverrideVisibilityTests(StaffFixture):
     def test_a_school_admin_holding_the_key_sees_the_block(self):
         response = self.get(self.admin, "staff-roles", pk=self.eze.pk)
         self.assertEqual(response.data["data"]["overrides"], [])
+        self.assertTrue(response.data["data"]["can_change_exceptions"])
+
+    def test_the_block_says_whether_the_reader_may_change_it(self):
+        """Eze is posted at Lekki with Lekki's Teacher grant, so Lekki's head
+        may change his exceptions. The registrar is school-wide: readable, not
+        changeable."""
+        response = self.get(self.lekki_head, "staff-roles", pk=self.eze.pk)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(response.data["data"]["can_change_exceptions"])
+        response = self.get(self.lekki_head, "staff-roles", pk=self.registrar.pk)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["overrides"], [])
+        self.assertFalse(response.data["data"]["can_change_exceptions"])
+
+    def test_another_branchs_persons_block_is_absent_even_when_the_profile_opens(self):
+        """The school's profile policy may open Sule's profile to Lekki; his
+        exceptions stay Ikeja's, and absent reads the same as no key.
+
+        The profile gate is stood in for here, admitting the read the way a
+        policy grant would, because what is under test is the block, not the
+        policy grid (``test_profile_visibility``).
+        """
+        from unittest import mock
+
+        from ..models import StaffProfile
+        from ..views.roles import StaffRolesView
+
+        def admitted(view, pk):
+            return StaffProfile.all_objects.get(pk=pk), None, None
+
+        with mock.patch.object(StaffRolesView, "admit_profile_read", admitted), \
+                mock.patch.object(StaffRolesView, "refuse_as_at_unless_full", lambda *args: None):
+            response = self.get(self.lekki_head, "staff-roles", pk=self.ikeja_teacher.pk)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIn("roles", response.data["data"])
+        self.assertNotIn("overrides", response.data["data"])
+        self.assertNotIn("can_change_exceptions", response.data["data"])
 
 
 class NobodyEndsTheirOwnEmploymentTests(StaffFixture):

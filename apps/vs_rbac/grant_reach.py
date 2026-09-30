@@ -51,13 +51,20 @@ DENY written there removes her access at Lekki too.
 
 Those three refuse with 403 ``SHARED_RECORD_READ_ONLY``
 (:class:`vs_rbac.exceptions.SharedRecordReadOnly`) before anything is written.
-Like the grant check, each applies only to a caller inside the tenant.
+Each has a ``caller_may_*`` twin answering the same question as a boolean, which
+the read endpoints hand to screens (``can_edit`` on a role,
+``can_change_exceptions`` on a person) so a control is drawn read-only by the
+rule that would refuse it. :func:`caller_may_read_person` is the wider
+question of whether a person's exceptions may be read at all. Like the grant
+check, each applies only to a caller inside the tenant.
 """
 from __future__ import annotations
 
 from rest_framework.exceptions import ValidationError
 
-from .scoping import WHOLE_TENANT, assert_caller_may_change, visible_branch_ids
+from .scoping import (
+    WHOLE_TENANT, assert_caller_may_change, caller_may_change, visible_branch_ids,
+)
 
 REACH_OUTSIDE = (
     "You can only grant roles that reach your own branches. A school-wide "
@@ -127,17 +134,30 @@ def _inside_tenant(caller, tenant) -> bool:
     return getattr(caller, "tenant_id", None) == getattr(tenant, "pk", None)
 
 
+def caller_may_define(caller, tenant, role) -> bool:
+    """Whether *caller*'s branches cover every branch *role* reaches.
+
+    The answer :func:`assert_caller_may_define` enforces, for a screen to draw
+    the role read-only before the server has to refuse it. The permission key
+    is a separate question.
+    """
+    if not _inside_tenant(caller, tenant):
+        return True
+    return caller_may_change(caller, tenant, role.branch_ids)
+
+
 def assert_caller_may_define(caller, tenant, role, *, verb: str = "do") -> None:
     """Refuse a change to what *role* means unless the caller covers its branches (403).
 
     ``verb`` completes the refusal: "do" for permissions, status, name and
     deletion, "see" for field access.
     """
-    if not _inside_tenant(caller, tenant):
+    from .exceptions import SharedRecordReadOnly
+
+    if caller_may_define(caller, tenant, role):
         return
-    ids = role.branch_ids
-    template = ROLE_OTHER_BRANCHES if ids else ROLE_SHARED
-    assert_caller_may_change(caller, tenant, ids, message=template.format(verb=verb))
+    template = ROLE_OTHER_BRANCHES if role.branch_ids else ROLE_SHARED
+    raise SharedRecordReadOnly(template.format(verb=verb))
 
 
 def assert_caller_may_reach(caller, tenant, branch_ids) -> None:
@@ -154,17 +174,43 @@ def assert_caller_may_reach(caller, tenant, branch_ids) -> None:
     )
 
 
-def assert_caller_may_change_person(caller, tenant, holder, *,
-                                    message: str = EXCEPTION_SHARED) -> None:
-    """Refuse a change that follows *holder* past the caller's branches (403).
+def caller_may_change_person(caller, tenant, holder) -> bool:
+    """Whether a change that follows *holder* stays inside *caller*'s branches.
 
     The person's branch set is their postings together with the branches
     their roles reach; a school-wide posting or a whole-school reach makes it
     the whole school.
     """
     if not _inside_tenant(caller, tenant):
-        return
+        return True
     postings = holder_posting_ids(holder)
     reach = visible_branch_ids(holder, tenant)
     ids = set() if not postings or reach is WHOLE_TENANT else postings | set(reach)
-    assert_caller_may_change(caller, tenant, ids, message=message)
+    return caller_may_change(caller, tenant, ids)
+
+
+def assert_caller_may_change_person(caller, tenant, holder, *,
+                                    message: str = EXCEPTION_SHARED) -> None:
+    """Refuse a change that follows *holder* past the caller's branches (403)."""
+    from .exceptions import SharedRecordReadOnly
+
+    if not caller_may_change_person(caller, tenant, holder):
+        raise SharedRecordReadOnly(message)
+
+
+def caller_may_read_person(caller, tenant, holder) -> bool:
+    """Whether *caller* may see *holder*'s access details at all.
+
+    The staff directory's reading: a branch-bound caller sees the people
+    posted to one of their branches and the people posted school-wide, and
+    nobody posted only elsewhere. Seeing is wider than changing
+    (:func:`caller_may_change_person`): the bursar posted at Lekki who holds
+    a school-wide role is Lekki's to read and not Lekki's to change.
+    """
+    if not _inside_tenant(caller, tenant):
+        return True
+    visible = visible_branch_ids(caller, tenant)
+    if visible is WHOLE_TENANT:
+        return True
+    postings = holder_posting_ids(holder)
+    return not postings or bool(postings & visible)

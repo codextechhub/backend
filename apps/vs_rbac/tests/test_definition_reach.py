@@ -16,7 +16,7 @@ a 403 ``SHARED_RECORD_READ_ONLY`` with nothing written.
 Harbour Primary has one branch, and its administrator's grant pinned to that
 branch reaches the whole school, so nothing here narrows her.
 """
-import itertools
+from datetime import date
 
 from django.test import TestCase
 from django.urls import reverse
@@ -65,7 +65,6 @@ ADMIN_KEYS = [
     "school.user_overrides.delete",
 ]
 TARGET_KEY = "school.students.update"
-_emails = itertools.count(1)
 
 
 def _client(user):
@@ -254,6 +253,36 @@ class RoleDefinitionReachTests(_BrightStar):
         ).exists())
 
 
+class RoleCanEditTests(_BrightStar):
+    """``can_edit`` on the role list, detail and Field Access responses."""
+
+    def _listed(self, caller):
+        response = _client(caller).get(self._url("rbac-role-list-create") + "&page_size=100")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        return {row["key"]: row["can_edit"] for row in response.json()["data"]}
+
+    def test_the_list_marks_what_a_branch_admin_may_change(self):
+        flags = self._listed(self.bello)
+        self.assertFalse(flags["teacher"])
+        self.assertFalse(flags["ikeja-clerk"])
+        self.assertTrue(flags["lekki-clerk"])
+
+    def test_the_whole_school_admin_may_change_every_role(self):
+        self.assertTrue(all(self._listed(self.okafor).values()))
+
+    def test_the_detail_and_field_access_agree_with_the_list(self):
+        for key, expected in (("teacher", False), ("lekki-clerk", True)):
+            with self.subTest(role=key):
+                detail = _client(self.bello).get(self._url("rbac-role-detail", key=key))
+                self.assertEqual(detail.status_code, status.HTTP_200_OK, detail.content)
+                self.assertIs(detail.json()["data"]["can_edit"], expected)
+                fields = _client(self.bello).get(
+                    self._url("rbac-role-field-access", key=key),
+                )
+                self.assertEqual(fields.status_code, status.HTTP_200_OK, fields.content)
+                self.assertIs(fields.json()["data"]["role"]["can_edit"], expected)
+
+
 class RoleFieldAccessReachTests(_BrightStar):
 
     @classmethod
@@ -297,7 +326,12 @@ class RoleFieldAccessReachTests(_BrightStar):
 
 class ExceptionReachTests(_BrightStar):
     """Tunde is Lekki's own; Nwankwo is the school-wide registrar; Sule is
-    Ikeja's; Ada is posted at Lekki but holds a school-wide Bursar role."""
+    Ikeja's; Ada is posted at Lekki but holds a school-wide Bursar role.
+
+    Mrs Bello may read Tunde's, Nwankwo's and Ada's exceptions and change only
+    Tunde's. Sule is posted only outside her branch, so to her he is nobody:
+    404 on every verb, as the staff directory answers for him.
+    """
 
     @classmethod
     def setUpTestData(cls):
@@ -337,12 +371,62 @@ class ExceptionReachTests(_BrightStar):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
 
     def test_a_branch_admin_is_refused_everybody_whose_access_reaches_further(self):
-        for person in (self.nwankwo, self.sule, self.ada):
+        for person in (self.nwankwo, self.ada):
             with self.subTest(person=person.email):
                 _refused(self, self._field_exception(self.bello, person), EXCEPTION_SHARED)
                 _refused(self, self._permission_exception(self.bello, person), EXCEPTION_SHARED)
                 self.assertFalse(UserFieldAccessOverride.objects.filter(user=person).exists())
                 self.assertFalse(UserPermissionOverride.objects.filter(user=person).exists())
+
+    def test_another_branchs_person_is_nobody_to_a_branch_admin(self):
+        """Sule is posted only at Ikeja, so Lekki cannot even see his exceptions."""
+        row = UserFieldAccessOverride.objects.create(
+            tenant=self.tenant, user=self.sule, field=self.bank, access="READ",
+            mode="DENY", reason="Set by Okafor.", created_by=self.okafor,
+        )
+        client = _client(self.bello)
+        for name in (
+            "rbac-user-field-access-override-list-create",
+            "rbac-user-permission-override-list-create",
+        ):
+            with self.subTest(read=name):
+                response = client.get(self._url(name, user_id=self.sule.pk))
+                self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        response = self._field_exception(self.bello, self.sule)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        response = client.delete(self._url(
+            "rbac-user-field-access-override-detail", user_id=self.sule.pk, id=row.pk,
+        ))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(UserFieldAccessOverride.objects.filter(pk=row.pk).exists())
+        self.assertFalse(UserPermissionOverride.objects.filter(user=self.sule).exists())
+
+    def _flag(self, caller, person, name="rbac-user-field-access-override-list-create"):
+        response = _client(caller).get(self._url(name, user_id=person.pk))
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        return response.json()["can_change_exceptions"]
+
+    def test_the_list_says_whether_the_reader_may_change_this_persons_exceptions(self):
+        for name in (
+            "rbac-user-field-access-override-list-create",
+            "rbac-user-permission-override-list-create",
+        ):
+            with self.subTest(read=name):
+                self.assertTrue(self._flag(self.bello, self.tunde, name))
+                # Readable, because they are posted at Lekki or school-wide,
+                # and not changeable, because their access reaches Ikeja.
+                self.assertFalse(self._flag(self.bello, self.ada, name))
+                self.assertFalse(self._flag(self.bello, self.nwankwo, name))
+                self.assertTrue(self._flag(self.okafor, self.sule, name))
+                self.assertTrue(self._flag(self.okafor, self.ada, name))
+
+    def test_the_flag_rides_the_as_at_list_too(self):
+        response = _client(self.bello).get(
+            self._url("rbac-user-field-access-override-list-create", user_id=self.tunde.pk)
+            + "&as_at=" + date.today().isoformat(),
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        self.assertTrue(response.json()["can_change_exceptions"])
 
     def test_the_whole_school_admin_may_set_exceptions_on_anybody(self):
         for person in (self.nwankwo, self.sule, self.ada):
@@ -416,6 +500,14 @@ class OneBranchSchoolTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+
+    def test_she_sees_every_role_and_person_as_hers_to_change(self):
+        response = _client(self.tolu).get(self._url("rbac-role-list-create"))
+        self.assertTrue(all(row["can_edit"] for row in response.json()["data"]))
+        response = _client(self.tolu).get(
+            self._url("rbac-user-permission-override-list-create", user_id=self.kemi.pk),
+        )
+        self.assertTrue(response.json()["can_change_exceptions"])
 
     def test_she_may_set_an_exception_on_a_school_wide_person(self):
         response = _client(self.tolu).post(

@@ -234,13 +234,35 @@ class TenantRoleGroupAttachmentSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class TenantRoleTemplateListSerializer(serializers.ModelSerializer):
+class _RoleCanEditMixin:
+    """``can_edit``: whether the reader's branch reach lets them change this role.
+
+    The rule every role write enforces (:func:`vs_rbac.grant_reach.caller_may_define`):
+    a school-wide role is a whole-school reader's to change, a branch role a
+    reader's who covers its branches. It says nothing about permission keys,
+    which a screen already checks, so a reader holding no update key may still
+    see ``true``.
+    """
+
+    def get_can_edit(self, obj) -> bool:
+        from ..grant_reach import caller_may_define
+
+        request = self.context.get("request")
+        caller = getattr(request, "user", None)
+        if caller is None or not getattr(caller, "is_authenticated", False):
+            return False
+        tenant = self.context.get("tenant") or obj.tenant
+        return caller_may_define(caller, tenant, obj)
+
+
+class TenantRoleTemplateListSerializer(_RoleCanEditMixin, serializers.ModelSerializer):
     """Lightweight serializer for role list screens."""
 
     tenant = serializers.SlugRelatedField(slug_field="slug", read_only=True)
     assigned_users_count = serializers.IntegerField(read_only=True)
     permissions_count = serializers.IntegerField(read_only=True)
     branch_ids = serializers.ListField(child=serializers.IntegerField(), read_only=True)
+    can_edit = serializers.SerializerMethodField()
 
     class Meta:
         model = TenantRoleTemplate
@@ -257,6 +279,7 @@ class TenantRoleTemplateListSerializer(serializers.ModelSerializer):
             "version",
             "assigned_users_count",
             "permissions_count",
+            "can_edit",
             "created_by",
             "created_at",
             "updated_at",
@@ -265,6 +288,7 @@ class TenantRoleTemplateListSerializer(serializers.ModelSerializer):
 
 
 class TenantRoleTemplateDetailSerializer(
+    _RoleCanEditMixin,
     TenantScopedSerializerMixin,
     PermissionKeyListValidationMixin,
     serializers.ModelSerializer,
@@ -306,6 +330,7 @@ class TenantRoleTemplateDetailSerializer(
     assigned_users_count = serializers.SerializerMethodField()
     permissions_count = serializers.SerializerMethodField()
     has_assignment_history = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
 
     #: Whether the reader holds this role themselves, so a screen that changes
     #: it knows to refresh the reader's own access afterwards. Computed here
@@ -362,6 +387,7 @@ class TenantRoleTemplateDetailSerializer(
             "assigned_users_count",
             "permissions_count",
             "has_assignment_history",
+            "can_edit",
             "created_at",
             "updated_at",
         ]
@@ -373,6 +399,7 @@ class TenantRoleTemplateDetailSerializer(
             "assigned_users_count",
             "permissions_count",
             "has_assignment_history",
+            "can_edit",
             "is_system_role",
             "version",
             "created_by",
