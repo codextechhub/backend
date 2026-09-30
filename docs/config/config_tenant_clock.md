@@ -208,12 +208,111 @@ below read a branch's day.
 
 ### Printed dates
 
-Server-rendered dates (invoices, receipts, PDFs, emails, exports, refusal
-sentences) are still written in fixed formats and, in some emails, on the
-server's UTC clock. They do not read `display.date_format` or `display.clock`
-yet; `todo.md` lists them.
+Everything the server writes for a person to read (a printed invoice or
+receipt, a PDF statement, an email or notification, a file an export produces
+for people, an approval card, a refusal or warning sentence) writes its dates
+and times through `vs_config.display`, so it reads exactly as the school's
+screens do (school-fe `src/lib/dates.ts`). Section 5 is the module.
 
-## 5. Tests
+## 5. Printing a date: `vs_config.display`
+
+```python
+from vs_config.display import (
+    format_date, format_datetime, format_time, format_month, format_date_range,
+)
+
+format_date(value, tenant, *, branch=None, year=True, month="short", weekday=None)
+    # "29 Sep 2026" | "29/09/2026" | "2026-09-29"
+format_datetime(value, tenant, *, branch=None, with_zone=False, weekday=None)
+    # "29 Sep 2026, 2:30 pm" | "29/09/2026, 14:30"; with_zone adds " WAT"
+format_time(value, tenant, *, branch=None, with_zone=False)
+    # "2:30 pm" | "14:30"
+format_month(value, tenant, *, branch=None, month="short")
+    # "Sep 2026" in every date format ("September 2026" with month="long")
+format_date_range(start, end, tenant, *, branch=None)
+    # "27 - 31 Oct 2025", "28 Oct - 2 Nov 2025", "19 Dec 2025 - 2 Jan 2026";
+    # the numeric formats print both dates in full
+```
+
+- **Two kinds of value.** A calendar date (a `date` or `"YYYY-MM-DD"`) is
+  printed as it is and never shifted: a due date is the same day at every
+  branch. An instant (a `datetime`, or an ISO timestamp string) is read on the
+  wall clock of `branch` when that branch keeps its own zone, else the
+  school's, and only then written. A naive `datetime` is UTC, which is what
+  the server stores (`USE_TZ = True`, `TIME_ZONE = "UTC"`). A wall time with
+  no date (a `time` or `"HH:MM"`: a bell, an exam slot) is only reworded for
+  the clock.
+- **Which branch.** Pass the branch of the thing being printed (an invoice's,
+  a purchase order's, an RFQ's, a person's) whenever the value is an instant.
+  Dates need none. A school-wide document (a statement run, an export file, a
+  report) passes none and reads the school's zone.
+- **The zone's name.** `with_zone=True` appends the zone's abbreviation, for a
+  reader outside the school: a vendor reading an RFQ deadline, a person
+  reading when a password-reset link dies.
+- **Empty and unreadable.** `None` and `""` print as `""`; a value that is not
+  a date comes back as written, so a bad value is visible rather than blank.
+- **The tenant.** `request.tenant` in a view, `entity.tenant` in the finance
+  and procurement engines, `staff.tenant` and so on elsewhere. `None` and the
+  platform tenant read the platform's values, so an email to a platform
+  operator follows the platform's settings.
+- **Caching.** The date format and the clock cost two queries together and
+  are memoised on the tenant instance beside its zone, shared with the
+  request's own instance; `forget_tenant_zone` drops them with the zone.
+- **Templates.** `{% load display_dates %}` gives `display_date`,
+  `display_datetime`, `display_time` and `display_month`, whose argument is a
+  tenant or a `vs_tenants.Branch`. The library is named for the display
+  settings rather than for a school because `vs_config` is an engine app. The
+  invoice and receipt templates take pre-written strings from their context
+  builders instead, like their money.
+- **The pure writers.** `write_date(day, date_format, ...)` and
+  `write_time(hour, minute, clock)` for a caller that already holds the
+  choices; `display_style(tenant)` returns them.
+
+### What stays ISO
+
+- JSON fields a client formats itself (`"due_date": "2026-09-29"`).
+- Export columns in system mode: ISO dates, UTC `YYYY-MM-DDTHH:MM:SS`, and
+  `HH:MM:SS` for a wall time, because an importer is written once.
+- A download's `{date}` and `{datetime}` file-name tokens (sortable, and a
+  slash cannot be in a file name), read on the school's clock
+  (`tenant_now`), so a file run at 00:30 in Lagos is named for that day, as
+  the builder's preview names it.
+- Structured audit metadata, log lines, `__str__`, document numbers
+  (`INV-12609291`), management-command output and the instruction "write it
+  as YYYY-MM-DD" on an import.
+- **Approval cards are stored ISO and written as they are read.** A workflow
+  instance snapshots its summary and details at submission. The handlers
+  store dates ISO, and `vs_workflow.presentation.summary_for_reader` and
+  `details_dates_for_reader` rewrite any value that is a date, a timestamp or
+  "date to date" in the tenant's format each time the card is read, so a card
+  submitted before a school changes its format reads the new way, and the
+  snapshot is never rewritten.
+
+### Issued and stored text
+
+Every printed document is built when it is asked for: an invoice or receipt
+page, its PDF, a statement, an email body, an export file. Each follows the
+setting in force at that moment. Two things are kept after they are made and
+are never rewritten: the PDF attached to a finance document email
+(`FinanceDocumentDelivery.pdf_file`) and an export's file with its name
+(`ExportFile`). A sentence stored for people (an audit message, a journal's
+narration) is written in the format in force when it is written and keeps it,
+like an issued document.
+
+## 6. Tests
+
+- `vs_config/tests_display_format.py`: every date format with every clock for
+  a date, an ISO string, an instant, a wall time and a month; the 12-hour
+  edges (12:00 am, 12:00 pm); a month named in every format; a calendar date
+  never shifted at any branch; an instant dated at its Nairobi branch after
+  21:00 UTC and a month turning there; naive and `Z` timestamps read as UTC;
+  the platform's values for `None` and the platform tenant; ranges; the
+  two-query memo, shared with the request's tenant and forgotten with the
+  zone; the template filters with a tenant and with a branch.
+- `tests_display_dates.py` in `vs_exports`, `vs_finance`, `vs_procurement`
+  and `vs_payments`, and `tests/test_display_dates.py` in `vs_workflow`,
+  `vs_students`, `vs_staff` and `vs_calendar`: each app's printed dates in a
+  school that writes DD/MM/YYYY on a 24-hour clock, and the defaults.
 
 - `vs_config/tests_clock.py`: Lagos's day at 23:30 UTC, a Nairobi tenant's own
   day and clock, the platform value inherited, the platform tenant reading the
