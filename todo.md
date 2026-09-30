@@ -81,7 +81,7 @@ expiry line; M11, M12, M14, M05 the refusal wording; M11 and M12 that the
 enrolment, placement, status and appointment dates are always the branch's day
 and never defaulted. MRD: remove the D78 documents gap.
 
-### D84. Supplier bills can be corrected, control accounts refuse hand journals, and bank money has its own documents (hash pending, 2026-09-30)
+### D84. Supplier bills can be corrected, control accounts refuse hand journals, and bank money has its own documents (2ad6ba28, 2026-09-30)
 MODULES: M23 purchase orders delivery and AP, M21 vendor management, M24 inventory
 and stock ledger, M19 finance and accounting, M18 payments and collections (tax
 share payment), M04 roles and permissions, MRD.
