@@ -606,17 +606,24 @@ def _booking_date(entity, paid_at, branch=None):
     return booked_on, metadata
 
 
-def collection_branch_id(*, customer=None, invoice=None):
-    """The branch a collection's receipt belongs to: its invoice's, else its customer's.
+def collection_branch_id(*, customer=None, invoice=None, deposit_account=None):
+    """The branch a collection's receipt belongs to.
+
+    In order: its invoice's, its customer's, the tenant's only branch, and the
+    branch of the bank account it is deposited into.
 
     Money paid against an invoice belongs to the branch that raised it, wherever the
     family is filed. The Okafor family is filed under Ikeja and pays a Lekki invoice
     online: the receipt is Lekki's, deposits into Lekki's bank, and clears the
     Lekki invoice. A collection naming no invoice (a top-up, a virtual account
     deposit) belongs to the customer's branch, and for a customer every branch
-    shares, to the tenant's only branch when it has one. ``None`` is left only
-    for such a customer at a tenant with several branches, where nothing on the
-    collection says whose the money is.
+    shares, to the tenant's only branch when it has one. At a tenant with several
+    branches nothing else on such a collection says whose the money is except the
+    account it lands in: a top-up deposited into Lekki's collection account is
+    Lekki's money. ``None`` is left only where the deposit account (``deposit_account``,
+    the ledger account the receipt debits) is behind no branch's bank account,
+    which the routes that raise a collection refuse
+    (:func:`vs_payments.views._collection_deposit`).
 
     The collection create route checks its deposit account against this branch,
     :func:`_book_receipt` books the receipt to it, and
@@ -629,7 +636,21 @@ def collection_branch_id(*, customer=None, invoice=None):
         return invoice.branch_id
     if customer is None:
         return None
-    return customer.branch_id or only_branch_id(customer.entity.tenant_id)
+    return (
+        customer.branch_id or only_branch_id(customer.entity.tenant_id)
+        or deposit_branch_id(deposit_account)
+    )
+
+
+def deposit_branch_id(deposit_account):
+    """The branch of the bank account behind a deposit ledger account, or None."""
+    if deposit_account is None:
+        return None
+    try:
+        bank = deposit_account.bank_account
+    except Exception:  # No bank account behind this ledger account.
+        return None
+    return bank.branch_id
 
 
 # Support the book receipt workflow.
@@ -642,7 +663,7 @@ def _book_receipt(intent, *, actor_user=None, paid_at=None):
     ``intent.metadata`` for the caller to save.
 
     The receipt carries :func:`collection_branch_id`: its invoice's branch, else
-    its customer's. It settles its invoice at once unless that invoice is dated
+    its customer's, else the branch whose account it lands in. It settles its invoice at once unless that invoice is dated
     after the receipt, in which case the money parks as customer credit (see
     :func:`_confirm_collection_atomic`).
     """
@@ -664,7 +685,8 @@ def _book_receipt(intent, *, actor_user=None, paid_at=None):
     )
 
     # The receipt's branch dates it too, so it reads on the day it belongs to.
-    receipt_branch_id = collection_branch_id(customer=intent.customer, invoice=intent.invoice)
+    receipt_branch_id = collection_branch_id(
+        customer=intent.customer, invoice=intent.invoice, deposit_account=intent.deposit_account)
     received, dating = _booking_date(intent.entity, paid_at, branch=receipt_branch_id)
     if dating:  # Keep the true paid day beside the receipt, however it was booked.
         intent.metadata = {**(intent.metadata or {}), **dating}

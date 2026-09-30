@@ -227,6 +227,73 @@ class PaymentsNameOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         self.assertEqual(PayoutBatch.objects.count(), before)
 
 
+class SharedFamilyTopUpNamesABranchTests(_FinanceBranchFixture):
+    """A top-up for a family every branch shares belongs to the branch it is paid into.
+
+    The Adeyemi family is shared by Ikeja and Lekki and pays a 5,000 top-up with no
+    invoice. Nothing on the family says whose money that is, so the account it is
+    deposited into does: Mr Eze, the whole-school clerk, deposits it into Lekki's
+    collection account, the receipt is Lekki's, and Lekki's clerk, not Ikeja's,
+    reaches the collection. Naming no account, or one that is no branch's, is a 400.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.ikeja_customer = self.customer(self.books, "CIKJP", self.ikeja)
+        self.shared_customer = self.customer(self.books, "CALLP", None)
+
+    post = PaymentsNameOnlyWhatTheClerkReachesTests.post
+    _collections_ledgers = PaymentsNameOnlyWhatTheClerkReachesTests._collections_ledgers
+
+    def head_clerk(self):
+        n = next(_clerks)
+        return TenantAPIClient(user=self.grant(
+            self.user_for(self.tenant, f"head-{n}@corona.test"), "payments.collection.create",
+            tenant=self.tenant, role_key=f"head-{n}",
+        ))
+
+    def test_a_top_up_must_name_a_branchs_account(self):
+        ledgers = self._collections_ledgers()
+        head = self.head_clerk()
+
+        refused = self.post(head, "collections/", {"amount": 5_000, "customer": "CALLP"})
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertIn("decides whose money it is", str(refused.data))
+        self.assertFalse(CollectionIntent.objects.filter(customer=self.shared_customer).exists())
+
+        accepted = self.post(head, "collections/", {
+            "amount": 5_000, "customer": "CALLP", "deposit_account": ledgers["LEK"].code})
+        self.assertNotIn("decides whose money", str(accepted.data))
+        self.assertNotIn("belongs to", str(accepted.data))
+
+    def test_the_receipt_takes_the_deposit_accounts_branch(self):
+        from .services import collection_branch_id
+
+        ledgers = self._collections_ledgers()
+        self.assertEqual(
+            collection_branch_id(customer=self.shared_customer, deposit_account=ledgers["LEK"]),
+            self.lekki.pk)
+        self.assertEqual(
+            collection_branch_id(customer=self.ikeja_customer, deposit_account=ledgers["LEK"]),
+            self.ikeja.pk)
+
+    def test_the_collection_is_reached_by_the_deposit_accounts_branch(self):
+        from .reach import PaymentsReach
+        from vs_rbac.scoping import BranchScope
+
+        ledgers = self._collections_ledgers()
+        top_up = CollectionIntent.objects.create(
+            entity=self.books, provider="PAYSTACK", reference="COL-TOPUP", amount=5_000,
+            customer=self.shared_customer, deposit_account=ledgers["LEK"])
+
+        def reached(branch):
+            scope = BranchScope(frozenset({branch.pk}), include_shared=False)
+            return set(PaymentsReach(self.books, scope).collections().values_list("pk", flat=True))
+
+        self.assertIn(top_up.pk, reached(self.lekki))
+        self.assertNotIn(top_up.pk, reached(self.ikeja))
+
+
 class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
     """Every payments list, summary, detail and status change stays within reach.
 
