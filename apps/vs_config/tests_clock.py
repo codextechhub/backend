@@ -37,7 +37,7 @@ from .display import (
     DATE_FORMAT_KEY,
     date_format_options,
     display_preferences,
-    format_date,
+    write_date,
 )
 from .exceptions import InvalidConfigurationValue
 from .models import ConfigurationDefinition
@@ -364,4 +364,4 @@ class DisplayPreferencesTests(TestCase):
             [option["label"] for option in date_format_options(day)],
             ["29 Sep 2026", "29/09/2026", "2026-09-29"],
         )
-        self.assertEqual(format_date(datetime.date(2026, 3, 5), D_MMM_YYYY), "5 Mar 2026")
+        self.assertEqual(write_date(datetime.date(2026, 3, 5), D_MMM_YYYY), "5 Mar 2026")
