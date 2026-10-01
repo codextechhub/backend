@@ -577,7 +577,7 @@ MUST SAY:
   rest); a whole-school reader is unchanged. FIX: the movements summary honours
   ?provider= as the feed does.
 
-### D97. Payroll works out PAYE from the year's tax table, takes the statutory deductions, pays each state and pension administrator, and issues payslips (hash pending, 2026-10-01)
+### D97. Payroll works out PAYE from the year's tax table, takes the statutory deductions, pays each state and pension administrator, and issues payslips (5ddc9bd5, 2026-10-01)
 MODULES: M19 finance and accounting, M12 staff management (payslips for staff),
 M08 notifications and delivery, M04 roles and permissions, M02 xvision admin
 console (national tax data), MRD.
