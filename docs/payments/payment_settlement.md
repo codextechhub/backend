@@ -39,6 +39,16 @@ tenant whose payments settle directly to each branch's bank
 payout creation and dispatch are refused with a 409 `ONLINE_PAYOUTS_NOT_OFFERED`,
 and it pays suppliers from its bank and records the payment.
 
+A held tenant's branch spends only what the platform holds for it: each payout is
+checked against the branch's held balance under a lock at dispatch and refused
+above it (409 `HELD_FUNDS_INSUFFICIENT`, the instruction FAILED, nothing sent).
+The platform pays each branch what it holds on the tenant's interval through a
+**settlement batch** (`PayoutBatch.purpose = SETTLEMENT`), built by the daily
+settlement run (`vs_payments/held.py`). It is the platform's own payout, in the
+platform's books (branch Lagos): a platform operator submits it and two platform
+people approve it; the tenant only sees it, and its books record the money
+arriving (§6).
+
 This does **NOT**:
 - move money itself - the PSP does; we book the ledger mirror after confirmation.
 - book anything at `initiate`/`submit` time - a `PENDING`/`PROCESSING` payout has
@@ -127,10 +137,13 @@ Base `/v1/payments/`; all require `?entity=<id|code>`, platform envelope + RBAC.
 | `POST /payout-batches/<pk>/` | `payments.payout.create` | retired direct provider route, always refused | - | `409 PAYOUT_APPROVAL_REQUIRED` |
 | `POST /payout-batches/<pk>/submit-for-approval/` | `payments.payout_batch.submit` | route the batch through the vs_workflow approval engine | - | `success_response(data=PayoutBatchSerializer)` |
 | `GET /reports/settlement-reconciliation/` | `payments.report.view` | gateway-confirmed movements vs. imported bank lines, with suggested settlements | query: `start_date`, `end_date` (ISO, inclusive), `provider` | `success_response(data={…, summary, rows[], unmatched_bank_lines[], suggested_settlements[]})` |
-| `POST /settlements/` | `payments.settlement.create` | book a bank statement line as the settlement of the online payments it carries | `statement_line`**, `collections`** (ids), `posting_date` | `success_response(data={journal_id, journal_number, date, statement_line, collections, gross, fee, net}, 201)` |
+| `POST /settlements/` | `payments.settlement.create` | book a bank statement line as the settlement of the online payments it carries (refused for a payment the platform held) | `statement_line`**, `collections`** (ids), `posting_date` | `success_response(data={journal_id, journal_number, date, statement_line, collections, gross, fee, net}, 201)` |
+| `GET /held-settlements/` | `payments.report.view` | the platform's settlements of the tenant's branches, read-only, narrowed to the caller's branches | query: `status` (PENDING/PAID/FAILED), `limit` (max 200) | `success_response(data=[{id, branch, branch_name, status, run_on, final, gross, fees, transfer_fee, amount, bank_account, batch, journal_id, paid_at, failure_reason}])` |
+| `GET /platform/held-settlements/` | platform staff + `payments.platform_settlement.view` | every tenant's settlements to act on: pending ones and any built today (no `?entity=`) | query: `status`, `client` (a tenant slug), `limit` | same rows plus `tenant`, `tenant_name`, `entity` |
+| `POST /platform/held-settlements/<pk>/submit/` | platform staff + `payments.platform_settlement.submit` | put a settlement forward for the platform's two-person approval | - | the row plus `approval` |
 | `GET /transactions/` | `payments.report.view` | the append-only gateway action log | query: `action`, `provider`, `succeeded` | `{pagination, data:[PaymentEventSerializer]}` |
-| `GET /movements/` | `payments.report.view` | unified in+out feed, newest first; payout PII FLS-masked | query: `direction` (in/out), `group`, `provider` | `{pagination, data:[row]}` |
-| `GET /movements/summary/` | `payments.report.view` | in7d / out7d / pending / failed across both gateways | query: `provider` | `success_response(data={in7d, out7d, pending, failed})` |
+| `GET /movements/` | `payments.report.view` | unified feed, newest first: collections (`in`), payouts (`out`) and held settlements (kind `settlement`, direction `transfer`); payout PII FLS-masked | query: `direction` (in/out/transfer), `group`, `provider` | `{pagination, data:[row]}` |
+| `GET /movements/summary/` | `payments.report.view` | in7d / out7d (money spent) / transfers7d (settlements) / pending / failed | query: `provider` | `success_response(data={in7d, out7d, transfers7d, pending, failed})` |
 
 ** = required. Notes:
 - `amount` must be positive. `vendor` resolves **within the entity** by code or pk;
@@ -253,8 +266,42 @@ net `N = G − W` (and `N` is exactly what the transfer sent):
 | Dr / Cr | account | amount |
 |---|---|---|
 | **Dr** | vendor AP control (`vendor.payable_account`) | `G` |
-| **Cr** | `source_account` (else fallback `1100` Cash & bank) | `N` |
+| **Cr** | `source_account` (else fallback `1100` Cash & bank); gateway clearing in the payout's branch when it was paid out of held money | `N` |
 | **Cr** | WHT payable (tax-code `collected_account`, else `WHT_PAYABLE_CODE`) | `W` (only if > 0) |
+
+A payout paid out of a branch's held money left the platform's provider balance,
+which the branch still carries as gateway clearing, so it credits clearing, not the
+bank the batch named.
+
+**Held funds, dispatch and confirmation.** At dispatch the claim takes the transfer
+from the held balance of the branch it pays for (a `HeldMovement` of kind `PAYOUT`
+or `SETTLEMENT`; a settlement takes what is sent plus its transfer fee) and posts
+Dr client funds held, Cr provider balance in the platform's books, branch Lagos. A
+clean provider rejection or a FAILED/REVERSED confirmation gives it back
+(`RELEASE`); a confirmation reporting another amount is corrected once.
+
+**Settlement payout** (`held.book_settlement_paid`, in the **tenant's** books,
+source `BANK`, the settlement's branch), on confirmation of the platform's
+`SETTLEMENT` line, for transfer `T`, the claimed payments' fees `F` and the
+transfer fee `X`:
+
+| Dr / Cr | account | amount |
+|---|---|---|
+| **Dr** | the branch's collection account's ledger account | `T` |
+| **Dr** | bank charges (mapping `BANK_CHARGES`) | `F + X` (only if > 0) |
+| **Cr** | gateway clearing (mapping `GATEWAY_CLEARING`) | `T + F + X` |
+
+`T + X` is the claimed payments less `F`, capped at the branch's held balance, so
+when online payouts spent part of the money clearing is credited with less than the
+payments came to: each payout already credited clearing for what it took. The
+claimed payments leave clearing when the settlement is PAID. The settlement batch
+is the platform's (its books, branch Lagos, paid from `PROVIDER_BALANCE`) and books
+no vendor payment; the platform's books move only through the held movement above.
+
+**Chargeback on held money** (`held.book_held_chargeback`, once per dispute): the
+tenant's books Dr payment chargebacks (`CHARGEBACKS`, 5520), Cr gateway clearing, in
+the branch; the platform's books Dr client funds held (what the branch held), Dr owed
+by clients (`CLIENT_FUNDS_OWED`, the rest), Cr provider balance.
 
 **Settlement match** (`settle_collections`, source `BANK`, the bank account's branch):
 
@@ -421,10 +468,29 @@ PENDING instruction, then returns the active approval. Paystack has not been cal
     bank's branch and a batch refuses lines from two branches. Test:
     `tests_custody.GatewayRecordBranchTests.test_a_batch_pays_from_one_branch`.
 
-15. ⚠️ **Held custody has no per-branch funds check yet.** Payouts for a held tenant
-    still draw on the platform's pooled balance with no check that the branch
-    collected that money; that check, the platform-side liability per branch and the
-    settlement run are held custody's own build step (phase B).
+15. ✅ **A held branch spends only its own held money.** The dispatch claim checks the
+    transfer against the branch's held balance under a lock and refuses it above;
+    the platform's books carry what it holds per branch, and the settlement run pays
+    each branch on the tenant's interval. Tests:
+    `tests_custody_held.HeldFundsCheckTests`, `.SettlementRunTests`.
+
+16. ✅ **The platform starts and approves settlements.** A settlement is a payout in
+    the platform's books; a platform operator submits it and two distinct platform
+    people approve it (always two, whatever the amount); the tenant neither submits
+    nor approves and its books record the money arriving. Tests:
+    `tests_custody_held.PlatformSettlementApprovalTests`.
+
+17. ✅ **The branch bears Paystack's transfer fee.** It is deducted from what is sent
+    and booked as the branch's bank charge; the platform's provider balance falls by
+    the whole. Test: `SettlementRunTests.test_the_branch_bears_the_transfer_fee`.
+
+18. ✅ **A settlement is a transfer, not money spent, on the movements feed.** Both
+    the tenant's and the platform's feeds show it as kind `settlement`, direction
+    `transfer`, and the summary counts it in `transfers7d`, not `out7d`. Test:
+    `HeldSettlementEndpointTests.test_a_settlement_is_a_transfer_in_both_feeds_not_money_spent`.
+
+19. ⚠️ **The transfer fee is the adapter's schedule** (`PaystackProvider.TRANSFER_FEE_TIERS`,
+    to confirm), not read back from Paystack.
 
 ## 9. Permissions & tenant isolation
 
@@ -484,6 +550,20 @@ its payout beneficiary fields.
 - `settlement.py` - `settle_collections` (the settlement journal),
   `suggest_settlements`, `awaiting_settlement_q`, and the `gateway_clearing_current`
   close check registered from `apps.py`.
+- `held.py` - the held-funds sub-ledger (`record_collection`,
+  `reserve_for_transfer`, `release_transfer`, `true_up_transfer`), the platform's
+  journal (`_post_platform_journal`, `post_pending_platform_journals`), the
+  settlement run (`build_settlement`, `run_settlements`, `book_settlement_paid`,
+  `fail_settlement`) and switching (`apply_custody_switch`,
+  `reissue_virtual_accounts`). Tasks: `run_held_settlements` (daily 06:30),
+  `apply_custody_switches` (daily 00:20).
+- `views_custody.py` - `HeldSettlementListView` (the tenant's, read-only),
+  `PlatformHeldSettlementListView` and `PlatformHeldSettlementSubmitView` (the
+  platform's).
+- `approvals.py` - `ensure_settlement_approval_template`, the platform tenant's
+  two-step `held-settlement` route.
+- `management/commands/record_held_opening_balance.py` - money already held when
+  the sub-ledger starts, once per branch, recorded by a named platform operator.
 - `views.py:359-1033` - payout, batch (+ submit-for-approval), reconciliation,
   transactions, movements views; `_movement_querysets` (`views.py:907-937`).
 - `serializers.py:67-151` - payout / batch / batch-summary / payment-event

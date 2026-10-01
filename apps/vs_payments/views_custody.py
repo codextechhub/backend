@@ -14,6 +14,13 @@
   caller's branches, read as :class:`vs_payments.reach.PaymentsReach` reads them,
   so a Lekki bursar settles Lekki's lines only and another branch's line answers
   404 like one that does not exist.
+* ``held-settlements/``: the platform's settlements of the money it held for the
+  tenant's branches, read-only, narrowed to the caller's branches. The tenant
+  never submits or approves one.
+* ``platform/held-settlements/`` and ``platform/held-settlements/<id>/submit/``:
+  the platform operators' list of settlements to act on across every tenant, and
+  putting one forward for the platform's two-person approval. Platform staff only
+  (``IsVisionStaff``), with ``payments.platform_settlement.view`` / ``.submit``.
 """
 from __future__ import annotations
 
@@ -25,7 +32,7 @@ from rest_framework.views import APIView
 
 from core.response import success_response
 from vs_finance.views import resolve_entity
-from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive, IsVisionStaff
 from vs_rbac.scoping import WholeTenantWriteMixin
 
 from . import custody, settlement
@@ -44,14 +51,19 @@ def _bank_row(bank):
 
 
 def _branch_rows(entity):
-    """Every branch of the tenant with its collection account."""
+    """Every branch of the tenant with its collection account and what the platform holds for it."""
     from vs_tenants.models import Branch
+
+    from .models import HeldBalance
 
     if not entity.tenant_id:
         return []
+    held = dict(HeldBalance.objects.filter(tenant_id=entity.tenant_id)
+                .values_list("branch_id", "balance"))
     return [
         {"branch": branch.pk, "branch_name": branch.name,
-         "collection_account": _bank_row(custody.branch_collection_account(entity, branch.pk))}
+         "collection_account": _bank_row(custody.branch_collection_account(entity, branch.pk)),
+         "held_balance": int(held.get(branch.pk, 0))}
         for branch in Branch.all_objects.filter(tenant_id=entity.tenant_id).order_by("name")
     ]
 
@@ -181,3 +193,144 @@ class SettlementCreateView(APIView):
             "date": entry.date.isoformat(), "statement_line": line.pk,
             "collections": sorted(ids), "gross": gross, "fee": gross - net, "net": net,
         }, status=201)
+
+
+#: Most rows the held-settlements list answers in one page.
+_HELD_SETTLEMENT_LIMIT = 200
+
+
+class HeldSettlementListView(APIView):
+    """GET: the platform's settlement runs paying this tenant's branches what it held for them.
+
+    Read with ``payments.report.view``, narrowed to the caller's branches as every
+    transaction is (:func:`vs_rbac.scoping.transaction_branch_q`): a Lekki bursar
+    sees Lekki's settlements only. ``?status=`` filters by ``PENDING``, ``PAID`` or
+    ``FAILED``; ``?limit=`` caps the page (at most 200). Newest first.
+
+    docstring-name: Held settlements
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "payments.report.view"
+
+    def get(self, request):
+        from vs_rbac.scoping import transaction_branch_q
+
+        from .constants import HeldSettlementStatus
+        from .models import HeldSettlement
+
+        entity = resolve_entity(request)
+        rows = (HeldSettlement.objects.filter(entity=entity)
+                .filter(transaction_branch_q(request))
+                .select_related("branch", "bank_account", "batch")
+                .order_by("-id"))
+        status = str(request.query_params.get("status") or "").strip().upper()
+        if status:
+            if status not in HeldSettlementStatus.values:
+                raise ValidationError({"status": f"Use one of: {', '.join(HeldSettlementStatus.values)}."})
+            rows = rows.filter(status=status)
+        try:
+            limit = min(max(int(request.query_params.get("limit") or 50), 1),
+                        _HELD_SETTLEMENT_LIMIT)
+        except ValueError as exc:
+            raise ValidationError({"limit": "Expected a whole number."}) from exc
+        rows = list(rows[:_limit(request)])
+        return success_response("Held settlements retrieved.",
+                                data=[_settlement_row(row) for row in rows])
+
+
+def _limit(request):
+    try:
+        return min(max(int(request.query_params.get("limit") or 50), 1), _HELD_SETTLEMENT_LIMIT)
+    except ValueError as exc:
+        raise ValidationError({"limit": "Expected a whole number."}) from exc
+
+
+def _settlement_row(row, *, platform=False):
+    """One held settlement as its readers see it; ``platform`` adds the tenant it pays."""
+    data = {
+        "id": row.pk, "branch": row.branch_id, "branch_name": row.branch.name,
+        "status": row.status, "run_on": row.run_on.isoformat(), "final": row.final,
+        "gross": int(row.gross), "fees": int(row.fees), "transfer_fee": int(row.transfer_fee),
+        "amount": int(row.amount),
+        "bank_account": {"id": row.bank_account_id, "name": row.bank_account.name},
+        "batch": ({"id": row.batch_id, "reference": row.batch.reference,
+                   "status": row.batch.status,
+                   "approval_status": (row.batch.metadata or {}).get("approval_status")}
+                  if row.batch_id else None),
+        "journal_id": row.settlement_journal_id,
+        "paid_at": row.paid_at.isoformat() if row.paid_at else None,
+        "failure_reason": row.failure_reason or None,
+    }
+    if platform:
+        data.update({"tenant": row.tenant.slug, "tenant_name": row.tenant.name,
+                     "entity": row.entity.code})
+    return data
+
+
+class PlatformHeldSettlementListView(APIView):
+    """GET: every settlement a platform operator has to act on, across tenants.
+
+    By default the pending ones (waiting to be put forward, approved or
+    transferred) and any built today; ``?status=`` lists one status instead and
+    ``?client=<slug>`` one client tenant (``?tenant=`` is the caller's own, which
+    routes the request). Platform staff with
+    ``payments.platform_settlement.view`` only.
+
+    docstring-name: Platform held settlements
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff & HasRBACPermission]
+    rbac_permission = "payments.platform_settlement.view"
+
+    def get(self, request):
+        from .constants import HeldSettlementStatus
+        from .held import settlements_due
+        from .models import HeldSettlement
+
+        status = str(request.query_params.get("status") or "").strip().upper()
+        if status:
+            if status not in HeldSettlementStatus.values:
+                raise ValidationError({"status": f"Use one of: {', '.join(HeldSettlementStatus.values)}."})
+            rows = (HeldSettlement.objects.filter(status=status)
+                    .select_related("tenant", "branch", "entity", "bank_account", "batch")
+                    .order_by("-id"))
+        else:
+            rows = settlements_due()
+        if (client := str(request.query_params.get("client") or "").strip()):
+            rows = rows.filter(tenant__slug=client)
+        return success_response("Held settlements retrieved.", data=[
+            _settlement_row(row, platform=True) for row in rows[:_limit(request)]])
+
+
+class PlatformHeldSettlementSubmitView(APIView):
+    """POST: put one settlement forward for the platform's two-person approval.
+
+    The caller becomes its requester and cannot approve it; two other platform
+    people in the settlement approver group do. Platform staff with
+    ``payments.platform_settlement.submit`` only. Answers the settlement and its
+    approval.
+
+    docstring-name: Submit a held settlement
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff & HasRBACPermission]
+    rbac_permission = "payments.platform_settlement.submit"
+
+    def post(self, request, pk):
+        from vs_workflow.services import release as release_svc
+
+        from .held import submit_settlement
+        from .models import HeldSettlement
+
+        row = (HeldSettlement.objects.select_related(
+            "tenant", "branch", "entity", "bank_account", "batch__entity__tenant")
+            .filter(pk=pk).first())
+        if row is None:
+            raise NotFound("No such settlement.")
+        instance = submit_settlement(row, requested_by=request.user)
+        row.batch.refresh_from_db()
+        return success_response("Settlement submitted for approval.", data={
+            **_settlement_row(row, platform=True),
+            "approval": release_svc.approval_block(instance),
+        })

@@ -26,6 +26,8 @@ class PaymentDirection(models.TextChoices):
 
     COLLECTION = "COLLECTION", "Collection (money in)"  # Incoming money.
     PAYOUT = "PAYOUT", "Payout (money out)"  # Outgoing money.
+    DISPUTE = "DISPUTE", "Dispute (a payer's chargeback)"  # Money a payer's bank claims back.
+    REFUND = "REFUND", "Refund (money returned through the provider)"  # A provider-side refund.
 
 
 # Group behavior for Collection Channel.
@@ -135,8 +137,17 @@ PAYOUT_BATCH_DISPATCHABLE = frozenset(
 
 # Define Virtual Account Status values.
 class VirtualAccountStatus(models.TextChoices):
+    """Whether a virtual account is offered, and what a deposit into it does.
+
+    ``INACTIVE`` is switched off: a deposit into it is held for review. ``RETIRED``
+    was replaced by a new number when the tenant's money started settling
+    directly: it is no longer offered, but a deposit into it still books to its
+    customer, and the platform passes the money on in the next settlement run.
+    """
+
     ACTIVE = "ACTIVE", "Active"  # Available for incoming transfers.
     INACTIVE = "INACTIVE", "Inactive"  # No longer offered for new transfers.
+    RETIRED = "RETIRED", "Retired"  # Replaced; deposits still book and are passed on.
 
 
 # Define Webhook Status values.
@@ -168,6 +179,15 @@ class PaymentAuditAction(models.TextChoices):
     COLLECTIONS_SETTLED = "COLLECTIONS_SETTLED", "Collections settled to a bank"  # Clearing moved to a bank.
     SUBACCOUNT_SAVED = "SUBACCOUNT_SAVED", "Collection subaccount saved"  # Provider subaccount created or refreshed.
     CUSTODY_SETTINGS_UPDATED = "CUSTODY_SETTINGS_UPDATED", "Custody settings updated"  # Mode or interval changed.
+    CUSTODY_SWITCHED = "CUSTODY_SWITCHED", "Custody mode switched"  # A pending mode took effect.
+    CUSTODY_SWITCH_WAITING = "CUSTODY_SWITCH_WAITING", "Custody switch waiting"  # Due, but held money remains.
+    HELD_SETTLEMENT_BUILT = "HELD_SETTLEMENT_BUILT", "Held settlement built"  # A branch's settlement payout prepared.
+    HELD_SETTLEMENT_PAID = "HELD_SETTLEMENT_PAID", "Held settlement paid"  # The branch's bank received it.
+    HELD_SETTLEMENT_FAILED = "HELD_SETTLEMENT_FAILED", "Held settlement failed"  # Its transfer failed.
+    HELD_FUNDS_REFUSED = "HELD_FUNDS_REFUSED", "Payout refused: held funds"  # Above the branch's held balance.
+    HELD_OPENING_BALANCE = "HELD_OPENING_BALANCE", "Held opening balance"  # Platform recorded money it already held.
+    VIRTUAL_ACCOUNT_REISSUED = "VIRTUAL_ACCOUNT_REISSUED", "Virtual account reissued"  # Old number retired.
+    PROVIDER_DISPUTE_RECEIVED = "PROVIDER_DISPUTE_RECEIVED", "Chargeback or refund received"  # Raised, not booked.
 
 
 class CustodyMode(models.TextChoices):
@@ -181,6 +201,37 @@ class CustodyMode(models.TextChoices):
 
     DIRECT = "DIRECT", "Direct to each branch's bank"
     HELD = "HELD", "Held by the platform"
+
+
+class PayoutPurpose(models.TextChoices):
+    """What a payout batch pays.
+
+    ``VENDOR``: suppliers, each line naming a verified vendor. ``SETTLEMENT``: the
+    platform paying a held-mode branch what it holds for it, one line into the
+    branch's collection bank account (:mod:`vs_payments.held`).
+    """
+
+    VENDOR = "VENDOR", "Supplier payments"
+    SETTLEMENT = "SETTLEMENT", "Settlement to a branch's bank"
+
+
+class HeldMovementKind(models.TextChoices):
+    """Why a held-mode branch's held balance moved (:class:`~vs_payments.models.HeldMovement`)."""
+
+    COLLECTION = "COLLECTION", "Online payment received"  # Raises the balance by what the provider kept.
+    PAYOUT = "PAYOUT", "Online payout sent"  # Lowers it when the payout is dispatched.
+    SETTLEMENT = "SETTLEMENT", "Settlement to the branch's bank"  # Lowers it when the transfer is dispatched.
+    RELEASE = "RELEASE", "Payout or settlement failed"  # Gives back what a failed transfer reserved.
+    OPENING = "OPENING", "Opening balance"  # Money already held when the ledger started.
+    DISPUTE = "DISPUTE", "Chargeback"  # A payer's bank took a held payment back.
+
+
+class HeldSettlementStatus(models.TextChoices):
+    """Where one branch's settlement payout stands."""
+
+    PENDING = "PENDING", "Awaiting approval or transfer"
+    PAID = "PAID", "Paid into the branch's bank"
+    FAILED = "FAILED", "Transfer failed; its payments are released"
 
 
 #: Settlement interval (days) a held-mode tenant is paid on, and its bounds.
@@ -213,6 +264,11 @@ WF_DEFAULT_HIGH_VALUE_GROUP = "payout-senior-approver"
 
 #: Batches at or above N500,000 require an additional, distinct senior approver.
 WF_DEFAULT_HIGH_VALUE_THRESHOLD = 50_000_000
+
+#: The platform tenant's route for a held-mode settlement batch, and the group of
+#: platform finance staff any two distinct members of which approve one.
+WF_SETTLEMENT_TEMPLATE_CODE = "held-settlement"
+WF_SETTLEMENT_APPROVER_GROUP = "held-settlement-approver"
 
 
 # The console's list screens filter by GROUP, not by raw status: one pill

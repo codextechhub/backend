@@ -518,6 +518,30 @@ def _attribute_refund_to_lots(refund, customer, *, as_of):
     return rows
 
 
+_REFUND_GUARDS: list = []
+
+
+def register_refund_guard(guard):
+    """Register ``guard(entity, method)``, which raises to refuse a refund paid that way. Idempotent.
+
+    A dependent app (payments decides whether money may go back through a
+    payment provider) registers from its ``ready()``, so finance never imports it.
+    """
+    if guard not in _REFUND_GUARDS:
+        _REFUND_GUARDS.append(guard)
+    return guard
+
+
+def check_refund_method(entity, method):
+    """Run every registered refund guard for a refund of ``entity`` paid by ``method``.
+
+    Called when a refund is drafted and again when it posts, so a refund drafted
+    before a guard applied cannot post past it.
+    """
+    for guard in _REFUND_GUARDS:
+        guard(entity, method)
+
+
 # Public wrapper for customer refund posting.
 def post_refund(refund, *, actor_user=None):
     """Post a customer :class:`Refund` (``Dr customer-credit (2140), Cr bank``).
@@ -562,6 +586,7 @@ def _post_refund_atomic(refund, *, actor_user=None):
         )
     if refund.amount <= 0:  # Refund must pay a positive amount.
         raise PostingError("A refund must have a positive amount to post.")
+    check_refund_method(refund.entity, refund.method)
 
     # Availability is measured **on the refund's own accounting date**, not today.
     # Credit that only arrives later has not happened yet as far as this payout is

@@ -52,6 +52,9 @@ Key fields:
   tenant's only branch, else the deposit bank's).
 - `fee` (nullable kobo) - what the provider kept, as its verify response reported it
   on confirmation; `None` when it did not say.
+- `held_by_platform`, `held_settlement` - the payment settled to the platform's
+  provider balance (it named no subaccount), so the platform owes it to the
+  branch, and the settlement run that pays it on (`vs_payments/held.py`).
 - `clearing_account` → `vs_finance.Account` - the gateway clearing account the
   receipt debited; `settlement_entry` → `vs_finance.JournalEntry` - the journal
   that moved it to a bank. The collection is in clearing while its receipt is posted
@@ -88,7 +91,12 @@ A dedicated NUBAN issued by a provider for self-reconciling collection.
   `currency`.
 - `account_number`, `bank_name`, `account_name` - the funding coordinates
   (`account_number`/`account_name` are **FLS-masked**, see §9).
-- `provider_reference`, `status` (`VirtualAccountStatus`: ACTIVE / INACTIVE,
+- `settlement_subaccount` - the branch subaccount deposits settle to, named when
+  the account was created; blank when they settle to the platform's balance.
+  `replaced_by` - the account issued in place of a retired one.
+- `provider_reference`, `status` (`VirtualAccountStatus`: ACTIVE / INACTIVE /
+  RETIRED (replaced when the tenant moved to direct custody; a deposit still books
+  to its customer and is passed on by the settlement run),
   default ACTIVE, `constants.py:103-105`), `raw` (`JSONField`).
 - **Uniqueness:** only `uniq_payments_va_provider_account` on
   `(provider, account_number)` (`models.py:72-77`). The docstring's claim of "one
@@ -330,10 +338,20 @@ Using the `FakeProvider` (test wiring, `tests.py:119-151`,
    their original bank debit and never await settlement. Tests:
    `tests_custody.GatewayClearingTests`.
 
-10. ⚠️ **Refunds and chargebacks under direct custody are not built.** A direct
-    tenant's payment settles to the branch's bank, while a provider refund comes out
-    of the platform's balance (to confirm with Paystack). Which side funds it is
-    decided when refunds are built.
+10. ✅ **A direct tenant's online payments are not refunded online.** A refund
+    recorded as paid online is refused (409 `ONLINE_REFUNDS_NOT_OFFERED`) and the
+    payer is refunded from the branch's bank; a chargeback or provider refund event
+    is recorded and raised to people, never booked. (A chargeback on a payment the
+    platform held is booked: it lowers the branch's held balance, see
+    `payment_settlement` §6.) Tests:
+    `tests_custody_held.DirectRefundAndDisputeTests`.
+
+11. ✅ **A held payment raises what the platform holds for its branch.** On
+    confirmation, in the same transaction, the branch's held balance rises by the
+    payment less the provider's fee and the platform's books record it (Dr provider
+    balance, Cr client funds held). Such a payment reaches the bank only through the
+    settlement run, so `POST /settlements/` refuses it. Tests:
+    `tests_custody_held.HeldCollectionTests`.
 
 ## 9. Permissions & tenant isolation
 

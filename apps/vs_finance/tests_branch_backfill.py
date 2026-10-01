@@ -334,6 +334,9 @@ class JournalDerivationTests(_BackfillFixture):
             ("vs_finance.JournalLine", "entry"),
             # Points at the settlement journal its bank statement line owns and raised.
             ("vs_payments.CollectionIntent", "settlement_entry"),
+            # The platform's own entry, always in the platform's branch rather than
+            # the client branch the movement is for.
+            ("vs_payments.HeldMovement", "platform_journal"),
         }
         checked = 0
         for field in JournalEntry._meta.related_objects:

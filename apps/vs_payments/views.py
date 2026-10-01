@@ -1045,13 +1045,17 @@ class TransactionsLogView(APIView):
 # Movements - unified money-in (collections) + money-out (payouts) feed        #
 # --------------------------------------------------------------------------- #
 
-# Unified status groups across both gateways (collections + payouts).  # Shared movement filters.
+# Unified status groups across collections, payouts and held settlements.
 MOVEMENT_GROUPS = {
-    "SETTLED": (["SUCCEEDED"], ["PAID"]),
-    "PENDING": (["PENDING", "PROCESSING"], ["PENDING", "PROCESSING"]),
-    "FAILED": (["FAILED", "ABANDONED"], ["FAILED", "REVERSED"]),
-    "REFUNDED": (["REFUNDED"], []),
+    "SETTLED": (["SUCCEEDED"], ["PAID"], ["PAID"]),
+    "PENDING": (["PENDING", "PROCESSING"], ["PENDING", "PROCESSING"], ["PENDING"]),
+    "FAILED": (["FAILED", "ABANDONED"], ["FAILED", "REVERSED"], ["FAILED"]),
+    "REFUNDED": (["REFUNDED"], [], []),
 }
+
+#: Feed ``direction`` values: money in, money spent, and a transfer of the
+#: tenant's own money between the platform's balance and its bank.
+MOVEMENT_DIRECTIONS = ("in", "out", "transfer")
 _MOVEMENT_COLS = [  # Common projection shape for the movements feed.
     "kind", "gateway_id", "reference", "created_at", "direction", "party", "provider",
     "amount", "status", "narration", "provider_reference", "confirmed_at",
@@ -1061,26 +1065,50 @@ _MOVEMENT_COLS = [  # Common projection shape for the movements feed.
 
 
 # Support the movement querysets workflow.
+def _held_settlements(reach):
+    """The held settlements paying ``reach``'s entity, narrowed as its transactions are.
+
+    A settlement is the tenant's own money moving from the platform's balance to
+    a branch's bank, so it is read by the branch it pays, exactly as the
+    gateway records are (:class:`vs_payments.reach.PaymentsReach`).
+    """
+    from .models import HeldSettlement
+
+    return HeldSettlement.objects.filter(entity=reach.entity).filter(reach.scope.q(""))
+
+
 def _movement_querysets(reach, *, provider=None, group=None):
-    """The collection (in) + payout (out) value-querysets projected to a common shape.
+    """The collection (in), payout (out) and settlement (transfer) value-querysets, one shape.
 
     ``amount`` is each record's own figure, the gross of a payout line.
     ``sent_amount`` is what moved: a collection's amount, and a payout's line less
     its WHT (:func:`vs_payments.services.payout_sent_expression`), with
     ``wht_amount`` the difference. :class:`MovementsView` presents them.
+
+    Settling held money is not spending it. In the platform's own feed its
+    settlement payouts read as ``settlement`` transfers; in a tenant's feed each
+    held settlement paying one of its branches reads as a ``settlement``
+    transfer from the platform's balance into that branch's bank.
     """
-    from django.db.models import BigIntegerField, CharField, F, Value
+    from django.db.models import BigIntegerField, Case, CharField, F, Value, When
     from django.db.models.functions import Coalesce
+
+    from .constants import PayoutPurpose
 
     cols = reach.collections()
     pos = reach.payouts()
-    if provider:  # Optional PSP filter applied to both sides.
+    held = _held_settlements(reach)
+    if provider:  # Optional PSP filter applied to every side.
         cols = cols.filter(provider=provider)
         pos = pos.filter(provider=provider)
+        held = held.filter(batch__provider=provider)
     if group in MOVEMENT_GROUPS:  # Optional status-group filter.
-        c_st, p_st = MOVEMENT_GROUPS[group]  # Split the collection and payout status sets.
+        c_st, p_st, h_st = MOVEMENT_GROUPS[group]
         cols = cols.filter(status__in=c_st) if c_st else cols.none()
         pos = pos.filter(status__in=p_st) if p_st else pos.none()
+        held = held.filter(status__in=h_st) if h_st else held.none()
+    settling = When(batch__purpose=PayoutPurpose.SETTLEMENT, then=Value("settlement"))
+    settling_direction = When(batch__purpose=PayoutPurpose.SETTLEMENT, then=Value("transfer"))
 
     cv = cols.annotate(
         kind=Value("collection", output_field=CharField()), gateway_id=F("id"),
@@ -1092,15 +1120,33 @@ def _movement_querysets(reach, *, provider=None, group=None):
         sent_amount=F("amount"), wht_amount=Value(0, output_field=BigIntegerField()),
     ).values(*_MOVEMENT_COLS)
     pv = pos.annotate(
-        kind=Value("payout", output_field=CharField()), gateway_id=F("id"),
-        direction=Value("out", output_field=CharField()), party=F("beneficiary_name"),
+        kind=Case(settling, default=Value("payout"), output_field=CharField()),
+        gateway_id=F("id"),
+        direction=Case(settling_direction, default=Value("out"), output_field=CharField()),
+        party=F("beneficiary_name"),
         email=Value("", output_field=CharField()),
         account_code=F("source_account__code"), account_name=F("source_account__name"),
         beneficiary_account=F("beneficiary_account_number"),
         sent_amount=services.payout_sent_expression(),
         wht_amount=services.payout_wht_expression(),
     ).values(*_MOVEMENT_COLS)
-    return cv, pv  # Return both common-shape querysets for the feed.
+    hv = held.annotate(
+        kind=Value("settlement", output_field=CharField()), gateway_id=F("id"),
+        reference=Coalesce(F("batch__reference"), Value(""), output_field=CharField()),
+        direction=Value("transfer", output_field=CharField()),
+        party=Value("Settled by the platform", output_field=CharField()),
+        provider=Coalesce(F("batch__provider"), Value(""), output_field=CharField()),
+        narration=Value("Online payments held by the platform, paid into the branch's bank",
+                        output_field=CharField()),
+        provider_reference=Value("", output_field=CharField()),
+        confirmed_at=F("paid_at"),
+        email=Value("", output_field=CharField()),
+        account_code=F("bank_account__gl_account__code"),
+        account_name=F("bank_account__name"),
+        beneficiary_account=Value("", output_field=CharField()),
+        sent_amount=F("amount"), wht_amount=Value(0, output_field=BigIntegerField()),
+    ).values(*_MOVEMENT_COLS)
+    return cv, pv, hv  # Common-shape querysets for the feed.
 
 
 #: The feed's own column names for the two payout fields Field Access governs,
@@ -1121,8 +1167,13 @@ _MOVEMENT_PAYOUT_FIELDS = {
 # Group endpoint behavior for Movements View.
 class MovementsView(APIView):
     """GET /payments/movements/ - unified, paginated money-movement feed: confirmed-or-
-    pending collections (in) + payouts (out), newest first. Filters: ``?direction=in|out``,
+    pending collections (in), payouts (out) and held settlements (transfer), newest
+    first. Filters: ``?direction=in|out|transfer``,
     ``?group=SETTLED|PENDING|FAILED|REFUNDED``, ``?provider=``.
+
+    A held settlement is the tenant's own money moving from the platform's balance
+    to a branch's bank, so it is a ``settlement`` row with direction ``transfer``,
+    never money spent (:func:`_movement_querysets`).
 
     ``amount`` is the money that moved: on a payout, the line less the WHT
     withheld, which is what was sent and what the bank shows. ``gross_amount``
@@ -1146,14 +1197,14 @@ class MovementsView(APIView):
         provider = request.query_params.get("provider")
         group = request.query_params.get("group")
         direction = request.query_params.get("direction")
-        cv, pv = _movement_querysets(reach, provider=provider, group=group)  # Build the projected querysets.
+        cv, pv, hv = _movement_querysets(reach, provider=provider, group=group)
 
-        parts = []  # Collect whichever sides the caller requested.
-        if direction != "out":  # Include collections unless the caller asked for payouts only.
-            parts.append(cv)  # Add the collection queryset.
-        if direction != "in":  # Include payouts unless the caller asked for collections only.
-            parts.append(pv)  # Add the payout queryset.
-        union = parts[0] if len(parts) == 1 else parts[0].union(parts[1], all=True)  # Union both sides when needed.
+        if direction in MOVEMENT_DIRECTIONS:
+            pv = pv.filter(direction=direction)
+            parts = {"in": [cv], "out": [pv], "transfer": [pv, hv]}[direction]
+        else:
+            parts = [cv, pv, hv]
+        union = parts[0].union(*parts[1:], all=True) if len(parts) > 1 else parts[0]
         union = union.order_by("-created_at")
 
         paginator = XVSPagination()  # Build the shared paginator.
@@ -1166,7 +1217,7 @@ class MovementsView(APIView):
         rows = []  # Build the response rows explicitly so the beneficiary can be dropped.
         for m in page:  # Convert each result row into a serializable mapping.
             row = dict(m)  # Coerce the projected row into a plain dict.
-            if row["kind"] == "payout":  # A collection's party is its customer, not a beneficiary.
+            if row["kind"] in ("payout", "settlement"):  # A collection's party is its customer.
                 for name in hidden:  # Absent, not masked: a marker is itself an answer.
                     row.pop(name, None)
             row["gross_amount"] = row["amount"]  # The record's own figure.
@@ -1180,8 +1231,12 @@ class MovementsView(APIView):
 
 # Group endpoint behavior for Movements Summary View.
 class MovementsSummaryView(APIView):
-    """GET /payments/movements/summary/ - money-in (7d) / money-out (7d, net of WHT) / pending / failed
-    across both gateways, for the Transactions Log header.
+    """GET /payments/movements/summary/ - money-in (7d) / money-out (7d, net of WHT) / transfers
+    (7d) / pending / failed across collections, payouts and held settlements, for the
+    Transactions Log header.
+
+    Money out is money spent: a settlement of held money is a transfer of the
+    tenant's own money, counted in ``transfers7d`` instead.
 
     docstring-name: Movements summary
     """
@@ -1209,15 +1264,24 @@ class MovementsSummaryView(APIView):
             pending=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["PENDING"][0])),
             failed=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["FAILED"][0])),
         )
+        from .constants import PayoutPurpose
+
+        settling = Q(batch__purpose=PayoutPurpose.SETTLEMENT)
         p = pos.aggregate(  # Money out is what was sent, net of WHT.
             out7d=Coalesce(Sum(services.payout_sent_expression(),
-                               filter=Q(status="PAID", confirmed_at__gte=cutoff)), 0),
+                               filter=Q(status="PAID", confirmed_at__gte=cutoff) & ~settling), 0),
+            settled7d=Coalesce(Sum(services.payout_sent_expression(),
+                                   filter=Q(status="PAID", confirmed_at__gte=cutoff) & settling), 0),
             pending=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["PENDING"][1])),
             failed=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["FAILED"][1])),
         )
+        held_settled = _held_settlements(reach).filter(
+            status="PAID", paid_at__gte=cutoff).aggregate(total=Coalesce(Sum("amount"), 0))["total"]
+        transfers = p["settled7d"] + held_settled
         return success_response("Movements summary retrieved.", data={
             "in7d": {"kobo": c["in7d"], "naira": format_naira(c["in7d"])},
             "out7d": {"kobo": p["out7d"], "naira": format_naira(p["out7d"])},
+            "transfers7d": {"kobo": transfers, "naira": format_naira(transfers)},
             "pending": c["pending"] + p["pending"],
             "failed": c["failed"] + p["failed"],
         })

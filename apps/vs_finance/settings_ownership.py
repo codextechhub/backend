@@ -111,6 +111,30 @@ ACCOUNT_MAPPING_CONSUMERS = {
         "vs_payments.services._book_receipt; vs_payments.settlement.settle_collections",
         "Holds confirmed online payments until the provider's settlement reaches a bank.",
     ),
+    AccountMappingKey.CLIENT_FUNDS_HELD: _consumer(
+        "Held online money (platform books)",
+        "vs_payments.held",
+        "Carries what the platform's provider balance holds for each client branch, "
+        "raised by its online payments and lowered by its settlements and payouts.",
+    ),
+    AccountMappingKey.CLIENT_FUNDS_OWED: _consumer(
+        "Held online money (platform books)",
+        "vs_payments.held",
+        "Carries what a client branch owes the platform when a chargeback took more "
+        "than the platform held for it; its next payments and settlement repay it.",
+    ),
+    AccountMappingKey.CHARGEBACKS: _consumer(
+        "Chargebacks on held online payments",
+        "vs_payments.held.record_dispute",
+        "Receives the loss when a payer's bank takes back an online payment the "
+        "platform held for the branch.",
+    ),
+    AccountMappingKey.PROVIDER_BALANCE: _consumer(
+        "Held online money (platform books)",
+        "vs_payments.held",
+        "Carries the platform's payment provider balance, the asset behind the "
+        "client funds it holds.",
+    ),
 }
 
 

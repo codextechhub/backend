@@ -23,6 +23,10 @@ reference, which is what keeps a re-delivery or a replay from creating a second 
 An event only ever resolves a record of the provider that signed it. A signature proves
 which provider sent the event, and nothing more: it does not make that provider an
 authority over another provider's collections or payouts. See :func:`_find_record`.
+
+A chargeback or a refund made at the provider is matched to the payment it concerns,
+recorded and raised to people (:func:`vs_payments.held.record_dispute`), and never
+booked automatically: how the loss is borne is a decision, not a reflex.
 """
 from __future__ import annotations
 
@@ -231,6 +235,15 @@ def _dispatch(event: WebhookEvent, parsed, record=None) -> None:
         else:  # If we cannot resolve the payout, keep the webhook as an ignored audit record.
             event.status = WebhookStatus.IGNORED  # Record that the payload was valid but unmatched.
             event.error = "No matching payout instruction."  # Save a clear operator-facing explanation.
+    elif parsed.direction in (PaymentDirection.DISPUTE, PaymentDirection.REFUND):
+        from .held import record_dispute
+
+        if record is not None:
+            event.collection = record
+            event.save(update_fields=["collection", "updated_at"])
+        record_dispute(event, record, parsed)  # Recorded and raised; never booked.
+        event.status = WebhookStatus.PROCESSED
+        event.error = "" if record is not None else "No matching collection; raised to operators."
     else:  # Unknown event directions are stored but not acted on.
         event.status = WebhookStatus.IGNORED  # Mark the event ignored rather than failing it.
         event.error = f"Unhandled direction '{parsed.direction}'."  # Preserve the unsupported direction for debugging.
@@ -314,6 +327,8 @@ def _find_record(parsed, provider: str):
     provider = provider.upper()
     if parsed.direction == PaymentDirection.COLLECTION:
         record, kind = _find_collection(parsed, provider), "collection"
+    elif parsed.direction in (PaymentDirection.DISPUTE, PaymentDirection.REFUND):
+        record, kind = _find_disputed_collection(parsed, provider), "collection"
     elif parsed.direction == PaymentDirection.PAYOUT:
         record, kind = _find_payout(parsed, provider), "payout"
     else:
@@ -339,6 +354,19 @@ def _find_collection(parsed, provider: str):
         if intent:
             return intent
     return _deposit_collection(parsed, provider)  # An unsolicited virtual-account transfer.
+
+
+def _find_disputed_collection(parsed, provider: str):
+    """The collection a chargeback or refund event concerns; never creates one."""
+    if parsed.reference:
+        intent = CollectionIntent.objects.filter(reference=parsed.reference).first()
+        if intent:
+            return intent
+    if parsed.provider_reference:
+        return CollectionIntent.objects.filter(
+            provider=provider, provider_reference=parsed.provider_reference,
+        ).first()
+    return None
 
 
 # Support the deposit collection workflow.

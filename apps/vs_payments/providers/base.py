@@ -104,12 +104,16 @@ class TransferResult:
 class WebhookParseResult:
     """Normalised view of an inbound webhook event.
 
-    ``direction`` is ``"COLLECTION"`` or ``"PAYOUT"``; ``status`` is the matching neutral
-    status value. ``dedupe_key`` is the stable idempotency key extracted from the event.
+    ``direction`` is a :class:`~vs_payments.constants.PaymentDirection` value:
+    ``"COLLECTION"`` or ``"PAYOUT"``, whose ``status`` is the matching neutral status
+    value, or ``"DISPUTE"`` (a chargeback) or ``"REFUND"`` (a refund made at the
+    provider), which name the earlier payment they concern by ``reference`` or
+    ``provider_reference``. ``dedupe_key`` is the stable idempotency key extracted
+    from the event.
     """
 
     event_type: str  # Provider event type name.
-    direction: str                   # PaymentDirection value  # COLLECTION or PAYOUT.
+    direction: str  # A PaymentDirection value.
     reference: str = ""              # our merchant reference if echoed back  # Merchant reference when available.
     provider_reference: str = ""  # PSP-side reference used for matching.
     status: str = ""                 # CollectionStatus / PayoutStatus value  # Neutral lifecycle state.
@@ -218,6 +222,14 @@ class PayoutProvider(WebhookCapable):
     def verify_transfer(self, *, reference: str,
                         provider_reference: str = "") -> TransferResult:
         ...  # Re-check transfer status with the PSP.
+
+    def transfer_fee(self, amount: int) -> int:
+        """Kobo the provider charges, on top of ``amount``, to transfer it to a bank account.
+
+        Charged to the sender's balance, not deducted from what arrives. None by
+        default; a provider with a fee schedule says so.
+        """
+        return 0
 
 
 # Group behavior for Provider.

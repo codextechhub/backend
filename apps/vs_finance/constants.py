@@ -846,6 +846,13 @@ class AccountMappingKey(models.TextChoices):
     BAD_DEBT_RECOVERED = "BAD_DEBT_RECOVERED", "Bad debts recovered"
     FORFEITED_DEPOSIT_INCOME = "FORFEITED_DEPOSIT_INCOME", "Forfeited deposits income"
     GATEWAY_CLEARING = "GATEWAY_CLEARING", "Gateway clearing"
+    # Platform books only: what the platform's provider balance holds for each
+    # client branch whose online money it keeps, and the balance itself.
+    CLIENT_FUNDS_HELD = "CLIENT_FUNDS_HELD", "Client funds held"
+    PROVIDER_BALANCE = "PROVIDER_BALANCE", "Payment provider balance"
+    CLIENT_FUNDS_OWED = "CLIENT_FUNDS_OWED", "Owed by clients"
+    # Online payments a payer's bank took back (a chargeback) on held money.
+    CHARGEBACKS = "CHARGEBACKS", "Payment chargebacks"
 
 #: Reserved code for CodeX's own platform set of books (the operator's entity).
 #: An uppercase identifier (like all entity codes); the display name is "CodeX".

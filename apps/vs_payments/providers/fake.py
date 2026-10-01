@@ -52,6 +52,8 @@ class FakeProvider(Provider):
         self.subaccounts_named: dict[str, str] = {}
         # Subaccounts created or refreshed, by code: the bank details they settle to.
         self.subaccounts: dict[str, dict] = {}
+        # The fee (kobo) every transfer costs the sender's balance.
+        self.transfer_fee_kobo: int = 0
 
     def healthcheck(self) -> bool:
         return True
@@ -131,6 +133,9 @@ class FakeProvider(Provider):
             raw={"amount": amount, "account_number": account_number},  # Keep core transfer inputs.
         )
 
+    def transfer_fee(self, amount):
+        return self.transfer_fee_kobo
+
     def verify_transfer(self, *, reference, provider_reference=""):
         status = self.forced_status.get(reference, "PROCESSING")
         return TransferResult(  # Return a deterministic transfer verification result.
@@ -161,7 +166,13 @@ class FakeProvider(Provider):
     # Handle the parse webhook workflow.
     def parse_webhook(self, *, payload, raw_body, headers):
         data = payload.get("data", payload)
-        direction = "PAYOUT" if payload.get("event", "").startswith("transfer") else "COLLECTION"
+        event = payload.get("event", "")
+        direction = (
+            "PAYOUT" if event.startswith("transfer")
+            else "DISPUTE" if event.startswith("charge.dispute")
+            else "REFUND" if event.startswith("refund")
+            else "COLLECTION"
+        )
         status = data.get("status", "")
         return WebhookParseResult(  # Return a neutral parse result for the webhook pipeline.
             event_type=payload.get("event", ""),
@@ -175,8 +186,8 @@ class FakeProvider(Provider):
             # Mirrors Paystack: a transfer into a dedicated NUBAN names the receiving
             # account on the event, and nothing else ties it to a payer we know.
             destination_account_number=(
-                "" if direction == "PAYOUT"
-                else str(data.get("receiver_account_number", "") or "")
+                str(data.get("receiver_account_number", "") or "")
+                if direction == "COLLECTION" else ""
             ),
             raw=payload,  # Preserve the original payload.
         )

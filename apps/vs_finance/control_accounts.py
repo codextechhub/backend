@@ -13,8 +13,9 @@ account, an opening supplier bill, says so explicitly with ``allow_control_accou
 Which accounts are kept is read from the books, never from a list kept by hand:
 
 * the entity's account mappings for the roles a sub-ledger owns (receivables,
-  payables, customer credit, vendor advances, GR/IR, inventory, output VAT, WHT
-  and gateway clearing);
+  payables, customer credit, vendor advances, GR/IR, inventory, output VAT, WHT,
+  gateway clearing, and on the platform's books the client funds it holds and
+  the provider balance behind them);
 * the owning rows: every customer's receivable account, every bank account's and
   petty cash fund's ledger, and every tax obligation's payable and recoverable
   accounts;
@@ -51,6 +52,12 @@ _MAPPED_ROLES = {
         "the tax ledger", "the vendor payment that withholds it, or a tax filing"),
     AccountMappingKey.GATEWAY_CLEARING: (
         "the payment gateway", "an online collection or a gateway settlement"),
+    AccountMappingKey.CLIENT_FUNDS_HELD: (
+        "the held-funds ledger", "a client's online payment, settlement or payout"),
+    AccountMappingKey.PROVIDER_BALANCE: (
+        "the held-funds ledger", "a client's online payment, settlement or payout"),
+    AccountMappingKey.CLIENT_FUNDS_OWED: (
+        "the held-funds ledger", "a client's chargeback, online payment or settlement"),
 }
 
 _BANK = ("its bank account", "a receipt, a vendor payment or a bank transaction")
@@ -77,29 +84,30 @@ def register_control_account_provider(fn):
 
 def control_accounts(entity) -> dict:
     """``{account_id: (kept_by, use_instead)}`` for every account a sub-ledger keeps."""
-    from .account_mappings import ACCOUNT_MAPPING_SPECS
+    from .account_mappings import ACCOUNT_MAPPING_SPECS, mapping_keys_for
     from .models import (
         Account, BankAccount, Customer, FinanceAccountMapping, PettyCashFund, TaxObligation,
     )
 
     kept: dict = {}
+    roles = {key: owner for key, owner in _MAPPED_ROLES.items() if key in mapping_keys_for(entity)}
 
     def keep(account_id, owner):
         if account_id is not None and account_id not in kept:
             kept[account_id] = owner
 
     overrides = dict(
-        FinanceAccountMapping.objects.filter(entity=entity, key__in=list(_MAPPED_ROLES))
+        FinanceAccountMapping.objects.filter(entity=entity, key__in=list(roles))
         .values_list("key", "account_id")
     )
     defaults = dict(
         Account.objects.filter(
             entity=entity,
-            code__in=[ACCOUNT_MAPPING_SPECS[key][0] for key in _MAPPED_ROLES
+            code__in=[ACCOUNT_MAPPING_SPECS[key][0] for key in roles
                       if key not in overrides],
         ).values_list("code", "id")
     )
-    for key, owner in _MAPPED_ROLES.items():
+    for key, owner in roles.items():
         keep(overrides.get(key) or defaults.get(ACCOUNT_MAPPING_SPECS[key][0]), owner)
     for account_id in BankAccount.objects.filter(entity=entity).values_list("gl_account_id", flat=True):
         keep(account_id, _BANK)

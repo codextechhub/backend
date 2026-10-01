@@ -43,7 +43,32 @@ ACCOUNT_MAPPING_SPECS = {
     # Money a payment provider has confirmed that has not yet reached a bank. It
     # empties as each settlement lands, so a balance here is money in transit.
     AccountMappingKey.GATEWAY_CLEARING: ("1125", AccountType.ASSET),
+    # The platform's own books: money its provider balance holds for clients
+    # (a liability, one sub-ledger row per client branch) and that balance.
+    AccountMappingKey.CLIENT_FUNDS_HELD: ("2180", AccountType.LIABILITY),
+    AccountMappingKey.PROVIDER_BALANCE: ("1127", AccountType.ASSET),
+    # What a client branch owes the platform once a chargeback took more than it
+    # held: the debit side of its held balance, kept apart from the liability.
+    AccountMappingKey.CLIENT_FUNDS_OWED: ("1128", AccountType.ASSET),
+    # A held payment its payer's bank took back, the branch's loss.
+    AccountMappingKey.CHARGEBACKS: ("5520", AccountType.EXPENSE),
 }
+
+#: Roles only the platform's books carry. Every other set of books neither lists
+#: nor maps them: a tenant holds no money for other tenants.
+PLATFORM_ONLY_MAPPING_KEYS = frozenset({
+    AccountMappingKey.CLIENT_FUNDS_HELD,
+    AccountMappingKey.PROVIDER_BALANCE,
+    AccountMappingKey.CLIENT_FUNDS_OWED,
+})
+
+
+def mapping_keys_for(entity):
+    """The account roles ``entity``'s books list and may map."""
+    if getattr(entity, "is_platform", False):
+        return list(ACCOUNT_MAPPING_SPECS)
+    return [key for key in ACCOUNT_MAPPING_SPECS if key not in PLATFORM_ONLY_MAPPING_KEYS]
+
 
 DEFAULT_CODE_TO_MAPPING_KEY = {
     code: key for key, (code, _account_type) in ACCOUNT_MAPPING_SPECS.items()
@@ -105,7 +130,8 @@ def account_mapping_snapshot(entity):
         for account in Account.objects.filter(entity=entity, code__in=default_codes)
     }
     rows = []
-    for key, (default_code, expected_type) in ACCOUNT_MAPPING_SPECS.items():
+    for key in mapping_keys_for(entity):
+        default_code, expected_type = ACCOUNT_MAPPING_SPECS[key]
         mapping = mappings.get(key)
         account = mapping.account if mapping else defaults.get(default_code)
         rows.append({
@@ -159,7 +185,7 @@ def update_account_mappings(*, request, entity, values, actor_user):
 
     if not isinstance(values, dict) or not values:
         raise ValidationError({"mappings": "Provide at least one account mapping."})
-    unknown = sorted(set(values) - set(ACCOUNT_MAPPING_SPECS))
+    unknown = sorted(set(values) - set(mapping_keys_for(entity)))
     if unknown:
         raise ValidationError({"mappings": f"Unknown account mapping keys: {', '.join(unknown)}."})
 

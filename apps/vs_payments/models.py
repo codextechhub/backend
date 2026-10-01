@@ -27,9 +27,12 @@ from .constants import (
     CollectionChannel,
     CollectionStatus,
     CustodyMode,
+    HeldMovementKind,
+    HeldSettlementStatus,
     PaymentAuditAction,
     PaymentProvider,
     PayoutBatchStatus,
+    PayoutPurpose,
     PayoutStatus,
     VirtualAccountStatus,
     WebhookStatus,
@@ -46,7 +49,10 @@ class VirtualAccount(TimeStampedModel):
     ``branch`` is set when the account is provisioned
     (:func:`vs_payments.services.virtual_account_branch_id`) and is the branch
     whose subaccount the provider settles deposits to when the tenant takes
-    payments directly.
+    payments directly. ``settlement_subaccount`` is that subaccount, named when
+    the account was created; an account without one settles to the platform's
+    provider balance, so its deposits are held for the branch
+    (:mod:`vs_payments.held`).
     """
 
     entity = models.ForeignKey(
@@ -81,6 +87,15 @@ class VirtualAccount(TimeStampedModel):
     status = models.CharField(
         max_length=12, choices=VirtualAccountStatus.choices,
         default=VirtualAccountStatus.ACTIVE,
+    )
+    settlement_subaccount = models.CharField(
+        max_length=64, blank=True, default="",
+        help_text="The provider subaccount deposits settle to; blank when they settle to "
+                  "the platform's balance.",
+    )
+    replaced_by = models.ForeignKey(
+        "self", on_delete=models.PROTECT, related_name="replaces", null=True, blank=True,
+        help_text="The account issued in place of this retired one.",
     )
     raw = models.JSONField(default=dict, blank=True)
 
@@ -126,6 +141,12 @@ class CollectionIntent(TimeStampedModel):
     deliberately not named ``*journal*``: finance reads a journal's owning document
     from the foreign keys so named (:func:`vs_finance.posting._journal_document_owner`),
     and one here would claim the journal for this collection instead.
+
+    ``held_by_platform`` says the money settled to the platform's provider balance
+    rather than a branch subaccount, recorded when the collection is confirmed:
+    the platform then owes it to the branch (:mod:`vs_payments.held`) and pays it
+    on in a settlement run, which claims it through ``held_settlement``. A
+    settlement that failed releases its claim.
     """
 
     entity = models.ForeignKey(
@@ -195,6 +216,15 @@ class CollectionIntent(TimeStampedModel):
         related_name="settled_collections", null=True, blank=True,
         help_text="The journal that moved this payment from clearing to a bank.",
     )
+    held_by_platform = models.BooleanField(
+        default=False,
+        help_text="The money settled to the platform's provider balance, which owes it to the branch.",
+    )
+    held_settlement = models.ForeignKey(
+        "HeldSettlement", on_delete=models.SET_NULL,
+        related_name="collections", null=True, blank=True,
+        help_text="The settlement run paying this held payment on to its branch's bank.",
+    )
     metadata = models.JSONField(default=dict, blank=True)
     raw_response = models.JSONField(default=dict, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
@@ -233,6 +263,8 @@ class CollectionIntent(TimeStampedModel):
             return False
         if self.status != CollectionStatus.SUCCEEDED or self.payment.status != DocumentStatus.POSTED:
             return False
+        if self.held_settlement_id and self.held_settlement.status == HeldSettlementStatus.PAID:
+            return False
         return (self.settlement_entry_id is None
                 or self.settlement_entry.status != DocumentStatus.POSTED)
 
@@ -251,6 +283,12 @@ class PayoutBatch(TimeStampedModel):
     batch whose lines would leave two branches' banks is refused when it is
     assembled (:func:`vs_payments.services.create_payout_batch`). The approval
     engine reads it as the document's branch.
+
+    ``purpose`` says what it pays: suppliers, or (``SETTLEMENT``) the money the
+    platform holds for a client branch, paid into that branch's collection
+    account. A settlement batch is the platform's, in the platform's books, and
+    goes through the platform's own two-person settlement route
+    (:func:`vs_payments.held.build_settlement`).
     """
 
     # vs_workflow document-type token. Every provider submission must carry the exact
@@ -271,6 +309,9 @@ class PayoutBatch(TimeStampedModel):
         help_text="The one branch every line of the batch pays from.",
     )
     provider = models.CharField(max_length=16, choices=PaymentProvider.choices)
+    purpose = models.CharField(
+        max_length=12, choices=PayoutPurpose.choices, default=PayoutPurpose.VENDOR,
+    )
     reference = models.CharField(
         max_length=64, unique=True,
         help_text="Our stable provider reference for this batch.",
@@ -419,6 +460,10 @@ class PaymentCustodySettings(TimeStampedModel):
     ``settlement_interval_days`` is how often a held-mode tenant is paid what the
     platform holds for it. ``clearing_stale_days`` is how long a confirmed payment
     may sit in gateway clearing before the period close warns.
+
+    A move to ``DIRECT`` that has reached its month waits until the platform
+    holds nothing for the tenant (:func:`vs_payments.held.apply_custody_switch`);
+    ``pending_note`` says what it is waiting for.
     """
 
     tenant = models.OneToOneField(
@@ -444,6 +489,10 @@ class PaymentCustodySettings(TimeStampedModel):
             MaxValueValidator(CLEARING_STALE_DAYS_RANGE[1]),
         ],
     )
+    pending_note = models.CharField(
+        max_length=500, blank=True, default="",
+        help_text="Why a pending change whose month has come has not taken effect yet.",
+    )
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         related_name="+", null=True, blank=True,
@@ -454,6 +503,204 @@ class PaymentCustodySettings(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.tenant_id}: {self.mode}"
+
+
+class HeldBalance(TimeStampedModel):
+    """What the platform's provider balance holds for one branch of a held-mode tenant.
+
+    One row per branch, the running sum of its :class:`HeldMovement` rows: what
+    its online payments brought in after the provider's fees, less what its
+    settlements, online payouts and chargebacks have taken. It is the row a
+    payout or settlement locks while it checks the branch can afford the
+    transfer, so two transfers for one branch can never both spend the same
+    money. It mirrors the branch's line of the client-funds liability in the
+    platform's own books.
+
+    Only a chargeback can take it below zero: the platform's balance lost money
+    the branch no longer had with it. A negative balance is what the branch owes
+    the platform (``CLIENT_FUNDS_OWED`` in the platform's books); its next
+    payments repay it before anything is settled to it again.
+    """
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT, related_name="held_balances",
+    )
+    branch = models.OneToOneField(
+        "vs_tenants.Branch", on_delete=models.PROTECT, related_name="held_balance",
+    )
+    balance = models.BigIntegerField(default=0, help_text="Kobo held for the branch.")
+
+    class Meta:
+        indexes = [models.Index(fields=["tenant"])]
+        ordering = ["tenant_id", "branch_id"]
+
+    def __str__(self) -> str:
+        return f"{self.branch_id}: {self.balance} kobo held"
+
+
+class HeldMovement(TimeStampedModel):
+    """One change in what the platform holds for a branch: its held-funds sub-ledger.
+
+    ``amount`` is signed kobo: a collection raises the balance by what reached the
+    provider balance (the payment less the provider's fee); a payout or a
+    settlement lowers it by what leaves the provider balance for it, when the
+    transfer is dispatched; a release gives that back when the transfer fails; a
+    chargeback lowers it by what the payer's bank took. ``balance_after`` is the
+    branch's balance once the movement applied.
+
+    ``platform_journal`` is the entry in the platform's own books moving the
+    provider balance by ``amount`` against the client-funds liability, or, for
+    the part of the movement below zero, against what the branch owes
+    (``CLIENT_FUNDS_OWED``), in the platform's own branch.
+    ``tenant_journal`` is a chargeback's entry in the tenant's books (Dr
+    chargebacks, Cr gateway clearing, in the branch). It belongs to this row, so it cannot be reversed by
+    hand. It is empty, with ``journal_error`` saying why, while those books
+    cannot take it (no open period, no account), and is posted later
+    (:func:`vs_payments.held.post_pending_platform_journals`): the movement itself
+    is never refused, because the money it records has already moved.
+    """
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT, related_name="held_movements",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT, related_name="held_movements",
+    )
+    kind = models.CharField(max_length=12, choices=HeldMovementKind.choices)
+    amount = models.BigIntegerField(help_text="Signed kobo: positive raises the held balance.")
+    balance_after = models.BigIntegerField(default=0, help_text="The branch's held balance after it.")
+    occurred_on = models.DateField()
+    collection = models.ForeignKey(
+        CollectionIntent, on_delete=models.PROTECT, related_name="held_movements",
+        null=True, blank=True,
+    )
+    payout = models.ForeignKey(
+        PayoutInstruction, on_delete=models.PROTECT, related_name="held_movements",
+        null=True, blank=True,
+    )
+    reference = models.CharField(max_length=64, blank=True, default="")
+    narration = models.CharField(max_length=255, blank=True, default="")
+    platform_journal = models.ForeignKey(
+        "vs_finance.JournalEntry", on_delete=models.PROTECT,
+        related_name="held_movements", null=True, blank=True,
+    )
+    journal_error = models.CharField(max_length=255, blank=True, default="")
+    tenant_journal = models.ForeignKey(
+        "vs_finance.JournalEntry", on_delete=models.PROTECT,
+        related_name="held_tenant_movements", null=True, blank=True,
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        related_name="+", null=True, blank=True,
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["collection"], condition=models.Q(kind="COLLECTION"),
+                name="uniq_payments_held_collection_once",
+            ),
+            models.UniqueConstraint(
+                fields=["collection"], condition=models.Q(kind="DISPUTE"),
+                name="uniq_payments_held_dispute_once",
+            ),
+            models.UniqueConstraint(
+                fields=["branch"], condition=models.Q(kind="OPENING"),
+                name="uniq_payments_held_opening_once",
+            ),
+            models.UniqueConstraint(
+                fields=["payout", "kind"], condition=models.Q(payout__isnull=False),
+                name="uniq_payments_held_payout_kind_once",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "branch"]),
+        ]
+        ordering = ["-id"]
+
+    def __str__(self) -> str:
+        return f"{self.kind} {self.amount} kobo for branch {self.branch_id}"
+
+
+class HeldSettlement(TimeStampedModel):
+    """One settlement run's payment to one branch of what the platform holds for it.
+
+    Claims every held payment of the branch confirmed before ``cutoff`` and not yet
+    settled (through :attr:`CollectionIntent.held_settlement`), so no payment is
+    ever paid on twice. What it takes from the branch's held balance is those
+    payments less the provider's fees (``fees``), capped at the balance, which
+    online payouts may already have drawn on; ``amount`` is that less the
+    provider's fee for the transfer itself (``transfer_fee``), which the branch
+    bears.
+
+    ``entity`` is the tenant's books, which record the money arriving. The
+    transfer is the platform's: ``batch`` is a ``SETTLEMENT`` payout batch in the
+    platform's books, paying the branch's collection account, put forward by a
+    platform operator and approved by two platform people
+    (:mod:`vs_payments.held`). Once the transfer is confirmed the tenant's books
+    record ``settlement_journal`` (Dr bank, Dr bank charges, Cr gateway clearing)
+    and the payments leave clearing; nobody at the tenant acts. A settlement
+    with nothing to transfer (its payments' money was spent on payouts) books
+    only its fees.
+
+    A failed transfer marks it ``FAILED`` and releases its payments for the next
+    run. At most one is ``PENDING`` per branch, and a run is idempotent per branch
+    and day (``run_on``), so a repeated run builds nothing new.
+    """
+
+    entity = models.ForeignKey(
+        "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="held_settlements",
+    )
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT, related_name="held_settlements",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT, related_name="held_settlements",
+    )
+    status = models.CharField(
+        max_length=10, choices=HeldSettlementStatus.choices, default=HeldSettlementStatus.PENDING,
+    )
+    run_on = models.DateField(help_text="The tenant's day the run built this settlement.")
+    final = models.BooleanField(
+        default=False, help_text="Built by a switch to direct custody, to pay out everything held.",
+    )
+    cutoff = models.DateTimeField(help_text="Payments confirmed before this instant are included.")
+    gross = MoneyField(default=0, help_text="The claimed payments, in kobo.")
+    fees = MoneyField(default=0, help_text="What the provider kept from them, in kobo.")
+    amount = MoneyField(default=0, help_text="Kobo transferred to the branch's bank.")
+    transfer_fee = MoneyField(
+        default=0, help_text="The provider's fee for the transfer, borne by the branch, in kobo.")
+    bank_account = models.ForeignKey(
+        "vs_finance.BankAccount", on_delete=models.PROTECT,
+        related_name="held_settlements",
+    )
+    batch = models.OneToOneField(
+        PayoutBatch, on_delete=models.PROTECT, related_name="held_settlement",
+        null=True, blank=True,
+    )
+    settlement_journal = models.ForeignKey(
+        "vs_finance.JournalEntry", on_delete=models.PROTECT,
+        related_name="held_settlements", null=True, blank=True,
+    )
+    failure_reason = models.CharField(max_length=255, blank=True, default="")
+    paid_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["branch"], condition=models.Q(status="PENDING"),
+                name="uniq_payments_held_settlement_one_pending",
+            ),
+            models.UniqueConstraint(
+                fields=["branch", "run_on", "final"],
+                name="uniq_payments_held_settlement_branch_day",
+            ),
+        ]
+        indexes = [models.Index(fields=["entity", "branch", "status"])]
+        ordering = ["-id"]
+
+    def __str__(self) -> str:
+        return f"Settlement {self.pk} to branch {self.branch_id}: {self.amount} kobo ({self.status})"
 
 
 class WebhookEvent(TimeStampedModel):

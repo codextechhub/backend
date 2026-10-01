@@ -1014,6 +1014,28 @@ def _build_default_templates() -> dict:
             ),
         },
 
+        # ── payments.dispute_received ───────────────────────────────────────
+        # Recorded, never booked: the reader decides how the loss is borne.
+        ("payments.dispute_received", C.IN_APP): {
+            "subject": "{{ kind_label }} on {{ amount_naira }} at {{ entity_code }}",
+            "body": (
+                "Payment {{ reference }}: {{ event_type }}. {{ booking }}"
+            ),
+        },
+        ("payments.dispute_received", C.EMAIL): {
+            "subject": "{{ kind_label }} - {{ entity_name }}",
+            "body": (
+                "The payment provider reported a {{ kind_label|lower }} on an online "
+                "payment.\n\n"
+                "Entity: {{ entity_name }} ({{ entity_code }})\n"
+                "Payment: {{ reference }}\n"
+                "Amount: {{ amount_naira }}\n"
+                "Provider event: {{ event_type }}\n"
+                "Custody: {{ custody_label }}\n\n"
+                "{{ booking }} {{ guidance }}\n"
+            ),
+        },
+
         # ── billing.invoice_overdue ─────────────────────────────────────────
         ("billing.invoice_overdue", C.IN_APP): {
             "subject": (
