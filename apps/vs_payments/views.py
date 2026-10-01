@@ -38,7 +38,7 @@ from vs_rbac.permissions import (
     IsAuthenticatedAndActive,
     IsVisionStaff,
 )
-from vs_rbac.scoping import transaction_branch_q
+from vs_rbac.scoping import branch_q, transaction_branch_q, transaction_branch_scope
 
 from . import reconciliation, services, webhooks
 from .reach import PaymentsReach
@@ -193,10 +193,11 @@ def _required_idempotency_key(request) -> str:
 def _payout_vendor(request, entity, reference):
     """Resolve a vendor by id or code inside the selected entity and the caller's branches.
 
-    Read exclusively, as :class:`~vs_payments.reach.PaymentsReach` reads the payout
-    through its vendor: a vendor of another branch, or one every branch shares,
-    answers like one that does not exist, so a clerk never raises a payout they
-    then cannot open.
+    A vendor is a shared record, read inclusively as procurement reads it: Ikeja's
+    clerk may pay a vendor filed under Ikeja or one every branch shares, and a
+    vendor Lekki keeps to itself answers like one that does not exist. Whose money
+    pays it is decided by the bank it leaves (:func:`_payout_source`), not by the
+    vendor.
     """
     from django.db.models import Q
     from vs_procurement.models import Vendor
@@ -207,11 +208,33 @@ def _payout_vendor(request, entity, reference):
     lookup = Q(code=raw) | Q(pk=raw) if raw.isdigit() else Q(code=raw)
     vendor = (
         Vendor.objects.filter(entity=entity)
-        .filter(transaction_branch_q(request)).filter(lookup).first()
+        .filter(branch_q(request)).filter(lookup).first()
     )
     if vendor is None:
         raise ValidationError({"vendor": "No such vendor in this entity."})
     return vendor
+
+
+def _payout_source(request, entity, reference):
+    """The ledger account a payout leaves, held to the caller's own branches' banks.
+
+    A payout is the branch of the bank it leaves
+    (:func:`vs_payments.services.payout_branch_id`) and is reached by that branch
+    alone (:class:`~vs_payments.reach.PaymentsReach`), so a branch-bound clerk may
+    raise only a payout leaving one of their own branches' banks: one they can
+    then open, and one spending their own branch's money. Naming no account pays
+    from the default cash account, which is held to the same rule. Where that
+    account is Lekki's bank, Ikeja's clerk naming none is asked to name Ikeja's
+    bank, rather than raising a payout of Lekki's money they could never open. A
+    whole-school caller is not narrowed and is not asked.
+    """
+    source = _resolve_account(request, entity, reference, "source_account")
+    scope = transaction_branch_scope(request)
+    if scope.is_narrowed and services.payout_branch_id(entity, source) not in scope.branch_ids:
+        raise ValidationError({"source_account": (
+            "Pay this from a bank account of your own branch."
+        )})
+    return source
 
 
 def _legacy_beneficiary_fields(body) -> dict:
@@ -522,7 +545,7 @@ class PayoutListCreateView(APIView):
         if amount <= 0:  # Reject invalid payout amounts.
             raise ValidationError({"amount": "A positive amount (in kobo) is required."})
         vendor = _payout_vendor(request, entity, body.get("vendor"))
-        source = _resolve_account(request, entity, body.get("source_account"), "source_account")
+        source = _payout_source(request, entity, body.get("source_account"))
         item = {
             "amount": amount, "vendor": vendor,
             "narration": body.get("narration", ""),
@@ -634,7 +657,7 @@ class PayoutBatchListCreateView(APIView):
         raw_items = body.get("items")
         if not isinstance(raw_items, list) or not raw_items:  # Require at least one item.
             raise ValidationError({"items": "A non-empty list of payout items is required."})
-        source = _resolve_account(request, entity, body.get("source_account"), "source_account")
+        source = _payout_source(request, entity, body.get("source_account"))
         items = []  # Build the normalized batch items here.
         for idx, raw in enumerate(raw_items):  # Normalize each submitted line item.
             amount = int(raw.get("amount") or 0)

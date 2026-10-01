@@ -2,8 +2,8 @@
 
 Corona runs Ikeja, Lekki and Yaba. Ikeja's clerk works payments for Ikeja. They
 must not raise a payment request or a virtual account for a Lekki family, or pay
-out to a vendor Lekki keeps to itself, any more than the finance screens let
-them. Nor may they see, count or change Lekki's collections, virtual accounts,
+out to a vendor Lekki keeps to itself or from a bank that is not Ikeja's, any
+more than the finance screens let them. Nor may they see, count or change Lekki's collections, virtual accounts,
 payouts or their log. Every gateway record names its branch in its own column
 and is read exclusively: a payout from Lekki's bank is Lekki's whoever it pays,
 and a record not yet given a branch is not theirs either, because nothing says
@@ -207,26 +207,70 @@ class PaymentsNameOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         self.assertFalse(VirtualAccount.objects.filter(customer=self.lekki_customer).exists())
 
     def test_a_payout_to_a_vendor_another_branch_keeps(self):
+        """A vendor is shared master data: Ikeja's own and every branch's are payable, Lekki's is not."""
+        ledgers = self._collections_ledgers()
         lekki_vendor = self.vendor("VLEK", self.lekki)
         client = self.clerk("payments.payout.create")
-        refused = self.post(client, "payouts/", {"amount": 5_000, "vendor": lekki_vendor.pk},
-                            HTTP_IDEMPOTENCY_KEY="reach-single-1")
+        refused = self.post(client, "payouts/", {
+            "amount": 5_000, "vendor": lekki_vendor.pk, "source_account": ledgers["IKJ"].code,
+        }, HTTP_IDEMPOTENCY_KEY="reach-single-1")
         self.assertEqual(refused.status_code, 400, refused.data)
         self.assertIn("No such vendor in this entity.", str(refused.data))
-        shared = self.post(client, "payouts/", {"amount": 5_000, "vendor": self.vendor("VALL", None).pk},
-                           HTTP_IDEMPOTENCY_KEY="reach-single-shared")
-        self.assertEqual(shared.status_code, 400, shared.data)
-        self.assertIn("No such vendor in this entity.", str(shared.data))
-        accepted = self.post(client, "payouts/", {"amount": 5_000, "vendor": self.vendor("VIKJ", self.ikeja).pk},
-                             HTTP_IDEMPOTENCY_KEY="reach-single-ok")
-        self.assertNotIn("No such vendor", str(accepted.data))
+        for vendor in (self.vendor("VALL", None), self.vendor("VIKJ", self.ikeja)):
+            with self.subTest(vendor=vendor.code):
+                accepted = self.post(client, "payouts/", {
+                    "amount": 5_000, "vendor": vendor.pk, "source_account": ledgers["IKJ"].code,
+                }, HTTP_IDEMPOTENCY_KEY=f"reach-single-{vendor.code}")
+                self.assertNotIn("No such vendor", str(accepted.data))
+                self.assertNotIn("your own branch", str(accepted.data))
+
+    def test_a_payout_leaves_only_a_bank_of_the_clerks_own_branch(self):
+        """Ikeja's clerk pays from Ikeja's bank; Lekki's bank, or none named, is refused.
+
+        Naming no account pays from the default cash account, which is no bank of
+        Ikeja's here, so the payout would spend money that is not Ikeja's and be
+        one Ikeja's clerk could never open.
+        """
+        from vs_procurement.constants import VendorKycStatus
+
+        from .approvals import ensure_tenant_approval_templates
+        from .models import PayoutInstruction
+
+        ensure_tenant_approval_templates(self.tenant)
+        ledgers = self._collections_ledgers()
+        vendor = self.vendor("VIKJ", self.ikeja)
+        type(vendor).objects.filter(pk=vendor.pk).update(
+            kyc_status=VendorKycStatus.VERIFIED, bank_account_name=vendor.name,
+            bank_account_number="0123456789", bank_code="058")
+        client = self.clerk("payments.payout.create")
+        for source, message in ((None, "Pay this from a bank account of your own branch."),
+                                (ledgers["LEK"].code, f"No account '{ledgers['LEK'].code}'")):
+            body = {"amount": 5_000, "vendor": vendor.pk}
+            if source:
+                body["source_account"] = source
+            for path, payload in (("payouts/", body),
+                                  ("payout-batches/", {**body, "items": [body]})):
+                with self.subTest(source=source, path=path):
+                    refused = self.post(client, path, payload,
+                                        HTTP_IDEMPOTENCY_KEY=f"reach-source-{path[:-1]}-{source}")
+                    self.assertEqual(refused.status_code, 400, refused.data)
+                    self.assertIn(message, str(refused.data))
+        self.assertFalse(PayoutInstruction.objects.exists())
+
+        accepted = self.post(client, "payouts/", {
+            "amount": 5_000, "vendor": vendor.pk, "source_account": ledgers["IKJ"].code,
+        }, HTTP_IDEMPOTENCY_KEY="reach-source-ok")
+        self.assertEqual(accepted.status_code, 201, accepted.data)
+        self.assertEqual(
+            set(PayoutInstruction.objects.values_list("branch_id", flat=True)), {self.ikeja.pk})
 
     def test_a_payout_batch_line_to_a_vendor_another_branch_keeps(self):
         lekki_vendor = self.vendor("VLEKB", self.lekki)
         before = PayoutBatch.objects.count()
         refused = self.post(
             self.clerk("payments.payout.create"), "payout-batches/",
-            {"items": [{"amount": 5_000, "vendor": lekki_vendor.pk}]},
+            {"items": [{"amount": 5_000, "vendor": lekki_vendor.pk}],
+             "source_account": self._collections_ledgers()["IKJ"].code},
             HTTP_IDEMPOTENCY_KEY="reach-batch-1",
         )
         self.assertEqual(refused.status_code, 400, refused.data)
