@@ -50,6 +50,9 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("2310", "PAYE Payable", AccountType.LIABILITY, True, False),  # PAYE payable.
     ("2320", "Pension Payable", AccountType.LIABILITY, True, False),  # Pension payable.
     ("2330", "Net Wages Payable", AccountType.LIABILITY, True, False),  # Net payroll payable.
+    ("2340", "NHF Payable", AccountType.LIABILITY, True, False),  # National Housing Fund withheld.
+    ("2350", "NSITF Payable", AccountType.LIABILITY, True, False),  # Employee compensation contribution.
+    ("2360", "ITF Payable", AccountType.LIABILITY, True, False),  # Training levy.
     ("2400", "Accrued Reimbursements", AccountType.LIABILITY, True, False),  # Staff reimbursement liability.
     # Equity  # Equity root and default equity accounts.
     ("3000", "Equity", AccountType.EQUITY, False, False),  # Equity section header.
@@ -68,6 +71,9 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("5150", "Inventory Adjustments", AccountType.EXPENSE, True, False),  # Inventory adjustment expense.
     ("5160", "Purchase Price Variance", AccountType.EXPENSE, True, False),  # Invoice-vs-receipt price variance.
     ("5200", "Salaries & Wages", AccountType.EXPENSE, True, False),  # Payroll expense account.
+    ("5210", "Employer Pension Contributions", AccountType.EXPENSE, True, False),
+    ("5220", "NSITF Contributions", AccountType.EXPENSE, True, False),
+    ("5230", "ITF Levy", AccountType.EXPENSE, True, False),
     ("5300", "General & Administrative", AccountType.EXPENSE, True, False),  # General admin expense.
     ("5350", "Bad Debts", AccountType.EXPENSE, True, False),  # Write-offs and doubtful-debt provisions.
     ("5400", "Depreciation Expense", AccountType.EXPENSE, True, False),  # Depreciation expense.
@@ -88,6 +94,12 @@ DEFAULT_TAX_OBLIGATIONS = [  # Starter statutory obligations.
      "State Internal Revenue Service", TaxFilingFrequency.MONTHLY, 10),  # PAYE authority and due day.
     ("PENSION", "Pension Contributions", TaxObligationType.PENSION, "2320", None,  # Pension payable account.
      "Pension Fund Administrator", TaxFilingFrequency.MONTHLY, 7),  # Pension authority and due day.
+    ("NHF", "National Housing Fund", TaxObligationType.NHF, "2340", None,
+     "Federal Mortgage Bank of Nigeria", TaxFilingFrequency.MONTHLY, 30),
+    ("NSITF", "NSITF Employee Compensation", TaxObligationType.NSITF, "2350", None,
+     "Nigeria Social Insurance Trust Fund", TaxFilingFrequency.MONTHLY, 16),
+    ("ITF", "ITF Training Levy", TaxObligationType.ITF, "2360", None,
+     "Industrial Training Fund", TaxFilingFrequency.ANNUAL, 1),
 ]
 
 #: Starter VAT codes: the standard rate beside a zero-rated and an exempt code, so a
@@ -121,6 +133,8 @@ DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory present
     "2200": IFRSLine.CURRENT_TAX_PAYABLE, "2300": IFRSLine.CURRENT_TAX_PAYABLE,  # Tax payables.
     "2310": IFRSLine.EMPLOYEE_PAYABLES, "2320": IFRSLine.EMPLOYEE_PAYABLES,  # Employee statutory payables.
     "2330": IFRSLine.EMPLOYEE_PAYABLES, "2400": IFRSLine.TRADE_PAYABLES,  # Wages and reimbursements.
+    "2340": IFRSLine.EMPLOYEE_PAYABLES, "2350": IFRSLine.EMPLOYEE_PAYABLES,
+    "2360": IFRSLine.EMPLOYEE_PAYABLES,
     # Equity  # Default equity presentation mappings.
     "3100": IFRSLine.SHARE_CAPITAL, "3200": IFRSLine.RETAINED_EARNINGS,  # Equity accounts.
     # Income  # Default revenue presentation mappings.
@@ -129,6 +143,8 @@ DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory present
     # Expenses  # Default expense presentation mappings.
     "5100": IFRSLine.COST_OF_SALES, "5150": IFRSLine.COST_OF_SALES, "5160": IFRSLine.COST_OF_SALES,
     "5200": IFRSLine.ADMIN_EXPENSES, "5300": IFRSLine.ADMIN_EXPENSES,  # Admin expenses.
+    "5210": IFRSLine.ADMIN_EXPENSES, "5220": IFRSLine.ADMIN_EXPENSES,
+    "5230": IFRSLine.ADMIN_EXPENSES,
     "5350": IFRSLine.ADMIN_EXPENSES,  # Bad debts.
     "5400": IFRSLine.ADMIN_EXPENSES, "5500": IFRSLine.FINANCE_COSTS,  # Depreciation and finance costs.
     "5520": IFRSLine.ADMIN_EXPENSES,  # Chargebacks.
@@ -142,9 +158,11 @@ _PARENTS = {  # Parent account code by child account code.
     "2100": "2000", "2140": "2000", "2150": "2000", "2160": "2000", "2170": "2000",  # Liability children.
     "2200": "2000", "2300": "2000",
     "2310": "2000", "2320": "2000", "2330": "2000", "2400": "2000",  # More liability children.
+    "2340": "2000", "2350": "2000", "2360": "2000",
     "3100": "3000", "3200": "3000",  # Equity children.
     "4100": "4000", "4810": "4000", "4820": "4000", "4900": "4000", "4910": "4000",  # Income children.
     "5100": "5000", "5150": "5000", "5160": "5000", "5200": "5000", "5300": "5000", "5350": "5000",
+    "5210": "5000", "5220": "5000", "5230": "5000",
     "5400": "5000", "5500": "5000", "5520": "5000",  # More expense children.
 }
 

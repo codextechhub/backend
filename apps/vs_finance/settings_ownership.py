@@ -244,3 +244,65 @@ CALENDAR_SETTING_CONSUMERS = {
         "Sets how many days before the calendar ends the next year is opened or the warning starts.",
     ),
 }
+
+PAYROLL_SETTING_CONSUMERS = {
+    "paye_method": _consumer(
+        "PAYE and employee pension on generated runs",
+        "vs_finance.payroll_statutory.work_out_line",
+        "Computes PAYE from the national tax table and pension from the rate, or takes both "
+        "from the salary structure or roster figures.",
+    ),
+    "tax_country": _consumer(
+        "PAYE tax table",
+        "vs_finance.payroll_tax.table_for",
+        "Picks which country's national tax tables price PAYE.",
+    ),
+    "employee_pension_enabled": _consumer(
+        "Employee pension", "vs_finance.payroll_statutory.work_out_line",
+        "Withholds the employee's pension contribution from pensionable pay.",
+    ),
+    "employee_pension_rate_bps": _consumer(
+        "Employee pension", "vs_finance.payroll_statutory.work_out_line",
+        "Rate of pensionable pay withheld as the employee's pension.",
+    ),
+    "employer_pension_enabled": _consumer(
+        "Employer pension", "vs_finance.payroll_statutory.work_out_line",
+        "Accrues the employer's pension contribution on top of pay, per branch.",
+    ),
+    "employer_pension_rate_bps": _consumer(
+        "Employer pension", "vs_finance.payroll_statutory.work_out_line",
+        "Rate of pensionable pay the employer contributes.",
+    ),
+    "nhf_enabled": _consumer(
+        "National Housing Fund", "vs_finance.payroll_statutory.work_out_line",
+        "Withholds NHF from the employee's basic pay.",
+    ),
+    "nhf_rate_bps": _consumer(
+        "National Housing Fund", "vs_finance.payroll_statutory.work_out_line",
+        "Rate of basic pay withheld for NHF.",
+    ),
+    "nsitf_enabled": _consumer(
+        "NSITF employee compensation", "vs_finance.payroll_statutory.work_out_line",
+        "Accrues the employer's NSITF contribution on gross pay, per branch.",
+    ),
+    "nsitf_rate_bps": _consumer(
+        "NSITF employee compensation", "vs_finance.payroll_statutory.work_out_line",
+        "Rate of gross pay the employer contributes to NSITF.",
+    ),
+    "itf_enabled": _consumer(
+        "ITF training levy", "vs_finance.payroll_statutory.work_out_line",
+        "Accrues the employer's ITF levy on gross pay, per branch.",
+    ),
+    "itf_rate_bps": _consumer(
+        "ITF training levy", "vs_finance.payroll_statutory.work_out_line",
+        "Rate of gross pay the employer accrues for the ITF levy.",
+    ),
+    "payslip_in_app": _consumer(
+        "Payslip delivery", "vs_finance.payslips.deliver_payslips",
+        "Shows each employee their own payslips in the app and sends an in-app notice.",
+    ),
+    "payslip_email": _consumer(
+        "Payslip delivery", "vs_finance.payslips.deliver_payslips",
+        "Emails each employee their payslip as a PDF when the run is paid.",
+    ),
+}

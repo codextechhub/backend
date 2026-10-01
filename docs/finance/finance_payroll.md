@@ -1,204 +1,319 @@
 # finance_payroll
 
 Batch **payroll** on the classic two-step accrual-then-disburse model: **post** a run
-to recognise the cost and park each liability (`Dr salary expense, Cr PAYE / pension /
+to recognise the cost and park each liability (`Dr salary expense and employer
+contribution expenses, Cr PAYE / pension / NHF / NSITF / ITF / voluntary deduction /
 net-wages payable`), then **pay** it to clear net wages (`Dr net-wages payable, Cr
-bank`). Runs are typed by hand or **generated from an employee-salary roster**, whose
-figures a **salary structure** can derive from gross.
+bank`) and issue each person's payslip. Runs are typed by hand or **generated from an
+employee-salary roster**, and a generated line works out its own statutory deductions:
+PAYE from the national tax table of the month's tax year, pension, NHF, voluntary
+deductions and employer contributions from the tenant's payroll settings.
 
 Routes (mounted at `/v1/finance/`): `payroll-runs/…`, `payroll-runs/{summary,generate}/`,
-`payroll-runs/<pk>/{post,pay}/`, `employee-salaries/…`, `salary-structures/…`.
+`payroll-runs/<pk>/{post,pay,cancel}/`, `payroll-runs/<pk>/lines/<line_pk>/payslip/`,
+`employee-salaries/…` (with `history/`, `deductions/`, `tax-summary/`),
+`employee-deductions/<pk>/`, `salary-structures/…` (with `history/`),
+`payroll/deduction-types/…`, `payroll/tax-tables/…`, `payroll/tax-states/…`,
+`payroll/pension-fund-administrators/…`, `settings/payroll/`, `my-payslips/…`,
+`my-tax-summary/`.
 
 ---
 
 ## 1. What it is (and what it is NOT)
 
-- A **`PayrollRun`** (`models/ops.py:678`) is a batch of **`PayrollLine`** rows (one
-  per employee: `gross`, `paye`, `pension`, `net = gross − paye − pension`).
-- An **`EmployeeSalary`** (`models/ops.py:865`) is the recurring roster a run is
-  *generated* from; a **`SalaryStructure`** + **`SalaryComponent`** (`:794`/`:823`)
-  is a reusable template that *derives* an employee's PAYE/pension/net from gross.
-- Two postings: **accrual** (`post_payroll`) then **disbursement** (`pay_payroll`).
+- A **`PayrollRun`** is a batch of **`PayrollLine`** rows, one per employee:
+  `gross`, `paye`, `pension`, `other_deductions` (NHF and voluntary deductions),
+  `employer_contributions` (employer pension, NSITF, ITF, a cost on top of gross) and
+  `net = gross - paye - pension - other_deductions`. Each deduction and contribution
+  is a **`PayrollLineItem`**, which decides the account it posts to.
+- An **`EmployeeSalary`** is the roster row a run is generated from: the person's
+  current pay terms, their statutory profile (state of residence, tax ID, PFA, pension
+  PIN, annual rent) and any explicit PAYE override. Its pay terms keep their history as
+  **`EmployeeSalaryVersion`** rows, each effective from a date.
+- A **`SalaryStructure`** + **`SalaryComponent`** split a gross into earnings (basic,
+  pensionable, taxable). Its lines keep their history too: an edit closes the current
+  lines and writes new ones effective from a date.
+- **National data, maintained by the platform:** **`PayeTaxTable`** (one per country
+  and tax year, with **`PayeTaxBand`** and **`PayeTaxRelief`** rows),
+  **`PayrollTaxJurisdiction`** (the states PAYE is remitted to) and
+  **`PensionFundAdministrator`**. No tenant can edit them.
+- **`FinancePayrollSettings`** is the tenant's payroll policy, every choice with a
+  default (section 5).
+- **`Payslip`** is issued per line when the line's pay leaves the bank.
 
 **This does NOT:**
-- **Post from the roster or a structure.** `EmployeeSalary`/`SalaryStructure` never
-  hit the GL - they only shape the numbers a run copies into its lines
-  (`models/ops.py:800`, `:872`).
-- **Show individual salaries to everyone.** Per-employee names and pay figures are
-  **FLS-masked** - only holders of `finance.payrollrun.view_sensitive` see them; plain
-  `view` sees the run and its **totals** but not who earns what (§9).
-- **One-click undo a *paid* run.** `cancel/` voids a DRAFT or POSTED (un-paid) run
-  (§4), but a **PAID** run is refused - the net wages already left, so the disbursement
-  must be reversed (a real clawback) first.
+- **Apportion a month by days.** A raise, a move or a structure change dated inside a
+  month applies to the whole month (the payroll date rule, section 6).
+- **Refund PAYE through payroll.** A month whose cumulative tax is below what was
+  already withheld deducts nothing; the excess reduces later months.
+- **Model reliefs the payroll has no input for** (health insurance, life assurance,
+  mortgage interest). The tax table can carry them as rules, but nothing feeds them.
+- **One-click undo a *paid* run.** `cancel/` voids a DRAFT or POSTED run; a PAID run is
+  refused (reverse the disbursement first).
+- **Show individual salaries to everyone.** Every pay figure, the tax ID and the
+  pension PIN are Field Access switches (section 11).
 
 ## 2. Domain model
 
-| Model | File | Key fields |
-|---|---|---|
-| `PayrollRun` | `models/ops.py:678` | `pay_date`, `period_label`, `run_status`, the four posting accounts, `gross/paye/pension/net_total`, `journal` (accrual), `disbursement_journal` |
-| `PayrollLine` | `:760` | `employee?`/`employee_name`, `gross/paye/pension/net_amount`, `components` (payslip snapshot), `cost_center` |
-| `SalaryStructure` | `:794` | `name`, `is_active`; `unique(entity, name)` |
-| `SalaryComponent` | `:823` | `kind` (EARNING/DEDUCTION), `calc_method`, `rate_bps`, `amount`, `is_basic`, `statutory_type` (NONE/PAYE/PENSION), `sequence` |
-| `EmployeeSalary` | `:865` | `name`, `employee?`, `structure?`, `gross_amount`, flat `paye/pension_amount`, `cost_center`, `is_active` |
+| Model | Key fields |
+|---|---|
+| `PayrollRun` | `pay_date`, `period_label`, `run_status`, `branch?`, the four base posting accounts, `gross/paye/pension/other_deductions/employer_contributions/net_total`, `journal`, `disbursement_journal` |
+| `PayrollLine` | `salary?`, `employee?`/`employee_name`, `branch`, `gross/paye/pension/other_deductions/employer_contributions/net_amount`, `taxable_pay`, `paye_source` (COMPUTED / OVERRIDE / SUPPLIED / MANUAL), `tax_table?`, `tax_basis` (the PAYE working), `tax_state?`, `pfa?`, `tax_id`, `pension_pin`, `components`, `cost_center` |
+| `PayrollLineItem` | `line`, `kind` (DEDUCTION / EMPLOYER), `code` (PAYE, PENSION, NHF, VOLUNTARY, EMPLOYER_PENSION, NSITF, ITF), `amount`, `basis_amount`, `rate_bps`, `deduction_type?`, `employee_deduction?`, `liability_account?`, `expense_account?` (stamped at posting) |
+| `PayrollRunBranch` | one branch's share of a central run: its totals, journal, disbursement and bank |
+| `EmployeeSalary` | current terms (`branch`, `structure`, `gross_amount`, typed `paye/pension_amount`, `cost_center`, `residence_state`), profile (`tax_id`, `pfa`, `pension_pin`, `annual_rent`), `paye_override` + `paye_override_reason`, `is_active` |
+| `EmployeeSalaryVersion` | `salary`, `effective_from`, the terms above, `reason`, `created_by` |
+| `SalaryComponent` | `kind`, `calc_method`, `rate_bps`, `amount`, `is_basic`, `is_pensionable`, `is_taxable`, `statutory_type`, `effective_from`, `effective_to` |
+| `PayrollDeductionType` | `code`, `name`, `liability_account` (shared config of the books) |
+| `EmployeeDeduction` | `salary`, `deduction_type`, `amount` a month, `start_date?`, `end_date?`, `total_limit?` |
+| `PayeTaxTable` | `country`, `tax_year`, `minimum_tax_rate_bps`, `exempt_income_threshold`, `revision`, bands, reliefs |
+| `PayeTaxRelief` | `kind` (CONTRIBUTION / PERCENT_CAPPED / FIXED), `basis` (PENSION / NHF / ANNUAL_RENT / ANNUAL_GROSS), `rate_bps`, `cap_amount?`, `floor_amount` |
+| `PayrollTaxJurisdiction` | `country`, `code` ("LA"), `name`, `authority_name` |
+| `PensionFundAdministrator` | `code` ("STANBIC"), `name` |
+| `FinancePayrollSettings` | section 5 |
+| `Payslip` | `line`, `run`, `salary?`, `employee?`, `branch`, `pay_date`, `email_status`, `email_attachment` (storage key) |
 
-- Money is kobo. **`run_status`** (`PayrollRunStatus`): `DRAFT → POSTED → PAID`, plus
-  `CANCELLED` (from `cancel/`). The run also carries a `DocumentStatus` (set to POSTED
-  on accrual, CANCELLED on cancel).
-- Default posting accounts: salary `5200`, PAYE `2310`, pension `2320`, net wages
-  `2330` (overridable per run).
+Money is kobo. Default posting accounts: salary `5200`, PAYE `2310`, pension `2320`,
+net wages `2330`, NHF `2340`, NSITF `2350` (expense `5220`), ITF `2360` (expense
+`5230`), employer pension expense `5210`. Per-state PAYE payables are `2310-<state>`
+and per-PFA pension payables `2320-<pfa>`, created on first use (section 8).
 
 ## 3. Endpoint map
 
-All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
+All tenant routes require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`
+unless noted.
 
-| Method + path | permission key | what it does | request body | response |
-|---|---|---|---|---|
-| `GET /payroll-runs/` | `finance.payrollrun.view` | List runs (paginated). Query: `run_status` | - | paginated `PayrollRunSerializer` (lines FLS-masked) |
-| `POST /payroll-runs/` | `finance.payrollrun.create` | Create a **DRAFT** run + lines by hand | `pay_date`, `period_label?`, `bank_account?`, `lines:[{employee_name, gross_amount, paye_amount?, pension_amount?, cost_center?}]` | `201` run |
-| `POST /payroll-runs/generate/` | `finance.payrollrun.create` | Draft a run from the **active roster** | `pay_date`, `period_label?`, `narration?` | `201` run |
-| `GET /payroll-runs/summary/` | `finance.payrollrun.view` | KPIs over all runs | - | `success_response` |
-| `GET /payroll-runs/<pk>/` | `finance.payrollrun.view` | Run + lines | - | detail |
-| `POST /payroll-runs/<pk>/post/` | `finance.payrollrun.post` | **Accrue** (DRAFT → POSTED) | - | run |
-| `POST /payroll-runs/<pk>/pay/` | `finance.payrollrun.pay` | **Disburse** net wages (POSTED → PAID) | `bank_account?`, `pay_date?` | run |
-| `POST /payroll-runs/<pk>/cancel/` | `finance.payrollrun.post` | Cancel a DRAFT, or **void** a POSTED (un-paid) run - reverses the accrual → CANCELLED. Refused once PAID | - | run |
-| `GET/POST /employee-salaries/` | `finance.salary.view` / `.create` | Roster list / add | `name`, `gross_amount`, `structure?`, flat `paye/pension?`, `cost_center?` | salary |
-| `PATCH/DELETE /employee-salaries/<pk>/` | `finance.salary.update` / `.delete` | Edit / remove a roster row | - | salary |
-| `GET/POST /salary-structures/` | `finance.salary.view` / `.create` | Structure list / create | `name`, `components:[…]` | structure |
-| `GET/PATCH /salary-structures/<pk>/` | `finance.salary.view` / `.update` | One structure + components / edit | - | detail |
+| Method + path | permission key | what it does |
+|---|---|---|
+| `GET /payroll-runs/` | `finance.payrollrun.view` | List runs |
+| `POST /payroll-runs/` | `finance.payrollrun.create` | Create a DRAFT run by hand. Typed PAYE is audited as an override |
+| `POST /payroll-runs/generate/` | `finance.payrollrun.create` | Draft a run from the roster; `skipped` lists people a live run of the month already pays |
+| `GET /payroll-runs/summary/` | `finance.payrollrun.view` | KPIs |
+| `GET /payroll-runs/<pk>/` | `finance.payrollrun.view` | Run + lines + items |
+| `POST /payroll-runs/<pk>/post/` | `finance.payrollrun.post` | Accrue |
+| `POST /payroll-runs/<pk>/pay/` | `finance.payrollrun.pay` | Disburse and issue payslips |
+| `POST /payroll-runs/<pk>/cancel/` | `finance.payrollrun.post` | Cancel a draft or void a posted run |
+| `GET /payroll-runs/<pk>/lines/<line_pk>/payslip/` | `finance.payrollrun.view` + every pay-figure switch | The line's payslip PDF (`?output=json` for content) |
+| `GET/POST /employee-salaries/` | `finance.salary.view` / `.create` | Roster list / add (with profile fields and `effective_from`) |
+| `PATCH /employee-salaries/<pk>/` | `finance.salary.update` | Profile edited in place; terms as a new dated version; `paye_override` with a reason |
+| `DELETE /employee-salaries/<pk>/` | `finance.salary.delete` | Deactivates (the row and history stay) |
+| `GET /employee-salaries/<pk>/history/` | `finance.salary.view` | Versions of the pay terms |
+| `GET/POST /employee-salaries/<pk>/deductions/` | `finance.salary.view` / `.create` | Voluntary deductions of one person |
+| `PATCH/DELETE /employee-deductions/<pk>/` | `finance.salary.update` / `.delete` | Edit or stop one |
+| `GET /employee-salaries/<pk>/tax-summary/?year=` | `finance.salary.view` + every pay-figure switch | The person's tax year, JSON or `?output=pdf` |
+| `GET/POST /salary-structures/` | `finance.salary.view` / `.create` | Structures with their current lines |
+| `GET/PATCH/DELETE /salary-structures/<pk>/` | `finance.salary.view` / `.update` | Edit lines from `effective_from` |
+| `GET /salary-structures/<pk>/history/` | `finance.salary.view` | Every line with its dates |
+| `GET/POST /payroll/deduction-types/`, `PATCH …/<pk>/` | `finance.salary.view` / `.create` / `.update`, whole-tenant writes | Voluntary deduction types |
+| `GET/PATCH /settings/payroll/` | `finance.settings.view` / `.update`, whole-tenant writes | Payroll policy |
+| `GET /payroll/tax-tables/`, `GET …/<pk>/` | any finance access | National PAYE tables |
+| `POST /payroll/tax-tables/`, `PATCH …/<pk>/` | platform staff + `finance.statutory.create` / `.update` (platform scope) | Add or edit a table |
+| `GET/POST /payroll/tax-states/`, `GET/PATCH …/<pk>/` | read: any finance access; write: platform staff + `finance.statutory.*` | PAYE states |
+| `GET/POST /payroll/pension-fund-administrators/`, `GET/PATCH …/<pk>/` | as above | PFAs |
+| `GET /my-payslips/`, `GET /my-payslips/<pk>/` (`?output=pdf`) | authenticated only | The caller's own payslips, where in-app delivery is on |
+| `GET /my-tax-summary/?year=` (`?output=pdf`) | authenticated only | The caller's own tax year |
 
-> **Note:** the roster (`employee-salaries`) and templates (`salary-structures`) are
-> their own RBAC resource - `finance.salary.{view,create,update,delete}`, all
-> SENSITIVE - separate from the `payrollrun` family. Individual pay-figure visibility
-> (FLS) remains keyed on `finance.payrollrun.view_sensitive` everywhere.
-
-## 4. Lifecycle / state machine
+## 4. Lifecycle
 
 ```
-Roster (EmployeeSalary) ──generate──▶ DRAFT run
+Roster (EmployeeSalary + versions) ──generate──▶ DRAFT run
                           (or POST /payroll-runs/ by hand)
-DRAFT ──post (accrue)──▶ POSTED ──pay (disburse)──▶ PAID
-  │                         │  │                        │
-cancel                    journal │              disbursement_journal
-  ▼                          cancel (reverse accrual)
-CANCELLED  ◀─────────────────┘   (PAID can't be cancelled - reverse the disbursement first)
+DRAFT ──post (accrue)──▶ POSTED ──pay (disburse)──▶ PAID ──▶ payslips issued
+  │                         │
+cancel                    cancel (reverse accrual)
+  ▼                         ▼
+CANCELLED ◀─────────────────┘   (PAID can't be cancelled)
 ```
-- **post** requires a DRAFT with ≥1 line, positive gross, and **no negative net** on
-  any line; it stamps `run_status=POSTED` and `status=POSTED`, and freezes the four
-  posting accounts on the run.
-- **pay** requires POSTED and a bank account; it clears net wages and sets `PAID`.
-- **cancel** (`cancel_payroll_run`): a DRAFT is just marked CANCELLED; a POSTED run is
-  **voided** by reversing its accrual journal → CANCELLED; a PAID run is **refused**
-  (the cash left the bank - reverse the disbursement first). Idempotent when already
-  cancelled.
 
-## 5. Calculations
+A run posted one journal per branch is paid a branch at a time; each branch's staff
+get their payslips when their branch's share is paid.
 
-**Structure application** - `apply_structure` (`payroll.py:41`), integer kobo:
+## 5. Payroll settings (`settings/payroll/`)
+
+| Setting | Default | Effect |
+|---|---|---|
+| `paye_method` | `COMPUTED` | COMPUTED: PAYE from the national table, employee pension from the rate. SUPPLIED: both from the structure's PAYE/pension lines or the roster's typed figures |
+| `tax_country` | `NG` | Which country's tables price PAYE |
+| `employee_pension_enabled` / `_rate_bps` | on / 800 | 8% of pensionable pay withheld (COMPUTED only) |
+| `employer_pension_enabled` / `_rate_bps` | on / 1000 | 10% of pensionable pay, expensed and accrued per branch |
+| `nhf_enabled` / `nhf_rate_bps` | on / 250 | 2.5% of basic withheld |
+| `nsitf_enabled` / `nsitf_rate_bps` | on / 100 | 1% of gross, employer |
+| `itf_enabled` / `itf_rate_bps` | on / 100 | 1% of gross, employer |
+| `payslip_in_app` | on | Employees see their payslips in the app and get an in-app notice |
+| `payslip_email` | on | Employees are emailed their payslip PDF |
+
+Writes need whole-tenant reach (403 `SHARED_RECORD_READ_ONLY` for a branch-bound
+caller), are validated per field and audited (`FIN_PAYROLL_SETTINGS_UPDATED`). A
+change reaches the next run generated.
+
+## 6. Generating a run
+
+**The payroll date of a month** is the last day of the payroll period containing the
+run's pay date (the entity's fiscal period, or that calendar month). Each person's
+terms are read as at that date (`EmployeeSalary.terms_on`): gross, structure (its
+lines in force then), branch, cost centre and state. One date per month, so every run
+of the month reads a person the same way, and **the branch a person belongs to on the
+payroll date pays the whole month**.
+
+**Who is on it.** A central run covers every active person whose terms exist on the
+payroll date; a branch run covers those whose branch on that date is the run's, read
+exclusively. **The person guard**: anybody a live run of the month (draft included)
+already pays is left off and listed in `skipped`; the salary rows are locked first so
+two concurrent runs cannot take the same person. A central school can therefore raise
+a second generated run for a late hire, but never pays the roster twice.
+
+**Each line** (`payroll_statutory.work_out_line`):
+
 ```
-value(component) = amount                         if FIXED
-                 = base × rate_bps / 10000          (base = gross, or basic for %-of-basic)
-basic  = Σ value(earning components flagged is_basic)
-paye   = Σ value(deduction where statutory_type == PAYE)
-pension= Σ value(deduction where statutory_type == PENSION)
-net    = gross − paye − pension
+pensionable = Σ earnings flagged pensionable   (whole gross when none is)
+basic       = Σ earnings flagged basic          (whole gross with no structure)
+taxable     = gross - Σ earnings flagged not taxable
+pension     = pensionable × employee rate        (SUPPLIED: structure or typed figure)
+nhf         = basic × NHF rate
+voluntary   = each due assignment, capped by what is left of its total_limit
+employer    = pensionable × employer pension rate + gross × NSITF rate + gross × ITF rate
+paye        = cumulative PAYE (below), or the person's override
+net         = gross - paye - pension - nhf - voluntary
 ```
-Earnings are an *informational* split of gross; only PAYE/pension deductions reduce
-net (so the accrual always balances). An `EmployeeSalary` **with a structure derives
-paye/pension** (its flat fields are ignored); **without one** it uses the flat
-`paye_amount`/`pension_amount`.
 
-**Run totals** - `recompute_totals` sums the lines; `compute_payroll` re-derives each
-`net = gross − paye − pension` first.
+**PAYE** (`payroll_tax.compute_paye`), month `m` of the tax year:
 
-## 6. What posting does to the ledger
-
-**Accrual** - `_post_payroll_atomic` (`payroll.py:168`):
 ```
-Dr  salary expense (5200, split by cost centre)   Σ gross   ← P&L, carries cost centre
-Cr  PAYE payable (2310)                           Σ paye
-Cr  pension payable (2320)                         Σ pension
-Cr  net wages payable (2330)                       Σ net
+income to date   = Σ taxable pay of earlier months + this month
+reliefs to date  = pension and NHF actually contributed to date
+                 + percentage reliefs (annual, floored and capped) × m/12
+chargeable       = max(income to date - reliefs to date, 0)
+tax to date      = Σ over the annual bands scaled by m/12, rounded to the kobo
+paye this month  = max(tax to date - PAYE already withheld this year, 0)
 ```
-The gross line is **split by cost centre** (each employee's gross grouped by their
-cost centre) so the P&L slices by department; the three liabilities are balance-sheet
-control accounts and stay aggregated. `Σ(gross by cost centre) == gross_total`, so it
-balances (`gross = paye + pension + net`).
 
-**Disbursement** - `_pay_payroll_atomic` (`payroll.py:272`):
+The line records `tax_table`, `taxable_pay` and `tax_basis` (bands, relief rules,
+inputs and every intermediate figure), so the month can be explained and recomputed.
+A year with no table refuses to compute and names the year.
+
+**PAYE state**: the person's `residence_state` on the payroll date, else the state of
+the branch that pays them (read from the branch's state text), else none (posts to the
+base PAYE payable).
+
+**Override**: `paye_override` on the salary row replaces the computed figure on every
+run until cleared; setting it needs a reason and is audited (`PAYE_OVERRIDE_CHANGED`),
+and the line keeps the computed figure beside it. A hand-typed run's PAYE is audited
+the same way.
+
+## 7. Salary and structure history
+
+- An edit to a person's terms writes a new version (`change_terms`), audited
+  (`SALARY_CHANGED`, with before and after). Undated, it takes effect from the first
+  payroll month not yet paid; a date inside a month already paid is refused.
+- A row created before history existed first records its terms as the version "from
+  the start", so the months before the change still read what they were paid on.
+- **Branch moves under per-branch payroll**: a move that would leave a person on no run
+  in a month is refused. Mrs Okafor moved from Lekki to Ikeja from 22 September after
+  Ikeja raised September's run without her: no run would pay her September, so the
+  move must be dated from October, or Ikeja's run voided and raised again.
+- Under per-branch payroll an active person must have a branch.
+- `payroll.scope` changes only at the start of a payroll month, before any run of it is
+  raised.
+- A structure edit closes the current lines (`effective_to`) and writes new ones from
+  `effective_from` (default: the first month nobody on it has been paid for), audited
+  (`SALARY_STRUCTURE_CHANGED`).
+- `DELETE` on a roster row deactivates it (`SALARY_DEACTIVATED`).
+
+## 8. What posting does to the ledger
+
+**Accrual**, one journal per branch whose staff are on the run:
 ```
-Dr  net wages payable (2330)   net_total
-Cr  bank (the bank account's GL cash)   net_total
+Dr  salary expense (5200, by cost centre)                Σ gross
+Dr  employer pension / NSITF / ITF expense (by cost centre)  Σ employer items
+Cr  PAYE payable of each state (2310-LA, 2310-OG, …; 2310 without a state)
+Cr  pension payable of each PFA (2320-STANBIC, …; 2320 without a PFA)
+                                         employee and employer pension together
+Cr  NHF (2340), NSITF (2350), ITF (2360) payable
+Cr  each voluntary deduction type's account
+Cr  net wages payable (2330)                              Σ net
 ```
-PAYE and pension **stay parked** as liabilities until remitted (a separate tax-filing
-/ AP payment - see `finance_tax_remittance`). Both postings run `post_journal` (the
-`finance_journals_posting` guards) and write durable rejection rows on failure.
+`gross + employer = deductions + employer liabilities + net`, so each branch's journal
+balances on its own. The first posting to a state or PFA creates its payable account
+(beside the base one) and its tax obligation (`PAYE-LA` to "Lagos State Internal Revenue
+Service", `PENSION-STANBIC` to the PFA), so each authority gets its own return. Each item
+is stamped with the accounts it posted to.
 
-## 7. Worked example
+**Disbursement**: `Dr 2330, Cr bank`, per branch share from that branch's own bank.
 
-Roster of 2 with a "Senior" structure (Basic 60% of gross, PAYE 10% of gross, Pension
-8% of gross). `POST /payroll-runs/generate/ {pay_date:"2026-07-25"}` → DRAFT with
-per-line gross/paye/pension/net derived. `post/` on gross `₦1,000,000` total →
-`Dr 5200 1,000,000 (by cost centre) / Cr 2310 100,000 / Cr 2320 80,000 / Cr 2330
-820,000`. `pay/ {bank_account:"GTB-OPS"}` → `Dr 2330 820,000 / Cr <bank> 820,000`;
-run → PAID. A viewer with only `payrollrun.view` sees the run and the ₦1,000,000
-gross total, but each employee line's name/amounts are stripped.
+## 9. Payslips and tax summaries
 
-## 8. Gotchas / known limitations
+- Paying a run (or a branch's share) creates a `Payslip` per line (`PAYSLIPS_ISSUED`).
+  After the payment commits, the delivery task sends the in-app notice
+  (`payroll.payslip_ready`) and the email with the PDF attached
+  (`payroll.payslip_emailed`), as the settings say. No user account or no email:
+  `email_status = NO_ADDRESS`.
+- The PDF is rendered from the line each time it is opened: earnings, every deduction,
+  employer contributions, totals, year to date, and how PAYE was arrived at.
+- The tax summary lists a person's posted and paid months of a year with totals, the
+  states and the tax ID.
+- An employee reads only their own (`my-payslips`, `my-tax-summary`). Payroll staff
+  read anybody's within their branch reach, and only if every pay figure on it is open
+  to their role.
 
-- ✅ **Cancel/void a run** (`cancel/`) - a DRAFT is cancelled; a POSTED run is voided
-  by reversing its accrual. **PAID runs are refused** (reverse the disbursement first);
-  there's no `unpay`/clawback action, so a paid run in error still needs manual journal
-  reversal.
-- **Totals are visible with plain `view`; only individual salaries are FLS-masked.**
-  `payrollrun.view` exposes `gross_total`/`net_total` etc. on the run - deliberate
-  (aggregate cost for finance) - but treat run-level totals as *not* secret.
-- **A structure silently overrides the flat PAYE/pension** on an `EmployeeSalary` - if
-  a row has both a structure and typed figures, the typed ones are ignored.
-- ✅ **Roster + structures have their own RBAC resource** -
-  `finance.salary.{view, create, update, delete}` (all SENSITIVE; even listing exposes
-  who earns what), split from `payrollrun.*` like the petty-cash precedent. Generating
-  a *run* from the roster still uses `payrollrun.create`. **Ops note:** roles that used
-  `payrollrun.create` for roster edits need the new `salary.*` grants. The FLS
-  "see individual pay figures" key stays unified on `payrollrun.view_sensitive`.
-- **`generate` copies the roster at that moment** - later roster edits don't touch an
-  already-generated draft; regenerate for a fresh copy.
+## 10. Worked example
 
-## 9. Permissions & tenant isolation
+Single Site pays Grace Eze N100,000 a month in Lagos under the default policy. January:
+pension N8,000, NHF N2,500, PAYE N3,425 (chargeable N89,500 against bands scaled to one
+month), net N86,075; employer pension N10,000, NSITF N1,000, ITF N1,000. Posting credits
+`2310-LA` N3,425, `2320` N18,000, `2340` N2,500, `2350` N1,000, `2360` N1,000, `2330`
+N86,075, and debits `5200` N100,000, `5210` N10,000, `5220` N1,000, `5230` N1,000. Her
+raise to N300,000 from July is a new version; the year's PAYE totals exactly the tax on
+N2.4m less her pension and NHF.
 
-- Two resources: `finance.payrollrun.{view, create, post, pay, view_sensitive}` for
-  runs, and `finance.salary.{view, create, update, delete}` for the roster and
-  structures. Every one of them is **SENSITIVE** (or CRITICAL) in the seed - payroll
-  data is sensitive by nature.
-- **Field-level security:** `PayrollLineSerializer` and `EmployeeSalarySerializer` use
-  `FieldSecurityMixin` - `gross/paye/pension/net_amount`, `components` (and the line's
-  `employee_name`) are stripped unless the caller holds
-  `finance.payrollrun.view_sensitive` (`serializers.py:963`, `:1044`). The roster keeps
-  **names** visible (it's the roster) but hides the amounts.
-- Every action resolves the entity then `filter(entity=…, pk=…)` (`_run`/`_resolve_salary`)
-  → cross-tenant run/salary id → 404. `bank_account`/accounts are entity-scoped. ✅
+## 11. Permissions & tenant isolation
 
-## 10. Code map
+- `finance.payrollrun.{view, create, post, pay}` for runs; `finance.salary.{view,
+  create, update, delete}` for the roster, structures, deductions and history;
+  `finance.settings.{view, update}` for the policy; `finance.tax.view` for schedules.
+- `finance.statutory.{create, update}` are **platform-scoped** and granted to the
+  platform roles; the views also require a platform account.
+- Field Access: the statutory figures travel under the switch of the figure they
+  belong to, so no new switch exists and a role keeps seeing what it saw. On a line,
+  `tax_id` and `pension_pin` go with the employee name, `taxable_pay` with gross,
+  `tax_basis` with PAYE, and `items`, `other_deductions_amount` and
+  `employer_contributions_amount` with the pay breakdown. On a salary row, `tax_id`,
+  `annual_rent` and `paye_override(_reason)` go with PAYE and `pension_pin` with
+  pension. Payslip, tax summary and remittance schedule are refused unless every pay
+  figure on them is open.
+- Runs, lines, salary rows, deductions and payslips resolve inside the entity and the
+  caller's branch reach; another tenant's ids are 404.
+
+## 12. Code map
 
 | File | Responsibility |
 |---|---|
-| `models/ops.py` | `PayrollRun`, `PayrollLine`, `SalaryStructure`, `SalaryComponent`, `EmployeeSalary` |
-| `payroll.py` | `apply_structure`, `compute_payroll`, `generate_run_from_roster`, `_accounts_for`, `post_payroll`, `pay_payroll`, `cancel_payroll_run` |
-| `views_ops/payroll.py` | run list/create/generate/summary/post/pay, employee-salary + salary-structure CRUD |
-| `serializers.py` | `PayrollRun/LineSerializer` (FLS), `EmployeeSalarySerializer` (FLS), `SalaryStructure/ComponentSerializer` |
-| `constants.py` | `PayrollRunStatus`, `SalaryComponentKind`, `SalaryCalcMethod`, `StatutoryType`; `SALARIES_EXPENSE_CODE`/`PAYE_PAYABLE_CODE`/`PENSION_PAYABLE_CODE`/`NET_WAGES_PAYABLE_CODE` |
+| `models/ops.py` | `PayrollRun`, `PayrollLine`, `PayrollRunBranch`, `SalaryStructure`, `SalaryComponent`, `EmployeeSalary` |
+| `models/payroll_statutory.py` | national data, `FinancePayrollSettings`, `EmployeeSalaryVersion`, voluntary deductions, `PayrollLineItem`, `Payslip` |
+| `payroll.py` | `apply_structure`, generation and the person guard, posting, paying, cancelling, scope guards |
+| `payroll_statutory.py` | payroll date, line working, YTD, accounts per item, salary and structure history, remittance schedules |
+| `payroll_tax.py` | tax table lookup and the cumulative PAYE calculation |
+| `payroll_settings.py` | the settings service |
+| `payslips.py` | payslip content, issue and delivery, tax summaries |
+| `pdf.py` | payslip and tax summary PDFs |
+| `views_ops/payroll.py`, `views_ops/payroll_statutory.py`, `views_settings.py` | endpoints |
 
-## 11. Test coverage & gaps
+## 13. Tests
 
-Existing (`tests.py`, `PayrollTests`): accrual posts balanced with statutory
-liabilities; gross salary splits by cost centre; disbursement clears net payable;
-negative net rejected; can't pay an unposted run.
+`tests_payroll_statutory.py`: the engine (January figure, mid-year raise, rent cap, no
+refund, exemption); a two-state multi-branch run (PAYE by residence and branch state,
+per-state and per-PFA accounts and obligations, employer costs per branch, the Ogun
+return and the PFA return with their schedules, a branch-bound reader's schedule); a
+one-branch run; a mid-year raise over twelve runs; the person guard and the scope switch
+under central payroll; mid-month moves under per-branch payroll; overrides, versions and
+deactivation; supplied figures and a capped voluntary deduction; payslips (issue,
+delivery switches, own-only reads, PDF field access, cross-tenant); settings; national
+data; structure history. `tests.py`, `tests_payroll_branch.py`,
+`tests_payroll_split.py` and `tests_payroll_share_reach.py` cover the run lifecycle,
+branch scope and per-branch posting.
 
-Worth asserting if not already:
-- **403** per verb; **FLS**: a caller without `view_sensitive` gets line amounts
-  stripped but still sees run totals; **cross-tenant** run/salary id → 404.
-- `apply_structure`: FIXED / %-of-gross / %-of-basic, and that a structure overrides
-  flat PAYE/pension; `net = gross − paye − pension`.
-- `generate_run_from_roster` uses only active rows and errors on an empty roster.
-- Post guards (draft, ≥1 line, positive gross, no negative net); empty-list shape.
-- **Cancel/void** (added): a DRAFT is cancelled with no GL; a POSTED run's accrual is
-  reversed → CANCELLED; a PAID run is refused.
+## 14. Known limitations
+
+- The 2026 table, the state revenue service names and the PFA list are data seeded for
+  an accountant to confirm.
+- PAYE is never refunded through payroll; a mid-year joiner with income elsewhere has
+  no opening year-to-date input.

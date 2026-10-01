@@ -487,6 +487,26 @@ EVENT_TYPE_REGISTRY = [
         # Muting this would leave the entity to find out when every posting fails.
         "is_transactional": True,
     },
+    # Payslips (vs_finance). The tenant's payroll settings decide which of the
+    # two is sent, so each is its own event with one channel.
+    {
+        "key": "payroll.payslip_ready",
+        "label": "Payslip ready",
+        "description": "Tells an employee their payslip for a pay period is ready to open.",
+        "source_module": "vs_finance",
+        "supported_channels": [ChannelChoices.IN_APP],
+        "default_enabled": True,
+        "branch_scoped": True,
+    },
+    {
+        "key": "payroll.payslip_emailed",
+        "label": "Payslip by email",
+        "description": "Emails an employee their payslip as a PDF when their pay is sent.",
+        "source_module": "vs_finance",
+        "supported_channels": [ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "branch_scoped": True,
+    },
     # Payment gateway operations (vs_payments). Money has already moved at the
     # provider by the time either of these fires, so they are operational alarms
     # rather than customer messages: the audience is whoever can replay the event.

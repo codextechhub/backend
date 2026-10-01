@@ -3350,14 +3350,14 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(vat["recoverable_balance"], 30000)
         self.assertEqual(vat["net_outstanding"], 45000)
 
-    # Verify seed creates four nigerian obligations behavior.
-    def test_seed_creates_four_nigerian_obligations(self):
+    # The seeded chart carries the Nigerian statutory obligations.
+    def test_seed_creates_the_nigerian_obligations(self):
         entity, _, _ = self.books
         # seed_chart_of_accounts (run by the fixture) seeds obligations too.
         rows = TaxObligation.objects.filter(entity=entity).order_by("code")
         self.assertEqual(
             list(rows.values_list("code", flat=True)),
-            ["PAYE", "PENSION", "VAT", "WHT"],
+            ["ITF", "NHF", "NSITF", "PAYE", "PENSION", "VAT", "WHT"],
         )
         vat = rows.get(code="VAT")
         self.assertEqual(vat.liability_account.code, "2200")
@@ -3367,7 +3367,21 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
         self.assertIsNone(wht.recoverable_account)
         # Re-running is idempotent - no duplicates.
         seed_tax_obligations(entity)
-        self.assertEqual(TaxObligation.objects.filter(entity=entity).count(), 4)
+        self.assertEqual(TaxObligation.objects.filter(entity=entity).count(), 7)
+
+
+def _supplied_payroll(entity):
+    """Make *entity* a tenant that supplies its own PAYE and pension, with no other items.
+
+    Its runs then carry exactly the figures its roster or structures give, which
+    is what the roster and structure tests assert.
+    """
+    from vs_finance.models import FinancePayrollSettings
+
+    FinancePayrollSettings.objects.update_or_create(entity=entity, defaults={
+        "paye_method": "SUPPLIED", "employer_pension_enabled": False,
+        "nhf_enabled": False, "nsitf_enabled": False, "itf_enabled": False,
+    })
 
 
 # Group tests for Payroll Tests.
@@ -4791,6 +4805,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     # Verify employee salary roster generates a run behavior.
     def test_employee_salary_roster_generates_a_run(self):
         entity, _, _ = self.books
+        _supplied_payroll(entity)
         for nm, g, p, pe in [("Ada Obi", 50000000, 7500000, 4000000),
                              ("Bola Lawal", 30000000, 4500000, 2400000)]:
             r = self.client.post(
@@ -4816,6 +4831,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     # Verify salary structure derives paye pension and net from gross behavior.
     def test_salary_structure_derives_paye_pension_and_net_from_gross(self):
         entity, _, _ = self.books
+        _supplied_payroll(entity)
         # A structure: Basic 40% of gross, Housing 30%, Transport 30% (earnings);
         # PAYE 7% of gross, Pension 8% of basic (deductions).
         struct = self.client.post(
@@ -5641,7 +5657,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
 
         # The one POST provisions a fully usable set of books: chart of accounts
         # and twelve open periods, so no CLI seed_finance step is needed.
-        accounts = self.client.get("/v1/finance/accounts/?entity=CREST").json()["data"]
+        accounts = self.client.get("/v1/finance/accounts/?entity=CREST&page_size=100").json()["data"]
         codes = {a["code"] for a in accounts}
         self.assertTrue({"1100", "1200", "3100"}.issubset(codes))  # cash, AR, share capital
 

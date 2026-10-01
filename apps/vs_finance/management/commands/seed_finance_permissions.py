@@ -158,6 +158,12 @@ FINANCE_RESOURCES = [
     ("tax",          "tax filings",            [("view", "NORMAL"), ("file", "SENSITIVE"),
                                                 ("pay", "CRITICAL"), ("create", "SENSITIVE"),
                                                 ("update", "SENSITIVE")]),
+    # The national payroll data every tenant's payroll is priced on: each tax
+    # year's PAYE table, the states PAYE is remitted to and the pension fund
+    # administrators. It is law and the regulator's register, maintained by
+    # CodeX for everybody, so both keys are platform-scoped and the views also
+    # require platform staff. Reading needs no key of its own.
+    ("statutory",    "national payroll tax data", [("create", "CRITICAL"), ("update", "CRITICAL")]),
 ]
 
 
@@ -260,6 +266,8 @@ class Command(BaseCommand):
                                 "finance.currency.create",
                                 "finance.fxrate.create",
                                 "finance.entity.create",
+                                "finance.statutory.create",
+                                "finance.statutory.update",
                             )
                             else PermissionScope.TENANT
                         ),

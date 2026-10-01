@@ -35,7 +35,17 @@ class _SplitFixture(_FinanceBranchFixture):
 
     @classmethod
     def setUpTestData(cls):
+        from vs_finance.models import FinancePayrollSettings
+
         super().setUpTestData()
+        # These schools supply their own PAYE and pension figures and switch the
+        # other statutory items off, so each line is exactly the roster's typed
+        # figures and the journals here are about branches, not statutory rules.
+        for books in (cls.books, cls.solo_books):
+            FinancePayrollSettings.objects.create(
+                entity=books, paye_method="SUPPLIED", employer_pension_enabled=False,
+                nhf_enabled=False, nsitf_enabled=False, itf_enabled=False,
+            )
         cls.ada = cls.salary(cls.books, "Ada Obi", cls.ikeja, gross=50_000, paye=3_000, pension=2_000)
         cls.bola = cls.salary(cls.books, "Bola Lawal", cls.lekki, gross=80_000, paye=5_000, pension=3_000)
         cls.ikeja_bank = cls.bank(cls.books, "Ikeja Operations", cls.ikeja, "71")
@@ -72,11 +82,11 @@ class _SplitFixture(_FinanceBranchFixture):
     def client_for(self, tenant, email, branch=None):
         return TenantAPIClient(user=self.user_holding(tenant, email, branch=branch))
 
-    def generate(self, client=None, books=None):
+    def generate(self, client=None, books=None, pay_date="2026-01-25"):
         books = books or self.books
         return (client or self.bello).post(
             f"/v1/finance/payroll-runs/generate/?entity={books.code}",
-            {"pay_date": "2026-01-25", "period_label": "January 2026"}, format="json",
+            {"pay_date": pay_date, "period_label": "January 2026"}, format="json",
         )
 
     def act(self, run, action, body=None, client=None, books=None):

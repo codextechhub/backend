@@ -449,3 +449,113 @@ def statement_pdf(customer, *, start_date=None, end_date=None, note: str = "",
     ])
 
     return _build(story, title=f"Statement of account {statement.customer_code}")
+
+
+# --------------------------------------------------------------------------- #
+# Payslip and yearly tax summary                                              #
+# --------------------------------------------------------------------------- #
+
+def _facts(pairs, styles):
+    """A two-column block of labelled facts, skipping the empty ones."""
+    rows = [[Paragraph(_text(label), styles["Label"]), Paragraph(f"<b>{_text(value)}</b>", styles["Small"])]
+            for label, value in pairs if value]
+    if not rows:
+        return Spacer(1, 1)
+    table = Table(rows, colWidths=[CONTENT_WIDTH * 0.28, CONTENT_WIDTH * 0.72])
+    table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    return table
+
+
+def payslip_pdf(context) -> bytes:
+    """Render one person's payslip from :func:`vs_finance.payslips.payslip_context`."""
+    styles = _styles()
+    issuer = {"name": context["issuer"]}
+    story = [
+        _letterhead(issuer, "Payslip", context["document_number"], styles),
+        Spacer(1, 5 * mm),
+        _facts([
+            ("Employee", context["employee_name"]),
+            ("Pay period", context["period_label"]),
+            ("Pay date", context["pay_date"]),
+            ("Branch", context["branch"]),
+            ("Tax ID", context["tax_id"]),
+            ("PAYE state", context["tax_state"]),
+            ("Pension administrator", context["pfa"]),
+            ("Pension PIN", context["pension_pin"]),
+        ], styles),
+        Spacer(1, 5 * mm),
+    ]
+    widths = [CONTENT_WIDTH * 0.7, CONTENT_WIDTH * 0.3]
+    earnings = [[row["name"], _bare(row["amount"])] for row in context["earnings"]]
+    if earnings:
+        story += [_grid(["Earnings", "Amount (NGN)"], earnings, widths, styles), Spacer(1, 3 * mm)]
+    deductions = [[row["name"], _bare(row["amount"])] for row in context["deductions"]]
+    story += [
+        _grid(["Deductions", "Amount (NGN)"], deductions or [["None", "0.00"]], widths, styles),
+        Spacer(1, 3 * mm),
+        _totals([
+            ("Gross pay", context["gross"]),
+            ("Total deductions", context["total_deductions"]),
+            ("Net pay", context["net"]),
+        ], styles),
+    ]
+    employer = [[row["name"], _bare(row["amount"])] for row in context["employer"]]
+    if employer:
+        story += [
+            Spacer(1, 5 * mm),
+            _grid(["Paid by your employer on top of your pay", "Amount (NGN)"], employer, widths, styles),
+        ]
+    ytd = context["ytd"]
+    story += [
+        Spacer(1, 5 * mm),
+        _grid(["Year to date", "Amount (NGN)"], [
+            ["Gross pay", _bare(ytd["gross"])], ["PAYE", _bare(ytd["paye"])],
+            ["Pension", _bare(ytd["pension"])], ["Net pay", _bare(ytd["net"])],
+        ], widths, styles),
+        Spacer(1, 6 * mm),
+        Paragraph(_text(
+            f"PAYE: {context['paye_source']}"
+            + (f" ({context['tax_table']})" if context["tax_table"] else "") + "."
+        ), styles["Centre"]),
+    ]
+    return _build(story, title=f"Payslip {context['document_number']}")
+
+
+def tax_summary_pdf(summary) -> bytes:
+    """Render a person's yearly tax summary from :func:`vs_finance.payslips.tax_summary`."""
+    from .money import format_naira
+
+    styles = _styles()
+    story = [
+        _letterhead({"name": summary["issuer"]}, "Tax summary", str(summary["year"]), styles),
+        Spacer(1, 5 * mm),
+        _facts([
+            ("Employee", summary["employee_name"]),
+            ("Tax year", str(summary["year"])),
+            ("Tax ID", summary["tax_id"]),
+            ("PAYE state", ", ".join(summary["tax_states"])),
+        ], styles),
+        Spacer(1, 5 * mm),
+    ]
+    rows = [
+        [row["period_label"] or row["pay_date"], _bare(format_naira(row["gross"])),
+         _bare(format_naira(row["taxable_pay"])), _bare(format_naira(row["paye"])),
+         _bare(format_naira(row["pension"])), _bare(format_naira(row["net"]))]
+        for row in summary["months"]
+    ]
+    totals = summary["totals"]
+    rows.append([
+        "Total", _bare(format_naira(totals["gross"])), _bare(format_naira(totals["taxable_pay"])),
+        _bare(format_naira(totals["paye"])), _bare(format_naira(totals["pension"])),
+        _bare(format_naira(totals["net"])),
+    ])
+    widths = [CONTENT_WIDTH * 0.20] + [CONTENT_WIDTH * 0.16] * 5
+    story.append(_grid(
+        ["Month", "Gross (NGN)", "Taxable (NGN)", "PAYE (NGN)", "Pension (NGN)", "Net (NGN)"],
+        rows, widths, styles,
+    ))
+    return _build(story, title=f"Tax summary {summary['year']}")

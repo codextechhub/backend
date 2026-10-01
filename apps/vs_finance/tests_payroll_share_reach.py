@@ -217,7 +217,8 @@ class TheWholeSchoolReaderTests(_ShareReachFixture):
         run = self.posted_run()
         self.assertEqual(self.act(run, "pay", {"bank_account": self.lekki_bank.pk}).status_code, 200)
 
-        other = PayrollRun.objects.get(pk=self.generate().data["data"]["id"])
+        # February's run: everybody is already paid for January.
+        other = PayrollRun.objects.get(pk=self.generate(pay_date="2026-02-25").data["data"]["id"])
         self.assertEqual(self.act(other, "cancel").status_code, 200)
 
     def test_a_pinned_reader_at_a_one_branch_school_is_not_narrowed(self):

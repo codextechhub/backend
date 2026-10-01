@@ -60,6 +60,16 @@ from .models import (
     PayrollRun,
     PayrollRunBranch,
     SalaryComponent,
+    PayrollLineItem,
+    EmployeeDeduction,
+    EmployeeSalaryVersion,
+    PayeTaxBand,
+    PayeTaxRelief,
+    PayeTaxTable,
+    PayrollDeductionType,
+    PayrollTaxJurisdiction,
+    PensionFundAdministrator,
+    Payslip,
     SalaryStructure,
     PettyCashFund,
     PettyCashVoucher,
@@ -1329,23 +1339,44 @@ def _narrow_filing(data, obj, reach):
 # Payroll                                                                    #
 # --------------------------------------------------------------------------- #
 
+class PayrollLineItemSerializer(serializers.ModelSerializer):
+    """One deduction or employer contribution on a line, and the accounts it posted to."""
+
+    class Meta:
+        model = PayrollLineItem
+        fields = [
+            "id", "kind", "code", "label", "amount", "basis_amount", "rate_bps",
+            "deduction_type_id", "liability_account_id", "expense_account_id",
+        ]
+
+
 class PayrollLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """One person's line of a payroll run.
 
     A line is always a row inside a run, never a detail response of its own,
     so it names no read-only fields: the run that carries it is the record a
-    form edits.
+    form edits. ``items`` lists each deduction and employer contribution;
+    ``tax_basis`` is the PAYE working and ``tax_table_id`` the national table it
+    was priced on. Every pay figure, the tax number and the pension PIN sit
+    behind their own Field Access switches.
     """
 
     field_resource = "finance.payrollrun"
 
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
+    tax_state = serializers.CharField(source="tax_state.code", read_only=True, default=None)
+    tax_state_name = serializers.CharField(source="tax_state.name", read_only=True, default=None)
+    pfa_name = serializers.CharField(source="pfa.name", read_only=True, default=None)
+    items = PayrollLineItemSerializer(many=True, read_only=True)
 
     class Meta:
         model = PayrollLine
         fields = [
-            "id", "line_no", "employee_id", "employee_name",
-            "gross_amount", "paye_amount", "pension_amount", "net_amount",
+            "id", "line_no", "employee_id", "employee_name", "salary_id",
+            "gross_amount", "paye_amount", "pension_amount", "other_deductions_amount",
+            "employer_contributions_amount", "net_amount", "taxable_pay",
+            "paye_source", "tax_table_id", "tax_basis", "items",
+            "tax_state", "tax_state_name", "pfa_id", "pfa_name", "tax_id", "pension_pin",
             "components", "cost_center", "branch_id", "branch_name",
         ]
 
@@ -1361,7 +1392,8 @@ class PayrollRunBranchSerializer(serializers.ModelSerializer):
         model = PayrollRunBranch
         fields = [
             "id", "branch_id", "branch_name", "status",
-            "gross_total", "paye_total", "pension_total", "net_total",
+            "gross_total", "paye_total", "pension_total", "other_deductions_total",
+            "employer_contributions_total", "net_total",
             "journal_id", "disbursement_journal_id", "bank_account_id",
         ]
 
@@ -1400,6 +1432,7 @@ class PayrollRunSerializer(serializers.ModelSerializer):
         fields = [
             "id", "document_number", "pay_date", "period_label", "narration",
             "run_status", "status", "gross_total", "paye_total", "pension_total",
+            "other_deductions_total", "employer_contributions_total",
             "net_total", "net_total_naira", "bank_account_id",
             "branch_id", "branch_name",
             "paye_payable_account", "paye_payable_account_id",
@@ -1449,6 +1482,9 @@ def _narrow_run(data, obj, reach):
         "gross_total": sum(line.gross_amount for line in lines),
         "paye_total": sum(line.paye_amount for line in lines),
         "pension_total": sum(line.pension_amount for line in lines),
+        "other_deductions_total": sum(line.other_deductions_amount for line in lines),
+        "employer_contributions_total": sum(
+            line.employer_contributions_amount for line in lines),
         "net_total": net,
         "net_total_naira": format_naira(net),
     })
@@ -1470,7 +1506,8 @@ class SalaryComponentSerializer(serializers.ModelSerializer):
         model = SalaryComponent
         fields = [
             "id", "name", "kind", "calc_method", "rate_bps", "amount",
-            "is_basic", "statutory_type", "sequence",
+            "is_basic", "is_pensionable", "is_taxable", "statutory_type", "sequence",
+            "effective_from", "effective_to",
         ]
 
 
@@ -1515,8 +1552,16 @@ class EmployeeSalarySerializer(FieldAccessMixin, serializers.ModelSerializer):
     # before the link existed, and there is no backfill, so a null means "not
     # linked yet" rather than "not an employee".
     employee_id = serializers.IntegerField(read_only=True, allow_null=True)
-    # PAYE/pension/net/components are derived when a structure is assigned, else the stored
-    # flat figures. Computed once per row (memoised) to avoid re-walking the components.
+    # Where PAYE goes and where pension goes. Not pay figures; the tax number,
+    # PIN, rent and any PAYE override are, and sit behind their own switches.
+    residence_state = serializers.CharField(source="residence_state.code", read_only=True, default=None)
+    residence_state_name = serializers.CharField(source="residence_state.name", read_only=True, default=None)
+    pfa_id = serializers.IntegerField(read_only=True, allow_null=True)
+    pfa_name = serializers.CharField(source="pfa.name", read_only=True, default=None)
+    # The figures a tenant that supplies its own PAYE is paid on: derived from the
+    # structure's current lines when one is assigned, else the typed figures. A
+    # tenant whose PAYE is computed has PAYE and pension worked out on each run.
+    # Computed once per row (memoised) to avoid re-walking the components.
     paye_amount = serializers.SerializerMethodField()
     pension_amount = serializers.SerializerMethodField()
     net_amount = serializers.SerializerMethodField()
@@ -1529,6 +1574,8 @@ class EmployeeSalarySerializer(FieldAccessMixin, serializers.ModelSerializer):
             "structure_id", "structure_name",
             "gross_amount", "paye_amount", "pension_amount", "net_amount", "components",
             "cost_center", "is_active",
+            "residence_state", "residence_state_name", "tax_id", "pfa_id", "pfa_name",
+            "pension_pin", "annual_rent", "paye_override", "paye_override_reason",
         ]
 
     def _derived(self, obj) -> dict:
@@ -1556,6 +1603,115 @@ class EmployeeSalarySerializer(FieldAccessMixin, serializers.ModelSerializer):
 
     def get_components(self, obj) -> list:
         return self._derived(obj)["components"]
+
+
+# --------------------------------------------------------------------------- #
+# Statutory payroll                                                           #
+# --------------------------------------------------------------------------- #
+
+class EmployeeSalaryVersionSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One dated version of a person's pay terms, with the pay figures behind their switches."""
+
+    field_resource = "finance.salary"
+
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    structure_name = serializers.CharField(source="structure.name", read_only=True, default=None)
+    cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
+    residence_state = serializers.CharField(source="residence_state.code", read_only=True, default=None)
+    created_by = serializers.CharField(source="created_by.email", read_only=True, default=None)
+
+    class Meta:
+        model = EmployeeSalaryVersion
+        fields = [
+            "id", "effective_from", "branch_id", "branch_name", "structure_id",
+            "structure_name", "gross_amount", "paye_amount", "pension_amount",
+            "cost_center", "residence_state", "reason", "created_by", "created_at",
+        ]
+
+
+class PayeTaxBandSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PayeTaxBand
+        fields = ["id", "sequence", "lower", "upper", "rate_bps"]
+
+
+class PayeTaxReliefSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PayeTaxRelief
+        fields = [
+            "id", "sequence", "code", "name", "kind", "basis", "rate_bps",
+            "cap_amount", "floor_amount",
+        ]
+
+
+class PayeTaxTableSerializer(serializers.ModelSerializer):
+    """A national tax table: public law, readable by anyone who runs payroll."""
+
+    bands = PayeTaxBandSerializer(many=True, read_only=True)
+    reliefs = PayeTaxReliefSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = PayeTaxTable
+        fields = [
+            "id", "country", "tax_year", "name", "source_reference", "notes",
+            "minimum_tax_rate_bps", "exempt_income_threshold", "revision", "is_active",
+            "bands", "reliefs", "updated_at",
+        ]
+
+
+class PayrollTaxJurisdictionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PayrollTaxJurisdiction
+        fields = ["id", "country", "code", "name", "authority_name", "is_active"]
+
+
+class PensionFundAdministratorSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PensionFundAdministrator
+        fields = ["id", "code", "name", "is_active"]
+
+
+class PayrollDeductionTypeSerializer(serializers.ModelSerializer):
+    liability_account = serializers.CharField(source="liability_account.code", read_only=True)
+
+    class Meta:
+        model = PayrollDeductionType
+        fields = ["id", "code", "name", "liability_account", "liability_account_id", "is_active"]
+
+
+class EmployeeDeductionSerializer(serializers.ModelSerializer):
+    deduction_type_code = serializers.CharField(source="deduction_type.code", read_only=True)
+    deduction_type_name = serializers.CharField(source="deduction_type.name", read_only=True)
+
+    class Meta:
+        model = EmployeeDeduction
+        fields = [
+            "id", "salary_id", "deduction_type_id", "deduction_type_code",
+            "deduction_type_name", "amount", "start_date", "end_date", "total_limit",
+            "reference", "is_active",
+        ]
+
+
+class PayslipSerializer(serializers.ModelSerializer):
+    """A payslip in a list of the reader's own: what it is for and what it paid them.
+
+    Only ever rendered for the employee the payslip is about, so the figures are
+    theirs to read.
+    """
+
+    entity = serializers.CharField(source="entity.code", read_only=True)
+    run = serializers.CharField(source="run.document_number", read_only=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    gross_amount = serializers.IntegerField(source="line.gross_amount", read_only=True)
+    net_amount = serializers.IntegerField(source="line.net_amount", read_only=True)
+    paye_amount = serializers.IntegerField(source="line.paye_amount", read_only=True)
+
+    class Meta:
+        model = Payslip
+        fields = [
+            "id", "entity", "run", "pay_date", "period_label", "branch_name",
+            "gross_amount", "paye_amount", "net_amount", "issued_at", "email_status",
+        ]
 
 
 # --------------------------------------------------------------------------- #

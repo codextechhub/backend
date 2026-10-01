@@ -51,6 +51,7 @@ _ALREADY_TITLED = {
     "procurement.quotation_submitted",
     "workflow.approver_removed",
     "payments.dispute_received",
+    "payroll.payslip_ready",
 }
 
 

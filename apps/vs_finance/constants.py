@@ -490,6 +490,74 @@ class StatutoryType(models.TextChoices):
     PENSION = "PENSION", "Pension"
 
 
+class PayeMethod(models.TextChoices):
+    """Where a tenant's PAYE and employee pension figures come from.
+
+    ``COMPUTED`` works PAYE out from the national tax table of the payroll
+    month's tax year and the employee pension from the tenant's statutory rate.
+    ``SUPPLIED`` takes both from the salary structure or the figures typed on the
+    roster, for a tenant whose payroll is worked out elsewhere.
+    """
+    COMPUTED = "COMPUTED", "Computed from the national tax table"
+    SUPPLIED = "SUPPLIED", "Supplied by the tenant"
+
+
+class PayeSource(models.TextChoices):
+    """How one payroll line's PAYE figure was arrived at."""
+    COMPUTED = "COMPUTED", "Computed from the tax table"
+    OVERRIDE = "OVERRIDE", "Overridden on the employee's salary"
+    SUPPLIED = "SUPPLIED", "Supplied by the salary structure or roster"
+    MANUAL = "MANUAL", "Typed on a hand-raised run"
+
+
+class PayrollItemKind(models.TextChoices):
+    """Whether a payroll line item is withheld from the employee or paid by the employer."""
+    DEDUCTION = "DEDUCTION", "Employee deduction"
+    EMPLOYER = "EMPLOYER", "Employer contribution"
+
+
+class PayrollItemCode(models.TextChoices):
+    """What a payroll line item is, which decides the accounts it posts to."""
+    PAYE = "PAYE", "PAYE"
+    PENSION = "PENSION", "Employee pension"
+    NHF = "NHF", "National Housing Fund"
+    VOLUNTARY = "VOLUNTARY", "Voluntary deduction"
+    EMPLOYER_PENSION = "EMPLOYER_PENSION", "Employer pension"
+    NSITF = "NSITF", "NSITF employee compensation"
+    ITF = "ITF", "ITF training levy"
+
+
+class PayeReliefKind(models.TextChoices):
+    """How a relief rule in a national tax table reduces taxable income.
+
+    ``CONTRIBUTION`` deducts what the employee actually contributed of the
+    ``basis`` kind (pension, NHF). ``PERCENT_CAPPED`` deducts ``rate_bps`` of the
+    basis, no less than ``floor_amount`` and no more than ``cap_amount`` a year.
+    ``FIXED`` deducts ``cap_amount`` a year.
+    """
+    CONTRIBUTION = "CONTRIBUTION", "Contribution actually made"
+    PERCENT_CAPPED = "PERCENT_CAPPED", "Percentage of a basis, floored and capped"
+    FIXED = "FIXED", "Fixed amount a year"
+
+
+class PayeReliefBasis(models.TextChoices):
+    """The figure a relief rule is measured against."""
+    NONE = "NONE", "None"
+    PENSION = "PENSION", "Employee pension contributions"
+    NHF = "NHF", "National Housing Fund contributions"
+    ANNUAL_RENT = "ANNUAL_RENT", "Annual rent the employee pays"
+    ANNUAL_GROSS = "ANNUAL_GROSS", "Annual gross income"
+
+
+class PayslipEmailStatus(models.TextChoices):
+    """Where a payslip's email stands."""
+    NOT_REQUESTED = "NOT_REQUESTED", "Not emailed (switched off)"
+    PENDING = "PENDING", "Waiting to be sent"
+    QUEUED = "QUEUED", "Handed to notifications"
+    NO_ADDRESS = "NO_ADDRESS", "No email address on file"
+    FAILED = "FAILED", "Could not be queued"
+
+
 # Define Budget Status values.
 class BudgetStatus(models.TextChoices):
     """Lifecycle of a budget; approval locks the figures so actuals can't be re-planned.
@@ -686,6 +754,14 @@ class FinanceAuditAction(models.TextChoices):
     TAX_FILING_PAID = "TAX_FILING_PAID", "Tax filing paid / remitted"
     TAX_FILING_REJECTED = "TAX_FILING_REJECTED", "Tax filing action rejected"
     TAX_REMITTANCE_REVERSED = "TAX_REMITTANCE_REVERSED", "Tax remittance reversed"
+    PAYROLL_SETTINGS_UPDATED = "FIN_PAYROLL_SETTINGS_UPDATED", "Finance payroll settings updated"
+    SALARY_CREATED = "SALARY_CREATED", "Employee salary added"
+    SALARY_CHANGED = "SALARY_CHANGED", "Employee salary changed"
+    SALARY_DEACTIVATED = "SALARY_DEACTIVATED", "Employee salary deactivated"
+    PAYE_OVERRIDE_CHANGED = "PAYE_OVERRIDE_CHANGED", "PAYE override set or cleared"
+    SALARY_STRUCTURE_CHANGED = "SALARY_STRUCTURE_CHANGED", "Salary structure changed"
+    PAYROLL_DEDUCTION_CHANGED = "PAYROLL_DEDUCTION_CHANGED", "Payroll deduction changed"
+    PAYSLIPS_ISSUED = "PAYSLIPS_ISSUED", "Payslips issued"
 
 
 # Define Finance Audit Status values.
@@ -702,6 +778,9 @@ class TaxObligationType(models.TextChoices):
     WHT = "WHT", "Withholding Tax"
     PAYE = "PAYE", "Pay-As-You-Earn (employee income tax)"
     PENSION = "PENSION", "Pension contribution"
+    NHF = "NHF", "National Housing Fund"
+    NSITF = "NSITF", "NSITF employee compensation"
+    ITF = "ITF", "ITF training levy"
     OTHER = "OTHER", "Other statutory levy"
 
 
@@ -812,6 +891,12 @@ PAYE_PAYABLE_CODE = "2310"                # PAYE (employee income tax) payable
 PENSION_PAYABLE_CODE = "2320"             # Pension payable
 NET_WAGES_PAYABLE_CODE = "2330"           # Net wages payable (cleared on disbursement)
 SALARIES_EXPENSE_CODE = "5200"            # Salaries & wages expense
+NHF_PAYABLE_CODE = "2340"                 # National Housing Fund payable
+NSITF_PAYABLE_CODE = "2350"               # NSITF employee compensation payable
+ITF_PAYABLE_CODE = "2360"                 # ITF training levy payable
+EMPLOYER_PENSION_EXPENSE_CODE = "5210"    # Employer pension contributions expense
+NSITF_EXPENSE_CODE = "5220"               # NSITF employee compensation expense
+ITF_EXPENSE_CODE = "5230"                 # ITF training levy expense
 DEPRECIATION_EXPENSE_CODE = "5400"        # Depreciation expense
 BANK_CHARGES_CODE = "5500"               # Bank charges expense
 RETAINED_EARNINGS_CODE = "3200"          # Retained earnings (equity) - net income closes here

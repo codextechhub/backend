@@ -18,6 +18,8 @@ from vs_finance.models import (
     Account,
     BankAccount,
     EmployeeSalary,
+    EmployeeSalaryVersion,
+    PayrollLineItem,
     FiscalPeriod,
     FiscalYear,
     LedgerEntity,
@@ -37,6 +39,7 @@ class FinanceDeepPayloadTests(DeepPayloadChecks, TestCase):
         _SURFACE + "BankAccountSerializer",
         _SURFACE + "PayrollLineSerializer",
         _SURFACE + "EmployeeSalarySerializer",
+        _SURFACE + "EmployeeSalaryVersionSerializer",
     })
 
     @classmethod
@@ -79,21 +82,32 @@ class FinanceDeepPayloadTests(DeepPayloadChecks, TestCase):
             run=run, employee_name="Ngozi Okafor", gross_amount=250_000_00,
             paye_amount=20_000_00, pension_amount=20_000_00, net_amount=210_000_00,
             components=[{"name": "Basic", "kind": "EARNING", "amount": 250_000_00}],
-            line_no=1,
+            line_no=1, other_deductions_amount=6_250_00, employer_contributions_amount=30_000_00,
+            taxable_pay=250_000_00, tax_basis={"tax_to_date": 20_000_00},
+            tax_id="TIN-1", pension_pin="PEN-1",
+        )
+        PayrollLineItem.objects.create(
+            line=line, kind="DEDUCTION", code="NHF", amount=6_250_00,
         )
         salary = EmployeeSalary.objects.create(
             entity=entity, branch=branch, name="Ngozi Okafor",
             gross_amount=250_000_00, paye_amount=20_000_00,
-            pension_amount=20_000_00,
+            pension_amount=20_000_00, tax_id="TIN-1", pension_pin="PEN-1",
+            annual_rent=1_200_000_00, paye_override=15_000_00, paye_override_reason="Bureau",
         )
-        return bank, line, salary
+        version = EmployeeSalaryVersion.objects.create(
+            salary=salary, effective_from=datetime.date(2026, 1, 1), branch=branch,
+            gross_amount=250_000_00, paye_amount=20_000_00, pension_amount=20_000_00,
+        )
+        return bank, line, salary, version
 
     def samples(self):
         samples = []
-        for tenant, (bank, line, salary) in self.records:
+        for tenant, (bank, line, salary, version) in self.records:
             samples += [
                 Sample(_SURFACE + "BankAccountSerializer", bank, tenant=tenant),
                 Sample(_SURFACE + "PayrollLineSerializer", line, tenant=tenant),
                 Sample(_SURFACE + "EmployeeSalarySerializer", salary, tenant=tenant),
+                Sample(_SURFACE + "EmployeeSalaryVersionSerializer", version, tenant=tenant),
             ]
         return samples

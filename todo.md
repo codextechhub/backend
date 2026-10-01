@@ -577,6 +577,48 @@ MUST SAY:
   rest); a whole-school reader is unchanged. FIX: the movements summary honours
   ?provider= as the feed does.
 
+### D97. Payroll works out PAYE from the year's tax table, takes the statutory deductions, pays each state and pension administrator, and issues payslips (hash pending, 2026-10-01)
+MODULES: M19 finance and accounting, M12 staff management (payslips for staff),
+M08 notifications and delivery, M04 roles and permissions, M02 xvision admin
+console (national tax data), MRD.
+From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF): resolves
+TAX-6, TAX-7, BRANCH-5, BRANCH-10 and TAX-8.
+MUST SAY:
+- PAYE (M19). Computed by default from a national tax table per calendar year
+  (bands, rates and reliefs as data: pension and NHF deductible, rent relief 20%
+  of rent capped at N500,000), maintained by CodeX staff (platform keys
+  finance.statutory.create/update); cumulative year to date, never refunding
+  through payroll; each line records the table and inputs. paye_method COMPUTED or
+  SUPPLIED per tenant; a hand override is audited. The 2026 figures are to be
+  confirmed by an accountant.
+- States and PFAs (M19). PAYE goes to the employee's state of residence (payroll
+  profile, defaulting to the branch's state): one PAYE payable and one tax return
+  per state (e.g. 2310-LA, PAYE-LA). Pension goes per PFA (2320-<PFA>,
+  PENSION-<PFA>), with each employee's PFA and pension PIN on their profile. Each
+  return has a schedule of the people behind it (tax-filings/<id>/schedule/).
+- Deductions and contributions (M19). Employee pension 8%, employer pension 10%,
+  NHF 2.5% of basic, employer NSITF 1% and ITF 1% of gross, each switchable and
+  re-rateable per tenant (settings/payroll/); tenant-defined voluntary deductions
+  (loans, cooperative savings) with their own liability accounts. Employer
+  contributions are expensed and accrued per branch. Migrations vs_finance 0048,
+  0049 (national data, new accounts 2340-2360 and 5210-5230, NHF/NSITF/ITF
+  returns).
+- One payment a month (M19). A person's branch, pay and state for a month are
+  read on its last day; nobody is generated onto a second run in a month already
+  paid; changes that would pay twice or not at all are refused; the
+  central/per-branch scope changes only before the month's first run.
+- Payslips (M19, M12, M08). A PDF payslip per person per run and a yearly tax
+  summary (?output=pdf); payslip_in_app and payslip_email are tenant settings
+  (default both on); events payroll.payslip_ready and payroll.payslip_emailed,
+  delivered after payment commits; staff read only their own (my-payslips/,
+  my-tax-summary/); PDFs refused unless the caller's role sees every figure.
+- Salary history (M19). Salary rows and structures keep effective-dated versions;
+  edits make a new version and are audited; deleting a roster row ends the person
+  rather than deleting them.
+- Needs Attention: the accountant must confirm the tax table, rates, PFA list and
+  state authority names; a mid-month change applies to the whole month; a new
+  starter's previous-employer pay and tax cannot be entered yet.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

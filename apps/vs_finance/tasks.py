@@ -4,7 +4,9 @@ Two daily jobs live here. The dunning run makes automated reminders actually
 *active*: it generates the day's dunning notices and dispatches every PENDING notice
 through **vs_notifications** (delivery never leaves vs_finance directly - see
 :func:`vs_finance.dunning.mark_notice_sent`). The fiscal-calendar rollover keeps
-every entity's calendar ahead of today (:func:`roll_fiscal_calendars`).
+every entity's calendar ahead of today (:func:`roll_fiscal_calendars`). Receipt
+emails and payslip delivery are queued here after the money moves, so a broker
+that is down never undoes a posting.
 
 Autodiscovered by Celery via ``app.autodiscover_tasks()`` in ``apps/apps/celery.py``
 (which scans ``tasks`` in every installed app); wired to beat as
@@ -151,3 +153,11 @@ def roll_fiscal_calendars():
         summary["entities"], summary["opened"], summary["warned"], summary["failed"],
     )
     return summary
+
+
+@shared_task(name="vs_finance.deliver_payslips")
+def deliver_payslips_task(payslip_ids):
+    """Send the in-app notices and emails of payslips just issued (:mod:`vs_finance.payslips`)."""
+    from .payslips import deliver_payslips
+
+    return deliver_payslips(payslip_ids)

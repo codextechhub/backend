@@ -4,14 +4,17 @@ Payroll is booked in two postings, deliberately separate because the cost is inc
 before the cash leaves (and the statutory deductions are held in between):
 
 * **Accrual** (:func:`post_payroll`): recognise the whole cost and park each liability -
-  ``Dr salary expense (Σgross), Cr PAYE payable (Σpaye), Cr pension payable (Σpension),
-  Cr net wages payable (Σnet)``.
+  ``Dr salary expense (Σgross), Dr employer contribution expenses, Cr each deduction's
+  and contribution's payable, Cr net wages payable (Σnet)``.
 * **Disbursement** (:func:`pay_payroll`): when employees are actually paid, clear the
-  net-pay liability - ``Dr net wages payable (Σnet), Cr bank (Σnet)``.
+  net-pay liability - ``Dr net wages payable (Σnet), Cr bank (Σnet)`` - and issue
+  each person's payslip.
 
-The statutory liabilities (PAYE, pension) stay on the balance sheet until remitted to
-the authorities - a separate AP payment outside this module. ``net = gross - paye -
-pension`` per employee; all amounts are integer kobo.
+The statutory liabilities (PAYE per state, pension per PFA, NHF, NSITF, ITF) stay on
+the balance sheet until remitted through the tax returns (:mod:`vs_finance.tax_filing`).
+``net = gross - paye - pension - other deductions`` per employee; all amounts are
+integer kobo. What each person's line deducts and contributes is worked out in
+:mod:`vs_finance.payroll_statutory`, and PAYE in :mod:`vs_finance.payroll_tax`.
 """
 from __future__ import annotations
 
@@ -30,6 +33,9 @@ from .constants import (
     NET_WAGES_PAYABLE_CODE,
     PAYE_PAYABLE_CODE,
     PENSION_PAYABLE_CODE,
+    PayeMethod,
+    PayrollItemCode,
+    PayrollItemKind,
     PayrollRunStatus,
     SALARIES_EXPENSE_CODE,
     SalaryCalcMethod,
@@ -37,64 +43,83 @@ from .constants import (
     StatutoryType,
 )
 from .exceptions import FinanceError, PayrollBranchUnassignedError, PayrollError
+from .payroll_statutory import ItemAccounts
 from .posting import post_journal, resolve_period
 
 
 # Calculate salary breakdown from a structure.
-def apply_structure(gross_amount, structure) -> dict:
-    """Derive an employee's pay breakdown from a salary structure applied to a gross.
+def apply_structure(gross_amount, structure, as_at=None) -> dict:
+    """Split a gross over a salary structure's lines in force on ``as_at``.
 
-    Earnings are an informational split of the gross; deductions tagged PAYE/pension are
-    what reduce it to net. Returns integer-kobo ``gross``/``basic``/``paye``/``pension``/
-    ``net`` plus a ``components`` snapshot ``[{name, kind, statutory_type, amount}]`` for
-    the payslip. ``net = gross - paye - pension`` always, so the accrual journal balances.
+    ``as_at`` None reads the structure's current lines; a payroll month passes its
+    payroll date, so it is always split by the lines that were in force then.
+
+    Returns integer-kobo ``gross``, ``basic`` (earnings flagged basic),
+    ``pensionable`` (earnings flagged pensionable, or the whole gross when none
+    is), ``taxable`` (gross less the earnings flagged not taxable), the
+    structure's own ``paye`` and ``pension`` deductions, ``net = gross - paye -
+    pension``, and a ``components`` snapshot ``[{name, kind, statutory_type,
+    amount}]`` for the payslip. With no structure the whole gross is basic,
+    pensionable and taxable and nothing is deducted.
     """
-    gross = int(gross_amount or 0)  # Normalize gross pay to integer kobo.
-    components = list(structure.components.all()) if structure is not None else []  # Snapshot structure components.
+    gross = int(gross_amount or 0)
+    components = structure.components_on(as_at) if structure is not None else []
 
-    # Compute one component amount.
     def value_of(component, basic):
-        if component.calc_method == SalaryCalcMethod.FIXED:  # Fixed components ignore gross/basic.
-            return int(component.amount or 0)  # Return fixed kobo amount.
-        base = basic if component.calc_method == SalaryCalcMethod.PERCENT_OF_BASIC else gross  # Choose percentage base.
-        return base * int(component.rate_bps or 0) // 10000  # Apply basis-point rate to base.
+        if component.calc_method == SalaryCalcMethod.FIXED:
+            return int(component.amount or 0)
+        base = basic if component.calc_method == SalaryCalcMethod.PERCENT_OF_BASIC else gross
+        return base * int(component.rate_bps or 0) // 10000
 
-    # Basic first - the base for any '% of basic' component (which must not itself be one).  # Required dependency order.
-    basic = sum(  # Sum components marked as basic earnings.
-        value_of(c, 0) for c in components  # Compute fixed/gross-percent basic components.
-        if c.kind == SalaryComponentKind.EARNING and c.is_basic  # Only earning/basic components contribute.
+    # Basic first: it is the base of any '% of basic' line, and is never one itself.
+    basic = sum(
+        value_of(c, 0) for c in components
+        if c.kind == SalaryComponentKind.EARNING and c.is_basic
     )
 
-    paye = pension = 0  # Statutory deduction totals.
-    snapshot = []  # Payslip component snapshot.
-    for c in components:  # Compute every configured component.
-        amt = value_of(c, basic)  # Calculate component amount.
-        snapshot.append({  # Preserve component details for payslip/history.
-            "name": c.name, "kind": c.kind,  # Component name and earning/deduction kind.
-            "statutory_type": c.statutory_type, "amount": amt,  # Statutory type and computed amount.
+    paye = pension = pensionable = untaxed = 0
+    snapshot = []
+    for c in components:
+        amt = value_of(c, basic)
+        snapshot.append({
+            "name": c.name, "kind": c.kind,
+            "statutory_type": c.statutory_type, "amount": amt,
         })
-        if c.kind == SalaryComponentKind.DEDUCTION:  # Only deductions reduce net pay.
-            if c.statutory_type == StatutoryType.PAYE:  # PAYE deduction.
-                paye += amt  # Add to PAYE liability.
-            elif c.statutory_type == StatutoryType.PENSION:  # Pension deduction.
-                pension += amt  # Add to pension liability.
+        if c.kind == SalaryComponentKind.EARNING:
+            if c.is_pensionable:
+                pensionable += amt
+            if not c.is_taxable:
+                untaxed += amt
+        elif c.statutory_type == StatutoryType.PAYE:
+            paye += amt
+        elif c.statutory_type == StatutoryType.PENSION:
+            pension += amt
 
-    return {  # Return payroll line calculation result.
-        "gross": gross, "basic": basic, "paye": paye, "pension": pension,  # Gross/basic/statutory totals.
-        "net": gross - paye - pension, "components": snapshot,  # Net pay and payslip snapshot.
+    return {
+        "gross": gross, "basic": basic if structure is not None else gross,
+        "pensionable": pensionable or gross, "taxable": max(gross - untaxed, 0),
+        "paye": paye, "pension": pension,
+        "net": gross - paye - pension, "components": snapshot,
     }
 
 
 # Recalculate payroll line net amounts and run totals.
 def compute_payroll(run) -> None:
-    """Derive each line's ``net_amount`` (gross − paye − pension) and roll up totals."""
+    """Derive each line's ``net_amount`` and roll the totals up onto the run.
+
+    ``net = gross - paye - pension - other deductions``; employer contributions
+    are a cost on top and never reduce it.
+    """
     from .models import PayrollLine
 
-    for line in run.lines.all():  # Walk every payroll line.
-        net = line.gross_amount - line.paye_amount - line.pension_amount  # Derive net pay.
-        if line.net_amount != net:  # Avoid unnecessary writes.
+    for line in run.lines.all():
+        net = (
+            line.gross_amount - line.paye_amount - line.pension_amount
+            - line.other_deductions_amount
+        )
+        if line.net_amount != net:
             PayrollLine.objects.filter(pk=line.pk).update(net_amount=net)
-    run.recompute_totals(save=True)  # Roll line totals up to payroll run.
+    run.recompute_totals(save=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -131,9 +156,10 @@ PAYROLL_SCOPE_CHOICES = (PAYROLL_SCOPE_CENTRAL, PAYROLL_SCOPE_PER_BRANCH)
 def payroll_scope(entity) -> str:
     """Which shape *entity*'s owning school runs payroll in.
 
-    Falls back to :data:`PAYROLL_SCOPE_CENTRAL` for anything unexpected: an entity
-    with no tenant (the platform's own books), an archived definition, a value that
-    is not one of the two. Failing to the old shape is the safe direction. The worst
+    Falls back to :data:`PAYROLL_SCOPE_CENTRAL` for anything unexpected: an
+    archived definition, or a value that is not one of the two. Every set of
+    books has a tenant, and every tenant (the platform's included) has at least
+    one branch. Failing to the old shape is the safe direction. The worst
     case that way is a school which opted in keeps running centrally until somebody
     notices; failing the other way would narrow a central school's payroll to one
     branch and quietly stop paying everybody else.
@@ -196,18 +222,62 @@ def assert_roster_fully_assigned(tenant) -> None:
     )
 
 
+def assert_no_run_this_month(tenant) -> None:
+    """Refuse a change of payroll scope once any run of the current payroll month exists.
+
+    Greenfield runs per branch, and Yaba paid October's salaries on the 8th. If
+    the head office switches to central on the 10th, the central run on the 25th
+    covers everybody, Yaba's 22 staff included. The person guard in
+    :func:`generate_run_from_roster` would leave them off it, but the month
+    would then be paid half one way and half the other, which nobody can read
+    back. So the scope changes only at the start of a payroll month, before any
+    run of it is raised (a cancelled run does not count).
+    """
+    from vs_config.clock import tenant_today
+    from vs_config.exceptions import InvalidConfigurationValue
+
+    from .models import LedgerEntity, PayrollRun
+    from .payroll_statutory import payroll_period
+
+    today = tenant_today(tenant)
+    for entity in LedgerEntity.objects.filter(tenant=tenant):
+        start, end = payroll_period(entity, today)
+        clash = (
+            PayrollRun.objects.filter(entity=entity, pay_date__gte=start, pay_date__lte=end)
+            .exclude(run_status=PayrollRunStatus.CANCELLED)
+            .select_related("branch").order_by("pay_date", "id").first()
+        )
+        if clash is None:
+            continue
+        whose = clash.branch.name if clash.branch_id else "the whole school"
+        raise InvalidConfigurationValue(
+            f"Payroll run {clash.document_number or clash.pk} for {whose} already covers "
+            f"this payroll month. Change how payroll is run at the start of a month, "
+            f"before any run of it is raised, or void that run first.",
+            extra={"key": PAYROLL_SCOPE_KEY},
+        )
+
+
 def guard_payroll_scope(value, *, tenant=None, branch=None) -> None:
     """The :mod:`vs_config` write guard behind :data:`PAYROLL_SCOPE_KEY`.
 
     Registered from this app's ``AppConfig.ready`` rather than called from
     :mod:`vs_config`, so the configuration engine keeps knowing nothing about
-    finance. Only the switch *into* PER_BRANCH is guarded: switching back to
-    CENTRAL is always safe, because a central run covers everybody whatever their
-    branch says.
+    finance. A change either way waits for a payroll month no run has started
+    (:func:`assert_no_run_this_month`), and the switch into PER_BRANCH also needs
+    every active person on a branch (:func:`assert_roster_fully_assigned`).
+    Switching back to CENTRAL needs nothing more: a central run covers everybody
+    whatever their branch says.
     """
-    if value != PAYROLL_SCOPE_PER_BRANCH or tenant is None:
+    if tenant is None:
         return
-    assert_roster_fully_assigned(tenant)
+    from vs_config.conf import get_config
+
+    if value == get_config(PAYROLL_SCOPE_KEY, PAYROLL_SCOPE_CENTRAL, tenant=tenant):
+        return
+    assert_no_run_this_month(tenant)
+    if value == PAYROLL_SCOPE_PER_BRANCH:
+        assert_roster_fully_assigned(tenant)
 
 
 def roster_for(entity, branch=None):
@@ -269,14 +339,13 @@ def _period_window(entity, pay_date):
 
 
 def ensure_no_overlapping_run(entity, pay_date, branch=None) -> None:
-    """Refuse a run that would pay somebody a second time in the same period.
+    """Refuse a branch run that would overlap another run of the same period.
 
-    **Only under PER_BRANCH.** A CENTRAL school is not guarded at all, and that is
-    deliberate rather than an oversight: raising two runs in one month has always
-    been allowed there, schools do it for advances and supplementary payments, and
-    this change promised to leave a central school's payroll exactly as it found
-    it. The double payment per-branch payroll could introduce is the branch/central
-    one, and that only exists once a school has switched.
+    **Only under PER_BRANCH.** A CENTRAL school may raise several runs in one
+    month: a supplementary run for a late hire, or hand-typed advances. What stops
+    a person being paid twice there is the person guard in
+    :func:`generate_run_from_roster`, which leaves off anybody a live run of the
+    period already pays, whatever its branch or scope.
 
     Under PER_BRANCH coverage nests, and the rule falls out of it: a central run
     covers everybody, a branch run covers its own site, and two different branches
@@ -316,33 +385,101 @@ def ensure_no_overlapping_run(entity, pay_date, branch=None) -> None:
     )
 
 
+def already_paid(entity, salaries, *, period_start, period_end) -> dict:
+    """``{salary_id: run}`` of the people a live run of the period already pays.
+
+    The person guard. A line is the person's when it names their salary row, or,
+    for a line written before lines named one, the same user account. Any live
+    run counts, draft included, whatever its branch or scope: a draft is a run
+    somebody means to pay.
+    """
+    from django.db.models import Q
+
+    from .models import PayrollLine
+
+    ids = [s.pk for s in salaries]
+    users = {s.employee_id: s.pk for s in salaries if s.employee_id}
+    rows = (
+        PayrollLine.objects.filter(
+            run__entity=entity, run__pay_date__gte=period_start, run__pay_date__lte=period_end,
+        )
+        .exclude(run__run_status=PayrollRunStatus.CANCELLED)
+        .filter(Q(salary_id__in=ids) | Q(salary__isnull=True, employee_id__in=list(users)))
+        .select_related("run")
+    )
+    out = {}
+    for line in rows:
+        salary_id = line.salary_id or users.get(line.employee_id)
+        if salary_id is not None:
+            out.setdefault(salary_id, line.run)
+    return out
+
+
 @transaction.atomic
 def generate_run_from_roster(entity, *, pay_date, branch=None, period_label="",
-                             narration="", currency=None,
-                             actor_user=None):  # Create a draft payroll run from active salaries.
-    """Raise a draft :class:`PayrollRun` with one line per active employee salary.
+                             narration="", currency=None, actor_user=None):
+    """Raise a draft :class:`PayrollRun` with one line per person due to be paid.
 
-    Copies the recurring gross/PAYE/pension (and cost centre) from the
-    :class:`EmployeeSalary` roster. Raises :class:`PayrollError` if the roster is empty.
+    The month's payroll date is the last day of its payroll period
+    (:func:`vs_finance.payroll_statutory.payroll_period`), and each person's pay
+    terms are those in force on it (:meth:`EmployeeSalary.terms_on`): their
+    gross, structure, branch and state then, whichever day of the month the run
+    is raised on. Each line is worked out in full - PAYE, pension, NHF, voluntary
+    deductions and employer contributions - by
+    :func:`vs_finance.payroll_statutory.work_out_line`.
 
-    ``branch`` picks which of the two shapes this is. Left out - the default, and
-    what every existing caller does - it is a central run over the whole entity and
-    behaves exactly as before, right down to the query. Given a branch it covers
-    only that branch's roster rows; :func:`roster_for` argues why that reading is
-    exclusive. Deciding *whether* to pass one is the caller's job, because that is
-    the school's setting rather than this function's business.
+    ``branch`` picks which of the two shapes this is. Left out it is a central
+    run over the whole entity; given, it covers the people whose branch on the
+    payroll date is that branch, read exclusively (:func:`roster_for` argues
+    why). Deciding *whether* to pass one is the caller's job, because that is the
+    school's setting rather than this function's business.
+
+    **The person guard.** Anybody a live run of the period already pays is left
+    off and listed in ``run.skipped`` (``[(name, run)]``), so nobody is paid twice
+    in a month whatever the runs' branches or scopes: Mr Bello, paid by Ikeja on
+    the 20th and moved to Lekki from October, is not on Lekki's September run.
+    The salary rows are locked first, so two officers raising runs at the same
+    moment cannot both take the same person. Raises :class:`PayrollError` when
+    nobody is left to pay.
     """
-    from .models import PayrollLine, PayrollRun
+    from .models import PayrollLine, PayrollLineItem, PayrollRun
+    from .models import EmployeeSalary
+    from .payroll_statutory import (
+        active_jurisdictions,
+        payroll_period,
+        payroll_settings,
+        voluntary_due,
+        work_out_line,
+        year_to_date,
+    )
+    from .payroll_tax import table_for
 
     ensure_no_overlapping_run(entity, pay_date, branch)
+    period_start, period_end = payroll_period(entity, pay_date)
+    branch_id = getattr(branch, "pk", branch)
 
-    roster = list(  # Load active employee salaries in stable order.
-        roster_for(entity, branch)
-        .select_related("cost_center")
-        .prefetch_related("structure__components")
-        .order_by("name")
+    candidates = list(
+        EmployeeSalary.objects.select_for_update(of=("self",))
+        .filter(entity=entity, is_active=True).order_by("pk")
     )
-    if not roster:  # A run needs at least one active employee.
+    rows = (
+        EmployeeSalary.objects.filter(pk__in=[c.pk for c in candidates])
+        .select_related("cost_center", "branch", "structure", "residence_state", "pfa")
+        .prefetch_related(
+            "structure__components", "versions__structure__components",
+            "versions__branch", "versions__residence_state", "versions__cost_center",
+        )
+        .order_by("name", "pk")
+    )
+    due = []
+    for row in rows:
+        terms = row.terms_on(period_end)
+        if terms is None:
+            continue
+        if branch_id is not None and terms.branch_id != branch_id:
+            continue
+        due.append((row, terms))
+    if not due:
         raise PayrollError(
             f"No active employees on the {branch.name} salary roster to generate a "
             f"run from."
@@ -350,25 +487,58 @@ def generate_run_from_roster(entity, *, pay_date, branch=None, period_label="",
             "No active employees on the salary roster to generate a run from.",
         )
 
-    run = PayrollRun.objects.create(
-        entity=entity, branch=branch, pay_date=pay_date, period_label=period_label,  # Scope, branch, period label.
-        narration=narration, currency=currency, created_by=actor_user,  # Narrative, currency, and actor.
-    )
-    for i, emp in enumerate(roster, start=1):  # Create one line per roster entry.
-        if emp.structure_id:  # Structured salaries derive statutory deductions.
-            d = apply_structure(emp.gross_amount, emp.structure)  # Calculate breakdown from structure.
-            paye, pension, components = d["paye"], d["pension"], d["components"]  # Extract deductions and snapshot.
-        else:  # Legacy/direct salaries store deductions on the roster row.
-            paye, pension, components = emp.paye_amount, emp.pension_amount, []  # Use explicit amounts.
-        PayrollLine.objects.create(
-            run=run, line_no=i, employee=emp.employee, employee_name=emp.name,  # Link employee and preserve name.
-            branch_id=emp.branch_id,  # The branch this person's pay is booked to.
-            gross_amount=emp.gross_amount, paye_amount=paye,  # Gross and PAYE amounts.
-            pension_amount=pension, cost_center=emp.cost_center, components=components,  # Pension, analytics, and snapshot.
+    paid = already_paid(entity, [row for row, _ in due],
+                        period_start=period_start, period_end=period_end)
+    skipped = [(row.name, paid[row.pk]) for row, _ in due if row.pk in paid]
+    due = [(row, terms) for row, terms in due if row.pk not in paid]
+    if not due:
+        shown = ", ".join(sorted({run.document_number or str(run.pk) for _, run in skipped}))
+        raise PayrollError(
+            f"Everybody on this roster is already on a payroll run for this period "
+            f"({shown}). Void a run before raising it again, or nobody is paid twice.",
         )
-    compute_payroll(run)  # Calculate net amounts and totals.
+
+    policy = payroll_settings(entity)
+    table = None
+    if policy.paye_method != PayeMethod.SUPPLIED:
+        table = table_for(policy.tax_country, period_end)
+    people = [row for row, _ in due]
+    ytd = year_to_date(
+        entity, people, year_start=period_end.replace(month=1, day=1), period_start=period_start,
+    )
+    voluntary = voluntary_due(people, period_start=period_start, period_end=period_end)
+    jurisdictions = active_jurisdictions(policy.tax_country)
+
+    run = PayrollRun.objects.create(
+        entity=entity, branch=branch, pay_date=pay_date, period_label=period_label,
+        narration=narration, currency=currency, created_by=actor_user,
+    )
+    items = []
+    for i, (row, terms) in enumerate(due, start=1):
+        line_branch = terms.branch if terms.branch_id else None
+        figures = work_out_line(
+            row, terms, policy=policy, period_end=period_end, ytd=ytd[row.pk],
+            voluntary=voluntary.get(row.pk, []), branch=line_branch,
+            jurisdictions=jurisdictions, table=table,
+        )
+        line = PayrollLine.objects.create(
+            run=run, line_no=i, employee_id=row.employee_id, employee_name=row.name,
+            salary=row, branch_id=terms.branch_id,
+            gross_amount=figures.gross, paye_amount=figures.paye,
+            pension_amount=figures.pension, other_deductions_amount=figures.other_deductions,
+            employer_contributions_amount=figures.employer_contributions,
+            net_amount=figures.net, taxable_pay=figures.taxable_pay,
+            paye_source=figures.paye_source, tax_table=figures.tax_table,
+            tax_basis=figures.tax_basis, tax_state=figures.tax_state,
+            pfa_id=row.pfa_id, tax_id=row.tax_id, pension_pin=row.pension_pin,
+            cost_center_id=terms.cost_center_id, components=figures.components,
+        )
+        items.extend(PayrollLineItem(line=line, **item) for item in figures.items)
+    PayrollLineItem.objects.bulk_create(items)
+    compute_payroll(run)
     run.refresh_from_db()
-    return run  # Return draft payroll run.
+    run.skipped = skipped
+    return run
 
 
 # Resolve payroll accrual accounts.
@@ -420,7 +590,11 @@ def _line_branch_ids(run) -> dict:
     from .branch_ledger import only_branch_id_or_several
     from .models import EmployeeSalary
 
-    lines = list(run.lines.select_related("cost_center").order_by("line_no", "id"))
+    lines = list(
+        run.lines.select_related("cost_center", "tax_state", "pfa")
+        .prefetch_related("items__deduction_type__liability_account")
+        .order_by("line_no", "id")
+    )
     if run.branch_id is not None:
         return {line: run.branch_id for line in lines}
 
@@ -467,20 +641,29 @@ def _require_every_line_placed(run, placed) -> None:
     )
 
 
-def _post_accrual(run, lines, *, branch_id, accounts, period, actor_user, label_suffix=""):
+def _post_accrual(run, lines, *, branch_id, accounts, resolver, period, actor_user,
+                  label_suffix=""):
     """Post one accrual journal for ``lines``, booked to ``branch_id``; return it and its totals.
 
-    ``Dr salary expense`` per cost centre, so the GL slices by department, and
-    ``Cr PAYE / pension / net wages payable``. Every figure is the sum of these
-    lines alone, so each branch's journal balances on its own.
+    ``Dr salary expense`` and ``Dr`` each employer contribution's expense, per
+    cost centre, so the GL slices by department; ``Cr`` each deduction's and
+    contribution's payable, as :class:`~vs_finance.payroll_statutory.ItemAccounts`
+    places it (PAYE by state, pension by PFA, NHF, NSITF, ITF, voluntary
+    deductions), and ``Cr net wages payable``. Every figure is the sum of these
+    lines alone, so each branch's journal balances on its own:
+    ``gross + employer = deductions + employer liabilities + net``. Each item is
+    stamped with the accounts it posted to.
     """
-    from .models import JournalEntry, JournalLine
+    from .models import JournalEntry, JournalLine, PayrollLineItem
+    from .payroll_statutory import ensure_line_items
 
-    salary, paye, pension, net = accounts
+    salary, _paye, _pension, net = accounts
     totals = {
         "gross": sum(line.gross_amount for line in lines),
         "paye": sum(line.paye_amount for line in lines),
         "pension": sum(line.pension_amount for line in lines),
+        "other": sum(line.other_deductions_amount for line in lines),
+        "employer": sum(line.employer_contributions_amount for line in lines),
         "net": sum(line.net_amount for line in lines),
     }
     entry = JournalEntry.objects.create(
@@ -492,31 +675,43 @@ def _post_accrual(run, lines, *, branch_id, accounts, period, actor_user, label_
         ) + label_suffix,
         created_by=actor_user,
     )
-    gross_by_cc: dict[int | None, int] = defaultdict(int)
-    cc_objs: dict[int | None, object] = {}
+    debits: dict = defaultdict(int)
+    credits: dict = defaultdict(int)
+    objects: dict = {}
     for line in lines:
-        gross_by_cc[line.cost_center_id] += line.gross_amount
-        cc_objs[line.cost_center_id] = line.cost_center
+        debits[(salary.pk, line.cost_center_id, "Gross salaries")] += line.gross_amount
+        objects[salary.pk], objects[("cc", line.cost_center_id)] = salary, line.cost_center
+        for item in ensure_line_items(line):
+            liability, expense = resolver.for_item(line, item)
+            PayrollLineItem.objects.filter(pk=item.pk).update(
+                liability_account=liability, expense_account=expense,
+            )
+            objects[liability.pk] = liability
+            label = item.get_code_display()
+            if item.code == PayrollItemCode.VOLUNTARY:
+                label = item.label or label
+            credits[(liability.pk, f"{label} payable")] += item.amount
+            if item.kind == PayrollItemKind.EMPLOYER and expense is not None:
+                objects[expense.pk] = expense
+                debits[(expense.pk, line.cost_center_id, item.get_code_display())] += item.amount
+    credits[(net.pk, "Net wages payable")] += totals["net"]
+    objects[net.pk] = net
 
     line_no = 0
-    for cc_id, amount in gross_by_cc.items():
-        if amount == 0:
-            continue
-        line_no += 1
-        JournalLine.objects.create(
-            entry=entry, account=salary, debit=amount, credit=0,
-            description="Gross salaries", cost_center=cc_objs[cc_id], line_no=line_no,
-        )
-    for account, amount, label in (
-        (paye, totals["paye"], "PAYE payable"),
-        (pension, totals["pension"], "Pension payable"),
-        (net, totals["net"], "Net wages payable"),
-    ):
+    for (account_id, cc_id, label), amount in debits.items():
         if amount <= 0:
             continue
         line_no += 1
         JournalLine.objects.create(
-            entry=entry, account=account, debit=0, credit=amount,
+            entry=entry, account=objects[account_id], debit=amount, credit=0,
+            description=label, cost_center=objects[("cc", cc_id)], line_no=line_no,
+        )
+    for (account_id, label), amount in credits.items():
+        if amount <= 0:
+            continue
+        line_no += 1
+        JournalLine.objects.create(
+            entry=entry, account=objects[account_id], debit=0, credit=amount,
             description=label, line_no=line_no,
         )
     post_journal(entry, actor_user=actor_user)
@@ -578,13 +773,14 @@ def _post_payroll_atomic(run, *, actor_user=None):
             PayrollLine.objects.filter(pk=line.pk).update(branch_id=branch_id)
 
     accounts = _accounts_for(run)  # Resolve expense and liability accounts.
+    resolver = ItemAccounts(run, paye_base=accounts[1], pension_base=accounts[2])
     period = resolve_period(run.entity, run.pay_date)  # Find payroll period.
     shares = []
     if len(groups) == 1:
         (branch_id, lines), = groups.items()
         entry, _ = _post_accrual(
-            run, lines, branch_id=branch_id, accounts=accounts, period=period,
-            actor_user=actor_user,
+            run, lines, branch_id=branch_id, accounts=accounts, resolver=resolver,
+            period=period, actor_user=actor_user,
         )
         run.journal = entry  # Link run to accrual journal.
     else:
@@ -592,13 +788,14 @@ def _post_payroll_atomic(run, *, actor_user=None):
         for branch_id in sorted(groups, key=lambda b: names.get(b, "")):
             entry, totals = _post_accrual(
                 run, groups[branch_id], branch_id=branch_id, accounts=accounts,
-                period=period, actor_user=actor_user,
+                resolver=resolver, period=period, actor_user=actor_user,
                 label_suffix=f" - {names.get(branch_id, '')}",
             )
             shares.append(PayrollRunBranch.objects.create(
                 run=run, branch_id=branch_id, journal=entry,
                 gross_total=totals["gross"], paye_total=totals["paye"],
-                pension_total=totals["pension"], net_total=totals["net"],
+                pension_total=totals["pension"], other_deductions_total=totals["other"],
+                employer_contributions_total=totals["employer"], net_total=totals["net"],
                 status=PayrollRunStatus.POSTED,
             ))
 
@@ -624,7 +821,8 @@ def _post_payroll_atomic(run, *, actor_user=None):
                 f"gross {share.gross_total}, net {share.net_total} kobo."
             ),
             journal_id=share.journal_id, gross=share.gross_total, paye=share.paye_total,
-            pension=share.pension_total, net=share.net_total,
+            pension=share.pension_total, other_deductions=share.other_deductions_total,
+            employer_contributions=share.employer_contributions_total, net=share.net_total,
         )
     if not shares:
         record(
@@ -632,7 +830,8 @@ def _post_payroll_atomic(run, *, actor_user=None):
             actor_user=actor_user, target=run, branch=run.journal.branch_id,
             message=f"Accrued payroll: gross {run.gross_total}, net {run.net_total} kobo.",
             journal_id=run.journal_id, gross=run.gross_total, paye=run.paye_total,
-            pension=run.pension_total, net=run.net_total,
+            pension=run.pension_total, other_deductions=run.other_deductions_total,
+            employer_contributions=run.employer_contributions_total, net=run.net_total,
         )
     return run  # Return posted payroll run.
 
@@ -752,6 +951,9 @@ def _pay_payroll_atomic(run, *, bank_account=None, bank_accounts=None, pay_date=
         message=f"Disbursed net wages {run.net_total} kobo from {bank_account.name}.",  # Summary.
         journal_id=entry.pk, net=run.net_total,  # Structured metadata.
     )
+    from .payslips import issue_payslips
+
+    issue_payslips(run, run.lines.all(), actor_user=actor_user)
     return run  # Return paid payroll run.
 
 
@@ -807,6 +1009,9 @@ def _pay_branch_shares(run, bank_accounts, *, pay_date, actor_user):
             ),
             journal_id=entry.pk, net=share.net_total, branch_id=share.branch_id,
         )
+        from .payslips import issue_payslips
+
+        issue_payslips(run, run.lines.filter(branch_id=share.branch_id), actor_user=actor_user)
 
     if all(share.status == PayrollRunStatus.PAID for share in shares.values()):
         run.run_status = PayrollRunStatus.PAID

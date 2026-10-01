@@ -198,7 +198,8 @@ class PayrollRunListCreateView(_FinanceBase):
     def get(self, request):
         entity = resolve_entity(request)
         qs = _runs_in_reach(request, entity).select_related("branch").prefetch_related(
-            "lines__branch", "branch_shares__branch")
+            "lines__branch", "lines__tax_state", "lines__pfa", "lines__items",
+            "branch_shares__branch")
         if (status_val := request.query_params.get("run_status")):
             qs = qs.filter(run_status=status_val)
         qs = _filter_by_branch(qs, request, entity)
@@ -240,6 +241,7 @@ class PayrollRunListCreateView(_FinanceBase):
                 branch=_line_branch(request, entity, branch, ln.get("branch"), f"lines[{i}].branch"),
                 employee_name=ln.get("employee_name", ""),
                 gross_amount=_money(ln.get("gross_amount", 0), f"lines[{i}].gross_amount"),
+                taxable_pay=_money(ln.get("gross_amount", 0), f"lines[{i}].gross_amount"),
                 paye_amount=_money(ln.get("paye_amount", 0), f"lines[{i}].paye_amount"),
                 pension_amount=_money(ln.get("pension_amount", 0), f"lines[{i}].pension_amount"),
                 cost_center=_resolve_cost_center(
@@ -247,6 +249,21 @@ class PayrollRunListCreateView(_FinanceBase):
             )
         compute_payroll(run)
         run.refresh_from_db()
+        typed = run.lines.filter(paye_amount__gt=0).count()
+        if typed:
+            from ..audit import record
+            from ..constants import FinanceAuditAction
+
+            # PAYE typed by hand is an override of the computed figure; say so.
+            record(
+                entity=entity, action=FinanceAuditAction.PAYE_OVERRIDE_CHANGED,
+                actor_user=request.user, target=run, branch=run.branch_id,
+                message=(
+                    f"Raised payroll run {run.document_number} by hand with PAYE typed on "
+                    f"{typed} line(s) instead of computed."
+                ),
+                lines=typed, paye=run.paye_total,
+            )
         return success_response(
             f"Payroll run {run.document_number} created.",
             data=_run_data(request, run), status=201,
@@ -340,7 +357,8 @@ class _PayrollActionBase(_FinanceBase):
         entity = resolve_entity(request)
         run = _runs_in_reach(request, entity).filter(pk=pk).select_related(
             "branch", "journal").prefetch_related(
-            "lines__branch", "branch_shares__branch").first()
+            "lines__branch", "lines__tax_state", "lines__pfa", "lines__items",
+            "branch_shares__branch").first()
         if run is None:
             raise NotFound("Payroll run not found for this entity.")
         if request.method not in SAFE_METHODS:
@@ -507,6 +525,61 @@ def _resolve_employee(entity, raw):
     return user
 
 
+def _resolve_jurisdiction(raw, where="residence_state"):
+    """A state of residence by id or code, or None for a blank value."""
+    from ..models import PayrollTaxJurisdiction
+
+    if raw in (None, "", 0, "0"):
+        return None
+    qs = PayrollTaxJurisdiction.objects.filter(is_active=True)
+    found = (
+        qs.filter(pk=raw).first() if str(raw).isdigit()
+        else qs.filter(code__iexact=str(raw).strip()).first()
+    )
+    if found is None:
+        raise ValidationError({where: "No such state."})
+    return found
+
+
+def _resolve_pfa(raw):
+    """A pension fund administrator by id or code, or None for a blank value."""
+    from ..models import PensionFundAdministrator
+
+    if raw in (None, "", 0, "0"):
+        return None
+    qs = PensionFundAdministrator.objects.filter(is_active=True)
+    found = (
+        qs.filter(pk=raw).first() if str(raw).isdigit()
+        else qs.filter(code__iexact=str(raw).strip()).first()
+    )
+    if found is None:
+        raise ValidationError({"pfa": "No such pension fund administrator."})
+    return found
+
+
+def _identifier(body, field):
+    value = str(body.get(field) or "").strip()
+    if len(value) > 32:
+        raise ValidationError({field: "Use at most 32 characters."})
+    return value
+
+
+def _override(body):
+    """``(amount or None, reason)`` from ``paye_override`` / ``paye_override_reason``.
+
+    Setting an override needs a reason: it replaces the computed PAYE on every
+    run until cleared, and the audit trail has to say why.
+    """
+    raw = body.get("paye_override")
+    if raw in (None, ""):
+        return None, ""
+    amount = _money(raw, "paye_override")
+    reason = str(body.get("paye_override_reason") or "").strip()
+    if not reason:
+        raise ValidationError({"paye_override_reason": "Say why PAYE is overridden."})
+    return amount, reason[:255]
+
+
 # Support the resolve structure workflow.
 def _resolve_structure(entity, raw, *, required=False):
     """Resolve a salary-structure id scoped to the entity, or None."""
@@ -561,7 +634,10 @@ class EmployeeSalaryListCreateView(_FinanceBase):
         )
 
     # Handle POST requests for this endpoint.
+    @transaction.atomic
     def post(self, request):
+        from ..payroll_statutory import record_creation, record_override_change
+
         entity = resolve_entity(request)
         body = request.data or {}
         employee = _resolve_employee(entity, body.get("employee"))
@@ -575,6 +651,7 @@ class EmployeeSalaryListCreateView(_FinanceBase):
             ).strip()
         if not name:
             raise ValidationError({"name": "An employee name is required."})
+        override, override_reason = _override(body)
         sal = EmployeeSalary.objects.create(
             entity=entity, name=name, employee=employee,
             # Every new hire names a branch; see the view's docstring.
@@ -585,7 +662,19 @@ class EmployeeSalaryListCreateView(_FinanceBase):
             pension_amount=_money(body.get("pension_amount", 0), "pension_amount"),
             cost_center=_resolve_cost_center(entity, body.get("cost_center"), "cost_center"),
             is_active=_bool(body.get("is_active", True), default=True),
+            residence_state=_resolve_jurisdiction(body.get("residence_state")),
+            tax_id=_identifier(body, "tax_id"),
+            pfa=_resolve_pfa(body.get("pfa")),
+            pension_pin=_identifier(body, "pension_pin"),
+            annual_rent=_money(body.get("annual_rent", 0), "annual_rent"),
+            paye_override=override, paye_override_reason=override_reason,
         )
+        record_creation(
+            sal, effective_from=_date(body.get("effective_from"), "effective_from"),
+            actor_user=request.user,
+        )
+        if override is not None:
+            record_override_change(sal, None, "", actor_user=request.user)
         return success_response(
             f"Employee salary for {name} added.",
             data=EmployeeSalarySerializer(sal, context={"request": request}).data, status=201,
@@ -614,15 +703,37 @@ class EmployeeSalaryDetailView(_FinanceBase):
         return "finance.salary.view"
 
     # Handle PATCH requests for this endpoint.
+    @transaction.atomic
     def patch(self, request, pk):
+        """Edit a roster row: profile in place, pay terms as a new dated version.
+
+        The pay terms (``branch``, ``structure``, ``gross_amount``,
+        ``paye_amount``, ``pension_amount``, ``cost_center``,
+        ``residence_state``) are never overwritten: the change is written as a
+        version effective from ``effective_from``, or from the first payroll
+        month not yet paid, and audited
+        (:func:`vs_finance.payroll_statutory.change_terms`). The profile (name,
+        account, tax number, PFA and PIN, annual rent) is edited in place and
+        audited; a PAYE override is audited on its own. ``is_active`` false takes
+        the person off the payroll.
+        """
+        from ..payroll_statutory import (
+            PROFILE_FIELDS,
+            assert_branch_required,
+            change_terms,
+            deactivate_salary,
+            record_override_change,
+            record_profile_change,
+        )
+
         entity = resolve_entity(request)
         sal = _resolve_salary(request, entity, pk)
         body = request.data or {}
+        profile_before = {k: getattr(sal, k) for k in PROFILE_FIELDS + ("is_active",)}
+        override_before = (sal.paye_override, sal.paye_override_reason)
         if "employee" in body:
-            # Linking an existing row to its person is the whole point of
-            # FR-015: every row written before this shipped has a null here, and
-            # there is no backfill, so this is how a school closes the gap one
-            # roster row at a time.
+            # A roster row written before rows named their person is linked here,
+            # one row at a time.
             sal.employee = _resolve_employee(entity, body.get("employee"))
             if sal.employee is not None and not str(body.get("name", "")).strip():
                 sal.name = " ".join(
@@ -632,19 +743,50 @@ class EmployeeSalaryDetailView(_FinanceBase):
                 ).strip() or sal.name
         if "name" in body:
             sal.name = str(body["name"]).strip()
+        for field in ("tax_id", "pension_pin"):
+            if field in body:
+                setattr(sal, field, _identifier(body, field))
+        if "pfa" in body:
+            sal.pfa = _resolve_pfa(body.get("pfa"))
+        if "annual_rent" in body:
+            sal.annual_rent = _money(body.get("annual_rent"), "annual_rent")
+        if "paye_override" in body:
+            sal.paye_override, sal.paye_override_reason = _override(body)
+        deactivate = False
+        if "is_active" in body:
+            active = _bool(body.get("is_active"), default=sal.is_active)
+            deactivate = sal.is_active and not active
+            if active and not sal.is_active:
+                assert_branch_required(entity, sal.branch_id, True)
+                sal.is_active = True
+        sal.save()
+
+        terms = {}
         if "branch" in body:
             # Placing and moving people is editable; see the view's docstring.
-            sal.branch = _transaction_branch(request, entity, body)
+            terms["branch_id"] = getattr(_transaction_branch(request, entity, body), "pk", None)
         if "structure" in body:
-            sal.structure = _resolve_structure(entity, body.get("structure"))
+            terms["structure_id"] = getattr(
+                _resolve_structure(entity, body.get("structure")), "pk", None)
         for field in ("gross_amount", "paye_amount", "pension_amount"):
             if field in body:
-                setattr(sal, field, _money(body.get(field), field))
+                terms[field] = _money(body.get(field), field)
         if "cost_center" in body:
-            sal.cost_center = _resolve_cost_center(entity, body.get("cost_center"), "cost_center")
-        if "is_active" in body:
-            sal.is_active = _bool(body.get("is_active"), default=sal.is_active)
-        sal.save()
+            terms["cost_center_id"] = getattr(
+                _resolve_cost_center(entity, body.get("cost_center"), "cost_center"), "pk", None)
+        if "residence_state" in body:
+            terms["residence_state_id"] = getattr(
+                _resolve_jurisdiction(body.get("residence_state")), "pk", None)
+        if terms:
+            change_terms(
+                sal, terms, effective_from=_date(body.get("effective_from"), "effective_from"),
+                reason=str(body.get("reason") or ""), actor_user=request.user,
+            )
+        record_profile_change(sal, profile_before, actor_user=request.user)
+        record_override_change(sal, *override_before, actor_user=request.user)
+        if deactivate:
+            deactivate_salary(sal, actor_user=request.user)
+        sal.refresh_from_db()
         return success_response(
             "Employee salary updated.",
             data=EmployeeSalarySerializer(sal, context={"request": request}).data,
@@ -652,8 +794,11 @@ class EmployeeSalaryDetailView(_FinanceBase):
 
     # Handle DELETE requests for this endpoint.
     def delete(self, request, pk):
+        """Take a person off the payroll. The row and its history stay, audited."""
+        from ..payroll_statutory import deactivate_salary
+
         entity = resolve_entity(request)
-        _resolve_salary(request, entity, pk).delete()
+        deactivate_salary(_resolve_salary(request, entity, pk), actor_user=request.user)
         return success_response("Employee salary removed.", data={})
 
 
@@ -691,9 +836,19 @@ class PayrollRunGenerateView(_FinanceBase):
             period_label=body.get("period_label", ""), narration=body.get("narration", ""),
             currency=_resolve_currency(body.get("currency")), actor_user=request.user,
         )
+        from vs_rbac.field_enforcement import can_read
+
+        data = _run_data(request, run)
+        # People a live run of the period already pays, left off this one; the
+        # names only for a caller who may read payroll names.
+        named = can_read(request, "finance.payrollrun.employee_name")
+        data["skipped"] = [
+            {"name": name if named else None, "run": other.document_number or other.pk}
+            for name, other in getattr(run, "skipped", [])
+        ]
         return success_response(
             f"Payroll run {run.document_number} generated from {run.lines.count()} employee(s).",
-            data=_run_data(request, run), status=201,
+            data=data, status=201,
         )
 
 
@@ -709,12 +864,17 @@ _VALID_STATUTORY = {StatutoryType.PAYE, StatutoryType.PENSION}
 
 
 # Support the save components workflow.
-def _save_components(structure, raw):
-    """Validate and replace a structure's components from a request body list.
+def _save_components(structure, raw, *, effective_from=None, actor_user=None, creating=False):
+    """Validate a request body's component list and write it as the structure's new lines.
 
-    Earnings carry no statutory type; deductions must be PAYE or pension so the run's
-    accrual journal stays balanced (``net = gross - paye - pension``).
+    Earnings carry no statutory type and may be flagged basic, pensionable and
+    taxable (taxable by default); deductions must be PAYE or pension, and count
+    only for a tenant whose PAYE is supplied rather than computed. The current
+    lines are closed rather than deleted
+    (:func:`vs_finance.payroll_statutory.replace_components`).
     """
+    from ..payroll_statutory import replace_components
+
     if not isinstance(raw, list):
         raise ValidationError({"components": "Expected a list of components."})
 
@@ -746,20 +906,40 @@ def _save_components(structure, raw):
         if method != SalaryCalcMethod.FIXED and not (0 < rate_bps <= 1_000_000):
             raise ValidationError({f"{where}.rate_bps": "Percent components need a rate in basis points."})
 
+        earning = kind == SalaryComponentKind.EARNING
         rows.append(SalaryComponent(
-            structure=structure, name=name, kind=kind, calc_method=method,
-            rate_bps=rate_bps, amount=amount,
-            is_basic=bool(c.get("is_basic", False)) and kind == SalaryComponentKind.EARNING,
+            name=name, kind=kind, calc_method=method, rate_bps=rate_bps, amount=amount,
+            is_basic=bool(c.get("is_basic", False)) and earning,
+            is_pensionable=bool(c.get("is_pensionable", False)) and earning,
+            is_taxable=bool(c.get("is_taxable", True)) or not earning,
             statutory_type=statutory, sequence=int(c.get("sequence", i)),
         ))
 
-    structure.components.all().delete()
-    SalaryComponent.objects.bulk_create(rows)
+    return replace_components(
+        structure, rows, effective_from=effective_from, actor_user=actor_user, creating=creating,
+    )
+
+
+def _structure_data(structure):
+    """A structure with its current lines, as the structure screens show it."""
+    from django.db.models import Prefetch
+
+    fresh = (
+        SalaryStructure.objects.filter(pk=structure.pk)
+        .prefetch_related(Prefetch(
+            "components", queryset=SalaryComponent.objects.filter(effective_to__isnull=True),
+        ))
+        .first()
+    )
+    return SalaryStructureSerializer(fresh).data
 
 
 # Group endpoint behavior for Salary Structure List Create View.
 class SalaryStructureListCreateView(_FinanceBase):
     """GET (list) / POST (create) reusable salary structures for an entity.
+
+    Lists show each structure's current lines; ``effective_from`` on a create
+    dates its first lines (from the start when left out).
 
     docstring-name: Salary structures
     """
@@ -772,10 +952,14 @@ class SalaryStructureListCreateView(_FinanceBase):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
+        from django.db.models import Prefetch
+
         entity = resolve_entity(request)
         qs = (
             SalaryStructure.objects.filter(entity=entity)
-            .prefetch_related("components")
+            .prefetch_related(Prefetch(
+                "components", queryset=SalaryComponent.objects.filter(effective_to__isnull=True),
+            ))
             .annotate(employee_count_annot=Count("employee_salaries", distinct=True))
         )
         if (active := request.query_params.get("is_active")) in ("true", "false"):
@@ -800,16 +984,26 @@ class SalaryStructureListCreateView(_FinanceBase):
             description=str(body.get("description", "")).strip(),
             is_active=_bool(body.get("is_active", True), default=True),
         )
-        _save_components(structure, body.get("components", []))
+        _save_components(
+            structure, body.get("components", []),
+            effective_from=_date(body.get("effective_from"), "effective_from"),
+            actor_user=request.user, creating=True,
+        )
         return success_response(
-            f"Salary structure '{name}' created.",
-            data=SalaryStructureSerializer(structure).data, status=201,
+            f"Salary structure '{name}' created.", data=_structure_data(structure), status=201,
         )
 
 
 # Group endpoint behavior for Salary Structure Detail View.
 class SalaryStructureDetailView(_FinanceBase):
-    """GET / PATCH / DELETE one salary structure. docstring-name: Salary structures"""
+    """GET / PATCH / DELETE one salary structure.
+
+    ``components`` on a PATCH replaces the current lines from ``effective_from``
+    (or the first payroll month nobody on the structure has been paid for); the
+    old lines are kept for the months they priced, and the change is audited.
+
+    docstring-name: Salary structures
+    """
 
     @property
     # Handle the rbac permission workflow.
@@ -828,9 +1022,7 @@ class SalaryStructureDetailView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request, pk):
         _, structure = self._structure(request, pk)
-        return success_response(
-            "Salary structure retrieved.", data=SalaryStructureSerializer(structure).data,
-        )
+        return success_response("Salary structure retrieved.", data=_structure_data(structure))
 
     @transaction.atomic
     # Handle PATCH requests for this endpoint.
@@ -841,11 +1033,11 @@ class SalaryStructureDetailView(_FinanceBase):
             name = str(body["name"]).strip()
             if not name:
                 raise ValidationError({"name": "A structure name is required."})
-            if (  # Check whether another salary structure already uses this name.
+            if (
                 SalaryStructure.objects.filter(entity=entity, name__iexact=name)
                 .exclude(pk=structure.pk)
                 .exists()
-            ):  # Start the duplicate-name validation block.
+            ):
                 raise ValidationError({"name": "A structure with this name already exists."})
             structure.name = name
         if "description" in body:
@@ -854,18 +1046,19 @@ class SalaryStructureDetailView(_FinanceBase):
             structure.is_active = _bool(body.get("is_active"), default=structure.is_active)
         structure.save()
         if "components" in body:
-            _save_components(structure, body.get("components", []))
-        structure.refresh_from_db()
-        return success_response(
-            "Salary structure updated.", data=SalaryStructureSerializer(structure).data,
-        )
+            _save_components(
+                structure, body.get("components", []),
+                effective_from=_date(body.get("effective_from"), "effective_from"),
+                actor_user=request.user,
+            )
+        return success_response("Salary structure updated.", data=_structure_data(structure))
 
     # Handle DELETE requests for this endpoint.
     def delete(self, request, pk):
         _, structure = self._structure(request, pk)
-        if structure.employee_salaries.exists():
+        if structure.employee_salaries.exists() or structure.salary_versions.exists():
             raise ValidationError(
-                {"structure": "This structure is assigned to employees; reassign them first."},
+                {"structure": "This structure is or was assigned to employees; deactivate it instead."},
             )
         structure.delete()
         return success_response("Salary structure removed.", data={})

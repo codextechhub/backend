@@ -135,8 +135,9 @@ class CentralPayrollIsUnchangedTests(_PayrollFixture):
 
     This is the assumption the whole feature is shipped on: per-branch payroll is
     opt-in, so no school that has not opted in may see a different roster, a
-    different run, a new refusal or a new required field. Every test here would
-    have passed against the code as it stood before the branch column existed.
+    different run, a new refusal or a new required field. The one refusal a
+    central school does meet is the person guard every school meets: nobody is
+    generated onto a second run in a month they are already paid in.
     """
 
     @classmethod
@@ -189,20 +190,24 @@ class CentralPayrollIsUnchangedTests(_PayrollFixture):
 
         self.assertEqual(response.status_code, 403, response.data)
 
-    def test_a_second_run_in_the_same_month_is_still_allowed(self):
-        """Advances and supplementary payments have always been possible here.
+    def test_a_second_run_in_the_same_month_pays_nobody_twice(self):
+        """Supplementary runs stay possible here; paying the roster twice does not.
 
-        The overlap guard is a PER_BRANCH rule. Turning it on for a central school
-        would be this change quietly taking away something schools use, on the way
-        to fixing something they had not asked about.
+        The run-level overlap guard is a PER_BRANCH rule, so a central school may
+        still raise a second run in a month: a hand-typed advance, or a generated
+        run for somebody hired after the first. What it may not do is generate the
+        whole roster again, because everybody on it is already on a live run of
+        the month (the person guard in ``generate_run_from_roster``).
         """
         hq = self.officer(self.tenant, "central-twice@fin.test", "c-twice")
 
         first = self.generate(hq, self.books)
-        second = self.generate(hq, self.books, pay_date="2026-01-31")
+        again = self.generate(hq, self.books, pay_date="2026-01-31")
+        advance = self.create_run(hq, self.books, pay_date="2026-01-31")
 
         self.assertEqual(first.status_code, 201, first.data)
-        self.assertEqual(second.status_code, 201, second.data)
+        self.assertEqual(again.status_code, 422, again.data)
+        self.assertEqual(advance.status_code, 201, advance.data)
         self.assertEqual(PayrollRun.objects.filter(entity=self.books).count(), 2)
 
     def test_the_roster_screen_shows_a_pinned_officer_nobody_unassigned(self):
@@ -1013,7 +1018,10 @@ class RunsCarryTheirBranchTests(_PayrollFixture):
         from vs_finance.payroll import generate_run_from_roster
 
         generate_run_from_roster(self.books, pay_date=datetime.date(2026, 1, 25))
-        self._make(self.ikeja)
+        # The branch run is the next month's: January is already paid centrally.
+        generate_run_from_roster(
+            self.books, pay_date=datetime.date(2026, 2, 25), branch=self.ikeja,
+        )
 
         rows = self._runs(query="&branch=unassigned")
 

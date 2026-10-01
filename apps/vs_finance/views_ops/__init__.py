@@ -30,6 +30,7 @@ from .expenses import *
 from .pettycash import *
 from .tax import *
 from .payroll import *
+from .payroll_statutory import *
 from .budgets import *
 from .assets import *
 from .audit import *

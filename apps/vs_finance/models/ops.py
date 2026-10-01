@@ -2,6 +2,8 @@
 """
 from __future__ import annotations
 
+import datetime
+
 from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
@@ -18,6 +20,7 @@ from ..constants import (
     DepreciationMethod,
     DocType,
     InvoicePaymentStatus,
+    PayeSource,
     PayrollRunStatus,
     SalaryCalcMethod,
     SalaryComponentKind,
@@ -30,6 +33,12 @@ from ..constants import (
 from ..money import MoneyField
 from .core import TimeStampedModel, LedgerEntity, FinanceDocument
 from .gl import Account, CostCenter, Currency, FiscalYear, TaxCode
+
+#: The date a payroll record with no history before it is treated as effective
+#: from: "from the start". A salary row or a structure line written before
+#: effective dates existed applies to every earlier payroll month.
+PAYROLL_HISTORY_START = datetime.date(1900, 1, 1)
+
 
 # ---------------------------------------------------------------------------
 # Banking, expenses, payroll, budget, fixed assets, period close
@@ -1244,6 +1253,12 @@ class PayrollRun(FinanceDocument):
     gross_total = MoneyField()
     paye_total = MoneyField()
     pension_total = MoneyField()
+    other_deductions_total = MoneyField(
+        help_text="NHF and voluntary deductions withheld across the run, in kobo.",
+    )
+    employer_contributions_total = MoneyField(
+        help_text="Employer pension, NSITF and ITF the run accrues on top of gross, in kobo.",
+    )
     net_total = MoneyField()
 
     journal = models.ForeignKey(
@@ -1265,25 +1280,46 @@ class PayrollRun(FinanceDocument):
         agg = self.lines.aggregate(
             gross=models.Sum("gross_amount"), paye=models.Sum("paye_amount"),
             pension=models.Sum("pension_amount"), net=models.Sum("net_amount"),
+            other=models.Sum("other_deductions_amount"),
+            employer=models.Sum("employer_contributions_amount"),
         )
         self.gross_total = agg["gross"] or 0
         self.paye_total = agg["paye"] or 0
         self.pension_total = agg["pension"] or 0
+        self.other_deductions_total = agg["other"] or 0
+        self.employer_contributions_total = agg["employer"] or 0
         self.net_total = agg["net"] or 0
         if save:
             self.save(update_fields=[
-                "gross_total", "paye_total", "pension_total", "net_total", "updated_at",
+                "gross_total", "paye_total", "pension_total", "other_deductions_total",
+                "employer_contributions_total", "net_total", "updated_at",
             ])
 
 
 class PayrollLine(TimeStampedModel):
-    """One employee's pay for a run. ``net = gross - paye - pension`` (all kobo).
+    """One employee's pay for a run, in kobo.
+
+    ``net = gross - paye - pension - other deductions``, where the other
+    deductions are NHF and the voluntary deductions (staff loans, cooperative
+    savings). Employer contributions (employer pension, NSITF, ITF) are a cost on
+    top of gross and never reduce net. Each deduction and contribution is a
+    :class:`~vs_finance.models.PayrollLineItem`, which decides the account it
+    posts to.
 
     ``branch`` is the branch this pay is booked to: the employee's roster branch
     when the run is generated, or the branch a hand-typed line names. Empty until
     the run posts, which fills it from the run, the employee's salary row or the
     school's only branch, and refuses a line none of those places
     (:func:`vs_finance.payroll.post_payroll`).
+
+    A generated line records the statutory facts it was worked out from, so a
+    past month can be read back and recomputed: the salary row (``salary``), the
+    tax state and PFA its PAYE and pension are remitted to, the person's tax
+    number and pension PIN as they stood, the national tax table that priced the
+    PAYE (``tax_table``) and the whole working (``tax_basis``). ``paye_source``
+    says whether the PAYE was computed, overridden, supplied or typed.
+    ``taxable_pay`` is this month's income for PAYE, which later months add up
+    year to date.
     """
 
     run = models.ForeignKey(
@@ -1298,10 +1334,46 @@ class PayrollLine(TimeStampedModel):
         related_name="finance_payroll_lines", null=True, blank=True,
     )
     employee_name = models.CharField(max_length=160, blank=True, default="")
+    salary = models.ForeignKey(
+        "EmployeeSalary", on_delete=models.PROTECT, related_name="payroll_lines",
+        null=True, blank=True,
+        help_text="The roster row this line pays; empty on a hand-typed line.",
+    )
     gross_amount = MoneyField(help_text="Gross pay in kobo.")
     paye_amount = MoneyField(help_text="PAYE (employee income tax) withheld, in kobo.")
     pension_amount = MoneyField(help_text="Employee pension contribution withheld, in kobo.")
-    net_amount = MoneyField(help_text="Take-home: gross - paye - pension, in kobo.")
+    other_deductions_amount = MoneyField(
+        help_text="NHF and voluntary deductions withheld, in kobo.",
+    )
+    employer_contributions_amount = MoneyField(
+        help_text="Employer pension, NSITF and ITF accrued for this person, in kobo.",
+    )
+    net_amount = MoneyField(
+        help_text="Take-home: gross - paye - pension - other deductions, in kobo.",
+    )
+    taxable_pay = MoneyField(help_text="This month's income for PAYE, in kobo.")
+    paye_source = models.CharField(
+        max_length=10, choices=PayeSource.choices, default=PayeSource.MANUAL,
+    )
+    tax_table = models.ForeignKey(
+        "PayeTaxTable", on_delete=models.PROTECT, related_name="payroll_lines",
+        null=True, blank=True,
+    )
+    tax_basis = models.JSONField(
+        default=dict, blank=True,
+        help_text="The inputs and working that produced the PAYE figure.",
+    )
+    tax_state = models.ForeignKey(
+        "PayrollTaxJurisdiction", on_delete=models.PROTECT, related_name="payroll_lines",
+        null=True, blank=True,
+        help_text="The state whose revenue service this person's PAYE is remitted to.",
+    )
+    pfa = models.ForeignKey(
+        "PensionFundAdministrator", on_delete=models.PROTECT, related_name="payroll_lines",
+        null=True, blank=True,
+    )
+    tax_id = models.CharField(max_length=32, blank=True, default="")
+    pension_pin = models.CharField(max_length=32, blank=True, default="")
     components = models.JSONField(
         default=list, blank=True,
         help_text="Payslip breakdown snapshot copied from the salary structure at "
@@ -1315,7 +1387,10 @@ class PayrollLine(TimeStampedModel):
 
     class Meta:
         ordering = ["run", "line_no", "id"]
-        indexes = [models.Index(fields=["run"]), models.Index(fields=["employee"])]
+        indexes = [
+            models.Index(fields=["run"]), models.Index(fields=["employee"]),
+            models.Index(fields=["salary"]),
+        ]
 
     def __str__(self) -> str:
         return f"{self.employee_name or self.employee_id}: net {self.net_amount}"
@@ -1343,6 +1418,8 @@ class PayrollRunBranch(TimeStampedModel):
     gross_total = MoneyField()
     paye_total = MoneyField()
     pension_total = MoneyField()
+    other_deductions_total = MoneyField()
+    employer_contributions_total = MoneyField()
     net_total = MoneyField()
     status = models.CharField(
         max_length=10, choices=PayrollRunStatus.choices, default=PayrollRunStatus.POSTED,
@@ -1380,9 +1457,15 @@ class SalaryStructure(TimeStampedModel):
     """A reusable named pay template - the earning/deduction components that define how
     an employee's gross is split into tranches and what's withheld.
 
-    Assigning a structure to an :class:`EmployeeSalary` *derives* that employee's PAYE,
-    pension and net from their gross, instead of typing each figure by hand. A structure
-    never posts; it only shapes the numbers a :class:`PayrollRun` copies into its lines.
+    Assigning a structure to an :class:`EmployeeSalary` splits that employee's gross
+    into earnings (which of them are basic, pensionable or taxable) and, for a tenant
+    whose PAYE is supplied rather than computed, derives PAYE and pension from it. A
+    structure never posts; it only shapes the numbers a :class:`PayrollRun` copies
+    into its lines.
+
+    Its lines keep their history: an edit closes the current lines and writes new
+    ones effective from a date, so a past month is always worked out from the lines
+    in force then (:meth:`components_on`).
     """
 
     entity = models.ForeignKey(
@@ -1401,6 +1484,20 @@ class SalaryStructure(TimeStampedModel):
             ),
         ]
 
+    def components_on(self, date=None):
+        """The lines in force on ``date``, or the current lines when ``date`` is None.
+
+        Reads a prefetched ``components`` set when there is one, so a roster of
+        many people sharing a structure costs no query per person.
+        """
+        rows = list(self.components.all())
+        if date is None:
+            return [c for c in rows if c.effective_to is None]
+        return [
+            c for c in rows
+            if c.effective_from <= date and (c.effective_to is None or c.effective_to >= date)
+        ]
+
     def __str__(self) -> str:
         return self.name
 
@@ -1410,7 +1507,13 @@ class SalaryComponent(TimeStampedModel):
     rule (fixed kobo, % of gross, or % of basic) that derives its amount.
 
     Earnings are an informational split of the gross (Basic/Housing/…); deductions tagged
-    PAYE or pension are what actually reduce gross to net and route the GL credit.
+    PAYE or pension reduce gross to net only for a tenant whose PAYE is supplied rather
+    than computed. ``is_pensionable`` earnings make up the pay the pension rates apply to,
+    and an earning that is not ``is_taxable`` is left out of the income PAYE is charged on.
+
+    A line is in force from ``effective_from`` to ``effective_to`` (open while
+    ``effective_to`` is empty). Editing a structure closes its lines and writes new
+    ones, so no line is ever rewritten once a payroll month could have used it.
     """
 
     structure = models.ForeignKey(
@@ -1437,11 +1540,25 @@ class SalaryComponent(TimeStampedModel):
         max_length=10, choices=StatutoryType.choices, default=StatutoryType.NONE,
         help_text="For deductions: routes the amount to PAYE/pension payable + the return.",
     )
+    is_pensionable = models.BooleanField(
+        default=False,
+        help_text="Earnings flagged pensionable form the base the pension rates apply to.",
+    )
+    is_taxable = models.BooleanField(
+        default=True,
+        help_text="An earning that is not taxable is left out of the income PAYE is charged on.",
+    )
     sequence = models.PositiveSmallIntegerField(default=0)
+    effective_from = models.DateField(default=PAYROLL_HISTORY_START)
+    effective_to = models.DateField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_salary_components", null=True, blank=True,
+    )
 
     class Meta:
-        ordering = ["structure", "sequence", "id"]
-        indexes = [models.Index(fields=["structure"])]
+        ordering = ["structure", "effective_from", "sequence", "id"]
+        indexes = [models.Index(fields=["structure", "effective_to"])]
 
     def __str__(self) -> str:
         return f"{self.name} ({self.kind})"
@@ -1467,6 +1584,19 @@ class EmployeeSalary(TimeStampedModel):
     New rows always name a branch; an unassigned one stops a run it is on from
     posting at a school with several branches, and blocks the switch to
     per-branch payroll.
+
+    The pay terms (branch, structure, gross, typed PAYE and pension, cost centre,
+    state of residence) keep their history as
+    :class:`~vs_finance.models.EmployeeSalaryVersion` rows, each effective from a
+    date; the columns here mirror the latest. A payroll month reads the terms in
+    force on its payroll date (:meth:`terms_on`). A row with no versions yet is
+    read from its own columns for every date.
+
+    The statutory profile sits beside the terms: the person's tax number, pension
+    fund administrator and PIN, the annual rent their rent relief is measured
+    against, and an explicit PAYE override for a person whose PAYE is worked out
+    elsewhere. ``residence_state`` is the state their PAYE is remitted to; left
+    empty, the branch's state is used.
     """
 
     entity = models.ForeignKey(
@@ -1498,6 +1628,27 @@ class EmployeeSalary(TimeStampedModel):
         null=True, blank=True,
     )
     is_active = models.BooleanField(default=True)
+    residence_state = models.ForeignKey(
+        "PayrollTaxJurisdiction", on_delete=models.PROTECT, related_name="residents",
+        null=True, blank=True,
+        help_text="State of residence, where PAYE is remitted. Empty: the branch's state.",
+    )
+    tax_id = models.CharField(
+        max_length=32, blank=True, default="", help_text="Tax identification number.",
+    )
+    pfa = models.ForeignKey(
+        "PensionFundAdministrator", on_delete=models.PROTECT, related_name="members",
+        null=True, blank=True,
+    )
+    pension_pin = models.CharField(
+        max_length=32, blank=True, default="", help_text="Retirement savings account PIN.",
+    )
+    annual_rent = MoneyField(help_text="Annual rent the person pays, for rent relief, in kobo.")
+    paye_override = MoneyField(
+        null=True, default=None,
+        help_text="Monthly PAYE supplied from outside, used instead of the computed figure.",
+    )
+    paye_override_reason = models.CharField(max_length=255, blank=True, default="")
 
     class Meta:
         indexes = [
@@ -1513,6 +1664,22 @@ class EmployeeSalary(TimeStampedModel):
     @property
     def net_amount(self) -> int:
         return self.gross_amount - self.paye_amount - self.pension_amount
+
+    def terms_on(self, date):
+        """The pay terms in force on ``date``: a version, this row, or None.
+
+        The latest version effective on or before ``date`` (the later written wins
+        on the same day). A row with no versions answers with itself for every
+        date. A row whose first version starts after ``date`` was not on the payroll
+        yet and answers None. Reads a prefetched ``versions`` set when there is one.
+        """
+        versions = list(self.versions.all())
+        if not versions:
+            return self
+        due = [v for v in versions if v.effective_from <= date]
+        if not due:
+            return None
+        return max(due, key=lambda v: (v.effective_from, v.pk))
 
     def __str__(self) -> str:
         return f"{self.name}: gross {self.gross_amount}"

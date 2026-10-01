@@ -960,6 +960,22 @@ def _build_default_templates() -> dict:
             ),
         },
 
+        # ── payroll.payslip_ready / payroll.payslip_emailed ─────────────────
+        # The pay period is the headline; the figures stay in the payslip.
+        ("payroll.payslip_ready", C.IN_APP): {
+            "subject": "Your payslip for {{ period_label }} is ready",
+            "body": "{{ issuer_name }} has paid you. Open the payslip to see the details.",
+        },
+        ("payroll.payslip_emailed", C.EMAIL): {
+            "subject": "Your payslip for {{ period_label }} from {{ issuer_name }}",
+            "body": (
+                "Hello {{ employee_name }},\n\n"
+                "Your payslip for {{ period_label }} is attached as a PDF.\n\n"
+                "If anything on it looks wrong, please speak to the payroll team.\n\n"
+                "{{ issuer_name }} via CodeX Vision"
+            ),
+        },
+
         # ── payments.unbooked_receipts_digest ───────────────────────────────
         # Operational, not customer-facing: the reader is whoever can replay the
         # event, so the message leads with the money and names the likely cause.

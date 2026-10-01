@@ -9,7 +9,7 @@ then **paid** branch share by branch share (`Dr payable, Cr bank`). The source f
 slice is how it is declared and leaves the books.
 
 Routes (mounted at `/v1/finance/`): `tax-obligations/…`, `tax-obligations/outstanding/`,
-`tax-filings/…`, `tax-filings/summary/`, `tax-filings/<pk>/{file,unfile,pay}/`,
+`tax-filings/…`, `tax-filings/summary/`, `tax-filings/<pk>/{file,unfile,pay,schedule}/`,
 `tax-filings/<pk>/remittances/<remittance_pk>/reverse/`, and `tax-codes/`.
 
 ---
@@ -85,6 +85,27 @@ under.
 Nothing new is written with a NULL branch at a tenant that has branches: every
 netting, penalty and remittance journal carries its share's branch.
 
+## 3a. Payroll returns: one per state, one per PFA
+
+Payroll posts PAYE to the payable account of each employee's state
+(`2310-LA`, `2310-OG`, …) and pension, employee and employer together, to the payable
+account of each employee's pension fund administrator (`2320-STANBIC`, …). The first
+posting to a state or PFA creates the account and its obligation (`PAYE-LA` to
+"Lagos State Internal Revenue Service", `PENSION-STANBIC` to the PFA), so each
+authority has its own return, filed and paid like any other: one return per obligation,
+booked per branch, each branch's share paid from that branch's own bank. A line with no
+state or PFA posts to the base `2310` / `2320` and is returned under `PAYE` /
+`PENSION`, as before. NHF (`2340`, Federal Mortgage Bank of Nigeria), NSITF (`2350`)
+and ITF (`2360`, annual) are seeded obligations of every chart.
+
+A state's revenue service wants each employee's PAYE and a PFA each member's
+contribution and PIN. `GET tax-filings/<pk>/schedule/` lists the people behind a
+payroll return from the payroll line items, which are stamped at posting with the
+payable account they credited: one row per line with the employee, tax ID, pension PIN,
+PFA, state, branch, pay date and the employee's and employer's amounts. A draft is read
+from the lines it would declare now. A branch-bound reader sees their own branches'
+people only; a caller whose role may not read every pay figure is refused.
+
 ## 4. Endpoint map
 
 All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
@@ -101,6 +122,7 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 | `POST /tax-filings/<pk>/unfile/` | `finance.tax.file` | **Un-file**: FILED → DRAFT, journals reversed, lines released | - | filing |
 | `POST /tax-filings/<pk>/pay/` | `finance.tax.pay` | **Remit** one or more branch shares | `pay_date`, and either `bank_account`, `branch?`, `amount?` or `shares: [{branch, bank_account, amount?}]` | filing |
 | `POST /tax-filings/<pk>/remittances/<remittance_pk>/reverse/` | `finance.tax.pay` | **Reverse a remittance** recorded in error | `reason`, `date?` | filing |
+| `GET /tax-filings/<pk>/schedule/` | `finance.tax.view` + every pay-figure switch | The people behind a payroll return (section 3a) | - | `{obligation, authority_name, rows, employee_total, employer_total, total}` |
 
 A filing response adds to the earlier fields: `brought_forward_credit`,
 `carried_forward_credit`, `credit_from_id`, `declared_line_count`, `late_line_count`,
@@ -244,7 +266,8 @@ journal. Ikeja pays from its account, Lekki from its own; PAID after both.
 | `models/gl.py` | `TaxCode.treatment` and its rate constraint |
 | `tax_filing.py` | `collect_source_lines`, `branch_rule`, `branch_breakdown`, `late_items`, `work_out_return`, `prepare_filing`, `file_filing`, `unfile_filing`, `pay_filing`, `pay_filing_shares`, `reverse_remittance`, `outstanding_obligations` |
 | `views_ops/tax.py` | obligation CRUD, outstanding, filing list/prepare/summary/detail/file/unfile/pay, remittance reversal |
-| `seed.py` | default obligations and the starter VAT codes |
+| `seed.py` | default obligations (VAT, WHT, PAYE, pension, NHF, NSITF, ITF) and the starter VAT codes |
+| `payroll_statutory.py` | per-state and per-PFA payables and obligations (`paye_account_for`, `pension_account_for`), `remittance_schedule` |
 | `constants.py` | `JournalSource.TAX`, `TaxTreatment`, `TaxSourceRole`, `TaxFilingStatus` |
 
 ## 12. Tests
@@ -255,4 +278,5 @@ March"; carried input VAT; a nil return; per-branch breakdown, own-bank payments
 PAID only when every share is; unbranched lines at one and at two branches; un-filing
 releasing lines; reversing a remittance; exempt lines and the seeded codes.
 `TaxFilingTests` in `tests.py` covers due dates, overlap, netting, penalties, partial
-payment and un-filing.
+payment and un-filing. `tests_payroll_statutory.py` covers a state's PAYE return and a
+PFA's pension return and their schedules.

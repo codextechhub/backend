@@ -248,3 +248,39 @@ class FinanceCalendarSettingsView(_FinanceSettingsView):
                 ),
             },
         )
+
+
+class FinancePayrollSettingsView(_FinanceSettingsView):
+    """Read or update the payroll policy: statutory switches and rates, payslip delivery."""
+
+    settings_subject = "the payroll settings"
+
+    def _payload(self, entity, settings):
+        from .payroll_settings import serialize_finance_payroll_settings
+        from .settings_ownership import PAYROLL_SETTING_CONSUMERS
+
+        return {
+            "settings": serialize_finance_payroll_settings(settings),
+            "consumers": PAYROLL_SETTING_CONSUMERS,
+            "history": _settings_history(entity, FinanceAuditAction.PAYROLL_SETTINGS_UPDATED),
+        }
+
+    def get(self, request):
+        from .payroll_settings import resolve_finance_payroll_settings
+
+        entity = resolve_entity(request)
+        return success_response(
+            "Finance payroll settings retrieved.",
+            data=self._payload(entity, resolve_finance_payroll_settings(entity)),
+        )
+
+    def patch(self, request):
+        from .payroll_settings import update_finance_payroll_settings
+
+        entity = resolve_entity(request)
+        settings = update_finance_payroll_settings(
+            entity=entity, data=request.data or {}, actor_user=request.user,
+        )
+        return success_response(
+            "Finance payroll settings saved.", data=self._payload(entity, settings),
+        )
