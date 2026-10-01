@@ -853,7 +853,8 @@ def _structure_last_paid_end(structure):
     return payroll_period(structure.entity, latest)[1]
 
 
-def _component_row(component) -> dict:
+def component_row(component) -> dict:
+    """One structure line as the audit trail records it and a change is compared by."""
     return {
         "name": component.name, "kind": component.kind, "calc_method": component.calc_method,
         "rate_bps": component.rate_bps, "amount": component.amount,
@@ -888,7 +889,7 @@ def replace_components(structure, rows, *, effective_from=None, actor_user=None,
             f"{format_date(_next_day(end), tenant)} or later."
         )})
     current = list(structure.components.filter(effective_to__isnull=True))
-    before = [_component_row(c) for c in current]
+    before = [component_row(c) for c in current]
     if current:
         structure.components.filter(pk__in=[c.pk for c in current]).update(
             effective_to=effective_from - datetime.timedelta(days=1),
@@ -898,7 +899,7 @@ def replace_components(structure, rows, *, effective_from=None, actor_user=None,
         row.effective_from = effective_from
         row.created_by = actor_user
     SalaryComponent.objects.bulk_create(rows)
-    after = [_component_row(c) for c in rows]
+    after = [component_row(c) for c in rows]
     if creating or before != after:
         record(
             entity=structure.entity, action=FinanceAuditAction.SALARY_STRUCTURE_CHANGED,

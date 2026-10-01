@@ -16,9 +16,10 @@ account.
   Lekki's run, counts Ikeja's N900,000 for January to March in his year to
   date, whoever opens it.
 * **Changing pay needs the write switch.** Mrs Okafor's role may read every pay
-  figure but change none: every payroll and salary write naming a pay field is
-  refused, field by field, and nothing is written. Mr Adeyemi's role may change
-  them, and the same writes succeed.
+  figure but change none: every payroll and salary write changing a pay field
+  is refused, field by field, and nothing is written. Mr Adeyemi's role may
+  change them, and the same writes succeed. A figure her form sends back
+  exactly as stored is not a change, so she corrects Tunde's name and saves.
 """
 from __future__ import annotations
 
@@ -337,8 +338,12 @@ class DatedMoveTests(_StatutoryFixture):
 # Changing pay needs the field's write switch                                 #
 # --------------------------------------------------------------------------- #
 
-class PayWriteSwitchTests(_StatutoryFixture):
-    """Mrs Okafor reads pay and changes none of it; Mr Adeyemi changes it."""
+class _PayRolesFixture(_StatutoryFixture):
+    """Mrs Okafor's role reads every pay figure and changes none; Mr Adeyemi's changes them.
+
+    Both hold every payroll key, so what tells them apart is the field
+    switches alone.
+    """
 
     @classmethod
     def setUpTestData(cls):
@@ -346,9 +351,10 @@ class PayWriteSwitchTests(_StatutoryFixture):
         from vs_rbac.tests.helpers import install_declared_fields, set_field_access
 
         super().setUpTestData()
-        keys = install_declared_fields("finance.salary", "finance.payrollrun")
+        cls.pay_keys = install_declared_fields("finance.salary", "finance.payrollrun")
         writable = set(
-            FieldDefinition.objects.filter(key__in=keys, writable=True).values_list("key", flat=True)
+            FieldDefinition.objects.filter(key__in=cls.pay_keys, writable=True)
+            .values_list("key", flat=True)
         )
         cls.okafor_user = cls.grant(cls.user_for(cls.tenant, "okafor@corona.test"), *cls.KEYS,
                                     tenant=cls.tenant, role_key="pay-read-only")
@@ -356,19 +362,9 @@ class PayWriteSwitchTests(_StatutoryFixture):
                                      tenant=cls.tenant, role_key="pay-writer")
         read_only = TenantRoleTemplate.objects.get(tenant=cls.tenant, key="pay-read-only")
         writer = TenantRoleTemplate.objects.get(tenant=cls.tenant, key="pay-writer")
-        set_field_access(read_only, *keys, read=True, write=False)
+        set_field_access(read_only, *cls.pay_keys, read=True, write=False)
         set_field_access(writer, *writable, read=True, write=True)
-        set_field_access(writer, *(set(keys) - writable), read=True, write=False)
-
-        cls.tunde = cls.person(cls.books, "Tunde Bello", cls.ikeja, 200_000)
-        record_creation(cls.tunde)
-        liability = Account.objects.create(entity=cls.books, code="2451", name="Staff loans",
-                                           account_type="LIABILITY", is_postable=True)
-        cls.loan = PayrollDeductionType.objects.create(
-            entity=cls.books, code="LOAN", name="Staff loan", liability_account=liability)
-        cls.deduction = EmployeeDeduction.objects.create(
-            salary=cls.tunde, deduction_type=cls.loan, amount=5_000 * N)
-        cls.structure = SalaryStructure.objects.create(entity=cls.books, name="Teachers")
+        set_field_access(writer, *(set(cls.pay_keys) - writable), read=True, write=False)
 
     def setUp(self):
         super().setUp()
@@ -378,6 +374,23 @@ class PayWriteSwitchTests(_StatutoryFixture):
     def call(self, client, method, suffix, body):
         return getattr(client, method)(
             f"/v1/finance/{suffix}?entity={self.books.code}", body, format="json")
+
+
+class PayWriteSwitchTests(_PayRolesFixture):
+    """Mrs Okafor reads pay and changes none of it; Mr Adeyemi changes it."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.tunde = cls.person(cls.books, "Tunde Bello", cls.ikeja, 200_000)
+        record_creation(cls.tunde)
+        liability = Account.objects.create(entity=cls.books, code="2451", name="Staff loans",
+                                           account_type="LIABILITY", is_postable=True)
+        cls.loan = PayrollDeductionType.objects.create(
+            entity=cls.books, code="LOAN", name="Staff loan", liability_account=liability)
+        cls.deduction = EmployeeDeduction.objects.create(
+            salary=cls.tunde, deduction_type=cls.loan, amount=5_000 * N)
+        cls.structure = SalaryStructure.objects.create(entity=cls.books, name="Teachers")
 
     def writes(self):
         """``(group, method, path, body, field named in the refusal)`` for every pay write."""
@@ -449,3 +462,213 @@ class PayWriteSwitchTests(_StatutoryFixture):
         self.assertEqual(response.status_code, 200, response.data)
         self.tunde.refresh_from_db()
         self.assertEqual(self.tunde.name, "Tunde A. Bello")
+
+
+class PayEchoTests(_PayRolesFixture):
+    """What the salary forms send back unchanged is not a write; what they change is.
+
+    Tunde Bello is on N234,567 at Ikeja on the Teachers structure, resident
+    in Lagos, with Stanbic as his PFA, a tax ID, a pension PIN and a staff
+    loan of N5,000 a month up to N50,000. Mrs Okafor opens his record to fix
+    the spelling of his name. The form sends every value it was opened with,
+    and she saves.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_finance.models import SalaryComponent
+        from vs_finance.payroll_statutory import replace_components
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_rbac.tests.helpers import set_field_access
+
+        super().setUpTestData()
+        cls.hidden_user = cls.grant(cls.user_for(cls.tenant, "eze@corona.test"), *cls.KEYS,
+                                    tenant=cls.tenant, role_key="pay-hidden")
+        hidden = TenantRoleTemplate.objects.get(tenant=cls.tenant, key="pay-hidden")
+        set_field_access(hidden, *cls.pay_keys, read=False, write=False)
+
+        cls.teachers = SalaryStructure.objects.create(entity=cls.books, name="Teachers")
+        replace_components(cls.teachers, [SalaryComponent(
+            name="Basic", kind="EARNING", calc_method="PERCENT_OF_GROSS", rate_bps=10_000,
+            is_basic=True, is_pensionable=True, is_taxable=True, sequence=0,
+        )], creating=True)
+        cls.seniors = SalaryStructure.objects.create(entity=cls.books, name="Senior staff")
+        cls.tunde = cls.person(
+            cls.books, "Tunde Belo", cls.ikeja, 234_567, structure=cls.teachers,
+            residence_state=cls.lagos, pfa=cls.stanbic, tax_id="TIN-TUNDE",
+            pension_pin="PEN-TUNDE",
+        )
+        record_creation(cls.tunde)
+        loans = Account.objects.create(entity=cls.books, code="2451", name="Staff loans",
+                                       account_type="LIABILITY", is_postable=True)
+        loan = PayrollDeductionType.objects.create(
+            entity=cls.books, code="LOAN", name="Staff loan", liability_account=loans)
+        cls.loan = EmployeeDeduction.objects.create(
+            salary=cls.tunde, deduction_type=loan, amount=5_000 * N, total_limit=50_000 * N)
+
+    def setUp(self):
+        super().setUp()
+        self.eze = TenantAPIClient(user=self.hidden_user)
+
+    def salary(self):
+        return f"employee-salaries/{self.tunde.pk}/"
+
+    def form(self, **changes):
+        """The salary edit form as it saves: every value it was opened with, and *changes*."""
+        rows = self.okafor.get(
+            f"/v1/finance/employee-salaries/?entity={self.books.code}").data["data"]
+        row = next(r for r in rows if r["id"] == self.tunde.pk)
+        body = {
+            "name": row["name"], "gross_amount": row["gross_amount"],
+            "structure": row["structure_id"], "residence_state": row["residence_state"],
+            "pfa": row["pfa_id"], "tax_id": row["tax_id"], "pension_pin": row["pension_pin"],
+            "annual_rent": row["annual_rent"], "paye_override": row["paye_override"],
+            "paye_override_reason": row["paye_override_reason"],
+            "cost_center": row["cost_center"], "is_active": row["is_active"],
+        }
+        body.update(changes)
+        return body
+
+    def pay(self):
+        """Everything about Tunde's pay that a save could disturb."""
+        tunde = EmployeeSalary.objects.get(pk=self.tunde.pk)
+        return (
+            tunde.gross_amount, tunde.structure_id, tunde.residence_state_id, tunde.pfa_id,
+            tunde.tax_id, tunde.pension_pin, tunde.annual_rent, tunde.paye_override,
+            tunde.versions.count(),
+            list(EmployeeDeduction.objects.filter(salary=tunde).values_list(
+                "amount", "total_limit", "end_date")),
+            list(self.teachers.components.values_list("pk", "rate_bps", "effective_to")),
+        )
+
+    def assert_refused(self, response, field):
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(response.data["error"]["code"], "field_write_denied")
+        self.assertEqual(sorted(response.data["error"]["detail"]), [field])
+
+    def test_a_corrected_name_saves_beside_every_figure_sent_back_unchanged(self):
+        before = self.pay()
+
+        response = self.call(self.okafor, "patch", self.salary(), self.form(name="Tunde Bello"))
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(EmployeeSalary.objects.get(pk=self.tunde.pk).name, "Tunde Bello")
+        self.assertEqual(self.pay(), before)
+
+    def test_a_figure_that_differs_is_refused_and_nothing_is_written(self):
+        before = self.pay()
+        for field, value in (
+            ("gross_amount", 234_567 * N + 1),
+            ("structure", self.seniors.pk),
+            ("residence_state", "OG"),
+            ("pfa", None),
+            ("tax_id", "TIN-OTHER"),
+        ):
+            with self.subTest(field=field):
+                response = self.call(self.okafor, "patch", self.salary(),
+                                     self.form(name="Tunde Bello", **{field: value}))
+
+                self.assert_refused(response, field)
+                self.assertEqual(EmployeeSalary.objects.get(pk=self.tunde.pk).name, "Tunde Belo")
+        self.assertEqual(self.pay(), before)
+
+    def test_a_value_spelt_differently_but_equal_once_read_is_unchanged(self):
+        response = self.call(self.okafor, "patch", self.salary(), self.form(
+            name="Tunde Bello", gross_amount=str(234_567 * N), structure=str(self.teachers.pk),
+            residence_state=str(self.lagos.pk), pfa="stanbic",
+        ))
+
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_a_value_that_does_not_read_is_a_change(self):
+        for field, value in (("gross_amount", "234,567"), ("structure", "999999"),
+                             ("pfa", "NOT-A-PFA")):
+            with self.subTest(field=field):
+                response = self.call(self.okafor, "patch", self.salary(),
+                                     self.form(name="Tunde Bello", **{field: value}))
+
+                self.assert_refused(response, field)
+        response = self.call(self.adeyemi, "patch", self.salary(),
+                             self.form(gross_amount="234,567"))
+        self.assertEqual(response.status_code, 400, response.data)
+
+    def test_a_figure_the_caller_cannot_read_is_refused_even_when_it_matches(self):
+        """Otherwise a save would answer whether a guess at Tunde's gross is right."""
+        response = self.call(self.eze, "patch", self.salary(),
+                             {"name": "Tunde Bello", "gross_amount": 234_567 * N})
+        self.assert_refused(response, "gross_amount")
+
+        # The structure shows on his record to anyone who opens it, so it reveals nothing.
+        response = self.call(self.eze, "patch", self.salary(),
+                             {"name": "Tunde Bello", "structure": self.teachers.pk})
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_a_deduction_changes_its_dates_beside_an_unchanged_amount(self):
+        path = f"employee-deductions/{self.loan.pk}/"
+
+        response = self.call(self.okafor, "patch", path, {
+            "amount": str(5_000 * N), "total_limit": 50_000 * N, "end_date": "2026-12-31",
+        })
+        self.assertEqual(response.status_code, 200, response.data)
+        self.loan.refresh_from_db()
+        self.assertEqual(str(self.loan.end_date), "2026-12-31")
+
+        response = self.call(self.okafor, "patch", path,
+                             {"amount": 6_000 * N, "end_date": "2027-03-31"})
+        self.assert_refused(response, "amount")
+        self.loan.refresh_from_db()
+        self.assertEqual((self.loan.amount, str(self.loan.end_date)), (5_000 * N, "2026-12-31"))
+
+    def test_a_structure_is_renamed_beside_its_unchanged_lines(self):
+        before = self.pay()
+        path = f"salary-structures/{self.teachers.pk}/"
+        lines = self.okafor.get(
+            f"/v1/finance/{path}?entity={self.books.code}").data["data"]["components"]
+
+        response = self.call(self.okafor, "patch", path,
+                             {"name": "Teachers 2026", "components": lines})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.pay(), before)
+
+        changed = [{**lines[0], "rate_bps": 9_000}]
+        response = self.call(self.okafor, "patch", path,
+                             {"name": "Teaching staff", "components": changed})
+        self.assert_refused(response, "components")
+        self.teachers.refresh_from_db()
+        self.assertEqual(self.teachers.name, "Teachers 2026")
+        self.assertEqual(self.pay(), before)
+
+    def test_a_new_row_may_leave_its_figures_empty_and_may_not_fill_them(self):
+        empty = {"name": "Dele Ade", "branch": self.ikeja.pk, "structure": None,
+                 "residence_state": None, "pfa": "", "tax_id": "", "paye_override": None,
+                 "annual_rent": 0}
+
+        response = self.call(self.okafor, "post", "employee-salaries/", empty)
+        self.assertEqual(response.status_code, 201, response.data)
+
+        response = self.call(self.okafor, "post", "employee-salaries/",
+                             {**empty, "name": "Funke Ade", "structure": self.teachers.pk})
+        self.assert_refused(response, "structure")
+        self.assertFalse(EmployeeSalary.objects.filter(name="Funke Ade").exists())
+
+    def test_a_write_that_never_asks_the_switches_is_rolled_back(self):
+        from django.core.exceptions import ImproperlyConfigured
+        from rest_framework.response import Response
+        from rest_framework.test import APIRequestFactory
+        from rest_framework.views import APIView
+
+        from vs_finance.views_ops.payroll import PayFieldWriteMixin
+
+        books = self.books
+
+        class Unjudged(PayFieldWriteMixin, APIView):
+            authentication_classes = ()
+            permission_classes = ()
+
+            def post(self, request):
+                SalaryStructure.objects.create(entity=books, name="Unjudged")
+                return Response(status=201)
+
+        with self.assertRaises(ImproperlyConfigured):
+            Unjudged.as_view()(APIRequestFactory().post("/", {}, format="json"))
+        self.assertFalse(SalaryStructure.objects.filter(name="Unjudged").exists())

@@ -45,6 +45,12 @@ changes anything:
   to the act of creating the record rather than to editing it, and whose write
   switch therefore governs only later corrections.
 
+A view applying a body without a serializer gets the same answer from
+:func:`assert_writable` when it passes the stored values as ``current``: an
+unchanged value is passed on the same terms, and on a create a value equal to
+what the record would hold without it is passed. Without ``current`` it judges
+every submitted name by presence alone.
+
 Who the caller is
 -----------------
 
@@ -378,30 +384,78 @@ def field_access_payload(user, tenant) -> dict:
     return payload
 
 
+class _Unparsed:
+    """The type of :data:`UNPARSED`, which compares equal to nothing."""
+
+    def __repr__(self) -> str:
+        return "UNPARSED"
+
+
+#: What a view puts in place of a submitted value it could not parse. It
+#: equals no stored value, so :func:`assert_writable` always counts it as a
+#: change.
+UNPARSED = _Unparsed()
+
+
+def _same(submitted, stored) -> bool:
+    """Whether *submitted* is exactly *stored*, of the same type and value.
+
+    Both are expected in the form the view writes, so anything short of an
+    exact match counts as a change: ``1`` and ``True``, or ``"5"`` and ``5``,
+    are different values here.
+    """
+    if submitted is UNPARSED:
+        return False
+    return type(submitted) is type(stored) and submitted == stored
+
+
 def assert_writable(
     request, resource: str, body, *, creating: bool = False,
     aliases: Mapping[str, str] | None = None,
+    current: Mapping | None = None,
 ) -> None:
     """Raise :class:`FieldWriteDenied` for keys of *body* the caller may not write.
 
-    For a view that applies ``request.data`` without a serializer. Stricter
-    than :class:`FieldAccessMixin` in one way, deliberately: a serializer can
-    drop a harmless submission before it writes anything, while a raw view
-    applies the body as it stands, so here an empty value for a field the
-    caller cannot write is refused rather than dropped. Pass ``creating=True``
-    on a create path, where a field declared ``open_on_create`` is allowed.
-    *body* is a mapping or any iterable of the names submitted.
+    For a view that applies ``request.data`` without a serializer. Pass
+    ``creating=True`` on a create path, where a field declared
+    ``open_on_create`` is allowed. *body* is a mapping or any iterable of the
+    names submitted.
+
+    Without ``current`` every submitted name is judged by its presence alone,
+    which is stricter than :class:`FieldAccessMixin`: an empty value, or one
+    equal to what is stored, is refused rather than dropped.
+
+    ``current`` lets a view say what the record holds, so that only a value
+    which changes it is judged. *body* is then a mapping of each submitted
+    name to the value the record would hold after the write, parsed exactly as
+    the view parses it to write it, or :data:`UNPARSED` where it does not
+    parse. ``current`` maps a name to the value held now, normalised the same
+    way; on a create, to the value the new record would hold were the name
+    left out. A name whose two values are exactly equal is not a write and is
+    passed, with one exception: on an update, a registered name the caller may
+    not read is judged whatever its value, because "equal is accepted,
+    different is refused" would otherwise reveal the hidden value, as
+    :class:`FieldAccessMixin` also holds. A name absent from ``current`` is
+    judged by presence, as without it. Mrs Okafor may read salaries but not
+    change them: her form sends back Tunde's unchanged gross beside his
+    corrected name, and the save goes through; had the gross differed by one
+    kobo, it is refused and nothing is written.
 
     ``aliases`` maps a submitted name that is not a registered name to the
     registered name whose write switch governs it: a value that is not itself
     a figure the switch hides but that changes one when written. The refusal
-    names the submitted name.
+    names the submitted name. Such a value is readable to anyone who sees the
+    record, so an unchanged one is passed whatever the caller may read.
 
     ``request=None`` is the escape hatch the module docstring names: a write
     made for nobody is refused nothing.
     """
     if request is None:
         return
+    if current is not None and not isinstance(body, Mapping):
+        raise ImproperlyConfigured(
+            "assert_writable compares values only for a body given as a mapping."
+        )
     access = _access_for(request)
     entries = _entries_for(request, resource)
     aliases = aliases or {}
@@ -411,6 +465,12 @@ def assert_writable(
         if entry is None or access.can_write(entry.key):
             continue
         if creating and entry.open_on_create:
+            continue
+        if (
+            current is not None and name in current
+            and _same(body[name], current[name])
+            and (creating or name in aliases or access.can_read(entry.key))
+        ):
             continue
         denied.append(name)
     if denied:

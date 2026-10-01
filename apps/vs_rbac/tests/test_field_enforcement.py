@@ -22,6 +22,7 @@ from rest_framework.test import APIRequestFactory
 from core.exceptions import custom_exception_handler
 from vs_rbac.field_enforcement import (
     SYSTEM_SURFACES,
+    UNPARSED,
     FieldAccessMixin,
     FieldWriteDenied,
     assert_system_surface,
@@ -431,6 +432,52 @@ class RawSurfaceTests(_Enforcement):
         )
         with self.assertRaises(FieldWriteDenied):
             assert_writable(self._request(), "fenf.vendor", body)
+
+
+class RawCurrentValueTests(_Enforcement):
+    """``assert_writable`` given the stored values judges what changes, not what is sent."""
+
+    STORED = {"phone": "08030000000", "bank_account_number": "0123456789", "rating": 4}
+
+    def _judge(self, body, *, creating=False, aliases=None):
+        return assert_writable(
+            self._request(), "fenf.vendor", body, creating=creating,
+            aliases=aliases, current=self.STORED,
+        )
+
+    def test_a_value_sent_back_unchanged_is_not_a_write(self):
+        self.assertIsNone(self._judge({"name": "Ade Stationers Ltd", "phone": "08030000000"}))
+
+    def test_a_value_that_differs_is_refused(self):
+        with self.assertRaises(FieldWriteDenied) as caught:
+            self._judge({"phone": "08039999999"})
+        self.assertEqual(caught.exception.fields, ["phone"])
+
+    def test_only_an_exact_match_of_type_and_value_is_unchanged(self):
+        with self.assertRaises(FieldWriteDenied):
+            self._judge({"rating": "4"}, aliases={"rating": "phone"})
+        self.assertIsNone(self._judge({"rating": 4}, aliases={"rating": "phone"}))
+
+    def test_a_value_the_view_could_not_parse_is_a_change(self):
+        with self.assertRaises(FieldWriteDenied):
+            self._judge({"phone": UNPARSED})
+
+    def test_a_field_the_caller_cannot_read_is_refused_even_when_it_matches(self):
+        with self.assertRaises(FieldWriteDenied) as caught:
+            self._judge({"bank_account_number": "0123456789"})
+        self.assertEqual(caught.exception.fields, ["bank_account_number"])
+
+    def test_an_unchanged_alias_passes_whatever_the_caller_may_read(self):
+        self.assertIsNone(self._judge({"rating": 4}, aliases={"rating": "bank_account_number"}))
+
+    def test_on_create_a_value_equal_to_leaving_it_out_is_not_a_write(self):
+        self.assertIsNone(self._judge({"bank_account_number": "0123456789"}, creating=True))
+        with self.assertRaises(FieldWriteDenied):
+            self._judge({"bank_account_number": "9999999999"}, creating=True)
+
+    def test_a_name_with_no_stored_value_is_judged_by_presence(self):
+        with self.assertRaises(FieldWriteDenied):
+            assert_writable(self._request(), "fenf.vendor", {"phone": ""}, current={})
 
 
 class CostTests(_Enforcement):

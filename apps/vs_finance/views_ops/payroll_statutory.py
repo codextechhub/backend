@@ -20,6 +20,7 @@ Three audiences, three gates:
 from __future__ import annotations
 
 import datetime
+from collections.abc import Mapping
 
 from django.db import transaction
 from django.http import HttpResponse
@@ -66,7 +67,7 @@ from ..serializers import (
 from ..payroll_statutory import owning_branch_id
 from ..views import resolve_entity
 from .base import _FinanceBase, _bool, _date, _int, _money, _resolve_account
-from .payroll import PayFieldWriteMixin, _resolve_salary, _runs_in_reach
+from .payroll import PayFieldWriteMixin, _parsed, _resolve_salary, _runs_in_reach
 
 
 # --------------------------------------------------------------------------- #
@@ -570,6 +571,28 @@ class PayrollDeductionTypeDetailView(WholeTenantWriteMixin, _FinanceBase):
         return success_response("Payroll deduction type updated.", data=after)
 
 
+def _limit(raw):
+    """A deduction's total limit in kobo, or None for no limit."""
+    return None if raw in (None, "") else _money(raw, "total_limit")
+
+
+def _deduction_pay_values(body):
+    """A deduction body, with its amount and limit as the row would hold them after the write.
+
+    Parsed by the same functions the write uses, or
+    :data:`~vs_rbac.field_enforcement.UNPARSED` where the write would refuse
+    the value. Every other key keeps its raw value.
+    """
+    if not isinstance(body, Mapping):
+        return {}
+    submitted = dict(body)
+    if "amount" in body:
+        submitted["amount"] = _parsed(lambda raw: _money(raw, "amount"), body.get("amount"))
+    if "total_limit" in body:
+        submitted["total_limit"] = _parsed(_limit, body.get("total_limit"))
+    return submitted
+
+
 class EmployeeDeductionListCreateView(PayFieldWriteMixin, _FinanceBase):
     """GET / POST one person's voluntary deductions, within the caller's branch reach.
 
@@ -596,6 +619,10 @@ class EmployeeDeductionListCreateView(PayFieldWriteMixin, _FinanceBase):
         entity = resolve_entity(request)
         salary = _resolve_salary(request, entity, pk)
         body = request.data or {}
+        # A new deduction always withholds an amount; only an absent limit is no write.
+        self.judge_pay_write(
+            _deduction_pay_values(body), current={"total_limit": None}, creating=True,
+        )
         kind = PayrollDeductionType.objects.filter(
             entity=entity, is_active=True, pk=body.get("deduction_type") or 0,
         ).first() if str(body.get("deduction_type") or "").isdigit() else None
@@ -607,10 +634,9 @@ class EmployeeDeductionListCreateView(PayFieldWriteMixin, _FinanceBase):
         start, end = _date(body.get("start_date"), "start_date"), _date(body.get("end_date"), "end_date")
         if start and end and end < start:
             raise ValidationError({"end_date": "The end date cannot precede the start."})
-        limit = body.get("total_limit")
         row = EmployeeDeduction.objects.create(
             salary=salary, deduction_type=kind, amount=amount, start_date=start, end_date=end,
-            total_limit=None if limit in (None, "") else _money(limit, "total_limit"),
+            total_limit=_limit(body.get("total_limit")),
             reference=str(body.get("reference") or "").strip()[:64], created_by=request.user,
         )
         record(
@@ -651,7 +677,14 @@ class EmployeeDeductionDetailView(PayFieldWriteMixin, _FinanceBase):
         from ..audit import record
 
         entity, row = self._row(request, pk)
+        # Locked, so the values judged are the values the write replaces.
+        list(EmployeeDeduction.objects.select_for_update().filter(pk=row.pk).values_list("pk"))
+        row.refresh_from_db()
         body = request.data or {}
+        self.judge_pay_write(
+            _deduction_pay_values(body),
+            current={"amount": row.amount, "total_limit": row.total_limit},
+        )
         before = dict(EmployeeDeductionSerializer(row).data)
         if "amount" in body:
             row.amount = _money(body.get("amount"), "amount")
@@ -659,8 +692,7 @@ class EmployeeDeductionDetailView(PayFieldWriteMixin, _FinanceBase):
             if field in body:
                 setattr(row, field, _date(body.get(field), field))
         if "total_limit" in body:
-            limit = body.get("total_limit")
-            row.total_limit = None if limit in (None, "") else _money(limit, "total_limit")
+            row.total_limit = _limit(body.get("total_limit"))
         if "is_active" in body:
             row.is_active = _bool(body.get("is_active"), default=row.is_active)
         row.save()

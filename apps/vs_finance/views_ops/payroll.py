@@ -2,6 +2,8 @@
 """
 from __future__ import annotations
 
+import datetime
+from collections.abc import Mapping
 
 from django.db import transaction
 from rest_framework.exceptions import NotFound
@@ -63,30 +65,61 @@ SHARED_RUN = "a payroll run for the whole school"
 
 
 class PayFieldWriteMixin:
-    """Checks the caller's Field Access write switches on a payroll or salary write.
+    """Judges a payroll or salary write against the caller's Field Access write switches.
 
-    Every view that writes pay figures carries this, so the check is made in
-    one place, before the handler runs and before anything is written
-    (:func:`vs_finance.field_access.assert_pay_writable`). ``pay_field_resource``
-    names the registered resource the body's fields belong to;
-    ``pay_field_rows`` names a key holding a list of rows whose fields are
-    written too (a hand-typed run's ``lines``). A POST is a create, so a field
-    declared open on create is allowed there. Reads and deletes submit no
-    field and are not checked.
+    Every view that writes pay figures carries this. Its handler works out,
+    inside its transaction and before it writes anything, what each pay key of
+    the body would leave on the record and what the record holds now, and
+    passes both to :meth:`judge_pay_write`
+    (:func:`vs_finance.field_access.assert_pay_writable`). So a value sent back
+    exactly as stored is not a write, and a value that changes a figure the
+    caller may not change is refused with nothing written.
+    ``pay_field_resource`` names the registered resource the body's fields
+    belong to.
+
+    A POST, PUT or PATCH that succeeds without having been judged is a fault in
+    the view rather than a permitted write: it raises
+    :class:`~django.core.exceptions.ImproperlyConfigured` inside the request's
+    transaction, so the unjudged write is rolled back. Reads and deletes submit
+    no field and are not judged.
     """
 
     pay_field_resource = "finance.salary"
-    pay_field_rows = ""
+    _pay_write_judged = False
 
-    def initial(self, request, *args, **kwargs):
-        super().initial(request, *args, **kwargs)
-        if request.method in ("POST", "PUT", "PATCH"):
-            from ..field_access import assert_pay_writable
+    def judge_pay_write(self, submitted, *, current, creating=False):
+        """Refuse the write if it changes a figure the caller may not change."""
+        from ..field_access import assert_pay_writable
 
-            assert_pay_writable(
-                request, self.pay_field_resource, request.data,
-                creating=request.method == "POST", rows_key=self.pay_field_rows,
-            )
+        assert_pay_writable(
+            self.request, self.pay_field_resource, submitted,
+            current=current, creating=creating,
+        )
+        self._pay_write_judged = True
+
+    def dispatch(self, request, *args, **kwargs):
+        if request.method not in ("POST", "PUT", "PATCH"):
+            return super().dispatch(request, *args, **kwargs)
+        with transaction.atomic():
+            response = super().dispatch(request, *args, **kwargs)
+            if response.status_code < 400 and not self._pay_write_judged:
+                from django.core.exceptions import ImproperlyConfigured
+
+                raise ImproperlyConfigured(
+                    f"{type(self).__name__}.{request.method.lower()} wrote without "
+                    f"calling judge_pay_write."
+                )
+        return response
+
+
+def _parsed(parse, raw):
+    """``parse(raw)``, or :data:`~vs_rbac.field_enforcement.UNPARSED` where the write would refuse it."""
+    from vs_rbac.field_enforcement import UNPARSED
+
+    try:
+        return parse(raw)
+    except (ValidationError, TypeError, ValueError, AttributeError):
+        return UNPARSED
 
 
 def _runs_in_reach(request, entity):
@@ -214,6 +247,58 @@ def _filter_by_branch(qs, request, entity, *, field: str = "branch", column: str
     return qs.filter(**{f"{column}_id": branch.pk})
 
 
+def _line_name(raw):
+    """A line's name as the run stores it; anything but text is not a name."""
+    if not isinstance(raw, str):
+        raise TypeError("An employee name is text.")
+    return raw
+
+
+#: The figures of a hand-typed payroll line, each with how the run view parses
+#: it and what a line holds when the key is left out.
+_LINE_FIGURES = {
+    "employee_name": (_line_name, ""),
+    "gross_amount": (lambda raw: _money(raw, "gross_amount"), 0),
+    "paye_amount": (lambda raw: _money(raw, "paye_amount"), 0),
+    "pension_amount": (lambda raw: _money(raw, "pension_amount"), 0),
+}
+
+
+def _run_line_values(body):
+    """``(submitted, current)`` for the pay check of a payroll run typed by hand.
+
+    The figures sit in ``lines``, one mapping per person, and a run is a
+    create, so ``current`` holds what a line would carry with the key left
+    out. A key is a write when any line sets it to something else: a line
+    with no name and nothing typed in writes no figure, and a line with
+    Tunde's gross writes his gross. Any other key a line or the body carries
+    is judged by its presence.
+    """
+    from vs_rbac.field_enforcement import UNPARSED
+
+    if not isinstance(body, Mapping):
+        return {}, {}
+    submitted = dict(body)
+    current, changed = {}, set()
+    lines = body.get("lines")
+    for row in lines if isinstance(lines, list) else ():
+        if not isinstance(row, Mapping):
+            continue
+        for name, raw in row.items():
+            figure = _LINE_FIGURES.get(name)
+            if figure is None:
+                submitted.setdefault(name, raw)
+                continue
+            parse, default = figure
+            value = _parsed(parse, raw)
+            current[name] = default
+            if value is UNPARSED or type(value) is not type(default) or value != default:
+                changed.add(name)
+    for name, default in current.items():
+        submitted[name] = UNPARSED if name in changed else default
+    return submitted, current
+
+
 # Group endpoint behavior for Payroll Run List Create View.
 class PayrollRunListCreateView(PayFieldWriteMixin, _FinanceBase):
     """GET (list) / POST (create draft) payroll runs for an entity.
@@ -222,7 +307,6 @@ class PayrollRunListCreateView(PayFieldWriteMixin, _FinanceBase):
     """
 
     pay_field_resource = "finance.payrollrun"
-    pay_field_rows = "lines"
 
     @property
     # Handle the rbac permission workflow.
@@ -251,6 +335,8 @@ class PayrollRunListCreateView(PayFieldWriteMixin, _FinanceBase):
 
         entity = resolve_entity(request)
         body = request.data or {}
+        submitted, current = _run_line_values(body)
+        self.judge_pay_write(submitted, current=current, creating=True)
         lines = _require_lines(body)
         branch = _raised_branch(request, entity, body)
         if branch is None:
@@ -674,6 +760,70 @@ def _resolve_structure(entity, raw, *, required=False):
     return structure
 
 
+#: What a new salary row holds for each pay key its body leaves out.
+_SALARY_PAY_DEFAULTS = {
+    "gross_amount": 0, "paye_amount": 0, "pension_amount": 0, "annual_rent": 0,
+    "structure": None, "residence_state": None, "pfa": None,
+    "tax_id": "", "pension_pin": "", "paye_override": None, "paye_override_reason": "",
+}
+
+
+def _salary_pay_values(entity, body, *, held_reason=""):
+    """Each key of a salary body, with every pay key as the row would hold it after the write.
+
+    Parsed by the same functions the write uses, so ``"234567"`` and
+    ``234567`` are one gross, a state named by code or by id is one state, and
+    a value the write would refuse is
+    :data:`~vs_rbac.field_enforcement.UNPARSED`. A PAYE override reason is
+    written only with ``paye_override``; sent without it, the row keeps
+    *held_reason*. Any other key keeps its raw value and is judged by presence.
+    """
+    from vs_rbac.field_enforcement import UNPARSED
+
+    if not isinstance(body, Mapping):
+        return {}
+    parsers = {
+        "gross_amount": lambda raw: _money(raw, "gross_amount"),
+        "paye_amount": lambda raw: _money(raw, "paye_amount"),
+        "pension_amount": lambda raw: _money(raw, "pension_amount"),
+        "annual_rent": lambda raw: _money(raw, "annual_rent"),
+        "structure": lambda raw: getattr(_resolve_structure(entity, raw), "pk", None),
+        "residence_state": lambda raw: getattr(_resolve_jurisdiction(raw), "pk", None),
+        "pfa": lambda raw: getattr(_resolve_pfa(raw), "pk", None),
+        "tax_id": lambda raw: _identifier({"tax_id": raw}, "tax_id"),
+        "pension_pin": lambda raw: _identifier({"pension_pin": raw}, "pension_pin"),
+    }
+    submitted = dict(body)
+    for name, parse in parsers.items():
+        if name in body:
+            submitted[name] = _parsed(parse, body.get(name))
+    if "paye_override" in body:
+        override = _parsed(_override, body)
+        amount, reason = (UNPARSED, UNPARSED) if override is UNPARSED else override
+        submitted["paye_override"] = amount
+        if "paye_override_reason" in body:
+            submitted["paye_override_reason"] = reason
+    elif "paye_override_reason" in body:
+        submitted["paye_override_reason"] = held_reason
+    return submitted
+
+
+def _salary_pay_held(sal):
+    """What ``sal`` holds for each pay key, in the form :func:`_salary_pay_values` gives.
+
+    The terms are those of its latest version, the ones a change is written
+    over (:func:`vs_finance.payroll_statutory.change_terms`).
+    """
+    terms = sal.terms_on(datetime.date.max) or sal
+    return {
+        "gross_amount": terms.gross_amount, "paye_amount": terms.paye_amount,
+        "pension_amount": terms.pension_amount, "structure": terms.structure_id,
+        "residence_state": terms.residence_state_id, "annual_rent": sal.annual_rent,
+        "pfa": sal.pfa_id, "tax_id": sal.tax_id, "pension_pin": sal.pension_pin,
+        "paye_override": sal.paye_override, "paye_override_reason": sal.paye_override_reason,
+    }
+
+
 # Group endpoint behavior for Employee Salary List Create View.
 class EmployeeSalaryListCreateView(PayFieldWriteMixin, _FinanceBase):
     """GET (list) / POST (add) employee salaries - the roster a run is generated from.
@@ -725,6 +875,9 @@ class EmployeeSalaryListCreateView(PayFieldWriteMixin, _FinanceBase):
 
         entity = resolve_entity(request)
         body = request.data or {}
+        self.judge_pay_write(
+            _salary_pay_values(entity, body), current=_SALARY_PAY_DEFAULTS, creating=True,
+        )
         employee = _resolve_employee(entity, body.get("employee"))
         name = str(body.get("name", "")).strip()
         if not name and employee is not None:
@@ -803,6 +956,13 @@ class EmployeeSalaryDetailView(PayFieldWriteMixin, _FinanceBase):
         account, tax number, PFA and PIN, annual rent) is edited in place and
         audited; a PAYE override is audited on its own. ``is_active`` false takes
         the person off the payroll.
+
+        Only a pay value that changes the row is checked against the caller's
+        write switches (:meth:`PayFieldWriteMixin.judge_pay_write`), with the
+        row locked so the values compared are the ones replaced. The edit form
+        sends back the structure, state and PFA it was opened with; a bursar
+        who may read pay but not change it corrects Tunde's name and saves, and
+        is refused only for a figure whose value actually differs.
         """
         from ..payroll_statutory import (
             PROFILE_FIELDS,
@@ -816,7 +976,14 @@ class EmployeeSalaryDetailView(PayFieldWriteMixin, _FinanceBase):
 
         entity = resolve_entity(request)
         sal = _resolve_salary(request, entity, pk)
+        # Locked, so the values judged are the values the write replaces.
+        list(EmployeeSalary.objects.select_for_update().filter(pk=sal.pk).values_list("pk"))
+        sal.refresh_from_db()
         body = request.data or {}
+        self.judge_pay_write(
+            _salary_pay_values(entity, body, held_reason=sal.paye_override_reason),
+            current=_salary_pay_held(sal),
+        )
         profile_before = {k: getattr(sal, k) for k in PROFILE_FIELDS + ("is_active",)}
         override_before = (sal.paye_override, sal.paye_override_reason)
         if "employee" in body:
@@ -950,18 +1117,13 @@ _VALID_METHODS = {
 _VALID_STATUTORY = {StatutoryType.PAYE, StatutoryType.PENSION}
 
 
-# Support the save components workflow.
-def _save_components(structure, raw, *, effective_from=None, actor_user=None, creating=False):
-    """Validate a request body's component list and write it as the structure's new lines.
+def _parse_components(raw) -> list:
+    """Validate a request body's component list into unsaved :class:`SalaryComponent` lines.
 
     Earnings carry no statutory type and may be flagged basic, pensionable and
     taxable (taxable by default); deductions must be PAYE or pension, and count
-    only for a tenant whose PAYE is supplied rather than computed. The current
-    lines are closed rather than deleted
-    (:func:`vs_finance.payroll_statutory.replace_components`).
+    only for a tenant whose PAYE is supplied rather than computed.
     """
-    from ..payroll_statutory import replace_components
-
     if not isinstance(raw, list):
         raise ValidationError({"components": "Expected a list of components."})
 
@@ -1001,10 +1163,37 @@ def _save_components(structure, raw, *, effective_from=None, actor_user=None, cr
             is_taxable=bool(c.get("is_taxable", True)) or not earning,
             statutory_type=statutory, sequence=int(c.get("sequence", i)),
         ))
+    return rows
 
-    return replace_components(
-        structure, rows, effective_from=effective_from, actor_user=actor_user, creating=creating,
-    )
+
+def _component_rows(components) -> list:
+    """Structure lines as comparable rows, in the order they are stored and read.
+
+    By sequence, and in the order given within one sequence, which is the
+    order a list written by :func:`_parse_components` is read back in. Given
+    the current lines ordered by sequence and id, it is the order they are read
+    in now, so two equal results are one set of lines.
+    """
+    from ..payroll_statutory import component_row
+
+    return [component_row(c) for c in sorted(components, key=lambda c: c.sequence)]
+
+
+def _structure_pay_values(body):
+    """A structure body, with ``components`` as the lines it would write.
+
+    Each line as :func:`_component_rows` compares it, or
+    :data:`~vs_rbac.field_enforcement.UNPARSED` for a list the write would
+    refuse. Every other key keeps its raw value.
+    """
+    if not isinstance(body, Mapping):
+        return {}
+    submitted = dict(body)
+    if "components" in body:
+        submitted["components"] = _parsed(
+            lambda raw: _component_rows(_parse_components(raw)), body.get("components"),
+        )
+    return submitted
 
 
 def _structure_data(structure):
@@ -1059,8 +1248,11 @@ class SalaryStructureListCreateView(PayFieldWriteMixin, _FinanceBase):
     @transaction.atomic
     # Handle POST requests for this endpoint.
     def post(self, request):
+        from ..payroll_statutory import replace_components
+
         entity = resolve_entity(request)
         body = request.data or {}
+        self.judge_pay_write(_structure_pay_values(body), current={"components": []}, creating=True)
         name = str(body.get("name", "")).strip()
         if not name:
             raise ValidationError({"name": "A structure name is required."})
@@ -1071,8 +1263,8 @@ class SalaryStructureListCreateView(PayFieldWriteMixin, _FinanceBase):
             description=str(body.get("description", "")).strip(),
             is_active=_bool(body.get("is_active", True), default=True),
         )
-        _save_components(
-            structure, body.get("components", []),
+        replace_components(
+            structure, _parse_components(body.get("components", [])),
             effective_from=_date(body.get("effective_from"), "effective_from"),
             actor_user=request.user, creating=True,
         )
@@ -1088,6 +1280,9 @@ class SalaryStructureDetailView(PayFieldWriteMixin, _FinanceBase):
     ``components`` on a PATCH replaces the current lines from ``effective_from``
     (or the first payroll month nobody on the structure has been paid for); the
     old lines are kept for the months they priced, and the change is audited.
+    A list equal to the current lines, as an edit form sends back when only the
+    name changed, is not a change: nothing is replaced, and the caller needs no
+    write switch on the pay breakdown for it.
 
     docstring-name: Salary structures
     """
@@ -1114,8 +1309,17 @@ class SalaryStructureDetailView(PayFieldWriteMixin, _FinanceBase):
     @transaction.atomic
     # Handle PATCH requests for this endpoint.
     def patch(self, request, pk):
+        from ..payroll_statutory import replace_components
+
         entity, structure = self._structure(request, pk)
+        # Locked, so the lines judged are the lines the write replaces.
+        list(SalaryStructure.objects.select_for_update().filter(pk=structure.pk).values_list("pk"))
         body = request.data or {}
+        submitted = _structure_pay_values(body)
+        held = {"components": _component_rows(
+            structure.components.filter(effective_to__isnull=True).order_by("sequence", "id"),
+        )}
+        self.judge_pay_write(submitted, current=held)
         if "name" in body:
             name = str(body["name"]).strip()
             if not name:
@@ -1132,9 +1336,9 @@ class SalaryStructureDetailView(PayFieldWriteMixin, _FinanceBase):
         if "is_active" in body:
             structure.is_active = _bool(body.get("is_active"), default=structure.is_active)
         structure.save()
-        if "components" in body:
-            _save_components(
-                structure, body.get("components", []),
+        if "components" in body and submitted["components"] != held["components"]:
+            replace_components(
+                structure, _parse_components(body.get("components", [])),
                 effective_from=_date(body.get("effective_from"), "effective_from"),
                 actor_user=request.user,
             )

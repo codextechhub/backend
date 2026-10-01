@@ -781,6 +781,29 @@ OK, schools.core.fal 288 OK. schools.vs_staff 543 with one error in
 test_as_at's leave test, which fails identically on e85e53fd without this change.
 The full suite was not run.
 
+### D101. A pay write is judged by what it changes, not by what the form sends (hash pending, 2026-10-01)
+MODULES: M19 finance and accounting (payroll), M04 roles and permissions (field
+access), MRD.
+MUST SAY:
+- Pay writes (M19, M04). Every payroll and salary write judges only the values
+  that change the record, compared after the same parsing the write uses ("234567"
+  and 234567 are one gross; a state or PFA by code or id is one value). A form
+  that sends back a figure exactly as stored is not refused for it, so a role that
+  may read pay but not change it can correct a name. A value that changes a
+  figure the caller may not write is refused (403 `field_write_denied`) with
+  nothing written; a value that does not parse counts as a change.
+- A figure the caller may not read is refused even when sent back unchanged, so a
+  save cannot confirm a guess at it. Structure, state of residence and PFA are
+  visible on the record, so an unchanged one passes for anyone.
+- On a create, a value equal to what the new record holds without it (null
+  structure, empty tax ID, zero rent) is not a write.
+- `vs_rbac.field_enforcement.assert_writable` takes the stored values (`current`)
+  so any raw-body view can judge changes the same way; the serializer path
+  already did.
+- Frontend: FinPro v0.7.41 and v0.7.42 send only changed fields and keep a
+  person's retired structure.
+Verified: vs_finance 1585 OK, vs_rbac 981 OK. The full suite was not run.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

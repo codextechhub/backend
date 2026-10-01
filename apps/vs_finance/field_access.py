@@ -22,7 +22,9 @@ writes anything (:func:`assert_pay_writable`), so a role that may read pay but
 not change it is refused with the standard field refusal on every path: a
 roster row's create and update (and the dated version of its terms an update
 writes), its statutory details and PAYE override, its deductions, the salary
-structures, and the lines of a payroll run typed by hand. Three body keys are
+structures, and the lines of a payroll run typed by hand. What is judged is
+the change, not the key: a form that sends back a figure exactly as stored
+writes nothing to it and is not refused for it. Three body keys are
 not registered names but change a registered figure when written, so they
 travel under its write switch (:data:`PAY_WRITE_ALIASES`): the state of
 residence decides which state's PAYE is charged, the pension fund
@@ -56,40 +58,28 @@ PAY_WRITE_ALIASES: dict[str, dict[str, str]] = {
 }
 
 
-def submitted_names(body, *, rows_key: str = "") -> list[str]:
-    """The names a payroll write body submits, including those inside its rows.
+def assert_pay_writable(request, resource: str, submitted: Mapping, *, current: Mapping,
+                        creating: bool = False):
+    """Refuse a payroll or salary write that changes a figure the caller may not change.
 
-    A hand-typed payroll run carries its figures in ``lines``, one mapping
-    per person; each name any row carries counts once. A body that is not a
-    mapping submits nothing a switch governs, and the view refuses it on its
-    own terms.
-    """
-    if not isinstance(body, Mapping):
-        return []
-    names = list(body)
-    rows = body.get(rows_key) if rows_key else None
-    if isinstance(rows, list):
-        for row in rows:
-            if isinstance(row, Mapping):
-                names.extend(name for name in row if name not in names)
-    return names
-
-
-def assert_pay_writable(request, resource: str, body, *, creating=False, rows_key: str = ""):
-    """Refuse a payroll or salary write naming a field the caller may not change.
-
-    The one check every payroll and salary write path makes before it writes
-    (:class:`vs_finance.views_ops.payroll.PayFieldWriteMixin` applies it to
-    each), so nothing is half written when it refuses. Mrs Okafor may read
-    salaries but not change them: a body setting Tunde's gross, his tax ID,
-    his PFA or a deduction's amount is refused with the standard field
-    refusal, naming each such field, and his record is untouched.
+    The one check every payroll and salary write path makes, inside its
+    transaction and before it writes anything, so nothing is half written
+    when it refuses. Only a value that changes the record is judged:
+    *submitted* maps each body key to what the record would hold after the
+    write, parsed as the view writes it, and *current* to what it holds now
+    (on a create, what it would hold were the key left out). Mrs Okafor may
+    read salaries but not change them. Correcting the spelling of Tunde's name
+    while her form sends back his unchanged gross, structure, state and PFA
+    succeeds; a body that changes his gross, his tax ID, his PFA or a
+    deduction's amount is refused with the standard field refusal, naming each
+    such field, and his record is untouched
+    (:func:`vs_rbac.field_enforcement.assert_writable`).
     """
     from vs_rbac.field_enforcement import assert_writable
 
     assert_writable(
-        request, resource, submitted_names(body, rows_key=rows_key),
-        creating=creating, aliases=PAY_WRITE_ALIASES.get(resource),
+        request, resource, submitted, creating=creating,
+        aliases=PAY_WRITE_ALIASES.get(resource), current=current,
     )
 
 
