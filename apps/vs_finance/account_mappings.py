@@ -59,6 +59,9 @@ ACCOUNT_MAPPING_SPECS = {
     AccountMappingKey.INTER_BRANCH: ("1260", AccountType.ASSET),
     # Money a branch received that belongs to another, until it is forwarded.
     AccountMappingKey.HELD_FOR_OTHER_BRANCHES: ("2190", AccountType.LIABILITY),
+    # What a petty cash count finds short (a debit) or over (a credit) against the
+    # fund's books. An expense, since a shortage is the usual finding.
+    AccountMappingKey.CASH_OVER_SHORT: ("5530", AccountType.EXPENSE),
 }
 
 #: Roles only the platform's books carry. Every other set of books neither lists

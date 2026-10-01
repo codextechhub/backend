@@ -22,6 +22,7 @@ from ..constants import (
     InvoicePaymentStatus,
     PayeSource,
     PayrollRunStatus,
+    PettyCashReturnKind,
     SalaryCalcMethod,
     SalaryComponentKind,
     StatutoryType,
@@ -707,6 +708,11 @@ class PettyCashFund(TimeStampedModel):
     (``Dr petty cash, Cr bank``). ``current_balance`` is a denormalised mirror **re-synced
     from the GL balance of ``gl_account`` after every operation** (the GL is the source of
     truth; the overdraw guard reads it live), so the two never silently drift.
+
+    Cash goes back to the bank only through a :class:`PettyCashReturn`: one that
+    reduces the float, or one that closes the fund. A closed fund carries the date
+    and the person (``closed_on``, ``closed_by``), is inactive, and takes no voucher,
+    top-up or float change until it is reopened.
     """
 
     entity = models.ForeignKey(
@@ -742,6 +748,15 @@ class PettyCashFund(TimeStampedModel):
     )
     last_replenished_at = models.DateField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
+    closed_on = models.DateField(
+        null=True, blank=True,
+        help_text="The date the fund was closed and its cash banked; blank while it runs.",
+    )
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="petty_cash_funds_closed", null=True, blank=True,
+        help_text="Who closed the fund.",
+    )
 
     class Meta:
         constraints = [
@@ -756,6 +771,11 @@ class PettyCashFund(TimeStampedModel):
     def shortfall(self) -> int:
         """How much a replenishment would draw to restore the float (kobo, never negative)."""
         return max(self.float_amount - self.current_balance, 0)
+
+    @property
+    def is_closed(self) -> bool:
+        """Whether the fund has been closed and its cash banked."""
+        return self.closed_on is not None
 
     def __str__(self) -> str:
         return f"{self.name} ({self.current_balance} kobo on hand)"
@@ -854,6 +874,115 @@ class PettyCashVoucherLine(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.description or self.expense_account_id}: {self.line_total}"
+
+
+class PettyCashReturn(FinanceDocument):
+    """Cash counted out of a petty cash fund and banked into its own branch's bank.
+
+    Two kinds (:class:`~vs_finance.constants.PettyCashReturnKind`). A **reduction**
+    cuts the fund's float to ``new_float_amount`` and banks ``amount`` of the cash
+    counted; the fund carries on with what is left in the tin. A **closure** banks
+    everything counted and stops the fund.
+
+    The custodian counts the tin first. ``counted_amount`` is what the count found
+    and ``book_balance`` what the fund's ledger said at that moment. The posting
+    (:func:`vs_finance.petty_cash.post_petty_cash_return`) books, as one journal on
+    the fund's branch::
+
+        Dr bank            amount           (the cash banked)
+        Cr petty cash      amount
+        Dr cash over/short shortage         (when the count is short)
+        Cr petty cash      shortage
+        Dr petty cash      overage          (when the count is over)
+        Cr cash over/short overage
+
+    so the fund's ledger ends at ``counted_amount - amount``, the cash really left
+    in the tin. A count that differs from the books needs ``difference_reason``.
+    The bank line is an ordinary deposit on the bank account's register and is
+    matched on its reconciliation like any other.
+
+    The bank account is always the fund's own branch's: Ikeja's float is never
+    banked into Lekki's account. The document carries the fund's branch.
+
+    It is approved through its own workflow route (``finance.petty_cash_return``),
+    as a bank transaction is: a route with steps holds it until approved, an empty
+    route needs the post confirmed, and no route posts it at once, which is how a
+    replenishment moves money. A route may test ``kind``, ``amount`` and
+    ``shortage`` to decide which returns need a second pair of eyes.
+    """
+
+    DOC_TYPE = DocType.PETTY_CASH_RETURN
+    workflow_document_type = "finance.petty_cash_return"
+    workflow_amount_field = "amount"
+
+    fund = models.ForeignKey(
+        PettyCashFund, on_delete=models.PROTECT, related_name="returns",
+    )
+    kind = models.CharField(max_length=8, choices=PettyCashReturnKind.choices)
+    bank_account = models.ForeignKey(
+        BankAccount, on_delete=models.PROTECT, related_name="petty_cash_returns",
+        null=True, blank=True,
+        help_text="Where the cash is banked. Blank only for a closure that banks nothing.",
+    )
+    return_date = models.DateField()
+    counted_amount = MoneyField(help_text="Cash the count found in the tin, in kobo.")
+    book_balance = MoneyField(
+        help_text="The fund's ledger balance when the count was recorded, in kobo.",
+    )
+    amount = MoneyField(help_text="Cash banked, in kobo.")
+    previous_float_amount = MoneyField(help_text="The fund's float before this return.")
+    new_float_amount = MoneyField(help_text="The fund's float after it; 0 for a closure.")
+    counted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="petty_cash_counts", null=True, blank=True,
+        help_text="Who counted the tin, usually the custodian.",
+    )
+    difference_reason = models.CharField(
+        max_length=255, blank=True, default="",
+        help_text="Why the count differs from the books. Required when it does.",
+    )
+    narration = models.CharField(max_length=255, blank=True, default="")
+    reference = models.CharField(max_length=64, blank=True, default="")
+    journal = models.ForeignKey(
+        "JournalEntry", on_delete=models.PROTECT, related_name="petty_cash_returns",
+        null=True, blank=True,
+    )
+
+    class Meta(FinanceDocument.Meta):
+        constraints = FinanceDocument.Meta.constraints + [
+            models.CheckConstraint(
+                check=models.Q(amount__gte=0) & models.Q(counted_amount__gte=0),
+                name="ck_finance_pcreturn_amounts_not_negative",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["fund", "status"]),
+        ]
+        ordering = ["-return_date", "-id"]
+
+    @property
+    def difference(self) -> int:
+        """The count less the books, in kobo: positive is over, negative is short."""
+        return int(self.counted_amount) - int(self.book_balance)
+
+    @property
+    def shortage(self) -> int:
+        """Cash the count found missing, in kobo (never negative)."""
+        return max(-self.difference, 0)
+
+    @property
+    def overage(self) -> int:
+        """Cash the count found beyond the books, in kobo (never negative)."""
+        return max(self.difference, 0)
+
+    @property
+    def cash_left(self) -> int:
+        """The cash the tin keeps after the return, in kobo."""
+        return int(self.counted_amount) - int(self.amount)
+
+    def __str__(self) -> str:
+        return f"{self.document_number or self.pk}: {self.kind} {self.amount}"
 
 
 class TaxObligation(TimeStampedModel):

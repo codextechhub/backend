@@ -132,9 +132,14 @@ FINANCE_RESOURCES = [
     # The fund/float (master data) and the voucher (a spend document) are distinct
     # resources - mirroring how every other finance document (invoice, expenseclaim …)
     # gets its own resource - so each verb is unambiguous.
+    # ``return`` counts the tin and banks the cash above a lowered float; ``close``
+    # banks the whole tin and stops the fund; ``reopen`` brings a closed fund back;
+    # ``reverse`` voids a return while its bank side is unmatched.
     ("pettycash",        "petty cash funds",    [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("update", "SENSITIVE"), ("establish", "SENSITIVE"),
-                                                ("replenish", "SENSITIVE")]),
+                                                ("replenish", "SENSITIVE"), ("return", "SENSITIVE"),
+                                                ("close", "SENSITIVE"), ("reopen", "SENSITIVE"),
+                                                ("reverse", "CRITICAL")]),
     ("pettycashvoucher", "petty cash vouchers", [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("post", "SENSITIVE")]),
     ("refund",       "customer refunds",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("post", "CRITICAL"),

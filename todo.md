@@ -913,6 +913,44 @@ Verified: tests_inter_branch 64 OK, tests_accruals 42 OK, tests_tax_returns 28 O
 vs_finance 1649 OK, schools.core.fal 293 OK, vs_payments 403 OK. The full suite
 was not run.
 
+### D105. Petty cash goes back to the bank: a float can be cut and a fund closed, voided back and reopened (hash pending, 2026-10-01)
+MODULES: M19 finance and accounting (petty cash, banking, reconciliation), M07
+workflow (the new petty cash return route), M04 roles and permissions (four keys),
+MRD.
+MUST SAY:
+- Reduce a float (M19). The custodian counts the cash; what is above the new float
+  is banked into a bank account of the fund's own branch (Dr bank, Cr petty cash)
+  and the float drops. A count that differs from the books posts the difference to
+  Cash Over and Short (mapping, default account 5530) with a required reason.
+- Close a fund (M19). Refused while a voucher is a draft or awaiting approval, or
+  another return is pending. Everything counted is banked, the fund is CLOSED
+  with its date and who raised it, and it takes no further vouchers, top-ups or
+  float changes. Reopening is a separate audited action with a reason; the fund
+  comes back empty. Draft vouchers can be cancelled.
+- The deposit is an ordinary bank register line, matchable on reconciliation; the
+  fund register labels returns and count differences.
+- Approval (M07): its own route `finance.petty_cash_return`; with no route a return
+  posts directly. Owner decision 2026-10-01: no default approval for shortages; a
+  ready-made template (a step for shortages above N5,000) that a school may adopt
+  is being added.
+- Void (M19): reverses the return and reopens a closed fund; refused once the bank
+  side is matched, if a later return stands, or if the float has changed since.
+- Fund edits refuse what only a return may do (lowering the float below the cash
+  held, deactivating a fund holding cash, changing a closed fund); float and
+  custodian changes are audited.
+- Security fix: a fund's custodian, spender or counter is looked up within the
+  tenant only (another school's user id could be attached and their name and
+  email shown). Top-ups and returns check the bank's branch in the service.
+- Keys (M04): finance.pettycash.return, .close, .reopen (SENSITIVE), .reverse
+  (CRITICAL). Routes under /v1/finance/: petty-cash-funds/<id>/reduce|close|reopen/,
+  petty-cash-returns/ (list, detail, <id>/void/), petty-cash-vouchers/<id>/cancel/.
+- Migrations vs_finance 0056, 0057 (the 5530 account for existing books).
+STILL OPEN (from the review): posting and voiding a voucher share one key, and a
+raised float has no approval step.
+Verified: tests_petty_cash_returns 32 OK, vs_finance 1681 OK (on b6d8dec7); the
+agent also ran vs_workflow 538, core 193, schools.core.fal 293, vs_payments 403,
+vs_procurement 727, vs_rbac 981, all OK. The full suite was not run.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

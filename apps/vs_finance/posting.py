@@ -789,6 +789,7 @@ _DOCUMENT_VOID_ROUTES = {
     "BankTransfer": ("BANK_TRANSFER", "finance/bank-transfers/{pk}/void/"),
     "InterBranchTransfer": ("INTER_BRANCH_TRANSFER", "finance/inter-branch-transfers/{pk}/void/"),
     "HeldForBranchReceipt": ("HELD_RECEIPT", "finance/held-receipts/{pk}/void/"),
+    "PettyCashReturn": ("PETTY_CASH_RETURN", "finance/petty-cash-returns/{pk}/void/"),
     "VendorInvoice": ("VENDOR_INVOICE", "procurement/vendor-invoices/{pk}/void/"),
     "VendorCreditNote": ("VENDOR_CREDIT_NOTE", "procurement/vendor-credit-notes/{pk}/void/"),
     "VendorPayment": ("VENDOR_PAYMENT", "procurement/vendor-payments/{pk}/reverse/"),

@@ -136,8 +136,15 @@ def _account_sets(entity) -> dict[str, set]:
 
 
 def _classify(net: int, counter: set, sets: dict) -> str:
-    """What kind of cash movement a journal is, from the accounts on its other side."""
+    """What kind of cash movement a journal is, from the accounts on its other side.
+
+    Cash banked back from a petty cash fund is the petty cash flow running the
+    other way, so it nets against the fund's top-ups rather than reading as other
+    money in.
+    """
     if net > 0:
+        if counter & sets["petty_cash"]:
+            return "petty_cash"
         if counter & sets["receivable"]:
             return "receipts"
         if counter & sets["income"]:

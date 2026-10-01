@@ -97,6 +97,7 @@ class DocType(models.TextChoices):
     INTER_BRANCH_TRANSFER = "IB", "Inter-branch Transfer"
     HELD_RECEIPT = "HF", "Receipt Held for Another Branch"
     RECHARGE = "RG", "Inter-branch Recharge"
+    PETTY_CASH_RETURN = "PB", "Petty Cash Returned to Bank"
 
 # Define Account Type values.
 class AccountType(models.TextChoices):
@@ -420,6 +421,16 @@ class BankTransactionDirection(models.TextChoices):
     """
     IN = "IN", "Money in"
     OUT = "OUT", "Money out"
+
+
+class PettyCashReturnKind(models.TextChoices):
+    """Why cash in a petty cash fund goes back to the bank.
+
+    REDUCE -> the float is cut and the cash above it is banked; the fund carries on.
+    CLOSE  -> every note in the tin is banked and the fund stops.
+    """
+    REDUCE = "REDUCE", "Reduce the float"
+    CLOSE = "CLOSE", "Close the fund"
 
 
 # Define Bank Line Status values.
@@ -778,6 +789,12 @@ class FinanceAuditAction(models.TextChoices):
     INCOME_GIVEN_BACK = "INCOME_GIVEN_BACK", "Income held at another branch given back"
     SHARED_COST_RULE_CHANGED = "SHARED_COST_RULE_CHANGED", "Shared cost rule changed"
     STOCK_TRANSFERRED = "STOCK_TRANSFERRED", "Stock moved between stores"
+    PETTY_CASH_RETURN_POSTED = "PETTY_CASH_RETURN_POSTED", "Petty cash returned to the bank"
+    PETTY_CASH_RETURN_VOIDED = "PETTY_CASH_RETURN_VOIDED", "Petty cash return voided"
+    PETTY_CASH_FUND_CLOSED = "PETTY_CASH_FUND_CLOSED", "Petty cash fund closed"
+    PETTY_CASH_FUND_REOPENED = "PETTY_CASH_FUND_REOPENED", "Petty cash fund reopened"
+    PETTY_CASH_FUND_UPDATED = "PETTY_CASH_FUND_UPDATED", "Petty cash fund details changed"
+    PETTY_CASH_VOUCHER_CANCELLED = "PETTY_CASH_VOUCHER_CANCELLED", "Draft petty cash voucher cancelled"
 
 
 class InterBranchTransferKind(models.TextChoices):
@@ -1005,6 +1022,8 @@ class AccountMappingKey(models.TextChoices):
     INTER_BRANCH = "INTER_BRANCH", "Inter-branch balances"
     # Money one branch received that belongs to another, until it is forwarded.
     HELD_FOR_OTHER_BRANCHES = "HELD_FOR_OTHER_BRANCHES", "Held for other branches"
+    # What a petty cash count finds over or short against the fund's books.
+    CASH_OVER_SHORT = "CASH_OVER_SHORT", "Cash over and short"
 
 #: Reserved code for CodeX's own platform set of books (the operator's entity).
 #: An uppercase identifier (like all entity codes); the display name is "CodeX".

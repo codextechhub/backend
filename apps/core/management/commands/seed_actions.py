@@ -110,7 +110,8 @@ ACTIONS: list[tuple[str, str]] = [
     ("import_opening", "Carry in balances owed when the books began, one document per original bill."),
 
     # ── Library-specific ──────────────────────────────────────────────────────
-    ("return",     "Record the return of a borrowed item."),
+    ("return",     "Record the return of a borrowed item, or of cash to where it came from "
+                   "(petty cash banked back)."),
 
     # ── Platform / DevOps ────────────────────────────────────────────────────
     ("impersonate","Act as another user for audited support diagnostics (platform staff only)."),

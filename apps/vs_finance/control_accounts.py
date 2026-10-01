@@ -68,7 +68,8 @@ _MAPPED_ROLES = {
 }
 
 _BANK = ("its bank account", "a receipt, a vendor payment or a bank transaction")
-_PETTY_CASH = ("its petty cash fund", "a petty cash voucher or a fund top-up")
+_PETTY_CASH = (
+    "its petty cash fund", "a petty cash voucher, a fund top-up or a return to the bank")
 _TAX = ("the tax ledger", "the invoice, bill or payroll run that carries the tax, or a tax filing")
 _CUSTOMER = _MAPPED_ROLES[AccountMappingKey.ACCOUNTS_RECEIVABLE]
 

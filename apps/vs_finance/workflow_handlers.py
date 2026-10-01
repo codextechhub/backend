@@ -42,7 +42,7 @@ from vs_workflow.exceptions import (
 from vs_workflow.handlers import BaseWorkflowHandler, register_handler
 from vs_workflow.presentation import document_details, fields_section, table_section
 
-from .constants import DocumentStatus, PaymentMethod
+from .constants import DocumentStatus, PaymentMethod, PettyCashReturnKind
 from .money import format_naira
 
 
@@ -443,6 +443,74 @@ class BankTransferHandler(_FinancePostOnApprove):
                 ("Amount", format_naira(document.amount)),
                 ("Date", document.transfer_date),
                 ("Narration", document.narration),
+                ("Reference", document.reference or "-"),
+            ]),
+        )
+
+
+@register_handler("finance.petty_cash_return")
+class PettyCashReturnHandler(_FinancePostOnApprove):
+    """Approval handler for a :class:`~vs_finance.models.PettyCashReturn`.
+
+    Cash banked back from a petty cash fund, to cut its float or close it, is routed
+    on its own document type, so a school decides whether a return needs a second
+    pair of eyes. A route's steps may test the kind (only closures), the cash banked,
+    or the shortage the count found (only counts more than ₦10,000 short). The
+    petty cash service posts it once approved, after checking the tin's books have
+    not moved since the count.
+    """
+    noun = "Petty cash return"
+
+    condition_fields = (
+        ConditionField("document.kind", "Petty cash return kind", "document",
+                       ConditionFieldType.CHOICE, tuple(PettyCashReturnKind.choices)),
+        ConditionField("document.shortage", "Petty cash count shortage", "document",
+                       ConditionFieldType.MONEY),
+    )
+
+    @property
+    def document_model(self):
+        from .models import PettyCashReturn
+        return PettyCashReturn
+
+    def preflight(self, document) -> None:
+        from .petty_cash import validate_petty_cash_return
+        from .posting import ensure_period_open, resolve_period
+
+        validate_petty_cash_return(document)
+        ensure_period_open(resolve_period(document.entity, document.return_date))
+
+    def post(self, document, *, actor_user) -> None:
+        from .petty_cash import post_petty_cash_return
+
+        post_petty_cash_return(document, actor_user=actor_user)
+
+    def summary(self, document) -> dict:
+        return {
+            "title": document.document_number or str(document.pk),
+            "subtitle": f"Petty cash return: {document.get_kind_display().lower()}",
+            "fields": [
+                {"label": "Date", "value": document.return_date.isoformat()},
+                {"label": "Banked", "value": format_naira(document.amount)},
+                {"label": "Fund", "value": document.fund.name},
+            ],
+            "link": _console_document_link("/finance/expenses/petty-cash", document),
+        }
+
+    def details(self, document) -> dict:
+        return document_details(
+            fields_section("Petty cash return details", [
+                ("Fund", document.fund.name),
+                ("Kind", document.get_kind_display()),
+                ("Counted", format_naira(document.counted_amount)),
+                ("On the books", format_naira(document.book_balance)),
+                ("Short", format_naira(document.shortage) if document.shortage else "-"),
+                ("Over", format_naira(document.overage) if document.overage else "-"),
+                ("Why the count differs", document.difference_reason or "-"),
+                ("Banked", format_naira(document.amount)),
+                ("Into", document.bank_account.name if document.bank_account_id else "-"),
+                ("New float", format_naira(document.new_float_amount)),
+                ("Date", document.return_date),
                 ("Reference", document.reference or "-"),
             ]),
         )

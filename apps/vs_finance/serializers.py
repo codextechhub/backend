@@ -72,6 +72,7 @@ from .models import (
     Payslip,
     SalaryStructure,
     PettyCashFund,
+    PettyCashReturn,
     PettyCashVoucher,
     PettyCashVoucherLine,
     Refund,
@@ -1119,7 +1120,16 @@ class PettyCashFundSerializer(serializers.ModelSerializer):
             "float_amount", "float_amount_naira",
             "current_balance", "current_balance_naira", "shortfall",
             "currency", "last_replenished_at", "is_active",
+            "state", "closed_on", "closed_by_id",
         ]
+
+    state = serializers.SerializerMethodField()
+
+    def get_state(self, obj) -> str:
+        """``CLOSED`` once the fund's cash has been banked, else ``ACTIVE`` or ``INACTIVE``."""
+        if obj.is_closed:
+            return "CLOSED"
+        return "ACTIVE" if obj.is_active else "INACTIVE"
 
     def get_custodian_label(self, obj) -> str:
         if obj.custodian_id:
@@ -1174,6 +1184,38 @@ class PettyCashVoucherSerializer(serializers.ModelSerializer):
         acc = lines[0].expense_account
         label = f"{acc.code} · {acc.name}"
         return f"{label} +{len(lines) - 1}" if len(lines) > 1 else label
+
+
+class PettyCashReturnSerializer(serializers.ModelSerializer):
+    """A petty cash return: the count, the books, what was banked and the float after.
+
+    ``difference`` is the count less the books (positive over, negative short);
+    ``cash_left`` is what the tin keeps after the return.
+    """
+
+    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
+    fund_name = serializers.CharField(source="fund.name", read_only=True)
+    bank_account_name = serializers.CharField(
+        source="bank_account.name", read_only=True, default=None)
+    difference = serializers.IntegerField(read_only=True)
+    shortage = serializers.IntegerField(read_only=True)
+    overage = serializers.IntegerField(read_only=True)
+    cash_left = serializers.IntegerField(read_only=True)
+    amount_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PettyCashReturn
+        fields = [
+            "id", "document_number", "status", "kind", "kind_label", "branch_id",
+            "fund_id", "fund_name", "bank_account_id", "bank_account_name",
+            "return_date", "counted_amount", "book_balance", "difference",
+            "shortage", "overage", "difference_reason", "amount", "amount_naira",
+            "cash_left", "previous_float_amount", "new_float_amount",
+            "counted_by_id", "narration", "reference", "journal_id", "created_by_id",
+        ]
+
+    def get_amount_naira(self, obj) -> str:
+        return format_naira(obj.amount)
 
 
 # --------------------------------------------------------------------------- #

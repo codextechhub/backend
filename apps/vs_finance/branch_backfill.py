@@ -298,6 +298,7 @@ _TARGETS = (
         order=50,
     ),
     Target("vs_finance.PettyCashVoucher", (via("the fund", "fund", "vs_finance.PettyCashFund"),), order=55),
+    Target("vs_finance.PettyCashReturn", (via("the fund", "fund", "vs_finance.PettyCashFund"),), order=55),
     Target("vs_finance.ExpenseClaim", (user_branch("the claimant", "claimant"),), order=50),
     Target(FIXED_ASSET, (banks_on_journal("the funding bank account", "acquisition_journal"),), order=50),
     # A run with no branch is a central run, booked one journal per branch.
@@ -347,6 +348,7 @@ _JOURNAL_OWNERS = (
     JournalOwner("vs_finance.Concession", "journal"),
     JournalOwner("vs_finance.ExpenseClaim", "journal"),
     JournalOwner("vs_finance.PettyCashVoucher", "journal"),
+    JournalOwner("vs_finance.PettyCashReturn", "journal"),
     JournalOwner("vs_finance.BankTransaction", "journal"),
     JournalOwner("vs_finance.BankTransfer", "journal"),
     # Each side of an inter-branch transfer is its own branch's journal; the leg

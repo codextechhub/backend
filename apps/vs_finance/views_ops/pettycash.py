@@ -1,4 +1,4 @@
-"""Petty cash funds and vouchers.
+"""Petty cash funds, their vouchers, and the returns that bank their cash.
 """
 from __future__ import annotations
 
@@ -10,17 +10,19 @@ from vs_rbac.scoping import transaction_branch_q
 from core.response import success_response
 from vs_config.clock import branch_today
 
-from ..constants import DocumentStatus
+from ..constants import DocumentStatus, PettyCashReturnKind
 from ..money import format_naira
 from ..views import resolve_entity
 from ..models import (
     JournalLine,
     PettyCashFund,
+    PettyCashReturn,
     PettyCashVoucher,
     PettyCashVoucherLine,
 )
 from ..serializers import (
     PettyCashFundSerializer,
+    PettyCashReturnSerializer,
     PettyCashVoucherSerializer,
 )
 
@@ -47,13 +49,24 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 # Support the resolve user workflow.
-def _resolve_user(ref, field):
-    """Resolve a platform user by id (or return None for a blank ref)."""
+def _resolve_user(ref, field, entity):
+    """Resolve a user of ``entity``'s own tenant by id (or return None for a blank ref).
+
+    A custodian, a spender or a counter is somebody who works at the tenant, so a
+    user of another tenant is unknown here exactly as a mistyped id is. Without the
+    tenant, naming another school's user id would attach them to this fund and the
+    fund's response would print their name and email.
+    """
     if ref in (None, ""):
         return None
     from django.contrib.auth import get_user_model
 
-    user = get_user_model().objects.filter(pk=ref).first()
+    if not str(ref).isdigit():
+        raise ValidationError({field: f"No user '{ref}'."})
+    users = get_user_model().objects.filter(pk=int(ref))
+    if entity.tenant_id is not None:
+        users = users.filter(tenant_id=entity.tenant_id)
+    user = users.first()
     if user is None:
         raise ValidationError({field: f"No user '{ref}'."})
     return user
@@ -96,7 +109,7 @@ class PettyCashFundListCreateView(_FinanceBase):
             # A float is one branch's cash tin.
             branch=_transaction_branch(request, entity, body),
             gl_account=_resolve_account(request, entity, body.get("gl_account"), "gl_account", required=True),
-            custodian=_resolve_user(body.get("custodian"), "custodian"),
+            custodian=_resolve_user(body.get("custodian"), "custodian", entity),
             custodian_name=body.get("custodian_name", ""),
             float_amount=_money(body.get("float_amount", 0), "float_amount"),
             currency=_resolve_currency(body.get("currency")),
@@ -130,18 +143,49 @@ class PettyCashFundDetailView(_PettyCashFundActionBase):
         return "finance.pettycash.update" if self.request.method == "PATCH" \
             else "finance.pettycash.view"
 
+    @staticmethod
+    def _counter_line(ln, fund):
+        """The line on the other side of the journal that ``ln`` moved against.
+
+        A spend credits petty cash against its expense lines, so the first debit
+        names it. A return to the bank holds two pairs in one journal (the cash
+        banked, then a count difference), so a line on the other side for the same
+        amount wins, the nearest by line number, the earlier on a tie: the banked
+        cash pairs with the bank line and a shortage with the over and short line.
+        """
+        inflow = int(ln.debit or 0)
+        others = [
+            line for line in ln.entry.lines.all()
+            if line.account_id != fund.gl_account_id
+            and (int(line.credit or 0) if inflow else int(line.debit or 0))
+        ]
+        size = inflow or int(ln.credit or 0)
+        same = [
+            line for line in others
+            if (int(line.credit or 0) if inflow else int(line.debit or 0)) == size
+        ]
+        if same:
+            return min(same, key=lambda line: (abs(line.line_no - ln.line_no), line.line_no))
+        return others[0] if others else None
+
     # Support the register workflow.
     def _register(self, fund, *, limit=80):
         """The fund's GL ledger as a movement register, newest first, running balance.
 
-        ``in``/``out`` are the petty-cash debit/credit. ``category`` is derived from
-        the journal's counter line: 'Top-up' for cash coming in, else the expense
-        account's name for a spend. The running balance walks back from the fund's
-        ``current_balance``, the ledger figure, so the lines walked are the same
-        ledger (:func:`vs_finance.branch_ledger.ledger_lines`): a reversed voucher and
-        its reversal both appear and cancel.
+        ``in``/``out`` are the petty-cash debit/credit. ``category`` comes from the
+        line it moved against (:meth:`_counter_line`): cash in from a bank is a
+        'Top-up' and cash out to one 'Returned to bank'; a count difference is
+        'Count over' or 'Count short'; a spend is named by its expense account.
+        The running balance walks back from the fund's ``current_balance``, the
+        ledger figure, so the lines walked are the same ledger
+        (:func:`vs_finance.branch_ledger.ledger_lines`): a reversed voucher and its
+        reversal both appear and cancel.
         """
+        from ..account_mappings import resolve_mapped_account
         from ..branch_ledger import ledger_lines
+        from ..constants import AccountMappingKey
+        from ..exceptions import MissingAccountError
+        from ..models import BankAccount
 
         lines = list(
             ledger_lines(fund.entity)
@@ -150,15 +194,25 @@ class PettyCashFundDetailView(_PettyCashFundActionBase):
             .prefetch_related("entry__lines__account")
             .order_by("-entry__date", "-id")[:limit]
         )
+        bank_ledgers = set(
+            BankAccount.objects.filter(entity=fund.entity).values_list("gl_account_id", flat=True))
+        try:
+            over_short_id = resolve_mapped_account(
+                fund.entity, AccountMappingKey.CASH_OVER_SHORT).pk
+        except MissingAccountError:
+            over_short_id = None
         running = fund.current_balance
         out = []
         for ln in lines:
             inflow, outflow = int(ln.debit or 0), int(ln.credit or 0)
-            if inflow:
+            counter = self._counter_line(ln, fund)
+            if counter is not None and counter.account_id == over_short_id:
+                category = "Count over" if inflow else "Count short"
+            elif counter is not None and counter.account_id in bank_ledgers and outflow:
+                category = "Returned to bank"
+            elif inflow:
                 category = "Top-up"
             else:
-                counter = next((l for l in ln.entry.lines.all()
-                                if l.account_id != fund.gl_account_id and (l.debit or 0)), None)
                 category = counter.account.name if counter else "-"
             out.append({
                 "id": ln.id, "date": ln.entry.date,
@@ -185,19 +239,30 @@ class PettyCashFundDetailView(_PettyCashFundActionBase):
 
     # Handle PATCH requests for this endpoint.
     def patch(self, request, pk):
+        """Edit the fund's name, custodian, float or activity, audited.
+
+        An edit moves no cash, so it refuses (409) what only a return can do:
+        lowering the float below the cash the fund holds, deactivating a fund that
+        still holds cash, or changing a closed fund's float or activity
+        (:func:`vs_finance.petty_cash.change_fund_details`).
+        """
+        from ..petty_cash import change_fund_details
+
         entity, fund = self._fund(request, pk)
         body = request.data or {}
+        changes = {}
         if "name" in body:
-            fund.name = body["name"]
+            changes["name"] = body["name"]
         if "custodian" in body:
-            fund.custodian = _resolve_user(body.get("custodian"), "custodian")
+            custodian = _resolve_user(body.get("custodian"), "custodian", entity)
+            changes["custodian_id"] = custodian.pk if custodian else None
         if "custodian_name" in body:
-            fund.custodian_name = body["custodian_name"]
+            changes["custodian_name"] = body["custodian_name"]
         if "float_amount" in body:
-            fund.float_amount = _money(body.get("float_amount", 0), "float_amount")
+            changes["float_amount"] = _money(body.get("float_amount", 0), "float_amount")
         if "is_active" in body:
-            fund.is_active = _bool(body["is_active"])
-        fund.save()
+            changes["is_active"] = _bool(body["is_active"])
+        fund = change_fund_details(fund, actor_user=request.user, **changes)
         return success_response(
             "Petty cash fund updated.", data=PettyCashFundSerializer(fund).data,
         )
@@ -262,6 +327,261 @@ class PettyCashFundReplenishView(_PettyCashFundActionBase):
         return success_response(
             f"Replenished petty cash '{fund.name}'.",
             data=PettyCashFundSerializer(fund).data,
+        )
+
+
+def _return_branch_id(request, entity, fund):
+    """The branch a return of ``fund`` is raised for: the fund's own.
+
+    The caller must work in it (:func:`vs_rbac.scoping.inherited_branch_id`). A fund
+    not yet given a branch is, at a tenant with one branch, that branch's; at a
+    tenant with several nobody can say whose cash it holds, so it is refused (400)
+    until it is given one (:func:`vs_finance.banking.money_branch_id`).
+    """
+    from ..banking import money_branch_id
+
+    branch_id = _inherited_branch_id(request, fund)
+    return branch_id if branch_id is not None else money_branch_id(entity, fund, field="fund")
+
+
+class _PettyCashReturnRaiseBase(_PettyCashFundActionBase):
+    """Count the tin and raise a return of its cash to the bank.
+
+    The fund is one of the caller's own branches' (404 otherwise) and the return
+    takes its branch. The bank account is one the caller can see (404 otherwise)
+    and of the fund's own branch (400 otherwise). ``book_balance`` is read from the
+    fund's ledger as the return is raised, so the count is held against the books
+    of that moment. Approval follows the ``finance.petty_cash_return`` route
+    exactly as a bank transaction follows its own: a route with steps holds it
+    (201 with an ``approval`` block), an empty route needs
+    ``confirm_without_approval``, and no route posts it at once.
+    """
+
+    kind = None
+
+    def _amounts(self, body, fund, counted):
+        """``(amount banked, new float)`` for this kind of return."""
+        raise NotImplementedError
+
+    def post(self, request, pk):
+        from ..approvals import approval_required, confirm_unconfigured_post
+        from ..petty_cash import (
+            gl_cash_on_hand, post_petty_cash_return, validate_petty_cash_return,
+        )
+
+        entity, fund = self._fund(request, pk)
+        body = request.data or {}
+        if body.get("counted_amount") in (None, ""):
+            raise ValidationError({"counted_amount": "Count the tin and give the cash found, in kobo."})
+        counted = _money(body.get("counted_amount"), "counted_amount")
+        amount, new_float = self._amounts(body, fund, counted)
+        bank = _resolve_bank_account(
+            request, entity, body.get("bank_account"), required=amount > 0,
+            document_branch=fund.branch_id, noun="petty cash fund",
+        )
+        return_date = _date(body.get("return_date"), "return_date", required=True)
+        counted_by = _resolve_user(body.get("counted_by"), "counted_by", entity)
+        reason = str(body.get("difference_reason") or "").strip()[:255]
+
+        with transaction.atomic():
+            fund = PettyCashFund.objects.select_for_update().get(pk=fund.pk)
+            ret = PettyCashReturn(
+                entity=entity, branch_id=_return_branch_id(request, entity, fund),
+                fund=fund, kind=self.kind, bank_account=bank, return_date=return_date,
+                counted_amount=counted, book_balance=gl_cash_on_hand(fund),
+                amount=amount, previous_float_amount=fund.float_amount,
+                new_float_amount=new_float,
+                counted_by=counted_by or fund.custodian,
+                difference_reason=reason,
+                narration=str(body.get("narration") or "").strip()[:255],
+                reference=str(body.get("reference") or "").strip()[:64],
+                created_by=request.user,
+            )
+            if ret.difference and not reason:
+                raise ValidationError({"difference_reason": (
+                    f"The count found {format_naira(counted)} against "
+                    f"{format_naira(ret.book_balance)} on the books. Say why they differ."
+                )})
+            validate_petty_cash_return(ret)
+            ret.save()
+            if approval_required(ret):
+                from vs_workflow.services import release as release_svc
+                from vs_workflow.services.submission import submit_for_approval
+
+                instance = submit_for_approval(ret, requested_by=request.user)
+                ret.refresh_from_db()
+                return success_response(
+                    message=(
+                        f"Petty cash return {ret.document_number} is waiting for approval. "
+                        f"It reaches the books once it is approved."
+                    ),
+                    data=PettyCashReturnSerializer(ret).data
+                    | {"approval": release_svc.approval_block(instance)},
+                    status=201,
+                )
+            confirm_unconfigured_post(ret, request, noun="petty cash return")
+            post_petty_cash_return(ret, actor_user=request.user)
+            ret.refresh_from_db()
+            fund.refresh_from_db()
+        return success_response(
+            message=f"Petty cash return posted as {ret.document_number}.",
+            data=PettyCashReturnSerializer(ret).data
+            | {"fund": PettyCashFundSerializer(fund).data},
+            status=201,
+        )
+
+
+class PettyCashFundReduceView(_PettyCashReturnRaiseBase):
+    """POST /finance/petty-cash-funds/<id>/reduce/?entity= - cut the float and bank the excess.
+
+    Body: ``counted_amount`` (the cash the custodian counted, kobo), ``new_float_amount``
+    (lower than today's float, above zero), ``bank_account`` (id or name, the fund's
+    own branch's), ``return_date``, and optionally ``amount`` (the cash banked; by
+    default the count less the new float), ``counted_by`` (a user id; by default the
+    custodian), ``difference_reason`` (required when the count differs from the
+    books), ``narration`` and ``reference``. Posts ``Dr bank, Cr petty cash`` and any
+    count difference to the cash over and short account.
+
+    docstring-name: Reduce a petty cash float
+    """
+
+    rbac_permission = "finance.pettycash.return"
+    kind = PettyCashReturnKind.REDUCE
+
+    def _amounts(self, body, fund, counted):
+        if body.get("new_float_amount") in (None, ""):
+            raise ValidationError({"new_float_amount": "Give the float the fund runs on from now."})
+        new_float = _money(body.get("new_float_amount"), "new_float_amount")
+        if body.get("amount") not in (None, ""):
+            return _money(body.get("amount"), "amount"), new_float
+        return max(counted - new_float, 0), new_float
+
+
+class PettyCashFundCloseView(_PettyCashReturnRaiseBase):
+    """POST /finance/petty-cash-funds/<id>/close/?entity= - bank the whole tin and close the fund.
+
+    Body: ``counted_amount``, ``return_date``, ``bank_account`` (required unless the
+    count found nothing), and optionally ``counted_by``, ``difference_reason``
+    (required when the count differs from the books), ``narration`` and
+    ``reference``. Refused (409) while a voucher of the fund is a draft or waiting on
+    approval, or another return of it is waiting on approval. Once posted the fund
+    is CLOSED, with the return's date and the person who raised it, and takes no
+    voucher, top-up or float change until reopened.
+
+    docstring-name: Close a petty cash fund
+    """
+
+    rbac_permission = "finance.pettycash.close"
+    kind = PettyCashReturnKind.CLOSE
+
+    def _amounts(self, body, fund, counted):
+        return counted, 0
+
+
+class PettyCashFundReopenView(_PettyCashFundActionBase):
+    """POST /finance/petty-cash-funds/<id>/reopen/?entity= - bring a closed fund back.
+
+    Body: ``reason`` (required) and optionally ``float_amount``. Moves no cash: the
+    fund comes back empty and is funded again with ``establish``. Audited under the
+    fund's branch.
+
+    docstring-name: Reopen a petty cash fund
+    """
+
+    rbac_permission = "finance.pettycash.reopen"
+
+    def post(self, request, pk):
+        from ..petty_cash import reopen_fund
+
+        entity, fund = self._fund(request, pk)
+        body = request.data or {}
+        float_amount = (
+            _money(body.get("float_amount"), "float_amount")
+            if body.get("float_amount") not in (None, "") else None
+        )
+        fund = reopen_fund(
+            fund, reason=str(body.get("reason") or ""), float_amount=float_amount,
+            actor_user=request.user,
+        )
+        return success_response(
+            f"Petty cash fund '{fund.name}' reopened.",
+            data=PettyCashFundSerializer(fund).data,
+        )
+
+
+def _returns_in_reach(request, entity):
+    """Petty cash returns read as every transaction is: by their own branch, exclusively."""
+    return PettyCashReturn.objects.filter(
+        transaction_branch_q(request), entity=entity,
+    ).select_related("fund", "bank_account")
+
+
+class PettyCashReturnListView(_FinanceBase):
+    """GET /finance/petty-cash-returns/?entity= - returns of petty cash to the bank.
+
+    Filters: ``fund``, ``kind`` (``REDUCE`` or ``CLOSE``) and ``status``.
+
+    docstring-name: Petty cash returns
+    """
+
+    rbac_permission = "finance.pettycash.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = _returns_in_reach(request, entity)
+        if (fund := request.query_params.get("fund")) and str(fund).isdigit():
+            qs = qs.filter(fund_id=int(fund))
+        if (kind := request.query_params.get("kind")):
+            qs = qs.filter(kind=str(kind).upper())
+        if (status_val := request.query_params.get("status")):
+            qs = qs.filter(status=status_val)
+        return self.paginate(request, qs.order_by("-return_date", "-id"), PettyCashReturnSerializer)
+
+
+class PettyCashReturnDetailView(_FinanceBase):
+    """GET /finance/petty-cash-returns/<id>/?entity= - one return.
+
+    docstring-name: Petty cash returns
+    """
+
+    rbac_permission = "finance.pettycash.view"
+
+    def get(self, request, pk):
+        ret = _returns_in_reach(request, resolve_entity(request)).filter(pk=pk).first()
+        if ret is None:
+            raise NotFound("Petty cash return not found for this entity.")
+        return success_response("Petty cash return retrieved.", data=PettyCashReturnSerializer(ret).data)
+
+
+class PettyCashReturnVoidView(_FinanceBase):
+    """POST /finance/petty-cash-returns/<id>/void/?entity= - undo a return.
+
+    A posted return is reversed (optional body ``date`` dates the reversal) and the
+    fund's cash and float come back, a closure reopening the fund; refused (409)
+    while its bank line is matched to a statement line, after a later return of the
+    fund, or once the fund has moved on. A draft left by a rejected approval is
+    cancelled. The return must be one of the caller's own branches' (404 otherwise).
+
+    docstring-name: Void a petty cash return
+    """
+
+    rbac_permission = "finance.pettycash.reverse"
+
+    def post(self, request, pk):
+        from ..petty_cash import void_petty_cash_return
+
+        entity = resolve_entity(request)
+        ret = _returns_in_reach(request, entity).filter(pk=pk).first()
+        if ret is None:
+            raise NotFound("Petty cash return not found for this entity.")
+        void_petty_cash_return(
+            ret, actor_user=request.user,
+            date=_date((request.data or {}).get("date"), "date"),
+        )
+        ret.refresh_from_db()
+        return success_response(
+            f"Petty cash return {ret.document_number} voided.",
+            data=PettyCashReturnSerializer(ret).data,
         )
 
 
@@ -349,13 +669,18 @@ class PettyCashVoucherListCreateView(_FinanceBase):
         ).first()
         if fund is None:
             raise ValidationError({"fund": f"No petty cash fund '{fund_ref}' in this entity."})
+        if fund.is_closed:
+            raise ValidationError({"fund": (
+                f"Petty cash fund '{fund.name}' was closed on {fund.closed_on.isoformat()}. "
+                f"Reopen it first."
+            )})
         voucher = PettyCashVoucher.objects.create(
             entity=entity, fund=fund,
             # A voucher takes its fund's branch.
             branch_id=_inherited_branch_id(request, fund),
             voucher_date=_date(body.get("voucher_date"), "voucher_date", required=True),
             payee=body.get("payee", ""),
-            spent_by=_resolve_user(body.get("spent_by"), "spent_by"),
+            spent_by=_resolve_user(body.get("spent_by"), "spent_by", entity),
             narration=body.get("narration", ""),
             reference=body.get("reference", ""),
             currency=_resolve_currency(body.get("currency")) or fund.currency,
@@ -447,5 +772,27 @@ class PettyCashVoucherVoidView(_PettyCashVoucherActionBase):
         voucher.refresh_from_db()
         return success_response(
             f"Petty cash voucher {voucher.document_number} voided.",
+            data=PettyCashVoucherSerializer(voucher).data,
+        )
+
+
+class PettyCashVoucherCancelView(_PettyCashVoucherActionBase):
+    """POST - cancel a draft voucher that will never be paid. Writes no journal.
+
+    Held by whoever may raise vouchers, since a draft has touched no ledger. A posted
+    voucher is voided instead.
+
+    docstring-name: Cancel a petty cash voucher
+    """
+    rbac_permission = "finance.pettycashvoucher.create"
+
+    def post(self, request, pk):
+        from ..petty_cash import cancel_voucher
+
+        _, voucher = self._voucher(request, pk)
+        cancel_voucher(voucher, actor_user=request.user)
+        voucher.refresh_from_db()
+        return success_response(
+            f"Petty cash voucher {voucher.document_number} cancelled.",
             data=PettyCashVoucherSerializer(voucher).data,
         )

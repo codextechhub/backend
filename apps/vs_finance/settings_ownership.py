@@ -140,6 +140,12 @@ ACCOUNT_MAPPING_CONSUMERS = {
         "vs_finance.inter_branch",
         "Holds a payment one branch received that belongs to another, until it is forwarded.",
     ),
+    AccountMappingKey.CASH_OVER_SHORT: _consumer(
+        "Petty cash counts",
+        "vs_finance.petty_cash.post_petty_cash_return",
+        "Receives what a petty cash count finds short, or over, against the fund's books "
+        "when cash goes back to the bank.",
+    ),
     AccountMappingKey.PROVIDER_BALANCE: _consumer(
         "Held online money (platform books)",
         "vs_payments.held",
