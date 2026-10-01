@@ -385,22 +385,39 @@ class SchoolShapeTests(_BackfillFixture):
         invoice.refresh_from_db()
         self.assertIsNone(invoice.branch_id)
 
-    def test_a_tenant_that_owns_no_branch_is_blocked_and_listed_as_a_prerequisite(self):
+    def test_a_tenant_that_owns_no_branch_is_reported_as_a_data_error_and_the_run_goes_on(self):
+        """Every tenant must own a branch, so one that owns none is reported as a data error.
+
+        Bare Books owns no branch and has an unbranched invoice. A run over every
+        tenant says so in those words, leaves the invoice untouched, and still
+        files Single Site's unbranched invoice under its only branch.
+        """
         from vs_tenants.models import Tenant
 
-        bare = Tenant.objects.create(name="Platform Books", slug="platform-books", kind="ORGANIZATION", status="ACTIVE")
+        bare = Tenant.objects.create(name="Bare Books", slug="bare-books", kind="ORGANIZATION", status="ACTIVE")
         books = self.build_books("BAREBOOKS", bare)
         invoice = blank(self.invoice(books, self.customer(books, "B1", None), None))
+        solo = blank(self.invoice(self.solo_books, self.customer(self.solo_books, "S2", None), None))
         plan = self.plan(books)
         self.assertTrue(plan.owns_no_branch)
         self.assertTrue(next(p for p in plan.targets if p.target.model_label == "vs_finance.Invoice").blocked)
-        out = io.StringIO()
-        call_command("branch_audit", "--tenant", "platform-books", stdout=out)
-        self.assertIn("BLOCKED", out.getvalue())
-        self.assertIn("Prerequisites", out.getvalue())
-        call_command("branch_backfill", "--tenant", "platform-books", "--apply", stdout=io.StringIO())
+
+        audit = io.StringIO()
+        call_command("branch_audit", stdout=audit)
+        self.assertIn("owns no branch, which every tenant must; this is a data error",
+                      audit.getvalue())
+        self.assertIn("Data errors", audit.getvalue())
+        self.assertIn("Bare Books [bare-books] books BAREBOOKS", audit.getvalue())
+        self.assertNotIn("BLOCKED", audit.getvalue())
+        self.assertNotIn("Prerequisite", audit.getvalue())
+
+        backfill = io.StringIO()
+        call_command("branch_backfill", "--apply", stdout=backfill)
+        self.assertIn("this is a data error", backfill.getvalue())
         invoice.refresh_from_db()
+        solo.refresh_from_db()
         self.assertIsNone(invoice.branch_id)
+        self.assertEqual(solo.branch_id, self.solo_main.pk)
 
 
 class WriteRuleTests(_BackfillFixture):

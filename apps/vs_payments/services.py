@@ -730,15 +730,20 @@ def collection_branch_id(*, customer=None, invoice=None, deposit_account=None):
     :func:`_book_receipt` books the receipt to it, and
     :class:`vs_payments.reach.PaymentsReach` gives the collection to the staff of
     that branch, so the three cannot disagree.
+
+    The tenant's only branch is read with
+    :func:`vs_rbac.scoping.only_branch_id_or_several`, so a tenant that owns no
+    branch raises :class:`~vs_tenants.exceptions.BranchlessTenantError` rather
+    than booking a receipt to no branch.
     """
-    from vs_rbac.scoping import only_branch_id
+    from vs_rbac.scoping import only_branch_id_or_several
 
     if invoice is not None:
         return invoice.branch_id
     if customer is None:
         return None
     return (
-        customer.branch_id or only_branch_id(customer.entity.tenant_id)
+        customer.branch_id or only_branch_id_or_several(customer.entity.tenant_id)
         or deposit_branch_id(deposit_account)
     )
 
@@ -1929,16 +1934,18 @@ def payout_branch_id(entity, account):
     branch (or none is named and the default cash account is used), the
     tenant's only branch. ``None`` is left only at a tenant with several
     branches paying from an account not yet given one; the branch backfill
-    fills it once the account has its branch.
+    fills it once the account has its branch. A tenant that owns no branch
+    raises :class:`~vs_tenants.exceptions.BranchlessTenantError`
+    (:func:`vs_rbac.scoping.only_branch_id_or_several`).
     """
     from vs_finance.models import Account
-    from vs_rbac.scoping import only_branch_id
+    from vs_rbac.scoping import only_branch_id_or_several
 
     if account is None:
         account = Account.objects.filter(entity=entity, code=CASH_BANK_CODE).first()
     branch_id = _paying_branch_id(account)
-    if branch_id is None and entity.tenant_id:
-        branch_id = only_branch_id(entity.tenant_id)
+    if branch_id is None:
+        branch_id = only_branch_id_or_several(entity.tenant_id)
     return branch_id
 
 

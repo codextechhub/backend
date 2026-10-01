@@ -61,8 +61,10 @@ Two rules follow, and they are separate:
      credit note, refund, journal, payroll run, requisition, order, vendor bill,
      vendor payment) and every container of a branch's money or stock (bank
      account, petty-cash fund, store) names one real branch. Raise one with
-     `raised_transaction_branch`, which answers null only for books with no
-     branch at all (the platform's); continue one with `inherited_branch_id`,
+     `raised_transaction_branch`, which never answers null: every tenant owns a
+     branch, the platform tenant included, so a tenant with none is a data
+     fault that `vs_rbac.scoping.only_branch_id_or_several` raises as
+     `BranchlessTenantError`; continue one with `inherited_branch_id`,
      which refuses sources from two branches. Read them with
      `transaction_branch_q` / `transaction_branch_scope`: a branch-bound reader
      sees only their own branches' transactions, and a transaction still carrying

@@ -25,6 +25,7 @@ from vs_finance.settings_ownership import (
     DOCUMENT_SETTING_CONSUMERS,
 )
 from schools.vs_schools.models import School
+from vs_tenants.models import Branch
 
 
 class FinanceAccountSettingsAPITests(TestCase):
@@ -102,6 +103,9 @@ class FinanceDocumentSettingsAPITests(TestCase):
         self.school = School.objects.create(
             name="Document Settings School", slug="document-settings-school",
             code="DOCSC", status="ACTIVE",
+        )
+        Branch.objects.create(
+            tenant=self.school.tenant, name="Main Branch", is_main=True, status="ACTIVE",
         )
         self.entity = LedgerEntity.objects.create(
             name="Document Settings Books", code="DOCBK",
@@ -228,6 +232,9 @@ class FinanceBankingSettingsAPITests(TestCase):
         self.school = School.objects.create(
             name="Banking Settings School", slug="banking-settings-school",
             code="BNKSC", status="ACTIVE",
+        )
+        Branch.objects.create(
+            tenant=self.school.tenant, name="Main Branch", is_main=True, status="ACTIVE",
         )
         self.entity = LedgerEntity.objects.create(
             name="Banking Settings Books", code="BNKBK",

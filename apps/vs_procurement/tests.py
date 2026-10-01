@@ -10525,9 +10525,9 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
     """Branch is captured once, inherited down the chain, and never widens access.
 
     Two differently shaped tenants run through every case: ``multi`` has two
-    branches, ``flat`` has none at all. The flat tenant must behave exactly as
-    procurement did before branch awareness existed - no new required field, no
-    error, and a null branch on every document.
+    branches, ``flat`` owns none. Every tenant is meant to own a branch, so
+    ``flat`` is a data fault: its books still read, and raising a document there
+    is a server error naming the tenant rather than a document with no branch.
     """
 
     share_p2p_books = False
@@ -10547,7 +10547,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         cls.ikeja = make_branch(cls.multi_school, name="Ikeja Branch", is_main=False)
         cls.multi = cls.build_books("MULTIBK", cls.multi_school.tenant)
 
-        # A tenant with no branches at all - the branch-optional shape.
+        # A tenant that owns no branch: a data fault, not a shape to support.
         cls.flat_school = make_school(
             slug="branch-flat", name="Single Site School", status="ACTIVE",
         )
@@ -10976,32 +10976,31 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
                 )
                 self.assertEqual(rejected.status_code, 400)
 
-    # -- the branch-optional tenant shape ------------------------------------- #
+    # -- a tenant that owns no branch ------------------------------------------ #
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    def test_tenant_without_branches_behaves_exactly_as_before(self, _permission):
-        client = self.client_for(self.flat_school.tenant, "flat-admin@test.com")
-        req, response = self.make_requisition(client, self.flat)
-        self.assertIsNone(req.branch_id)
-        self.assertIsNone(response.json()["data"]["branch_id"])
-        self.assertIsNone(response.json()["data"]["branch_name"])
+    def test_a_tenant_that_owns_no_branch_raises_no_requisition(self, _permission):
+        """Every tenant owns a branch, so a requisition at one that owns none is a data fault.
 
+        The request fails as a server error naming the tenant and nothing is
+        written, rather than a requisition with no branch that no branch's
+        buyer could see. The books still read, and naming a branch they do not
+        own is the usual 400.
+        """
+        from vs_tenants.exceptions import BranchlessTenantError
+
+        client = self.client_for(self.flat_school.tenant, "flat-admin@test.com")
         url = f"/v1/procurement/requisitions/?entity={self.flat.entity.code}"
+        with self.assertLogs("core.exceptions", level="ERROR") as logged:
+            refused = client.post(url, self.requisition_payload(), format="json")
+        self.assertEqual(refused.status_code, 500)
+        self.assertEqual(refused.json()["error"]["code"], "SERVER_ERROR")
+        self.assertIsInstance(logged.records[0].exc_info[1], BranchlessTenantError)
+        self.assertFalse(PurchaseRequisition.objects.filter(entity=self.flat.entity).exists())
+
         listed = client.get(url)
         self.assertEqual(listed.status_code, 200)
-        self.assertEqual([row["id"] for row in self.rows(listed)], [req.id])
-        self.assertIsNone(self.rows(listed)[0]["branch_id"])
-
-        # A chain raised in a branchless tenant stays branchless end to end.
-        submit_requisition(req)
-        approve_requisition(req)
-        req.refresh_from_db()
-        po = create_po_from_requisition(
-            req, vendor=self.flat.vendor, order_date=datetime.date(2026, 1, 12),
-        )
-        self.assertIsNone(po.branch_id)
-
-        # There is no branch to filter by, and asking for one is a plain 400.
+        self.assertEqual(self.rows(listed), [])
         self.assertEqual(client.get(f"{url}&branch={self.lekki.pk}").status_code, 400)
 
     # -- tenancy must not regress --------------------------------------------- #

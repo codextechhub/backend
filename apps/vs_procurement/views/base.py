@@ -147,9 +147,9 @@ def _resolve_branch_reference(entity, ref, field="branch"):
 def _raised_branch(request, entity, body, *, field="branch"):
     """:func:`vs_rbac.scoping.raised_transaction_branch` for this entity's owning tenant.
 
-    For a document or a store, never ``None`` at a school: a caller covering several
-    branches, or a whole-school caller at a school with several, names one (400
-    otherwise), and at a school with one branch the row takes it without asking.
+    For a document or a store, never ``None``: a caller covering several branches,
+    or a whole-tenant caller at a tenant with several, names one (400 otherwise),
+    and at a tenant with one branch the row takes it without asking.
     """
     return _rbac_raised_transaction_branch(request, entity.tenant, body, field=field)
 

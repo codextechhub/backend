@@ -319,6 +319,55 @@ class SharedFamilyTopUpNamesABranchTests(_FinanceBranchFixture):
         self.assertNotIn("belongs to", str(accepted.data))
         self.assertIn(accepted.status_code, (200, 201), accepted.data)
 
+    def _bare_books(self, code):
+        """Books whose tenant owns no branch: a data fault, since every tenant owns one."""
+        from vs_tenants.models import Tenant
+
+        bare = Tenant.objects.create(
+            name=f"Bare {code}", slug=f"pay-bare-{code.lower()}", kind="ORGANIZATION",
+            status="ACTIVE")
+        return self.build_books(code, bare)
+
+    def test_a_collection_at_a_tenant_that_owns_no_branch_is_a_data_fault(self):
+        """Books whose tenant owns no branch take no collection, whatever account is named.
+
+        Every tenant owns a branch, so the shared check raises a server error
+        naming the tenant rather than letting the Adeyemi family's top-up, or
+        their payment on a bill not yet given a branch, through to a receipt
+        booked to no branch at all.
+        """
+        from types import SimpleNamespace
+
+        from vs_tenants.exceptions import BranchlessTenantError
+
+        from .views import _collection_deposit
+
+        books = self._bare_books("PAYBARE")
+        adeyemi = self.customer(books, "CBARE", None)
+        unbranched_bill = self.invoice(books, adeyemi, None)
+        cash = Account.objects.get(entity=books, code="1000")
+        clerk = SimpleNamespace(user=self.user_for(books.tenant, "bare-clerk@bare.test"))
+
+        for invoice in (None, unbranched_bill):
+            for ref in (None, cash.code):
+                with self.subTest(invoice=invoice, deposit_account=ref):
+                    with self.assertRaises(BranchlessTenantError) as caught:
+                        _collection_deposit(clerk, books, ref, customer=adeyemi,
+                                            invoice=invoice, noun="payment request")
+                    self.assertEqual(caught.exception.tenant, books.tenant_id)
+
+    def test_the_branch_helpers_raise_for_a_tenant_that_owns_no_branch(self):
+        """A collection's receipt and a payout's booking never fall back to no branch."""
+        from vs_tenants.exceptions import BranchlessTenantError
+
+        from .services import collection_branch_id, payout_branch_id
+
+        books = self._bare_books("PAYBARE2")
+        with self.assertRaises(BranchlessTenantError):
+            collection_branch_id(customer=self.customer(books, "CBARE2", None))
+        with self.assertRaises(BranchlessTenantError):
+            payout_branch_id(books, None)
+
     def test_the_receipt_takes_the_deposit_accounts_branch(self):
         from .services import collection_branch_id
 

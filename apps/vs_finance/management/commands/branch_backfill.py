@@ -9,7 +9,9 @@ Dry-run by default; ``--apply`` writes. The plan is ``branch_audit``'s, from
 :mod:`vs_finance.branch_derivation`: each row takes the first branch its sources
 give, a one-branch tenant files what is left under its only branch, and at a
 tenant with several branches what is left stays blank and is listed for an
-administrator. The main branch is never assumed.
+administrator. The main branch is never assumed. A tenant that owns no branch is
+a data error, because every tenant must own one: it is reported as one, nothing
+of it is written, and the run goes on to the next set of books.
 
 Writes go in batches of ``--batch-size``, one transaction each. A row that
 already has a branch is never touched, including one that gained it between

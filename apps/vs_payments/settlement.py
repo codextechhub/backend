@@ -88,6 +88,12 @@ def settle_collections(statement_line, collection_ids, *, actor_user=None, posti
     A payment the platform held is refused: its money reaches the branch only
     through the platform's settlement run (:mod:`vs_payments.held`), which books
     its own settlement, so a statement line naming it would book it twice.
+
+    The journal names the bank account's branch, or the tenant's only branch for
+    an account not yet given one. A tenant that owns no branch raises
+    :class:`~vs_tenants.exceptions.BranchlessTenantError`
+    (:func:`vs_rbac.scoping.only_branch_id_or_several`) rather than booking it
+    to no branch.
     """
     from vs_config.display import format_date
     from vs_finance.account_mappings import resolve_mapped_account
@@ -98,7 +104,7 @@ def settle_collections(statement_line, collection_ids, *, actor_user=None, posti
     )
     from vs_finance.models import BankStatementLine, JournalEntry, JournalLine
     from vs_finance.posting import post_journal, resolve_period
-    from vs_rbac.scoping import only_branch_id, same_transaction_branch
+    from vs_rbac.scoping import only_branch_id_or_several, same_transaction_branch
 
     from .models import CollectionIntent
 
@@ -160,7 +166,7 @@ def settle_collections(statement_line, collection_ids, *, actor_user=None, posti
             gross=gross, net=net, reported_fee=sum(reported),
         )
 
-    branch_id = bank.branch_id or (only_branch_id(tenant_id) if tenant_id else None)
+    branch_id = bank.branch_id or only_branch_id_or_several(tenant_id)
     book_date = resolve_adjustment_date(entity, line.txn_date, requested=posting_date)
     received = max(intent.payment.payment_date for intent in intents)
     if book_date < received:  # Money cannot leave clearing before it entered it.

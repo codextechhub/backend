@@ -27,6 +27,7 @@ from vs_procurement.purchasing import vendor_purchase_block_reason
 from vs_procurement.settings import SETTING_FIELDS
 from vs_procurement.settings_ownership import PROCUREMENT_SETTING_CONSUMERS
 from schools.vs_schools.models import School
+from vs_tenants.models import Branch
 
 
 class ProcurementSettingsAPITests(TestCase):
@@ -37,6 +38,7 @@ class ProcurementSettingsAPITests(TestCase):
         cls.school = School.objects.create(
             name="Proc Settings School", slug="proc-settings-school", code="PRSSC", status="ACTIVE",
         )
+        Branch.objects.create(tenant=cls.school.tenant, name="Main Branch", is_main=True, status="ACTIVE")
         cls.entity = LedgerEntity.objects.create(
             name="Proc Settings Books", code="PRSBK", kind=LedgerEntity.Kind.TENANT,
             tenant=cls.school.tenant,
