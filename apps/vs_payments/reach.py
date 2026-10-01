@@ -1,27 +1,33 @@
 """Which gateway records a caller may read or act on: their own branches'.
 
-No gateway table carries a branch of its own. Each record hangs on a finance or
-procurement row that does, and takes its reach from that row, read exclusively
-as every transaction is (:func:`vs_rbac.scoping.transaction_branch_scope`): a
-branch-bound caller reaches the records of their own branches only, and never
-one whose row has not been given a branch. A whole-school caller reaches them
-all, and can see what still needs a branch.
+Every gateway record names the branch whose money it is, in its own ``branch``
+column, and is read exclusively as every transaction is
+(:func:`vs_rbac.scoping.transaction_branch_scope`): a branch-bound caller reaches
+the records of their own branches only, and never one not yet given a branch. A
+whole-school caller reaches them all, and can see what still needs a branch.
 
-* a **collection** on the branch it belongs to
-  (:func:`vs_payments.services.collection_branch_id`): its invoice's when it
-  names one, else its customer's, else (for a customer every branch shares) the
-  branch of the account it is deposited into. The Okafor family is filed under
-  Ikeja and pays a Lekki invoice online; the money is Lekki's, so Lekki's clerk
-  reaches that collection and Ikeja's does not;
-* a **virtual account** on its customer, or for a customer every branch shares,
-  on the account it deposits into;
-* a **payout** on the vendor it pays (a loose ``vendor_source_id``, since this app
-  does not hard-FK procurement);
-* a **payout batch** on every line in it: one line paying a vendor outside reach
-  withholds the whole batch, because its detail lists every line;
-* a **gateway action** (the transactions log) on the record whose reference it
-  carries, and a **webhook event** on the collection or payout it matched;
-* a **bank statement line** (settlement reconciliation) on its bank account.
+The column is set when the record is created, and it is the only thing reach
+reads:
+
+* a **collection** is the branch of the invoice it pays, else of its customer,
+  else of the account it is deposited into
+  (:func:`vs_payments.services.collection_branch_id`). The Okafor family is
+  filed under Ikeja and pays a Lekki invoice online; the money is Lekki's, so
+  Lekki's clerk reaches that collection and Ikeja's does not;
+* a **virtual account** is the branch its deposits belong to
+  (:func:`vs_payments.services.virtual_account_branch_id`);
+* a **payout** is the branch whose bank account the money leaves
+  (:func:`vs_payments.services.payout_branch_id`), whoever it pays. A payout
+  from Lekki's bank is Lekki's, to a vendor filed under Ikeja or one every
+  branch shares alike, so Lekki's clerk reaches it and Ikeja's does not;
+* a **payout batch** is the one branch every line in it pays from, since a
+  batch whose lines leave two branches' banks is refused when it is assembled
+  (:func:`vs_payments.services.create_payout_batch`);
+* a **gateway action** (the transactions log) is reached with the record whose
+  reference it carries, and a **webhook event** with the collection or payout
+  it matched;
+* a **bank statement line** (settlement reconciliation) is reached with its
+  bank account.
 
 Every payments list, detail, summary and status change starts from
 :class:`PaymentsReach`, never from ``Model.objects``, so a new view cannot forget
@@ -50,9 +56,6 @@ from .models import (
     VirtualAccount,
     WebhookEvent,
 )
-
-#: The ``vendor_source_type`` a vendor-backed payout records.
-VENDOR_SOURCE = "vs_procurement.Vendor"
 
 
 class PaymentsReach:
@@ -84,81 +87,27 @@ class PaymentsReach:
     def is_narrowed(self) -> bool:
         return self.scope.is_narrowed
 
-    # -- the reach of each table, as a Q over its own rows ---------------------- #
+    def _out_of_reach(self, model):
+        """This entity's rows of a gateway table that this caller does not reach.
 
-    def _collection_q(self):
-        """The branch rule of :func:`vs_payments.services.collection_branch_id`, in SQL.
-
-        The only-branch step is absent because a caller at a school with one
-        branch is never narrowed.
+        An unbranched row is among them, because ``exclude`` keeps a NULL that
+        the exclusive ``branch_id IN (...)`` does not match.
         """
-        shared = Q(invoice__isnull=True, customer__branch__isnull=True)
-        return (
-            (Q(invoice__isnull=False) & self.scope.q("invoice__"))
-            | (Q(invoice__isnull=True, customer__branch__isnull=False) & self.scope.q("customer__"))
-            | (shared & self.scope.q("deposit_account__bank_account__"))
-        )
-
-    def _virtual_account_q(self):
-        """A virtual account on its customer's branch, or its deposit account's."""
-        return (
-            (Q(customer__branch__isnull=False) & self.scope.q("customer__"))
-            | (Q(customer__branch__isnull=True) & self.scope.q("deposit_account__bank_account__"))
-        )
-
-    def _hidden_vendors(self):
-        from vs_procurement.models import Vendor
-
-        return (
-            Vendor.objects.filter(entity=self.entity).exclude(self.scope.q())
-            .annotate(_pk_text=Cast("pk", CharField()))
-        )
-
-    def _payout_hidden(self):
-        """True for a payout whose vendor is not one of this caller's branches'."""
-        vendor = self._hidden_vendors().filter(_pk_text=OuterRef("vendor_source_id"))
-        return Q(vendor_source_type=VENDOR_SOURCE) & Exists(vendor)
-
-    # -- the out-of-reach rows, for the tables that hang on them ---------------- #
-
-    def _hidden_collections(self):
-        return CollectionIntent.objects.filter(entity=self.entity).exclude(self._collection_q())
-
-    def _hidden_payouts(self):
-        return PayoutInstruction.objects.filter(entity=self.entity).filter(self._payout_hidden())
-
-    def _hidden_virtual_accounts(self):
-        return VirtualAccount.objects.filter(entity=self.entity).exclude(self._virtual_account_q())
-
-    def hidden_batches(self):
-        """The batches of this entity withheld from this caller, for a reader outside views.
-
-        The approval inbox reads a batch through the workflow engine rather than
-        through :meth:`batches`, and asks this for the ones to leave out (see
-        :meth:`vs_payments.workflow_handlers.PayoutBatchApprovalHandler.hidden_document_ids`).
-        """
-        return PayoutBatch.objects.filter(entity=self.entity).filter(
-            Exists(self._hidden_payouts().filter(batch=OuterRef("pk"))))
+        return model.objects.filter(entity=self.entity).exclude(self.scope.q())
 
     # -- the querysets every view starts from ----------------------------------- #
 
     def collections(self):
-        qs = CollectionIntent.objects.filter(entity=self.entity)
-        return qs.filter(self._collection_q()) if self.is_narrowed else qs
+        return self.scope.filter(CollectionIntent.objects.filter(entity=self.entity))
 
     def virtual_accounts(self):
-        qs = VirtualAccount.objects.filter(entity=self.entity)
-        return qs.filter(self._virtual_account_q()) if self.is_narrowed else qs
+        return self.scope.filter(VirtualAccount.objects.filter(entity=self.entity))
 
     def payouts(self):
-        qs = PayoutInstruction.objects.filter(entity=self.entity)
-        return qs.exclude(self._payout_hidden()) if self.is_narrowed else qs
+        return self.scope.filter(PayoutInstruction.objects.filter(entity=self.entity))
 
     def batches(self):
-        qs = PayoutBatch.objects.filter(entity=self.entity)
-        if not self.is_narrowed:
-            return qs
-        return qs.exclude(Exists(self._hidden_payouts().filter(batch=OuterRef("pk"))))
+        return self.scope.filter(PayoutBatch.objects.filter(entity=self.entity))
 
     def events(self):
         """The transactions log, less every action on a record outside reach.
@@ -174,15 +123,15 @@ class PaymentsReach:
         if not self.is_narrowed:
             return qs
         ref = OuterRef("reference")
+        virtual_accounts = self._out_of_reach(VirtualAccount)
         return qs.annotate(
             _virtual_account=KeyTextTransform("virtual_account_id", "metadata"),
         ).exclude(
-            Exists(self._hidden_collections().filter(reference=ref))
-            | Exists(self._hidden_payouts().filter(reference=ref))
-            | Exists(self.hidden_batches().filter(reference=ref))
-            | Exists(self._hidden_virtual_accounts().exclude(provider_reference="")
-                     .filter(provider_reference=ref))
-            | Exists(self._hidden_virtual_accounts().annotate(_pk_text=Cast("pk", CharField()))
+            Exists(self._out_of_reach(CollectionIntent).filter(reference=ref))
+            | Exists(self._out_of_reach(PayoutInstruction).filter(reference=ref))
+            | Exists(self._out_of_reach(PayoutBatch).filter(reference=ref))
+            | Exists(virtual_accounts.exclude(provider_reference="").filter(provider_reference=ref))
+            | Exists(virtual_accounts.annotate(_pk_text=Cast("pk", CharField()))
                      .filter(_pk_text=OuterRef("_virtual_account")))
         )
 
@@ -200,9 +149,9 @@ class PaymentsReach:
             Q(collection__entity=self.entity) | Q(payout__entity=self.entity))
         if not self.is_narrowed:
             return qs
-        return qs.exclude(
-            Exists(self._hidden_collections().filter(pk=OuterRef("collection_id")))
-            | Exists(self._hidden_payouts().filter(pk=OuterRef("payout_id")))
+        return qs.filter(
+            (Q(collection__isnull=True) | self.scope.q("collection__"))
+            & (Q(payout__isnull=True) | self.scope.q("payout__"))
         )
 
     def bank_lines(self, qs):

@@ -11,7 +11,11 @@ An online payment for an invoice belongs to the invoice's branch, so a
 collection reads its invoice first. A payout reads the supplier payment it
 settles, named by a loose id because payments does not import procurement,
 then the bank account the money leaves from. A batch reads its payouts, and only
-when they all agree.
+when they all agree: its own source account is not consulted, because a batch is
+reached by its branch and its detail lists every line, so a batch whose lines
+left Ikeja's and Lekki's banks, given Ikeja because it names Ikeja's account,
+would show Lekki's payouts to Ikeja's clerk. Such a batch is left for an
+administrator.
 """
 from __future__ import annotations
 
@@ -51,10 +55,7 @@ _TARGETS = (
     ),
     Target(
         "vs_payments.PayoutBatch",
-        (
-            agreeing("the batch's payouts", PAYOUT_INSTRUCTION, "batch", ("id", PAYOUT_INSTRUCTION)),
-            bank_behind("the source bank account", "source_account"),
-        ),
+        (agreeing("the batch's payouts", PAYOUT_INSTRUCTION, "batch", ("id", PAYOUT_INSTRUCTION)),),
         order=960,
     ),
 )

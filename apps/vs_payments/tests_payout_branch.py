@@ -1,10 +1,14 @@
 """A gateway payout is booked to the branch whose bank account the money left.
 
 Corona pays Ojo Stationers by Paystack. Ojo has an open bill at Ikeja and one at
-Lekki. A payout sent from Ikeja's bank books an Ikeja vendor payment: its journal
-is Ikeja's and it settles the Ikeja bill. A payout from Lekki's bank books to
-Lekki and settles the Lekki bill. The same holds for each line of a batch, whose
-lines may be paid from different banks.
+Lekki. A payout sent from Ikeja's bank is Ikeja's, and books an Ikeja vendor
+payment: its journal is Ikeja's and it settles the Ikeja bill. A payout from
+Lekki's bank is Lekki's, books to Lekki and settles the Lekki bill.
+
+Each line of a batch books to the branch of its own bank. The service refuses
+to assemble a batch whose lines leave two branches' banks
+(:func:`vs_payments.services.create_payout_batch`), but a batch already holding
+such lines still books each one where its money left.
 """
 from __future__ import annotations
 
@@ -72,7 +76,9 @@ class PayoutBranchTests(_FinanceBranchFixture):
             entity=self.books, provider="PAYSTACK", reference=reference,
             provider_reference=f"TR-{reference}", amount=BILL,
             beneficiary_name=self.vendor.name, beneficiary_account_number="0123456789",
-            source_account=self.banks[bank], batch=batch, status=PayoutStatus.PROCESSING,
+            source_account=self.banks[bank],
+            branch_id=services.payout_branch_id(self.books, self.banks[bank]),
+            batch=batch, status=PayoutStatus.PROCESSING,
             vendor_source_type="vs_procurement.Vendor", vendor_source_id=str(self.vendor.pk))
         payout = services.confirm_payout(payout, status=PayoutStatus.PAID)
         self.assertEqual(payout.status, PayoutStatus.PAID)

@@ -2,13 +2,14 @@
 
 Corona runs Ikeja, Lekki and Yaba. Ikeja's clerk works payments for Ikeja. They
 must not raise a payment request or a virtual account for a Lekki family, or pay
-out to a vendor Lekki keeps to itself, any more than the finance screens let
-them. Nor may they see, count or change Lekki's collections, virtual accounts,
-payouts or their log. Every gateway record takes its reach from the row it hangs
-on, read exclusively: a record whose customer, invoice, vendor or bank carries no
-branch is not theirs either, because nothing says whose money it is. Each is
-answered exactly as a record that does not exist, while Ikeja's own behave as
-before, and a reader who covers the whole school sees everything.
+out to a vendor Lekki keeps to itself or from a bank that is not Ikeja's, any
+more than the finance screens let them. Nor may they see, count or change Lekki's collections, virtual accounts,
+payouts or their log. Every gateway record names its branch in its own column
+and is read exclusively: a payout from Lekki's bank is Lekki's whoever it pays,
+and a record not yet given a branch is not theirs either, because nothing says
+whose money it is. Each is answered exactly as a record that does not exist,
+while Ikeja's own behave as before, and a reader who covers the whole school
+sees everything.
 """
 from __future__ import annotations
 
@@ -206,26 +207,70 @@ class PaymentsNameOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         self.assertFalse(VirtualAccount.objects.filter(customer=self.lekki_customer).exists())
 
     def test_a_payout_to_a_vendor_another_branch_keeps(self):
+        """A vendor is shared master data: Ikeja's own and every branch's are payable, Lekki's is not."""
+        ledgers = self._collections_ledgers()
         lekki_vendor = self.vendor("VLEK", self.lekki)
         client = self.clerk("payments.payout.create")
-        refused = self.post(client, "payouts/", {"amount": 5_000, "vendor": lekki_vendor.pk},
-                            HTTP_IDEMPOTENCY_KEY="reach-single-1")
+        refused = self.post(client, "payouts/", {
+            "amount": 5_000, "vendor": lekki_vendor.pk, "source_account": ledgers["IKJ"].code,
+        }, HTTP_IDEMPOTENCY_KEY="reach-single-1")
         self.assertEqual(refused.status_code, 400, refused.data)
         self.assertIn("No such vendor in this entity.", str(refused.data))
-        shared = self.post(client, "payouts/", {"amount": 5_000, "vendor": self.vendor("VALL", None).pk},
-                           HTTP_IDEMPOTENCY_KEY="reach-single-shared")
-        self.assertEqual(shared.status_code, 400, shared.data)
-        self.assertIn("No such vendor in this entity.", str(shared.data))
-        accepted = self.post(client, "payouts/", {"amount": 5_000, "vendor": self.vendor("VIKJ", self.ikeja).pk},
-                             HTTP_IDEMPOTENCY_KEY="reach-single-ok")
-        self.assertNotIn("No such vendor", str(accepted.data))
+        for vendor in (self.vendor("VALL", None), self.vendor("VIKJ", self.ikeja)):
+            with self.subTest(vendor=vendor.code):
+                accepted = self.post(client, "payouts/", {
+                    "amount": 5_000, "vendor": vendor.pk, "source_account": ledgers["IKJ"].code,
+                }, HTTP_IDEMPOTENCY_KEY=f"reach-single-{vendor.code}")
+                self.assertNotIn("No such vendor", str(accepted.data))
+                self.assertNotIn("your own branch", str(accepted.data))
+
+    def test_a_payout_leaves_only_a_bank_of_the_clerks_own_branch(self):
+        """Ikeja's clerk pays from Ikeja's bank; Lekki's bank, or none named, is refused.
+
+        Naming no account pays from the default cash account, which is no bank of
+        Ikeja's here, so the payout would spend money that is not Ikeja's and be
+        one Ikeja's clerk could never open.
+        """
+        from vs_procurement.constants import VendorKycStatus
+
+        from .approvals import ensure_tenant_approval_templates
+        from .models import PayoutInstruction
+
+        ensure_tenant_approval_templates(self.tenant)
+        ledgers = self._collections_ledgers()
+        vendor = self.vendor("VIKJ", self.ikeja)
+        type(vendor).objects.filter(pk=vendor.pk).update(
+            kyc_status=VendorKycStatus.VERIFIED, bank_account_name=vendor.name,
+            bank_account_number="0123456789", bank_code="058")
+        client = self.clerk("payments.payout.create")
+        for source, message in ((None, "Pay this from a bank account of your own branch."),
+                                (ledgers["LEK"].code, f"No account '{ledgers['LEK'].code}'")):
+            body = {"amount": 5_000, "vendor": vendor.pk}
+            if source:
+                body["source_account"] = source
+            for path, payload in (("payouts/", body),
+                                  ("payout-batches/", {**body, "items": [body]})):
+                with self.subTest(source=source, path=path):
+                    refused = self.post(client, path, payload,
+                                        HTTP_IDEMPOTENCY_KEY=f"reach-source-{path[:-1]}-{source}")
+                    self.assertEqual(refused.status_code, 400, refused.data)
+                    self.assertIn(message, str(refused.data))
+        self.assertFalse(PayoutInstruction.objects.exists())
+
+        accepted = self.post(client, "payouts/", {
+            "amount": 5_000, "vendor": vendor.pk, "source_account": ledgers["IKJ"].code,
+        }, HTTP_IDEMPOTENCY_KEY="reach-source-ok")
+        self.assertEqual(accepted.status_code, 201, accepted.data)
+        self.assertEqual(
+            set(PayoutInstruction.objects.values_list("branch_id", flat=True)), {self.ikeja.pk})
 
     def test_a_payout_batch_line_to_a_vendor_another_branch_keeps(self):
         lekki_vendor = self.vendor("VLEKB", self.lekki)
         before = PayoutBatch.objects.count()
         refused = self.post(
             self.clerk("payments.payout.create"), "payout-batches/",
-            {"items": [{"amount": 5_000, "vendor": lekki_vendor.pk}]},
+            {"items": [{"amount": 5_000, "vendor": lekki_vendor.pk}],
+             "source_account": self._collections_ledgers()["IKJ"].code},
             HTTP_IDEMPOTENCY_KEY="reach-batch-1",
         )
         self.assertEqual(refused.status_code, 400, refused.data)
@@ -290,9 +335,13 @@ class SharedFamilyTopUpNamesABranchTests(_FinanceBranchFixture):
         from vs_rbac.scoping import BranchScope
 
         ledgers = self._collections_ledgers()
+        from .services import collection_branch_id
+
         top_up = CollectionIntent.objects.create(
             entity=self.books, provider="PAYSTACK", reference="COL-TOPUP", amount=5_000,
-            customer=self.shared_customer, deposit_account=ledgers["LEK"])
+            customer=self.shared_customer, deposit_account=ledgers["LEK"],
+            branch_id=collection_branch_id(
+                customer=self.shared_customer, deposit_account=ledgers["LEK"]))
 
         def reached(branch):
             scope = BranchScope(frozenset({branch.pk}), include_shared=False)
@@ -305,11 +354,17 @@ class SharedFamilyTopUpNamesABranchTests(_FinanceBranchFixture):
 class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
     """Every payments list, summary, detail and status change stays within reach.
 
-    Corona's books hold a gateway record for each of Ikeja, Lekki and one whose row
-    carries no branch, on every screen. Ikeja's clerk sees Ikeja's and counts only
-    those; a Lekki record is a 404 to them, on reading it and on changing it, and
-    nothing changes. The bursar, who covers the whole school, sees all of them
-    exactly as before.
+    Corona's books hold gateway records for Ikeja, for Lekki and for no branch yet,
+    on every screen, each carrying the branch its creation gives it. Ikeja's clerk
+    sees Ikeja's and counts only those; a Lekki record, or one with no branch, is a
+    404 to them, on reading it and on changing it, and nothing changes. The
+    bursar, who covers the whole school, sees all of them.
+
+    A payout is the branch of the bank it leaves. Ikeja's bank pays the Ikeja
+    vendor (PAY-IKJ) and a vendor every branch shares (PAY-ALL), both in BAT-IKJ;
+    Lekki's bank pays the Ikeja vendor (PAY-LEK, in BAT-LEK); and a bank account
+    not yet given a branch pays the Ikeja vendor (PAY-NONE, in BAT-NONE). Ikeja's
+    clerk reaches the first two and neither of the others.
     """
 
     KEYS = (
@@ -328,12 +383,13 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
 
         from .constants import CollectionStatus, PaymentAuditAction, PayoutStatus
         from .models import PaymentEvent, PayoutInstruction, WebhookEvent
+        from .services import collection_branch_id, payout_branch_id, virtual_account_branch_id
 
         super().setUpTestData()
         e = cls.books
         vendor = PaymentsNameOnlyWhatTheClerkReachesTests.vendor
         now = timezone.now()
-        ikeja_c = cls.customer(e, "CIKJ", cls.ikeja)
+        cls.ikeja_customer = ikeja_c = cls.customer(e, "CIKJ", cls.ikeja)
         lekki_c = cls.customer(e, "CLEK", cls.lekki)
         shared_c = cls.customer(e, "CALL", None)
         lekki_invoice = cls.invoice(e, shared_c, cls.lekki)
@@ -342,7 +398,8 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
             return CollectionIntent.objects.create(
                 entity=e, provider="PAYSTACK", reference=ref, amount=1_000,
                 customer=customer, invoice=invoice, status=CollectionStatus.SUCCEEDED,
-                confirmed_at=now)
+                confirmed_at=now,
+                branch_id=collection_branch_id(customer=customer, invoice=invoice))
 
         cls.collections = {
             "COL-IKJ": collection("COL-IKJ", ikeja_c),
@@ -354,32 +411,49 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         cls.vas = {
             code: VirtualAccount.objects.create(
                 entity=e, provider="PAYSTACK", customer=customer,
-                account_number=f"90{n}", provider_reference=f"VA-{code}")
+                account_number=f"90{n}", provider_reference=f"VA-{code}",
+                branch_id=virtual_account_branch_id(customer=customer))
             for n, (code, customer) in enumerate(
                 (("IKJ", ikeja_c), ("LEK", lekki_c), ("ALL", shared_c)))
         }
-        vendors = {
-            "IKJ": vendor(cls, "VIKJ", cls.ikeja), "LEK": vendor(cls, "VLEK", cls.lekki),
-            "ALL": vendor(cls, "VALL", None),
-        }
+
+        cash_type = Account.objects.get(entity=e, code="1000").account_type
+        cls.banks = {}
+        for n, (tag, branch) in enumerate((("IKJ", cls.ikeja), ("LEK", cls.lekki),
+                                           ("NONE", None))):
+            gl = Account.objects.create(entity=e, code=f"116{n}", name=f"Cash {tag}",
+                                        account_type=cash_type, is_postable=True)
+            bank = BankAccount.objects.create(entity=e, name=f"Bank {tag}", branch=branch,
+                                              gl_account=gl)
+            BankStatementLine.objects.create(
+                bank_account=bank, txn_date=tenant_today(e.tenant), amount=777,
+                description=f"LINE-{tag}", reference=f"LINE-{tag}")
+            cls.banks[tag] = gl
+
+        vendors = {"IKJ": vendor(cls, "VIKJ", cls.ikeja), "ALL": vendor(cls, "VALL", None)}
         cls.batches = {
-            code: PayoutBatch.objects.create(entity=e, provider="PAYSTACK", reference=code)
-            for code in ("BAT-IKJ", "BAT-MIXED", "BAT-ALL")
+            ref: PayoutBatch.objects.create(
+                entity=e, provider="PAYSTACK", reference=ref, source_account=cls.banks[bank],
+                branch_id=payout_branch_id(e, cls.banks[bank]))
+            for ref, bank in (("BAT-IKJ", "IKJ"), ("BAT-LEK", "LEK"), ("BAT-NONE", "NONE"))
         }
 
-        def payout(ref, vendor, batch):
+        def payout(ref, vendor, bank, batch):
             return PayoutInstruction.objects.create(
                 entity=e, provider="PAYSTACK", reference=ref, amount=2_000,
                 beneficiary_name=vendor.name, beneficiary_account_number="0123456789",
                 vendor_source_type="vs_procurement.Vendor", vendor_source_id=str(vendor.pk),
+                source_account=cls.banks[bank], branch_id=payout_branch_id(e, cls.banks[bank]),
                 batch=cls.batches[batch], status=PayoutStatus.PAID, confirmed_at=now)
 
-        payout("PAY-IKJ", vendors["IKJ"], "BAT-IKJ")
-        payout("PAY-LEK", vendors["LEK"], "BAT-MIXED")
-        payout("PAY-ALL", vendors["ALL"], "BAT-MIXED")
-        payout("PAY-ALL2", vendors["ALL"], "BAT-ALL")
+        cls.payouts = {
+            "PAY-IKJ": payout("PAY-IKJ", vendors["IKJ"], "IKJ", "BAT-IKJ"),
+            "PAY-ALL": payout("PAY-ALL", vendors["ALL"], "IKJ", "BAT-IKJ"),
+            "PAY-LEK": payout("PAY-LEK", vendors["IKJ"], "LEK", "BAT-LEK"),
+            "PAY-NONE": payout("PAY-NONE", vendors["IKJ"], "NONE", "BAT-NONE"),
+        }
 
-        for ref in (*cls.collections, "PAY-IKJ", "PAY-LEK", "PAY-ALL", *cls.batches):
+        for ref in (*cls.collections, *cls.payouts, *cls.batches):
             PaymentEvent.objects.create(
                 entity=e, action=PaymentAuditAction.COLLECTION_INITIATED, reference=ref)
         for code, va in cls.vas.items():
@@ -393,17 +467,10 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
             WebhookEvent.objects.create(
                 provider="PAYSTACK", dedupe_key=f"wh-{ref}", provider_reference=f"WH-{ref}",
                 collection=cls.collections[ref], status="FAILED")
-
-        cash_type = Account.objects.get(entity=e, code="1000").account_type
-        for n, (tag, branch) in enumerate((("IKJ", cls.ikeja), ("LEK", cls.lekki),
-                                           ("ALL", None))):
-            gl = Account.objects.create(entity=e, code=f"116{n}", name=f"Cash {tag}",
-                                        account_type=cash_type, is_postable=True)
-            bank = BankAccount.objects.create(entity=e, name=f"Bank {tag}", branch=branch,
-                                              gl_account=gl)
-            BankStatementLine.objects.create(
-                bank_account=bank, txn_date=tenant_today(e.tenant), amount=777,
-                description=f"LINE-{tag}", reference=f"LINE-{tag}")
+        for ref in ("PAY-ALL", "PAY-LEK", "PAY-NONE"):
+            WebhookEvent.objects.create(
+                provider="PAYSTACK", dedupe_key=f"wh-{ref}", provider_reference=f"WH-{ref}",
+                payout=cls.payouts[ref], status="FAILED")
 
     vendor = PaymentsNameOnlyWhatTheClerkReachesTests.vendor
 
@@ -423,26 +490,28 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
     def refs(self, client, path, key="reference"):
         return {row[key] for row in self.get(client, path)["data"]}
 
+    def detail(self, path, pk):
+        return f"/v1/payments/{path}/{pk}/?entity={self.books.code}"
+
     # -- lists ---------------------------------------------------------------- #
 
     def test_each_list_holds_only_rows_in_reach(self):
         clerk, bursar = self.reader(branch=self.ikeja), self.reader(branch=None)
+        every_payout = set(self.payouts)
         cases = (
             ("collections/", "reference", {"COL-IKJ"}, set(self.collections)),
             ("virtual-accounts/", "provider_reference", {"VA-IKJ"},
              {"VA-IKJ", "VA-LEK", "VA-ALL"}),
-            ("payouts/", "reference", {"PAY-IKJ"},
-             {"PAY-IKJ", "PAY-LEK", "PAY-ALL", "PAY-ALL2"}),
+            ("payouts/", "reference", {"PAY-IKJ", "PAY-ALL"}, every_payout),
             ("payout-batches/", "reference", {"BAT-IKJ"}, set(self.batches)),
-            ("movements/", "reference", {"COL-IKJ", "PAY-IKJ"},
-             set(self.collections) | {"PAY-IKJ", "PAY-LEK", "PAY-ALL", "PAY-ALL2"}),
+            ("movements/", "reference", {"COL-IKJ", "PAY-IKJ", "PAY-ALL"},
+             set(self.collections) | every_payout),
             ("transactions/", "reference",
-             {"COL-IKJ", "PAY-IKJ", "BAT-IKJ", "REQ-IKJ", "VA-IKJ"},
-             set(self.collections) | {"PAY-IKJ", "PAY-LEK", "PAY-ALL", *self.batches,
-                                      "REQ-IKJ", "REQ-LEK", "REQ-ALL",
-                                      "VA-IKJ", "VA-LEK", "VA-ALL"}),
-            ("webhooks/?status=ALL", "provider_reference", {"WH-COL-IKJ"},
-             {"WH-COL-IKJ", "WH-COL-LEK"}),
+             {"COL-IKJ", "PAY-IKJ", "PAY-ALL", "BAT-IKJ", "REQ-IKJ", "VA-IKJ"},
+             set(self.collections) | every_payout | set(self.batches)
+             | {"REQ-IKJ", "REQ-LEK", "REQ-ALL", "VA-IKJ", "VA-LEK", "VA-ALL"}),
+            ("webhooks/?status=ALL", "provider_reference", {"WH-COL-IKJ", "WH-PAY-ALL"},
+             {"WH-COL-IKJ", "WH-COL-LEK", "WH-PAY-ALL", "WH-PAY-LEK", "WH-PAY-NONE"}),
         )
         for path, key, clerk_sees, bursar_sees in cases:
             with self.subTest(path=path):
@@ -456,12 +525,12 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
                     {line["reference"] for line in data["unmatched_bank_lines"]})
 
         rows, lines = seen(self.reader(branch=self.ikeja))
-        self.assertEqual(rows, {"COL-IKJ", "PAY-IKJ"})
+        self.assertEqual(rows, {"COL-IKJ", "PAY-IKJ", "PAY-ALL"})
         self.assertEqual(lines, {"LINE-IKJ"})
         rows, lines = seen(self.reader(branch=None))
         self.assertIn("COL-LEK", rows)
         self.assertIn("PAY-LEK", rows)
-        self.assertEqual(lines, {"LINE-IKJ", "LINE-LEK", "LINE-ALL"})
+        self.assertEqual(lines, {"LINE-IKJ", "LINE-LEK", "LINE-NONE"})
 
     # -- summaries ------------------------------------------------------------ #
 
@@ -472,11 +541,11 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
              (1, 1_000), (5, 5_000)),
             ("virtual-accounts/", lambda d: d["kpis"]["total"], 1, 3),
             ("payouts/summary/", lambda d: (d["total"], d["settled7d"]["kobo"]),
-             (1, 2_000), (4, 8_000)),
+             (2, 4_000), (4, 8_000)),
             ("payout-batches/summary/", lambda d: d["total"], 1, 3),
             ("movements/summary/", lambda d: (d["in7d"]["kobo"], d["out7d"]["kobo"]),
-             (1_000, 2_000), (5_000, 8_000)),
-            ("webhooks/summary/", lambda d: d["failed"], 1, 2),
+             (1_000, 4_000), (5_000, 8_000)),
+            ("webhooks/summary/", lambda d: d["failed"], 2, 5),
         )
         for path, pick, clerk_counts, bursar_counts in cases:
             with self.subTest(path=path):
@@ -486,6 +555,112 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
                 self.assertEqual(pick(clerk_data), clerk_counts)
                 self.assertEqual(pick(bursar_data), bursar_counts)
 
+    # -- the paying bank decides a payout ------------------------------------- #
+
+    def test_a_payout_is_reached_by_the_bank_it_leaves_not_the_vendor_it_pays(self):
+        """Lekki's bank paying the Ikeja vendor is Lekki's; Ikeja's bank paying anyone is Ikeja's.
+
+        Ikeja's clerk does not see PAY-LEK, though it pays a vendor filed under
+        Ikeja, and does see PAY-ALL, though it pays a vendor every branch shares.
+        Lekki's clerk sees the reverse.
+        """
+        ikeja, lekki = self.reader(branch=self.ikeja), self.reader(branch=self.lekki)
+        for path in ("payouts/", "movements/"):
+            with self.subTest(path=path):
+                ikeja_sees, lekki_sees = self.refs(ikeja, path), self.refs(lekki, path)
+                self.assertIn("PAY-ALL", ikeja_sees)
+                self.assertNotIn("PAY-LEK", ikeja_sees)
+                self.assertIn("PAY-LEK", lekki_sees)
+                self.assertNotIn("PAY-ALL", lekki_sees)
+        self.assertEqual(self.get(lekki, "payouts/summary/")["data"]["total"], 1)
+
+    # -- batches -------------------------------------------------------------- #
+
+    def test_a_batch_is_reached_by_its_own_branch(self):
+        """BAT-IKJ, paid from Ikeja's bank, opens with both its lines; BAT-LEK does not open."""
+        clerk = self.reader(branch=self.ikeja)
+        opened = clerk.get(self.detail("payout-batches", self.batches["BAT-IKJ"].pk))
+        self.assertEqual(opened.status_code, 200, opened.data)
+        self.assertEqual({line["reference"] for line in opened.data["data"]["instructions"]},
+                         {"PAY-IKJ", "PAY-ALL"})
+        refused = clerk.get(self.detail("payout-batches", self.batches["BAT-LEK"].pk))
+        self.assertEqual(refused.status_code, 404, refused.data)
+        lekki = self.reader(branch=self.lekki)
+        self.assertEqual(
+            lekki.get(self.detail("payout-batches", self.batches["BAT-LEK"].pk)).status_code, 200)
+
+    # -- the log and webhooks ------------------------------------------------- #
+
+    def test_the_log_and_webhooks_follow_their_records_own_branch(self):
+        """An action or a provider event is reached with the record it names."""
+        lekki = self.reader(branch=self.lekki)
+        self.assertEqual(
+            self.refs(lekki, "transactions/"),
+            {"COL-LEK", "COL-LEKINV", "PAY-LEK", "BAT-LEK", "REQ-LEK", "VA-LEK"})
+        self.assertEqual(self.refs(lekki, "webhooks/?status=ALL", "provider_reference"),
+                         {"WH-COL-LEK", "WH-PAY-LEK"})
+        self.assertEqual(self.get(lekki, "webhooks/summary/")["data"]["failed"], 2)
+
+    # -- rows not yet given a branch ------------------------------------------ #
+
+    def test_an_unbranched_gateway_row_is_whole_school_only(self):
+        """A row whose own branch is blank is a 404 to a branch reader, whatever it hangs on.
+
+        Every fact around these rows points at Ikeja (the Ikeja family, Ikeja's
+        bank, an Ikeja vendor), but their own branch is blank, as a row the
+        backfill leaves for an administrator is. Ikeja's clerk cannot open or
+        list them; the bursar can.
+        """
+        from .models import PayoutInstruction
+
+        e = self.books
+        family = self.customer(e, "CIKJ2", self.ikeja)
+        rows = {
+            "collections": CollectionIntent.objects.create(
+                entity=e, provider="PAYSTACK", reference="COL-BLANK", amount=1_000,
+                customer=family),
+            "virtual-accounts": VirtualAccount.objects.create(
+                entity=e, provider="PAYSTACK", customer=family, account_number="909",
+                provider_reference="VA-BLANK"),
+            "payout-batches": PayoutBatch.objects.create(
+                entity=e, provider="PAYSTACK", reference="BAT-BLANK",
+                source_account=self.banks["IKJ"]),
+        }
+        vendor = self.vendor("VIKJ2", self.ikeja)
+        PayoutInstruction.objects.create(
+            entity=e, provider="PAYSTACK", reference="PAY-BLANK", amount=2_000,
+            beneficiary_name=vendor.name, beneficiary_account_number="0123456789",
+            vendor_source_type="vs_procurement.Vendor", vendor_source_id=str(vendor.pk),
+            source_account=self.banks["IKJ"], batch=rows["payout-batches"])
+
+        clerk, bursar = self.reader(branch=self.ikeja), self.reader(branch=None)
+        for path, row in rows.items():
+            with self.subTest(path=path):
+                self.assertEqual(clerk.get(self.detail(path, row.pk)).status_code, 404)
+                self.assertEqual(bursar.get(self.detail(path, row.pk)).status_code, 200)
+        for path, key, ref in (("collections/", "reference", "COL-BLANK"),
+                               ("virtual-accounts/", "provider_reference", "VA-BLANK"),
+                               ("payouts/", "reference", "PAY-BLANK"),
+                               ("payout-batches/", "reference", "BAT-BLANK")):
+            with self.subTest(list=path):
+                self.assertNotIn(ref, self.refs(clerk, path, key))
+                self.assertIn(ref, self.refs(bursar, path, key))
+
+    def test_at_a_one_branch_school_an_unbranched_row_is_the_branchs(self):
+        """A clerk pinned to a school's only branch is not narrowed, so the blank row is theirs."""
+        from vs_rbac.scoping import transaction_branch_scope_for_user
+
+        from .reach import PaymentsReach
+
+        row = CollectionIntent.objects.create(
+            entity=self.solo_books, provider="PAYSTACK", reference="COL-SOLO", amount=1_000)
+        clerk = self.grant(self.user_for(self.solo_tenant, "solo-clerk@single.test"),
+                           *self.KEYS, tenant=self.solo_tenant, role_key="solo-clerk",
+                           branch=self.solo_main)
+        scope = transaction_branch_scope_for_user(clerk, tenant=self.solo_tenant)
+        self.assertFalse(scope.is_narrowed)
+        self.assertIn(row, PaymentsReach(self.solo_books, scope).collections())
+
     # -- detail and status changes -------------------------------------------- #
 
     def test_another_branchs_rows_are_unknown_on_detail(self):
@@ -493,14 +668,13 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         lekki = {
             "collections": self.collections["COL-LEK"].pk,
             "virtual-accounts": self.vas["LEK"].pk,
-            "payout-batches": self.batches["BAT-MIXED"].pk,
+            "payout-batches": self.batches["BAT-LEK"].pk,
         }
         for path, pk in lekki.items():
             with self.subTest(path=path):
-                url = f"/v1/payments/{path}/{pk}/?entity={self.books.code}"
-                self.assertEqual(clerk.get(url).status_code, 404)
-                self.assertEqual(bursar.get(url).status_code, 200)
-        own = f"/v1/payments/collections/{self.collections['COL-IKJ'].pk}/?entity={self.books.code}"
+                self.assertEqual(clerk.get(self.detail(path, pk)).status_code, 404)
+                self.assertEqual(bursar.get(self.detail(path, pk)).status_code, 200)
+        own = self.detail("collections", self.collections["COL-IKJ"].pk)
         self.assertEqual(clerk.get(own).status_code, 200)
 
     def _okafor_collection(self):
@@ -509,11 +683,14 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
 
         from .constants import CollectionStatus, PaymentAuditAction
         from .models import PaymentEvent, WebhookEvent
+        from .services import collection_branch_id
 
         okafor = self.customer(self.books, "COKAF", self.ikeja)
+        invoice = self.invoice(self.books, okafor, self.lekki)
         row = CollectionIntent.objects.create(
             entity=self.books, provider="PAYSTACK", reference="COL-OKAF", amount=1_000,
-            customer=okafor, invoice=self.invoice(self.books, okafor, self.lekki),
+            customer=okafor, invoice=invoice,
+            branch_id=collection_branch_id(customer=okafor, invoice=invoice),
             status=CollectionStatus.SUCCEEDED, confirmed_at=timezone.now())
         PaymentEvent.objects.create(
             entity=self.books, action=PaymentAuditAction.COLLECTION_INITIATED,
@@ -586,7 +763,7 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         self.assertEqual(set(_collections(scope).values_list("reference", flat=True)),
                          {"COL-IKJ"})
         self.assertEqual(set(_payouts(scope).values_list("reference", flat=True)),
-                         {"PAY-IKJ"})
+                         {"PAY-IKJ", "PAY-ALL"})
         whole = ScopeContext(tenant=self.tenant, entity=self.books, user=None)
         self.assertEqual(_collections(whole).count(), 5)
 
@@ -594,7 +771,7 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         from .models import WebhookEvent
 
         clerk = self.reader(branch=self.ikeja)
-        batch = self.batches["BAT-MIXED"]
+        batch = self.batches["BAT-LEK"]
         for path in (f"payout-batches/{batch.pk}/submit-for-approval/",
                      f"payout-batches/{batch.pk}/"):
             with self.subTest(path=path):
@@ -612,47 +789,60 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         self.assertEqual(event.status, "FAILED")
 
 
-
 class PayoutBatchApprovalsStayWithinReachTests(_FinanceBranchFixture):
     """The payout approval inbox holds only the batches the approver can reach.
 
     Mrs Bello is Ikeja's bursar and is named on Corona's payout approver group, so
-    the approval route puts them on every batch; a batch has no branch of its own.
-    One batch pays an Ikeja vendor, another pays a Lekki vendor and one every
-    branch shares. The payout screens already keep the second from them. The approval inbox,
-    the instance behind it and its approve and reject answer the same way, while
-    the head bursar, who covers the whole school, sees and decides both.
+    the approval route puts them on every batch. A batch is the branch of the bank
+    it pays from. One pays a vendor every branch shares from Ikeja's bank, and is
+    Ikeja's; one pays an Ikeja vendor from Lekki's bank, and is Lekki's; one pays
+    the Ikeja vendor from a bank account not yet given a branch. Bello sees and
+    decides only the first. The approval inbox, the instance behind it and its
+    approve and reject answer the same way, while the head bursar, who covers the
+    whole school, sees and decides all three.
     """
 
     def setUp(self):
+        from vs_finance.models import BankAccount
         from vs_workflow.constants import GroupMemberKind
         from vs_workflow.models import WorkflowApproverGroup, WorkflowApproverGroupMember
 
         from .approvals import ensure_tenant_approval_templates
         from .constants import WF_DEFAULT_APPROVE_GROUP, PayoutStatus
         from .models import PayoutInstruction
-        from .services import submit_payout_batch_for_approval
+        from .services import payout_branch_id, submit_payout_batch_for_approval
 
         super().setUp()
         e = self.books
         vendor = PaymentsNameOnlyWhatTheClerkReachesTests.vendor
-        vendors = {"IKJ": vendor(self, "AVIKJ", self.ikeja),
-                   "LEK": vendor(self, "AVLEK", self.lekki),
-                   "ALL": vendor(self, "AVALL", None)}
+        vendors = {"IKJ": vendor(self, "AVIKJ", self.ikeja), "ALL": vendor(self, "AVALL", None)}
+        cash_type = Account.objects.get(entity=e, code="1000").account_type
+        banks = {}
+        for n, (tag, branch) in enumerate((("IKJ", self.ikeja), ("LEK", self.lekki),
+                                           ("NONE", None))):
+            banks[tag] = Account.objects.create(entity=e, code=f"115{n}", name=f"Bank {tag}",
+                                                account_type=cash_type, is_postable=True)
+            BankAccount.objects.create(entity=e, name=f"Bank {tag}", branch=branch,
+                                       gl_account=banks[tag])
 
-        def batch(ref, *codes):
-            row = PayoutBatch.objects.create(entity=e, provider="PAYSTACK", reference=ref)
-            for n, code in enumerate(codes):
-                PayoutInstruction.objects.create(
-                    entity=e, provider="PAYSTACK", reference=f"{ref}-{n}", amount=2_000,
-                    beneficiary_name=vendors[code].name, beneficiary_account_number="0123456789",
-                    vendor_source_type="vs_procurement.Vendor",
-                    vendor_source_id=str(vendors[code].pk), batch=row,
-                    status=PayoutStatus.PENDING)
+        def batch(ref, bank, code):
+            source = banks[bank]
+            row = PayoutBatch.objects.create(
+                entity=e, provider="PAYSTACK", reference=ref, source_account=source,
+                branch_id=payout_branch_id(e, source))
+            PayoutInstruction.objects.create(
+                entity=e, provider="PAYSTACK", reference=f"{ref}-0", amount=2_000,
+                beneficiary_name=vendors[code].name, beneficiary_account_number="0123456789",
+                vendor_source_type="vs_procurement.Vendor",
+                vendor_source_id=str(vendors[code].pk), batch=row, source_account=source,
+                branch_id=row.branch_id, status=PayoutStatus.PENDING)
             return row
 
-        self.ikeja_batch = batch("ABAT-IKJ", "IKJ")
-        self.mixed_batch = batch("ABAT-MIXED", "LEK", "ALL")
+        self.batches = {
+            "ABAT-IKJ": batch("ABAT-IKJ", "IKJ", "ALL"),
+            "ABAT-LEK": batch("ABAT-LEK", "LEK", "IKJ"),
+            "ABAT-NONE": batch("ABAT-NONE", "NONE", "IKJ"),
+        }
 
         ensure_tenant_approval_templates(self.tenant)
         self.bello = self.grant(self.user_for(self.tenant, "bello@corona.test"),
@@ -669,8 +859,8 @@ class PayoutBatchApprovalsStayWithinReachTests(_FinanceBranchFixture):
 
         clerk = self.user_for(self.tenant, "payout-clerk@corona.test")
         self.instances = {
-            b.reference: submit_payout_batch_for_approval(b, requested_by=clerk)
-            for b in (self.ikeja_batch, self.mixed_batch)
+            ref: submit_payout_batch_for_approval(row, requested_by=clerk)
+            for ref, row in self.batches.items()
         }
 
     def inbox(self, user):
@@ -684,29 +874,30 @@ class PayoutBatchApprovalsStayWithinReachTests(_FinanceBranchFixture):
             {"action": action, "comment": "Checked."}, format="json")
 
     def test_the_inbox_holds_only_the_batches_in_reach(self):
-        self.assertEqual(self.inbox(self.bello), {str(self.ikeja_batch.pk)})
-        self.assertEqual(self.inbox(self.head),
-                         {str(self.ikeja_batch.pk), str(self.mixed_batch.pk)})
+        self.assertEqual(self.inbox(self.bello), {str(self.batches["ABAT-IKJ"].pk)})
+        self.assertEqual(self.inbox(self.head), {str(b.pk) for b in self.batches.values()})
 
     def test_the_finance_dashboard_counts_only_the_batches_in_reach(self):
         from vs_finance.dashboard_blocks import approvals_waiting_on
 
         self.assertEqual(approvals_waiting_on(self.books, self.bello)["total"], 1)
-        self.assertEqual(approvals_waiting_on(self.books, self.head)["total"], 2)
+        self.assertEqual(approvals_waiting_on(self.books, self.head)["total"], 3)
 
     def test_a_batch_out_of_reach_cannot_be_read_approved_or_rejected(self):
-        instance = self.instances["ABAT-MIXED"]
         client = TenantAPIClient(user=self.bello)
-        self.assertEqual(
-            client.get(f"/v1/workflow/instances/{instance.pk}/").status_code, 404)
-        for action in ("APPROVED", "REJECTED"):
-            with self.subTest(action=action):
-                self.assertEqual(self.act(self.bello, "ABAT-MIXED", action).status_code, 404)
-        instance.refresh_from_db()
-        self.assertEqual(instance.status, "IN_PROGRESS")
+        for reference in ("ABAT-LEK", "ABAT-NONE"):
+            instance = self.instances[reference]
+            with self.subTest(reference=reference):
+                self.assertEqual(
+                    client.get(f"/v1/workflow/instances/{instance.pk}/").status_code, 404)
+                for action in ("APPROVED", "REJECTED"):
+                    self.assertEqual(self.act(self.bello, reference, action).status_code, 404)
+                instance.refresh_from_db()
+                self.assertEqual(instance.status, "IN_PROGRESS")
 
         self.assertEqual(self.act(self.bello, "ABAT-IKJ", "REJECTED").status_code, 200)
-        self.assertEqual(self.act(self.head, "ABAT-MIXED", "REJECTED").status_code, 200)
+        self.assertEqual(self.act(self.head, "ABAT-LEK", "REJECTED").status_code, 200)
+
 
 class PaymentsViewsStartFromTheReachTests(SimpleTestCase):
     """No payments view reaches a gateway table except through :class:`PaymentsReach`.

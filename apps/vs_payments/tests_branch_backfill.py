@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from vs_finance.branch_derivation import apply_plan, plan_entity
 from vs_finance.tests_branch_scope import _FinanceBranchFixture
-from vs_payments.models import CollectionIntent, VirtualAccount
+from vs_payments.models import CollectionIntent, PayoutBatch, PayoutInstruction, VirtualAccount
 
 
 class PaymentsBackfillReportTests(_FinanceBranchFixture):
@@ -49,3 +49,38 @@ class PaymentsBackfillReportTests(_FinanceBranchFixture):
         self.assertEqual(result.written["vs_payments.CollectionIntent"], 1)
         intent.refresh_from_db()
         self.assertEqual(intent.branch_id, self.lekki.pk)
+
+    def test_a_batch_takes_its_lines_branch_only_when_they_agree(self):
+        """A batch whose lines left two branches' banks is flagged, whatever account it names.
+
+        BAT-ONE pays twice from Ikeja's bank and is Ikeja's. BAT-TWO names Ikeja's
+        bank but one of its lines left Lekki's, so it stays blank for an
+        administrator rather than showing Lekki's payout to Ikeja's clerk.
+        """
+        from vs_finance.models import Account, BankAccount
+
+        cash_type = Account.objects.get(entity=self.books, code="1000").account_type
+        banks = {}
+        for n, branch in enumerate((self.ikeja, self.lekki)):
+            banks[branch.pk] = Account.objects.create(
+                entity=self.books, code=f"119{n}", name=f"Bank {n}",
+                account_type=cash_type, is_postable=True)
+            BankAccount.objects.create(entity=self.books, name=f"Bank {n}", branch=branch,
+                                       gl_account=banks[branch.pk])
+
+        def batch(ref, *branches):
+            row = PayoutBatch.objects.create(entity=self.books, provider="FAKE", reference=ref,
+                                             source_account=banks[self.ikeja.pk])
+            for n, branch in enumerate(branches):
+                PayoutInstruction.objects.create(
+                    entity=self.books, provider="FAKE", reference=f"{ref}-{n}", amount=1_000,
+                    beneficiary_name="Ojo Stationers", beneficiary_account_number="0123456789",
+                    source_account=banks[branch.pk], batch=row)
+            return row
+
+        one = batch("BAT-ONE", self.ikeja, self.ikeja)
+        two = batch("BAT-TWO", self.ikeja, self.lekki)
+        target = self.target(plan_entity(self.books), PayoutBatch)
+        self.assertEqual(target.assign[one.pk][0], self.ikeja.pk)
+        self.assertNotIn(two.pk, target.assign)
+        self.assertEqual([f.pk for f in target.flags], [two.pk])
