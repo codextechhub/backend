@@ -165,6 +165,29 @@ def ledger_balances(entity, scope=None):
     return BranchLedger(entity, scope)
 
 
+def only_branch_id_or_several(tenant):
+    """The id of ``tenant``'s one branch, or ``None`` when it owns several.
+
+    ``tenant`` is a tenant or its id. Counted over every branch the tenant owns,
+    whatever its status, as :func:`vs_rbac.scoping.only_branch_id` counts them.
+    A ledger line, bank account or payroll line not yet given a branch is that
+    branch's at a tenant with one; at a tenant with several it belongs to none
+    until somebody gives it one.
+
+    Raises :class:`~vs_finance.exceptions.BranchlessTenantError` when the tenant
+    owns no branch, a shape that does not exist, so ``None`` here always means
+    several branches. One query, reading at most two ids.
+    """
+    from vs_tenants.models import Branch
+
+    from .exceptions import BranchlessTenantError
+
+    ids = list(Branch.all_objects.filter(tenant=tenant).values_list("pk", flat=True)[:2])
+    if not ids:
+        raise BranchlessTenantError(tenant)
+    return ids[0] if len(ids) == 1 else None
+
+
 @dataclass(frozen=True)
 class YearBranches:
     """Which branches a fiscal year's ledger lines belong to.

@@ -413,23 +413,18 @@ def _line_branch_ids(run) -> dict:
     """Each line of ``run`` with the branch id its pay is booked to, and who has none.
 
     Returns ``{line: branch_id}``. A line answered by nothing at a tenant with
-    several branches maps to ``_UNASSIGNED``; at a tenant with no branch at all
-    (the platform's books) every line maps to ``None``.
+    several branches maps to ``_UNASSIGNED``. A tenant that owns no branch raises
+    :class:`~vs_finance.exceptions.BranchlessTenantError`, so no line is ever
+    booked without one.
     """
-    from vs_rbac.scoping import only_branch_id
-    from vs_tenants.models import Branch
-
+    from .branch_ledger import only_branch_id_or_several
     from .models import EmployeeSalary
 
     lines = list(run.lines.select_related("cost_center").order_by("line_no", "id"))
     if run.branch_id is not None:
         return {line: run.branch_id for line in lines}
 
-    tenant_id = run.entity.tenant_id
-    only = only_branch_id(tenant_id)
-    has_branches = only is not None or (
-        tenant_id is not None and Branch.all_objects.filter(tenant_id=tenant_id).exists()
-    )
+    only = only_branch_id_or_several(run.entity.tenant_id)
     employees = {line.employee_id for line in lines if line.branch_id is None and line.employee_id}
     salary_branch = dict(
         EmployeeSalary.objects.filter(
@@ -440,7 +435,7 @@ def _line_branch_ids(run) -> dict:
     out = {}
     for line in lines:
         branch_id = line.branch_id or salary_branch.get(line.employee_id) or only
-        if branch_id is None and has_branches:
+        if branch_id is None:
             branch_id = _UNASSIGNED
         out[line] = branch_id
     return out
@@ -579,7 +574,7 @@ def _post_payroll_atomic(run, *, actor_user=None):
     groups: dict = {}
     for line, branch_id in placed.items():
         groups.setdefault(branch_id, []).append(line)
-        if line.branch_id != branch_id and branch_id is not None:
+        if line.branch_id != branch_id:
             PayrollLine.objects.filter(pk=line.pk).update(branch_id=branch_id)
 
     accounts = _accounts_for(run)  # Resolve expense and liability accounts.

@@ -28,9 +28,11 @@ given a branch. Each branch share gets its own netting/penalty journal at filing
 and its own remittance journals when paid, all carrying that branch; the return is
 PAID when every share is. A share is paid only from its own branch's bank account:
 an account with no branch pays nothing at a tenant with several branches, and
-counts as the branch's at a tenant with one. A tenant with no branch at all (the
-platform's own books) files and pays as one share with no branch. A branch-bound
-reader sees and pays only the shares of their own branches.
+counts as the branch's at a tenant with one. Every tenant owns at least one
+branch, so every share that is filed and paid names one; a tenant with none is a
+broken invariant and raises :class:`~vs_finance.exceptions.BranchlessTenantError`
+(:func:`branch_rule`). A branch-bound reader sees and pays only the shares of
+their own branches.
 
 **Credits carry forward.** When recoverable input tax (and any credit brought
 forward) exceeds the tax, the return is due nil and the excess is carried to the
@@ -83,7 +85,8 @@ TAX_MODULE_SOURCES = (JournalSource.TAX,)
 #: Statuses of a return whose lines are declared and whose credit can carry forward.
 FILED_STATUSES = (TaxFilingStatus.FILED, TaxFilingStatus.PAID)
 
-#: Marks "no branch named" for :func:`pay_filing`, where ``None`` is a real branch value.
+#: Marks "no branch named" for :func:`pay_filing` and :func:`file_filing`, apart from a
+#: branch argument passed as ``None``.
 ANY_SHARE = object()
 
 
@@ -148,14 +151,12 @@ def _account_movement(entity, account, *, period_start=None, period_end=None,
 class BranchRule:
     """How a line's entry branch becomes the branch it is counted under.
 
-    ``only_branch_id`` is the tenant's one branch when it has exactly one;
-    ``has_branches`` is whether it has any. A line whose entry names a branch keeps
-    it. One with none counts as the only branch; at a tenant with several it is
-    pending; at a tenant with none it simply has no branch.
+    ``only_branch_id`` is the tenant's one branch when it has exactly one, and
+    ``None`` when it has several. A line whose entry names a branch keeps it. One
+    with none counts as the only branch; at a tenant with several it is pending.
     """
 
     only_branch_id: int | None
-    has_branches: bool
 
     def resolve(self, branch_id):
         """``(branch_id, pending)`` for a line whose entry carries ``branch_id``."""
@@ -163,29 +164,27 @@ class BranchRule:
             return branch_id, False
         if self.only_branch_id is not None:
             return self.only_branch_id, False
-        return None, self.has_branches
+        return None, True
 
     def bank_branch_id(self, bank_account):
         """The branch whose share ``bank_account`` may pay, or ``None``.
 
         An account's own branch; at a tenant with one branch, an account with
-        none is that branch's. ``None`` means the account pays no branch: fine at
-        a tenant without branches, and a refusal at a tenant with several.
+        none is that branch's. ``None`` means the account pays no share: an
+        account not yet given a branch at a tenant with several.
         """
         return bank_account.branch_id or self.only_branch_id
 
 
 def branch_rule(entity) -> BranchRule:
-    """The :class:`BranchRule` of ``entity``'s tenant (no tenant means no branches)."""
-    from vs_rbac.scoping import only_branch_id
-    from vs_tenants.models import Branch
+    """The :class:`BranchRule` of ``entity``'s tenant.
 
-    tenant = entity.tenant if entity.tenant_id else None
-    if tenant is None:
-        return BranchRule(only_branch_id=None, has_branches=False)
-    only = only_branch_id(tenant)
-    has = only is not None or Branch.all_objects.filter(tenant=tenant).exists()
-    return BranchRule(only_branch_id=only, has_branches=has)
+    Raises :class:`~vs_finance.exceptions.BranchlessTenantError` when the tenant
+    owns no branch (:func:`vs_finance.branch_ledger.only_branch_id_or_several`).
+    """
+    from .branch_ledger import only_branch_id_or_several
+
+    return BranchRule(only_branch_id=only_branch_id_or_several(entity.tenant_id))
 
 
 @dataclass(frozen=True)
@@ -454,8 +453,8 @@ def _spread_adjustment(shares, adjustment, *, adjustment_branch_id, rule) -> lis
     """Add a penalty to the shares and return the (possibly extended) share list.
 
     Named branch first; otherwise in proportion to each branch's tax; otherwise the
-    one share there is, or the tenant's only branch (or no branch, at a tenant with
-    none). A tenant with several branches and no tax to go by must name the branch.
+    one share there is, or the tenant's only branch. A tenant with several branches
+    and no tax to go by must name the branch.
     """
     if adjustment <= 0:
         return shares
@@ -468,6 +467,11 @@ def _spread_adjustment(shares, adjustment, *, adjustment_branch_id, rule) -> lis
             shares.append(by_key[key])
         return by_key[key]
 
+    if adjustment_branch_id is None:
+        raise TaxFilingError(
+            "A penalty is booked to one branch, so name the branch that bears it.",
+            failures=["adjustment_branch"],
+        )
     if adjustment_branch_id is not ANY_SHARE:
         share_for(adjustment_branch_id).adjustment += adjustment
         return shares
@@ -480,7 +484,7 @@ def _spread_adjustment(shares, adjustment, *, adjustment_branch_id, rule) -> lis
     if len(settled) == 1:
         settled[0].adjustment += adjustment
         return shares
-    if rule.only_branch_id is not None or not rule.has_branches:
+    if rule.only_branch_id is not None:
         share_for(rule.only_branch_id).adjustment += adjustment
         return shares
     raise TaxFilingError(
@@ -981,11 +985,9 @@ def pay_filing(filing, *, bank_account, pay_date, amount=None, branch=ANY_SHARE,
     Every share is paid only from its own branch's bank account
     (:meth:`BranchRule.bank_branch_id`): at a tenant with several branches an
     account with no branch pays no share; at a tenant with one branch its
-    accounts are that branch's; a tenant with no branch pays its one share from
-    any of its accounts.
+    accounts are that branch's.
 
-    ``branch`` (a Branch, its id, or ``None`` for the no-branch share of a tenant
-    without branches) names the share to pay. Without it: the only unpaid share,
+    ``branch`` (a Branch or its id) names the share to pay. Without it: the only unpaid share,
     else the unpaid share of the bank account's branch. ``amount`` defaults to the
     share's balance. ``reach`` (a set of branch ids, or ``None`` for the whole
     tenant) refuses a share outside the caller's branches. Records a durable
@@ -1043,9 +1045,7 @@ def _shares_to_pay(filing, rule, bank_account):
     shares = list(filing.shares.select_for_update(of=("self",)).order_by("id"))
     if shares or filing.amount_due <= 0:
         return shares
-    branch_id = filing.branch_id or rule.only_branch_id
-    if branch_id is None and rule.has_branches:
-        branch_id = bank_account.branch_id
+    branch_id = filing.branch_id or rule.only_branch_id or bank_account.branch_id
     share = TaxFilingShare.objects.create(
         filing=filing, branch_id=branch_id,
         gross_liability=filing.gross_liability, recoverable_amount=filing.recoverable_amount,
@@ -1089,7 +1089,7 @@ def _pay_filing_atomic(filing, *, bank_account, pay_date, amount, branch, actor_
 
     rule = branch_rule(filing.entity)
     bank_branch = rule.bank_branch_id(bank_account)
-    if rule.has_branches and bank_branch is None:
+    if bank_branch is None:
         raise TaxFilingError(
             f"{bank_account.name} is not any one branch's account. Each branch's share of "
             f"the return is paid from that branch's own account.",
@@ -1122,7 +1122,7 @@ def _pay_filing_atomic(filing, *, bank_account, pay_date, amount, branch, actor_
     paid = []
     for share in targets:
         journal_branch = share_branch(share)
-        if rule.has_branches and journal_branch != bank_branch:
+        if journal_branch != bank_branch:
             raise TaxFilingError(
                 f"This share of the return belongs to {_branch_name(journal_branch)}. "
                 f"Pay it from {_branch_name(journal_branch)}'s own account.",

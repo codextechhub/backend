@@ -20,7 +20,8 @@ forcing needs ``finance.period.force_close`` rather than the ordinary close key.
 Harbour Primary has one branch, Main. Its entries written before branches were
 recorded carry none, and its year closes them onto Main. At Lagoon View an
 income entry with no branch belongs to neither branch's result, so the close is
-refused until it is given one.
+refused until it is given one. A tenant that owns no branch at all is a broken
+invariant, so the close raises rather than write a closing journal with none.
 
 The close also refuses while a depreciation charge dated in the year is unposted,
 because nothing can post it afterwards, and a posting in flight holds a year or
@@ -60,7 +61,7 @@ from .constants import (
     FinanceAuditAction,
     PeriodStatus,
 )
-from .exceptions import PeriodCloseError, PeriodClosedError, PostingError
+from .exceptions import BranchlessTenantError, PeriodCloseError, PeriodClosedError, PostingError
 from .models import (
     Account,
     FinanceAuditLog,
@@ -402,6 +403,17 @@ class YearCloseByBranchTests(_YearFixture):
         self.assertEqual(self.year().status, PeriodStatus.OPEN)
         self.assertFalse(JournalEntry.objects.filter(closes_fiscal_year=self.year()).exists())
         self.assertEqual(self.month(1).status, PeriodStatus.SOFT_CLOSED)
+
+    def test_a_tenant_with_no_branch_is_a_fault_not_an_unbranched_close(self):
+        bare = make_school(slug="bare-year-guard", name="Bare Academy")
+        books = _books("BAREYG", bare.tenant)
+        self.seal_months(books=books)
+
+        with self.assertRaises(BranchlessTenantError):
+            close_fiscal_year(books, self.year(books))
+
+        self.assertEqual(self.year(books).status, PeriodStatus.OPEN)
+        self.assertFalse(JournalEntry.objects.filter(closes_fiscal_year=self.year(books)).exists())
 
     def test_unbranched_balance_sheet_entries_do_not_block_the_close(self):
         self.trade()

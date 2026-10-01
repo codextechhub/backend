@@ -1046,10 +1046,9 @@ class TaxFilingShare(TimeStampedModel):
     surplus credit covers part of it, and that transfer stays visible as the two
     branches' opposite balances on the payable account.
 
-    ``branch`` is null in two cases only: the books of a tenant that owns no branch
-    (the platform's own), and ``branch_pending`` lines at a tenant with several
-    branches whose entries carry none. A pending share is shown on a draft and
-    stops the return being filed until its lines are given a branch.
+    ``branch`` is null on a ``branch_pending`` share: lines at a tenant with
+    several branches whose entries carry none. A pending share is shown on a draft
+    and stops the return being filed until its lines are given a branch.
     """
 
     filing = models.ForeignKey(TaxFiling, on_delete=models.CASCADE, related_name="shares")

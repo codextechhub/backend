@@ -441,38 +441,33 @@ def _closing_buckets(entity, fiscal_year):
 
     Returns ``{branch_id: {account_id: (debit, credit)}}`` built from the ledger's
     journal lines, with accounts that are already flat left out and branches with
-    nothing to close left out altogether.
+    nothing to close left out altogether. Every key is a real branch.
 
     An entry with no branch is filed under the tenant's only branch when it has
     exactly one. At a tenant with several, nothing says which branch's result it
     belongs to, so the close is refused and the count of such entries named. A
-    tenant that owns no branch at all (the platform's own books) has no branch
-    dimension, and its movement closes under ``None``.
+    tenant that owns no branch raises
+    :class:`~vs_finance.exceptions.BranchlessTenantError`
+    (:func:`vs_finance.branch_ledger.only_branch_id_or_several`): no closing
+    journal is ever written without a branch.
     """
     from django.db.models import Sum
 
-    from vs_rbac.scoping import only_branch_id
-    from vs_tenants.models import Branch
-
-    from .branch_ledger import branches_in_year, ledger_lines
+    from .branch_ledger import branches_in_year, ledger_lines, only_branch_id_or_several
     from .constants import AccountType
 
     pl_types = (AccountType.INCOME, AccountType.EXPENSE)
-    unbranched_target = None
+    only = only_branch_id_or_several(entity.tenant_id)
     shape = branches_in_year(entity, fiscal_year, account_types=pl_types)
-    if shape.has_unbranched:
-        only = only_branch_id(entity.tenant)
-        if only is not None:
-            unbranched_target = only
-        elif Branch.all_objects.filter(tenant=entity.tenant).exists():
-            count = shape.unbranched_entries
-            raise PeriodCloseError(
-                f"FY{fiscal_year.year} cannot close yet: {count} journal "
-                f"{'entry carries' if count == 1 else 'entries carry'} income or expense "
-                f"with no branch. The year is closed branch by branch, so give "
-                f"{'it' if count == 1 else 'each of them'} a branch first.",
-                failures=["unbranched_entries"], unbranched_entries=count,
-            )
+    if shape.has_unbranched and only is None:
+        count = shape.unbranched_entries
+        raise PeriodCloseError(
+            f"FY{fiscal_year.year} cannot close yet: {count} journal "
+            f"{'entry carries' if count == 1 else 'entries carry'} income or expense "
+            f"with no branch. The year is closed branch by branch, so give "
+            f"{'it' if count == 1 else 'each of them'} a branch first.",
+            failures=["unbranched_entries"], unbranched_entries=count,
+        )
 
     rows = (
         ledger_lines(entity)
@@ -486,7 +481,7 @@ def _closing_buckets(entity, fiscal_year):
     for row in rows:
         branch_id = row["entry__branch_id"]
         if branch_id is None:
-            branch_id = unbranched_target
+            branch_id = only
         accounts = buckets.setdefault(branch_id, {})
         debit, credit = accounts.get(row["account_id"], (0, 0))
         accounts[row["account_id"]] = (debit + int(row["d"] or 0), credit + int(row["c"] or 0))
@@ -650,8 +645,8 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
         )
         account_ids = {acc for accounts in buckets.values() for acc in accounts}
         accounts = Account.objects.in_bulk(account_ids)
-        branches = Branch.all_objects.in_bulk([b for b in buckets if b is not None])
-        for branch_id in sorted(buckets, key=lambda b: (b is None, b or 0)):
+        branches = Branch.all_objects.in_bulk(list(buckets))
+        for branch_id in sorted(buckets):
             closing_lines = []  # (account, debit, credit) - each line zeroes one P&L account.
             branch_net = 0
             for acc_id, (d, c) in sorted(buckets[branch_id].items()):
@@ -665,12 +660,12 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
             elif branch_net < 0:  # Loss → debit Retained Earnings.
                 closing_lines.append((retained, -branch_net, 0))
 
-            branch = branches.get(branch_id)
+            branch = branches[branch_id]
             narration = f"Year-end close FY{fiscal_year.year}"
             entry = JournalEntry.objects.create(  # One closing journal per branch.
                 entity=entity, branch=branch, date=closing_date, period=period,
                 source=JournalSource.CLOSING, created_by=actor_user,
-                narration=f"{narration} - {branch.name}" if branch else narration,
+                narration=f"{narration} - {branch.name}",
                 closes_fiscal_year=fiscal_year,
             )
             for i, (acc, debit, credit) in enumerate(closing_lines, start=1):
@@ -683,7 +678,7 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
             )
             journals.append(entry)
             net_income += branch_net
-            net_by_branch[str(branch_id) if branch_id is not None else ""] = branch_net
+            net_by_branch[str(branch_id)] = branch_net
 
     fiscal_year.status = PeriodStatus.CLOSED  # Seal the year.
     fiscal_year.save(update_fields=["status", "updated_at"])

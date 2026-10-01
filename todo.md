@@ -528,6 +528,17 @@ MUST SAY:
   to CodeX's bank daily (confirm the Paystack setting before go-live); CodeX's own
   online supplier payouts from the balance are not yet in the books' figure.
 
+### D95. Books with no branch are a fault, and a tax penalty names its branch (fc496395, 2026-10-01)
+MODULES: M19 finance and accounting, MRD.
+MUST SAY:
+- A tenant that owns no branch cannot exist (every tenant, the platform's included,
+  owns at least one). The year-end close, tax returns, bank postings and payroll
+  refuse such a tenant with a server fault naming it (BranchlessTenantError) and
+  write nothing, instead of writing unbranched entries. One-branch and
+  multi-branch behaviour is unchanged.
+- Filing a tax return with a penalty requires adjustment_branch; a penalty with no
+  branch is refused.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
