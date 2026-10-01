@@ -913,7 +913,7 @@ Verified: tests_inter_branch 64 OK, tests_accruals 42 OK, tests_tax_returns 28 O
 vs_finance 1649 OK, schools.core.fal 293 OK, vs_payments 403 OK. The full suite
 was not run.
 
-### D105. Petty cash goes back to the bank: a float can be cut and a fund closed, voided back and reopened (hash pending, 2026-10-01)
+### D105. Petty cash goes back to the bank: a float can be cut and a fund closed, voided back and reopened (aaff9d19, 2026-10-01)
 MODULES: M19 finance and accounting (petty cash, banking, reconciliation), M07
 workflow (the new petty cash return route), M04 roles and permissions (four keys),
 MRD.
