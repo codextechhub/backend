@@ -539,6 +539,44 @@ MUST SAY:
 - Filing a tax return with a penalty requires adjustment_branch; a penalty with no
   branch is refused.
 
+### D96. Every school fee bill names its pupil's branch, the FAL raises nothing without a branch, and held money is read by branch (86114bb2, 603c473b, a05dea84; school-fe 7d75643; 2026-10-01)
+MODULES: M17 billing and invoicing (fee runs), M11 student management, M22
+procurement and M23 purchase orders delivery and AP (through the FAL), M18
+payments and collections (held money), M19 finance and accounting (audit), M04
+roles and permissions, MRD; FAL contract 1.1.4 (docs spec 16).
+Owner decisions of 2026-10-01.
+MUST SAY:
+- Fee runs (M17, M11). The FAL names every bill's branch: a pupil is billed at
+  the branch the class roll says they attend; a family with no pupil behind it
+  at its account's branch; a family every branch shares at the caller's branch,
+  the only branch at a one-branch school, or a required branch field (400
+  BRANCH_REQUIRED). The engine refuses a fee bill with no branch or one
+  contradicting its account. The branch is not part of the billing key, so a
+  rerun bills nobody twice.
+- Account follows the pupil (M17, owner decision). When a pupil's fee account is
+  filed at another branch than the one they attend, the run bills them where they
+  attend and moves the account there in the same transaction; earlier bills keep
+  their branch. Each move is in the run's accounts_moved (preview included, where
+  nothing moves) and is audited under both branches ("moved to Lekki" under the
+  old, "moved from Ikeja" under the new), with no money figures. One mismatch
+  never blocks the run. The school-fe preview lists the moves by name and branch.
+- Reach (M17, M04). The roll decides who may bill a pupil: a branch-bound bursar
+  bills only pupils attending their branches, however a pupil id is written (one
+  canonical spelling, "42"; "+42" or "042" no longer name pupil 42); the reach,
+  price-list and conflict checks sit inside the billing code, not only the route.
+- FAL procurement (M22, M23). A requisition takes its branch from the raiser's
+  grants (a pinned raiser their branch; several branches must name one; no
+  "head office purchase" with no branch). Order, receipt, supplier bill and
+  payment continuations check the caller reaches the document. A supplier
+  payment pays from the bill's own branch's bank, or a named one.
+- Held money (M18). Held settlements and held balances are read through
+  PaymentsReach: a branch-bound reader of the movements feed, held settlements
+  and the custody settings screen sees only their branches' rows, collection
+  banks and held balances, and the custody pending note names only their own
+  branches' money ("online money is still held at other branches" for the
+  rest); a whole-school reader is unchanged. FIX: the movements summary honours
+  ?provider= as the feed does.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
