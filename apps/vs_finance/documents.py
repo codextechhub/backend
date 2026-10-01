@@ -51,9 +51,8 @@ def primary_collection_account(entity, branch=None):
     otherwise only after every account of the branch's own. ``None`` when the
     branch has no account to print.
 
-    With no ``branch`` (the platform's books, or a document with none) the
-    entity's flagged account, else its first active one, as a single set of books
-    has one.
+    With no ``branch`` (a document not yet given one) the entity's flagged
+    account, else its first active one.
     """
     from vs_rbac.scoping import transaction_branch_match_q
 

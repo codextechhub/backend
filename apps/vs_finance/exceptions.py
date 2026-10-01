@@ -18,6 +18,24 @@ class FinanceError(Exception):
         super().__init__(self.message)  # Initialize the base Exception with the message.
 
 
+class BranchlessTenantError(RuntimeError):
+    """A tenant's books are read by branch and the tenant owns no branch.
+
+    Every tenant owns at least one branch, the platform tenant included, so this
+    is a broken invariant rather than a request to refuse: the data needs fixing,
+    not the caller. It is deliberately not a :class:`FinanceError`, so no view
+    turns it into a 4xx and nothing writes a journal without a branch; it
+    surfaces as a server error naming the tenant.
+    """
+
+    def __init__(self, tenant):
+        self.tenant = tenant
+        super().__init__(
+            f"Tenant {tenant} owns no branch. Every tenant keeps at least one, and its "
+            f"books are kept by branch; create the tenant's branch before using its books."
+        )
+
+
 class PostingError(FinanceError):
     error_code = "POSTING_ERROR"  # General journal-posting error.
     default_message = "The journal could not be posted."  # Default posting failure message.

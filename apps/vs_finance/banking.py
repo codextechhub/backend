@@ -859,25 +859,20 @@ def money_branch_id(entity, *accounts, field="bank_account"):
     nobody can say whose money it holds, so it moves nothing until it is given a
     branch: Mr Bello's UBA account, opened before accounts carried a branch, at a
     school running Ikeja and Lekki is refused with a 400 naming it, rather than
-    raising a transaction that no branch's bursar can see. The one ``None`` is books with no branch at all
-    (the platform's own).
+    raising a transaction that no branch's bursar can see. Never ``None``: a tenant
+    that owns no branch raises
+    :class:`~vs_finance.exceptions.BranchlessTenantError`.
     """
     from rest_framework.exceptions import ValidationError
 
-    from vs_rbac.scoping import only_branch_id
-    from vs_tenants.models import Branch
+    from .branch_ledger import only_branch_id_or_several
 
     named = next((a.branch_id for a in accounts if a.branch_id is not None), None)
     if named is not None:
         return named
-    tenant = entity.tenant if entity.tenant_id else None
-    if tenant is None:
-        return None
-    only = only_branch_id(tenant)
+    only = only_branch_id_or_several(entity.tenant_id)
     if only is not None:
         return only
-    if not Branch.all_objects.filter(tenant=tenant).exists():
-        return None
     unplaced = next(a for a in accounts if a.branch_id is None)
     raise ValidationError({field: (
         f"{unplaced.name} has not been given a branch, so no branch can move money "

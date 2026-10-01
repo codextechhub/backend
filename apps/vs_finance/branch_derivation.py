@@ -24,8 +24,8 @@ When no source answers:
   an administrator. The main branch is never assumed: a Lekki pupil's invoice
   filed under Ikeja because Ikeja is the main branch would move Lekki's fee
   income into Ikeja's year result, and nothing afterwards would say so;
-* a tenant that owns no branch at all (the platform's own books) is reported as
-  blocked, and nothing is derived until it has one.
+* a tenant that owns no branch breaks the rule that every tenant keeps one, so
+  it is reported as blocked and nothing is derived until it has one.
 
 Derivations chain. An RFQ reads its requisition's branch, including a branch
 the same run has derived but not yet written, which is what makes a dry run
@@ -618,7 +618,7 @@ def gates(plan: EntityPlan) -> list[Gate]:
     none. Both read an entry's branch, so both are cleared by the journal
     entries this plan resolves. Counted with the close's and the tax module's own
     helpers, so the numbers are the ones those checks will see. A tenant with one
-    branch, or none, is never refused, and has no gates.
+    branch is never refused, and has no gates.
     """
     from vs_config.clock import tenant_today
 

@@ -40,7 +40,7 @@ from .constants import (
     TaxFilingStatus,
     TaxTreatment,
 )
-from .exceptions import PostingError, TaxFilingError
+from .exceptions import BranchlessTenantError, PostingError, TaxFilingError
 from .models import (
     Account,
     BankAccount,
@@ -52,6 +52,7 @@ from .models import (
     JournalLine,
     LedgerEntity,
     TaxCode,
+    TaxFiling,
     TaxFilingLine,
     TaxObligation,
 )
@@ -480,6 +481,15 @@ class UnbranchedLineTests(_ReturnsFixture):
         self.assertEqual(refused.exception.extra["unbranched_lines"], 1)
         self.assertEqual(filing.filing_status, TaxFilingStatus.DRAFT)
         self.assertFalse(TaxFilingLine.objects.filter(filing=filing).exists())
+
+    def test_a_tenant_with_no_branch_is_a_fault_not_an_unbranched_share(self):
+        bare = make_school(slug="bare-tax-returns", name="Bare Academy")
+        books = _books("BARETX", bare.tenant)
+
+        with self.assertRaises(BranchlessTenantError):
+            self.prepare(books, "VAT", 6)
+
+        self.assertFalse(TaxFiling.objects.filter(entity=books).exists())
 
     def test_unbranched_lines_count_as_the_only_branch_at_one_branch(self):
         books = self.harbour_books

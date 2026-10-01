@@ -63,9 +63,8 @@ def _raised_branch(request, entity, body, *, field="branch",
 def _transaction_branch(request, entity, body, *, field="branch"):
     """:func:`vs_rbac.scoping.raised_transaction_branch` for this entity's tenant.
 
-    Never ``None`` at a school: a whole-school caller at a school with several
-    branches names one, and at a school with one branch gets it without asking.
-    Only books with no branch at all (the platform's) raise it with none.
+    Never ``None``: a whole-tenant caller at a tenant with several branches names
+    one, and at a tenant with one branch gets it without asking.
     """
     return _rbac_raised_transaction_branch(request, entity.tenant, body, field=field)
 
