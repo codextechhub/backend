@@ -128,6 +128,7 @@ from .contracts import (
     ProcurementSnapshot,
     Receipt,
     ReceiptLine,
+    Ref,
     SchoolRef,
     Series,
     SessionRef,
@@ -789,7 +790,7 @@ class ProcurementActionPort(ABC):
     @abstractmethod
     def pay_supplier(
         self, bill: ProcDocRef, *, actor_ref: UserRef, amount: Kobo,
-        payment_date: date,
+        payment_date: date, bank_account_ref: Optional[Ref] = None,
     ) -> FinanceResult[ProcDocument]:
         """Record a vendor payment against a bill, still DRAFT and unposted.
 
@@ -800,9 +801,15 @@ class ProcurementActionPort(ABC):
         settles the bill the school chose rather than the oldest one. ``amount``
         is integer kobo, and part-payment is allowed.
 
-        :raises ProcurementStateError: the amount is not positive, or the engine
-            refused the payment.
-        :raises CrossTenantError / CrossBranchError: scope violation.
+        The payment names the bill's branch and leaves from that branch's own
+        bank account: ``bank_account_ref`` (a ``vs_finance`` BankAccount the
+        actor can reach), or, left out, the branch's one active account.
+
+        :raises ProcurementStateError: the amount is not positive, the account
+            named is another branch's, the branch has no account or several and
+            none was named, or the engine refused the payment.
+        :raises CrossTenantError / CrossBranchError: scope violation, including
+            a bank account outside the actor's reach.
         """
 
     @abstractmethod

@@ -31,6 +31,8 @@ class ProcurementChainTests(FALFixture):
         cls.approver = cls.user_for(cls.corona, "approver@corona.test")
         cls._staff_the_approver_role()
         cls.vendor = cls._vendor(cls.corona_books, "Ojo Stationers")
+        cls.ikeja_bank = cls._bank("Ikeja Operations", cls.ikeja, "71")
+        cls.lekki_bank = cls._bank("Lekki Operations", cls.lekki, "72")
 
     def setUp(self):
         super().setUp()
@@ -75,6 +77,19 @@ class ProcurementChainTests(FALFixture):
         WorkflowApproverGroupMember.objects.get_or_create(
             group=group, kind=GroupMemberKind.ROLE, role=role,
         )
+
+    @classmethod
+    def _bank(cls, name, branch, tag):
+        """A branch's own bank account, which that branch's payments leave from."""
+        from vs_finance.models import Account, BankAccount
+
+        entity_id = cls.corona_books.entity_ref
+        gl = Account.objects.create(
+            entity_id=entity_id, code=f"11{tag}", name=f"{name} cash",
+            account_type=cls.account(entity_id, "1000").account_type, is_postable=True,
+        )
+        return BankAccount.objects.create(
+            entity_id=entity_id, name=name, branch=branch, gl_account=gl)
 
     @classmethod
     def _vendor(cls, books, name):
@@ -232,6 +247,50 @@ class ProcurementChainTests(FALFixture):
         ).unwrap()
 
         self.assertEqual(order.ref.branch_ref, self.lekki.pk)
+
+    def test_a_payment_leaves_from_the_bills_own_branch_bank(self):
+        """Ikeja's bill is paid from Ikeja's account, never the school's cash."""
+        from vs_procurement.models import VendorPayment
+
+        bill = self._posted_bill()
+        payment = self.port.pay_supplier(
+            bill.ref, actor_ref=self.bursar.pk, amount=1_000_000,
+            payment_date=datetime.date(2026, 10, 20),
+        ).unwrap()
+
+        row = VendorPayment.objects.get(pk=payment.ref.doc_ref)
+        self.assertEqual(row.branch_id, self.ikeja.pk)
+        self.assertEqual(row.payment_account_id, self.ikeja_bank.gl_account_id)
+
+    def test_another_branchs_bank_account_is_refused(self):
+        from vs_procurement.models import VendorPayment
+
+        bill = self._posted_bill()
+        with self.assertRaises(ProcurementStateError):
+            self.port.pay_supplier(
+                bill.ref, actor_ref=self.bursar.pk, amount=1_000_000,
+                payment_date=datetime.date(2026, 10, 20),
+                bank_account_ref=self.lekki_bank.pk,
+            )
+        self.assertFalse(VendorPayment.objects.exists())
+
+    def test_a_branch_with_two_accounts_is_asked_which(self):
+        from vs_procurement.models import VendorPayment
+
+        self._bank("Ikeja Reserve", self.ikeja, "73")
+        bill = self._posted_bill()
+        with self.assertRaises(ProcurementStateError):
+            self.port.pay_supplier(
+                bill.ref, actor_ref=self.bursar.pk, amount=1_000_000,
+                payment_date=datetime.date(2026, 10, 20),
+            )
+        self.assertFalse(VendorPayment.objects.exists())
+        named = self.port.pay_supplier(
+            bill.ref, actor_ref=self.bursar.pk, amount=1_000_000,
+            payment_date=datetime.date(2026, 10, 20),
+            bank_account_ref=self.ikeja_bank.pk,
+        ).unwrap()
+        self.assertEqual(named.status, "DRAFT")
 
     def test_a_lekki_bursar_cannot_submit_an_ikeja_requisition(self):
         """Acting on another branch's document is refused as for a missing one."""

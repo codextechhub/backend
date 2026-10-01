@@ -523,13 +523,6 @@ def _receivable_account(entity):
     )
 
 
-def _cash_account(entity):
-    """The entity's cash/bank account, without which nothing can be paid out."""
-    from vs_finance.constants import AccountMappingKey
-
-    return _mapped_account(entity, AccountMappingKey.CASH_BANK, "cash or bank")
-
-
 def _student_row(student_ref):
     """The child this reference names, as the three facts the FAL needs, or None.
 
@@ -2253,8 +2246,46 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
             raise _translate_procurement(exc) from exc
         return _available(_proc_document(bill, overridden=False))
 
+    def _supplier_bank(self, entity, user, invoice, bank_account_ref):
+        """The bank account a payment of *invoice* leaves from.
+
+        A document is paid only from its own branch's bank account, which the
+        caller can reach (:func:`vs_finance.views_ops.base._resolve_bank_account`,
+        the check every money-out screen makes). Named, it is checked; not
+        named, the branch's one active account in reach is used, and a branch
+        with none or several is asked to name one. The account is chosen when
+        the payment is recorded, not when it posts: a payment recorded against
+        the wrong account would otherwise wait for approval and then be
+        refused.
+        """
+        from types import SimpleNamespace
+
+        from vs_finance.models import BankAccount
+        from vs_finance.views_ops.base import _resolve_bank_account
+        from vs_rbac.scoping import transaction_branch_match_q, transaction_branch_q_for_user
+
+        if bank_account_ref is not None:
+            return _resolve_bank_account(
+                SimpleNamespace(user=user), entity, bank_account_ref,
+                document_branch=invoice.branch_id, noun="supplier payment",
+            )
+        candidates = list(
+            BankAccount.objects
+            .filter(transaction_branch_q_for_user(user), entity=entity, is_active=True)
+            .filter(transaction_branch_match_q(entity.tenant, invoice.branch_id))
+            .select_related("gl_account")[:2]
+        )
+        if len(candidates) != 1:
+            raise ProcurementStateError(
+                "Name the bank account this payment leaves from (bank_account_ref): "
+                "the bill's branch has "
+                + ("no bank account." if not candidates else "more than one.")
+            )
+        return candidates[0]
+
     @envelope
-    def pay_supplier(self, bill, *, actor_ref, amount, payment_date):
+    def pay_supplier(self, bill, *, actor_ref, amount, payment_date,
+                     bank_account_ref=None):
         from vs_procurement.models import VendorPayment, VendorPaymentAllocation
 
         entity, invoice, user = self._resolve_for(bill, actor_ref)
@@ -2263,15 +2294,12 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
 
         try:
             with transaction.atomic():
+                bank = self._supplier_bank(entity, user, invoice, bank_account_ref)
                 payment = VendorPayment.objects.create(
                     entity=entity, branch_id=invoice.branch_id, vendor=invoice.vendor,
                     payment_date=payment_date, gross_amount=amount,
                     wht_amount=0, net_amount=amount, created_by=user,
-                    # Without this the payment records fine and then refuses to
-                    # post, days later, after somebody has approved it. The
-                    # account the money leaves from is part of recording the
-                    # payment, not part of posting it.
-                    payment_account=_cash_account(entity),
+                    payment_account=bank.gl_account,
                 )
                 # A draft allocation row, which the engine calls an approval
                 # instruction: it names the bill this money is for, survives the

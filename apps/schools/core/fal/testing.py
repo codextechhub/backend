@@ -638,7 +638,8 @@ class FakeProcurementActions(ProcurementActionPort):
                              document.ref.branch_ref, total, raised_by=actor_ref,
                              vendor_ref=vendor_ref, status="DRAFT"))
 
-    def pay_supplier(self, bill, *, actor_ref, amount, payment_date):
+    def pay_supplier(self, bill, *, actor_ref, amount, payment_date,
+                     bank_account_ref=None):
         document = self._get(bill)
         if amount <= 0 or amount > document.total:
             raise ProcurementStateError("The payment must be positive and within the bill.")
