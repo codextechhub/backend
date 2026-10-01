@@ -643,7 +643,7 @@ MUST SAY:
   nothing until its day.
 - Deploy: run sync_field_registry.
 
-### D99. A guardian is told when their child is suspended, and the school chooses who (not yet committed, 2026-10-01)
+### D99. A guardian is told when their child is suspended, and the school chooses who (130608cf, 2026-10-01)
 MODULES: M11 students (the suspension panel and the new setting), M04 roles and
 permissions only if the settings key needs listing, MRD. Also whichever FRD
 carries the notification event catalogue: the new event type belongs in it.
@@ -783,20 +783,26 @@ The full suite was not run.
 
 ## Undone
 
-Three items. Each says what is wrong, how to fix it, and what is stopping it.
+Two items. Each says what is wrong, how to fix it, and what is stopping it.
 Verified against the code on 2026-10-01. An item is removed from here once the
 work lands, and the commit that closed it is named in the Documents owed entry
 that carries it, so this section holds only what is genuinely still open.
 
 Two were removed on 2026-10-01 after being checked against the code rather than
 remembered, both of them stale rather than wrong when written: billing on
-withdrawal (closed by 58c30eb0, carried as D86, and recorded under item 2 above
-because its panel promise was half of that item), and the staff import's Role
+withdrawal (closed by 58c30eb0 and carried as D86: the withdrawal panel's
+"Billing stops at the effective date" is true now, because withdrawal, transfer
+and graduation deactivate the pupil's finance customer through the FAL), and the
+staff import's Role
 column (closed by ec907841 on 2026-09-29, three days after the item was filed:
 the seeded staff template now carries twelve columns and no Role among them, and
 `schools/vs_staff/imports.py` grants the school's starting role through
 `starting_role_for_import`, which is the Add form's own rule, so the two cannot
 disagree).
+
+A third went on 2026-10-01 because it was built: a guardian is now told when
+their child is suspended, the school chooses who hears it, and the reason behind
+the suspension is a field a school opens per role. Carried as D99 (130608cf).
 
 ### 1. FAL write ports for payments and concessions (deferred on purpose)
 Payments and concessions bypass the FAL and reach /v1/finance/ directly, so a
@@ -806,26 +812,7 @@ FIX: write ports - `apply_payment`, and something for concessions.
 BLOCKED BY: the fees backend step, deliberately, so that the design says what a
 payment screen and a waiver screen need before the port is shaped.
 
-### 2. A guardian is not told when their child is suspended (2026-08-30, decided 2026-10-01)
-The suspension panel prints "Guardians are notified by email" and no
-guardian-facing event type exists anywhere, so the screen promises a message the
-backend never sends. The API itself is honest; only a screen reading the mockup
-instead of the response says otherwise.
-DECIDED: who receives it is the school's own setting, defaulting to the primary
-guardian alone. A school that wants every linked adult told may say so.
-FIX: a student.suspended event type with templates, a per-tenant setting for the
-audience, and dispatch from the suspension path.
-BLOCKED BY: nothing.
-WAS ALSO HERE, NOW DONE: billing did not stop when a child was withdrawn, and
-the withdrawal panel's "Billing stops at the effective date" was untrue. Closed
-by 58c30eb0 (2026-09-30, carried as D86): withdrawal, transfer and graduation
-deactivate the pupil's finance customer through the FAL's `set_customer_active`,
-so no fee run and no "bill all active" selection bills them again, while what
-they still owe stays owed and on the debtor list; readmission reactivates them.
-The fee-assignment concept this entry said Finance needed first was not the
-shape the answer took, so do not go looking for it.
-
-### 3. School settings left out until the gradebook exists (2026-09-27)
+### 2. School settings left out until the gradebook exists (2026-09-27)
 The school Settings console (/settings) was surveyed for every rule a school
 might want to set its own way. Three were left out on purpose; revisit them
 when the gradebook is built.
