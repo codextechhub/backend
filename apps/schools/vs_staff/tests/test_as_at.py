@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from unittest import mock
 from zoneinfo import ZoneInfo
 
+from schools.vs_calendar.models import CalendarEvent, EventType
 from schools.vs_staff.constants import LeaveStatus, LeaveType
 from schools.vs_staff.models import LeaveRequest, StaffQualification
 from vs_config.clock import DEFAULT_TIME_ZONE
@@ -89,6 +90,12 @@ class StaffAsAtTests(StaffFixture):
         self.assertEqual(after, [])
 
     def test_leave_reads_as_it_stood_and_the_day_decides_on_leave(self):
+        CalendarEvent.all_objects.create(
+            tenant=self.tenant, session=self.year, branch=self.lekki,
+            name="Branch closure", event_type=EventType.HOLIDAY,
+            closes_school=True, start_date=dt.date(2026, 3, 9),
+            end_date=dt.date(2026, 3, 9),
+        )
         with recorded_on(3, 2):
             leave = LeaveRequest.all_objects.create(
                 tenant=self.tenant, staff=self.person, leave_type=LeaveType.ANNUAL,
@@ -98,9 +105,13 @@ class StaffAsAtTests(StaffFixture):
         with recorded_on(3, 3):
             leave.status = LeaveStatus.APPROVED
             leave.save()
-        pending = self.as_at("staff-leave", "2026-03-02", pk=self.person.pk).data["data"]
+        response = self.as_at("staff-leave", "2026-03-02", pk=self.person.pk)
+        self.assertEqual(response.status_code, 200, response.data)
+        pending = response.data["data"]
         running = self.as_at("staff-detail", "2026-03-05", pk=self.person.pk).data["data"]
         self.assertEqual(pending["leave"][0]["status"], LeaveStatus.PENDING)
+        self.assertEqual(pending["leave"][0]["resumption_date"], "2026-03-10")
+        self.assertTrue(pending["leave"][0]["resumption_is_estimate"])
         self.assertEqual(pending["days_taken"], [])
         self.assertTrue(running["on_leave_today"])
         self.assertEqual(running["on_leave_until"], dt.date(2026, 3, 6))

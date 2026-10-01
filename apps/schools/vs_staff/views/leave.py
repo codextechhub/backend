@@ -114,8 +114,10 @@ class StaffLeaveView(StaffViewMixin, APIView):
             counted = rows
             subject = record
         read_context = self._request_context(rows, as_at)
-        read_context["legacy_resumption_dates"] = leave_service.legacy_resumption_dates(subject, rows)
-        rules = leave_rules(subject.tenant)
+        rules = leave_rules(self.tenant)
+        read_context["legacy_resumption_dates"] = leave_service.legacy_resumption_dates(
+            subject, rows, rules=rules,
+        )
         group = next((row for row in rules.groups if row["id"] == subject.leave_group), None)
         return success_response(data={
             "leave": LeaveSerializer(rows, many=True, context={"as_at": as_at, **read_context}).data,

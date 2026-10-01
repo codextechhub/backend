@@ -134,6 +134,9 @@ def session_on(tenant, as_at: AsAt):
 def staff_at(staff, as_at: AsAt):
     """*staff* rebuilt as at *as_at*, ready for the profile's serializer.
 
+    History omits tenant ownership. The admitted live record supplies that
+    stable scope to calendar and settings reads on the reconstructed profile.
+
     Returns ``(record, children, meta)``. Raises
     :class:`vs_history.as_at.HistoryNotKept` when the history starts later.
     """
@@ -144,6 +147,7 @@ def staff_at(staff, as_at: AsAt):
     starts = require_history(spec, staff.pk, as_at, noun=f"{name}'s record")
     version = instance_at(spec, staff.pk, as_at)
     record = version
+    record.tenant_id = staff.tenant_id
     record.updated_at = version._history_version.recorded_at
     record.user = account_at(staff.user, as_at) or staff.user
     postings = version._history_version.data.get("additional_postings", [])

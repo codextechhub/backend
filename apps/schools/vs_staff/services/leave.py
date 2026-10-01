@@ -117,16 +117,13 @@ def next_working_day(staff, end_date, *, rules=None, closed=None):
     return None
 
 
-def legacy_resumption_dates(staff, rows) -> dict:
-    """Derive older requests' expected returns with one calendar lookup."""
+def legacy_resumption_dates(staff, rows, *, rules) -> dict:
+    """Derive older requests' expected returns under the caller's tenant rules."""
     from datetime import timedelta
-
-    from .rules import leave_rules
 
     dates = {row.end_date for row in rows if row.resumption_date is None}
     if not dates:
         return {}
-    rules = leave_rules(staff.tenant)
     closed = (
         closure_dates(staff, min(dates) + timedelta(days=1), max(dates) + timedelta(days=366))
         if rules.exclude_closures else set()
