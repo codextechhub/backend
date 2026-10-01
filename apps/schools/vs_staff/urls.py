@@ -51,6 +51,7 @@ from .views.records import (
     QualificationDetailView,
     QualificationListCreateView,
 )
+from .views.section_history import StaffSectionHistoryView
 from .views.roles import StaffRolesView
 from .views.settings import StaffNumberPolicyView, StaffRulesView
 from .views.teaching import (
@@ -159,6 +160,7 @@ urlpatterns = [
     path("<int:pk>/", StaffDetailView.as_view(), name="staff-detail"),
     path("<int:pk>/status/", StaffStatusView.as_view(), name="staff-status"),
     path("<int:pk>/history/", StaffHistoryView.as_view(), name="staff-history"),
+    path("<int:pk>/section-history/", StaffSectionHistoryView.as_view(), name="staff-section-history"),
     path("<int:pk>/roles/", StaffRolesView.as_view(), name="staff-roles"),
     path(
         "<int:pk>/qualifications/", QualificationListCreateView.as_view(),

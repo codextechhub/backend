@@ -154,27 +154,29 @@ class StaffHistoryView(StaffViewMixin, APIView):
         from .. import as_at as past
 
         staff, _access, admission = self.admit_profile_read(pk)
+        from ..services.visibility import ADMITTED_KEY
+
+        show_private_notes = admission == ADMITTED_KEY
         as_at = parse_as_at(request)
         self.refuse_as_at_unless_full(as_at, admission)
         rows = staff.employment_events.select_related("changed_by")
         if as_at is not None:
             past.staff_at(staff, as_at)
             rows = rows.filter(created_at__lt=as_at.moment)
-        events = [
-            {
-                "kind": "employment",
-                "at": row.created_at,
-                **EmploymentEventSerializer(row).data,
-            }
-            for row in rows
-        ]
+        events = []
+        for row in rows:
+            detail = dict(EmploymentEventSerializer(row).data)
+            if not show_private_notes:
+                detail.pop("reason", None)
+                detail.pop("note", None)
+            events.append({"kind": "employment", "at": row.created_at, **detail})
         timeline = sorted(
-            events + self._account_events(staff, as_at),
+            events + self._account_events(staff, as_at, show_private_notes),
             key=lambda row: row["at"], reverse=True,
         )
         return success_response(data={"entries": timeline})
 
-    def _account_events(self, staff, as_at=None):
+    def _account_events(self, staff, as_at=None, show_private_notes=False):
         """The identity layer's half, read from the audit trail it writes to.
 
         Every account action is recorded by ``vs_user.services.audit.
@@ -215,7 +217,7 @@ class StaffHistoryView(StaffViewMixin, APIView):
                 "at": row.event_at,
                 "event": event,
                 "label": labels.get(event, event),
-                "note": str(row.metadata.get("note") or "") if event == "EMAIL_CHANGED" else "",
+                "note": str(row.metadata.get("note") or "") if show_private_notes and event == "EMAIL_CHANGED" else "",
                 "actor": (
                     {
                         "id": actor.pk,
