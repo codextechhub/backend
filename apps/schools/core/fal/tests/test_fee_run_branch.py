@@ -251,17 +251,53 @@ class AccountFollowsPupilTests(RouteFixture):
             "to_branch": "Lekki", "to_branch_id": self.lekki.pk,
         }])
 
-        entry = FinanceAuditLog.objects.get(
+        entries = FinanceAuditLog.objects.filter(
             action=FinanceAuditAction.CUSTOMER_UPDATED, target_id=str(self.account.pk),
         )
-        self.assertEqual(entry.before, {"branch_id": self.ikeja.pk})
-        self.assertEqual(entry.after, {"branch_id": self.lekki.pk})
-        self.assertEqual(entry.branch_id, self.lekki.pk)
-        self.assertEqual(entry.actor_id, self.bursar.pk)
-        self.assertIn("from Ikeja to Lekki", entry.message)
         self.assertEqual(
-            (entry.metadata["from_branch"], entry.metadata["to_branch"]), ("Ikeja", "Lekki"),
+            sorted(entries.values_list("branch_id", flat=True)),
+            sorted([self.ikeja.pk, self.lekki.pk]),
         )
+        for entry in entries:
+            self.assertEqual(entry.before, {"branch_id": self.ikeja.pk})
+            self.assertEqual(entry.after, {"branch_id": self.lekki.pk})
+            self.assertEqual(entry.actor_id, self.bursar.pk)
+            self.assertEqual(
+                (entry.metadata["from_branch"], entry.metadata["to_branch"]),
+                ("Ikeja", "Lekki"),
+            )
+        self.assertIn("moved to Lekki", entries.get(branch=self.ikeja).message)
+        self.assertIn("moved from Ikeja", entries.get(branch=self.lekki).message)
+
+    def audit_reader(self, email, branch=None):
+        user = self.user_for(self.corona, email)
+        self.grant(user, "finance.audit.view", branch=branch)
+        return self.client_for(user)
+
+    def move_messages(self, client):
+        res = client.get(
+            f"/v1/finance/audit-logs/?entity=CORONA&page_size=100&tenant={self.slug}"
+            f"&action=CUSTOMER_UPDATED"
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        return [
+            row["message"] for row in res.data["data"]
+            if row["target_id"] == str(self.account.pk)
+        ]
+
+    def test_each_branch_reads_its_own_side_of_the_move(self):
+        """Ikeja reads why Tunde left; Lekki reads that they arrived; the school both."""
+        self.bill_second_term(self.tunde)
+
+        ikeja = self.move_messages(self.audit_reader("audit-ikeja@corona.test", self.ikeja))
+        lekki = self.move_messages(self.audit_reader("audit-lekki@corona.test", self.lekki))
+        school = self.move_messages(self.audit_reader("audit-all@corona.test"))
+
+        self.assertEqual(len(ikeja), 1, ikeja)
+        self.assertIn("moved to Lekki", ikeja[0])
+        self.assertEqual(len(lekki), 1, lekki)
+        self.assertIn("moved from Ikeja", lekki[0])
+        self.assertEqual(sorted(school), sorted(ikeja + lekki))
 
     def test_the_old_bill_stays_with_the_branch_that_raised_it(self):
         self.bill_second_term(self.tunde)

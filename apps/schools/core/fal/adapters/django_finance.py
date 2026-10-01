@@ -949,13 +949,21 @@ def _refile_accounts(to_bill, moves, *, actor_user):
 
     Each move goes through :func:`vs_finance.customers.update_customer`, the
     one way an account is changed, under its row lock, and is written to the
-    finance audit trail as its own entry: before and after carry the branch
-    ids, the message names the account and both branches, and the entry is
-    filed under the account's branch as it now stands, by the audit trail's
-    rule that an entry takes the branch of the record it is about. Returns the
-    moves as :class:`~schools.core.fal.contracts.AccountMove` values, in the
-    order the run bills.
+    finance audit trail once for each side, because a branch-bound reader sees
+    only their own branches' entries:
+
+    * the entry ``update_customer`` writes is the arriving side, filed under
+      Lekki ("moved from Ikeja"), the account's branch as it now stands;
+    * a second entry is the leaving side, filed under Ikeja ("moved to Lekki,
+      where the pupil attends"), so Ikeja's bursar, wondering why Tunde left
+      their list while still owing First Term, finds the reason.
+
+    Both carry the branch ids before and after and no money figure. Returns
+    the moves as :class:`~schools.core.fal.contracts.AccountMove` values, in
+    the order the run bills.
     """
+    from vs_finance.audit import record
+    from vs_finance.constants import FinanceAuditAction
     from vs_finance.customers import update_customer
     from vs_tenants.models import Branch
 
@@ -971,14 +979,24 @@ def _refile_accounts(to_bill, moves, *, actor_user):
         if customer.pk not in moves or customer.pk in {m.customer_ref for m in done}:
             continue
         from_id, to_id = customer.branch_id, moves[customer.pk]
+        details = {"from_branch": names[from_id], "to_branch": names[to_id]}
         update_customer(
             customer, {"branch_id": to_id}, actor_user=actor_user,
             message=(
-                f"Moved customer {customer.code} ({customer.name}) from "
-                f"{names[from_id]} to {names[to_id]}, the branch they attend, "
-                f"when their fees were billed there."
+                f"Customer {customer.code} ({customer.name}) moved from "
+                f"{names[from_id]}, billed here where the pupil attends."
             ),
-            from_branch=names[from_id], to_branch=names[to_id],
+            **details,
+        )
+        record(
+            entity=customer.entity, action=FinanceAuditAction.CUSTOMER_UPDATED,
+            actor_user=actor_user, target=customer, branch=from_id,
+            message=(
+                f"Customer {customer.code} ({customer.name}) moved to "
+                f"{names[to_id]}, where the pupil attends. Bills raised here "
+                f"stay here."
+            ),
+            before={"branch_id": from_id}, after={"branch_id": to_id}, **details,
         )
         done.append(AccountMove(
             customer_ref=customer.pk, student_ref=customer.source_id,
