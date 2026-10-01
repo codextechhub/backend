@@ -1,8 +1,9 @@
 """Custody settings, branch subaccounts and settlement matching (``/v1/payments/``).
 
 * ``settings/custody/``: the tenant's custody mode, its pending change and the
-  settlement interval, with every branch's collection account and whether it is
-  set up with the provider. Read with ``payments.settings.view``; changed with
+  settlement interval, with each branch's collection account, whether it is set
+  up with the provider and what the platform holds for it, for the branches the
+  caller reaches. Read with ``payments.settings.view``; changed with
   ``payments.settings.update`` by a whole-tenant caller only, since the mode binds
   every branch (:class:`vs_rbac.scoping.WholeTenantWriteMixin`).
 * ``subaccounts/``: create or refresh the provider subaccount behind one branch's
@@ -52,21 +53,22 @@ def _bank_row(bank):
     }
 
 
-def _branch_rows(entity):
-    """Every branch of the tenant with its collection account and what the platform holds for it."""
-    from vs_tenants.models import Branch
+def _branch_rows(reach):
+    """Each branch in reach with its collection account and what the platform holds for it.
 
-    from .models import HeldBalance
-
-    if not entity.tenant_id:
+    A branch-bound reader gets their own branches' rows only: another branch's
+    collection account and held balance are that branch's money, so they are
+    absent, not blanked. A whole-school reader gets every branch.
+    """
+    if not reach.entity.tenant_id:
         return []
-    held = dict(HeldBalance.objects.filter(tenant_id=entity.tenant_id)
-                .values_list("branch_id", "balance"))
+    held = dict(reach.held_balances().values_list("branch_id", "balance"))
     return [
         {"branch": branch.pk, "branch_name": branch.name,
-         "collection_account": _bank_row(custody.branch_collection_account(entity, branch.pk)),
+         "collection_account": _bank_row(
+             custody.branch_collection_account(reach.entity, branch.pk)),
          "held_balance": int(held.get(branch.pk, 0))}
-        for branch in Branch.all_objects.filter(tenant_id=entity.tenant_id).order_by("name")
+        for branch in reach.branches().order_by("name")
     ]
 
 
@@ -91,7 +93,7 @@ class CustodySettingsView(WholeTenantWriteMixin, APIView):
     def _payload(self, entity, row):
         tenant = entity.tenant if entity.tenant_id else None
         return {"settings": custody.serialize_custody(row, tenant),
-                "branches": _branch_rows(entity)}
+                "branches": _branch_rows(PaymentsReach.for_request(self.request, entity))}
 
     def get(self, request):
         entity = resolve_entity(request)
@@ -205,9 +207,10 @@ class HeldSettlementListView(APIView):
     """GET: the platform's settlement runs paying this tenant's branches what it held for them.
 
     Read with ``payments.report.view``, narrowed to the caller's branches as every
-    transaction is (:func:`vs_rbac.scoping.transaction_branch_q`): a Lekki bursar
-    sees Lekki's settlements only. ``?status=`` filters by ``PENDING``, ``PAID`` or
-    ``FAILED``; ``?limit=`` caps the page (at most 200). Newest first.
+    payments read is (:meth:`vs_payments.reach.PaymentsReach.held_settlements`): a
+    Lekki bursar sees Lekki's settlements only. ``?status=`` filters by
+    ``PENDING``, ``PAID`` or ``FAILED``; ``?limit=`` caps the page (at most 200).
+    Newest first.
 
     docstring-name: Held settlements
     """
@@ -216,14 +219,10 @@ class HeldSettlementListView(APIView):
     rbac_permission = "payments.report.view"
 
     def get(self, request):
-        from vs_rbac.scoping import transaction_branch_q
-
         from .constants import HeldSettlementStatus
-        from .models import HeldSettlement
 
         entity = resolve_entity(request)
-        rows = (HeldSettlement.objects.filter(entity=entity)
-                .filter(transaction_branch_q(request))
+        rows = (PaymentsReach.for_request(request, entity).held_settlements()
                 .select_related("branch", "bank_account", "batch")
                 .order_by("-id"))
         status = str(request.query_params.get("status") or "").strip().upper()
@@ -231,17 +230,13 @@ class HeldSettlementListView(APIView):
             if status not in HeldSettlementStatus.values:
                 raise ValidationError({"status": f"Use one of: {', '.join(HeldSettlementStatus.values)}."})
             rows = rows.filter(status=status)
-        try:
-            limit = min(max(int(request.query_params.get("limit") or 50), 1),
-                        _HELD_SETTLEMENT_LIMIT)
-        except ValueError as exc:
-            raise ValidationError({"limit": "Expected a whole number."}) from exc
         rows = list(rows[:_limit(request)])
         return success_response("Held settlements retrieved.",
                                 data=[_settlement_row(row) for row in rows])
 
 
 def _limit(request):
+    """The page size ``?limit=`` asks for: 50 by default, at least 1, at most 200."""
     try:
         return min(max(int(request.query_params.get("limit") or 50), 1), _HELD_SETTLEMENT_LIMIT)
     except ValueError as exc:
