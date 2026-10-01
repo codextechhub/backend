@@ -620,6 +620,7 @@ def _post_journal_atomic(
         account = line.account  # Account on this line.
         if not (account.is_active and account.is_postable):  # Inactive/header accounts cannot post.
             raise InactiveAccountError(account_code=account.code)
+    _ensure_counterparties(entry, lines)
 
     if not allow_control_accounts:
         from .control_accounts import HAND_SOURCES, ensure_no_control_lines
@@ -643,6 +644,35 @@ def _post_journal_atomic(
         debit=total_debit, credit=total_credit,  # Structured totals.
     )
     return entry  # Return posted journal.
+
+
+def _ensure_counterparties(entry, lines) -> None:
+    """Refuse an inter-branch line whose counterparty is its own branch or another tenant's.
+
+    A line naming a counterparty branch says "this branch's balance with that
+    one". Naming the entry's own branch would book a balance a branch owes
+    itself, and naming another tenant's branch would carry a balance across
+    tenants, so both are refused. Lines naming none, which is every other line,
+    cost nothing here.
+    """
+    named = {line.counterparty_branch_id for line in lines if line.counterparty_branch_id}
+    if not named:
+        return
+    from vs_tenants.models import Branch
+
+    if entry.branch_id in named:
+        raise PostingError(
+            f"Journal {entry.document_number or entry.pk} names its own branch as the "
+            f"other branch of an inter-branch line.",
+        )
+    tenants = set(
+        Branch.all_objects.filter(pk__in=named).values_list("tenant_id", flat=True)
+    )
+    if tenants != {entry.entity.tenant_id}:
+        raise PostingError(
+            f"Journal {entry.document_number or entry.pk} names a branch outside these "
+            f"books as the other branch of an inter-branch line.",
+        )
 
 
 def _journal_document_owner(entry):
@@ -670,6 +700,11 @@ def _journal_document_owner(entry):
     the run, because cancelling the run is the only thing that may reverse them
     (each on its own branch). Reversing one share's journal by hand would put that
     branch's salary cost back while the run still read posted.
+
+    An inter-branch transfer posts one journal per branch through its two
+    :class:`~vs_finance.models.InterBranchTransferLeg` rows; both belong to the
+    transfer, since reversing one side alone would leave one branch owed money
+    the other no longer owes.
 
     A stock movement names the journal it was valued in, and so does the goods
     receipt or goods return that raised that journal. The document wins: a stock
@@ -712,6 +747,8 @@ def _journal_document_owner(entry):
             owner = owner.note
         elif type(owner).__name__ == "PayrollRunBranch":
             owner = owner.run
+        elif type(owner).__name__ == "InterBranchTransferLeg":
+            owner = owner.transfer
         return owner
     if stock_movement is not None:
         return stock_movement
@@ -750,6 +787,8 @@ _DOCUMENT_VOID_ROUTES = {
     "Concession": ("CONCESSION", "finance/concessions/{pk}/void/"),
     "BankTransaction": ("BANK_TRANSACTION", "finance/bank-transactions/{pk}/void/"),
     "BankTransfer": ("BANK_TRANSFER", "finance/bank-transfers/{pk}/void/"),
+    "InterBranchTransfer": ("INTER_BRANCH_TRANSFER", "finance/inter-branch-transfers/{pk}/void/"),
+    "HeldForBranchReceipt": ("HELD_RECEIPT", "finance/held-receipts/{pk}/void/"),
     "VendorInvoice": ("VENDOR_INVOICE", "procurement/vendor-invoices/{pk}/void/"),
     "VendorCreditNote": ("VENDOR_CREDIT_NOTE", "procurement/vendor-credit-notes/{pk}/void/"),
     "VendorPayment": ("VENDOR_PAYMENT", "procurement/vendor-payments/{pk}/reverse/"),
@@ -926,6 +965,7 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
             description=f"Reversal: {line.description}".strip(": "),  # Label reversal line.
             cost_center=line.cost_center,  # Preserve analytics.
             dimensions=line.dimensions,  # Preserve dimensions.
+            counterparty_branch_id=line.counterparty_branch_id,  # Same inter-branch pair.
             line_no=line.line_no,  # Preserve line order.
         )
 

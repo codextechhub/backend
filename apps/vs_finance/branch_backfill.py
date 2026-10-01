@@ -249,6 +249,21 @@ _TARGETS = (
     Target(CREDIT_NOTE, (via("the invoice", "invoice", INVOICE), customer()), order=30),
     Target("vs_finance.BankTransaction", (via("the bank account", "bank_account", BANK_ACCOUNT),), order=20),
     Target("vs_finance.BankTransfer", (via("the sending bank account", "from_account", BANK_ACCOUNT),), order=20),
+    # Inter-branch documents are raised with both branches named and never blank;
+    # they are listed so a row written blank by hand is still placed or flagged.
+    Target(
+        "vs_finance.InterBranchTransfer",
+        (via("the sending bank account", "from_bank_account", BANK_ACCOUNT),), order=20,
+        no_source_note="an inter-branch transfer names its sending branch; an administrator decides which",
+    ),
+    Target(
+        "vs_finance.HeldForBranchReceipt",
+        (via("the bank account that received it", "bank_account", BANK_ACCOUNT),), order=20,
+    ),
+    Target(
+        "vs_finance.InterBranchRecharge", (), order=20,
+        no_source_note="a recharge names the branch that paid the cost; an administrator decides which",
+    ),
     Target(
         "vs_finance.WriteOffRequest",
         (via("the invoice", "invoice", INVOICE), customer("invoice__customer")),
@@ -334,6 +349,10 @@ _JOURNAL_OWNERS = (
     JournalOwner("vs_finance.PettyCashVoucher", "journal"),
     JournalOwner("vs_finance.BankTransaction", "journal"),
     JournalOwner("vs_finance.BankTransfer", "journal"),
+    # Each side of an inter-branch transfer is its own branch's journal; the leg
+    # always carries that branch, so it needs no target of its own.
+    JournalOwner("vs_finance.InterBranchTransferLeg", "journal"),
+    JournalOwner("vs_finance.HeldForBranchReceipt", "journal"),
     JournalOwner("vs_finance.TaxFiling", "filing_journal"),
     JournalOwner("vs_finance.TaxFilingShare", "filing_journal"),
     JournalOwner("vs_finance.TaxRemittance", "journal"),

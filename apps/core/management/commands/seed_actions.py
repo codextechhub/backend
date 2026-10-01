@@ -94,6 +94,8 @@ ACTIONS: list[tuple[str, str]] = [
     ("replenish",  "Replenish a petty-cash float back to its imprest level."),
     ("file",       "File a statutory return (VAT, WHT, PAYE) with the authority."),
     ("approve_senior", "Provide senior-tier approval for high-value records above threshold."),
+    ("request",    "Ask another branch or party to act (one branch asking another for money)."),
+    ("recharge",   "Recharge a shared cost one branch paid to the other branches that share it."),
 
     # ── Procurement-specific ──────────────────────────────────────────────────
     ("renew",      "Renew a contract or agreement into a successor term."),

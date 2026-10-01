@@ -804,6 +804,47 @@ MUST SAY:
   person's retired structure.
 Verified: vs_finance 1585 OK, vs_rbac 981 OK. The full suite was not run.
 
+### D102. Branches lend, forward, recharge and move stock between themselves, and a pupil's whole account moves with them (hash pending, 2026-10-01)
+MODULES: M19 finance and accounting (inter-branch transfers, receivables, period
+close, chart of accounts), M20 procurement and inventory (stock transfers), M04
+roles and permissions (the finance.interbranch keys), M11 students only for the
+FAL move once the guides session wires it, MRD.
+MUST SAY:
+- Inter-branch transfers (M19). A branch sends money to another; the sender sends
+  and the receiving branch confirms arrival; each side posts its own journal
+  through INTER_BRANCH 1260, every line naming its counterparty branch. Declined
+  and voided transfers reverse both sides; a void needs somebody who works in
+  both branches and is refused while either bank side is reconciled.
+- Money held for another branch (M19). A branch that collects another's money
+  books it to HELD_FOR_OTHER_BRANCHES 2190 and forwards it.
+- Recharges and shared cost rules (M19). A branch bills another for shared costs,
+  by hand or by a standing split rule; rules are whole-school configuration.
+- Stock transfers (M20). Stock moves between branches' stores at cost.
+- Moving a pupil's account (M19, M11). `transfer_open_receivables` moves open
+  invoices and debit notes, unapplied credit (less pending refund reservations,
+  re-applied at the new branch when auto-apply is on) and the unreleased deferred
+  income of each moved invoice; earned income stays with the old branch, which is
+  owed it through the inter-branch account. Moved documents cannot be voided on
+  their own while the move stands; a move can be voided while nothing moved has
+  been paid, credited or released at the new branch.
+- Period close (M19). `inter_branch_balanced` blocks the tenant close unless the
+  inter-branch account nets to zero, each pair's two sides agree and no line
+  lacks a counterparty; for a single branch it warns.
+- Permissions (M04): finance.interbranch.view, request, transfer, confirm,
+  recharge, reverse.
+- Routes: /v1/finance/inter-branch-transfers/ (requests/, receivable-moves/,
+  <id>/send|decline|confirm|void/), inter-branch-balances/, held-receipts/
+  (forward, void), recharges/, shared-cost-rules/,
+  /v1/procurement/stock-items/<id>/transfer/.
+- Migrations: vs_finance 0052, 0053; vs_procurement 0043.
+KNOWN LIMIT: a credit note at the new branch that reaches back into an earned
+share still unreleased at the old branch debits the new branch's deferred income
+for it (fix in progress, 2026-10-01).
+Verified: vs_finance.tests_inter_branch 47 OK, vs_finance 1623 OK, vs_procurement
+727 OK, vs_payments 403 OK, vs_rbac 973 OK, schools.core.fal 288 OK, vs_health 51
+OK, core 193 OK (on ef3f2769); with 20fa340c on top, tests_inter_branch,
+tests_payroll_roster_rules and tests_ledger_lock 95 OK. The full suite was not run.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

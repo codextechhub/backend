@@ -22,7 +22,7 @@ single-location school keep calling these services unchanged. Once an entity has
 than one, a call that does not say where is refused: guessing which branch stock left
 is the defect this exists to fix.
 
-Three movement kinds touch the ledger:
+Four movement kinds touch the ledger:
 
 * **receipt**  - :func:`receive_stock`, called from :func:`vs_procurement.purchasing.post_grn`
   for a stock-tracked GRN line. Raises qty/value at the purchase cost; the GRN journal
@@ -31,6 +31,10 @@ Three movement kinds touch the ledger:
   posts **Dr expense, Cr inventory**.
 * **adjustment** - :func:`adjust_stock`. A signed stock-count / shrinkage / write-up
   correction, posting the value delta between inventory and an adjustment account.
+* **transfer** - :func:`transfer_stock`. Goods moved from one store to another at the
+  sending store's moving average. Between two branches' stores it books an
+  inter-branch goods transfer, and the receiving branch owes the cost; between two
+  stores of one branch it posts nothing.
 
 """
 from __future__ import annotations
@@ -517,3 +521,125 @@ def _adjust_stock_atomic(stock_item, *, quantity_delta, movement_date, location=
         journal_id=entry.pk, value=value, location_id=location.pk,
     )
     return movement
+
+
+# --------------------------------------------------------------------------- #
+# Transfer between stores                                                      #
+# --------------------------------------------------------------------------- #
+
+def transfer_stock(stock_item, *, quantity, movement_date, from_location, to_location,
+                   actor_user=None, reference="", narration=""):
+    """Move ``quantity`` from one store to another at the sending store's moving average.
+
+    Two TRANSFER movements are written, out of ``from_location`` and into
+    ``to_location``, each with the same value, so the receiving store's average
+    takes in the cost the goods stood at where they left.
+
+    * Two stores of the **same branch** post nothing: the goods stay in the same
+      inventory account of the same branch's books.
+    * Stores of **two branches** book an inter-branch goods transfer
+      (:func:`vs_finance.inter_branch.book_goods_transfer`): the sending branch's
+      inventory goes down and it is owed the cost, the receiving branch's goes up
+      and it owes it. Each movement names its branch's journal. A store not yet
+      given a branch, at a tenant with several, cannot take part: nobody can say
+      whose books the goods would leave.
+
+    Records a durable rejection audit on any :class:`FinanceError`, then
+    re-raises. A transfer is undone by transferring the goods back. Returns the
+    outgoing movement; its ``paired_movement`` is the incoming one.
+    """
+    try:
+        return _transfer_stock_atomic(
+            stock_item, quantity=quantity, movement_date=movement_date,
+            from_location=from_location, to_location=to_location, actor_user=actor_user,
+            reference=reference, narration=narration,
+        )
+    except FinanceError as exc:
+        record_rejection(
+            entity=stock_item.entity, action=FinanceAuditAction.STOCK_TRANSFERRED,
+            exc=exc, actor_user=actor_user, target=stock_item,
+            branch=_store_branch(stock_item, from_location),
+        )
+        raise
+
+
+@transaction.atomic
+def _transfer_stock_atomic(stock_item, *, quantity, movement_date, from_location, to_location,
+                           actor_user=None, reference="", narration=""):
+    """Write both movements, and both branches' journals when the stores' branches differ."""
+    from vs_rbac.scoping import same_transaction_branch
+
+    stock_item = _lock_stock_item(stock_item)
+    quantity = _dec(quantity)
+    if quantity <= 0:
+        raise StockError("A stock transfer must have a positive quantity.")
+    if from_location is None or to_location is None:
+        raise StockError("Name the store the goods leave and the store they go to.")
+    entity = stock_item.entity
+    source = resolve_location(entity, from_location)
+    target = resolve_location(entity, to_location)
+    if source.pk == target.pk:
+        raise StockError("Choose two different stores to move stock between.")
+    # Lock both balances in id order, so two opposite transfers cannot deadlock.
+    first, second = sorted((source, target), key=lambda store: store.pk)
+    balances = {first.pk: lock_balance(stock_item, first), second.pk: lock_balance(stock_item, second)}
+    out_balance, in_balance = balances[source.pk], balances[target.pk]
+    on_hand = _dec(out_balance.on_hand_qty)
+    if quantity > on_hand:
+        raise InsufficientStockError(
+            item_code=f"{stock_item.code}@{source.code}", requested=quantity, on_hand=on_hand,
+        )
+    value = _issue_value(out_balance, quantity)
+    if value <= 0:
+        raise StockError("A stock transfer must have a positive value to move.")
+
+    transfer = None
+    legs = {}
+    if not same_transaction_branch(entity.tenant_id, source.branch_id, target.branch_id):
+        from vs_finance.inter_branch import book_goods_transfer, leg_journals
+
+        for store in (source, target):
+            if store.branch_id is None:
+                raise StockError(
+                    f"Store {store.code} has not been given a branch, so goods cannot move "
+                    f"between it and another branch's store. Give it its branch first.",
+                )
+        transfer = book_goods_transfer(
+            entity, from_branch=source.branch_id, to_branch=target.branch_id, amount=value,
+            transfer_date=movement_date, inventory_account=stock_item.inventory_account,
+            purpose=narration or f"{quantity} of {stock_item.code} from {source.code} to {target.code}",
+            reference=reference, actor_user=actor_user,
+        )
+        legs = leg_journals(transfer)
+
+    text = narration or f"Moved from {source.code} to {target.code}"
+    incoming = _record_movement(
+        stock_item, in_balance, movement_type=StockMovementType.TRANSFER,
+        quantity=quantity, value_amount=value, movement_date=movement_date,
+        journal=legs.get("RECEIVING"), actor_user=actor_user, reference=reference,
+        narration=text,
+    )
+    outgoing = _record_movement(
+        stock_item, out_balance, movement_type=StockMovementType.TRANSFER,
+        quantity=-quantity, value_amount=-value, movement_date=movement_date,
+        journal=legs.get("SENDING"), actor_user=actor_user, reference=reference,
+        narration=text,
+    )
+    outgoing.paired_movement = incoming
+    outgoing.inter_branch_transfer = transfer
+    outgoing.save(update_fields=["paired_movement", "inter_branch_transfer", "updated_at"])
+    if transfer is not None:
+        incoming.inter_branch_transfer = transfer
+        incoming.save(update_fields=["inter_branch_transfer", "updated_at"])
+    for store, movement in ((source, outgoing), (target, incoming)):
+        record(
+            entity=entity, action=FinanceAuditAction.STOCK_TRANSFERRED,
+            actor_user=actor_user, target=stock_item, branch=store.branch_id,
+            message=(
+                f"Moved {quantity} of {stock_item.code} from {source.code} to {target.code} "
+                f"({format_naira(value)})."
+            ),
+            movement_id=movement.pk, location_id=store.pk, value=value,
+            inter_branch_transfer_id=getattr(transfer, "pk", None),
+        )
+    return outgoing

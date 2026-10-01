@@ -10,7 +10,7 @@ Money into or out of the bank with no customer or supplier behind it (owner
 capital, a loan, interest) is a bank transaction: it names the bank account, carries
 that account's branch and posts through the banking service. Money between two of
 Ikeja's own accounts (Zenith to GTBank) is a transfer; money between Ikeja's and
-Lekki's accounts is an inter-branch transfer, which is not built, and is refused.
+Lekki's accounts is an inter-branch transfer, a different document, and is refused here.
 
 Both are transactions, so they follow the branch rules every transaction does. A
 branch-bound bursar reads and moves only their own branches' money, and an account

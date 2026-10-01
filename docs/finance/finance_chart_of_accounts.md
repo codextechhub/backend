@@ -80,6 +80,8 @@ posting is refused with the missing account named.
 | `DOUBTFUL_DEBT_ALLOWANCE` | 1290 Allowance for Doubtful Debts | asset (contra, credit balance) | set by provision runs, used by write-offs |
 | `VENDOR_ADVANCE` | 1240 Vendor Advances | asset | money paid to a vendor before their bill |
 | `INVENTORY_ASSET` | 1400 Inventory | asset | stock |
+| `INTER_BRANCH` | 1260 Inter-branch Balances | asset (a branch that owes more than it is owed carries a credit balance) | what each branch is owed by or owes to each other branch; every line names its counterparty, and it nets to zero across all branches |
+| `HELD_FOR_OTHER_BRANCHES` | 2190 Held for Other Branches | liability | money one branch received that belongs to another, until forwarded |
 | `ACCOUNTS_PAYABLE` | 2100 Accounts Payable | liability | vendor AP control |
 | `CUSTOMER_CREDIT` | 2140 Customer Credit | liability | unapplied receipts, overpayments, credit notes |
 | `GRIR_CLEARING` | 2150 GR/IR Clearing | liability | goods received, not yet billed |
@@ -94,6 +96,12 @@ posting is refused with the missing account named.
 | `PURCHASE_PRICE_VARIANCE` | 5160 Purchase Price Variance | expense | receipt-to-bill price differences |
 | `BAD_DEBT_EXPENSE` | 5350 Bad Debts | expense | write-offs beyond the allowance, provision movements |
 | `BANK_CHARGES` | 5500 Bank Charges | expense | bank reconciliation adjustments |
+
+1260 and 2190 are part of the starter chart and are kept by the inter-branch
+ledger, so a typed journal cannot touch them. Books seeded before them receive
+them from migration `0053_inter_branch_accounts`; where a code is already taken,
+the first free code in the range (1261-1299, 2191-2199) is created and mapped to
+the role.
 
 The six accounts behind the receivables accruals (1290, 2160, 2170, 4810, 4820,
 5350) are part of the starter chart. Books whose chart was seeded before them

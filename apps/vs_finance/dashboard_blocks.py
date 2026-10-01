@@ -58,6 +58,7 @@ APPROVAL_TYPES = {
     "finance.journal": ("journal", "journals"),
     "finance.bank_transaction": ("bank transaction", "bank transactions"),
     "finance.bank_transfer": ("transfer between own accounts", "transfers between own accounts"),
+    "finance.inter_branch_transfer": ("inter-branch transfer", "inter-branch transfers"),
     "payments.payout_batch": ("payout", "payouts"),
 }
 

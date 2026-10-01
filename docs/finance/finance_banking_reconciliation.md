@@ -168,6 +168,11 @@ returns the line to `UNMATCHED`.
 - ✅ **`book-lines/` now paginates** (was capped at 200).
 - **Import doesn't validate** opening/closing against the GL - it records what the
   bank said; the difference surfaces later in the reconciliation snapshot.
+- **An inter-branch transfer appears on both banks' reconciliations.** Its sending
+  journal credits the sending branch's bank ledger and its receiving journal (or, for
+  a forwarded receipt, the receipt it raised) debits the receiving branch's, both on
+  the transfer date. Once either side is matched to a statement line the transfer can
+  no longer be voided; unmatch it first.
 
 ## 9. Permissions & tenant isolation
 

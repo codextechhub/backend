@@ -94,6 +94,9 @@ class DocType(models.TextChoices):
     BANK_TRANSFER = "BX", "Transfer Between Own Accounts"
     CUSTOMER_CREDIT_TRANSFER = "CT", "Customer Credit Transfer"
     DOUBTFUL_DEBT_PROVISION = "DP", "Doubtful-debt Provision"
+    INTER_BRANCH_TRANSFER = "IB", "Inter-branch Transfer"
+    HELD_RECEIPT = "HF", "Receipt Held for Another Branch"
+    RECHARGE = "RG", "Inter-branch Recharge"
 
 # Define Account Type values.
 class AccountType(models.TextChoices):
@@ -762,6 +765,58 @@ class FinanceAuditAction(models.TextChoices):
     SALARY_STRUCTURE_CHANGED = "SALARY_STRUCTURE_CHANGED", "Salary structure changed"
     PAYROLL_DEDUCTION_CHANGED = "PAYROLL_DEDUCTION_CHANGED", "Payroll deduction changed"
     PAYSLIPS_ISSUED = "PAYSLIPS_ISSUED", "Payslips issued"
+    INTER_BRANCH_REQUESTED = "INTER_BRANCH_REQUESTED", "Inter-branch transfer requested"
+    INTER_BRANCH_SENT = "INTER_BRANCH_SENT", "Inter-branch transfer sent"
+    INTER_BRANCH_DECLINED = "INTER_BRANCH_DECLINED", "Inter-branch transfer request declined"
+    INTER_BRANCH_CONFIRMED = "INTER_BRANCH_CONFIRMED", "Inter-branch transfer arrival confirmed"
+    INTER_BRANCH_VOIDED = "INTER_BRANCH_VOIDED", "Inter-branch transfer voided"
+    HELD_RECEIPT_POSTED = "HELD_RECEIPT_POSTED", "Receipt held for another branch"
+    HELD_RECEIPT_VOIDED = "HELD_RECEIPT_VOIDED", "Receipt held for another branch voided"
+    RECHARGE_POSTED = "RECHARGE_POSTED", "Shared cost recharged to other branches"
+    RECHARGE_VOIDED = "RECHARGE_VOIDED", "Shared cost recharge voided"
+    RECEIVABLE_TRANSFERRED = "RECEIVABLE_TRANSFERRED", "Open receivable moved to another branch"
+    SHARED_COST_RULE_CHANGED = "SHARED_COST_RULE_CHANGED", "Shared cost rule changed"
+    STOCK_TRANSFERRED = "STOCK_TRANSFERRED", "Stock moved between stores"
+
+
+class InterBranchTransferKind(models.TextChoices):
+    """What an inter-branch transfer moves between two branches.
+
+    Only CASH and FORWARDED_RECEIPT move money between banks. The others move a
+    balance and leave cash where it is; the owing branch settles later with a
+    cash transfer the other way.
+    """
+    CASH = "CASH", "Cash"
+    FORWARDED_RECEIPT = "FORWARDED_RECEIPT", "Forwarded receipt"
+    RECEIVABLE = "RECEIVABLE", "Receivable"
+    RECHARGE = "RECHARGE", "Recharge"
+    GOODS = "GOODS", "Goods"
+
+
+class InterBranchLegRole(models.TextChoices):
+    """Which side of an inter-branch transfer a leg books."""
+    SENDING = "SENDING", "Sending branch"
+    RECEIVING = "RECEIVING", "Receiving branch"
+
+
+class ReceivableMoveItemKind(models.TextChoices):
+    """What a receivable move carried to the new branch, one row per document."""
+    INVOICE = "INVOICE", "Invoice"
+    DEBIT_NOTE = "DEBIT_NOTE", "Debit note"
+    RECEIPT_CREDIT = "RECEIPT_CREDIT", "Unapplied receipt"
+    NOTE_CREDIT = "NOTE_CREDIT", "Unapplied credit note"
+
+
+class SharedCostTreatment(models.TextChoices):
+    """What happens to a cost one branch pays on behalf of others."""
+    ABSORB = "ABSORB", "Absorbed by the paying branch"
+    RECHARGE = "RECHARGE", "Recharged to the other branches"
+
+
+class RechargeBasis(models.TextChoices):
+    """How a recharged cost is split between branches."""
+    COUNTS = "COUNTS", "Per-branch counts"
+    PERCENTAGES = "PERCENTAGES", "Fixed percentages"
 
 
 # Define Finance Audit Status values.
@@ -938,6 +993,11 @@ class AccountMappingKey(models.TextChoices):
     CLIENT_FUNDS_OWED = "CLIENT_FUNDS_OWED", "Owed by clients"
     # Online payments a payer's bank took back (a chargeback) on held money.
     CHARGEBACKS = "CHARGEBACKS", "Payment chargebacks"
+    # What one branch is owed by, or owes to, each other branch. Every line on it
+    # names its counterparty branch, and across every branch it nets to zero.
+    INTER_BRANCH = "INTER_BRANCH", "Inter-branch balances"
+    # Money one branch received that belongs to another, until it is forwarded.
+    HELD_FOR_OTHER_BRANCHES = "HELD_FOR_OTHER_BRANCHES", "Held for other branches"
 
 #: Reserved code for CodeX's own platform set of books (the operator's entity).
 #: An uppercase identifier (like all entity codes); the display name is "CodeX".

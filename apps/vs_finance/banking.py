@@ -1084,9 +1084,10 @@ def validate_bank_transfer(transfer) -> None:
 
     Two different live accounts of the same books, each with a ledger, and a positive
     amount. Both must belong to the same branch: money between branches is an
-    inter-branch transfer, which records that one branch owes the other and is not
-    built yet, so moving it here would leave each branch's books wrong with nothing
-    saying why. The accounts are compared by
+    inter-branch transfer (:mod:`vs_finance.inter_branch`), which books each
+    branch's side and records that one branch owes the other, so moving it here
+    would leave each branch's books wrong with nothing saying why. The accounts
+    are compared by
     :func:`vs_rbac.scoping.same_transaction_branch`, so at a tenant with one branch
     an account not yet given a branch is that branch's, and the transfer itself
     must be the accounts' branch's.
@@ -1112,9 +1113,9 @@ def validate_bank_transfer(transfer) -> None:
 
         raise PostingError(
             f"{source.name} belongs to {where(source)} and {target.name} to "
-            f"{where(target)}. Money between branches is an inter-branch transfer, "
-            f"which records that one branch owes the other and is not available yet. "
-            f"Move money here only between accounts of the same branch.",
+            f"{where(target)}. Money between branches is an inter-branch transfer "
+            f"(/finance/inter-branch-transfers/), which records that one branch owes "
+            f"the other. Move money here only between accounts of the same branch.",
         )
     _require_accounts_branch(transfer, (source, target), "transfer")
 

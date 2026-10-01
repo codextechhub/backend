@@ -59,10 +59,17 @@ Routes covered (mounted at `/v1/finance/`):
   `opening_balance: true`. The source also decides one posting rule: a `MANUAL` or
   `OPENING` journal may not name an account a sub-ledger keeps (AR, AP, a bank or
   petty cash ledger, tax payable and recoverable, GR/IR, inventory, customer credit,
-  vendor advances). It is refused `CONTROL_ACCOUNT_LOCKED`, naming the document to use
+  vendor advances, the inter-branch balances and the money held for other
+  branches). It is refused `CONTROL_ACCOUNT_LOCKED`, naming the document to use
   instead (`control_accounts.py`). Money into or out of a bank account with no
   customer or supplier is a bank transaction (`/bank-transactions/`); money between
-  two of one branch's own accounts is a transfer (`/bank-transfers/`).
+  two of one branch's own accounts is a transfer (`/bank-transfers/`); money between
+  two branches is an inter-branch transfer (`/inter-branch-transfers/`), which posts
+  one journal per branch.
+- A journal line on the inter-branch balances or held-for-other-branches account
+  names its counterparty branch (`JournalLine.counterparty_branch`). Posting refuses
+  a line naming the entry's own branch or another tenant's, and a reversal carries
+  the counterparty with the mirrored line.
 
 ## 3. Endpoint map
 

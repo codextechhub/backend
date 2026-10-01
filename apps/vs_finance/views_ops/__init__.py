@@ -34,3 +34,4 @@ from .payroll_statutory import *
 from .budgets import *
 from .assets import *
 from .audit import *
+from .interbranch import *

@@ -274,11 +274,18 @@ class StockMovementType(models.TextChoices):
     RETURN     -> goods sent back to the vendor against a posted receipt. Takes the
                   quantity out at the cost it came in at, and the goods return's
                   journal (Dr GR/IR, Cr inventory) carries the GL side.
+    TRANSFER   -> goods moved from one store to another, written as a pair: out of
+                  the sending store and into the receiving one, both at the
+                  sending store's moving-average cost. Between two stores of one
+                  branch nothing posts; between two branches each branch books its
+                  side of an inter-branch transfer, and the receiving branch owes
+                  the cost.
     """
     RECEIPT = "RECEIPT", "Receipt"
     ISSUE = "ISSUE", "Issue"
     ADJUSTMENT = "ADJUSTMENT", "Adjustment"
     RETURN = "RETURN", "Return to vendor"
+    TRANSFER = "TRANSFER", "Transfer between stores"
 
 
 #: Well-known Chart-of-Accounts codes the P2P journals resolve against (per entity).

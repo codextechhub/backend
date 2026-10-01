@@ -14,8 +14,9 @@ Which accounts are kept is read from the books, never from a list kept by hand:
 
 * the entity's account mappings for the roles a sub-ledger owns (receivables,
   payables, customer credit, vendor advances, GR/IR, inventory, output VAT, WHT,
-  gateway clearing, and on the platform's books the client funds it holds and
-  the provider balance behind them);
+  gateway clearing, the inter-branch balances and the money held for other
+  branches, and on the platform's books the client funds it holds and the
+  provider balance behind them);
 * the owning rows: every customer's receivable account, every bank account's and
   petty cash fund's ledger, and every tax obligation's payable and recoverable
   accounts;
@@ -58,6 +59,12 @@ _MAPPED_ROLES = {
         "the held-funds ledger", "a client's online payment, settlement or payout"),
     AccountMappingKey.CLIENT_FUNDS_OWED: (
         "the held-funds ledger", "a client's chargeback, online payment or settlement"),
+    AccountMappingKey.INTER_BRANCH: (
+        "the inter-branch ledger",
+        "an inter-branch transfer, a recharge, a goods transfer or a receivable move"),
+    AccountMappingKey.HELD_FOR_OTHER_BRANCHES: (
+        "the inter-branch ledger",
+        "a receipt held for another branch, or the transfer that forwards it"),
 }
 
 _BANK = ("its bank account", "a receipt, a vendor payment or a bank transaction")

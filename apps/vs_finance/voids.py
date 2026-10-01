@@ -55,6 +55,19 @@ def _refuse_if_transferred(source, label):
         )
 
 
+def _refuse_if_moved(document):
+    """Refuse to void a document a standing receivable move carried to another branch.
+
+    See :func:`vs_finance.inter_branch.moved_document_refusal`: an invoice or debit
+    note that moved, and a receipt or credit note whose credit a move drew on.
+    """
+    from .inter_branch import moved_document_refusal
+
+    reason = moved_document_refusal(document)
+    if reason is not None:
+        raise PostingError(reason)
+
+
 def _run_with_rejection(document, action, worker, *, actor_user, date):
     try:
         return worker(document, actor_user=actor_user, date=date)
@@ -97,6 +110,7 @@ def _void_invoice_atomic(invoice, *, actor_user=None, date=None):
 
     invoice = Invoice.objects.select_for_update(of=("self",)).get(pk=invoice.pk)
     _guard_posted(invoice, "invoice")
+    _refuse_if_moved(invoice)
 
     # A posted settlement/adjustment must be unwound through its own document first.
     # The denormalised totals also catch legacy write-offs that predate requests.
@@ -147,18 +161,23 @@ def void_payment(payment, *, actor_user=None, date=None):
 
 
 @transaction.atomic
-def _void_payment_atomic(payment, *, actor_user=None, date=None, transfer=None):
+def _void_payment_atomic(payment, *, actor_user=None, date=None, transfer=None, forwarded=None):
     """Void a receipt, unwinding every settlement it made and every journal it raised.
 
     A credit-transfer receipt is voided only through its transfer (``transfer``),
     which also gives the credit back to the source customer; voiding the receipt on
-    its own would destroy that credit.
+    its own would destroy that credit. A receipt raised by an inter-branch
+    transfer (money forwarded from another branch, or credit a receivable move
+    carried here) is voided only through that transfer (``forwarded``), which also
+    reverses the other branch's side; voiding the receipt alone would leave the
+    other branch's books short.
     """
     from .installments import refresh_plans_for_invoice
     from .models import (
         CreditNote,
         CustomerCreditTransfer,
         DebitNoteAllocation,
+        InterBranchTransfer,
         Invoice,
         Payment,
         PaymentAllocation,
@@ -175,6 +194,14 @@ def _void_payment_atomic(payment, *, actor_user=None, date=None, transfer=None):
             f"credit to {owner.from_customer.code}.",
         )
     _refuse_if_transferred(payment, "receipt")
+    _refuse_if_moved(payment)
+    sender = InterBranchTransfer.objects.filter(receipt=payment).first()
+    if sender is not None and (forwarded is None or forwarded.pk != sender.pk):
+        raise PostingError(
+            f"Receipt {payment.document_number} was raised by inter-branch transfer "
+            f"{sender.document_number} from {sender.branch.name}; void that transfer "
+            f"instead, which reverses both branches' sides.",
+        )
 
     posted_refunds = RefundAllocation.objects.select_for_update().filter(
         payment=payment, refund__status=DocumentStatus.POSTED,
@@ -293,6 +320,7 @@ def _void_credit_note_atomic(note, *, actor_user=None, date=None):
 
     note = CreditNote.objects.select_for_update(of=("self",)).get(pk=note.pk)
     _guard_posted(note, "credit/debit note")
+    _refuse_if_moved(note)
 
     if note.kind == CreditNoteKind.DEBIT:
         settlement = (

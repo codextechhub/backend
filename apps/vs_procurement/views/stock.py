@@ -682,6 +682,58 @@ class StockIssueView(_ProcBase):
         )
 
 
+class StockTransferView(_ProcBase):
+    """POST - move stock from one store to another at moving-average cost.
+
+    Body: ``quantity``, ``to_location`` (id or code; any live store of the books,
+    since goods go to a store the sender does not run), optional ``location`` (the
+    sending store; the caller's own when they run one), ``movement_date``,
+    ``reference`` and ``narration``. Between two branches' stores the receiving
+    branch owes the cost as an inter-branch balance; between two stores of one
+    branch nothing posts.
+
+    docstring-name: Transfer stock between stores
+    """
+
+    rbac_permission = "procurement.stock.issue"
+
+    def post(self, request, pk):
+        entity = resolve_entity(request)
+        item = StockItem.objects.filter(entity=entity, pk=pk).first()
+        if item is None:
+            raise NotFound("No such stock item in this entity.")
+        body = request.data
+        quantity = _quantity(body.get("quantity"), "quantity")
+        source = _movement_location(request, entity, body.get("location"))
+        if source is None:
+            source = stock.resolve_location(entity, None)
+        raw = body.get("to_location")
+        if raw in (None, ""):
+            raise ValidationError({"to_location": "Name the store the goods go to."})
+        lookup = {"pk": raw} if str(raw).isdigit() else {"code": str(raw)}
+        target = StockLocation.objects.filter(entity=entity, is_active=True, **lookup).first()
+        if target is None:
+            raise ValidationError({"to_location": "No such stock location in this entity."})
+        moved_on = _date(body.get("movement_date"), "movement_date")
+        movement = stock.transfer_stock(
+            item, quantity=quantity,
+            movement_date=moved_on or branch_today(entity.tenant, source.branch_id),
+            from_location=source, to_location=target, actor_user=request.user,
+            reference=_text(body.get("reference", ""), "reference", 64),
+            narration=_text(body.get("narration", ""), "narration", 255),
+        )
+        return success_response(
+            "Stock transferred.",
+            data={
+                "movement": StockMovementSerializer(movement).data,
+                "received": StockMovementSerializer(movement.paired_movement).data,
+                "inter_branch_transfer_id": movement.inter_branch_transfer_id,
+                "stock_item": _detail_payload(request, entity, item.pk),
+            },
+            status=201,
+        )
+
+
 class StockRestockRequisitionView(_ProcBase):
     """POST - draft one requisition for every item at or below its reorder level.
 

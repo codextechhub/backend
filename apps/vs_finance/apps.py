@@ -41,6 +41,10 @@ class VsFinanceConfig(AppConfig):
         from .deferred_income import deferred_income_close_check
 
         register_close_check(deferred_income_close_check)
+        # The inter-branch balances net to zero, and each pair's two sides agree.
+        from .inter_branch import inter_branch_close_check
+
+        register_close_check(inter_branch_close_check)
         from .provisioning import register_entity_provisioner
         from .provisioning_hooks import provision_adjustment_approvals
 

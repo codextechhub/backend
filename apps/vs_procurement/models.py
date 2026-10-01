@@ -729,7 +729,8 @@ class StockMovement(TimeStampedModel):
     the on-hand balance. ``balance_qty`` / ``balance_value`` snapshot the state of this
     movement's **location** afterwards, so the history reconstructs one site's position
     rather than a blend of every site. ``journal`` links the GL entry the movement
-    posted (a stock-tracked GRN line, an issue, or an adjustment).
+    posted (a stock-tracked GRN line, an issue, an adjustment, or one branch's side
+    of a goods transfer between branches).
     """
 
     entity = models.ForeignKey(
@@ -776,6 +777,16 @@ class StockMovement(TimeStampedModel):
     cost_center = models.ForeignKey(
         "vs_finance.CostCenter", on_delete=models.PROTECT, related_name="stock_movements",
         null=True, blank=True, help_text="Who the stock was issued to, when an issue names one.",
+    )
+    # The other half of a store-to-store transfer, and the inter-branch transfer
+    # that booked it when the two stores belong to different branches.
+    paired_movement = models.OneToOneField(
+        "self", on_delete=models.PROTECT, related_name="paired_with",
+        null=True, blank=True,
+    )
+    inter_branch_transfer = models.ForeignKey(
+        "vs_finance.InterBranchTransfer", on_delete=models.PROTECT,
+        related_name="stock_movements", null=True, blank=True,
     )
     reference = models.CharField(max_length=64, blank=True, default="")
     narration = models.CharField(max_length=255, blank=True, default="")

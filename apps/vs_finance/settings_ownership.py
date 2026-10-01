@@ -129,6 +129,17 @@ ACCOUNT_MAPPING_CONSUMERS = {
         "Receives the loss when a payer's bank takes back an online payment the "
         "platform held for the branch.",
     ),
+    AccountMappingKey.INTER_BRANCH: _consumer(
+        "Inter-branch transfers",
+        "vs_finance.inter_branch",
+        "Carries what each branch is owed by or owes to each other branch: cash lent, "
+        "costs recharged, goods issued and customers' balances moved.",
+    ),
+    AccountMappingKey.HELD_FOR_OTHER_BRANCHES: _consumer(
+        "Money received for another branch",
+        "vs_finance.inter_branch",
+        "Holds a payment one branch received that belongs to another, until it is forwarded.",
+    ),
     AccountMappingKey.PROVIDER_BALANCE: _consumer(
         "Held online money (platform books)",
         "vs_payments.held",

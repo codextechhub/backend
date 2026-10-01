@@ -1,6 +1,10 @@
 # finance_branch_books_design
 
-**Status:** design, partly built. Every decision below is agreed.
+**Status:** design, partly built. Every decision below is agreed. Inter-branch
+transfers (section 4), money held for another branch (section 5), recharges
+(section 8), the receivable transfer of a pupil move (section 9, the finance
+service) and goods transfers between branches' stores (section 10) are built;
+section 15 says where.
 
 Every tenant keeps its books by branch. There is no mode to choose and nothing
 that is "school-wide" in the books: every transaction belongs to a real branch,
@@ -176,6 +180,22 @@ Across all branches the account always nets to zero.
 **Visibility.** A transfer is visible to anyone whose reach includes either of its
 two branches: "sending branch in reach **or** receiving branch in reach".
 
+**Built.** `vs_finance.inter_branch` and `InterBranchTransfer` (with one
+`InterBranchTransferLeg` per branch, each holding that branch's journal). The
+inter-branch account is the `INTER_BRANCH` mapping (starter code 1260
+Inter-branch Balances), locked against hand-typed journals; its counterparty is a
+column on the journal line (`JournalLine.counterparty_branch`), so the pair
+balances are one query over the ledger and a reversal carries it with the line.
+A cash transfer is requested by the receiving branch or sent unprompted, sent
+through the sending branch's `finance.inter_branch_transfer` approval route, and
+confirmed by the receiving branch; both journals post on the transfer date, and
+each reaches its own bank's reconciliation. It is voided (both sides reversed)
+by somebody who works in both branches, while neither bank side is matched. The
+both-branches-open check is `ensure_branches_open`, which reads the tenant's
+period today and is where a per-branch close will answer. At a tenant with one
+branch every write refuses ("there is only one branch") and nothing touches the
+account.
+
 ---
 
 ## 5. Money in
@@ -186,6 +206,13 @@ two branches: "sending branch in reach **or** receiving branch in reach".
   branches" liability, naming the branch it belongs to. The receiving branch
   cannot apply it to another branch's invoice. A forwarded-receipt transfer moves
   it, and the invoice is settled on arrival.
+- **Built.** `HeldForBranchReceipt` (`/finance/held-receipts/`) books
+  `Dr bank, Cr held for other branches [Lekki]` (mapping
+  `HELD_FOR_OTHER_BRANCHES`, starter code 2190). Forwarding it is a
+  `FORWARDED_RECEIPT` transfer on the same approval route as cash: Ikeja books
+  `Dr held for other branches [Lekki], Cr bank`, and Lekki receives an ordinary
+  receipt against the customer in its own bank, which settles their Lekki
+  invoices oldest first. The receipt is voided only through the transfer.
 
 ---
 
@@ -199,6 +226,11 @@ two branches: "sending branch in reach **or** receiving branch in reach".
   The year-end close runs per branch, and the tenant's year closes when every
   branch's has.
 - A transfer is refused unless both branches are open on its date.
+- **Built.** The close check `inter_branch_balanced` (`vs_finance.inter_branch.
+  inter_branch_close_check`) reads the inter-branch account up to the period's
+  end: across all branches it must net to zero, and each pair's two sides must
+  agree. It blocks the tenant's close; a single branch's close runs it for the
+  pairs that branch is part of, as a warning.
 
 ---
 
@@ -227,6 +259,13 @@ two branches: "sending branch in reach **or** receiving branch in reach".
     headcount. Bright Star Abuja holds 20% of the pupils but its boarding house
     drives most of the insurance bill, so the owner sets Abuja at 40%.
   Fixed percentages must total 100.
+- **Built.** The choice per cost is a `SharedCostRule` (absorb by default,
+  counts by default; fixed percentages kept as its shares), written only by a
+  whole-tenant caller. A recharge (`/finance/recharges/`) splits the cost
+  exactly (largest remainder) and books each other branch's share as a
+  `RECHARGE` transfer: `Dr inter-branch [owing], Cr expense` at the paying
+  branch and `Dr expense, Cr inter-branch [paying]` at the owing one. The counts
+  are plain numbers in the request; the schools product supplies pupil numbers.
 
 ---
 
@@ -240,6 +279,32 @@ two branches: "sending branch in reach **or** receiving branch in reach".
   and chases them. The old branch's revenue reports, which read entries, still
   show the fees earned there.
 - The finance customer's branch follows the pupil.
+- **Built (finance side).** `vs_finance.inter_branch.transfer_open_receivables`
+  moves the customer's whole position at the old branch, so the new branch holds
+  everything and the old branch keeps only the revenue it has already earned:
+  - every open invoice and open debit note is given the new branch in its own
+    branch column, so the new branch's bursar sees and chases it, and every
+    later receipt, credit note or write-off on it is the new branch's; a live
+    payment plan on a moved invoice moves too. The revenue journals stay at the
+    old branch;
+  - the customer's unapplied credit (receipts and credit notes not yet spent,
+    less what a pending refund reserves) is drawn from its source documents,
+    which stay at the old branch, and reappears at the new branch as one receipt
+    applied to the customer's bills there;
+  - income not yet earned moves: a moved invoice's deferred shares recognised
+    after the move date are given the new branch, so later releases recognise
+    the revenue there. Shares already released, or recognised by the move date,
+    stay at the old branch, which earned them.
+
+  Each branch posts one journal: the old branch credits the receivable and
+  debits customer credit and deferred income, the new branch books the mirror
+  image, and the difference is the inter-branch balance. It is idempotent per
+  move, runs inside the caller's transaction, and is audited under both
+  branches. A moved invoice or debit note, and a receipt or credit note whose
+  credit moved, cannot be voided on their own; the move is voidable until
+  anything it moved is paid, credited or released at the new branch. The FAL's
+  account re-filing calls it right after re-filing the customer; it is also a
+  whole-tenant endpoint (`/finance/inter-branch-transfers/receivable-moves/`).
 
 ---
 
@@ -253,6 +318,13 @@ two branches: "sending branch in reach **or** receiving branch in reach".
 3. A central store belongs to one branch. Another branch requisitions from it, and
    the goods issued are a goods transfer at cost.
 4. A supplier advance is its branch's asset and settles only that branch's bills.
+5. **Built.** A store-to-store move is `vs_procurement.stock.transfer_stock`
+   (`/procurement/stock-items/<id>/transfer/`), a TRANSFER movement out of one
+   store and into the other at the sending store's moving average. Between two
+   branches' stores it books a `GOODS` transfer (`Dr inter-branch [receiving],
+   Cr inventory` and `Dr inventory, Cr inter-branch [sending]`); between two
+   stores of one branch it posts nothing. Goods are returned by a transfer back,
+   never by a void.
 
 ---
 
@@ -305,7 +377,13 @@ The entity selector also offers the branches:
   data) needs a caller who reaches every branch. At a one-branch tenant, a grant
   pinned to the only branch reaches every branch.
 - Permission keys for transfers: request, approve, and run a recharge.
-  Branch-scoped grants apply.
+  Branch-scoped grants apply. Built as `finance.interbranch.view`, `.request`
+  (the receiving branch asks), `.transfer` (the sending branch sends, declines,
+  forwards a held receipt or moves a customer's balance), `.confirm` (the
+  receiving branch confirms arrival), `.recharge` and `.reverse`. Who may act:
+  the receiving branch requests and confirms, the sending branch sends and
+  declines, a void needs both branches, and a receivable move or a shared-cost
+  rule needs the whole tenant.
 
 ---
 
@@ -337,3 +415,20 @@ Existing books were kept with blank branches. Moving them:
    receivable transfers.
 9. Goods transfers from a central store, and one-order-per-branch buying.
 10. The branch selector and the transfer and pair-balance reports.
+
+Built so far from this order: 3 (cash transfers, approval, pair balances
+`/finance/inter-branch-balances/`, the register `/finance/inter-branch-transfers/`,
+bank matching), 5, 7, the finance half of 8, and the goods half of 9.
+
+---
+
+## 15. Code map for the inter-branch work
+
+| Piece | Where |
+| --- | --- |
+| Services: cash, held and forwarded receipts, voids, receivable moves, recharges, goods, pair balances | `apps/vs_finance/inter_branch.py` |
+| Models | `apps/vs_finance/models/interbranch.py`; `JournalLine.counterparty_branch` |
+| Endpoints | `apps/vs_finance/views_ops/interbranch.py`; `vs_procurement.views.stock.StockTransferView` |
+| Approval route | `finance.inter_branch_transfer` in `apps/vs_finance/workflow_handlers.py` |
+| Store-to-store moves | `vs_procurement.stock.transfer_stock` |
+| Tests | `vs_finance.tests_inter_branch` (three branches, and the one-branch tenant where it recedes) |

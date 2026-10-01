@@ -448,6 +448,65 @@ class BankTransferHandler(_FinancePostOnApprove):
         )
 
 
+@register_handler("finance.inter_branch_transfer")
+class InterBranchTransferHandler(_FinancePostOnApprove):
+    """Approval handler for a cash :class:`~vs_finance.models.InterBranchTransfer`.
+
+    Money leaving one branch for another is approved by the sending branch, on its
+    own document type, so a tenant can set its own steps for lending between
+    branches apart from moving money between one branch's own accounts. A
+    forwarded receipt follows the same route, since it too sends money out of the
+    sending branch's bank. Approval sends it: both branches' sides are booked by
+    :func:`vs_finance.inter_branch.post_inter_branch_transfer`.
+    """
+    noun = "Inter-branch transfer"
+
+    @property
+    def document_model(self):
+        from .models import InterBranchTransfer
+        return InterBranchTransfer
+
+    def preflight(self, document) -> None:
+        from .inter_branch import ensure_branches_open, validate_money_transfer
+
+        validate_money_transfer(document)
+        ensure_branches_open(document.entity, document.transfer_date)
+
+    def post(self, document, *, actor_user) -> None:
+        from .inter_branch import post_inter_branch_transfer
+
+        post_inter_branch_transfer(document, actor_user=actor_user)
+
+    def summary(self, document) -> dict:
+        return {
+            "title": document.document_number or str(document.pk),
+            "subtitle": "Inter-branch transfer",
+            "fields": [
+                {"label": "Date", "value": document.transfer_date.isoformat()},
+                {"label": "Amount", "value": format_naira(document.amount)},
+                {"label": "From", "value": document.branch.name},
+                {"label": "To", "value": document.to_branch.name},
+            ],
+            "link": _console_document_link("/finance/inter-branch-transfers", document),
+        }
+
+    def details(self, document) -> dict:
+        return document_details(
+            fields_section("Inter-branch transfer details", [
+                ("Kind", document.get_kind_display()),
+                ("From", f"{document.branch.name} ({document.from_bank_account.name})"
+                 if document.from_bank_account_id else document.branch.name),
+                ("To", f"{document.to_branch.name} ({document.to_bank_account.name})"
+                 if document.to_bank_account_id else document.to_branch.name),
+                ("Amount", format_naira(document.amount)),
+                ("Date", document.transfer_date),
+                ("Purpose", document.purpose),
+                ("Repay by", document.repay_by or "-"),
+                ("Reference", document.reference or "-"),
+            ]),
+        )
+
+
 @register_handler("finance.refund")
 # Workflow handler for customer refund approvals.
 class RefundHandler(_FinancePostOnApprove):

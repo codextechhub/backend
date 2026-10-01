@@ -496,10 +496,24 @@ class JournalLine(TimeStampedModel):
     ``cost_center`` and ``dimensions`` JSON attach analytics without widening the
     table. Lines are immutable once their journal is posted; corrections are made by
     reversing and re-posting, never by editing history.
+
+    ``counterparty_branch`` is set only on a line of the inter-branch balances or
+    the held-for-other-branches account, and names the other branch of the pair:
+    on Ikeja's journal, ``Dr inter-branch [Lekki]`` says Lekki owes Ikeja. It is a
+    column on the line rather than a sub-ledger row of its own because the line
+    already is the sub-ledger: the pair balances and the register are one
+    ``GROUP BY`` over the ledger (:func:`vs_finance.inter_branch.pair_balances`),
+    and a reversal mirrors the line with its counterparty, so nothing has to be
+    kept in step with it.
     """
 
     entry = models.ForeignKey(
         JournalEntry, on_delete=models.CASCADE, related_name="lines",
+    )
+    counterparty_branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT, related_name="+",
+        null=True, blank=True,
+        help_text="The other branch of an inter-branch line; blank on every other line.",
     )
     account = models.ForeignKey(
         Account, on_delete=models.PROTECT, related_name="journal_lines",

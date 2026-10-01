@@ -326,3 +326,31 @@ class SettlementTargetError(PostingError):
     error_code = "SETTLEMENT_TARGET"
     default_message = "This document cannot be settled by the money named."
     http_status = 400
+
+
+class InterBranchError(PostingError):
+    """An inter-branch transfer, recharge or move that cannot be booked as asked.
+
+    Raised for a request naming the wrong thing: a bank account of another branch
+    than the side it is for, a branch transferring to itself, a void after a bank
+    statement has matched one side. A 400, because the request can be corrected;
+    a closed month still answers with its own 409.
+    """
+
+    error_code = "INTER_BRANCH_REFUSED"
+    default_message = "This inter-branch transfer cannot be booked."
+    http_status = 400
+
+
+class InterBranchUnavailableError(InterBranchError):
+    """The tenant has one branch, so there is no other branch to transfer to.
+
+    Inter-branch transfers, recharges, goods transfers between branches and
+    receivable moves need two branches. At a tenant with one the feature
+    recedes: nothing books, and the refusal says why.
+    """
+
+    error_code = "INTER_BRANCH_ONE_BRANCH"
+    default_message = (
+        "There is only one branch, so there is no other branch to transfer to."
+    )

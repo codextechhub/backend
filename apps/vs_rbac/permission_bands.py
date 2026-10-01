@@ -130,6 +130,7 @@ RESOURCE_BANDS = {
     ("finance", "directentry"): CORE,
     ("finance", "banktransaction"): CORE,
     ("finance", "banktransfer"): CORE,
+    ("finance", "interbranch"): CORE,
     ("finance", "customer"): CORE,
     ("finance", "invoice"): CORE,
     ("finance", "payment"): CORE,

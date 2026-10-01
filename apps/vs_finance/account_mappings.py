@@ -52,6 +52,13 @@ ACCOUNT_MAPPING_SPECS = {
     AccountMappingKey.CLIENT_FUNDS_OWED: ("1128", AccountType.ASSET),
     # A held payment its payer's bank took back, the branch's loss.
     AccountMappingKey.CHARGEBACKS: ("5520", AccountType.EXPENSE),
+    # What each branch is owed by, or owes to, each other branch. One account for
+    # every pair: each line names its counterparty branch, and the account nets to
+    # zero across all branches, so it is typed ASSET and a branch that owes more
+    # than it is owed simply carries a credit balance on it.
+    AccountMappingKey.INTER_BRANCH: ("1260", AccountType.ASSET),
+    # Money a branch received that belongs to another, until it is forwarded.
+    AccountMappingKey.HELD_FOR_OTHER_BRANCHES: ("2190", AccountType.LIABILITY),
 }
 
 #: Roles only the platform's books carry. Every other set of books neither lists

@@ -86,6 +86,16 @@ FINANCE_RESOURCES = [
     # Money between two of one branch's own bank accounts.
     ("banktransfer", "transfers between own accounts", [("view", "NORMAL"), ("create", "CRITICAL"),
                                                          ("reverse", "CRITICAL")]),
+    # Between two branches: money lent or forwarded, a customer's open balance
+    # moved, a shared cost recharged. ``request`` is the receiving branch asking;
+    # ``transfer`` is the sending branch sending (routed through
+    # ``finance.inter_branch_transfer``) or declining, forwarding a held receipt,
+    # or moving a customer's open balance; ``confirm`` is the receiving branch
+    # saying the money arrived; ``recharge`` splits a cost and keeps the tenant's
+    # shared-cost rules.
+    ("interbranch",  "inter-branch transfers", [("view", "NORMAL"), ("request", "SENSITIVE"),
+                                                ("transfer", "CRITICAL"), ("confirm", "SENSITIVE"),
+                                                ("recharge", "CRITICAL"), ("reverse", "CRITICAL")]),
     ("budget",       "budgets",                [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("edit", "SENSITIVE"), ("approve", "SENSITIVE"),
                                                 ("delete", "SENSITIVE")]),

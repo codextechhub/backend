@@ -171,6 +171,7 @@ urlpatterns = [
          name="proc-stock-restock-requisition"),
     path("stock-items/<int:pk>/", views.StockItemDetailView.as_view(), name="proc-stock-item-detail"),
     path("stock-items/<int:pk>/issue/", views.StockIssueView.as_view(), name="proc-stock-issue"),
+    path("stock-items/<int:pk>/transfer/", views.StockTransferView.as_view(), name="proc-stock-transfer"),
     path("stock-items/<int:pk>/adjust/", views.StockAdjustView.as_view(), name="proc-stock-adjust"),
     path("stock-movements/", views.StockMovementListView.as_view(), name="proc-stock-movements"),
 

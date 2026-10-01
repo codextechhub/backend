@@ -34,6 +34,8 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     # would assert that suppliers owe us money. It is an asset - the vendor owes us
     # goods - and it drains back to AP when the bill arrives.
     ("1240", "Vendor Advances", AccountType.ASSET, True, False),  # Prepayments to vendors.
+    # Owed by or to the tenant's other branches; nets to zero across all of them.
+    ("1260", "Inter-branch Balances", AccountType.ASSET, True, False),
     ("1300", "Input VAT (Recoverable)", AccountType.ASSET, True, False),  # Recoverable VAT account.
     ("1400", "Inventory", AccountType.ASSET, True, False),  # Inventory account.
     ("1500", "Property, Plant & Equipment", AccountType.ASSET, True, False),  # PPE cost account.
@@ -45,6 +47,7 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("2150", "GR/IR Clearing", AccountType.LIABILITY, True, False),  # Goods-received/invoice-received clearing.
     ("2160", "Deferred Income", AccountType.LIABILITY, True, False),  # Billed ahead of the service period.
     ("2170", "Customer Deposits Held", AccountType.LIABILITY, True, False),  # Refundable deposits.
+    ("2190", "Held for Other Branches", AccountType.LIABILITY, True, False),  # Received for another branch.
     ("2200", "Output VAT (Payable)", AccountType.LIABILITY, True, False),  # Output VAT payable.
     ("2300", "WHT Payable", AccountType.LIABILITY, True, False),  # Withholding tax payable.
     ("2310", "PAYE Payable", AccountType.LIABILITY, True, False),  # PAYE payable.
@@ -124,12 +127,14 @@ DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory present
     # "Trade and other receivables" carries supplier advances under IFRS for SMEs,
     # and it mirrors 2140 presenting inside "trade and other payables".
     "1240": IFRSLine.TRADE_RECEIVABLES,  # Advances paid to vendors.
+    "1260": IFRSLine.OTHER_CURRENT_ASSETS,  # Nets to zero for the tenant; shows on branch statements.
     "1300": IFRSLine.CURRENT_TAX_ASSET,  # Recoverable input VAT.
     "1400": IFRSLine.INVENTORIES,  # Inventory.
     "1500": IFRSLine.PPE, "1900": IFRSLine.PPE,  # PPE and accumulated depreciation.
     # Liabilities  # Default liability presentation mappings.
     "2100": IFRSLine.TRADE_PAYABLES, "2140": IFRSLine.TRADE_PAYABLES, "2150": IFRSLine.TRADE_PAYABLES,  # AP-like balances.
     "2160": IFRSLine.DEFERRED_INCOME, "2170": IFRSLine.TRADE_PAYABLES,  # Fees in advance, deposits.
+    "2190": IFRSLine.TRADE_PAYABLES,  # Money held for another branch.
     "2200": IFRSLine.CURRENT_TAX_PAYABLE, "2300": IFRSLine.CURRENT_TAX_PAYABLE,  # Tax payables.
     "2310": IFRSLine.EMPLOYEE_PAYABLES, "2320": IFRSLine.EMPLOYEE_PAYABLES,  # Employee statutory payables.
     "2330": IFRSLine.EMPLOYEE_PAYABLES, "2400": IFRSLine.TRADE_PAYABLES,  # Wages and reimbursements.
@@ -153,10 +158,10 @@ DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory present
 #: parent_code by child_code - wires the tree after the flat create.
 _PARENTS = {  # Parent account code by child account code.
     "1100": "1000", "1110": "1000", "1125": "1000", "1200": "1000", "1290": "1000", "1240": "1000",  # Asset children.
-    "1300": "1000",
+    "1260": "1000", "1300": "1000",
     "1400": "1000", "1500": "1000", "1900": "1000",  # More asset children.
     "2100": "2000", "2140": "2000", "2150": "2000", "2160": "2000", "2170": "2000",  # Liability children.
-    "2200": "2000", "2300": "2000",
+    "2190": "2000", "2200": "2000", "2300": "2000",
     "2310": "2000", "2320": "2000", "2330": "2000", "2400": "2000",  # More liability children.
     "2340": "2000", "2350": "2000", "2360": "2000",
     "3100": "3000", "3200": "3000",  # Equity children.

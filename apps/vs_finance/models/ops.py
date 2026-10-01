@@ -202,7 +202,7 @@ class BankTransfer(FinanceDocument):
     own account's register and reconciliation like any other movement.
 
     Both accounts belong to one branch, which the transfer carries. Money between
-    branches is the inter-branch transfer of the branch-books design, which records
+    branches is an :class:`~vs_finance.models.InterBranchTransfer`, which records
     who owes whom and is a different document. Topping up a petty cash float from the
     bank is the fund's own establish and replenish actions.
 
