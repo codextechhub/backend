@@ -987,6 +987,19 @@ class HeldSettlementsStayWithinReachTests(_FinanceBranchFixture):
         self.assertEqual(str(reach.held_settlements().query),
                          str(HeldSettlement.objects.filter(entity=self.books).query))
 
+    def test_the_summary_and_the_feed_agree_on_a_provider(self):
+        """Lekki's money went by Paystack and Ikeja's settlement sent nothing.
+
+        Asked about Paystack alone, the summary counts what the feed lists.
+        """
+        bursar = self.reader(self.tenant, None)
+        feed = bursar.get(f"/v1/payments/movements/?entity={self.books.code}&provider=PAYSTACK")
+        self.assertEqual({row["gateway_id"] for row in feed.data["data"]
+                          if row["kind"] == "settlement"}, {self.lekki_run.pk})
+        summary = bursar.get(
+            f"/v1/payments/movements/summary/?entity={self.books.code}&provider=PAYSTACK")
+        self.assertEqual(summary.data["data"]["transfers7d"]["kobo"], 20_000)
+
     def test_another_schools_settlements_are_never_visible(self):
         """Rival's Ikeja Branch shares a name with Corona's and nothing else."""
         corona_ikeja = self.reader(self.tenant, self.ikeja)

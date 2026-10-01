@@ -226,17 +226,13 @@ class HeldSettlementListView(APIView):
             if status not in HeldSettlementStatus.values:
                 raise ValidationError({"status": f"Use one of: {', '.join(HeldSettlementStatus.values)}."})
             rows = rows.filter(status=status)
-        try:
-            limit = min(max(int(request.query_params.get("limit") or 50), 1),
-                        _HELD_SETTLEMENT_LIMIT)
-        except ValueError as exc:
-            raise ValidationError({"limit": "Expected a whole number."}) from exc
         rows = list(rows[:_limit(request)])
         return success_response("Held settlements retrieved.",
                                 data=[_settlement_row(row) for row in rows])
 
 
 def _limit(request):
+    """The page size ``?limit=`` asks for: 50 by default, at least 1, at most 200."""
     try:
         return min(max(int(request.query_params.get("limit") or 50), 1), _HELD_SETTLEMENT_LIMIT)
     except ValueError as exc:

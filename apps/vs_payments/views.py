@@ -1242,9 +1242,11 @@ class MovementsSummaryView(APIView):
         provider = request.query_params.get("provider")
         cols = reach.collections()
         pos = reach.payouts()
-        if provider:  # Apply the provider filter to both sides when requested.
+        held = reach.held_settlements()
+        if provider:  # Optional PSP filter applied to every side, as the feed does.
             cols = cols.filter(provider=provider)
             pos = pos.filter(provider=provider)
+            held = held.filter(batch__provider=provider)
         cutoff = timezone.now() - datetime.timedelta(days=7)
         c = cols.aggregate(
             in7d=Coalesce(Sum("amount", filter=Q(status="SUCCEEDED", confirmed_at__gte=cutoff)), 0),
@@ -1262,7 +1264,7 @@ class MovementsSummaryView(APIView):
             pending=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["PENDING"][1])),
             failed=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["FAILED"][1])),
         )
-        held_settled = reach.held_settlements().filter(
+        held_settled = held.filter(
             status="PAID", paid_at__gte=cutoff).aggregate(total=Coalesce(Sum("amount"), 0))["total"]
         transfers = p["settled7d"] + held_settled
         return success_response("Movements summary retrieved.", data={
