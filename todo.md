@@ -619,6 +619,30 @@ MUST SAY:
   state authority names; a mid-month change applies to the whole month; a new
   starter's previous-employer pay and tax cannot be entered yet.
 
+### D98. Payslips, deductions, audit trails and notices carry no pay a reader may not see (b968ebce, 2026-10-01)
+MODULES: M19 finance and accounting (payroll), M12 staff management, M05 audit,
+M08 notifications and delivery, M04 roles and permissions (field access), MRD.
+MUST SAY:
+- Payslip year to date (M19). It counts the payslip's own roster row, as the PAYE
+  working does, never the person's other rows, so one branch's payslip never
+  carries another branch's pay.
+- Voluntary deductions (M19, M04). Amount and limit follow the pay breakdown
+  field-access switch, as the payroll line's figures do.
+- Audit (M05, M19). Payroll before/after values pass through field access, and
+  audit messages about salaries name no figures (they are mirrored to the
+  platform trail).
+- Payslip notices (M08). The notice is never given net pay: rendered notices sit
+  in tenant-wide history.
+- Read paths (M19). Every statutory read (runs, summary, payslip and PDF,
+  my-payslips, roster, salary history, tax summary, return schedules and details)
+  is guard-tested for branch reach, self-only payslips (a colleague's payslip by
+  id is 404 to anyone) and other tenants.
+- Moved staff (M19, M12, owner decision). A moved person's pay record follows
+  them from the move's start date: the new branch sees the whole year, the
+  payslip shows the same figures to every reader, and a move dated ahead changes
+  nothing until its day.
+- Deploy: run sync_field_registry.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
