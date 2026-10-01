@@ -164,9 +164,8 @@ class BaseWorkflowHandler:
         The engine narrows approvals by the branch each instance is filed under,
         which is the document's own ``branch``, and reads an instance with no
         branch as the school's. A document whose reach is not that answers here
-        instead: a payout batch has no branch, and is hidden from a reader when one
-        of its lines pays a vendor another branch keeps to itself; a transaction
-        is read by its own branch exclusively
+        instead: a transaction (a payout batch included) is read by its own
+        branch exclusively
         (:func:`vs_workflow.services.visibility.documents_outside_transaction_reach`). Every approval read goes through
         :func:`vs_workflow.services.visibility.exclude_hidden_documents`, so a
         hidden document is absent from the inbox, the instance list and the

@@ -4,10 +4,10 @@ An instance is filed under its document's branch, and the approval reads narrow 
 it inclusively. Some documents' reach is decided by their own module rather than by
 that reading (see
 :meth:`vs_workflow.handlers.base.BaseWorkflowHandler.hidden_document_ids`): a
-payout batch has no branch of its own, and a transaction with no branch is not
-shared. This is where every approval read asks each registered handler for the
-documents it keeps from this reader. A read that skips it would show an approver a
-document the module that owns it would answer with a 404.
+transaction with no branch is not shared. This is where every approval read asks
+each registered handler for the documents it keeps from this reader. A read that
+skips it would show an approver a document the module that owns it would answer
+with a 404.
 """
 from __future__ import annotations
 

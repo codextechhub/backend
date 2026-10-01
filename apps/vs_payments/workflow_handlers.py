@@ -105,34 +105,20 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
 
     # --- engine entry points ------------------------------------------------ #
     def hidden_document_ids(self, user, tenant):
-        """The batches with a line paying a vendor another branch keeps from ``user``.
+        """The batches of another branch, or of none yet, kept from a branch-bound ``user``.
 
-        A batch names the branch it pays from, but a line paying a vendor filed
-        under another branch still makes it unreadable to a caller bound to the
-        batch's branch alone, and a batch raised before batches carried a branch
-        names none. So the engine's own branch filing is not the whole answer,
-        and approvers are kept to the batches they may read. Its reach is the one
-        the payout screens read it by (:class:`vs_payments.reach.PaymentsReach`):
-        a batch Lekki's vendor is paid from is absent from an Ikeja-only
-        approver's inbox, and approving or rejecting it answers 404.
+        A batch is a transaction naming the one branch its lines pay from, so it is
+        read exclusively, as the payout screens read it
+        (:class:`vs_payments.reach.PaymentsReach`): a batch paid from Lekki's bank is
+        absent from an Ikeja-only approver's inbox, and approving or rejecting it
+        answers 404. The engine reads an instance with no branch as the school's,
+        which is wrong for a batch not yet given one, so this answers instead.
         """
-        from vs_finance.models import LedgerEntity
-        from vs_rbac.scoping import transaction_branch_scope_for_user
+        from vs_workflow.services.visibility import documents_outside_transaction_reach
 
-        from .reach import PaymentsReach
-
-        if tenant is None:
-            return None
-        scope = transaction_branch_scope_for_user(user, tenant=tenant)
-        if not scope.is_narrowed:
-            return None
-        hidden = set()
-        for entity in LedgerEntity.objects.filter(tenant=tenant):
-            hidden.update(
-                str(pk) for pk in
-                PaymentsReach(entity, scope).hidden_batches().values_list("pk", flat=True)
-            )
-        return hidden
+        return documents_outside_transaction_reach(
+            self.document_model.objects.filter(entity__tenant=tenant), user, tenant,
+        )
 
     def resolve_default_template_code(self, document) -> str:
         return "standard"  # One template code per document type for now.
