@@ -105,11 +105,6 @@ NARROWERS = (
 #: Flagged lookups whose branch question is answered somewhere else. Keyed by
 #: ``<path>::<function>::<Model>``, which survives ordinary edits to the file.
 SETTLED_ELSEWHERE = {
-    "schools/core/fal/views.py::students_off_the_price_list::Student":
-        "A count, not a read: it only asks how many of the children the caller "
-        "named attend another branch than the fee structure's, to refuse the "
-        "run. refuse_unseen_students, called just before it, has already "
-        "404'd any named child outside the caller's branch reach.",
     "vs_procurement/views/orders.py::post::PurchaseRequisition":
         "The requisition fixes the order's branch and inherited_branch_id "
         "refuses a caller who may not work in it. The source document decides, "
