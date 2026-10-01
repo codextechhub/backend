@@ -1,9 +1,9 @@
 """A school's own staff rules: starting role, documents, self-service, hiring, leave.
 
-Seven ``vs_config`` definitions, all school-scoped, read through
+Nine ``vs_config`` definitions, all school-scoped, read through
 :func:`resolve_many` so a school's value, the platform's and the definition's
 default are inherited exactly as every other setting is. The staff-number rule
-is the eighth part of Settings, Staff and lives in ``number_policy.py``,
+is a separate part of Settings, Staff and lives in ``number_policy.py``,
 because a branch may hold its own.
 
 Each default is the behaviour a school has before it chooses:
@@ -34,12 +34,15 @@ is not written again, so saving the screen unchanged leaves no audit rows.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from uuid import UUID
 
 from django.db import transaction
 
 from ..constants import (
     CFG_HIRE_APPROVAL,
     CFG_LEAVE_ALLOWANCES,
+    CFG_LEAVE_GROUPS,
+    CFG_LEAVE_OVERRIDES,
     CFG_LEAVE_EXCLUDE_CLOSURES,
     CFG_LEAVE_WORKING_DAYS,
     CFG_REQUIRED_DOCUMENTS,
@@ -58,10 +61,14 @@ from ..exceptions import StaffSettingNotRegistered
 
 _RULE_KEYS = (
     CFG_STARTING_ROLE, CFG_REQUIRED_DOCUMENTS, CFG_SELF_EDITABLE, CFG_HIRE_APPROVAL,
-    CFG_LEAVE_ALLOWANCES, CFG_LEAVE_WORKING_DAYS, CFG_LEAVE_EXCLUDE_CLOSURES,
+    CFG_LEAVE_ALLOWANCES, CFG_LEAVE_GROUPS, CFG_LEAVE_OVERRIDES,
+    CFG_LEAVE_WORKING_DAYS, CFG_LEAVE_EXCLUDE_CLOSURES,
 )
 
-_LEAVE_KEYS = (CFG_LEAVE_ALLOWANCES, CFG_LEAVE_WORKING_DAYS, CFG_LEAVE_EXCLUDE_CLOSURES)
+_LEAVE_KEYS = (
+    CFG_LEAVE_ALLOWANCES, CFG_LEAVE_GROUPS, CFG_LEAVE_OVERRIDES,
+    CFG_LEAVE_WORKING_DAYS, CFG_LEAVE_EXCLUDE_CLOSURES,
+)
 
 
 def resolve_many(keys, *, tenant, branch=None):
@@ -165,6 +172,59 @@ def _allowances(value) -> dict:
     return {code: _allowance(stored.get(code)) for code in LeaveType.values}
 
 
+def _groups(value) -> tuple:
+    """Valid, uniquely named leave groups from a stored configuration value."""
+    if not isinstance(value, list):
+        return ()
+    groups, seen_ids, seen_names = [], set(), set()
+    for item in value[:100]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            group_id = str(UUID(str(item.get("id", ""))))
+        except (ValueError, TypeError, AttributeError):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
+            continue
+        name = name.strip()
+        if group_id in seen_ids or name.casefold() in seen_names:
+            continue
+        groups.append({"id": group_id, "name": name})
+        seen_ids.add(group_id)
+        seen_names.add(name.casefold())
+    return tuple(groups)
+
+
+def _overrides(value, groups) -> tuple:
+    """Only known leave types and groups, with one rule per scope and type."""
+    if not isinstance(value, list):
+        return ()
+    group_ids = {group["id"] for group in groups}
+    out, seen = [], set()
+    for item in value[:500]:
+        if not isinstance(item, dict):
+            continue
+        branch_id = item.get("branch_id")
+        group_id = item.get("group_id") or None
+        leave_type = item.get("leave_type")
+        days = item.get("days")
+        if branch_id is not None and (isinstance(branch_id, bool) or not isinstance(branch_id, int) or branch_id < 1):
+            continue
+        if group_id is not None and group_id not in group_ids:
+            continue
+        if branch_id is None and group_id is None:
+            continue
+        if leave_type not in LeaveType.values or (days is not None and _allowance(days) is None):
+            continue
+        key = (branch_id, group_id, leave_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"branch_id": branch_id, "group_id": group_id, "leave_type": leave_type, "days": days})
+    return tuple(out)
+
+
 def _working_days(value) -> tuple:
     if not isinstance(value, (list, tuple)):
         return DEFAULT_WORKING_DAYS
@@ -182,16 +242,44 @@ class LeaveRules:
     """How a school counts and limits leave."""
 
     allowances: dict = field(default_factory=lambda: _allowances({}))
+    groups: tuple = ()
+    overrides: tuple = ()
     working_days: tuple = DEFAULT_WORKING_DAYS
     exclude_closures: bool = True
 
-    def allowance_for(self, leave_type):
-        """Days of *leave_type* allowed per session, or None for no limit."""
+    def allowance_for(self, leave_type, staff=None):
+        """Resolve a person's most specific allowance for one leave type.
+
+        A combined branch and group rule wins, then the person's group, then
+        their main posting's branch, then the school-wide default. A missing
+        rule inherits; an explicit null rule removes a limit.
+        """
+        if staff is not None:
+            branch_id = staff.branch_id
+            group_id = staff.leave_group or None
+            scopes = (
+                (branch_id, group_id), (None, group_id), (branch_id, None),
+            )
+            for wanted_branch, wanted_group in scopes:
+                if wanted_branch is None and wanted_group is None:
+                    continue
+                for row in self.overrides:
+                    if (row["leave_type"] == leave_type
+                            and row["branch_id"] == wanted_branch
+                            and row["group_id"] == wanted_group):
+                        return row["days"]
         return self.allowances.get(leave_type)
 
-    def as_dict(self) -> dict:
+    def as_dict(self, tenant=None) -> dict:
+        from vs_tenants.models import Branch
+
         return {
             "allowances": dict(self.allowances),
+            "groups": list(self.groups),
+            "overrides": list(self.overrides),
+            "branch_options": list(
+                Branch.objects.filter(tenant=tenant).order_by("name").values("id", "name")
+            ) if tenant is not None else [],
             "leave_types": [
                 {"value": value, "label": label} for value, label in LeaveType.choices
             ],
@@ -234,22 +322,25 @@ class StaffRules:
             "self_editable_options": self_editable_options(),
             "self_editable_locked": self_editable_locked(),
             "hire_requires_approval": self.hire_requires_approval,
-            "leave": self.leave.as_dict(),
+            "leave": self.leave.as_dict(tenant),
         }
 
 
 def _leave_from(found: dict) -> LeaveRules:
+    groups = _groups(found.get(CFG_LEAVE_GROUPS))
     return LeaveRules(
         allowances=_allowances(found.get(CFG_LEAVE_ALLOWANCES)),
+        groups=groups,
+        overrides=_overrides(found.get(CFG_LEAVE_OVERRIDES), groups),
         working_days=_working_days(found.get(CFG_LEAVE_WORKING_DAYS)),
         exclude_closures=found.get(CFG_LEAVE_EXCLUDE_CLOSURES, True) is not False,
     )
 
 
 def read_staff_rules(tenant) -> StaffRules:
-    """All seven rules in one read: eight queries whatever the school.
+    """All nine rules in one read, with defaults when there is no tenant.
 
-    With no tenant, the defaults.
+    Values resolve through the configuration service's scope hierarchy.
     """
     found = _values(tenant, _RULE_KEYS)
     return StaffRules(
@@ -316,12 +407,17 @@ def write_staff_rules(
         code: days for code, days in _allowances(leave.get("allowances")).items()
         if days is not None
     }
+    current = leave_rules(tenant)
+    groups = _groups(leave.get("groups", list(current.groups)))
+    overrides = _overrides(leave.get("overrides", list(current.overrides)), groups)
     wanted = {
         CFG_STARTING_ROLE: starting_role,
         CFG_REQUIRED_DOCUMENTS: list(_documents(required_documents)),
         CFG_SELF_EDITABLE: list(_self_editable(self_editable_fields)),
         CFG_HIRE_APPROVAL: bool(hire_requires_approval),
         CFG_LEAVE_ALLOWANCES: allowances,
+        CFG_LEAVE_GROUPS: list(groups),
+        CFG_LEAVE_OVERRIDES: list(overrides),
         CFG_LEAVE_WORKING_DAYS: list(_working_days(leave.get("working_days"))),
         CFG_LEAVE_EXCLUDE_CLOSURES: bool(leave.get("exclude_closures")),
     }

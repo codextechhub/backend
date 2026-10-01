@@ -53,7 +53,7 @@ from .views.records import (
 )
 from .views.section_history import StaffSectionHistoryView
 from .views.roles import StaffRolesView
-from .views.settings import StaffNumberPolicyView, StaffRulesView
+from .views.settings import StaffLeaveGroupView, StaffNumberPolicyView, StaffRulesView
 from .views.teaching import (
     ClassTeacherView,
     StaffTeachingView,
@@ -96,6 +96,7 @@ urlpatterns = [
         name="staff-document-detail",
     ),
     path("leave/<int:pk>/", LeaveDetailView.as_view(), name="staff-leave-detail"),
+    path("<int:pk>/leave-group/", StaffLeaveGroupView.as_view(), name="staff-leave-group"),
 
     # ── The organogram, under a literal prefix of its own ─────────────────
     path(

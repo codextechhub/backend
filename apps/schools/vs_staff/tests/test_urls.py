@@ -89,6 +89,10 @@ class LiteralSegmentTests(SimpleTestCase):
         self.assertEqual(
             resolve("/v1/i/me/staff/3/status/").url_name, "staff-status",
         )
+        self.assertEqual(
+            resolve("/v1/i/me/staff/3/leave-group/").url_name,
+            "staff-leave-group",
+        )
 
     def test_the_staff_mount_is_reached_before_the_school_slug_pattern(self):
         """``v1/i/<str:slug>/`` would otherwise catch ``me/staff/`` and its children."""
@@ -110,6 +114,7 @@ class SurfaceTests(SimpleTestCase):
         "StaffListCreateView", "StaffDetailView", "StaffSearchView", "StaffMineView",
         "StaffBulkPostingView", "StaffRosterView", "StaffBulkRoleView",
         "StaffRolesView", "StaffResendInvitationView",
+        "StaffSectionHistoryView",
         "QualificationListCreateView", "QualificationDetailView",
         "DocumentListCreateView", "DocumentDetailView",
         # Read only: the Add form renders the rule's hint during onboarding.
@@ -124,7 +129,7 @@ class SurfaceTests(SimpleTestCase):
         "StaffAccountUnlockView", "StaffAccountEmailView",
         "StaffTeachingView", "TeachingAssignmentDetailView",
         "ClassTeacherView", "TeachingCoverageView",
-        "StaffLeaveView", "LeaveDetailView",
+        "StaffLeaveView", "LeaveDetailView", "StaffLeaveGroupView",
         "OrgNodeListCreateView", "OrgNodeDetailView",
         "PositionListCreateView", "PositionTreeView", "PositionVacanciesView",
         "PositionDetailView", "AppointmentListCreateView", "AppointmentDetailView",

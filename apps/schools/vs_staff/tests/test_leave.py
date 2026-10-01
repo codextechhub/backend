@@ -165,9 +165,10 @@ class FilingTests(LeaveFixture):
         items = instance.document_details["sections"][0]["items"]
         self.assertEqual(
             [item["label"] for item in items],
-            ["Days", "Job title", "Reason"],
+            ["Days", "Resumption date", "Job title", "Reason"],
         )
         self.assertIn({"label": "Days", "value": "8"}, items)
+        self.assertIn({"label": "Resumption date", "value": "2026-01-05"}, items)
         self.assertIn({
             "label": "Reason",
             "value": "Travelling for a family ceremony.",
@@ -178,6 +179,23 @@ class FilingTests(LeaveFixture):
         self.post(self.admin, "staff-leave", self.body(), pk=self.eze.pk)
         row = LeaveRequest.all_objects.get(staff=self.eze)
         self.assertEqual(row.days, 10)
+        self.assertEqual(row.resumption_date, dt.date(2026, 1, 5))
+        data = self.get(self.admin, "staff-leave", pk=self.eze.pk).data["data"]["leave"][0]
+        self.assertEqual(data["resumption_date"], "2026-01-05")
+        self.assertFalse(data["resumption_is_estimate"])
+
+    def test_an_older_request_has_an_estimated_return_on_the_profile(self):
+        self.post(self.admin, "staff-leave", self.body(), pk=self.eze.pk)
+        LeaveRequest.all_objects.filter(staff=self.eze).update(resumption_date=None)
+        data = self.get(self.admin, "staff-leave", pk=self.eze.pk).data["data"]["leave"][0]
+        self.assertEqual(data["resumption_date"], "2026-01-05")
+        self.assertTrue(data["resumption_is_estimate"])
+
+    def test_resumption_skips_a_closed_workday(self):
+        from schools.vs_staff.services.leave import next_working_day
+
+        with patch("schools.vs_staff.services.leave.closure_dates", return_value={dt.date(2026, 1, 5)}):
+            self.assertEqual(next_working_day(self.eze, dt.date(2026, 1, 2)), dt.date(2026, 1, 6))
 
     def test_a_caller_may_send_its_own_day_count(self):
         """The count the school works out is a default, not a rule."""

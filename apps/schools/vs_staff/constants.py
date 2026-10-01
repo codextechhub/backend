@@ -337,6 +337,8 @@ CFG_REQUIRED_DOCUMENTS = "staff.documents.required"
 CFG_SELF_EDITABLE = "staff.self_editable_fields"
 CFG_HIRE_APPROVAL = "staff.hire.requires_approval"
 CFG_LEAVE_ALLOWANCES = "staff.leave.allowances"
+CFG_LEAVE_GROUPS = "staff.leave.groups"
+CFG_LEAVE_OVERRIDES = "staff.leave.overrides"
 CFG_LEAVE_WORKING_DAYS = "staff.leave.working_days"
 CFG_LEAVE_EXCLUDE_CLOSURES = "staff.leave.exclude_closures"
 

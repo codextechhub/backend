@@ -94,6 +94,7 @@ class StaffLeaveView(StaffViewMixin, APIView):
         from vs_history.as_at import parse_as_at
 
         from .. import as_at as past
+        from ..services.rules import leave_rules
 
         staff, _access, admission = self.admit_profile_read(pk)
         as_at = parse_as_at(request)
@@ -103,6 +104,7 @@ class StaffLeaveView(StaffViewMixin, APIView):
             rows = list(staff.leave_requests.select_related("requested_by", "staff__user"))
             days_taken = leave_service.days_taken(staff)
             counted = None
+            subject = staff
         else:
             record, children, _meta = past.staff_at(staff, as_at)
             rows = sorted(children["leave_requests"], key=lambda row: row.start_date, reverse=True)
@@ -110,12 +112,17 @@ class StaffLeaveView(StaffViewMixin, APIView):
                 row.staff = record
             days_taken = past.days_taken_at(rows)
             counted = rows
+            subject = record
         read_context = self._request_context(rows, as_at)
+        read_context["legacy_resumption_dates"] = leave_service.legacy_resumption_dates(subject, rows)
+        rules = leave_rules(subject.tenant)
+        group = next((row for row in rules.groups if row["id"] == subject.leave_group), None)
         return success_response(data={
             "leave": LeaveSerializer(rows, many=True, context={"as_at": as_at, **read_context}).data,
+            "leave_group": group,
             "days_taken": days_taken,
             "balances": (
-                leave_service.balances(staff, session, rows=counted)
+                leave_service.balances(subject, session, rows=counted, rules=rules)
                 if session is not None else []
             ),
             "balance_session": (

@@ -12,6 +12,7 @@ rule needs only that branch in the caller's reach.
 from __future__ import annotations
 
 from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework import serializers
 from rest_framework.views import APIView
 
 from core.response import success_response
@@ -70,6 +71,38 @@ class StaffRulesView(_SettingsView):
             self.tenant, request.user, reason=data.pop("reason", ""), **data,
         )
         return success_response("Staff rules saved.", data=rules.as_dict(self.tenant))
+
+
+class StaffLeaveGroupView(StaffViewMixin, APIView):
+    """Assign a school's named leave group to one manageable staff record.
+
+    An empty group clears the assignment. The school's settings writer may
+    change a person only within their existing staff management scope.
+    """
+
+    rbac_permission = PERM_SETTINGS_UPDATE
+
+    def put(self, request, pk):
+        from ..services.rules import leave_rules
+
+        class Assignment(serializers.Serializer):
+            group_id = serializers.UUIDField(allow_null=True, required=True)
+
+        staff = self.get_staff_for_write(pk)
+        writer = Assignment(data=request.data)
+        writer.is_valid(raise_exception=True)
+        group_id = writer.validated_data["group_id"]
+        group = next(
+            (row for row in leave_rules(self.tenant).groups if row["id"] == str(group_id)),
+            None,
+        ) if group_id else None
+        if group_id and group is None:
+            raise ValidationError({"group_id": "Choose a leave group at this school."})
+        wanted = group["id"] if group else ""
+        if staff.leave_group != wanted:
+            staff.leave_group = wanted
+            staff.save(update_fields=["leave_group", "updated_at"])
+        return success_response("Leave group saved.", data={"leave_group": group})
 
 
 class StaffNumberPolicyView(_SettingsView):

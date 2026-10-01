@@ -145,6 +145,7 @@ class StaffProfile(_Owned):
     employment_type = models.CharField(
         max_length=16, choices=EmploymentType.choices, blank=True, default="",
     )
+    leave_group = models.CharField(max_length=36, blank=True, default="")
     #: Never derived. Written by ``services.employment`` and, for a hire the
     #: school approves before inviting, by ``services.hire``.
     employment_status = models.CharField(
@@ -393,6 +394,7 @@ class LeaveRequest(_Owned):
     leave_type = models.CharField(max_length=20, choices=LeaveType.choices)
     start_date = models.DateField()
     end_date = models.DateField()
+    resumption_date = models.DateField(null=True, blank=True)
     #: Stored rather than derived, and the one derived-looking value in this
     #: module that is deliberately a column: the school's working week and its
     #: calendar change, and a request's count must stay what it was when it was

@@ -537,12 +537,15 @@ class LeaveSerializer(serializers.ModelSerializer):
     approval = serializers.SerializerMethodField()
     last_changed_by = serializers.SerializerMethodField()
     last_changed_at = serializers.SerializerMethodField()
+    resumption_date = serializers.SerializerMethodField()
+    resumption_is_estimate = serializers.SerializerMethodField()
 
     class Meta:
         model = LeaveRequest
         fields = [
             "id", "staff_id", "staff_name", "leave_type", "leave_type_label",
-            "start_date", "end_date", "days", "over_allowance_by", "note", "status",
+            "start_date", "end_date", "resumption_date", "resumption_is_estimate",
+            "days", "over_allowance_by", "note", "status",
             "display_status", "decided_at", "requested_by", "created_at",
             "approval", "last_changed_by", "last_changed_at",
         ]
@@ -567,6 +570,21 @@ class LeaveSerializer(serializers.ModelSerializer):
     def get_last_changed_at(self, obj):
         change = self.context.get("leave_changes", {}).get(obj.pk)
         return change.event_at if change else None
+
+    def get_resumption_date(self, obj):
+        if obj.resumption_date is not None:
+            return obj.resumption_date.isoformat()
+        cached = self.context.get("legacy_resumption_dates", {})
+        if obj.end_date in cached:
+            value = cached[obj.end_date]
+            return value.isoformat() if value else None
+        from .services.leave import next_working_day
+
+        value = next_working_day(obj.staff, obj.end_date)
+        return value.isoformat() if value else None
+
+    def get_resumption_is_estimate(self, obj):
+        return obj.resumption_date is None
 
 
 class LeaveWriteSerializer(serializers.Serializer):
@@ -1103,6 +1121,18 @@ class StaffNumberPolicySerializer(serializers.Serializer):
         return value
 
 
+class LeaveGroupSettingSerializer(serializers.Serializer):
+    id = serializers.UUIDField(format="hex_verbose")
+    name = serializers.CharField(max_length=80, trim_whitespace=True)
+
+
+class LeaveOverrideSettingSerializer(serializers.Serializer):
+    branch_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    group_id = serializers.UUIDField(required=False, allow_null=True, format="hex_verbose")
+    leave_type = serializers.ChoiceField(choices=LeaveType.choices)
+    days = serializers.IntegerField(allow_null=True, min_value=0, max_value=366)
+
+
 class LeaveRulesSerializer(serializers.Serializer):
     """How a school counts and limits leave, as the settings screen saves it."""
 
@@ -1113,6 +1143,8 @@ class LeaveRulesSerializer(serializers.Serializer):
             "not_a_dict": "Give the allowances as leave types and days.",
         },
     )
+    groups = LeaveGroupSettingSerializer(many=True, required=False, allow_empty=True)
+    overrides = LeaveOverrideSettingSerializer(many=True, required=False, allow_empty=True)
     working_days = serializers.ListField(
         child=serializers.JSONField(allow_null=True), allow_empty=True,
         error_messages={
@@ -1161,6 +1193,58 @@ class LeaveRulesSerializer(serializers.Serializer):
                     "(Sunday).",
                 )
         return sorted(set(value))
+
+    def validate(self, attrs):
+        """Keep group references and branch exceptions inside this school."""
+        from vs_tenants.models import Branch
+
+        from .models import StaffProfile
+        from .services.rules import leave_rules
+
+        tenant = self.context["tenant"]
+        if "groups" in attrs:
+            groups = [{"id": str(row["id"]), "name": row["name"]} for row in attrs["groups"]]
+            if len(groups) > 100:
+                raise serializers.ValidationError({"groups": "Keep at most 100 leave groups."})
+            ids = [row["id"] for row in groups]
+            names = [row["name"].casefold() for row in groups]
+            if len(ids) != len(set(ids)) or len(names) != len(set(names)):
+                raise serializers.ValidationError({"groups": "Give each leave group a unique name and ID."})
+            current_ids = {row["id"] for row in leave_rules(tenant).groups}
+            removed = current_ids - set(ids)
+            if removed and StaffProfile.all_objects.filter(tenant=tenant, leave_group__in=removed).exists():
+                raise serializers.ValidationError({"groups": "Move staff out of a leave group before removing it."})
+            attrs["groups"] = groups
+        else:
+            groups = list(leave_rules(tenant).groups) if "overrides" in attrs else []
+
+        if "overrides" in attrs:
+            if len(attrs["overrides"]) > 500:
+                raise serializers.ValidationError({"overrides": "Keep at most 500 leave exceptions."})
+            group_ids = {row["id"] for row in groups}
+            overrides, seen, branch_ids = [], set(), set()
+            for row in attrs["overrides"]:
+                branch_id = row.get("branch_id")
+                group_id = str(row["group_id"]) if row.get("group_id") else None
+                if branch_id is None and group_id is None:
+                    raise serializers.ValidationError({"overrides": "Choose a branch or leave group for each exception."})
+                if group_id and group_id not in group_ids:
+                    raise serializers.ValidationError({"overrides": "That leave group is not defined for this school."})
+                if branch_id:
+                    branch_ids.add(branch_id)
+                key = (branch_id, group_id, row["leave_type"])
+                if key in seen:
+                    raise serializers.ValidationError({"overrides": "Each branch, group and leave type may have one exception."})
+                seen.add(key)
+                overrides.append({
+                    "branch_id": branch_id, "group_id": group_id,
+                    "leave_type": row["leave_type"], "days": row["days"],
+                })
+            owned = set(Branch.objects.filter(tenant=tenant, pk__in=branch_ids).values_list("pk", flat=True))
+            if owned != branch_ids:
+                raise serializers.ValidationError({"overrides": "Choose branches belonging to this school."})
+            attrs["overrides"] = overrides
+        return attrs
 
 
 class StaffRulesSerializer(serializers.Serializer):

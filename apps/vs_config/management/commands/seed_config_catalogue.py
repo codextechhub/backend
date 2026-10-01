@@ -329,6 +329,16 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "JSON", {}, {},
     ),
     (
+        "staff.leave.groups", "Staff Leave Groups",
+        "Named groups assigned to staff for leave allowance exceptions.",
+        "JSON", [], {},
+    ),
+    (
+        "staff.leave.overrides", "Leave Allowance Exceptions",
+        "Leave type allowances for a branch, a staff leave group, or both.",
+        "JSON", [], {},
+    ),
+    (
         "staff.leave.working_days", "Working Days For Leave",
         "The weekdays a leave request counts, as ISO numbers (Monday is 1, "
         "Sunday is 7).",

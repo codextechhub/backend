@@ -86,6 +86,54 @@ def count_days(staff, start_date, end_date, *, rules=None) -> int:
     return total
 
 
+def next_working_day(staff, end_date, *, rules=None, closed=None):
+    """The first scheduled workday after leave ends.
+
+    The same weekdays and school closures used to count leave decide when the
+    person returns. A year with no open workday yields no planned date rather
+    than guessing one.
+    """
+    from datetime import timedelta
+
+    from .rules import leave_rules
+
+    rules = rules or leave_rules(staff.tenant)
+    first = end_date + timedelta(days=1)
+    last = end_date + timedelta(days=366)
+    checked_through = end_date
+    supplied = closed is not None
+    closed = closed or set()
+    day = first
+    while day <= last:
+        if not supplied and day > checked_through:
+            checked_through = min(day + timedelta(days=13), last)
+            closed = (
+                closure_dates(staff, day, checked_through)
+                if rules.exclude_closures else set()
+            )
+        if day.isoweekday() in rules.working_days and day not in closed:
+            return day
+        day += timedelta(days=1)
+    return None
+
+
+def legacy_resumption_dates(staff, rows) -> dict:
+    """Derive older requests' expected returns with one calendar lookup."""
+    from datetime import timedelta
+
+    from .rules import leave_rules
+
+    dates = {row.end_date for row in rows if row.resumption_date is None}
+    if not dates:
+        return {}
+    rules = leave_rules(staff.tenant)
+    closed = (
+        closure_dates(staff, min(dates) + timedelta(days=1), max(dates) + timedelta(days=366))
+        if rules.exclude_closures else set()
+    )
+    return {end: next_working_day(staff, end, rules=rules, closed=closed) for end in dates}
+
+
 def _counted(staff, start_date, end_date, days, rules):
     """*days* where the caller sent it, else the school's count, never zero."""
     if days is not None:
@@ -151,7 +199,7 @@ def over_allowance(staff, leave_type, start_date, days, *, exclude_pk=None, rule
     from .rules import leave_rules
 
     rules = rules or leave_rules(staff.tenant)
-    allowance = rules.allowance_for(leave_type)
+    allowance = rules.allowance_for(leave_type, staff)
     if allowance is None:
         return 0
     session = leave_session(staff, start_date)
@@ -190,7 +238,7 @@ def balances(staff, session, *, rows=None, rules=None) -> list[dict]:
             pending[row.leave_type] = pending.get(row.leave_type, 0) + row.days
     out = []
     for code, label in LeaveType.choices:
-        allowance = rules.allowance_for(code)
+        allowance = rules.allowance_for(code, staff)
         out.append({
             "leave_type": code,
             "label": label,
@@ -208,7 +256,7 @@ def _over_warning(leave, rules):
     """The filing's own warning where it goes past the allowance, or None."""
     if not leave.over_allowance_by:
         return None
-    allowance = rules.allowance_for(leave.leave_type)
+    allowance = rules.allowance_for(leave.leave_type, leave.staff)
     over = leave.over_allowance_by
     return {
         "code": "OVER_ALLOWANCE",
@@ -294,6 +342,7 @@ def file_request(*, staff, leave_type, start_date, end_date, days=None, note="",
     leave = LeaveRequest.objects.create(
         tenant=staff.tenant, staff=staff, leave_type=leave_type,
         start_date=start_date, end_date=end_date, days=days,
+        resumption_date=next_working_day(staff, end_date, rules=rules),
         over_allowance_by=over_allowance(
             staff, leave_type, start_date, days, rules=rules,
         ),
@@ -344,6 +393,8 @@ def correct(leave, *, leave_type=None, start_date=None, end_date=None, days=None
     from .rules import leave_rules
 
     rules = leave_rules(leave.tenant)
+    if end_date is not None or leave.resumption_date is None:
+        leave.resumption_date = next_working_day(leave.staff, leave.end_date, rules=rules)
     if days is not None:
         leave.days = days
     elif start_date is not None or end_date is not None:

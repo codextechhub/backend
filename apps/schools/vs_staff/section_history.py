@@ -61,9 +61,11 @@ SECTION_MODELS = {
     }),
     "leave": (LeaveRequest, {
         "leave_type": "Leave type", "start_date": "Start date",
-        "end_date": "End date", "days": "Days", "status": "Status",
+        "end_date": "End date", "resumption_date": "Resumption date",
+        "days": "Days", "status": "Status",
     }),
 }
+LEAVE_PROFILE_FIELDS = {"leave_group": "Leave group"}
 
 
 def _model(section):
@@ -104,6 +106,12 @@ def _names(tenant, section, versions):
             model._base_manager.filter(tenant=tenant, pk__in=ids[bucket])
             .values_list("pk", label)
         ) if ids[bucket] else {}
+    if section == "leave":
+        from .services.rules import leave_rules
+
+        names["leave_group"] = {
+            row["id"]: row["name"] for row in leave_rules(tenant).groups
+        }
     return names
 
 
@@ -144,6 +152,8 @@ def _display(section, field, value, names):
         return dict(LeaveStatus.choices).get(value, "Other")
     if field == "employment_type":
         return str(value).replace("_", " ").title()
+    if field == "leave_group":
+        return names["leave_group"].get(value, "Unavailable group")
     if field == "gender":
         return {"MALE": "Male", "FEMALE": "Female", "OTHER": "Other"}.get(value, str(value))
     return str(value)
@@ -161,6 +171,8 @@ def _title(section, data, names, record_type):
     if section == "documents":
         return data.get("title") or "Document"
     if section == "leave":
+        if record_type == StaffProfile._meta.label_lower:
+            return "Leave group"
         return _display(section, "leave_type", data.get("leave_type"), names) or "Leave"
     return _display(section, "role_id", data.get("role_id"), names) or "Role"
 
@@ -208,10 +220,15 @@ def section_changes(*, tenant, staff, section, page, visible_fields=None, before
         scope = Q(owners__contains=[owner_key(StaffProfile._meta.label_lower, staff.pk)])
 
     changed = Q(is_deleted=True) | Q(is_baseline=True)
-    for field in set(fields) | (set(user_fields) if section == "overview" else set()):
+    extra_fields = LEAVE_PROFILE_FIELDS if section == "leave" else {}
+    for field in set(fields) | set(user_fields) | set(extra_fields):
         changed |= Q(changed__contains=[field])
+    if section == "leave":
+        scope |= Q(record_type=StaffProfile._meta.label_lower, record_id=str(staff.pk))
     rows = RecordVersion.objects.filter(tenant=tenant).filter(scope).filter(changed)
-    if section != "overview":
+    if section == "leave":
+        rows = rows.filter(record_type__in=[record_type, StaffProfile._meta.label_lower])
+    elif section != "overview":
         rows = rows.filter(record_type=record_type)
     if before is not None:
         rows = rows.filter(recorded_at__lt=before.moment)
@@ -225,7 +242,10 @@ def section_changes(*, tenant, staff, section, page, visible_fields=None, before
     names = _names(tenant, section, versions)
     entries = []
     for row in versions[:PAGE_SIZE]:
-        row_fields = user_fields if row.record_type == "vs_user.user" else fields
+        row_fields = (
+            LEAVE_PROFILE_FIELDS if section == "leave" and row.record_type == StaffProfile._meta.label_lower
+            else user_fields if row.record_type == "vs_user.user" else fields
+        )
         old = row.data if row.is_deleted else (row.previous_data or {})
         new = {} if row.is_deleted else row.data
         changes = []

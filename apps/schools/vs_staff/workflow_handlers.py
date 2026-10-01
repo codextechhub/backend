@@ -105,14 +105,18 @@ class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
         }
 
     def get_document_details(self, document) -> dict:
-        """The count, the job and the reason, and how far past the allowance it goes.
+        """The planned return, count, job, reason and any excess days.
 
         The allowance line appears only where the request exceeds it. Filing
         over the allowance is allowed, so this is where the approver learns it.
         """
         staff = getattr(document, "staff", None)
+        from .services.leave import next_working_day
+
+        resumption = document.resumption_date or next_working_day(staff, document.end_date)
         rows = [
             ("Days", getattr(document, "days", 0)),
+            ("Resumption date", str(resumption) if resumption else "Not set"),
             ("Job title", getattr(staff, "job_title", "") or "-"),
             ("Reason", getattr(document, "note", "")),
         ]

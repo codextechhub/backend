@@ -13,6 +13,7 @@ rule that binds the whole school.
 from __future__ import annotations
 
 import datetime as dt
+from uuid import uuid4
 from unittest import mock
 
 from django.urls import reverse
@@ -170,6 +171,69 @@ class StaffRulesRoundTripTests(_SettingsFixture):
         before = ConfigurationAuditEvent.objects.count()
         self.save_rules(required_documents=["CV"])
         self.assertEqual(ConfigurationAuditEvent.objects.count(), before)
+
+
+class LeaveGroupRuleTests(_SettingsFixture):
+    def test_group_assignment_and_exception_precedence(self):
+        from schools.vs_staff.services.rules import leave_rules
+
+        group_id = str(uuid4())
+        self.save_rules(leave={
+            "allowances": {"ANNUAL": 20},
+            "groups": [{"id": group_id, "name": "Senior staff"}],
+            "overrides": [
+                {"branch_id": self.lekki.pk, "group_id": None, "leave_type": "ANNUAL", "days": 18},
+                {"branch_id": None, "group_id": group_id, "leave_type": "ANNUAL", "days": 25},
+                {"branch_id": self.lekki.pk, "group_id": group_id, "leave_type": "ANNUAL", "days": 30},
+            ],
+        })
+        response = self.put(self.tolu, "staff-leave-group", {"group_id": group_id}, pk=self.eze.pk)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.eze.refresh_from_db()
+        rules = leave_rules(self.tenant)
+        self.assertEqual(rules.allowance_for("ANNUAL", self.eze), 30)
+        self.assertEqual(rules.allowance_for("ANNUAL", self.ikeja_teacher), 20)
+        self.assertEqual(rules.allowance_for("ANNUAL", self.registrar), 20)
+        self.assertEqual(self.get(self.admin, "staff-leave", pk=self.eze.pk).data["data"]["leave_group"]["name"], "Senior staff")
+
+        self.put(self.tolu, "staff-leave-group", {"group_id": None}, pk=self.eze.pk)
+        self.eze.refresh_from_db()
+        self.assertEqual(rules.allowance_for("ANNUAL", self.eze), 18)
+
+    def test_group_write_requires_settings_key_and_staff_scope(self):
+        group_id = str(uuid4())
+        self.save_rules(leave={"groups": [{"id": group_id, "name": "Senior staff"}]})
+        self.assertEqual(self.put(self.nobody, "staff-leave-group", {"group_id": group_id}, pk=self.eze.pk).status_code, 403)
+        self.assertEqual(self.put(self.kemi, "staff-leave-group", {"group_id": group_id}, pk=self.ikeja_teacher.pk).status_code, 404)
+        self.assertEqual(self.put(self.tolu, "staff-leave-group", {"group_id": group_id}, pk=self.solo_staff.pk).status_code, 404)
+        self.assertEqual(self.put(self.tolu, "staff-leave-group", {"group_id": str(uuid4())}, pk=self.eze.pk).status_code, 400)
+        self.eze.refresh_from_db()
+        self.assertEqual(self.eze.leave_group, "")
+
+    def test_removing_an_assigned_group_is_refused(self):
+        group_id = str(uuid4())
+        self.save_rules(leave={"groups": [{"id": group_id, "name": "Senior staff"}]})
+        self.put(self.tolu, "staff-leave-group", {"group_id": group_id}, pk=self.eze.pk)
+        response = self.put(self.tolu, "staff-rules", self.rules_body(leave={"groups": []}))
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("Move staff out", str(response.data))
+
+    def test_group_assignment_appears_in_the_leave_history(self):
+        group_id = str(uuid4())
+        self.save_rules(leave={"groups": [{"id": group_id, "name": "Senior staff"}]})
+        self.put(self.tolu, "staff-leave-group", {"group_id": group_id}, pk=self.eze.pk)
+        response = self.get(self.eze.user, "staff-section-history", {"section": "leave"}, pk=self.eze.pk)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIn({
+            "field": "Leave group", "before": None, "after": "Senior staff",
+        }, response.data["data"]["entries"][0]["changes"])
+
+    def test_other_schools_branch_cannot_be_used_for_exception(self):
+        response = self.put(self.tolu, "staff-rules", self.rules_body(leave={
+            "overrides": [{"branch_id": self.solo_branch.pk, "group_id": None, "leave_type": "ANNUAL", "days": 5}],
+        }))
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("belonging to this school", str(response.data))
 
 
 class StaffRulesValidationTests(_SettingsFixture):
