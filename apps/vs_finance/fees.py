@@ -94,9 +94,10 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
     better than the customer record does (a school knows each pupil's) names it
     per customer, and the engine refuses a name that contradicts a customer's own
     branch rather than choosing between the two. An invoice left with no branch
-    is refused whenever the tenant owns one, so a run never files a bill under no
-    branch by omission; only books with no branch at all (none exist today) raise
-    one without.
+    is refused, so a run never files a bill under no branch by omission. Every
+    tenant owns a branch, so at a tenant that owns none the refusal is
+    :class:`~vs_finance.exceptions.BranchlessTenantError`, a data fault, rather
+    than a request to name one.
 
     An omitted ``invoice_date`` is today at the branch each invoice is raised
     for, so a family billed at a branch that keeps its own time zone is billed on
@@ -146,7 +147,6 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
         ).values_list("item_id", "customer_id")
     ) if optional_ids else set()
     created = []  # Collect generated posted invoices for the return value.
-    tenant_has_branches = None  # Looked up once, only if an invoice lacks a branch.
 
     for customer in customers:  # Generate at most one invoice per selected customer.
         if customer.pk in billed or not customer.is_active:  # Billed already, or left.
@@ -159,15 +159,12 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
             continue
 
         branch_id = _invoice_branch_id(customer, named, shared_branch_id)
-        if branch_id is None:
-            if tenant_has_branches is None:
-                from vs_tenants.models import Branch
-                tenant_has_branches = Branch.all_objects.filter(
-                    tenant_id=structure.entity.tenant_id).exists()
-            if tenant_has_branches:  # A transaction always names a branch.
-                raise PostingError(
-                    f"Customer {customer.code} is shared by every branch, so say "
-                    f"which branch their {structure.code} invoice belongs to.")
+        if branch_id is None:  # A transaction always names a branch.
+            from .branch_ledger import only_branch_id_or_several
+            only_branch_id_or_several(structure.entity.tenant_id)  # Raises for a tenant with none.
+            raise PostingError(
+                f"Customer {customer.code} is shared by every branch, so say "
+                f"which branch their {structure.code} invoice belongs to.")
         dated = invoice_date or branch_today(structure.entity.tenant, branch_id)
         invoice = Invoice.objects.create(
             entity=structure.entity, customer=customer,  # Scope invoice to the structure entity and customer.
