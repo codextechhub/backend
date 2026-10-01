@@ -515,6 +515,20 @@ EVENT_TYPE_REGISTRY = [
         # digest should still hear about that, so it must not be silenceable.
         "is_transactional": True,
     },
+    {
+        "key": "payments.dispute_received",
+        "label": "Chargeback or provider refund",
+        "description": (
+            "A payer's bank disputed an online payment, or a refund was made at the "
+            "payment provider. It is recorded against the payment and never booked "
+            "automatically, so finance staff decide how the loss is borne."
+        ),
+        "source_module": "vs_payments",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        # A dispute has a deadline at the provider; muting it forfeits the reply.
+        "is_transactional": True,
+    },
 
     {
         "key": "billing.refund_processed",

@@ -33,4 +33,11 @@ class VsPaymentsConfig(AppConfig):
         from .settlement import register as register_close_checks
 
         register_close_checks()
+        # Refuse a refund recorded as paid online for a tenant whose payments
+        # settle directly; finance asks without importing this app.
+        from vs_finance.credit_notes import register_refund_guard
+
+        from .custody import refund_guard
+
+        register_refund_guard(refund_guard)
 

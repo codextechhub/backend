@@ -246,6 +246,89 @@ def unbooked_surge(*, window_minutes=SURGE_WINDOW_MINUTES, threshold=SURGE_THRES
     return {"failures": len(recent), "alarmed": True, "notified": len(sent)}
 
 
+def dispute_received(*, event, intent, parsed, custody_mode, chargeback=None,
+                     outcome="", restored=None):
+    """Tell the tenant's finance staff and the platform's operators about a chargeback or provider refund.
+
+    The tenant's readers are those who can see its provider events
+    (``payments.webhook.view``); the platform's are those who see every tenant's
+    (``payments.unattributed_webhook.view``), because the platform is the
+    merchant of record and answers the provider. An event matching no payment
+    goes to the platform alone. ``chargeback`` is the held movement that took a
+    held payment's chargeback from its branch, when one was booked, and the
+    message says what it took and what the branch now owes. ``outcome`` is a
+    :class:`~vs_payments.constants.DisputeOutcome` when the event resolves the
+    dispute, and ``restored`` the held movement that gave a won chargeback back.
+    Returns ``{"notified": N}``.
+    """
+    from vs_tenants.models import Tenant
+
+    from .constants import CustodyMode, PaymentDirection
+
+    from .constants import DisputeOutcome
+    from .held import owed_by_chargeback, repaid_by_restore
+
+    entity = intent.entity if intent is not None else None
+    tenant = entity.tenant if entity is not None and entity.tenant_id else None
+    amount = int(parsed.amount or 0) or int(getattr(intent, "amount", 0) or 0)
+    direct = custody_mode == CustodyMode.DIRECT
+    if outcome == DisputeOutcome.WON and restored is not None:
+        repaid = repaid_by_restore(restored)
+        booking = f"{_naira(restored.amount)} was given back to the branch's held balance."
+        if repaid:
+            booking += f" {_naira(repaid)} of it repaid what the branch owed the platform."
+    elif outcome == DisputeOutcome.WON:
+        booking = "Nothing was booked for this dispute, so nothing is given back."
+    elif outcome == DisputeOutcome.LOST:
+        booking = "The dispute was lost; the chargeback stands as booked."
+    elif chargeback is not None:
+        owed = owed_by_chargeback(chargeback)
+        booking = (f"{_naira(-chargeback.amount)} was taken from the branch's held balance and "
+                   f"booked as a chargeback.")
+        if owed:
+            booking += f" {_naira(owed)} of it is owed to the platform from the next settlement."
+    else:
+        booking = "Nothing has been booked."
+    context = {
+        "kind_label": (
+            "Chargeback won" if outcome == DisputeOutcome.WON else
+            "Chargeback lost" if outcome == DisputeOutcome.LOST else
+            "Chargeback" if parsed.direction == PaymentDirection.DISPUTE else
+            "Provider refund"),
+        "entity_code": getattr(entity, "code", "") or "unattributed",
+        "entity_name": getattr(entity, "name", "") or "An unknown payment",
+        "reference": getattr(intent, "reference", "") or parsed.reference or "unknown",
+        "amount_naira": _naira(amount),
+        "event_type": parsed.event_type,
+        "custody_label": ("settled directly to the branch's bank" if direct
+                          else "held by the platform"),
+        "booking": booking,
+        "guidance": (
+            "No action is needed." if outcome == DisputeOutcome.WON else
+            "Pursue the payer for the amount if it is still owed." if outcome else
+            "The money is in the branch's bank: if it is to be returned, refund the payer "
+            "from that bank and record the refund." if direct else
+            "Pursue the payer for the amount; the receipt and invoice are unchanged."
+            if chargeback is not None else
+            "The money was held by the platform: agree with the platform how it is borne "
+            "before recording anything."
+        ),
+    }
+    notified = 0
+    if tenant is not None:
+        notified += len(_notify(
+            "payments.dispute_received", context=context, tenant=tenant,
+            recipients=_recipients(tenant, DIGEST_PERMISSION, "SCHOOL"),
+        ))
+    platform = Tenant.objects.filter(kind=Tenant.Kind.PLATFORM).first()
+    if platform is not None:
+        notified += len(_notify(
+            "payments.dispute_received", context=context, tenant=platform,
+            recipients=_recipients(platform, SURGE_PERMISSION, "PLATFORM"),
+        ))
+    return {"notified": notified}
+
+
 def _naira(kobo: int) -> str:
     """Format kobo for a human, without importing finance at module load."""
     from vs_finance.money import format_naira

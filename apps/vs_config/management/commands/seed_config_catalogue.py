@@ -120,6 +120,12 @@ DEFINITIONS = [
         "Country used when a new branch omits the field.",
         "STRING", "Nigeria", {},
     ),
+    (
+        "payments.held_reconciliation_tolerance_kobo", "Held-ledger Reconciliation Tolerance",
+        "Kobo the payment provider's reported balance may differ from the platform's books "
+        "before the daily check opens a health incident.",
+        "INTEGER", 0, {"min": 0, "max": 100_000_000},
+    ),
 ]
 
 # (key, label, description, value_type, default_value, validation_rules)

@@ -42,9 +42,14 @@ def awaiting_settlement_q(prefix: str = "") -> Q:
 
     Booked to clearing, with a receipt still posted, and no posted settlement.
     A settlement that was unmatched (its journal reversed) leaves them waiting
-    again; a receipt that was voided takes them out of clearing altogether.
+    again; a receipt that was voided takes them out of clearing altogether. A
+    payment the platform held leaves clearing when its held settlement is paid
+    (:mod:`vs_payments.held`), even one whose money online payouts had already
+    spent, so the settlement booked no journal of its own for it.
     """
     from vs_finance.constants import DocumentStatus
+
+    from .constants import HeldSettlementStatus
 
     return (
         Q(**{f"{prefix}status": CollectionStatus.SUCCEEDED,
@@ -52,6 +57,7 @@ def awaiting_settlement_q(prefix: str = "") -> Q:
              f"{prefix}payment__status": DocumentStatus.POSTED})
         & (Q(**{f"{prefix}settlement_entry__isnull": True})
            | ~Q(**{f"{prefix}settlement_entry__status": DocumentStatus.POSTED}))
+        & ~Q(**{f"{prefix}held_settlement__status": HeldSettlementStatus.PAID})
     )
 
 
@@ -78,6 +84,10 @@ def settle_collections(statement_line, collection_ids, *, actor_user=None, posti
     rather than the line's, so the transactions log shows the settlement to
     exactly the readers who can see the payments it settled
     (:meth:`vs_payments.reach.PaymentsReach.events`).
+
+    A payment the platform held is refused: its money reaches the branch only
+    through the platform's settlement run (:mod:`vs_payments.held`), which books
+    its own settlement, so a statement line naming it would book it twice.
     """
     from vs_config.display import format_date
     from vs_finance.account_mappings import resolve_mapped_account
@@ -119,6 +129,12 @@ def settle_collections(statement_line, collection_ids, *, actor_user=None, posti
     )
     tenant_id = entity.tenant_id
     for intent in intents:
+        if intent.held_by_platform:
+            _refuse(
+                f"Collection {intent.reference} was held by the platform. It reaches the bank "
+                f"through the platform's settlement run, which books its settlement.",
+                collection=intent.pk,
+            )
         if intent.pk not in waiting:
             _refuse(f"Collection {intent.reference} is not waiting in gateway clearing.",
                     collection=intent.pk)

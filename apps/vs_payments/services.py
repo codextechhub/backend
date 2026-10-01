@@ -28,7 +28,7 @@ from vs_finance.accounts import resolve_account
 from vs_finance.constants import CASH_BANK_CODE, PaymentMethod
 from vs_finance.exceptions import FinanceError
 
-from . import audit, custody
+from . import audit, custody, held
 from .constants import (
     COLLECTION_PROVISIONAL_FAILURES,
     COLLECTION_SETTLED,
@@ -38,6 +38,7 @@ from .constants import (
     PaymentAuditAction,
     PaymentProvider,
     PayoutBatchStatus,
+    PayoutPurpose,
     PayoutStatus,
     REFERENCE_PREFIX,
     WF_DEFAULT_HIGH_VALUE_THRESHOLD,
@@ -364,7 +365,7 @@ def create_virtual_account(*, entity, customer, provider=None, deposit_account=N
         deposit_account=deposit_account, account_number=result.account_number,
         bank_name=result.bank_name, account_name=result.account_name,
         currency=_entity_currency(entity), provider_reference=result.provider_reference,
-        status=VirtualAccountStatus.ACTIVE, raw=result.raw,
+        status=VirtualAccountStatus.ACTIVE, settlement_subaccount=subaccount, raw=result.raw,
     )
 
     audit.record(  # Record the new virtual account for traceability.
@@ -377,6 +378,54 @@ def create_virtual_account(*, entity, customer, provider=None, deposit_account=N
     return va  # Return the stored model instance.
 
 
+def reissue_virtual_account(va, *, actor_user=None):
+    """Replace a virtual account settling to the platform's balance with one against its branch's subaccount.
+
+    Used when a tenant's money starts settling directly. The new number is
+    created at the provider first, with no transaction open, then the old one is
+    retired and linked to it in one transaction: a parent who still pays into the
+    old number is credited to the same customer, and the platform passes the
+    money on in its next settlement run. Refused (409) when the branch has no
+    subaccount. Returns the new account; an account already replaced returns its
+    replacement.
+    """
+    _assert_no_open_transaction("Issuing a replacement virtual account")
+    if va.replaced_by_id:
+        return va.replaced_by
+    entity = va.entity
+    subaccount = custody.branch_subaccount(entity, va.branch_id, va.provider)
+    collection = custody.branch_collection_account(entity, va.branch_id)
+    reference = _new_reference(entity)
+    customer = va.customer
+    result = get_provider(va.provider).create_virtual_account(
+        reference=reference, customer_name=customer.name,
+        customer_email=customer.billing_email, subaccount=subaccount,
+    )
+    with transaction.atomic():
+        old = VirtualAccount.objects.select_for_update().get(pk=va.pk)
+        if old.status != VirtualAccountStatus.ACTIVE or old.replaced_by_id:
+            return old.replaced_by or old
+        old.status = VirtualAccountStatus.RETIRED
+        old.save(update_fields=["status", "updated_at"])
+        new = VirtualAccount.objects.create(
+            entity=entity, branch_id=old.branch_id, provider=old.provider, customer=customer,
+            deposit_account=collection.gl_account if collection else old.deposit_account,
+            account_number=result.account_number, bank_name=result.bank_name,
+            account_name=result.account_name, currency=old.currency,
+            provider_reference=result.provider_reference, status=VirtualAccountStatus.ACTIVE,
+            settlement_subaccount=subaccount, raw=result.raw,
+        )
+        old.replaced_by = new
+        old.save(update_fields=["replaced_by", "updated_at"])
+        audit.record(
+            action=PaymentAuditAction.VIRTUAL_ACCOUNT_REISSUED, entity=entity,
+            provider=old.provider, reference=reference, actor_user=actor_user,
+            message=f"Virtual account for {customer.code} reissued; the old number is retired.",
+            metadata={"retired_id": old.pk, "virtual_account_id": new.pk},
+        )
+    return new
+
+
 @transaction.atomic
 # Handle the set virtual account status workflow.
 def set_virtual_account_status(va, *, status, actor_user=None):
@@ -385,9 +434,15 @@ def set_virtual_account_status(va, *, status, actor_user=None):
     We flip the local status and record it. Provider-side teardown is **not**
     wired (no provider method backs it), so a deactivated account stops being
     offered for new transfers here while remaining whatever it is at the PSP.
+    A retired account (:func:`reissue_virtual_account`) is neither.
     """
-    if status not in VirtualAccountStatus.values:  # Reject invalid lifecycle states.
-        raise ValidationError({"status": f"Must be one of {', '.join(VirtualAccountStatus.values)}."})
+    settable = (VirtualAccountStatus.ACTIVE, VirtualAccountStatus.INACTIVE)
+    if status not in settable:  # Retiring happens only when an account is reissued.
+        raise ValidationError({"status": f"Must be one of {', '.join(settable)}."})
+    if va.status == VirtualAccountStatus.RETIRED:
+        raise ValidationError({"status": (
+            "This account was replaced by a new number when payments started settling "
+            "directly to the branch's bank, so it cannot be switched on or off.")})
     
     if va.status == status:  # No work to do when the requested state is already applied.
         return va
@@ -531,6 +586,10 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
 
     ``fee`` is what the provider says it kept, stored for the settlement that
     later moves the payment out of clearing; ``None`` when it did not say.
+
+    A payment whose money settled to the platform's provider balance raises
+    what the platform holds for its branch, in the same transaction
+    (:func:`vs_payments.held.record_collection`).
     """
     intent = CollectionIntent.objects.select_for_update().get(pk=intent_id)
     # The real idempotency guarantee. Another worker may have booked this while we
@@ -566,9 +625,10 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
     _book_receipt(intent, actor_user=actor_user, paid_at=paid_at)  # Create and post the corresponding receipt.
     intent.status = CollectionStatus.SUCCEEDED  # Mark the gateway event as settled.
     intent.confirmed_at = timezone.now()
+    held.record_collection(intent, actor_user=actor_user)  # The platform owes it to the branch.
     intent.save(update_fields=[
         "status", "payment", "amount", "metadata", "confirmed_at", "raw_response",
-        "fee", "clearing_account", "branch", "updated_at",
+        "fee", "clearing_account", "branch", "held_by_platform", "updated_at",
     ])
 
     audit_metadata = {"payment_id": intent.payment_id}
@@ -1011,7 +1071,8 @@ def _validate_approved_instance(batch, approved_instance):
     (:func:`vs_workflow.services.approvers.requester_ids`: the named requester
     and the real submitter and resubmitters). Ada who submits a batch and then
     approves it as Chioma and as Bola by proxy is one person and the requester,
-    so the batch counts no approver and waits.
+    so the batch counts no approver and waits. A settlement batch (the platform
+    paying a client branch) always needs two, whatever its size.
     """
     from django.contrib.contenttypes.models import ContentType
     from django.db.models.functions import Coalesce
@@ -1048,7 +1109,8 @@ def _validate_approved_instance(batch, approved_instance):
         ).annotate(real_voter=Coalesce("proxied_by", "actor"))
         .values_list("real_voter", flat=True)
     ) - requester_ids(instance)
-    required = 2 if batch.total_amount >= WF_DEFAULT_HIGH_VALUE_THRESHOLD else 1
+    required = 2 if (batch.purpose == PayoutPurpose.SETTLEMENT
+                     or batch.total_amount >= WF_DEFAULT_HIGH_VALUE_THRESHOLD) else 1
     if len(actor_ids) < required:
         requirement = (
             "two distinct human approvers"
@@ -1083,6 +1145,16 @@ def _dispatch_transfer(
 
     The amount sent is :func:`payout_transfer_amount`, the line less its WHT, and it
     is recorded on the row as ``transfer_amount`` in the claiming transaction.
+
+    For a held-mode tenant the claim also takes the transfer from the held balance
+    of the branch it pays for, under that balance's lock
+    (:func:`vs_payments.held.reserve_for_transfer`). A branch holding less is
+    refused: the instruction is marked FAILED with the reason, nothing is sent,
+    and :class:`~vs_payments.held.InsufficientHeldFundsError` is raised. A clean
+    provider rejection gives the reservation back.
+
+    A settlement line pays no vendor; its destination is checked against the
+    branch's collection account instead (:func:`vs_payments.held.validate_settlement_destination`).
     """
     from vs_procurement.models import Vendor
 
@@ -1092,11 +1164,15 @@ def _dispatch_transfer(
             "A payout instruction can be dispatched only through its approved batch.",
         )
     _validate_approved_instance(batch, approved_instance)
-    if vendor is None:
-        if not payout.vendor_source_id:
-            raise PaymentStateError("The payout instruction has no vendor master reference.")
-        vendor = Vendor.objects.filter(pk=int(payout.vendor_source_id)).first()
-    _validate_instruction_snapshot(payout, vendor)
+    settling = batch.purpose == PayoutPurpose.SETTLEMENT
+    if settling:
+        held.validate_settlement_destination(payout)
+    else:
+        if vendor is None:
+            if not payout.vendor_source_id:
+                raise PaymentStateError("The payout instruction has no vendor master reference.")
+            vendor = Vendor.objects.filter(pk=int(payout.vendor_source_id)).first()
+        _validate_instruction_snapshot(payout, vendor)
     client = client or get_provider(payout.provider)  # Allow callers to reuse or lazily resolve the PSP client.
 
     # Claim the row, re-check the approval, and re-check the destination in one
@@ -1106,21 +1182,29 @@ def _dispatch_transfer(
     # here because an administrator can reverse it while the batch is mid-flight;
     # the reversal takes this same row lock, so whichever runs first, the other
     # sees the finished state instead of a stale one.
-    with transaction.atomic():
-        payout = PayoutInstruction.objects.select_for_update().get(pk=payout.pk)
-        if payout.status != PayoutStatus.PENDING:
-            # Another dispatch already claimed it. Never send twice.
-            return payout
-        _validate_approved_instance(batch, approved_instance)
-        _validate_instruction_snapshot(
-            payout, Vendor.objects.select_for_update().get(pk=vendor.pk),
-        )
-        payout.status = PayoutStatus.PROCESSING  # In flight from here on, whatever happens.
-        transfer_amount = payout_transfer_amount(payout)  # The supplier receives the line less WHT.
-        # Recorded before the send, so confirmation knows what was asked for even
-        # when the provider's answer is lost.
-        payout.metadata = {**(payout.metadata or {}), "transfer_amount": transfer_amount}
-        payout.save(update_fields=["status", "metadata", "updated_at"])
+    try:
+        with transaction.atomic():
+            payout = PayoutInstruction.objects.select_for_update().get(pk=payout.pk)
+            if payout.status != PayoutStatus.PENDING:
+                # Another dispatch already claimed it. Never send twice.
+                return payout
+            _validate_approved_instance(batch, approved_instance)
+            if settling:
+                held.validate_settlement_destination(payout, lock=True)
+            else:
+                _validate_instruction_snapshot(
+                    payout, Vendor.objects.select_for_update().get(pk=vendor.pk),
+                )
+            payout.status = PayoutStatus.PROCESSING  # In flight from here on, whatever happens.
+            transfer_amount = payout_transfer_amount(payout)  # The supplier receives the line less WHT.
+            held.reserve_for_transfer(payout, transfer_amount, actor_user=actor_user)
+            # Recorded before the send, so confirmation knows what was asked for even
+            # when the provider's answer is lost.
+            payout.metadata = {**(payout.metadata or {}), "transfer_amount": transfer_amount}
+            payout.save(update_fields=["status", "metadata", "updated_at"])
+    except held.InsufficientHeldFundsError as exc:
+        _refuse_unfunded(payout, exc, actor_user=actor_user)
+        raise
 
     currency = payout.currency  # Store the payout currency once for the request.
 
@@ -1140,6 +1224,8 @@ def _dispatch_transfer(
         if _provider_failure_is_final(exc):  # A clean rejection: nothing was sent.
             payout.status = PayoutStatus.FAILED
             fields.append("status")
+            with transaction.atomic():
+                held.release_transfer(payout, reason=reason, actor_user=actor_user)
         else:
             # The provider may have accepted this transfer and failed to tell us.
             # PROCESSING keeps it out of every retry path; the recovery sweep
@@ -1174,6 +1260,23 @@ def _dispatch_transfer(
     )
 
     return payout  # Return the now-processing payout instruction.
+
+
+def _refuse_unfunded(payout, exc, *, actor_user=None):
+    """Mark a payout refused for want of held funds: FAILED, with the reason, nothing sent."""
+    message = str(getattr(exc, "message", exc))[:255]
+    with transaction.atomic():
+        row = PayoutInstruction.objects.select_for_update().get(pk=payout.pk)
+        if row.status == PayoutStatus.PENDING:
+            row.status = PayoutStatus.FAILED
+            row.failure_reason = message
+            row.save(update_fields=["status", "failure_reason", "updated_at"])
+            if held.is_settlement_payout(row):
+                held.fail_settlement(row, reason=message, actor_user=actor_user)
+    audit.record_rejection(
+        action=PaymentAuditAction.HELD_FUNDS_REFUSED, exc=exc, entity=payout.entity,
+        provider=payout.provider, reference=payout.reference, actor_user=actor_user,
+    )
 
 
 def _payout_wht(payout) -> int:
@@ -1454,6 +1557,12 @@ class _PreparedDispatch(NamedTuple):
 def _prepare_batch_dispatch(batch, approved_instance) -> _PreparedDispatch:
     """Re-check everything that must hold before a single naira leaves the account.
 
+    A ``SETTLEMENT`` batch pays no vendor: its one line must still be paid into
+    the branch's collection account it was prepared for
+    (:func:`vs_payments.held.validate_settlement_destination`), and it is not
+    refused for a direct tenant, whose retired virtual accounts can still bring
+    the platform money to pass on.
+
     Deliberately safe to call *inside* a transaction: it performs no provider I/O
     (:func:`get_provider` only reads configuration). That is what lets the approval
     handler run these checks in the approval transaction, so a batch that could never
@@ -1463,7 +1572,9 @@ def _prepare_batch_dispatch(batch, approved_instance) -> _PreparedDispatch:
     from vs_procurement.models import Vendor
 
     batch = PayoutBatch.objects.select_for_update().get(pk=batch.pk)
-    custody.assert_online_payouts_allowed(batch.entity)  # The tenant may have moved to direct since approval.
+    settling = batch.purpose == PayoutPurpose.SETTLEMENT
+    if not settling:  # The tenant may have moved to direct since approval.
+        custody.assert_online_payouts_allowed(batch.entity)
     approved_instance = _validate_approved_instance(batch, approved_instance)
     instructions = list(batch.instructions.select_for_update().order_by("pk"))
     if batch.item_count != len(instructions) or batch.total_amount != sum(
@@ -1480,6 +1591,14 @@ def _prepare_batch_dispatch(batch, approved_instance) -> _PreparedDispatch:
         raise PaymentStateError("A payout instruction does not match its owning batch.")
 
     pending = [payout for payout in instructions if payout.status == PayoutStatus.PENDING]
+    if settling:  # One line into the branch's own collection account; no vendor.
+        for payout in pending:
+            held.validate_settlement_destination(payout)
+        return _PreparedDispatch(
+            batch=batch, approved_instance=approved_instance, pending=pending,
+            vendor_ids=[None] * len(pending), vendors={},
+            client=get_provider(batch.provider),
+        )
     vendor_ids = []
     for payout in pending:
         if payout.vendor_source_type != "vs_procurement.Vendor" or not payout.vendor_source_id:
@@ -1553,7 +1672,7 @@ def submit_payout_batch(batch, *, approved_instance=None, actor_user=None):
         try:  # One failed instruction should not abort the whole batch.
             _dispatch_transfer(
                 payout, batch=batch, approved_instance=approved_instance,
-                vendor=vendors[vendor_id], client=client,
+                vendor=vendors.get(vendor_id), client=client,
                 metadata=payout.metadata or {}, actor_user=actor_user,
             )  # Submit this payout to the provider.
             submitted += 1  # Count successful submissions.
@@ -1731,6 +1850,11 @@ def _confirm_payout_atomic(payout_id, *, status, amount, verify_raw, actor_user,
     and nothing else: it is not an outcome, so it is not audited as one. The save
     moves ``updated_at``, which is the recovery sweep's record of when it last
     asked.
+
+    A failed transfer gives back what it took from a branch's held balance; a
+    paid one corrects that balance when the provider sent another amount. A
+    paid settlement line books the tenant's settlement
+    (:func:`vs_payments.held.book_settlement_paid`) instead of a vendor payment.
     """
     payout = PayoutInstruction.objects.select_for_update().get(pk=payout_id)
     # Another worker may have booked this while we were talking to the provider.
@@ -1745,6 +1869,7 @@ def _confirm_payout_atomic(payout_id, *, status, amount, verify_raw, actor_user,
             return payout
         payout.status = status  # Mirror the final failure state.
         payout.save(update_fields=["status", "raw_response", "updated_at"])
+        held.release_transfer(payout, reason=f"The transfer ended {status}.", actor_user=actor_user)
         audit.record(  # Record the failed payout confirmation for auditability.
             action=PaymentAuditAction.PAYOUT_FAILED, entity=payout.entity,
             provider=payout.provider, reference=payout.reference, succeeded=False,
@@ -1762,7 +1887,11 @@ def _confirm_payout_atomic(payout_id, *, status, amount, verify_raw, actor_user,
         }
         payout.amount = sent + (_payout_wht(payout) if net_basis else 0)
 
-    _book_vendor_payment(payout, actor_user=actor_user, paid_at=paid_at)  # Post the vendor payment into the ledger.
+    held.true_up_transfer(payout, sent if sent > 0 else expected, actor_user=actor_user)
+    if payout.batch_id and payout.batch.purpose == PayoutPurpose.SETTLEMENT:
+        held.book_settlement_paid(payout, sent=payout.amount, paid_at=paid_at, actor_user=actor_user)
+    else:
+        _book_vendor_payment(payout, actor_user=actor_user, paid_at=paid_at)  # Post the vendor payment into the ledger.
     payout.status = PayoutStatus.PAID  # Mark the payout as successfully settled.
     payout.confirmed_at = timezone.now()
     payout.save(update_fields=[
@@ -1849,6 +1978,11 @@ def _book_vendor_payment(payout, *, actor_user=None, paid_at=None):
     Ikeja and settles Ikeja's open bills for the vendor, oldest first (see
     :func:`vs_procurement.payables._auto_settlement_candidates`).
 
+    A payout paid out of a branch's held money (a held-mode tenant's) left the
+    platform's provider balance, which is still the branch's gateway clearing in
+    its books, so the payment credits gateway clearing in the payout's branch,
+    not the bank the batch named.
+
     Gross is the payout line's amount, WHT is the figure resolved when the line
     was created, and net (what the bank is credited with) is their difference,
     which is exactly what :func:`_dispatch_transfer` sent. The WHT code and the
@@ -1873,11 +2007,19 @@ def _book_vendor_payment(payout, *, actor_user=None, paid_at=None):
         TaxCode.objects.filter(entity=payout.entity, pk=metadata["wht_tax_code_id"]).first()
         if metadata.get("wht_tax_code_id") else None
     )
-    paid_from = payout.source_account or resolve_account(
-        payout.entity, CASH_BANK_CODE, label="Cash & bank",
-    )
-    # The branch whose bank the money left: its journal, its bills and its day.
-    paying_branch_id = _paying_branch_id(paid_from)
+    if held.drew_on_held(payout):  # The money left the provider balance, not a bank.
+        from vs_finance.account_mappings import resolve_mapped_account
+        from vs_finance.constants import AccountMappingKey
+
+        paid_from = resolve_mapped_account(
+            payout.entity, AccountMappingKey.GATEWAY_CLEARING, label="gateway clearing")
+        paying_branch_id = held.held_branch_id(payout.entity, payout.branch_id)
+    else:
+        paid_from = payout.source_account or resolve_account(
+            payout.entity, CASH_BANK_CODE, label="Cash & bank",
+        )
+        # The branch whose bank the money left: its journal, its bills and its day.
+        paying_branch_id = _paying_branch_id(paid_from)
     payment_date, dating = _booking_date(payout.entity, paid_at, branch=paying_branch_id)
     if dating:  # Keep the true paid day beside the payment, however it was booked.
         payout.metadata = {**metadata, **dating}

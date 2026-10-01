@@ -37,7 +37,7 @@ from vs_finance.models import BankStatementLine, JournalEntry
 from vs_finance.money import format_naira
 from vs_rbac.scoping import UNNARROWED
 
-from .constants import CollectionStatus, PayoutStatus
+from .constants import CollectionStatus, HeldSettlementStatus, PayoutPurpose, PayoutStatus
 from .reach import PaymentsReach
 from .services import payout_sent_amount
 from .settlement import awaiting_settlement_q, suggest_settlements
@@ -56,7 +56,7 @@ class SettlementRow:
     amount: int                     # signed kobo (+ in, - out)  # Signed gateway amount for matching.
     confirmed_at: datetime.datetime | None
     matched_bank_line_id: int | None = None  # Bank statement line matched to this movement, if any.
-    match_basis: str = ""           # "reference" | "amount" | ""  # Which rule found the match.
+    match_basis: str = ""  # "reference", "amount", "settlement", "platform_settlement" or "".
     settled: bool = False  # Whether a bank line was matched.
     settled_amount: int | None = None    # the matched bank line's signed amount (net of fees)  # Bank-side amount.
     settlement_reference: str = ""       # the matched bank line's reference  # Bank-side reference.
@@ -182,7 +182,10 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
     rows: list[SettlementRow] = []  # Collect gateway movements into reconciliation rows.
 
     collections = reach.collections().filter(status=CollectionStatus.SUCCEEDED)
-    payouts = reach.payouts().filter(status=PayoutStatus.PAID)
+    # A settlement payout brings the platform's held money into the branch's bank;
+    # it is the held payments' settlement, not money leaving the books.
+    payouts = reach.payouts().filter(status=PayoutStatus.PAID).exclude(
+        batch__purpose=PayoutPurpose.SETTLEMENT)
     if provider:  # Optional PSP filter narrows the report to one provider.
         collections = collections.filter(provider=provider)
         payouts = payouts.filter(provider=provider)
@@ -261,6 +264,16 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
         row.settlement_date = line.txn_date
         row.settlement_description = line.description
 
+    # A held payment is settled when the platform's settlement run paid its branch.
+    held_paid = set(collections.filter(
+        held_settlement__status=HeldSettlementStatus.PAID).values_list("pk", flat=True))
+    for row in rows:
+        if row.kind == "COLLECTION" and not row.settled and row.gateway_id in held_paid:
+            row.settled = True
+            row.match_basis = "platform_settlement"
+            row.settled_amount = (
+                row.amount - row.reported_fee if row.reported_fee is not None else None)
+
     # Support the take workflow.
     def _take(candidates):
         for cand in candidates:  # Walk candidate matches in order.
@@ -334,7 +347,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
         for line in bank_lines if line.id not in consumed  # Preserve only unmatched bank lines.
     ]
 
-    waiting = reach.collections().filter(awaiting_settlement_q())
+    waiting = reach.collections().filter(awaiting_settlement_q()).filter(held_by_platform=False)
     if provider:
         waiting = waiting.filter(provider=provider)
     suggestions = suggest_settlements(

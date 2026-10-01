@@ -214,6 +214,29 @@ class PaystackProvider(Provider):
             raw=data,  # Preserve the raw response.
         )
 
+    #: Paystack's transfer fee by amount sent, in kobo *(confirm the schedule)*:
+    #: N10 up to N5,000, N25 up to N50,000, N50 above.
+    TRANSFER_FEE_TIERS = ((500_000, 1_000), (5_000_000, 2_500), (None, 5_000))
+
+    def transfer_fee(self, amount: int) -> int:
+        """Paystack's fee for a transfer of ``amount`` kobo, from :attr:`TRANSFER_FEE_TIERS`."""
+        for ceiling, fee in self.TRANSFER_FEE_TIERS:
+            if ceiling is None or int(amount) <= ceiling:
+                return fee
+        return 0
+
+    def available_balance(self, currency="NGN"):
+        """The merchant's Paystack balance in ``currency``, in kobo (``GET /balance``).
+
+        Paystack answers a list of ``{currency, balance}`` rows *(confirm the
+        shape and that it is kobo)*; a currency it does not list holds nothing.
+        """
+        data = self._require_ok(self._get("/balance"))
+        for row in data if isinstance(data, list) else []:
+            if str(row.get("currency", "")).upper() == currency.upper():
+                return int(row.get("balance") or 0)
+        return 0
+
     def verify_transfer(self, *, reference, provider_reference=""):
         data = self._require_ok(self._get(f"/transfer/verify/{reference}"))  # Re-query the final transfer state.
         status = (data.get("status") or "").lower()
@@ -238,8 +261,38 @@ class PaystackProvider(Provider):
 
     # Handle the parse webhook workflow.
     def parse_webhook(self, *, payload, raw_body, headers):
+        """The neutral view of a Paystack event.
+
+        ``transfer.*`` events concern payouts. ``charge.dispute.*`` (a chargeback)
+        and ``refund.*`` (a refund made at Paystack) concern an earlier payment,
+        which they name inside ``data.transaction`` or as
+        ``data.transaction_reference`` *(confirm both shapes)*. Everything else
+        is a collection event.
+        """
         event = payload.get("event", "")
         data = payload.get("data", {})
+        if event.startswith("charge.dispute") or event.startswith("refund"):
+            status = str(data.get("status", "") or "")
+            if event == "charge.dispute.resolve":
+                status = _dispute_outcome(data) or status
+            transaction_block = data.get("transaction") or {}
+            if not isinstance(transaction_block, dict):
+                transaction_block = {}
+            reference = (transaction_block.get("reference")
+                         or data.get("transaction_reference") or "")
+            return WebhookParseResult(
+                event_type=event,
+                direction="DISPUTE" if event.startswith("charge.dispute") else "REFUND",
+                reference=reference,
+                provider_reference=str(transaction_block.get("id", "") or ""),
+                status=status,
+                amount=int(data.get("refund_amount") or data.get("amount")
+                           or transaction_block.get("amount") or 0),
+                currency=data.get("currency", "NGN"),
+                dedupe_key=f"PAYSTACK:{event}:{data.get('id', '') or reference}",
+                destination_account_number="",
+                raw=payload,
+            )
         if event.startswith("transfer"):  # Transfer events correspond to outbound payouts.
             gateway = (data.get("status") or "").lower()
             status = _TRANSFER_STATUS.get(gateway, "PROCESSING")
@@ -271,6 +324,21 @@ class PaystackProvider(Provider):
             ),
             raw=payload,  # Keep the original normalized payload.
         )
+
+
+#: Paystack's ``data.resolution`` on ``charge.dispute.resolve`` *(confirm the values)*:
+#: a dispute ``declined`` went the merchant's way; one the merchant accepted, or
+#: that was accepted for it, went the payer's.
+_DISPUTE_RESOLUTIONS = {
+    "declined": "WON",
+    "merchant-accepted": "LOST",
+    "auto-accepted": "LOST",
+}
+
+
+def _dispute_outcome(data: dict) -> str:
+    """The neutral outcome a dispute resolution reports, or "" when it names none."""
+    return _DISPUTE_RESOLUTIONS.get(str(data.get("resolution", "") or "").strip().lower(), "")
 
 
 def _kobo_or_none(value):

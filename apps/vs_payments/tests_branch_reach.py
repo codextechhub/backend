@@ -899,23 +899,279 @@ class PayoutBatchApprovalsStayWithinReachTests(_FinanceBranchFixture):
         self.assertEqual(self.act(self.head, "ABAT-LEK", "REJECTED").status_code, 200)
 
 
+class HeldSettlementsStayWithinReachTests(_FinanceBranchFixture):
+    """The platform's settlements of held money are read by the branch each one pays.
+
+    The platform holds Corona's online money and pays Ikeja N100 and Lekki N200
+    on the same day; Rival Group, which also has an Ikeja Branch, is paid N400.
+    Lekki's bursar sees Lekki's settlement in the settlements list, the movements
+    feed and its summary, and nothing of Ikeja's. Corona's bursar, who covers the
+    whole school, sees both of Corona's and never Rival's.
+    """
+
+    KEYS = ("payments.report.view",)
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.utils import timezone
+
+        from vs_finance.models import BankAccount
+
+        from .constants import HeldSettlementStatus, PayoutPurpose
+        from .models import HeldSettlement
+
+        super().setUpTestData()
+        now = timezone.now()
+
+        def settlement(entity, branch, amount, code, *, batch=None):
+            gl = Account.objects.create(entity=entity, code=code, name=f"Collections {code}",
+                                        account_type="ASSET", is_postable=True)
+            bank = BankAccount.objects.create(entity=entity, name=f"Collections {code}",
+                                              branch=branch, gl_account=gl)
+            return HeldSettlement.objects.create(
+                entity=entity, tenant=entity.tenant, branch=branch,
+                status=HeldSettlementStatus.PAID, run_on=tenant_today(entity.tenant),
+                cutoff=now, gross=amount, amount=amount, bank_account=bank, batch=batch,
+                paid_at=now)
+
+        lekki_transfer = PayoutBatch.objects.create(
+            entity=cls.books, provider="PAYSTACK", reference="SET-LEK",
+            purpose=PayoutPurpose.SETTLEMENT)
+        cls.ikeja_run = settlement(cls.books, cls.ikeja, 10_000, "1181")
+        cls.lekki_run = settlement(cls.books, cls.lekki, 20_000, "1182", batch=lekki_transfer)
+        cls.rival_run = settlement(cls.rival_books, cls.rival_branch, 40_000, "1181")
+
+    def reader(self, tenant, branch):
+        n = next(_clerks)
+        return TenantAPIClient(user=self.grant(
+            self.user_for(tenant, f"held-reader-{n}@corona.test"), *self.KEYS,
+            tenant=tenant, role_key=f"held-reader-{n}", branch=branch,
+        ))
+
+    def seen(self, client, books=None):
+        """What ``client`` reaches in the list, the feed and the summary of ``books``."""
+        code = (books or self.books).code
+        listed = client.get(f"/v1/payments/held-settlements/?entity={code}")
+        feed = client.get(f"/v1/payments/movements/?entity={code}")
+        summary = client.get(f"/v1/payments/movements/summary/?entity={code}")
+        for response in (listed, feed, summary):
+            self.assertEqual(response.status_code, 200, response.data)
+        return (
+            {row["id"] for row in listed.data["data"]},
+            {row["gateway_id"] for row in feed.data["data"] if row["kind"] == "settlement"},
+            summary.data["data"]["transfers7d"]["kobo"],
+        )
+
+    def test_a_branch_reader_sees_only_their_branchs_settlements(self):
+        lekki = self.reader(self.tenant, self.lekki)
+        self.assertEqual(self.seen(lekki), ({self.lekki_run.pk}, {self.lekki_run.pk}, 20_000))
+        ikeja = self.reader(self.tenant, self.ikeja)
+        self.assertEqual(self.seen(ikeja), ({self.ikeja_run.pk}, {self.ikeja_run.pk}, 10_000))
+        yaba = self.reader(self.tenant, self.yaba)
+        self.assertEqual(self.seen(yaba), (set(), set(), 0))
+
+    def test_a_whole_school_reader_is_not_narrowed(self):
+        """The bursar sees every settlement of the school, through the entity filter alone."""
+        from vs_rbac.scoping import transaction_branch_scope_for_user
+
+        from .models import HeldSettlement
+        from .reach import PaymentsReach
+
+        both = {self.ikeja_run.pk, self.lekki_run.pk}
+        self.assertEqual(self.seen(self.reader(self.tenant, None)), (both, both, 30_000))
+
+        bursar = self.grant(self.user_for(self.tenant, "held-bursar@corona.test"), *self.KEYS,
+                            tenant=self.tenant, role_key="held-bursar", branch=None)
+        reach = PaymentsReach(self.books, transaction_branch_scope_for_user(bursar))
+        self.assertFalse(reach.is_narrowed)
+        self.assertEqual(str(reach.held_settlements().query),
+                         str(HeldSettlement.objects.filter(entity=self.books).query))
+
+    def test_the_summary_and_the_feed_agree_on_a_provider(self):
+        """Lekki's money went by Paystack and Ikeja's settlement sent nothing.
+
+        Asked about Paystack alone, the summary counts what the feed lists.
+        """
+        bursar = self.reader(self.tenant, None)
+        feed = bursar.get(f"/v1/payments/movements/?entity={self.books.code}&provider=PAYSTACK")
+        self.assertEqual({row["gateway_id"] for row in feed.data["data"]
+                          if row["kind"] == "settlement"}, {self.lekki_run.pk})
+        summary = bursar.get(
+            f"/v1/payments/movements/summary/?entity={self.books.code}&provider=PAYSTACK")
+        self.assertEqual(summary.data["data"]["transfers7d"]["kobo"], 20_000)
+
+    def test_another_schools_settlements_are_never_visible(self):
+        """Rival's Ikeja Branch shares a name with Corona's and nothing else."""
+        corona_ikeja = self.reader(self.tenant, self.ikeja)
+        corona_bursar = self.reader(self.tenant, None)
+        for client in (corona_ikeja, corona_bursar):
+            listed, fed, _ = self.seen(client)
+            self.assertNotIn(self.rival_run.pk, listed | fed)
+            refused = client.get(f"/v1/payments/held-settlements/?entity={self.rival_books.code}")
+            self.assertEqual(refused.status_code, 404, refused.data)
+
+        rival = self.reader(self.rival_tenant, self.rival_branch)
+        self.assertEqual(self.seen(rival, self.rival_books),
+                         ({self.rival_run.pk}, {self.rival_run.pk}, 40_000))
+
+    def test_a_held_settlement_always_names_its_branch(self):
+        """No settlement is unbranched, so none can be whole-school only.
+
+        A settlement is one branch's money on its way to that branch's bank, and
+        the column refuses a blank branch outright. Reach reads it exclusively
+        all the same, as it reads every transaction.
+        """
+        from django.db import IntegrityError, transaction
+
+        from .models import HeldSettlement
+
+        row = HeldSettlement.objects.get(pk=self.ikeja_run.pk)
+        row.pk, row.branch = None, None
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            row.save()
+
+
+class CustodySettingsStayWithinReachTests(_FinanceBranchFixture):
+    """The custody settings screen lists only the branches its reader reaches.
+
+    The platform holds N12,400 for Corona's Ikeja Branch, paid into Ikeja GTBank,
+    and N5,000 for Lekki Branch, paid into Lekki Zenith; Yaba has neither. Rival
+    Group's Ikeja Branch has N9,000 held and banks with Rival Access. Mrs Bello,
+    Lekki's bursar, may view the payment settings: she sees Lekki's row and
+    nothing of Ikeja's, neither its balance nor its bank. Corona's school-wide
+    bursar sees every Corona branch. Nobody at Corona sees Rival's.
+    """
+
+    KEYS = ("payments.settings.view",)
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_finance.models import BankAccount
+
+        from .models import HeldBalance
+
+        super().setUpTestData()
+        for entity, branch, code, bank, held in (
+                (cls.books, cls.ikeja, "1191", "Ikeja GTBank", 1_240_000),
+                (cls.books, cls.lekki, "1192", "Lekki Zenith", 500_000),
+                (cls.rival_books, cls.rival_branch, "1191", "Rival Access", 900_000)):
+            gl = Account.objects.create(entity=entity, code=code, name=bank,
+                                        account_type="ASSET", is_postable=True)
+            BankAccount.objects.create(entity=entity, name=bank, branch=branch, gl_account=gl,
+                                       bank_name=bank, is_primary_collection=True)
+            HeldBalance.objects.create(tenant=entity.tenant, branch=branch, balance=held)
+
+    def reader(self, tenant, branch, email):
+        return TenantAPIClient(user=self.grant(
+            self.user_for(tenant, email), *self.KEYS,
+            tenant=tenant, role_key=email.split("@")[0], branch=branch,
+        ))
+
+    def rows(self, client, books=None):
+        """``{branch name: (collection bank name, held balance)}`` as the screen lists them."""
+        response = client.get(f"/v1/payments/settings/custody/?entity={(books or self.books).code}")
+        self.assertEqual(response.status_code, 200, response.data)
+        return response, {
+            row["branch_name"]: ((row["collection_account"] or {}).get("name"), row["held_balance"])
+            for row in response.data["data"]["branches"]
+        }
+
+    def test_a_branch_reader_sees_only_their_branchs_row(self):
+        bello = self.reader(self.tenant, self.lekki, "bello@corona.test")
+        response, rows = self.rows(bello)
+        self.assertEqual(rows, {"Lekki Branch": ("Lekki Zenith", 500_000)})
+        body = str(response.data)
+        for unseen in ("Ikeja", "1240000", "Yaba"):
+            self.assertNotIn(unseen, body)
+        self.assertIn("mode", response.data["data"]["settings"])
+
+    def test_a_whole_school_reader_sees_every_branch(self):
+        _, rows = self.rows(self.reader(self.tenant, None, "bursar@corona.test"))
+        self.assertEqual(rows, {
+            "Ikeja Branch": ("Ikeja GTBank", 1_240_000),
+            "Lekki Branch": ("Lekki Zenith", 500_000),
+            "Yaba Branch": (None, 0),
+        })
+
+    def waiting_to_go_direct(self):
+        """Corona is waiting to move to direct, its stored note naming both branches' money."""
+        import datetime
+
+        from . import custody
+        from .held import WAITING_LEAD, _naira
+
+        row = custody.custody_row(self.tenant)
+        row.pending_mode, row.pending_from = "DIRECT", datetime.date(2026, 11, 1)
+        row.pending_note = (f"{WAITING_LEAD}: Corona Ikeja Branch has {_naira(1_240_000)} held; "
+                            f"Corona Lekki Branch has {_naira(500_000)} held.")
+        row.save()
+        return row.pending_note
+
+    def note(self, client):
+        response, _ = self.rows(client)
+        return response.data["data"]["settings"]["pending_note"]
+
+    def test_a_branch_readers_pending_note_names_only_their_money(self):
+        from .held import _naira
+
+        self.waiting_to_go_direct()
+        note = self.note(self.reader(self.tenant, self.lekki, "bello@corona.test"))
+
+        self.assertIn(f"Lekki Branch has {_naira(500_000)} held", note)
+        self.assertIn("online money is still held at other branches", note)
+        self.assertNotIn("Ikeja", note)
+        self.assertNotIn(_naira(1_240_000), note)
+
+    def test_a_whole_school_reader_keeps_the_full_pending_note(self):
+        stored = self.waiting_to_go_direct()
+
+        self.assertEqual(self.note(self.reader(self.tenant, None, "bursar@corona.test")), stored)
+
+    def test_another_schools_rows_never_appear(self):
+        """Rival's Ikeja Branch shares a name with Corona's and nothing else."""
+        for client in (self.reader(self.tenant, self.ikeja, "ikeja@corona.test"),
+                       self.reader(self.tenant, None, "school@corona.test")):
+            response, rows = self.rows(client)
+            self.assertNotIn("Rival Access", str(response.data))
+            self.assertNotIn(900_000, [held for _, held in rows.values()])
+            refused = client.get(f"/v1/payments/settings/custody/?entity={self.rival_books.code}")
+            self.assertEqual(refused.status_code, 404, refused.data)
+
+        _, rows = self.rows(self.reader(self.rival_tenant, self.rival_branch, "rival@rival.test"),
+                            self.rival_books)
+        self.assertEqual(rows, {"Ikeja Branch": ("Rival Access", 900_000)})
+
+
 class PaymentsViewsStartFromTheReachTests(SimpleTestCase):
     """No payments view reaches a gateway table except through :class:`PaymentsReach`.
 
-    A view that filtered ``CollectionIntent.objects`` itself would show Ikeja's
-    clerk the whole school again, and nothing else would notice.
+    A view that filtered ``CollectionIntent.objects``, ``HeldSettlement.objects`` or
+    ``HeldBalance.objects`` itself would show Ikeja's clerk the whole school again,
+    and nothing else would notice. The only exceptions read at platform scope, for
+    platform staff only: webhook events matched to no tenant, every tenant's held
+    settlements for the operators who put them forward, and the daily checks of
+    the platform's books against its provider balance.
     """
 
     def test_views_name_no_gateway_manager(self):
         import inspect
         import re
 
-        from . import views
+        from . import views, views_custody
 
-        source = inspect.getsource(views)
-        unattributed = inspect.getsource(views._unattributed_webhooks)
-        found = re.findall(
-            r"\b(CollectionIntent|VirtualAccount|PayoutInstruction|PayoutBatch|PaymentEvent"
-            r"|WebhookEvent)\.(?:objects|all_objects)\b",
-            source.replace(unattributed, ""))
-        self.assertEqual(found, [], "Start from vs_payments.reach.PaymentsReach instead.")
+        platform_scope = {
+            views: (views._unattributed_webhooks,),
+            views_custody: (views_custody.PlatformHeldSettlementListView,
+                            views_custody.PlatformHeldSettlementSubmitView,
+                            views_custody.PlatformHeldReconciliationListView),
+        }
+        for module, exempt in platform_scope.items():
+            source = inspect.getsource(module)
+            for reader in exempt:
+                source = source.replace(inspect.getsource(reader), "")
+            found = re.findall(
+                r"\b(CollectionIntent|VirtualAccount|PayoutInstruction|PayoutBatch|PaymentEvent"
+                r"|WebhookEvent|HeldSettlement|HeldBalance)\.(?:objects|all_objects)\b",
+                source)
+            with self.subTest(module=module.__name__):
+                self.assertEqual(found, [], "Start from vs_payments.reach.PaymentsReach instead.")

@@ -56,6 +56,12 @@ PAYMENTS_RESOURCES = [
     # Matching a bank line to the online payments it settles posts a journal
     # moving gateway clearing to the bank and booking the provider's fees.
     ("settlement",      "gateway settlements", [("create", "SENSITIVE")]),
+    # The platform's settlements of money it holds for client branches, across
+    # every tenant. Granted to the platform roles below; the views also require
+    # the caller to be platform staff. Putting one forward starts the transfer's
+    # approval, so it is CRITICAL.
+    ("platform_settlement", "platform held settlements",
+     [("view", "SENSITIVE"), ("submit", "CRITICAL")]),
 ]
 
 

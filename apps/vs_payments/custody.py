@@ -12,11 +12,17 @@ A tenant holds its online money one of two ways (:class:`~vs_payments.constants.
   online: a direct tenant pays them from its bank and records the payment.
 
 The arrangement binds every branch of the tenant and changes only at the start
-of a month. A change is stored as pending with the first day of the next month,
-and :func:`custody_mode` answers the pending mode from that day on, so nothing
-has to run at midnight for the switch to happen. The setting also records the
-settlement interval: how often a held tenant is to be paid what the platform
-holds for it.
+of a month. A change is stored as pending with the first day of the next month.
+A move to held is in force from that day, and :func:`custody_mode` answers it
+without anything having to run at midnight. A move to direct waits for the daily
+task (:func:`vs_payments.held.apply_custody_switch`), which first pays out
+everything the platform holds for the tenant and takes effect only once nothing
+is held. The setting also records the settlement interval: how often a held
+tenant is to be paid what the platform holds for it.
+
+A direct tenant's online payments are not refunded online either: the money is
+returned from the branch's bank and the refund recorded
+(:func:`assert_online_refund_allowed`).
 
 Either way a confirmed payment is first booked to gateway clearing and moves to
 a bank when its settlement is matched (:mod:`vs_payments.settlement`).
@@ -55,6 +61,16 @@ class OnlinePayoutsNotOfferedError(PaymentStateError):
     )
 
 
+class OnlineRefundsNotOfferedError(PaymentStateError):
+    """A direct-mode tenant asked to refund an online payment online, which it does not do."""
+
+    error_code = "ONLINE_REFUNDS_NOT_OFFERED"
+    default_message = (
+        "Online payments are not refunded online while they settle directly to each "
+        "branch's bank. Refund the payer from the branch's bank and record the refund."
+    )
+
+
 def next_month_start(day: datetime.date) -> datetime.date:
     """The first day of the month after ``day``."""
     return (day.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
@@ -81,7 +97,10 @@ def custody_row(tenant):
 def custody_mode(tenant, *, on=None, row=None) -> str:
     """The mode in force for ``tenant`` on ``on`` (the tenant's today by default).
 
-    A pending change is in force from its month start. Books with no tenant (the
+    A pending move to held is in force from its month start. A pending move to
+    direct is not in force until the daily task applies it, because it waits
+    until the platform holds nothing for the tenant: until then its payments
+    still settle to the platform's balance. Books with no tenant (the
     platform's own) and a tenant that never chose are ``HELD``.
     """
     if tenant is None:
@@ -90,7 +109,8 @@ def custody_mode(tenant, *, on=None, row=None) -> str:
     if row.pk is None:
         return CustodyMode.HELD
     day = on or _today(tenant)
-    if row.pending_mode and row.pending_from and row.pending_from <= day:
+    if (row.pending_mode == CustodyMode.HELD and row.pending_from
+            and row.pending_from <= day):
         return row.pending_mode
     return row.mode
 
@@ -105,6 +125,26 @@ def assert_online_payouts_allowed(entity) -> None:
     """Refuse an online payout for a tenant whose payments settle directly (409)."""
     if is_direct(entity):
         raise OnlinePayoutsNotOfferedError()
+
+
+def assert_online_refund_allowed(entity) -> None:
+    """Refuse an online refund for a tenant whose payments settle directly (409).
+
+    The money is in the branch's bank, not in a provider balance, and a refund
+    through the provider would be paid out of the platform's own balance. The
+    gate every path that would return money through the provider passes;
+    recording a refund paid from the bank stays open.
+    """
+    if is_direct(entity):
+        raise OnlineRefundsNotOfferedError()
+
+
+def refund_guard(entity, method) -> None:
+    """Finance's refund guard: a refund recorded as paid online is an online refund."""
+    from vs_finance.constants import PaymentMethod
+
+    if str(method or "").upper() == PaymentMethod.ONLINE:
+        assert_online_refund_allowed(entity)
 
 
 # --------------------------------------------------------------------------- #
@@ -182,6 +222,7 @@ def serialize_custody(row, tenant) -> dict:
         "effective_from": row.effective_from.isoformat() if row.effective_from else None,
         "pending_mode": row.pending_mode or None,
         "pending_from": row.pending_from.isoformat() if row.pending_from else None,
+        "pending_note": row.pending_note or None,
         "settlement_interval_days": row.settlement_interval_days,
         "clearing_stale_days": row.clearing_stale_days,
         "updated_at": row.updated_at.isoformat() if row.pk else None,
@@ -211,13 +252,16 @@ def update_custody_settings(*, entity, data, actor_user=None):
 
     A new ``mode`` never takes effect at once. It is stored as pending from the
     first day of next month; asking for the mode already in force cancels a
-    pending change instead. Moving to direct needs every branch's collection
+    pending change instead, and asking again for the mode already pending keeps
+    its date, so a move to direct that is waiting for held money to be paid out
+    does not slip a month. Moving to direct needs every branch's collection
     account set up with the provider first, or the first day of the month would
     leave a branch unable to take a payment: Lekki's bursar would find every
     parent's checkout refused on 1 November.
 
-    A pending change whose month has arrived is written as the stored mode before
-    anything else, so the row always says what is in force.
+    A pending move to held whose month has arrived is written as the stored mode
+    before anything else, so the row always says what is in force. A pending
+    move to direct is applied only by the daily task.
     """
     from .models import PaymentCustodySettings
 
@@ -233,9 +277,10 @@ def update_custody_settings(*, entity, data, actor_user=None):
     PaymentCustodySettings.objects.get_or_create(tenant=tenant)
     row = PaymentCustodySettings.objects.select_for_update().get(tenant=tenant)
     today = _today(tenant)
-    if row.pending_mode and row.pending_from and row.pending_from <= today:
+    if (row.pending_mode == CustodyMode.HELD and row.pending_from
+            and row.pending_from <= today):
         row.mode, row.effective_from = row.pending_mode, row.pending_from
-        row.pending_mode, row.pending_from = "", None
+        row.pending_mode, row.pending_from, row.pending_note = "", None, ""
     before = serialize_custody(row, tenant)
 
     if "settlement_interval_days" in data:
@@ -248,7 +293,9 @@ def update_custody_settings(*, entity, data, actor_user=None):
         if mode not in CustodyMode.values:
             raise ValidationError({"mode": f"Use one of: {', '.join(CustodyMode.values)}."})
         if mode == row.mode:  # Staying put cancels a change still waiting for its month.
-            row.pending_mode, row.pending_from = "", None
+            row.pending_mode, row.pending_from, row.pending_note = "", None, ""
+        elif mode == row.pending_mode:  # Already on its way; keep its date.
+            pass
         else:
             if mode == CustodyMode.DIRECT:
                 missing = branches_without_subaccount(entity)
@@ -293,7 +340,8 @@ def save_collection_subaccount(*, entity, bank_account, settlement_bank_code,
 
     An account that already has a subaccount at the same provider has it pointed
     at the account's current details, so its code, and every virtual account
-    created against it, stays valid. The provider is called outside any
+    created against it, stays valid. The bank code is kept on the account too:
+    a held tenant's settlement run transfers the branch's money there. The provider is called outside any
     transaction: it creates nothing that moves money, but a slow provider must
     not hold a row lock.
     """
@@ -344,8 +392,10 @@ def save_collection_subaccount(*, entity, bank_account, settlement_bank_code,
 
     bank_account.gateway_subaccount_code = result.subaccount_code
     bank_account.gateway_subaccount_provider = provider_name
+    bank_account.settlement_bank_code = code
     bank_account.save(update_fields=[
-        "gateway_subaccount_code", "gateway_subaccount_provider", "updated_at"])
+        "gateway_subaccount_code", "gateway_subaccount_provider", "settlement_bank_code",
+        "updated_at"])
     audit.record(
         action=PaymentAuditAction.SUBACCOUNT_SAVED, entity=entity, provider=provider_name,
         reference=result.subaccount_code, actor_user=actor_user,

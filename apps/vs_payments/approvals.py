@@ -27,6 +27,8 @@ from .constants import (
     WF_DEFAULT_HIGH_VALUE_GROUP,
     WF_DEFAULT_HIGH_VALUE_THRESHOLD,
     WF_DEFAULT_TEMPLATE_CODE,
+    WF_SETTLEMENT_APPROVER_GROUP,
+    WF_SETTLEMENT_TEMPLATE_CODE,
 )
 
 #: The single approvable document type in this app, and its human labels.
@@ -297,4 +299,52 @@ def ensure_tenant_approval_templates(
             high_value_group_code=high_value_group_code,
             high_value_threshold=high_value_threshold,
         ) if with_default_stages else [],
+    ), True
+
+
+def ensure_settlement_approval_template(tenant, *, created_by=None):
+    """Give the platform tenant its route for held-mode settlements. Returns ``(template, created)``.
+
+    A settlement pays a client branch money the platform holds for it, so the
+    platform approves it, never the client: two approval steps, both always
+    run, each staffed by the platform's ``held-settlement-approver`` group
+    (created empty, so a settlement parks until somebody is appointed rather
+    than paying itself out). Dispatch independently requires two distinct real
+    people besides whoever put it forward
+    (:func:`vs_payments.services._validate_approved_instance`), so one person
+    voting on both steps does not release it.
+
+    Non-destructive: a route with a live step is left as an administrator set it.
+    """
+    from vs_workflow.models import WorkflowTemplate
+    from vs_workflow.services.groups import ensure_approver_group
+    from vs_workflow.services.templates import publish_template
+
+    if tenant is None:
+        raise ValueError("The platform tenant is required to seed its settlement route.")
+    existing = WorkflowTemplate.all_objects.filter(
+        tenant=tenant, branch=None, document_type=DOCUMENT_TYPE,
+        code=WF_SETTLEMENT_TEMPLATE_CODE,
+    ).first()
+    if existing is not None and existing.stages.filter(retired_at__isnull=True).exists():
+        return existing, False
+    ensure_approver_group(
+        tenant, WF_SETTLEMENT_APPROVER_GROUP,
+        description="Platform finance staff who approve settlements of money held for "
+                    "client branches. Two of them approve each one.",
+    )
+    stage = {
+        "kind": "APPROVAL", "approver_source": "WORKFLOW_GROUP",
+        "approver_group_code": WF_SETTLEMENT_APPROVER_GROUP, "approver_scope": "SCHOOL",
+        "advance_rule": "ANY", "on_rejection": "TERMINAL", "skip_if_no_approvers": False,
+    }
+    return publish_template(
+        tenant=tenant, branch=None, document_type=DOCUMENT_TYPE,
+        code=WF_SETTLEMENT_TEMPLATE_CODE, name="Held settlement approval",
+        description="Two platform approvals for paying a client branch the money held for it.",
+        created_by=created_by,
+        stages_payload=[
+            {**stage, "code": "first", "label": "Settlement approval", "order": 10},
+            {**stage, "code": "second", "label": "Second settlement approval", "order": 20},
+        ],
     ), True

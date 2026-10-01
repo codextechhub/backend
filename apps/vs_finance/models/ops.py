@@ -54,8 +54,10 @@ class BankAccount(TimeStampedModel):
     (``is_primary_collection``): the one its invoices and receipts print as "pay
     to", and the one a payment provider settles the branch's online payments into
     when the tenant takes them directly. ``gateway_subaccount_code`` is the
-    provider's handle for that settlement route; payments reads and writes it,
-    finance only stores it.
+    provider's handle for that settlement route, and ``settlement_bank_code`` the
+    bank's code a provider transfer into the account names (a held tenant's
+    settlement run pays the branch here); payments reads and writes both, finance
+    only stores them.
     """
 
     entity = models.ForeignKey(
@@ -92,6 +94,11 @@ class BankAccount(TimeStampedModel):
     gateway_subaccount_provider = models.CharField(
         max_length=16, blank=True, default="",
         help_text="The payment provider that issued the subaccount.",
+    )
+    settlement_bank_code = models.CharField(
+        max_length=10, blank=True, default="",
+        help_text="The bank's code at the payment provider, which a transfer into "
+                  "this account names (for example 058).",
     )
 
     class Meta:

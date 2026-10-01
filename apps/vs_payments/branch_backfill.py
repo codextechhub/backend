@@ -16,12 +16,22 @@ reached by its branch and its detail lists every line, so a batch whose lines
 left Ikeja's and Lekki's banks, given Ikeja because it names Ikeja's account,
 would show Lekki's payouts to Ikeja's clerk. Such a batch is left for an
 administrator.
+
+A held settlement's journal (Dr bank, Dr bank charges, Cr gateway clearing in the
+tenant's books) belongs to the settlement and carries its branch, and a
+chargeback's entry in the tenant's books belongs to its held movement and carries
+the movement's branch. A held movement's platform journal is not registered: it is
+the platform's own entry, always raised in the platform's branch, never the client
+branch the movement is for.
 """
 from __future__ import annotations
 
 from django.apps import apps
 
-from vs_finance.branch_derivation import Target, agreeing, bank_behind, customer, register_target, via
+from vs_finance.branch_derivation import (
+    JournalOwner, Target, agreeing, bank_behind, customer, register_journal_owner,
+    register_target, via,
+)
 
 VIRTUAL_ACCOUNT = "vs_payments.VirtualAccount"
 PAYOUT_INSTRUCTION = "vs_payments.PayoutInstruction"
@@ -62,3 +72,6 @@ _TARGETS = (
 
 for _target in _TARGETS:
     register_target(_target)
+
+register_journal_owner(JournalOwner("vs_payments.HeldSettlement", "settlement_journal"))
+register_journal_owner(JournalOwner("vs_payments.HeldMovement", "tenant_journal"))

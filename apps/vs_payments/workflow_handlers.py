@@ -121,7 +121,12 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
         )
 
     def resolve_default_template_code(self, document) -> str:
-        return "standard"  # One template code per document type for now.
+        """The platform's settlement route for a settlement batch, the standard ladder otherwise."""
+        from .constants import WF_SETTLEMENT_TEMPLATE_CODE, PayoutPurpose
+
+        if document.purpose == PayoutPurpose.SETTLEMENT:
+            return WF_SETTLEMENT_TEMPLATE_CODE
+        return "standard"
 
     def validate_document(self, document, requested_by) -> None:
         """Reject anything that could not actually be submitted.

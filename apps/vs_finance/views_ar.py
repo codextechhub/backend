@@ -1905,6 +1905,10 @@ def _build_refund(request, entity, body):
         request, entity, body.get("bank_account"), required=False,
         document_branch=branch_id, noun="refund")
     refund_date = _date(body.get("refund_date"), "refund_date", required=True)
+    method = body.get("method", "BANK_TRANSFER")
+    from .credit_notes import check_refund_method
+
+    check_refund_method(entity, method)
     # Measure the branch's credit on the refund's own date, so a doomed backdated
     # draft is refused at creation rather than surviving to the posting guard.
     available = customer_refund_available_balance(
@@ -1917,7 +1921,7 @@ def _build_refund(request, entity, body):
         branch_id=branch_id,
         refund_date=refund_date,
         currency=_resolve_currency(body.get("currency")),
-        method=body.get("method", "BANK_TRANSFER"),
+        method=method,
         amount=amount,
         bank_account=bank_account,
         reference=body.get("reference", ""),

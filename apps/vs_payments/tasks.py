@@ -116,3 +116,47 @@ def recover_unconfirmed_payments():
     if summary["collections_booked"] or summary["payouts_booked"] or summary["failures"]:
         logger.warning("recover_unconfirmed_payments: %s", summary)
     return summary
+
+
+@shared_task(name="vs_payments.run_held_settlements", acks_late=True, reject_on_worker_lost=True)
+# Pay each held-mode branch what the platform holds for it, on its tenant's interval.
+def run_held_settlements():
+    """Build every settlement that is due, then post platform journals left waiting.
+
+    See :func:`vs_payments.held.run_settlements`. Idempotent per branch and day: a
+    branch with a settlement still pending, or settled within its tenant's
+    interval, is left alone, and a payment is claimed by one settlement only.
+    """
+    from .held import post_pending_platform_journals, run_settlements
+
+    summary = run_settlements()
+    summary["platform_journals"] = post_pending_platform_journals()
+    if summary["built"] or summary["platform_journals"]["waiting"]:
+        logger.info("run_held_settlements: %s", summary)
+    return summary
+
+
+@shared_task(name="vs_payments.reconcile_held_ledger")
+# Compare the platform's books with the provider balance it reports.
+def reconcile_held_ledger():
+    """See :func:`vs_payments.held_reconciliation.reconcile_held_ledger`. Safe to re-run."""
+    from .held_reconciliation import reconcile_held_ledger as reconcile
+
+    row = reconcile()
+    if not row.agrees:
+        logger.warning("reconcile_held_ledger: %s", row)
+    return {"checked_on": row.checked_on.isoformat(), "agrees": row.agrees,
+            "difference": row.difference, "error": row.error,
+            "incident": row.incident_code}
+
+
+@shared_task(name="vs_payments.apply_custody_switches", acks_late=True, reject_on_worker_lost=True)
+# Apply custody changes whose month has come, or say why they wait.
+def apply_custody_switches():
+    """See :func:`vs_payments.held.apply_custody_switches`. Safe to re-run."""
+    from .held import apply_custody_switches as apply
+
+    summary = apply()
+    if summary["results"]:
+        logger.info("apply_custody_switches: %s", summary)
+    return summary

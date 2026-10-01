@@ -451,6 +451,83 @@ MUST SAY:
   unbranched and flagged for an administrator, not given its source account's
   branch.
 
+### D93. CodeX holds a held school's money in its own books, pays each branch on schedule, and only two CodeX people can release it (59e43f6c, 2026-10-01)
+MODULES: M18 payments and collections, M19 finance and accounting, M02 xvision
+admin console (CodeX operators), M08 notifications and delivery, M04 roles and
+permissions, MRD.
+From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF); design in
+docs/payments/payment_custody_design.md (phase B of two).
+MUST SAY:
+- Held ledger (M18, M19). CodeX's books (the platform entity, branch Lagos) carry
+  CLIENT_FUNDS_HELD (2180, liability) per held tenant branch, PROVIDER_BALANCE
+  (1127) and CLIENT_FUNDS_OWED (1128). A held collection raises the branch's held
+  balance in both books; every movement records the balance after it.
+- Settlement run (M18). Every settlement_interval_days a beat task
+  (vs_payments.run_held_settlements, 06:30) builds each due branch's settlement in
+  CodeX's books: payments confirmed before the tenant's day, less fees, capped at
+  the held balance, never paying a collection twice. A CodeX operator submits it
+  (POST /v1/payments/platform/held-settlements/<id>/submit/) and two distinct CodeX
+  people approve it (route held-settlement); the platform list GET
+  /v1/payments/platform/held-settlements/ (?status, ?limit, ?client) shows every
+  tenant's due settlements. Keys payments.platform_settlement.view and .submit for
+  the platform roles. On confirmation the school books Dr bank, Dr bank charges,
+  Cr gateway clearing automatically; schools only read their settlements (GET
+  /v1/payments/held-settlements/, narrowed to their branches).
+- Fees: the branch bears Paystack's transfer fee, deducted from what is sent and
+  booked as its bank charge.
+- Funds check (M18). A held branch's online payout is refused at dispatch, under a
+  lock on its held balance, above that balance or while the branch owes CodeX (409
+  HELD_FUNDS_INSUFFICIENT); the balance falls at dispatch and is restored on
+  failure.
+- Chargebacks (M18). On held money a dispute lowers the branch's held balance at
+  once: school books Dr Payment Chargebacks (5520), Cr gateway clearing; CodeX's
+  books Dr held funds (and Dr owed by clients for any shortfall), Cr provider
+  balance. A shortfall is repaid from the branch's next payments. Event
+  payments.dispute_received reaches finance staff and CodeX operators. In direct
+  mode, disputes are recorded and raised only, and online refunds are refused (409
+  ONLINE_REFUNDS_NOT_OFFERED); bank refunds are recorded as usual.
+- Opening balances: record_held_opening_balance --tenant --branch --amount
+  --reason --by <CodeX operator>, once per branch, audited.
+- Switching: a move to held takes effect on its date; a move to direct is applied
+  by a daily task (vs_payments.apply_custody_switches, 00:20) only once nothing is
+  held and every branch has a subaccount, then issues new virtual accounts against
+  the branch subaccounts and retires the old numbers; money paid into a retired
+  number is passed on in the next settlement.
+- Movements feed: settlements are kind settlement, direction transfer
+  (?direction=transfer; summary transfers7d), not money spent.
+- Migrations: vs_finance 0047 (accounts, 5520 to every chart), vs_payments 0010.
+- Needs Attention: a dispute CodeX wins does not yet restore the branch's held
+  balance; nothing yet compares CodeX's held ledger with Paystack's reported
+  balance; Paystack's transfer fee table and dispute fields are to be confirmed.
+
+### D94. A dispute CodeX wins gives the branch its money back, and CodeX's held ledger is checked against Paystack every day (3f6b791c, 2026-10-01)
+MODULES: M18 payments and collections, M30 system health and monitoring, M06
+configuration and capability, M08 notifications and delivery, MRD.
+MUST SAY:
+- Disputes (M18). Paystack's charge.dispute.resolve (data.resolution: declined =
+  merchant won; merchant-accepted or auto-accepted = lost; to confirm with
+  Paystack) is recorded and audited (PROVIDER_DISPUTE_RESOLVED) and sent to the
+  tenant's finance staff and CodeX operators. On held money a won dispute restores
+  the branch's held balance once per dispute: any amount the branch owed CodeX is
+  repaid first, the rest is held again, and the school's chargeback entry is
+  reversed (Dr gateway clearing, Cr Payment Chargebacks). A lost dispute stays
+  booked. Direct-mode outcomes are recorded and raised only.
+- Held-ledger reconciliation (M18, M30). A daily beat task
+  (vs_payments.reconcile_held_ledger, payments-reconcile-held-ledger, 07:15)
+  compares Paystack's reported balance (GET /balance through the adapter) with
+  CodeX's books (provider balance account plus CodeX's own online payments not yet
+  settled, less fees) and checks the provider balance against the per-branch held
+  balances. Each check is a HeldReconciliation row per provider, currency and day.
+  A difference above payments.held_reconciliation_tolerance_kobo (a platform
+  vs_config value, default 0) opens one system-health incident
+  (payments.held-ledger-mismatch) and notifies CodeX's health and settlement
+  operators once; the next agreeing check resolves it. GET
+  /v1/payments/platform/held-reconciliations/ (?agrees, ?limit) for CodeX staff
+  with payments.platform_settlement.view. Migration vs_payments 0011.
+- Needs Attention: the check assumes CodeX's Paystack balance is kept, not swept
+  to CodeX's bank daily (confirm the Paystack setting before go-live); CodeX's own
+  online supplier payouts from the balance are not yet in the books' figure.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

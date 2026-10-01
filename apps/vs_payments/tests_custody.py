@@ -132,9 +132,30 @@ class _CustodyFixture(_FinanceBranchFixture):
         PaymentCustodySettings.objects.update_or_create(
             tenant=tenant, defaults={"mode": CustodyMode.DIRECT})
 
+    @classmethod
+    def settle_directly(cls):
+        """Corona and Single Site take payments directly, Ikeja, Lekki and Main set up.
+
+        A payment the provider settles to the branch's own bank is the one a bank
+        statement line settles; a held payment reaches the bank only through the
+        platform's settlement run (``tests_custody_held``).
+        """
+        for bank, code in ((cls.ikeja_bank, "ACCT_IKJ"), (cls.lekki_bank, "ACCT_LEK"),
+                           (cls.solo_bank, "ACCT_SOLO")):
+            BankAccount.objects.filter(pk=bank.pk).update(
+                gateway_subaccount_code=code, gateway_subaccount_provider="PAYSTACK")
+        for tenant in (cls.tenant, cls.solo_tenant):
+            PaymentCustodySettings.objects.update_or_create(
+                tenant=tenant, defaults={"mode": CustodyMode.DIRECT})
+
 
 class GatewayClearingTests(_CustodyFixture):
     """A confirmed payment waits in clearing; its settlement moves it to the branch's bank."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.settle_directly()
 
     def test_a_confirmed_payment_debits_clearing_not_the_bank(self):
         for entity, customer, bank, branch in (
@@ -282,7 +303,8 @@ class CustodyModeTests(_CustodyFixture):
         self.assertEqual((row.pending_mode, row.pending_from),
                          (CustodyMode.DIRECT, custody.next_month_start(today)))
         self.assertEqual(custody.custody_mode(self.tenant), CustodyMode.HELD)
-        self.assertEqual(custody.custody_mode(self.tenant, on=row.pending_from), CustodyMode.DIRECT)
+        # Still held on the day itself, until the daily task finds nothing held.
+        self.assertEqual(custody.custody_mode(self.tenant, on=row.pending_from), CustodyMode.HELD)
 
         row = custody.update_custody_settings(entity=self.books, data={"mode": "HELD"})
         self.assertEqual((row.pending_mode, row.pending_from), ("", None))
@@ -439,6 +461,11 @@ class GatewayClearingMigrationTests(_CustodyFixture):
 
 class CustodyEndpointTests(_CustodyFixture):
     """Custody and subaccounts are whole-tenant; settlements stay within the caller's branches."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.settle_directly()
 
     def client_for(self, *keys, branch=None, tenant=None):
         tenant = tenant or self.tenant

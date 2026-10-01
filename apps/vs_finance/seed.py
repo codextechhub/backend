@@ -72,6 +72,7 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("5350", "Bad Debts", AccountType.EXPENSE, True, False),  # Write-offs and doubtful-debt provisions.
     ("5400", "Depreciation Expense", AccountType.EXPENSE, True, False),  # Depreciation expense.
     ("5500", "Bank Charges", AccountType.EXPENSE, True, False),  # Bank charges expense.
+    ("5520", "Payment Chargebacks", AccountType.EXPENSE, True, False),  # Online payments payers took back.
 ]
 
 #: Starter statutory tax obligations for a Nigerian entity. Each row maps a tax to
@@ -130,6 +131,7 @@ DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory present
     "5200": IFRSLine.ADMIN_EXPENSES, "5300": IFRSLine.ADMIN_EXPENSES,  # Admin expenses.
     "5350": IFRSLine.ADMIN_EXPENSES,  # Bad debts.
     "5400": IFRSLine.ADMIN_EXPENSES, "5500": IFRSLine.FINANCE_COSTS,  # Depreciation and finance costs.
+    "5520": IFRSLine.ADMIN_EXPENSES,  # Chargebacks.
 }
 
 #: parent_code by child_code - wires the tree after the flat create.
@@ -143,7 +145,7 @@ _PARENTS = {  # Parent account code by child account code.
     "3100": "3000", "3200": "3000",  # Equity children.
     "4100": "4000", "4810": "4000", "4820": "4000", "4900": "4000", "4910": "4000",  # Income children.
     "5100": "5000", "5150": "5000", "5160": "5000", "5200": "5000", "5300": "5000", "5350": "5000",
-    "5400": "5000", "5500": "5000",  # More expense children.
+    "5400": "5000", "5500": "5000", "5520": "5000",  # More expense children.
 }
 
 

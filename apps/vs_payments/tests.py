@@ -1793,6 +1793,14 @@ class PayoutBatchApprovalTests(TestCase):
         branch = Branch.objects.create(
             tenant=cls.tenant, name="Main", is_main=True, status="ACTIVE",
         )
+        # The platform holds Cedar's online money, so an approved payout is sent only
+        # within what it holds for Main. Enough is held here for every batch these
+        # cases send; the held-funds check itself is tests_custody_held's subject.
+        from vs_payments.held import record_opening_balance
+
+        record_opening_balance(
+            tenant=cls.tenant, branch=branch, amount=10_000_000_000,
+            reason="Held for the approval cases' payouts.")
         cls.requester = cls.User.objects.create_user(
             email="req-pba@test.com", password="pw", status="ACTIVE",
             first_name="Req", last_name="Ester", branch=branch,
