@@ -95,7 +95,7 @@ class ProcurementChainTests(FALFixture):
             entity_ref=self.corona_books.entity_ref, raiser_ref=self.bursar.pk,
             lines=(BillLine(description="Exercise books", quantity=100,
                             unit_price=25_000),),
-            narration="Termly stationery",
+            branch_ref=self.ikeja.pk, narration="Termly stationery",
         ).unwrap()
         self.port.submit_for_approval(document.ref, actor_ref=self.bursar.pk)
         self.port.approve(
@@ -170,6 +170,7 @@ class ProcurementChainTests(FALFixture):
         document = self.port.raise_requisition(
             entity_ref=self.corona_books.entity_ref, raiser_ref=self.bursar.pk,
             lines=(BillLine(description="Chalk", quantity=10, unit_price=1_000),),
+            branch_ref=self.ikeja.pk,
         ).unwrap()
         self.assertIs(document.approval_state, ProcApprovalState.NOT_SUBMITTED)
 

@@ -63,6 +63,7 @@ from .exceptions import (
     AmbiguousPrimaryEntity,
     ApprovalNotParkedError,
     ApprovalTemplateMissingError,
+    BranchRequiredError,
     CrossBranchError,
     CrossTenantError,
     CustomerCreationRace,
@@ -439,8 +440,11 @@ class FakeProcurementActions(ProcurementActionPort):
     * ``override_users``      - who holds ``procurement.approval.override``.
       Absent means ``OverrideNotPermittedError``.
     * ``user_branches``       - user ref to branch ref, for branch defaulting and
-      ``CrossBranchError``. A user absent from the map is school-level, and their
-      documents legitimately carry no branch.
+      ``CrossBranchError``. A user absent from the map is school-level.
+    * ``entity_branches``     - entity ref to its school's branch refs. A
+      school-level raiser naming no branch gets the only one, or
+      ``BranchRequiredError`` where there are several. Books absent from the map
+      own no branch, and their documents carry none.
 
     ``grant_approver(entity_ref)`` proves the release-without-resubmission rule:
     a parked document becomes unparked the moment the role is filled.
@@ -450,11 +454,13 @@ class FakeProcurementActions(ProcurementActionPort):
     def __init__(self, *, seeded_entities: Optional[set] = None,
                  entities_with_approver: Optional[set] = None,
                  override_users: Optional[set] = None,
-                 user_branches: Optional[dict] = None) -> None:
+                 user_branches: Optional[dict] = None,
+                 entity_branches: Optional[dict] = None) -> None:
         self.seeded_entities = set(seeded_entities or ())
         self.entities_with_approver = set(entities_with_approver or ())
         self.override_users = set(override_users or ())
         self.user_branches = dict(user_branches or {})
+        self.entity_branches = {k: tuple(v) for k, v in (entity_branches or {}).items()}
         self.documents: dict = {}
         self.overrides: list = []
         self._parked: dict = {}
@@ -473,7 +479,12 @@ class FakeProcurementActions(ProcurementActionPort):
     def _branch_for(self, actor_ref, entity_ref, branch_ref):
         caller = self.user_branches.get(actor_ref)
         if branch_ref is None:
-            return caller
+            if caller is not None:
+                return caller
+            owned = self.entity_branches.get(entity_ref, ())
+            if len(owned) > 1:
+                raise BranchRequiredError("Name the branch this is for.")
+            return owned[0] if owned else None
         if caller is not None and caller != branch_ref:
             raise CrossBranchError("That user cannot act for another branch.")
         return branch_ref

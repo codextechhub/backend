@@ -1979,21 +1979,17 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
         return user
 
     def _raised_branch(self, entity, user, branch_ref):
-        """The branch a new document captures, following the raiser.
+        """The branch a new document names, by the raiser's grants.
 
-        A branch-bound raiser writes their own branch and may not name another. A
-        school-level raiser writes whatever they name, including nothing at all:
-        an empty branch is a head-office purchase, not a validation failure.
+        The rule every procurement screen raises by
+        (:func:`_raised_transaction_branch_id`): a raiser pinned to one branch
+        raises for it and may name no other (:class:`CrossBranchError`); one
+        covering several, or a school-wide raiser at a school with several, must
+        name one (:class:`BranchRequiredError`); a school with one branch gives
+        its only one. Head Office is a branch like any other, so a head-office
+        purchase names Head Office rather than no branch.
         """
-        caller_branch_id = getattr(user, "branch_id", None)
-        if branch_ref is None:
-            return caller_branch_id
-        _branch(branch_ref, entity.tenant)
-        if caller_branch_id is not None and caller_branch_id != branch_ref:
-            raise CrossBranchError(
-                "A branch-bound user cannot raise a document for another branch."
-            )
-        return branch_ref
+        return _raised_transaction_branch_id(user, entity.tenant, branch_ref)
 
     # ----- raise ----------------------------------------------------------- #
     @envelope

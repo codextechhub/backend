@@ -669,12 +669,17 @@ class ProcurementActionPort(ABC):
     ) -> FinanceResult[ProcDocument]:
         """Create a DRAFT purchase requisition.
 
-        ``branch_ref`` defaults to the raiser's branch when omitted; an empty
-        branch for a school-level raiser is a valid head-office requisition, not
-        an error.
+        The requisition names a branch, decided by the raiser's grants: a raiser
+        pinned to one branch raises for it when ``branch_ref`` is left out, and a
+        school with one branch gives its only one. A raiser covering several
+        branches, or a school-wide raiser at a school with several, names one.
+        Head Office is a branch like any other.
 
-        :raises CrossTenantError: ``entity_ref`` is not the raiser's school's.
+        :raises CrossTenantError: ``entity_ref`` is not the raiser's school's,
+            or ``branch_ref`` is another school's branch.
         :raises CrossBranchError: a branch-bound raiser named another branch.
+        :raises BranchRequiredError: the raiser has a choice of branches and
+            named none.
         :raises ProcurementStateError: no lines, or a line the engine refuses.
         """
 
