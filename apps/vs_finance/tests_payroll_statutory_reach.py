@@ -475,3 +475,31 @@ class AuditTrailFieldAccessTests(_ReachFixture):
         for summary in summaries:
             self.assertNotIn("555500", summary)
             self.assertNotIn("333300", summary)
+
+
+class PayslipNoticeTests(_ReachFixture):
+    """A payslip notice names the period, never the pay.
+
+    The notice and the email's text are rendered from a template the school
+    may edit, and kept, rendered, in the notification history every
+    notification auditor reads across all branches. Bola's pay stays in the
+    PDF attached to their own email.
+    """
+
+    def test_the_notices_carry_no_figure(self):
+        from django.core.files.storage import default_storage
+
+        from vs_finance.payslips import deliver_payslips
+
+        payslip = Payslip.objects.get(salary=self.bola)
+        with mock.patch("vs_notifications.notify.send_notification", return_value=["n1"]) as send, \
+                mock.patch.object(default_storage, "save", return_value="stored.pdf"):
+            deliver_payslips([payslip.pk])
+
+        self.assertEqual(send.call_count, 2)
+        for call in send.call_args_list:
+            context = call.kwargs["context"]
+            self.assertEqual(context["employee_name"], "Bola Lawal")
+            self.assertEqual(call.kwargs["recipients"], [self.bola_user])
+            self.assertNotIn("net_pay", context)
+            self.assertNotIn("₦", str(context))

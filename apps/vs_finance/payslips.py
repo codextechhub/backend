@@ -256,7 +256,13 @@ def queue_payslip_delivery(payslip_ids) -> bool:
 def deliver_payslips(payslip_ids) -> dict:
     """Send each payslip's in-app notice and email as the tenant's settings say.
 
-    The PDF attached to an email is kept in storage under the payslip's
+    The notice names the person, the issuer and the period, and no figure. Its
+    text comes from a template the tenant may edit and is kept, rendered, in a
+    notification history read across every branch, so a pay figure offered to
+    the template could be printed there for every member of staff. The pay
+    travels only in the PDF attached to the employee's own email.
+
+    The attached PDF is kept in storage under the payslip's
     ``email_attachment`` key for the email task to read; it is never served from
     there.
     """
@@ -279,7 +285,6 @@ def deliver_payslips(payslip_ids) -> dict:
             "employee_name": payslip.line.employee_name,
             "issuer_name": _issuer_name(payslip.entity),
             "period_label": payslip.period_label or payslip.pay_date.isoformat(),
-            "net_pay": format_naira(payslip.line.net_amount),
         }
         if policy.payslip_in_app and user is not None:
             try:
