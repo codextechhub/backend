@@ -781,7 +781,7 @@ OK, schools.core.fal 288 OK. schools.vs_staff 543 with one error in
 test_as_at's leave test, which fails identically on e85e53fd without this change.
 The full suite was not run.
 
-### D101. A pay write is judged by what it changes, not by what the form sends (hash pending, 2026-10-01)
+### D101. A pay write is judged by what it changes, not by what the form sends (20fa340c, 2026-10-01)
 MODULES: M19 finance and accounting (payroll), M04 roles and permissions (field
 access), MRD.
 MUST SAY:
