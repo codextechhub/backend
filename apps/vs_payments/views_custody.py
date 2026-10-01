@@ -38,7 +38,7 @@ from vs_finance.views import resolve_entity
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive, IsVisionStaff
 from vs_rbac.scoping import WholeTenantWriteMixin
 
-from . import custody, settlement
+from . import custody, held, settlement
 from .reach import PaymentsReach
 
 
@@ -62,12 +62,12 @@ def _branch_rows(reach):
     """
     if not reach.entity.tenant_id:
         return []
-    held = dict(reach.held_balances().values_list("branch_id", "balance"))
+    balances = dict(reach.held_balances().values_list("branch_id", "balance"))
     return [
         {"branch": branch.pk, "branch_name": branch.name,
          "collection_account": _bank_row(
              custody.branch_collection_account(reach.entity, branch.pk)),
-         "held_balance": int(held.get(branch.pk, 0))}
+         "held_balance": int(balances.get(branch.pk, 0))}
         for branch in reach.branches().order_by("name")
     ]
 
@@ -92,8 +92,13 @@ class CustodySettingsView(WholeTenantWriteMixin, APIView):
 
     def _payload(self, entity, row):
         tenant = entity.tenant if entity.tenant_id else None
-        return {"settings": custody.serialize_custody(row, tenant),
-                "branches": _branch_rows(PaymentsReach.for_request(self.request, entity))}
+        reach = PaymentsReach.for_request(self.request, entity)
+        settings = custody.serialize_custody(row, tenant)
+        if reach.is_narrowed and entity.tenant_id:
+            # A branch reader's note names only their own branches' money.
+            settings["pending_note"] = held.pending_note_in_reach(
+                row, entity, reach.branches().values_list("pk", flat=True))
+        return {"settings": settings, "branches": _branch_rows(reach)}
 
     def get(self, request):
         entity = resolve_entity(request)

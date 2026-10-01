@@ -934,6 +934,56 @@ def outstanding_reasons(tenant) -> list[str]:
     return reasons
 
 
+#: The pending note's lead, shared by the stored sentence and a branch reader's.
+WAITING_LEAD = "Waiting until no online money is held for any branch and every branch is ready"
+
+
+def pending_note_in_reach(row, entity, branch_ids) -> str | None:
+    """The custody switch's pending note as a branch-bound reader is shown it.
+
+    The stored ``pending_note`` names every branch's held money, and another
+    branch's money is never a branch reader's to see. Their note is rebuilt from
+    their own branches only: what is held for them, their payments not yet
+    settled, and which of them is not set up with the payment provider. Anything
+    still waiting at other branches is one plain line with no names or amounts.
+    Lagoon View is moving to direct while Ikeja holds N12,400 and Lekki N5,000:
+    Lekki's bursar reads "Lekki Branch has N5,000 held; online money is still
+    held at other branches", never Ikeja's figure.
+    """
+    from vs_tenants.models import Branch
+
+    from .custody import branch_collection_account
+    from .models import CollectionIntent, HeldBalance
+    from .settlement import awaiting_settlement_q
+
+    if not row.pending_note:
+        return None
+    tenant_id = entity.tenant_id
+    mine = set(branch_ids)
+    held = dict(HeldBalance.objects.filter(tenant_id=tenant_id).exclude(balance=0)
+                .values_list("branch_id", "balance"))
+    unsettled = {}
+    for branch_id in (CollectionIntent.objects.filter(entity__tenant_id=tenant_id, held_by_platform=True)
+                      .filter(awaiting_settlement_q()).values_list("branch_id", flat=True)):
+        unsettled[branch_id] = unsettled.get(branch_id, 0) + 1
+    branches = list(Branch.all_objects.filter(tenant_id=tenant_id).order_by("name"))
+    unready = {b.pk for b in branches
+               if not getattr(branch_collection_account(entity, b.pk), "gateway_subaccount_code", "")}
+
+    parts = [f"{b.name} has {_naira(held[b.pk])} held" for b in branches if b.pk in mine and b.pk in held]
+    mine_unsettled = sum(n for branch_id, n in unsettled.items() if branch_id in mine)
+    if mine_unsettled:
+        parts.append(f"{mine_unsettled} held online payment(s) are not yet settled")
+    mine_unready = [b.name for b in branches if b.pk in mine and b.pk in unready]
+    if mine_unready:
+        parts.append(f"not set up with the payment provider: {', '.join(mine_unready)}")
+    if any(b not in mine for b in held) or any(b not in mine for b in unsettled):
+        parts.append("online money is still held at other branches")
+    if any(b not in mine for b in unready):
+        parts.append("other branches are not yet set up with the payment provider")
+    return f"{WAITING_LEAD}: {'; '.join(parts)}." if parts else f"{WAITING_LEAD}."
+
+
 def apply_custody_switch(row, *, today=None) -> dict:
     """Apply ``row``'s pending mode once its month has come, when it can be.
 
@@ -969,8 +1019,7 @@ def apply_custody_switch(row, *, today=None) -> dict:
             return {"tenant": tenant.slug, "result": "not_due"}
         entity = entities[0] if entities else None
         if reasons:
-            note = ("Waiting until no online money is held for any branch and every branch "
-                    "is ready: " + "; ".join(reasons) + ".")[:500]
+            note = (f"{WAITING_LEAD}: " + "; ".join(reasons) + ".")[:500]
             if note != row.pending_note:
                 row.pending_note = note
                 row.save(update_fields=["pending_note", "updated_at"])

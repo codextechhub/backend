@@ -1093,6 +1093,40 @@ class CustodySettingsStayWithinReachTests(_FinanceBranchFixture):
             "Yaba Branch": (None, 0),
         })
 
+    def waiting_to_go_direct(self):
+        """Corona is waiting to move to direct, its stored note naming both branches' money."""
+        import datetime
+
+        from . import custody
+        from .held import WAITING_LEAD, _naira
+
+        row = custody.custody_row(self.tenant)
+        row.pending_mode, row.pending_from = "DIRECT", datetime.date(2026, 11, 1)
+        row.pending_note = (f"{WAITING_LEAD}: Corona Ikeja Branch has {_naira(1_240_000)} held; "
+                            f"Corona Lekki Branch has {_naira(500_000)} held.")
+        row.save()
+        return row.pending_note
+
+    def note(self, client):
+        response, _ = self.rows(client)
+        return response.data["data"]["settings"]["pending_note"]
+
+    def test_a_branch_readers_pending_note_names_only_their_money(self):
+        from .held import _naira
+
+        self.waiting_to_go_direct()
+        note = self.note(self.reader(self.tenant, self.lekki, "bello@corona.test"))
+
+        self.assertIn(f"Lekki Branch has {_naira(500_000)} held", note)
+        self.assertIn("online money is still held at other branches", note)
+        self.assertNotIn("Ikeja", note)
+        self.assertNotIn(_naira(1_240_000), note)
+
+    def test_a_whole_school_reader_keeps_the_full_pending_note(self):
+        stored = self.waiting_to_go_direct()
+
+        self.assertEqual(self.note(self.reader(self.tenant, None, "bursar@corona.test")), stored)
+
     def test_another_schools_rows_never_appear(self):
         """Rival's Ikeja Branch shares a name with Corona's and nothing else."""
         for client in (self.reader(self.tenant, self.ikeja, "ikeja@corona.test"),
