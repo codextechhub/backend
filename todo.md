@@ -500,7 +500,7 @@ MUST SAY:
   balance; nothing yet compares CodeX's held ledger with Paystack's reported
   balance; Paystack's transfer fee table and dispute fields are to be confirmed.
 
-### D94. A dispute CodeX wins gives the branch its money back, and CodeX's held ledger is checked against Paystack every day (hash pending, 2026-10-01)
+### D94. A dispute CodeX wins gives the branch its money back, and CodeX's held ledger is checked against Paystack every day (3f6b791c, 2026-10-01)
 MODULES: M18 payments and collections, M30 system health and monitoring, M06
 configuration and capability, M08 notifications and delivery, MRD.
 MUST SAY:
