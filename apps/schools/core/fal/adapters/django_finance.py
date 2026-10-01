@@ -60,6 +60,7 @@ from ..due_dates import policy_for, resolve_due_date
 from ..contracts import (
     SOURCE_TYPE_STUDENT,
     student_pk,
+    AccountMove,
     AgeingBucket,
     AgeingRow,
     ApprovalDecision,
@@ -97,7 +98,6 @@ from ..contracts import (
     Unit,
 )
 from ..exceptions import (
-    AccountBranchConflict,
     AmbiguousPrimaryEntity,
     ApprovalNotParkedError,
     ApprovalTemplateMissingError,
@@ -866,25 +866,33 @@ class _RunBranch:
 
 
 def _cohort_branches(structure, pairs, to_bill, *, raiser, run_branch):
-    """``{customer id: branch id}`` for every invoice this run raises.
+    """Every invoice's branch, and the pupils' accounts the run re-files.
+
+    Returns ``({customer id: branch id}, {customer id: branch id})``: the branch
+    each invoice this run raises names, and, for each pupil about to be billed
+    whose account is filed at a branch other than the one they attend, the
+    branch that account moves to.
 
     A pupil's own branch on the roll comes first: ``Student.branch`` is never
     null and a child attends exactly one branch, while a class may be shared by
     several. A family with no pupil behind it gives its account's branch, and
     one with neither takes the run's (:class:`_RunBranch`).
 
-    Three refusals, each before anything is written and each over the whole
+    Two refusals, each before anything is written and each over the whole
     cohort, so a run bills everyone named or nobody:
 
     * :class:`CrossBranchError` (404) for a family whose branch the raiser
-      cannot reach. Tunde attends Ikeja, so a Lekki-bound bursar who names them
-      is refused exactly as for an id that names nobody.
+      cannot reach. The roll decides, not the account: Tunde attends Ikeja, so a
+      Lekki-bound bursar who names them is refused exactly as for an id that
+      names nobody, wherever Tunde's account happens to be filed.
     * :class:`OffPriceListError` (409) when the structure is one branch's price
       list and a family belongs to another branch, or to every branch.
-    * :class:`AccountBranchConflict` (409) for a pupil about to be billed whose
-      account is filed under a branch other than the one they attend. Only those
-      about to be billed: a pupil already billed for this period is skipped, so
-      a rerun never bills anybody twice and never trips over them.
+
+    A pupil whose account is filed elsewhere is billed where they attend, and
+    their account follows them (:func:`_refile_accounts`). Only pupils about to
+    be billed move: one already billed for this period is skipped, so a rerun
+    bills nobody twice and moves nobody. An account every branch shares stays
+    shared; its bill names the pupil's branch.
 
     The branch is not part of the billing key. A rerun finds a pupil's invoice
     for the period by account, structure and period whichever branch it names.
@@ -920,20 +928,64 @@ def _cohort_branches(structure, pairs, to_bill, *, raiser, run_branch):
                 f"branch's structure."
             )
 
-    conflicts = [
-        customer for customer in to_bill
+    moves = {
+        customer.pk: own[customer.pk] for customer in to_bill
         if customer.branch_id is not None and own[customer.pk] != customer.branch_id
-    ]
-    if conflicts:
-        raise AccountBranchConflict(
-            f"{len(conflicts)} of the children named have a fee account filed under "
-            f"a branch other than the one they attend. Nothing was billed."
-        )
-
-    return {
+    }
+    branches = {
         customer.pk: own[customer.pk] if own[customer.pk] is not None else run_branch.id()
         for customer in to_bill
     }
+    return branches, moves
+
+
+def _refile_accounts(to_bill, moves, *, actor_user):
+    """Re-file each pupil's account in ``moves`` at the branch they attend.
+
+    The account is a shared record that follows its pupil, so the run that bills
+    Tunde at Lekki files Tunde's account at Lekki in the same transaction.
+    Nothing already raised moves: Tunde's First Term bill stays Ikeja's, and
+    Ikeja keeps chasing it.
+
+    Each move goes through :func:`vs_finance.customers.update_customer`, the
+    one way an account is changed, under its row lock, and is written to the
+    finance audit trail as its own entry: before and after carry the branch
+    ids, the message names the account and both branches, and the entry is
+    filed under the account's branch as it now stands, by the audit trail's
+    rule that an entry takes the branch of the record it is about. Returns the
+    moves as :class:`~schools.core.fal.contracts.AccountMove` values, in the
+    order the run bills.
+    """
+    from vs_finance.customers import update_customer
+    from vs_tenants.models import Branch
+
+    if not moves:
+        return ()
+    names = dict(
+        Branch.all_objects.filter(
+            pk__in={c.branch_id for c in to_bill if c.pk in moves} | set(moves.values()),
+        ).values_list("pk", "name")
+    )
+    done = []
+    for customer in to_bill:
+        if customer.pk not in moves or customer.pk in {m.customer_ref for m in done}:
+            continue
+        from_id, to_id = customer.branch_id, moves[customer.pk]
+        update_customer(
+            customer, {"branch_id": to_id}, actor_user=actor_user,
+            message=(
+                f"Moved customer {customer.code} ({customer.name}) from "
+                f"{names[from_id]} to {names[to_id]}, the branch they attend, "
+                f"when their fees were billed there."
+            ),
+            from_branch=names[from_id], to_branch=names[to_id],
+        )
+        done.append(AccountMove(
+            customer_ref=customer.pk, student_ref=customer.source_id,
+            name=customer.name, from_branch_ref=from_id, from_branch=names[from_id],
+            to_branch_ref=to_id, to_branch=names[to_id],
+        ))
+    return tuple(done)
 
 
 class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
@@ -999,9 +1051,10 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
         Every invoice names its branch, decided here and handed to the engine
         per customer (:func:`_cohort_branches`): a pupil is billed in the branch
         they attend on the roll, and the run refuses, before anything is
-        written, a pupil outside the raiser's reach, a family off a branch
-        structure's price list, and a pupil whose account is filed at another
-        branch.
+        written, a pupil outside the raiser's reach and a family off a branch
+        structure's price list. A pupil whose account is filed at another
+        branch is billed where they attend and their account moves with them
+        (:func:`_refile_accounts`); a preview lists the moves it would make.
         """
         from vs_finance import fees
         from vs_finance.models import Customer
@@ -1060,8 +1113,11 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
             skipped = tuple(ref for ref, c in pairs if c.pk in already)
             billable = tuple(ref for ref, c in pairs if c.pk not in already)
             to_bill = [c for _ref, c in pairs if c.pk not in already]
-            branches = _cohort_branches(
+            branches, moves = _cohort_branches(
                 structure, pairs, to_bill, raiser=raiser, run_branch=run_branch,
+            )
+            accounts_moved = _refile_accounts(
+                to_bill, moves, actor_user=effective_user or raiser,
             )
 
             # The school's own rule, resolved here rather than in the engine.
@@ -1098,6 +1154,7 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
                 students_to_bill=billable,
                 dry_run=dry_run,
                 due_date=due_date,
+                accounts_moved=accounts_moved,
             )
 
         if not dry_run:

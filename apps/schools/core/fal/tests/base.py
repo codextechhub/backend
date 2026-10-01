@@ -95,7 +95,8 @@ class FALFixture(TestCase):
         )
 
         permission = make_permission(key)
-        role = make_role(user.tenant, name=f"Role for {key}")
+        # Named for its holder too, so two people in one test can each hold the key.
+        role = make_role(user.tenant, name=f"Role for {key} ({user.email})")
         make_role_permission(role, permission)
         make_assignment(user.tenant, user, role, branch=branch)
         return role

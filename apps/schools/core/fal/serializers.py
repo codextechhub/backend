@@ -85,6 +85,18 @@ def generation_payload(result) -> dict:
         "total_billed": result.total_billed,
         # ISO date, or null from a bridge that resolves none.
         "due_date": result.due_date.isoformat() if result.due_date else None,
+        "accounts_moved": [
+            {
+                "customer": move.customer_ref,
+                "student": move.student_ref,
+                "name": move.name,
+                "from_branch": move.from_branch,
+                "from_branch_id": move.from_branch_ref,
+                "to_branch": move.to_branch,
+                "to_branch_id": move.to_branch_ref,
+            }
+            for move in result.accounts_moved
+        ],
         "counts": {
             "to_bill": len(result.students_to_bill),
             "skipped": len(result.students_skipped),

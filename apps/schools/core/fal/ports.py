@@ -276,8 +276,13 @@ class FeeTermBridgePort(ABC):
         for such a family (a school with one branch gives its only one).
 
         ``raiser_ref`` is the person running it, and their grants bound it: a
-        bursar pinned to Lekki bills only Lekki's families. Left out, the
-        effective user of the request in progress is the raiser.
+        bursar pinned to Lekki bills only Lekki's families, by the roll. Left
+        out, the effective user of the request in progress is the raiser.
+
+        A pupil whose account is filed at a branch other than the one they
+        attend is billed where they attend, and the account is re-filed there
+        in the same transaction, audited and listed in ``accounts_moved``.
+        Bills raised before keep their branch.
 
         :raises TermNotLinkedError: the structure has no linked term.
         :raises CrossBranchError: a family belongs to a branch the raiser cannot
@@ -286,8 +291,7 @@ class FeeTermBridgePort(ABC):
             and nothing decides which branch the invoice names.
         :raises OffPriceListError: the structure is one branch's price list and
             a family belongs to another.
-        :raises AccountBranchConflict: a pupil about to be billed has an account
-            filed under a branch other than the one they attend.
+
         :raises CustomerNotProvisioned: a reference names no child on the roll,
             so no account can be opened for it.
         :raises CrossTenantError: a student attends another school.

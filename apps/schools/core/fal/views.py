@@ -38,7 +38,6 @@ from vs_rbac.scoping import assert_caller_may_configure, branch_q
 
 from .contracts import student_pk
 from .exceptions import (
-    AccountBranchConflict,
     BranchRequiredError,
     CrossBranchError,
     CrossTenantError,
@@ -68,7 +67,6 @@ _REFUSALS = {
     CustomerNotProvisioned: (status.HTTP_400_BAD_REQUEST, "CUSTOMER_NOT_PROVISIONED"),
     EntityNotProvisioned: (status.HTTP_409_CONFLICT, "ENTITY_NOT_PROVISIONED"),
     OffPriceListError: (status.HTTP_409_CONFLICT, "WRONG_BRANCH"),
-    AccountBranchConflict: (status.HTTP_409_CONFLICT, "ACCOUNT_BRANCH_CONFLICT"),
 }
 
 
@@ -236,9 +234,10 @@ class GenerateInvoicesView(_FalView):
     school needs no branch named. The caller is the raiser, and the bridge
     holds the branch rules over their grants (see
     :meth:`~schools.core.fal.ports.FeeTermBridgePort.generate_cohort_invoices`):
-    another branch's child is a 404, a child off a branch structure's price list
-    a 409 ``WRONG_BRANCH``, a child whose account is filed at another branch a
-    409 ``ACCOUNT_BRANCH_CONFLICT``. The optional ``branch`` names where a
+    another branch's child is a 404, and a child off a branch structure's price
+    list a 409 ``WRONG_BRANCH``. A child whose account is filed at another branch
+    is billed where they attend, and the account moves with them
+    (``accounts_moved`` in the response). The optional ``branch`` names where a
     family shared by every branch, with no child behind it, is billed; a
     school-wide bursar at a school with several branches who bills such a family
     without it gets a 400 ``BRANCH_REQUIRED`` naming the field.

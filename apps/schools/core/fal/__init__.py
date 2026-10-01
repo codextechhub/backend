@@ -232,6 +232,7 @@ __all__ = [
     "EntityHandle",
     "FeeTermLink",
     "InvoiceGenerationResult",
+    "AccountMove",
     "CustomerHandle",
     # NOTE: the payment-application types (Allocation, ApplyPaymentCommand,
     # AppliedInvoice, PaymentApplication) and PaymentPort are v1.2 (deferred)

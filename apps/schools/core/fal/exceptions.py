@@ -26,7 +26,6 @@ Mapping at the API edge (the consuming module's responsibility):
     BranchRequiredError       -> 400 naming ``field`` (a transaction needs a branch
                                  and the caller has a choice to make)
     OffPriceListError         -> 409 (a branch's fee structure billing another's)
-    AccountBranchConflict     -> 409 (a pupil's account is filed at another branch)
     InvalidFilterError        -> 400 (bad report/list filter)
     PaymentGatewayError       -> 502-class (gateway rejected the session)
     ApprovalTemplateMissing   -> 409 (no approval rule configured at all)
@@ -160,16 +159,6 @@ class OffPriceListError(FALError):
 
     A structure with a branch is that branch's price list: Ikeja's JSS 1 fee is
     not Lekki's. Rendered 409.
-    """
-
-
-class AccountBranchConflict(FALError):
-    """A pupil's AR account is filed under a branch other than the pupil's own.
-
-    The fee run bills each pupil in the branch they attend on the roll, and the
-    account's branch is meant to be that same branch. When the two disagree the
-    run refuses rather than choosing between them, because either choice files
-    money where one of the two branches' staff cannot see it. Rendered 409.
     """
 
 
