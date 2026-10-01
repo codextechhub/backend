@@ -13,7 +13,9 @@ from vs_user.tokens import CodeXRefreshToken
 from .base import FALFixture
 
 
-class FalRouteTests(FALFixture):
+class RouteFixture(FALFixture):
+    """Corona's fee structure and term, and a client that signs in for real."""
+
     def setUp(self):
         super().setUp()
         # Default: no credentials, Corona asserted. as_bursar() replaces both.
@@ -53,6 +55,22 @@ class FalRouteTests(FALFixture):
             f"{url}?tenant={self.slug}", body or {}, format="json",
         )
 
+    def as_lekki_bursar(self):
+        """A bursar whose grants are pinned to Lekki, linking and billing there."""
+        for key in ("finance.feestructure.edit", "finance.feestructure.generate"):
+            self.grant(self.lekki_bursar, key, branch=self.lekki)
+        self.client = self.client_for(self.lekki_bursar)
+        self.slug = self.lekki_bursar.tenant.slug
+
+    def link(self, structure=None):
+        res = self.post(
+            self.link_url(structure.pk if structure else None),
+            {"session": self.session.pk, "term": self.term.pk},
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+
+
+class FalRouteTests(RouteFixture):
     # ---- security --------------------------------------------------------
     def test_an_anonymous_caller_is_refused(self):
         self.assertEqual(self.post(self.link_url(), {}).status_code, 401)
@@ -140,13 +158,6 @@ class FalRouteTests(FALFixture):
         self.assertEqual(res.data["data"]["counts"]["created"], 1)
 
     # ---- branch scope of the cohort ---------------------------------------
-    def as_lekki_bursar(self):
-        """A bursar whose grants are pinned to Lekki, linking and billing there."""
-        for key in ("finance.feestructure.edit", "finance.feestructure.generate"):
-            self.grant(self.lekki_bursar, key, branch=self.lekki)
-        self.client = self.client_for(self.lekki_bursar)
-        self.slug = self.lekki_bursar.tenant.slug
-
     def test_a_branch_bursar_cannot_bill_a_child_at_another_branch(self):
         """The structure is shared, so she reaches it; the Ikeja child is not hers.
 

@@ -47,7 +47,7 @@ LINES = (BillLine(description="Books", quantity=10, unit_price=1_000),)
 
 class ContractShapeTests(SimpleTestCase):
     def test_the_version_is_declared(self):
-        self.assertEqual(FAL_CONTRACT_VERSION, "1.1.3")
+        self.assertEqual(FAL_CONTRACT_VERSION, "1.1.4")
 
     def test_every_dto_is_frozen(self):
         """A consumer holds a snapshot, and cannot mutate finance through it."""

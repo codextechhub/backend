@@ -97,9 +97,11 @@ from ..contracts import (
     Unit,
 )
 from ..exceptions import (
+    AccountBranchConflict,
     AmbiguousPrimaryEntity,
     ApprovalNotParkedError,
     ApprovalTemplateMissingError,
+    BranchRequiredError,
     CrossBranchError,
     CrossTenantError,
     CustomerCreationRace,
@@ -108,6 +110,7 @@ from ..exceptions import (
     GuardianLinkNotConfigured,
     InvalidFilterError,
     InvalidTermLinkError,
+    OffPriceListError,
     OverrideNotPermittedError,
     PaymentGatewayError,
     ProcurementStateError,
@@ -777,6 +780,169 @@ def _link_dto(link):
     )
 
 
+def _translate_branch_refusal(exc, field):
+    """Turn a DRF refusal from :mod:`vs_rbac.scoping`'s branch rules into a FAL one.
+
+    The scoping helpers speak DRF because the screens call them; the FAL's
+    callers speak its own exceptions. A 400 asks the caller to name a branch, a
+    403 is a branch outside their reach, and anything else is not a branch
+    refusal and is returned untouched.
+    """
+    from rest_framework.exceptions import PermissionDenied
+    from rest_framework.exceptions import ValidationError as DRFValidationError
+
+    if isinstance(exc, DRFValidationError):
+        return BranchRequiredError(_drf_message(exc.detail), field=field)
+    if isinstance(exc, PermissionDenied):
+        return CrossBranchError(str(exc.detail))
+    return exc
+
+
+def _raised_transaction_branch_id(user, tenant, branch_ref, *, field="branch_ref"):
+    """The branch a transaction *user* raises in *tenant* names, by their grants.
+
+    :func:`vs_rbac.scoping.raised_transaction_branch`, the rule every screen
+    raises a transaction by, asked for a caller the FAL holds as a user rather
+    than a request: a caller pinned to one branch raises for it and may name no
+    other; a caller covering several, or a school-wide caller at a school with
+    several, must name one; a school with one branch gives its only one. A
+    branch of another school is :class:`CrossTenantError`, as everywhere in the
+    FAL, before any of that is asked.
+
+    ``user`` may be ``None`` for a run with nobody behind it, which reaches the
+    whole school.
+    """
+    from types import SimpleNamespace
+
+    from rest_framework.exceptions import APIException
+
+    from vs_rbac.scoping import raised_transaction_branch
+
+    if branch_ref is not None:
+        _branch(branch_ref, tenant)
+    try:
+        branch = raised_transaction_branch(
+            SimpleNamespace(user=user), tenant, {"branch": branch_ref},
+        )
+    except APIException as exc:
+        raise _translate_branch_refusal(exc, field) from exc
+    return getattr(branch, "pk", None)
+
+
+def _cohort_raiser(raiser_ref, effective_user, tenant):
+    """Whose reach bounds a fee run: the named raiser, else the request's user.
+
+    A named raiser of another school is refused. Without one, the effective user
+    of the request in progress is the raiser when they belong to this school;
+    otherwise nobody is, and the run is bounded by the school alone, as for a
+    management command.
+    """
+    if raiser_ref is not None:
+        user = _user(raiser_ref)
+        if user is None or user.tenant_id != tenant.pk:
+            raise CrossTenantError("That user does not belong to this school.")
+        return user
+    if getattr(effective_user, "tenant_id", None) == tenant.pk:
+        return effective_user
+    return None
+
+
+class _RunBranch:
+    """The branch a fee run names for a family that gives none of its own.
+
+    A pupil's invoice names the pupil's branch, so most runs never ask this. A
+    family every branch shares with no pupil behind it (a receivable imported
+    before the roll) has no branch to give, and their invoice takes the
+    raiser's, by :func:`_raised_transaction_branch_id`. A named ``branch_ref``
+    is checked at once, so a bad one is refused whoever the cohort holds; an
+    absent one is asked about only when such a family is billed.
+    """
+
+    def __init__(self, raiser, tenant, branch_ref):
+        self._raiser, self._tenant, self._ref = raiser, tenant, branch_ref
+        self._resolved = False
+        self._id = None
+        if branch_ref is not None:
+            self.id()
+
+    def id(self):
+        if not self._resolved:
+            self._id = _raised_transaction_branch_id(self._raiser, self._tenant, self._ref)
+            self._resolved = True
+        return self._id
+
+
+def _cohort_branches(structure, pairs, to_bill, *, raiser, run_branch):
+    """``{customer id: branch id}`` for every invoice this run raises.
+
+    A pupil's own branch on the roll comes first: ``Student.branch`` is never
+    null and a child attends exactly one branch, while a class may be shared by
+    several. A family with no pupil behind it gives its account's branch, and
+    one with neither takes the run's (:class:`_RunBranch`).
+
+    Three refusals, each before anything is written and each over the whole
+    cohort, so a run bills everyone named or nobody:
+
+    * :class:`CrossBranchError` (404) for a family whose branch the raiser
+      cannot reach. Tunde attends Ikeja, so a Lekki-bound bursar who names them
+      is refused exactly as for an id that names nobody.
+    * :class:`OffPriceListError` (409) when the structure is one branch's price
+      list and a family belongs to another branch, or to every branch.
+    * :class:`AccountBranchConflict` (409) for a pupil about to be billed whose
+      account is filed under a branch other than the one they attend. Only those
+      about to be billed: a pupil already billed for this period is skipped, so
+      a rerun never bills anybody twice and never trips over them.
+
+    The branch is not part of the billing key. A rerun finds a pupil's invoice
+    for the period by account, structure and period whichever branch it names.
+    """
+    from schools.vs_students.models import Student
+    from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
+
+    tenant = structure.entity.tenant
+    ids = {student_pk(ref) for ref, _customer in pairs} - {None}
+    pupils = dict(
+        Student.all_objects.filter(tenant=tenant, pk__in=ids).values_list("pk", "branch_id")
+    ) if ids else {}
+
+    own = {}
+    for ref, customer in pairs:
+        pupil_branch = pupils.get(student_pk(ref))
+        own[customer.pk] = (
+            pupil_branch if pupil_branch is not None else customer.branch_id
+        )
+
+    reach = visible_branch_ids(raiser, tenant) if raiser is not None else WHOLE_TENANT
+    if reach is not WHOLE_TENANT and any(
+        branch_id is not None and branch_id not in reach for branch_id in own.values()
+    ):
+        raise CrossBranchError("No such student.")
+
+    if structure.branch_id:
+        off = sum(1 for branch_id in own.values() if branch_id != structure.branch_id)
+        if off:
+            raise OffPriceListError(
+                f"{off} of the children named attend another branch. This fee "
+                f"structure prices one branch only; bill them from their own "
+                f"branch's structure."
+            )
+
+    conflicts = [
+        customer for customer in to_bill
+        if customer.branch_id is not None and own[customer.pk] != customer.branch_id
+    ]
+    if conflicts:
+        raise AccountBranchConflict(
+            f"{len(conflicts)} of the children named have a fee account filed under "
+            f"a branch other than the one they attend. Nothing was billed."
+        )
+
+    return {
+        customer.pk: own[customer.pk] if own[customer.pk] is not None else run_branch.id()
+        for customer in to_bill
+    }
+
+
 class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
     """Component 2 over the FAL-owned link table and ``vs_finance.fees``."""
 
@@ -816,7 +982,7 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
 
     @envelope
     def generate_cohort_invoices(self, fee_structure_ref, student_refs, *, period=None,
-                                 dry_run=False):
+                                 dry_run=False, raiser_ref=None, branch_ref=None):
         """Bill a cohort against a fee structure, or preview what billing would do.
 
         A preview runs the real thing and throws the writes away, deliberately
@@ -836,6 +1002,13 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
         Second Term fees billed in December for a term that starts in January are
         therefore deferred income in December and revenue month by month from
         January; a term already under way is billed as revenue on the day.
+
+        Every invoice names its branch, decided here and handed to the engine
+        per customer (:func:`_cohort_branches`): a pupil is billed in the branch
+        they attend on the roll, and the run refuses, before anything is
+        written, a pupil outside the raiser's reach, a family off a branch
+        structure's price list, and a pupil whose account is filed at another
+        branch.
         """
         from vs_finance import fees
         from vs_finance.models import Customer
@@ -843,6 +1016,12 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
         from ..models import FeeStructureTermLink
 
         structure = _fee_structure(fee_structure_ref)
+        tenant = structure.entity.tenant
+        # The effective user, not the actor: where a CodeX operator is acting
+        # inside a school's session, the bill is the school's act.
+        _actor, effective_user, _proxy = get_current_audit_identity()
+        raiser = _cohort_raiser(raiser_ref, effective_user, tenant)
+        run_branch = _RunBranch(raiser, tenant, branch_ref)
         link = (
             FeeStructureTermLink.objects
             .filter(fee_structure=structure)
@@ -888,14 +1067,9 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
             skipped = tuple(ref for ref, c in pairs if c.pk in already)
             billable = tuple(ref for ref, c in pairs if c.pk not in already)
             to_bill = [c for _ref, c in pairs if c.pk not in already]
-
-            # The effective user, not the actor: where a CodeX operator is acting
-            # inside a school's session, the bill is the school's act and its
-            # ledger should say so. Read from the request context rather than a
-            # port argument, because every caller of this bridge is already
-            # inside an authenticated request and none of them should have to
-            # remember to thread an identity through to be attributed.
-            _actor, effective_user, _proxy = get_current_audit_identity()
+            branches = _cohort_branches(
+                structure, pairs, to_bill, raiser=raiser, run_branch=run_branch,
+            )
 
             # The school's own rule, resolved here rather than in the engine.
             # Three of the four bases are academic-calendar facts, and the term
@@ -915,7 +1089,8 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
             # dates and defers what is billed before they start.
             taught = link.term if link.term_id else link.session
             invoices = fees.generate_invoices(
-                structure, to_bill, actor_user=effective_user,
+                structure, to_bill, actor_user=effective_user or raiser,
+                invoice_branches=branches,
                 invoice_date=invoice_date, due_date=due_date,
                 billing_period=link.period_key, billing_period_label=link.label,
                 service_start=taught.start_date, service_end=taught.end_date,

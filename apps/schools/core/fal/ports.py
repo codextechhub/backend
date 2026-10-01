@@ -243,6 +243,7 @@ class FeeTermBridgePort(ABC):
     def generate_cohort_invoices(
         self, fee_structure_ref: FeeStructureRef, student_refs: tuple[StudentRef, ...],
         *, period: Optional[Period] = None, dry_run: bool = False,
+        raiser_ref: Optional[UserRef] = None, branch_ref: Optional[BranchRef] = None,
     ) -> FinanceResult[InvoiceGenerationResult]:
         """Generate one posted invoice per student in the cohort.
 
@@ -264,7 +265,28 @@ class FeeTermBridgePort(ABC):
         source for a child's name; the refusal survives only for a reference that
         names nobody.
 
+        **Every invoice names a branch, and the run decides it.** A pupil is
+        billed in the branch they attend on the roll, so a run for the whole
+        school bills Tunde at Ikeja and Amaka at Lekki. A family with no pupil
+        behind it (a receivable imported before the roll) gives its account's
+        branch, and one shared by every branch takes the raiser's:
+        ``branch_ref``, which a raiser pinned to one branch may leave out, and
+        which a school-wide raiser at a school with several branches must name
+        for such a family (a school with one branch gives its only one).
+
+        ``raiser_ref`` is the person running it, and their grants bound it: a
+        bursar pinned to Lekki bills only Lekki's families. Left out, the
+        effective user of the request in progress is the raiser.
+
         :raises TermNotLinkedError: the structure has no linked term.
+        :raises CrossBranchError: a family belongs to a branch the raiser cannot
+            reach, or ``branch_ref`` is not one of theirs.
+        :raises BranchRequiredError: a family shared by every branch is billed
+            and nothing decides which branch the invoice names.
+        :raises OffPriceListError: the structure is one branch's price list and
+            a family belongs to another.
+        :raises AccountBranchConflict: a pupil about to be billed has an account
+            filed under a branch other than the one they attend.
         :raises CustomerNotProvisioned: a reference names no child on the roll,
             so no account can be opened for it.
         :raises CrossTenantError: a student attends another school.

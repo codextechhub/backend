@@ -559,6 +559,58 @@ class InheritedBranchTests(_WriteFixture):
         self.assertEqual(by_customer[self.cust_lekki.pk], self.lekki.pk)
         self.assertEqual(by_customer[self.cust_shared.pk], self.yaba.pk)
 
+    def _structure(self, code):
+        from vs_finance.models import FeeItem
+
+        structure = FeeStructure.objects.create(entity=self.books, code=code, name=code)
+        FeeItem.objects.create(
+            structure=structure, line_no=1, description="Tuition",
+            revenue_account=Account.objects.get(entity=self.books, code="4100"),
+            amount=300_000,
+        )
+        return structure
+
+    def test_a_branch_named_per_family_bills_a_shared_family_there(self):
+        """The owner layer names each family's branch; the shared one is Lekki's."""
+        from vs_finance.fees import generate_invoices
+
+        invoices = generate_invoices(
+            self._structure("INHN"), [self.cust_ikeja, self.cust_shared],
+            invoice_date=datetime.date(2026, 1, 12),
+            invoice_branches={self.cust_ikeja.pk: self.ikeja.pk,
+                              self.cust_shared.pk: self.lekki.pk},
+        )
+
+        by_customer = {inv.customer_id: inv.branch_id for inv in invoices}
+        self.assertEqual(by_customer, {
+            self.cust_ikeja.pk: self.ikeja.pk, self.cust_shared.pk: self.lekki.pk,
+        })
+
+    def test_a_named_branch_never_overrides_the_familys_own(self):
+        from vs_finance.exceptions import FinanceError
+        from vs_finance.fees import generate_invoices
+        from vs_finance.models import Invoice
+
+        with self.assertRaises(FinanceError):
+            generate_invoices(
+                self._structure("INHX"), [self.cust_ikeja],
+                invoice_date=datetime.date(2026, 1, 12),
+                invoice_branches={self.cust_ikeja.pk: self.lekki.pk},
+            )
+        self.assertFalse(Invoice.objects.filter(reference="FEE:INHX").exists())
+
+    def test_a_shared_family_is_never_billed_under_no_branch(self):
+        from vs_finance.exceptions import PostingError
+        from vs_finance.fees import generate_invoices
+        from vs_finance.models import Invoice
+
+        with self.assertRaises(PostingError):
+            generate_invoices(
+                self._structure("INHB"), [self.cust_shared],
+                invoice_date=datetime.date(2026, 1, 12),
+            )
+        self.assertFalse(Invoice.objects.filter(reference="FEE:INHB").exists())
+
 
 class WriteThenReadTests(_WriteFixture):
     """The two halves closing on each other, which is the point of the change.

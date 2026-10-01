@@ -187,7 +187,7 @@ class FakeFeeTermBridge(FeeTermBridgePort):
         return _ok(link)
 
     def generate_cohort_invoices(self, fee_structure_ref, student_refs, *, period=None,
-                                 dry_run=False):
+                                 dry_run=False, raiser_ref=None, branch_ref=None):
         link = self.links.get(fee_structure_ref)
         if link is None:
             raise TermNotLinkedError(f"Structure {fee_structure_ref!r} has no term.")
