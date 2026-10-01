@@ -856,7 +856,7 @@ Verified: vs_finance.tests_inter_branch 47 OK, vs_finance 1623 OK, vs_procuremen
 OK, core 193 OK (on ef3f2769); with 20fa340c on top, tests_inter_branch,
 tests_payroll_roster_rules and tests_ledger_lock 95 OK. The full suite was not run.
 
-### D103. Income given back across branches, and a voided move frees its key (hash pending, 2026-10-01)
+### D103. Income given back across branches, and a voided move frees its key (b53a36a1, 2026-10-01)
 MODULES: M19 finance and accounting (deferred income, inter-branch), M20
 adjustments and concessions (credit notes, concessions, write-offs), M17 billing
 only where it describes a moved bill being credited, MRD.
