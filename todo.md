@@ -431,6 +431,26 @@ MUST SAY:
   phase B; the Paystack field names listed in the adapter are to be confirmed
   against Paystack's documentation.
 
+### D92. Gateway records are read by their own branch, and a payout is paid from the caller's branch's bank (e10a3c06, 2026-10-01)
+MODULES: M18 payments and collections, M07 workflow and approval engine (payout
+batch approvals), M04 roles and permissions, MRD.
+MUST SAY:
+- Reach (M18). A branch-bound reader reaches a collection, virtual account,
+  payout or payout batch when its own branch (D91) is one of theirs; the
+  transactions log and webhook events follow the record they name. A record with
+  no branch is whole-school only. A payout is reached by the branch of the bank
+  it is paid from, not its vendor's: Ikeja's clerk does not see a payout from
+  Lekki's bank to an Ikeja vendor, and does see one from Ikeja's bank to a vendor
+  every branch shares. The approval inbox, dashboard count and approve/reject
+  read a batch by its own branch.
+- Raising a payout (M18). A branch-bound caller must name a bank account of their
+  own branch (400 "Pay this from a bank account of your own branch."); the
+  default cash account is used only for a whole-school caller. A vendor every
+  branch shares can be paid.
+- Backfill (M18). A batch whose lines left different branches' banks is left
+  unbranched and flagged for an administrator, not given its source account's
+  branch.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
