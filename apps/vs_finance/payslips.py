@@ -54,14 +54,23 @@ def _issuer_name(entity) -> str:
 
 
 def _person_lines(entity, line):
-    """Every line of the same person on ``entity``'s counted runs."""
+    """Every line of ``line``'s roster row on ``entity``'s counted runs.
+
+    The row is the person whose year to date a payslip prints, counted exactly
+    as the PAYE working counts it (:func:`vs_finance.payroll_statutory.year_to_date`):
+    the lines naming the row, and any line of the same account written before
+    lines named a row. Somebody on two branches' rosters has two rows and two
+    years to date. Tunde teaches at Ikeja and at Lekki: his Lekki payslip
+    counts what Lekki paid him, which is what his Lekki PAYE was worked out on,
+    and Lekki's bursar, who opens it, never reads Ikeja's pay inside a total.
+    """
     from .models import PayrollLine
 
     person = Q(pk=line.pk)
     if line.salary_id:
         person |= Q(salary_id=line.salary_id)
     if line.employee_id:
-        person |= Q(employee_id=line.employee_id)
+        person |= Q(salary__isnull=True, employee_id=line.employee_id)
     return PayrollLine.objects.filter(person, run__entity=entity, run__run_status__in=_COUNTED)
 
 
