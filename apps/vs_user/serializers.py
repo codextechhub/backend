@@ -359,9 +359,10 @@ class UserCreateSerializer(serializers.Serializer):
         )
 
         # The branch rule, asked of the model so there is one statement of it -
-        # see User.branch_assignment_error. Judged on the raw reference, not a
-        # resolved row: the platform tenant owns no branches, so resolving
-        # first would answer "no such branch" and hide the real reason.
+        # see User.branch_assignment_error. Judged on whether any branch was
+        # named, not on a resolved row: platform staff take no branch at all,
+        # and resolving first would answer "no such branch" for a reference
+        # that names none, hiding the real reason.
         if creating_platform_staff:
             error = User.branch_assignment_error(
                 target_tenant, branch_ref not in (None, ''),

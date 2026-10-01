@@ -313,10 +313,10 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             # THE BRANCH RULE IS NOT HERE. It is a database TRIGGER, installed
             # by vs_user migration 0009, and this comment is the signpost to it.
             #
-            # The rule itself is unchanged: a user on a PLATFORM-kind tenant
-            # must not be bound to a branch. Platform staff work for the
-            # platform, and the platform tenant owns no branches for them to be
-            # bound to. Every tenant user MAY carry one, and a NULL means
+            # The rule: a user on a PLATFORM-kind tenant must not be bound to a
+            # branch. Platform staff serve every tenant, so none is posted to
+            # any branch, not even the platform's own Lagos branch, which
+            # exists for CodeX's books. Every tenant user MAY carry one, and a NULL means
             # "across the whole tenant" - the same first-class value the
             # academic structure and procurement documents already use. It does
             # not mean "no branches exist".
