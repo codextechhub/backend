@@ -105,6 +105,28 @@ GuardianRef = LooseRef    # a future parent/guardian record
 #: against a model that does not exist, and nothing downstream notices.
 SOURCE_TYPE_STUDENT = "vs_students.Student"
 
+
+def student_pk(ref) -> Optional[int]:
+    """The roll's primary key a student reference names, or ``None``.
+
+    A reference names pupil 42 only when it is spelled exactly ``"42"``. Python's
+    ``int()`` also reads ``"+42"``, ``"042"``, ``"4_2"`` and ``"٤٢"`` as 42, while
+    the same reference is stored and matched as a string in
+    ``Customer.source_id``. Parsing loosely would give one child several
+    spellings, and every spelling opens an AR account of its own: the billing key
+    is per account, so Tunde billed as ``"42"`` is billed again as ``"+42"``, and
+    a branch check that reads only the plain spelling is walked round by another.
+
+    Every place that turns a reference or a ``source_id`` into a pupil reads it
+    here, so a reference names the same pupil, or nobody, everywhere. Anything
+    else is a loose reference the ledger merely stores (an imported receivable).
+    """
+    text = "" if ref is None else str(ref)
+    if not (text.isascii() and text.isdigit()) or text != str(int(text)):
+        return None
+    return int(text)
+
+
 T = TypeVar("T")
 
 

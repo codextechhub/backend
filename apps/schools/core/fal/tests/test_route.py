@@ -167,6 +167,50 @@ class FalRouteTests(FALFixture):
         self.assertEqual(res.status_code, 404, res.data)
         self.assertFalse(Invoice.objects.filter(entity_id=self.books.entity_ref).exists())
 
+    @staticmethod
+    def respellings(pk):
+        """Other ways of writing a pupil's id that Python's ``int()`` reads as it."""
+        text = str(pk)
+        spellings = [f"+{text}", f"0{text}"]
+        if len(text) > 1:
+            spellings.append(f"{text[0]}_{text[1:]}")
+        return spellings
+
+    def test_a_branch_bursar_cannot_bill_another_branchs_child_by_respelling_the_id(self):
+        """Writing Ikeja's child as ``+42`` must not slip past the Lekki check.
+
+        The branch check and the bridge read the reference the same way, so a
+        spelling that names nobody to one names nobody to the other, and the run
+        is refused rather than opening an account and billing the child at Ikeja.
+        """
+        from vs_finance.models import Customer, Invoice
+
+        self.as_lekki_bursar()
+        self.post(self.link_url(), {"session": self.session.pk, "term": self.term.pk})
+        ikeja_child = self.student(self.corona, self.ikeja)
+
+        for spelling in self.respellings(ikeja_child.pk):
+            res = self.post(self.gen_url(), {"students": [spelling]})
+            self.assertIn(res.status_code, (400, 404), (spelling, res.data))
+        self.assertFalse(Invoice.objects.filter(entity_id=self.books.entity_ref).exists())
+        self.assertFalse(Customer.objects.filter(entity_id=self.books.entity_ref).exists())
+
+    def test_a_child_is_not_billed_twice_under_another_spelling_of_their_id(self):
+        """One child, one account: a second spelling opens no account to bill again."""
+        from vs_finance.models import Invoice
+
+        self.as_bursar("finance.feestructure.edit", "finance.feestructure.generate")
+        self.post(self.link_url(), {"session": self.session.pk, "term": self.term.pk})
+        child = self.student(self.corona, self.lekki, first="Amaka")
+        first = self.post(self.gen_url(), {"students": [str(child.pk)]})
+        self.assertEqual(first.status_code, 201, first.data)
+
+        for spelling in self.respellings(child.pk):
+            res = self.post(self.gen_url(), {"students": [spelling]})
+            self.assertEqual(res.status_code, 400, (spelling, res.data))
+            self.assertEqual(res.data.get("code"), "CUSTOMER_NOT_PROVISIONED")
+        self.assertEqual(Invoice.objects.filter(entity_id=self.books.entity_ref).count(), 1)
+
     def test_a_branch_bursar_previews_and_bills_her_own_branch(self):
         self.as_lekki_bursar()
         self.post(self.link_url(), {"session": self.session.pk, "term": self.term.pk})

@@ -55,7 +55,7 @@ def _student_for(document, tenant):
     reason (``adapters.django_finance._class_labels``), one page at a time;
     this is the one-document case the engine needs.
     """
-    from schools.core.fal.contracts import SOURCE_TYPE_STUDENT
+    from schools.core.fal.contracts import SOURCE_TYPE_STUDENT, student_pk
 
     from .models import Student
 
@@ -64,9 +64,8 @@ def _student_for(document, tenant):
         return None
     if customer.source_type != SOURCE_TYPE_STUDENT or not customer.source_id:
         return None
-    try:
-        student_id = int(customer.source_id)
-    except (TypeError, ValueError):
+    student_id = student_pk(customer.source_id)
+    if student_id is None:
         return None
     return Student.all_objects.filter(
         pk=student_id, tenant=tenant,

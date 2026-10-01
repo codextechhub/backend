@@ -36,6 +36,7 @@ from vs_finance.models import FeeStructure
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 from vs_rbac.scoping import assert_caller_may_configure, branch_q
 
+from .contracts import student_pk
 from .exceptions import (
     CrossTenantError,
     CustomerNotProvisioned,
@@ -104,15 +105,18 @@ class _FalView(APIView):
         are read exclusively, as they are everywhere else: a child always
         belongs to one branch.
 
-        Only references that name a student row are checked. A reference that
-        is not a student's primary key is an imported receivable the bridge
-        resolves by entity, and a child of another school is the bridge's
-        ``CrossTenantError``, which also answers 404.
+        Only references that name a student row are checked, read by
+        :func:`~schools.core.fal.contracts.student_pk` exactly as the bridge
+        reads them, so no spelling of a child's id names them to the bridge and
+        nobody here. A reference that is not a student's primary key is an
+        imported receivable the bridge resolves by entity, and a child of
+        another school is the bridge's ``CrossTenantError``, which also answers
+        404.
         """
         from schools.vs_students.models import Student
         from schools.vs_students.services.scoping import scope_students
 
-        ids = {int(ref) for ref in student_refs if str(ref).isdigit()}
+        ids = {student_pk(ref) for ref in student_refs} - {None}
         if not ids:
             return
         tenant = self.request.tenant
@@ -134,7 +138,7 @@ class _FalView(APIView):
 
         if not structure.branch_id:
             return 0
-        ids = {int(ref) for ref in student_refs if str(ref).isdigit()}
+        ids = {student_pk(ref) for ref in student_refs} - {None}
         return (
             Student.all_objects.filter(tenant=self.request.tenant, pk__in=ids)
             .exclude(branch_id=structure.branch_id)

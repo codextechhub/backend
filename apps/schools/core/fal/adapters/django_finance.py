@@ -59,6 +59,7 @@ from schools.vs_academics.services.words import term_word
 from ..due_dates import policy_for, resolve_due_date
 from ..contracts import (
     SOURCE_TYPE_STUDENT,
+    student_pk,
     AgeingBucket,
     AgeingRow,
     ApprovalDecision,
@@ -538,9 +539,8 @@ def _student_row(student_ref):
     """
     from schools.vs_students.models import Student
 
-    try:
-        student_id = int(student_ref)
-    except (TypeError, ValueError):
+    student_id = student_pk(student_ref)
+    if student_id is None:
         return None
     return (
         Student.all_objects.filter(pk=student_id)
@@ -596,12 +596,8 @@ def _class_labels(student_refs, tenant_id):
     """
     from schools.vs_students.models import ClassEnrolment
 
-    by_id = {}
-    for ref in student_refs:
-        try:
-            by_id[int(ref)] = ref
-        except (TypeError, ValueError):
-            continue
+    by_id = {student_pk(ref): ref for ref in student_refs}
+    by_id.pop(None, None)
     if not by_id:
         return {}
 
@@ -1485,10 +1481,12 @@ class DjangoGuardianLinkAdapter(GuardianLinkPort):
     def owns(self, guardian_ref, student_ref):
         from schools.vs_students.models import StudentGuardian
 
+        student_id = student_pk(student_ref)
         try:
             guardian_id = int(guardian_ref)
-            student_id = int(student_ref)
         except (TypeError, ValueError):
+            return False
+        if student_id is None:
             return False
         return StudentGuardian.all_objects.filter(
             guardian_id=guardian_id, student_id=student_id,
