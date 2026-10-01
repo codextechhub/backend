@@ -369,8 +369,8 @@ _JOURNAL_OWNERS = (
     JournalOwner("vs_finance.CustomerCreditAllocationJournal", "journal", via="note", via_label=CREDIT_NOTE),
     JournalOwner("vs_finance.DeferredIncomeRelease", "journal"),
     JournalOwner("vs_finance.DeferredIncomeEntry", "void_journal"),
-    # The adjusting journal belongs to its credit note, concession or write-off; the
-    # share it took back is on the same bill, so of the same branch.
+    # The adjusting journal belongs to its credit note, concession or write-off. An
+    # unbranched one predates receivable moves, so its shares are its own branch's.
     JournalOwner("vs_finance.DeferredIncomeUnwind", "adjustment_entry",
                  via="entry", via_label="vs_finance.DeferredIncomeEntry"),
     JournalOwner("vs_finance.DoubtfulDebtProvisionLine", "journal"),

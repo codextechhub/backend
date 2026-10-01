@@ -26,12 +26,21 @@ the liability rather than revenue for that part, latest months first, and voidin
 the adjustment restores it (:func:`restore_unwinds`). Voiding the invoice cancels
 what is still pending and takes the revenue already released back out
 (:func:`cancel_invoice_schedule`).
+
+Every share is held by one branch: the invoice's, until a receivable move carries
+the months still to come to another branch. An adjustment takes each share back
+from the branch that holds it. Its own journal debits the inter-branch account
+for a share held elsewhere, and the holding branch debits its own deferred income
+(or, for a credit note, the revenue a share already released) in a journal of its
+own (:func:`unwind_debits`, :func:`apply_unwind`), so no branch's books ever carry
+another branch's income.
 """
 from __future__ import annotations
 
 import calendar
 import datetime
 from collections import defaultdict
+from typing import NamedTuple
 
 from django.db import transaction
 from django.db.models import Count, F, Sum
@@ -43,6 +52,7 @@ from .constants import (
     AccountMappingKey,
     ChargeKind,
     DeferredIncomeStatus,
+    DocumentStatus,
     FinanceAuditAction,
     JournalSource,
     PeriodStatus,
@@ -125,13 +135,43 @@ def pending_total(invoice) -> int:
 # Adjustments of a deferred bill                                               #
 # --------------------------------------------------------------------------- #
 
-def plan_unwind(invoice, amount) -> list[tuple[object, int]]:
+class UnwindStep(NamedTuple):
+    """One share an adjustment takes back, and how much of it.
+
+    ``after_release`` marks a share taken back out of the revenue it already
+    released (:func:`plan_released_takeback`); otherwise the share is still
+    waiting, and the liability is what the adjustment debits.
+    """
+
+    entry: object
+    take: int
+    after_release: bool = False
+
+
+def held_elsewhere(entry, branch_id) -> bool:
+    """Whether the share ``entry`` sits at a branch other than ``branch_id``.
+
+    Both must name a branch. A share or an adjusting journal not yet given one is
+    taken as the adjusting journal's own, as every share was before a receivable
+    move could carry part of a bill to another branch.
+    """
+    return entry.branch_id is not None and branch_id is not None and entry.branch_id != branch_id
+
+
+def plan_unwind(invoice, amount) -> list[UnwindStep]:
     """The pending shares an adjustment of ``amount`` takes back, latest month first.
 
     Locks the shares, so two adjustments of one bill queue. The latest months go
     first because an adjustment of a bill in progress is almost always about the
     service still to come: Tunde withdraws in February and the March and April
     shares are the ones he will not receive.
+
+    The shares may sit at more than one branch once a receivable move has carried
+    the bill (:func:`vs_finance.inter_branch.transfer_open_receivables`): the
+    months still to come move, and a month already earned stays at the branch
+    that earned it. The plan takes them in the same order wherever they sit;
+    :func:`unwind_debits` and :func:`apply_unwind` take each one back from the
+    branch that holds it.
     """
     from .models import DeferredIncomeEntry
 
@@ -146,42 +186,180 @@ def plan_unwind(invoice, amount) -> list[tuple[object, int]]:
             break
         take = min(entry.open_amount, remaining)
         if take > 0:
-            plan.append((entry, take))
+            plan.append(UnwindStep(entry, take))
             remaining -= take
     return plan
 
 
-def apply_unwind(plan, *, adjustment_entry) -> int:
-    """Record ``plan`` against the adjusting journal that debited the liability for it."""
+def plan_released_takeback(invoice, amount, *, branch_id) -> list[UnwindStep]:
+    """The released shares a credit note of ``branch_id`` takes back past every waiting one.
+
+    Only on a bill whose shares sit at more than one branch. On any other bill
+    the rest of a credit note is its own branch's revenue, as it has always been,
+    and this returns nothing.
+
+    On such a bill the revenue each share released belongs to the branch that
+    released it. Tunde's January share was released at Ikeja after his term
+    moved to Lekki; a credit note at Lekki cancelling the whole term takes that
+    January revenue back from Ikeja, exactly as it would have taken the share
+    back from Ikeja's deferred income had the release not run yet, so who bears
+    the cancellation never depends on when the release ran.
+
+    Latest months first, as :func:`plan_unwind`. A share gives at most what it
+    released less what credit notes already took back after release, and every
+    share taken is recorded (:class:`~vs_finance.models.DeferredIncomeUnwind`),
+    at the note's own branch too, so the order holds across several credit
+    notes. A share released at the note's own branch is the note's ordinary
+    revenue debit; one released elsewhere is taken back from that branch
+    (:func:`apply_unwind`).
+    """
+    from .models import DeferredIncomeEntry, DeferredIncomeUnwind
+
+    remaining = int(amount or 0)
+    if remaining <= 0 or invoice is None or branch_id is None:
+        return []
+    shares = DeferredIncomeEntry.objects.filter(invoice=invoice)
+    if not shares.filter(branch__isnull=False).exclude(branch_id=branch_id).exists():
+        return []
+    released = list(
+        shares.select_for_update().filter(status=DeferredIncomeStatus.RELEASED)
+        .order_by("-recognition_date", "-id")
+    )
+    taken = dict(
+        DeferredIncomeUnwind.objects
+        .filter(entry__in=released, after_release=True, restored=False)
+        .values("entry_id").annotate(total=Sum("amount")).values_list("entry_id", "total")
+    )
+    plan = []
+    for entry in released:
+        if remaining <= 0:
+            break
+        take = min(int(entry.released_amount) - int(taken.get(entry.pk) or 0), remaining)
+        if take > 0:
+            plan.append(UnwindStep(entry, take, after_release=True))
+            remaining -= take
+    return plan
+
+
+def unwind_debits(plan, *, entity, branch_id) -> list[tuple]:
+    """The debits an adjusting journal of ``branch_id`` books for ``plan``.
+
+    ``[(account, amount, counterparty_branch_id)]``: deferred income for the
+    waiting shares the branch holds itself, then one line on the inter-branch
+    account for each other branch holding a share the plan takes, naming that
+    branch. That other branch books its own side when the plan is applied
+    (:func:`apply_unwind`), so each journal touches only its own branch's
+    deferred income and revenue. A share released at the adjusting branch itself
+    books nothing here: the adjustment debits its revenue, as for any income
+    already earned.
+
+    The amounts add up to what the adjustment debits in place of revenue,
+    allowance or expense.
+    """
+    own = sum(
+        step.take for step in plan
+        if not step.after_release and not held_elsewhere(step.entry, branch_id)
+    )
+    others: dict[int, int] = defaultdict(int)
+    for step in plan:
+        if held_elsewhere(step.entry, branch_id):
+            others[step.entry.branch_id] += step.take
+    debits = []
+    if own:
+        debits.append((
+            resolve_mapped_account(entity, AccountMappingKey.DEFERRED_INCOME, label="deferred income"),
+            own, None,
+        ))
+    if others:
+        from .inter_branch import inter_branch_account
+
+        ib = inter_branch_account(entity)
+        debits.extend((ib, amount, holder) for holder, amount in sorted(others.items()) if amount)
+    return debits
+
+
+def apply_unwind(plan, *, adjustment_entry, label="", actor_user=None) -> int:
+    """Record ``plan`` against the posted adjusting journal, and book each other branch's side.
+
+    Every waiting share taken is reduced, and every share taken gets its
+    :class:`~vs_finance.models.DeferredIncomeUnwind` row. For each branch other
+    than the adjusting journal's that holds a share of the plan, an
+    ``INCOME_GIVEN_BACK`` transfer posts that branch's own journal
+    (:func:`vs_finance.inter_branch.book_income_given_back`), so the pair agrees.
+
+    Tunde's 400k term (20 January to 30 April, 100k a month) was billed at Ikeja
+    and moved to Lekki on 25 January: Lekki took February to April (300k) into
+    its deferred income and owes Ikeja 100k for January, which Ikeja still holds
+    unreleased. Lekki then cancels the whole term with a 400k credit note:
+
+    * Lekki: ``Dr deferred income 300k, Dr inter-branch [Ikeja] 100k, Cr
+      receivable 400k``. Lekki no longer owes Ikeja anything.
+    * Ikeja: ``Dr deferred income 100k, Cr inter-branch [Lekki] 100k``. Ikeja's
+      January share is cancelled and never becomes revenue.
+
+    Had January been released already, Ikeja debits the revenue account and cost
+    centre the release credited instead of deferred income. A credit note for
+    February to April only takes Lekki's own shares, and Lekki still owes Ikeja
+    the 100k January earned. ``label`` names the adjusting document on the
+    transfer, so a refusal to void the transfer alone can say what to void.
+    Returns the kobo taken.
+    """
     from .models import DeferredIncomeUnwind
 
-    for entry, take in plan:
-        entry.unwound_amount += take
-        if entry.open_amount == 0:
-            entry.status = DeferredIncomeStatus.CANCELLED
-        entry.save(update_fields=["unwound_amount", "status", "updated_at"])
+    holders: dict[int, dict] = {}
+    for step in plan:
+        entry = step.entry
+        if not step.after_release:
+            entry.unwound_amount += step.take
+            if entry.open_amount == 0:
+                entry.status = DeferredIncomeStatus.CANCELLED
+            entry.save(update_fields=["unwound_amount", "status", "updated_at"])
         DeferredIncomeUnwind.objects.create(
-            entry=entry, adjustment_entry=adjustment_entry, amount=take,
+            entry=entry, adjustment_entry=adjustment_entry, amount=step.take,
+            after_release=step.after_release,
         )
-    return sum(take for _entry, take in plan)
+        if held_elsewhere(entry, adjustment_entry.branch_id):
+            side = holders.setdefault(entry.branch_id, {"deferred": 0, "revenue": defaultdict(int)})
+            if step.after_release:
+                side["revenue"][(entry.revenue_account_id, entry.cost_center_id)] += step.take
+            else:
+                side["deferred"] += step.take
+    if holders:
+        from .inter_branch import book_income_given_back
+
+        invoice = plan[0].entry.invoice
+        for holder_id in sorted(holders):
+            book_income_given_back(
+                adjustment_entry, holder_branch_id=holder_id, invoice=invoice,
+                deferred=holders[holder_id]["deferred"], revenue=holders[holder_id]["revenue"],
+                label=label, actor_user=actor_user,
+            )
+    return sum(step.take for step in plan)
 
 
-def restore_unwinds(adjustment_entry) -> int:
+def restore_unwinds(adjustment_entry, *, actor_user=None, date=None) -> int:
     """Give back what a voided adjustment took from the schedule. Returns the kobo restored.
 
     A share still waiting gets its amount back. A share released since (it was
     only partly taken back, and the rest was released) cannot reopen, so the
-    restored amount becomes a new share of its own on the same date, released with
-    the next run.
+    restored amount becomes a new share of its own on the same date and branch,
+    released with the next run. A share taken back after its release keeps its
+    figures; the void's own reversal puts the revenue back.
+
+    Each branch's side of income given back (:func:`apply_unwind`) is voided
+    with the adjustment, dated ``date``, so the branch that held the income has
+    it again and the inter-branch pair returns to what it was.
     """
-    from .models import DeferredIncomeEntry, DeferredIncomeUnwind
+    from .models import DeferredIncomeEntry, DeferredIncomeUnwind, InterBranchTransfer
 
     restored = 0
     for unwind in (DeferredIncomeUnwind.objects.select_for_update()
                    .filter(adjustment_entry=adjustment_entry, restored=False)
                    .select_related("entry").order_by("pk")):
         entry = unwind.entry
-        if entry.status == DeferredIncomeStatus.RELEASED:
+        if unwind.after_release:
+            pass
+        elif entry.status == DeferredIncomeStatus.RELEASED:
             DeferredIncomeEntry.objects.create(
                 entity_id=entry.entity_id, branch_id=entry.branch_id,
                 invoice_id=entry.invoice_id, line_id=entry.line_id,
@@ -195,7 +373,18 @@ def restore_unwinds(adjustment_entry) -> int:
             entry.save(update_fields=["unwound_amount", "status", "updated_at"])
         unwind.restored = True
         unwind.save(update_fields=["restored", "updated_at"])
-        restored += int(unwind.amount)
+        if not unwind.after_release:
+            restored += int(unwind.amount)
+    given_back = list(InterBranchTransfer.objects.filter(
+        adjustment_entry=adjustment_entry, status=DocumentStatus.POSTED,
+    ).order_by("pk"))
+    if given_back:
+        from .inter_branch import _void_transfer_atomic
+
+        for transfer in given_back:
+            _void_transfer_atomic(
+                transfer, actor_user=actor_user, date=date, adjustment_entry=adjustment_entry,
+            )
     return restored
 
 

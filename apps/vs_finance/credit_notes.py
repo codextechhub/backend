@@ -21,7 +21,11 @@ The postings raised here:
 
 A credit note or write-off of a bill whose income is still deferred gives back the
 unreleased part first: it debits deferred income rather than revenue or expense
-for that part (:func:`vs_finance.deferred_income.plan_unwind`).
+for that part (:func:`vs_finance.deferred_income.plan_unwind`). A share held at
+another branch, which a receivable move leaves behind for a month already earned,
+is taken back from that branch through the inter-branch account, and so is the
+revenue such a share released when a credit note reaches it
+(:func:`vs_finance.deferred_income.apply_unwind`).
 
 All amounts are integer kobo; tax uses the same ``ROUND_HALF_UP`` discipline as
 :mod:`vs_finance.receivables`.
@@ -45,7 +49,7 @@ from .constants import (
     JournalSource,
 )
 from .chronology import ANY_BRANCH
-from .deferred_income import apply_unwind, plan_unwind
+from .deferred_income import apply_unwind, plan_released_takeback, plan_unwind, unwind_debits
 from .exceptions import FinanceError, PostingError
 from .money import format_naira
 from .posting import post_journal, resolve_period
@@ -245,18 +249,24 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
         # invoices (Cr AR) for the applied portion; the unapplied remainder becomes a
         # customer-credit liability (Cr 2140) so AR never carries a credit balance.  # Keep AR non-negative.
         # A bill whose income is still deferred gives back the unreleased part first.
-        unwind_plan = plan_unwind(note.invoice, note.subtotal) if note.invoice_id else []
-        to_unwind = sum(take for _entry, take in unwind_plan)
-        if to_unwind:
+        if note.invoice_id:
+            unwind_plan = plan_unwind(note.invoice, note.subtotal)
+            unwind_plan += plan_released_takeback(
+                note.invoice, note.subtotal - sum(step.take for step in unwind_plan),
+                branch_id=entry.branch_id,
+            )
+        to_unwind = 0
+        for account, amount, holder in unwind_debits(unwind_plan, entity=note.entity, branch_id=entry.branch_id):
             line_no += 1
             JournalLine.objects.create(
-                entry=entry, debit=to_unwind, credit=0, line_no=line_no,
-                account=resolve_mapped_account(
-                    note.entity, AccountMappingKey.DEFERRED_INCOME, label="deferred income"),
-                description="Deferred income given back",
+                entry=entry, debit=amount, credit=0, line_no=line_no, account=account,
+                counterparty_branch_id=holder,
+                description=("Deferred income given back" if holder is None
+                             else "Income held at another branch given back"),
             )
+            to_unwind += amount
         for (acc_id, cc_id), amount in revenue_by_key.items():  # Emit grouped revenue/return debits.
-            covered = min(amount, to_unwind)  # Already debited to deferred income.
+            covered = min(amount, to_unwind)  # Taken back from deferred income or another branch.
             to_unwind -= covered
             amount -= covered
             if amount == 0:  # Skip empty groups.
@@ -300,7 +310,10 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
 
     post_journal(entry, actor_user=actor_user)  # Validate and post note journal.
     if not is_debit and unwind_plan:
-        apply_unwind(unwind_plan, adjustment_entry=entry)
+        apply_unwind(
+            unwind_plan, adjustment_entry=entry, actor_user=actor_user,
+            label=f"credit note {note.document_number or note.pk}",
+        )
 
     note.journal = entry  # Link note to journal.
     note.status = DocumentStatus.POSTED  # Mark note posted.
@@ -784,7 +797,8 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
         tenant=invoice.entity.tenant,
     )
     unwind_plan = plan_unwind(invoice, amount)  # Income never recognised is not a loss.
-    unwound = sum(take for _entry, take in unwind_plan)
+    unwound_debits = unwind_debits(unwind_plan, entity=invoice.entity, branch_id=invoice.branch_id)
+    unwound = sum(value for _account, value, _holder in unwound_debits)
     from_allowance = min(amount - unwound, allowance_available(invoice.entity, invoice.branch_id))
     expensed = amount - unwound - from_allowance
     period = resolve_period(invoice.entity, when)  # Resolve write-off period.
@@ -794,23 +808,24 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
         narration=narration or f"Write-off {invoice.document_number or ''}".strip(),  # Narration.
         created_by=actor_user,  # Posting actor.
     )
-    debits = (
-        (unwound, lambda: resolve_mapped_account(
-            invoice.entity, AccountMappingKey.DEFERRED_INCOME, label="deferred income"),
-         f"Deferred income written off: {customer.code}"),
+    debits = [
+        *((value, lambda account=account: account, holder,
+           f"Deferred income written off: {customer.code}" if holder is None
+           else f"Income held at another branch written off: {customer.code}")
+          for account, value, holder in unwound_debits),
         (from_allowance, lambda: resolve_mapped_account(
             invoice.entity, AccountMappingKey.DOUBTFUL_DEBT_ALLOWANCE,
             label="allowance for doubtful debts"),
-         f"Allowance used: {customer.code}"),
-        (expensed, lambda: expense, f"Bad debt: {customer.code}"),
-    )
+         None, f"Allowance used: {customer.code}"),
+        (expensed, lambda: expense, None, f"Bad debt: {customer.code}"),
+    ]
     line_no = 0
-    for value, account, description in debits:
+    for value, account, holder, description in debits:
         if value:
             line_no += 1
             JournalLine.objects.create(
                 entry=entry, account=account(), debit=value, credit=0,
-                description=description, line_no=line_no,
+                counterparty_branch_id=holder, description=description, line_no=line_no,
             )
     JournalLine.objects.create(
         entry=entry, account=ar_account, debit=0, credit=amount,  # Cr receivables.
@@ -818,7 +833,10 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
     )
     post_journal(entry, actor_user=actor_user)  # Validate and post write-off journal.
     if unwind_plan:
-        apply_unwind(unwind_plan, adjustment_entry=entry)
+        apply_unwind(
+            unwind_plan, adjustment_entry=entry, actor_user=actor_user,
+            label=f"write-off of {invoice.document_number or invoice.pk}",
+        )
 
     invoice.amount_credited += amount  # Increase non-cash settlement.
     invoice.refresh_payment_status(save=False)  # Recompute invoice payment status.

@@ -30,6 +30,10 @@ The kinds, and the two journals each posts (sending branch first):
   expense`` and ``Dr expense, Cr inter-branch [A]``.
 * **Goods** (``A``'s store issues stock to ``B``'s): ``Dr inter-branch [B], Cr
   inventory`` and ``Dr inventory, Cr inter-branch [A]``, at moving-average cost.
+* **Income given back** (a credit note, concession or write-off at ``A`` takes
+  back a bill's income ``B`` holds): ``Dr inter-branch [B]`` as a line of the
+  adjusting document's own journal, and ``Dr deferred income or revenue, Cr
+  inter-branch [A]`` at ``B`` (:func:`book_income_given_back`).
 
 Both branches must be open on the transfer's date (:func:`ensure_branches_open`).
 A tenant with one branch has no other branch to transfer to, so every service
@@ -40,7 +44,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
@@ -170,8 +174,9 @@ def _post_leg(transfer, *, role, branch_id, counterparty_id, lines, source, narr
               bank_account=None, actor_user=None):
     """Post one branch's journal for ``transfer`` and record it as that branch's leg.
 
-    ``lines`` are ``(account, debit, credit, counterparty_branch_id)``; the
-    counterparty is set only on the inter-branch and held-for lines.
+    ``lines`` are ``(account, debit, credit, counterparty_branch_id)``, with an
+    optional fifth item, the cost centre id; the counterparty is set only on the
+    inter-branch and held-for lines.
     """
     from .models import InterBranchTransferLeg, JournalEntry, JournalLine
 
@@ -181,10 +186,11 @@ def _post_leg(transfer, *, role, branch_id, counterparty_id, lines, source, narr
         source=source, narration=narration[:255],
         reference=transfer.document_number, created_by=actor_user,
     )
-    for number, (account, debit, credit, counterparty) in enumerate(lines, start=1):
+    for number, (account, debit, credit, counterparty, *rest) in enumerate(lines, start=1):
         JournalLine.objects.create(
             entry=entry, account=account, debit=debit, credit=credit,
-            counterparty_branch_id=counterparty, description=narration[:255], line_no=number,
+            counterparty_branch_id=counterparty, cost_center_id=rest[0] if rest else None,
+            description=narration[:255], line_no=number,
         )
     post_journal(entry, actor_user=actor_user)
     InterBranchTransferLeg.objects.create(
@@ -635,7 +641,8 @@ def void_inter_branch_transfer(transfer, *, actor_user=None, date=None):
 
 
 @transaction.atomic
-def _void_transfer_atomic(transfer, *, actor_user=None, date=None, recharge=None):
+def _void_transfer_atomic(transfer, *, actor_user=None, date=None, recharge=None,
+                          adjustment_entry=None):
     """Reverse both branches' journals and mark the transfer REVERSED.
 
     * A cash transfer or forwarded receipt is refused once a bank statement line
@@ -651,6 +658,11 @@ def _void_transfer_atomic(transfer, *, actor_user=None, date=None, recharge=None
       restored to its receipts and credit notes.
     * A recharge share is voided only with its recharge, and goods only by sending
       them back: the stock has moved, and a reversal would not move it back.
+    * Income given back is voided only with the credit note or concession that
+      gave it back (``adjustment_entry``, from
+      :func:`vs_finance.deferred_income.restore_unwinds`): voiding it alone would
+      put the income back at the branch that held it while the document still
+      took it from the customer.
     """
     from .banking import journal_is_reconciled
     from .models import InterBranchTransfer
@@ -671,6 +683,12 @@ def _void_transfer_atomic(transfer, *, actor_user=None, date=None, recharge=None
         raise InterBranchError(
             f"Transfer {transfer.document_number} is a share of recharge "
             f"{transfer.recharge.document_number}; void the recharge instead.",
+        )
+    if transfer.kind == InterBranchTransferKind.INCOME_GIVEN_BACK and (
+            adjustment_entry is None or adjustment_entry.pk != transfer.adjustment_entry_id):
+        raise InterBranchError(
+            f"Transfer {transfer.document_number} gives back income taken by "
+            f"{transfer.reference or 'an adjusting document'}; void that document instead.",
         )
     legs = list(transfer.legs.select_related("journal").order_by("role"))
     journals = [leg.journal for leg in legs if leg.journal_id]
@@ -802,19 +820,14 @@ def transfer_open_receivables(customer, from_branch, to_branch, actor, *, move_d
 
     Runs inside the caller's transaction and locks what it moves in id order.
     Idempotent per move: a second call finds nothing at ``from_branch`` and
-    returns an empty :class:`ReceivableMove`; a ``move_key`` already used
-    returns the move it named. The customer's own branch is not touched:
-    whoever moves the customer does that.
+    returns an empty :class:`ReceivableMove`; a ``move_key`` a standing move
+    already used returns that move (:func:`_live_move`), even for a retry that
+    raced it. A voided move gives its key up: Tunde's move to Lekki is voided,
+    his account is put back at Ikeja, his bill voided and the fee run redone,
+    and the run's same key then moves his new bill again rather than answering
+    with the voided move. The customer's own branch is not touched: whoever
+    moves the customer does that.
     """
-    from .chronology import credit_lots, plan_credit_draw
-    from .constants import CREDIT_TRANSFER_METHOD, CreditNoteKind
-    from .constants import ReceivableMoveItemKind as Kind
-    from .document_settings import resolve_finance_document_settings
-    from .models import (
-        CreditNote, Invoice, InterBranchTransfer, Payment, PaymentPlan, ReceivableTransferItem,
-    )
-    from .receivables import _post_payment_atomic, customer_refund_available_balance
-
     entity = customer.entity
     require_several_branches(entity)
     source = tenant_branch(entity, from_branch, field="from_branch")
@@ -822,15 +835,52 @@ def transfer_open_receivables(customer, from_branch, to_branch, actor, *, move_d
     if source.pk == target.pk:
         raise InterBranchError("The balance is already at that branch.", field="to_branch")
     key = (move_key or "")[:96]
-    if key:
-        done = InterBranchTransfer.objects.filter(entity=entity, move_key=key).first()
-        if done is not None:
-            return _move_result(done)
+    done = _live_move(entity, key)
+    if done is not None:
+        return _move_result(done)
     receivable = customer.receivable_account
     if receivable is None:
         raise InterBranchError(f"Customer {customer.code} has no receivable account.")
     on = move_date or branch_today(entity.tenant, target.pk)
 
+    try:
+        return _move_open_receivables(
+            customer, source, target, actor, on=on, key=key, purpose=purpose, receivable=receivable)
+    except IntegrityError:
+        done = _live_move(entity, key)
+        if done is None:
+            raise
+        return _move_result(done)
+
+
+def _live_move(entity, key):
+    """The standing (not voided) move ``key`` names, or ``None``. A blank key names none."""
+    from .models import InterBranchTransfer
+
+    if not key:
+        return None
+    return (
+        InterBranchTransfer.objects
+        .filter(entity=entity, move_key=key).exclude(status=DocumentStatus.REVERSED).first()
+    )
+
+
+def _move_open_receivables(customer, source, target, actor, *, on, key, purpose, receivable):
+    """The work of :func:`transfer_open_receivables`, in one savepoint.
+
+    Two retries of one key race safely. The second waits on the first's locks;
+    once they are released it finds the first's move and returns it. Where
+    nothing it locks overlaps, the live-key unique index refuses its insert, the
+    savepoint rolls its writes back, and the caller returns the first's move.
+    """
+    from .chronology import credit_lots, plan_credit_draw
+    from .constants import CREDIT_TRANSFER_METHOD, CreditNoteKind
+    from .constants import ReceivableMoveItemKind as Kind
+    from .document_settings import resolve_finance_document_settings
+    from .models import CreditNote, Invoice, Payment, PaymentPlan, ReceivableTransferItem
+    from .receivables import _post_payment_atomic, customer_refund_available_balance
+
+    entity = customer.entity
     with transaction.atomic():
         invoices = list(
             Invoice.objects.select_for_update(of=("self",))
@@ -838,6 +888,9 @@ def transfer_open_receivables(customer, from_branch, to_branch, actor, *, move_d
                     status=DocumentStatus.POSTED)
             .order_by("pk")
         )
+        done = _live_move(entity, key)  # A retry that waited on these locks.
+        if done is not None:
+            return _move_result(done)
         unearned = {}
         for entry in _unearned_entries([i.pk for i in invoices], source.pk, on).select_for_update():
             unearned[entry.invoice_id] = unearned.get(entry.invoice_id, 0) + entry.open_amount
@@ -1059,6 +1112,79 @@ def moved_document_refusal(document):
         f"{document.document_number} moved to {where} with the customer's balance "
         f"({row.transfer.document_number}). Void that move first, or correct it at {where}."
     )
+
+
+def book_income_given_back(adjustment_entry, *, holder_branch_id, invoice, deferred=0, revenue=None,
+                           label="", actor_user=None):
+    """Book the holding branch's side of a bill's income an adjustment took back from it.
+
+    A receivable move leaves a month already earned at the old branch while the
+    bill and the months to come move on. A credit note, concession or write-off
+    raised at the new branch that reaches that month cannot debit the new
+    branch's deferred income, which never held it. Its own journal debits the
+    inter-branch account naming the holding branch instead
+    (:func:`vs_finance.deferred_income.unwind_debits`), and this posts the
+    holding branch's journal: ``Dr deferred income`` for the waiting shares and
+    ``Dr revenue`` (per account and cost centre the release credited) for shares
+    already released, ``Cr inter-branch [adjusting branch]`` for the total.
+
+    Tunde's 400k term moved from Ikeja to Lekki on 25 January, leaving January's
+    100k unreleased at Ikeja and Lekki owing Ikeja 100k. Lekki's 400k credit note
+    debits ``inter-branch [Ikeja] 100k`` among its lines, and Ikeja books ``Dr
+    deferred income 100k, Cr inter-branch [Lekki] 100k``: Ikeja keeps no January
+    income, Lekki owes it nothing, and the pair agrees.
+
+    One ``INCOME_GIVEN_BACK`` transfer records it, from the adjusting branch to
+    the holding branch, linked to the adjusting journal. The adjusting branch's
+    leg carries no journal, because its side is a line of the adjusting
+    document's own journal. Voided only with that document
+    (:func:`vs_finance.deferred_income.restore_unwinds`). Returns the transfer,
+    or ``None`` when nothing is given back.
+    """
+    from .models import Account, InterBranchTransferLeg
+
+    entity = adjustment_entry.entity
+    revenue = {key: int(value) for key, value in (revenue or {}).items() if value}
+    deferred = int(deferred or 0)
+    amount = deferred + sum(revenue.values())
+    if amount <= 0:
+        return None
+    giver = tenant_branch(entity, adjustment_entry.branch_id)
+    holder = tenant_branch(entity, holder_branch_id)
+    label = (label or f"journal {adjustment_entry.document_number or adjustment_entry.pk}")[:64]
+    transfer = _new_transfer(
+        entity, kind=InterBranchTransferKind.INCOME_GIVEN_BACK, from_branch_id=giver.pk,
+        to_branch_id=holder.pk, amount=amount, transfer_date=adjustment_entry.date,
+        purpose=f"Income of invoice {invoice.document_number} held at {holder.name}, "
+                f"taken back by {label} at {giver.name}",
+        actor_user=actor_user, customer_id=invoice.customer_id,
+        adjustment_entry=adjustment_entry, reference=label,
+    )
+    InterBranchTransferLeg.objects.create(
+        transfer=transfer, role=InterBranchLegRole.SENDING, branch_id=giver.pk,
+        counterparty_branch_id=holder.pk, journal=None,
+    )
+    accounts = Account.objects.in_bulk([account_id for account_id, _ in revenue])
+    lines = []
+    if deferred:
+        lines.append((resolve_mapped_account(entity, AccountMappingKey.DEFERRED_INCOME), deferred, 0, None))
+    for (account_id, cost_center_id), value in sorted(revenue.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0)):
+        lines.append((accounts[account_id], value, 0, None, cost_center_id))
+    lines.append((inter_branch_account(entity), 0, amount, giver.pk))
+    _post_leg(
+        transfer, role=InterBranchLegRole.RECEIVING, branch_id=holder.pk, counterparty_id=giver.pk,
+        source=JournalSource.SALES, actor_user=actor_user, lines=lines,
+        narration=f"Income of invoice {invoice.document_number} given back for {label} at {giver.name}",
+    )
+    _finish(transfer)
+    _audit_both(
+        transfer, FinanceAuditAction.INCOME_GIVEN_BACK,
+        f"{label} at {giver.name} took back {format_naira(amount)} of invoice "
+        f"{invoice.document_number}'s income held at {holder.name}.",
+        actor_user=actor_user, invoice_id=invoice.pk, adjustment_journal_id=adjustment_entry.pk,
+        deferred=deferred, revenue=sum(revenue.values()),
+    )
+    return transfer
 
 
 # --------------------------------------------------------------------------- #

@@ -407,21 +407,21 @@ def _post_concession_atomic(concession, *, actor_user=None):
         narration=concession.reason or f"{label} {concession.document_number or ''}".strip(),  # Narration from reason/kind.
         reference=concession.reference, created_by=actor_user,  # External reference and actor.
     )
-    from .account_mappings import resolve_mapped_account
-    from .constants import AccountMappingKey
-    from .deferred_income import apply_unwind, plan_unwind
+    from .deferred_income import apply_unwind, plan_unwind, unwind_debits
 
     unwind_plan = plan_unwind(invoice, amount)  # Income not yet recognised is reduced first.
-    unwound = sum(take for _entry, take in unwind_plan)
+    unwound = 0
     line_no = 0
-    if unwound:
+    for account, value, holder in unwind_debits(unwind_plan, entity=concession.entity,
+                                                branch_id=entry.branch_id):
         line_no += 1
         JournalLine.objects.create(
-            entry=entry, debit=unwound, credit=0, line_no=line_no,
-            account=resolve_mapped_account(
-                concession.entity, AccountMappingKey.DEFERRED_INCOME, label="deferred income"),
-            description=f"{label} of deferred income: {customer.code}",
+            entry=entry, debit=value, credit=0, line_no=line_no, account=account,
+            counterparty_branch_id=holder,
+            description=(f"{label} of deferred income: {customer.code}" if holder is None
+                         else f"{label} of income held at another branch: {customer.code}"),
         )
+        unwound += value
     if amount - unwound:
         line_no += 1
         JournalLine.objects.create(
@@ -434,7 +434,10 @@ def _post_concession_atomic(concession, *, actor_user=None):
     )
     post_journal(entry, actor_user=actor_user)  # Validate and post concession journal.
     if unwind_plan:
-        apply_unwind(unwind_plan, adjustment_entry=entry)
+        apply_unwind(
+            unwind_plan, adjustment_entry=entry, actor_user=actor_user,
+            label=f"{label.lower()} {concession.document_number or concession.pk}",
+        )
 
     concession.allowance_account = allowance  # Persist account used.
     concession.journal = entry  # Link concession to journal.

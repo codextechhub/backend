@@ -5,7 +5,9 @@ Corona runs Ikeja, Lekki and Yaba. Lekki is short for diesel and asks Ikeja for
 Lekki fees into Ikeja's account, and Ikeja forwards it. Ikeja pays the 3m audit
 fee and recharges it by pupil numbers. Tunde moves from Ikeja to Lekki owing
 170k, and his whole position moves with him: his debit note, his unapplied
-credit and the part of his term not yet taught. Ikeja's central store sends Lekki textbooks.
+credit and the part of his term not yet taught. When Lekki later cancels the
+term, January, which Ikeja earned and kept, is taken back from Ikeja rather than
+out of Lekki's books. Ikeja's central store sends Lekki textbooks.
 
 Every one of those posts two journals, one per branch, so no entry ever mixes
 branches, and the inter-branch account nets to zero across the school. Each
@@ -645,6 +647,52 @@ class ReceivableMoveTests(_InterBranchFixture):
         audited = FinanceAuditLog.objects.filter(action="RECEIVABLE_TRANSFERRED")
         self.assertEqual(set(audited.values_list("branch_id", flat=True)), {self.ikeja.pk, self.lekki.pk})
         self.assertEqual({row.metadata["amount"] for row in audited}, {170_000})
+        # Both sides hold the same two-party figures, and name no third branch.
+        figures = {(row.metadata["owed"], row.metadata["credit"], row.metadata["deferred"],
+                    row.metadata["net"], row.metadata["from_branch_id"], row.metadata["to_branch_id"])
+                   for row in audited}
+        self.assertEqual(figures, {(170_000, 0, 0, 170_000, self.ikeja.pk, self.lekki.pk)})
+
+    def test_a_voided_move_gives_its_key_up_and_the_redone_run_moves_the_new_bill(self):
+        key = f"fee-run:F1:2026-T1:C{self.tunde.pk}:B{self.ikeja.pk}-B{self.lekki.pk}"
+        first = self.move(move_key=key)
+        void_inter_branch_transfer(InterBranchTransfer.objects.get(pk=first.transfer_id), date=JAN_20)
+        void_invoice(self.first, date=JAN_20)
+        rebilled = self.posted_invoice(self.tunde, self.ikeja)
+
+        again = self.move(move_key=key)
+        retried = self.move(move_key=key)
+
+        self.assertNotEqual(again.transfer_id, first.transfer_id)
+        self.assertEqual(set(again.invoice_ids), {rebilled.pk, self.second.pk})
+        self.assertEqual(retried, again)
+        rebilled.refresh_from_db()
+        self.assertEqual(rebilled.branch_id, self.lekki.pk)
+        self.assertEqual(net(self.ar, self.ikeja), 0)
+        self.assertEqual(net(self.ar, self.lekki), 170_000)
+
+    def test_a_retry_that_raced_the_move_returns_it_and_moves_nothing_more(self):
+        from unittest import mock
+
+        from . import inter_branch
+
+        key = "fee-run:F1:2026-T1:race"
+        first = self.move(move_key=key)
+        later = self.posted_invoice(self.tunde, self.ikeja)
+        real, calls = inter_branch._live_move, []
+
+        def unseen_until_the_insert(entity, move_key):
+            calls.append(move_key)
+            return None if len(calls) <= 2 else real(entity, move_key)
+
+        with mock.patch.object(inter_branch, "_live_move", side_effect=unseen_until_the_insert):
+            raced = self.move(move_key=key)
+
+        self.assertEqual(raced, first)
+        self.assertEqual(len(calls), 3)
+        later.refresh_from_db()
+        self.assertEqual(later.branch_id, self.ikeja.pk)
+        self.assertEqual(InterBranchTransfer.objects.filter(move_key=key).count(), 1)
 
     def test_a_second_call_for_the_same_move_moves_nothing(self):
         first = self.move(move_key="move-1")
@@ -767,31 +815,49 @@ class WholeBalanceMoveTests(_InterBranchFixture):
         self.assertEqual(net(self.ib), 0)
 
 
-class UnearnedIncomeMoveTests(_InterBranchFixture):
-    """Tunde's 400k second term runs 20 January to 30 April; he moves on 25 January."""
+class _TermFixture(_InterBranchFixture):
+    """Tunde's 400k second term runs 20 January to 30 April, billed at Ikeja: 100k a month.
+
+    February to April are open at Corona and at Single Site, whose own pupil Kemi
+    is billed the same term at its one branch.
+    """
 
     @classmethod
     def setUpTestData(cls):
         super().setUpTestData()
-        year = FiscalYear.objects.get(entity=cls.books)
         FiscalPeriod.objects.filter(entity=cls.books, period_no=2).update(status=PeriodStatus.OPEN)
-        for number, month in ((3, 3), (4, 4)):
-            FiscalPeriod.objects.create(
-                entity=cls.books, fiscal_year=year, period_no=number, name=f"M{month} 2026",
-                start_date=datetime.date(2026, month, 1),
-                end_date=datetime.date(2026, month, 30 if month == 4 else 31),
-            )
+        for books in (cls.books, cls.solo_books):
+            year = FiscalYear.objects.get(entity=books)
+            for month in (2, 3, 4) if books == cls.solo_books else (3, 4):
+                FiscalPeriod.objects.create(
+                    entity=books, fiscal_year=year, period_no=month, name=f"M{month} 2026",
+                    start_date=datetime.date(2026, month, 1),
+                    end_date=datetime.date(2026, month, {2: 28, 4: 30}.get(month, 31)),
+                )
+        cls.deferred = Account.objects.get(entity=cls.books, code="2160")
+        cls.revenue = Account.objects.get(entity=cls.books, code="4100")
         cls.tunde = cls.customer(cls.books, "TUNDE", cls.ikeja)
-        cls.term = Invoice.objects.create(
-            entity=cls.books, customer=cls.tunde, branch=cls.ikeja,
+        cls.term = cls.term_invoice(cls.books, cls.tunde, cls.ikeja)
+        cls.kemi = cls.customer(cls.solo_books, "KEMI", cls.solo_main)
+        cls.solo_term = cls.term_invoice(cls.solo_books, cls.kemi, cls.solo_main)
+
+    @classmethod
+    def term_invoice(cls, books, customer, branch):
+        invoice = Invoice.objects.create(
+            entity=books, customer=customer, branch=branch,
             invoice_date=datetime.date(2026, 1, 10), due_date=datetime.date(2026, 1, 25),
         )
         InvoiceLine.objects.create(
-            invoice=cls.term, line_no=1, quantity=1, unit_price=400_000,
-            revenue_account=Account.objects.get(entity=cls.books, code="4100"),
+            invoice=invoice, line_no=1, quantity=1, unit_price=400_000,
+            revenue_account=Account.objects.get(entity=books, code="4100"),
             service_start=datetime.date(2026, 1, 20), service_end=datetime.date(2026, 4, 30),
         )
-        post_invoice(cls.term)
+        post_invoice(invoice)
+        return invoice
+
+
+class UnearnedIncomeMoveTests(_TermFixture):
+    """Tunde moves on 25 January, partway through his term."""
 
     def test_income_not_yet_earned_moves_and_is_recognised_at_the_new_branch(self):
         from .deferred_income import release_deferred_income
@@ -810,6 +876,196 @@ class UnearnedIncomeMoveTests(_InterBranchFixture):
         self.assertEqual(net(revenue, self.lekki), -200_000)
         self.assertEqual(net(deferred, self.ikeja), 0)
         self.assertEqual(net(deferred, self.lekki), -100_000)
+
+
+JAN_28 = datetime.date(2026, 1, 28)
+FEB_3 = datetime.date(2026, 2, 3)
+APR_30 = datetime.date(2026, 4, 30)
+
+
+class IncomeGivenBackTests(_TermFixture):
+    """Tunde moves to Lekki on 25 January; Lekki then credits, concedes or writes off his term.
+
+    The move leaves January's 100k at Ikeja, which earned it, and Lekki owes
+    Ikeja that 100k. Whatever Lekki takes back of January is taken from Ikeja,
+    through the inter-branch account, so neither branch's books carry the
+    other's income and the pair still agrees.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.moved = transfer_open_receivables(
+            cls.tunde, cls.ikeja, cls.lekki, None, move_date=datetime.date(2026, 1, 25))
+
+    def credit(self, amount, on, *, invoice=None, branch=None):
+        from .credit_notes import post_credit_note
+
+        invoice = Invoice.objects.get(pk=(invoice or self.term).pk)
+        note = CreditNote.objects.create(
+            entity=invoice.entity, customer=invoice.customer, branch=branch or self.lekki,
+            kind=CreditNoteKind.CREDIT, note_date=on, invoice=invoice, reason="Term cancelled",
+        )
+        CreditNoteLine.objects.create(
+            note=note, line_no=1, quantity=1, unit_price=amount,
+            revenue_account=Account.objects.get(entity=invoice.entity, code="4100"),
+        )
+        post_credit_note(note)
+        note.refresh_from_db()
+        return note
+
+    def given_back(self):
+        return InterBranchTransfer.objects.filter(kind=InterBranchTransferKind.INCOME_GIVEN_BACK)
+
+    def assert_pairs_agree(self, period_no=4):
+        from .inter_branch import inter_branch_close_check
+
+        period = FiscalPeriod.objects.get(entity=self.books, period_no=period_no)
+        check = inter_branch_close_check(self.books, period)
+        self.assertTrue(check.passed, check.detail)
+        self.assertEqual(net(self.ib), 0)
+        self.assertEqual(net(self.ib, self.ikeja, self.lekki), -net(self.ib, self.lekki, self.ikeja))
+
+    def assert_branch_books(self, *, deferred, revenue, lekki_owes_ikeja):
+        """``deferred`` and ``revenue`` are ``(Ikeja, Lekki)``, as debits less credits."""
+        self.assertEqual((net(self.deferred, self.ikeja), net(self.deferred, self.lekki)), deferred)
+        self.assertEqual((net(self.revenue, self.ikeja), net(self.revenue, self.lekki)), revenue)
+        self.assertEqual(net(self.ib, self.ikeja, self.lekki), lekki_owes_ikeja)
+        self.assert_pairs_agree()
+
+    def test_cancelling_the_whole_term_before_january_is_released_takes_january_back_from_ikeja(self):
+        from .deferred_income import release_deferred_income
+        from .inter_branch import pair_balances
+
+        note = self.credit(400_000, JAN_28)
+        released = release_deferred_income(self.books, up_to=APR_30)
+
+        self.assertEqual(released, [])
+        self.assert_branch_books(deferred=(0, 0), revenue=(0, 0), lekki_owes_ikeja=0)
+        self.assertEqual(net(self.ar, self.lekki), 0)
+        self.assertEqual(pair_balances(self.books)["pairs"], [])
+        lines = {(line.account.code, line.counterparty_branch_id): line.debit
+                 for line in note.journal.lines.filter(debit__gt=0)}
+        self.assertEqual(lines, {("2160", None): 300_000, ("1260", self.ikeja.pk): 100_000})
+        (transfer,) = self.given_back()
+        self.assertEqual((transfer.branch_id, transfer.to_branch_id, transfer.amount),
+                         (self.lekki.pk, self.ikeja.pk, 100_000))
+        legs = {leg.role: leg for leg in transfer.legs.all()}
+        self.assertIsNone(legs[InterBranchLegRole.SENDING].journal_id)
+        ikeja_side = legs[InterBranchLegRole.RECEIVING].journal
+        self.assertEqual(ikeja_side.branch_id, self.ikeja.pk)
+        self.assertEqual(
+            sorted((line.account.code, line.debit, line.credit, line.counterparty_branch_id)
+                   for line in ikeja_side.lines.all()),
+            [("1260", 0, 100_000, self.lekki.pk), ("2160", 100_000, 0, None)],
+        )
+
+    def test_crediting_february_to_april_leaves_january_earned_at_ikeja(self):
+        from .deferred_income import release_deferred_income
+
+        self.credit(300_000, JAN_28)
+
+        self.assert_branch_books(deferred=(-100_000, 0), revenue=(0, 0), lekki_owes_ikeja=100_000)
+        release_deferred_income(self.books, up_to=APR_30)
+        self.assert_branch_books(deferred=(0, 0), revenue=(-100_000, 0), lekki_owes_ikeja=100_000)
+        self.assertFalse(self.given_back().exists())
+        self.assertEqual(net(self.ar, self.lekki), 100_000)
+
+    def test_cancelling_after_january_was_released_takes_the_revenue_back_from_ikeja(self):
+        from .deferred_income import release_deferred_income
+
+        release_deferred_income(self.books, up_to=datetime.date(2026, 1, 31))
+        self.credit(400_000, FEB_3)
+
+        self.assert_branch_books(deferred=(0, 0), revenue=(0, 0), lekki_owes_ikeja=0)
+        (transfer,) = self.given_back()
+        ikeja_side = transfer.legs.get(role=InterBranchLegRole.RECEIVING).journal
+        self.assertEqual(
+            sorted((line.account.code, line.debit, line.credit) for line in ikeja_side.lines.all()),
+            [("1260", 0, 100_000), ("4100", 100_000, 0)],
+        )
+
+    def test_two_credit_notes_take_released_months_latest_first_and_never_twice(self):
+        from .deferred_income import release_deferred_income
+
+        release_deferred_income(self.books, up_to=datetime.date(2026, 2, 28))
+        self.credit(250_000, datetime.date(2026, 3, 2))
+
+        self.assert_branch_books(deferred=(0, 0), revenue=(-100_000, -50_000), lekki_owes_ikeja=100_000)
+        self.credit(150_000, datetime.date(2026, 3, 3))
+        self.assert_branch_books(deferred=(0, 0), revenue=(0, 0), lekki_owes_ikeja=0)
+
+    def test_voiding_the_credit_note_gives_ikeja_january_back(self):
+        from .deferred_income import release_deferred_income
+        from .voids import void_credit_note
+
+        note = self.credit(400_000, JAN_28)
+
+        void_credit_note(note, date=datetime.date(2026, 1, 29))
+
+        (transfer,) = self.given_back()
+        self.assertEqual(transfer.status, DocumentStatus.REVERSED)
+        self.assert_branch_books(deferred=(-100_000, -300_000), revenue=(0, 0), lekki_owes_ikeja=100_000)
+        release_deferred_income(self.books, up_to=APR_30)
+        self.assert_branch_books(deferred=(0, 0), revenue=(-100_000, -300_000), lekki_owes_ikeja=100_000)
+
+    def test_the_move_and_the_income_given_back_are_voided_only_through_the_credit_note(self):
+        note = self.credit(400_000, JAN_28)
+        (transfer,) = self.given_back()
+
+        with self.assertRaisesMessage(InterBranchError, "cannot be undone"):
+            void_inter_branch_transfer(InterBranchTransfer.objects.get(pk=self.moved.transfer_id))
+        with self.assertRaisesMessage(InterBranchError, f"credit note {note.document_number}"):
+            void_inter_branch_transfer(transfer)
+        with self.assertRaisesMessage(PostingError, "cannot be reversed on its own"):
+            from .posting import reverse_journal
+
+            reverse_journal(transfer.legs.get(role=InterBranchLegRole.RECEIVING).journal)
+
+    def test_a_write_off_at_lekki_gives_back_ikejas_january_rather_than_expensing_it(self):
+        from .credit_notes import write_off_invoice
+
+        write_off_invoice(Invoice.objects.get(pk=self.term.pk), write_off_date=JAN_28)
+
+        self.assert_branch_books(deferred=(0, 0), revenue=(0, 0), lekki_owes_ikeja=0)
+        self.assertEqual(net(Account.objects.get(entity=self.books, code="5350")), 0)
+        self.assertEqual(self.given_back().get().amount, 100_000)
+
+    def test_a_concession_at_lekki_gives_back_ikejas_january_and_its_void_restores_it(self):
+        from .installments import post_concession
+        from .models import Concession
+        from .voids import void_concession
+
+        concession = Concession.objects.create(
+            entity=self.books, customer=self.tunde, invoice=Invoice.objects.get(pk=self.term.pk),
+            branch=self.lekki, concession_date=JAN_28, amount=400_000,
+        )
+        post_concession(concession)
+
+        self.assert_branch_books(deferred=(0, 0), revenue=(0, 0), lekki_owes_ikeja=0)
+        void_concession(concession, date=JAN_28)
+        self.assert_branch_books(deferred=(-100_000, -300_000), revenue=(0, 0), lekki_owes_ikeja=100_000)
+        self.assertEqual(self.given_back().get().status, DocumentStatus.REVERSED)
+
+    def test_a_single_branch_school_credits_its_whole_term_as_before(self):
+        from .deferred_income import release_deferred_income
+        from .models import DeferredIncomeUnwind
+
+        deferred = Account.objects.get(entity=self.solo_books, code="2160")
+        revenue = Account.objects.get(entity=self.solo_books, code="4100")
+        release_deferred_income(self.solo_books, up_to=datetime.date(2026, 1, 31))
+
+        note = self.credit(400_000, FEB_3, invoice=self.solo_term, branch=self.solo_main)
+
+        self.assertEqual(
+            sorted((line.account.code, line.debit, line.counterparty_branch_id)
+                   for line in note.journal.lines.filter(debit__gt=0)),
+            [("2160", 300_000, None), ("4100", 100_000, None)],
+        )
+        self.assertEqual((net(deferred), net(revenue)), (0, 0))
+        self.assertFalse(ledger_lines(self.solo_books).filter(account__code="1260").exists())
+        self.assertFalse(InterBranchTransfer.objects.filter(entity=self.solo_books).exists())
+        self.assertFalse(DeferredIncomeUnwind.objects.filter(after_release=True).exists())
 
 
 class InterBranchCloseCheckTests(_InterBranchFixture):

@@ -775,6 +775,7 @@ class FinanceAuditAction(models.TextChoices):
     RECHARGE_POSTED = "RECHARGE_POSTED", "Shared cost recharged to other branches"
     RECHARGE_VOIDED = "RECHARGE_VOIDED", "Shared cost recharge voided"
     RECEIVABLE_TRANSFERRED = "RECEIVABLE_TRANSFERRED", "Open receivable moved to another branch"
+    INCOME_GIVEN_BACK = "INCOME_GIVEN_BACK", "Income held at another branch given back"
     SHARED_COST_RULE_CHANGED = "SHARED_COST_RULE_CHANGED", "Shared cost rule changed"
     STOCK_TRANSFERRED = "STOCK_TRANSFERRED", "Stock moved between stores"
 
@@ -785,12 +786,18 @@ class InterBranchTransferKind(models.TextChoices):
     Only CASH and FORWARDED_RECEIPT move money between banks. The others move a
     balance and leave cash where it is; the owing branch settles later with a
     cash transfer the other way.
+
+    INCOME_GIVEN_BACK is booked by a credit note, concession or write-off that
+    takes back a bill's income held at another branch
+    (:func:`vs_finance.inter_branch.book_income_given_back`), and is voided only
+    with that document.
     """
     CASH = "CASH", "Cash"
     FORWARDED_RECEIPT = "FORWARDED_RECEIPT", "Forwarded receipt"
     RECEIVABLE = "RECEIVABLE", "Receivable"
     RECHARGE = "RECHARGE", "Recharge"
     GOODS = "GOODS", "Goods"
+    INCOME_GIVEN_BACK = "INCOME_GIVEN_BACK", "Income given back"
 
 
 class InterBranchLegRole(models.TextChoices):

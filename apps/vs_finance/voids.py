@@ -369,7 +369,7 @@ def _void_credit_note_atomic(note, *, actor_user=None, date=None):
     from .deferred_income import restore_unwinds
     from .deposits import restore_released_deposits
 
-    restore_unwinds(note.journal)  # Deferred income the note took back waits again.
+    restore_unwinds(note.journal, actor_user=actor_user, date=date)  # What the note took back waits again.
     restore_released_deposits(note)  # Deposits the note returned are held again.
 
     for allocation in allocations:
@@ -456,7 +456,7 @@ def _void_concession_atomic(concession, *, actor_user=None, date=None):
     reversal = _reverse(concession.journal, concession, actor_user=actor_user, date=date)
     from .deferred_income import restore_unwinds
 
-    restore_unwinds(concession.journal)  # Deferred income the concession took back waits again.
+    restore_unwinds(concession.journal, actor_user=actor_user, date=date)  # What it took back waits again.
     invoice.amount_credited = max(0, invoice.amount_credited - concession.amount)
     invoice.refresh_payment_status(save=False)
     invoice.save(update_fields=["amount_credited", "payment_status", "updated_at"])

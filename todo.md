@@ -856,6 +856,35 @@ Verified: vs_finance.tests_inter_branch 47 OK, vs_finance 1623 OK, vs_procuremen
 OK, core 193 OK (on ef3f2769); with 20fa340c on top, tests_inter_branch,
 tests_payroll_roster_rules and tests_ledger_lock 95 OK. The full suite was not run.
 
+### D103. Income given back across branches, and a voided move frees its key (hash pending, 2026-10-01)
+MODULES: M19 finance and accounting (deferred income, inter-branch), M20
+adjustments and concessions (credit notes, concessions, write-offs), M17 billing
+only where it describes a moved bill being credited, MRD.
+MUST SAY:
+- A credit note, concession or write-off at the branch now holding a moved bill
+  takes back an unreleased or released income share held at another branch from
+  that branch, through the inter-branch account: the document's journal debits
+  INTER_BRANCH naming the holding branch, and an INCOME_GIVEN_BACK transfer posts
+  the holding branch's own journal (Dr deferred income, or revenue for a share
+  already released; Cr INTER_BRANCH naming the other branch). Voiding the
+  adjustment restores the shares and voids that transfer; it cannot be voided on
+  its own. A branch-bound bursar's adjustment can therefore post in the other
+  branch's books (owner decision: otherwise the bill cannot be corrected).
+- Tunde: 400k term 20 Jan to 30 Apr moved Ikeja to Lekki on 25 Jan. A full credit
+  at Lekki leaves deferred income and revenue 0 at both and nothing owed between
+  them, whether or not January had been released.
+- A receivable move's key is unique only among moves still standing, so a voided
+  move no longer answers for it and a redone fee run moves the new bill.
+- Migration vs_finance 0054.
+OWNER DECISIONS OF 2026-10-01, being built: a credit on ANY moved bill (not only a
+deferred one) takes its revenue and output tax back from the branch that booked
+it; and a write-off of a moved debt is always borne by the branch holding the debt
+(the earned share at the old branch stays earned and owed, whatever the release
+timing).
+Verified: vs_finance.tests_inter_branch 58 OK, vs_finance.tests_accruals 42 OK,
+vs_finance 1643 OK, schools.core.fal 293 OK, vs_payments 403 OK. The full suite
+was not run.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

@@ -190,12 +190,25 @@ class DeferredIncomeEntry(TimeStampedModel):
 
 
 class DeferredIncomeUnwind(TimeStampedModel):
-    """Deferred income a credit note, concession or write-off took back before release.
+    """Deferred income a credit note, concession or write-off took back.
 
     ``adjustment_entry`` is the adjusting document's own journal, which debited the
     deferred-income liability for ``amount`` instead of revenue. Voiding that
     document reverses its journal and restores the amount to the schedule
     (``restored``), so the income is released again when its month comes.
+
+    A share held at a branch other than the adjusting journal's is taken back
+    from the branch holding it: the adjusting journal debits the inter-branch
+    account naming that branch instead, and the holding branch books its own side
+    through an ``INCOME_GIVEN_BACK`` transfer
+    (:func:`vs_finance.inter_branch.book_income_given_back`).
+
+    ``after_release`` marks a share a credit note took back after its release, on
+    a bill whose shares sit at more than one branch
+    (:func:`vs_finance.deferred_income.plan_released_takeback`). Its revenue,
+    not the liability, is what was debited, so the share's own figures are left
+    alone; the row only records how much of the released share is already taken
+    back, so a later credit note does not take it twice.
     """
 
     entry = models.ForeignKey(
@@ -206,6 +219,9 @@ class DeferredIncomeUnwind(TimeStampedModel):
     )
     amount = MoneyField(help_text="Deferred income taken back, in kobo.")
     restored = models.BooleanField(default=False)
+    after_release = models.BooleanField(
+        default=False, help_text="Taken back out of revenue the share had already released.",
+    )
 
     class Meta:
         indexes = [models.Index(fields=["adjustment_entry", "restored"])]

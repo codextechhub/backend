@@ -254,7 +254,13 @@ class InterBranchTransfer(FinanceDocument):
     :class:`ReceivableTransferItem` rows and journals say what each part was and
     who owes whom.
 
-    Every kind posts two journals, one per branch, through its two
+    Income given back is booked by a credit note, concession or write-off
+    (``adjustment_entry``) that takes back a bill's income held at another
+    branch. ``branch`` is the adjusting document's branch, whose side is a line
+    of that document's own journal, so its leg carries no journal of its own;
+    ``to_branch`` holds the income and books its side on its receiving leg.
+
+    Every other kind posts two journals, one per branch, through its two
     :class:`InterBranchTransferLeg` rows. The cash kind on the sending side is
     ``Dr inter-branch [receiving], Cr sending bank``; on the receiving side
     ``Dr receiving bank, Cr inter-branch [sending]``. Both branches must be open
@@ -313,6 +319,11 @@ class InterBranchTransfer(FinanceDocument):
         max_length=96, blank=True, default="",
         help_text="The caller's key for a receivable move, so a repeated call moves nothing twice.",
     )
+    adjustment_entry = models.ForeignKey(
+        "JournalEntry", on_delete=models.PROTECT, related_name="income_given_back",
+        null=True, blank=True,
+        help_text="For income given back: the credit note, concession or write-off journal that took it.",
+    )
     requested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+",
         null=True, blank=True,
@@ -345,9 +356,11 @@ class InterBranchTransfer(FinanceDocument):
                 check=~models.Q(branch=models.F("to_branch")),
                 name="ck_finance_ibt_two_branches",
             ),
+            # A voided move gives its key up, so the same move can be made again.
             models.UniqueConstraint(
-                fields=["entity", "move_key"], condition=~models.Q(move_key=""),
-                name="uniq_finance_ibt_move_key",
+                fields=["entity", "move_key"],
+                condition=~models.Q(move_key="") & ~models.Q(status="REVERSED"),
+                name="uniq_finance_ibt_live_move_key",
             ),
         ]
         indexes = [
@@ -389,7 +402,9 @@ class InterBranchTransferLeg(TimeStampedModel):
     is filed under the receiving branch rather than the sending one the
     transfer itself names. ``journal`` is blank on the receiving leg of a
     forwarded receipt, whose receiving side is the receipt it raised
-    (:attr:`InterBranchTransfer.receipt`).
+    (:attr:`InterBranchTransfer.receipt`), and on the sending leg of income given
+    back, whose sending side is the adjusting document's own journal
+    (:attr:`InterBranchTransfer.adjustment_entry`).
     """
 
     transfer = models.ForeignKey(

@@ -337,6 +337,9 @@ class JournalDerivationTests(_BackfillFixture):
             # The platform's own entry, always in the platform's branch rather than
             # the client branch the movement is for.
             ("vs_payments.HeldMovement", "platform_journal"),
+            # Points at the credit note, concession or write-off journal that gave
+            # income back; that document owns it, and the transfer's own journal is a leg's.
+            ("vs_finance.InterBranchTransfer", "adjustment_entry"),
         }
         checked = 0
         for field in JournalEntry._meta.related_objects:
