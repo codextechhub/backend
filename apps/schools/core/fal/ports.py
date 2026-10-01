@@ -281,8 +281,12 @@ class FeeTermBridgePort(ABC):
 
         A pupil whose account is filed at a branch other than the one they
         attend is billed where they attend, and the account is re-filed there
-        in the same transaction, audited and listed in ``accounts_moved``.
-        Bills raised before keep their branch.
+        in the same transaction with its whole open balance: open invoices and
+        debit notes take the new branch, unapplied credit and income not yet
+        earned follow, and income already earned stays with the old branch,
+        which the new one owes for it through the inter-branch account. Each
+        move is audited under both branches and listed in ``accounts_moved``
+        with the balance it carried.
 
         :raises TermNotLinkedError: the structure has no linked term.
         :raises CrossBranchError: a family belongs to a branch the raiser cannot

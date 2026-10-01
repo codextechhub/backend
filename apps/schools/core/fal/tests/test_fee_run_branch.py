@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import datetime
 
+from django.test import SimpleTestCase
+from vs_config.clock import branch_today
+
 from schools.core.fal.adapters.django_finance import DjangoFeeTermBridgeAdapter
 from schools.core.fal.exceptions import CrossBranchError
 
@@ -174,22 +177,58 @@ class OneBranchFeeRunTests(RouteFixture):
         )
 
 
+def _net(account, branch, counterparty=None):
+    """Debits less credits on ``account`` in one branch's books, against one counterparty."""
+    from vs_finance.branch_ledger import ledger_lines
+
+    lines = ledger_lines().filter(account=account, entry__branch=branch)
+    if counterparty is not None:
+        lines = lines.filter(counterparty_branch=counterparty)
+    return sum(line.debit - line.credit for line in lines)
+
+
+class MoveKeyTests(SimpleTestCase):
+    """One key per pupil, branch pair, structure and period, the same every time it is asked."""
+
+    def test_the_key_is_stable_and_changes_with_each_part(self):
+        from types import SimpleNamespace
+
+        from schools.core.fal.adapters.django_finance import _move_key
+
+        tuition, bus = SimpleNamespace(pk=12), SimpleNamespace(pk=13)
+        key = _move_key(tuition, "S4-T9", 44, 1, 2)
+
+        self.assertEqual(key, "fee-run:F12:S4-T9:C44:B1-B2")
+        self.assertEqual(key, _move_key(tuition, "S4-T9", 44, 1, 2))
+        self.assertEqual(len({
+            key, _move_key(bus, "S4-T9", 44, 1, 2), _move_key(tuition, "S4-T10", 44, 1, 2),
+            _move_key(tuition, "S4-T9", 45, 1, 2), _move_key(tuition, "S4-T9", 44, 3, 2),
+        }), 5)
+
+
 class AccountFollowsPupilTests(RouteFixture):
     """Tunde attends Lekki on the roll while their fee account is filed at Ikeja.
 
-    First Term was billed while Tunde attended Ikeja. The roll now says Lekki,
-    so Second Term bills them at Lekki and their account moves to Lekki in the
-    same transaction; the First Term bill stays Ikeja's. Amaka attends Ikeja
-    throughout and is billed there in the same run.
+    First Term (N150,000) was billed while Tunde attended Ikeja, and Tunde also
+    holds a N5,000 receipt at Ikeja not yet applied to anything. The roll now
+    says Lekki, so Second Term bills them at Lekki, their account moves to Lekki
+    in the same transaction, and their whole open balance goes with it: the
+    First Term bill becomes Lekki's to collect, the N5,000 follows as credit at
+    Lekki, and Lekki owes Ikeja, through the inter-branch account, for what
+    Ikeja had earned. Amaka attends Ikeja throughout and is billed there.
     """
+
+    FIRST_TERM = 15_000_000
+    CREDIT = 500_000
 
     def setUp(self):
         from schools.vs_academics.models import AcademicTerm
-        from vs_finance.models import Customer
+        from vs_finance.models import Customer, FeeItem
 
         super().setUp()
         self.as_bursar("finance.feestructure.edit", "finance.feestructure.generate")
         self.link()
+        FeeItem.objects.filter(structure=self.structure).update(amount=self.FIRST_TERM)
         self.tunde = self.student(self.corona, self.ikeja)
         self.amaka = self.student(self.corona, self.ikeja, first="Amaka")
         first = self.post(
@@ -200,6 +239,7 @@ class AccountFollowsPupilTests(RouteFixture):
             customer__source_id=str(self.tunde.pk))
         self.account = Customer.objects.get(
             entity_id=self.books.entity_ref, source_id=str(self.tunde.pk))
+        self.receipt(self.CREDIT)
         self.move_to(self.tunde, self.lekki)
 
         second_term = AcademicTerm.all_objects.create(
@@ -213,11 +253,41 @@ class AccountFollowsPupilTests(RouteFixture):
         )
         self.assertEqual(res.status_code, 200, res.data)
 
+    # ---- helpers -----------------------------------------------------------
     @staticmethod
     def move_to(student, branch):
         from schools.vs_students.models import Student
 
         Student.all_objects.filter(pk=student.pk).update(branch=branch)
+
+    def receipt(self, amount, *, invoice=None):
+        """A posted Ikeja receipt from Tunde's family, applied to ``invoice`` or left as credit."""
+        from vs_finance.models import Payment
+        from vs_finance.receivables import post_payment
+
+        payment = Payment.objects.create(
+            entity_id=self.books.entity_ref, customer=self.account, branch=self.ikeja,
+            payment_date=branch_today(self.corona.tenant, self.ikeja), amount=amount,
+            deposit_account=self.account_for("1100"),
+        )
+        post_payment(
+            payment, allocations=[(invoice, amount)] if invoice is not None else None,
+            auto_allocate=False,
+        )
+        return payment
+
+    def account_for(self, code):
+        """A ledger account by code (``self.account`` is Tunde's fee account here)."""
+        return RouteFixture.account(self.books.entity_ref, code)
+
+    def unearned_first_term(self):
+        """First Term income not yet earned on the run's date, which moves with the bill."""
+        from vs_finance.models import DeferredIncomeEntry
+
+        return sum(entry.open_amount for entry in DeferredIncomeEntry.objects.filter(
+            invoice=self.first_term_bill, status="PENDING",
+            recognition_date__gt=branch_today(self.corona.tenant, None),
+        ))
 
     def bill_second_term(self, *students, dry_run=False):
         return self.post(self.gen_url(self.second.pk), {
@@ -231,10 +301,28 @@ class AccountFollowsPupilTests(RouteFixture):
             .values("customer__source_id", "branch_id")
         }
 
+    def moves(self):
+        from vs_finance.models import InterBranchTransfer
+
+        return InterBranchTransfer.objects.filter(entity_id=self.books.entity_ref)
+
+    def expected_move(self, *, owed=FIRST_TERM, invoices=1, deferred=0):
+        return {
+            "customer": self.account.pk, "student": str(self.tunde.pk),
+            "name": "Tunde Adeyemi",
+            "from_branch": "Ikeja", "from_branch_id": self.ikeja.pk,
+            "to_branch": "Lekki", "to_branch_id": self.lekki.pk,
+            "amount": owed - self.CREDIT, "invoice_count": invoices,
+            "debit_note_count": 0, "credit_amount": self.CREDIT,
+            "deferred_amount": deferred,
+        }
+
+    # ---- the move ----------------------------------------------------------
     def test_the_pupil_is_billed_where_they_attend_and_their_account_follows(self):
         from vs_finance.constants import FinanceAuditAction
         from vs_finance.models import FinanceAuditLog
 
+        unearned = self.unearned_first_term()
         res = self.bill_second_term(self.tunde, self.amaka)
 
         self.assertEqual(res.status_code, 201, res.data)
@@ -244,12 +332,9 @@ class AccountFollowsPupilTests(RouteFixture):
         )
         self.account.refresh_from_db()
         self.assertEqual(self.account.branch_id, self.lekki.pk)
-        self.assertEqual(res.data["data"]["accounts_moved"], [{
-            "customer": self.account.pk, "student": str(self.tunde.pk),
-            "name": "Tunde Adeyemi",
-            "from_branch": "Ikeja", "from_branch_id": self.ikeja.pk,
-            "to_branch": "Lekki", "to_branch_id": self.lekki.pk,
-        }])
+        self.assertEqual(
+            res.data["data"]["accounts_moved"], [self.expected_move(deferred=unearned)],
+        )
 
         entries = FinanceAuditLog.objects.filter(
             action=FinanceAuditAction.CUSTOMER_UPDATED, target_id=str(self.account.pk),
@@ -258,17 +343,148 @@ class AccountFollowsPupilTests(RouteFixture):
             sorted(entries.values_list("branch_id", flat=True)),
             sorted([self.ikeja.pk, self.lekki.pk]),
         )
+        move = self.moves().get()
         for entry in entries:
             self.assertEqual(entry.before, {"branch_id": self.ikeja.pk})
             self.assertEqual(entry.after, {"branch_id": self.lekki.pk})
             self.assertEqual(entry.actor_id, self.bursar.pk)
             self.assertEqual(
-                (entry.metadata["from_branch"], entry.metadata["to_branch"]),
-                ("Ikeja", "Lekki"),
+                {k: entry.metadata[k] for k in
+                 ("from_branch", "to_branch", "amount", "receivable_move_id")},
+                {"from_branch": "Ikeja", "to_branch": "Lekki",
+                 "amount": self.FIRST_TERM - self.CREDIT, "receivable_move_id": move.pk},
             )
-        self.assertIn("moved to Lekki", entries.get(branch=self.ikeja).message)
-        self.assertIn("moved from Ikeja", entries.get(branch=self.lekki).message)
+            self.assertNotIn("deferred", str(entry.metadata))
+        self.assertIn(
+            "moved to Lekki, where the pupil attends, with ₦145,000.00 owed.",
+            entries.get(branch=self.ikeja).message,
+        )
+        self.assertIn(
+            "moved from Ikeja with ₦145,000.00 owed", entries.get(branch=self.lekki).message,
+        )
 
+    def test_the_first_term_bill_moves_to_the_branch_the_pupil_attends(self):
+        """Lekki collects it now; the revenue it booked stays in Ikeja's journal.
+
+        The N5,000 arrives at Lekki as credit and the school applies credit to
+        open bills, so it settles part of First Term there.
+        """
+        self.bill_second_term(self.tunde)
+
+        self.first_term_bill.refresh_from_db()
+        self.assertEqual(self.first_term_bill.branch_id, self.lekki.pk)
+        self.assertEqual(self.first_term_bill.balance_due, self.FIRST_TERM - self.CREDIT)
+        self.assertEqual(self.first_term_bill.journal.branch_id, self.ikeja.pk)
+        move = self.moves().get()
+        self.assertEqual(
+            (move.branch_id, move.to_branch_id, move.purpose),
+            (self.ikeja.pk, self.lekki.pk, "Fee run: pupil attends Lekki"),
+        )
+
+    def test_each_branch_books_its_side_and_both_balance(self):
+        """Ikeja is owed by Lekki; Lekki holds Tunde's receivable and owes Ikeja.
+
+        Ikeja hands over N150,000 of receivable and N5,000 of credit, and any
+        First Term income not yet earned, so Lekki owes Ikeja the difference.
+        """
+        from vs_finance.branch_ledger import ledger_lines
+
+        ar, credit = self.account_for("1200"), self.account_for("2140")
+        ib, deferred_income = self.account_for("1260"), self.account_for("2160")
+        ikeja_ar = _net(ar, self.ikeja)
+        unearned = self.unearned_first_term()
+
+        res = self.bill_second_term(self.tunde)
+
+        self.assertEqual(res.status_code, 201, res.data)
+        owed_to_ikeja = self.FIRST_TERM - self.CREDIT - unearned
+        self.assertEqual(_net(ar, self.ikeja), ikeja_ar - self.FIRST_TERM)
+        self.assertEqual(_net(credit, self.ikeja), 0)
+        self.assertEqual(_net(ib, self.ikeja, self.lekki), owed_to_ikeja)
+        self.assertEqual(_net(ib, self.lekki, self.ikeja), -owed_to_ikeja)
+        self.assertEqual(_net(ib, self.ikeja) + _net(ib, self.lekki), 0)
+        second_term = _invoices(self.books).get(reference="FEE:JSS1-T2").total
+        self.assertEqual(
+            _net(ar, self.lekki) + _net(credit, self.lekki),
+            self.FIRST_TERM + second_term - self.CREDIT,
+        )
+        self.assertEqual(_net(deferred_income, self.lekki), -(second_term + unearned))
+        for branch in (self.ikeja, self.lekki):
+            lines = ledger_lines().filter(entry__branch=branch)
+            self.assertEqual(
+                sum(line.debit for line in lines), sum(line.credit for line in lines), branch.name,
+            )
+
+    def test_income_not_yet_earned_moves_with_the_bill(self):
+        """Ikeja billed Tunde's Second Term bus fare in advance: Lekki will earn it.
+
+        N60,000 for January to March 2027, all of it still deferred at Ikeja.
+        It moves with the bill, so Ikeja's deferred income for it is cleared and
+        Lekki's carries it. Posting the bus bill spends Tunde's N5,000 credit on
+        it, so no credit is left to move.
+        """
+        from vs_finance.models import Invoice, InvoiceLine
+        from vs_finance.receivables import post_invoice
+
+        bus = Invoice.objects.create(
+            entity_id=self.books.entity_ref, customer=self.account, branch=self.ikeja,
+            invoice_date=branch_today(self.corona.tenant, self.ikeja),
+            due_date=datetime.date(2027, 1, 6),
+        )
+        InvoiceLine.objects.create(
+            invoice=bus, line_no=1, quantity=1, unit_price=6_000_000,
+            revenue_account=self.account_for("4100"),
+            service_start=datetime.date(2027, 1, 6), service_end=datetime.date(2027, 3, 31),
+        )
+        post_invoice(bus)
+        deferred_income = self.account_for("2160")
+        ikeja_deferred = _net(deferred_income, self.ikeja)
+        unearned = self.unearned_first_term() + 6_000_000
+
+        res = self.bill_second_term(self.tunde)
+
+        self.assertEqual(res.status_code, 201, res.data)
+        expected = self.expected_move(
+            owed=self.FIRST_TERM + 6_000_000, invoices=2, deferred=unearned)
+        expected["credit_amount"] = 0
+        self.assertEqual(res.data["data"]["accounts_moved"], [expected])
+        bus.refresh_from_db()
+        self.assertEqual(bus.branch_id, self.lekki.pk)
+        self.assertEqual(_net(deferred_income, self.ikeja), ikeja_deferred + unearned)
+        self.assertEqual(
+            _net(self.account_for("1260"), self.ikeja, self.lekki),
+            self.FIRST_TERM + 6_000_000 - self.CREDIT - unearned,
+        )
+
+    def test_a_pupil_in_credit_takes_the_credit_with_them(self):
+        """Tunde paid First Term in full and still holds the N5,000: Ikeja owes Lekki."""
+        from vs_finance.models import Payment
+
+        self.receipt(self.FIRST_TERM, invoice=self.first_term_bill)
+        unearned = self.unearned_first_term()
+
+        res = self.bill_second_term(self.tunde)
+
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(
+            res.data["data"]["accounts_moved"],
+            [self.expected_move(owed=0, invoices=1 if unearned else 0, deferred=unearned)],
+        )
+        self.assertEqual(res.data["data"]["accounts_moved"][0]["amount"], -self.CREDIT)
+        self.assertEqual(
+            _net(self.account_for("1260"), self.ikeja, self.lekki), -(self.CREDIT + unearned),
+        )
+        self.assertTrue(Payment.objects.filter(
+            customer=self.account, branch=self.lekki, method="CREDIT_TRANSFER",
+            amount=self.CREDIT,
+        ).exists())
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.branch_id, self.lekki.pk)
+        messages = self.move_messages(self.audit_reader("audit-all@corona.test"))
+        self.assertEqual(len(messages), 2, messages)
+        self.assertTrue(all("with ₦5,000.00 in credit" in m for m in messages), messages)
+
+    # ---- the audit trail ---------------------------------------------------
     def audit_reader(self, email, branch=None):
         user = self.user_for(self.corona, email)
         self.grant(user, "finance.audit.view", branch=branch)
@@ -295,18 +511,15 @@ class AccountFollowsPupilTests(RouteFixture):
 
         self.assertEqual(len(ikeja), 1, ikeja)
         self.assertIn("moved to Lekki", ikeja[0])
+        self.assertIn("₦145,000.00 owed", ikeja[0])
         self.assertEqual(len(lekki), 1, lekki)
-        self.assertIn("moved from Ikeja", lekki[0])
+        self.assertIn("moved from Ikeja with ₦145,000.00 owed", lekki[0])
         self.assertEqual(sorted(school), sorted(ikeja + lekki))
 
-    def test_the_old_bill_stays_with_the_branch_that_raised_it(self):
-        self.bill_second_term(self.tunde)
-
-        self.first_term_bill.refresh_from_db()
-        self.assertEqual(self.first_term_bill.branch_id, self.ikeja.pk)
-
+    # ---- reruns and previews -----------------------------------------------
     def test_a_rerun_after_the_move_bills_nobody_twice_and_moves_nobody(self):
         self.bill_second_term(self.tunde, self.amaka)
+        ikeja_ib = _net(self.account_for("1260"), self.ikeja)
         again = self.bill_second_term(self.tunde, self.amaka)
 
         self.assertEqual(again.status_code, 201, again.data)
@@ -314,25 +527,83 @@ class AccountFollowsPupilTests(RouteFixture):
         self.assertEqual(again.data["data"]["counts"]["skipped"], 2)
         self.assertEqual(again.data["data"]["accounts_moved"], [])
         self.assertEqual(_invoices(self.books).filter(reference="FEE:JSS1-T2").count(), 2)
+        self.assertEqual(self.moves().count(), 1)
+        self.assertEqual(_net(self.account_for("1260"), self.ikeja), ikeja_ib)
+
+    def test_a_run_queued_behind_the_move_finds_the_account_moved_and_moves_nothing(self):
+        """Two runs read Tunde's account at Ikeja; the second waits on its lock and finds it at Lekki."""
+        from schools.core.fal.adapters.django_finance import _refile_accounts
+        from vs_finance.models import Customer
+
+        stale = Customer.objects.get(pk=self.account.pk)
+        self.bill_second_term(self.tunde)
+
+        moved = _refile_accounts(
+            [stale], {stale.pk: self.lekki.pk}, actor_user=self.bursar,
+            structure=self.second, period_key="S0-T0",
+            on=branch_today(self.corona.tenant, None),
+        )
+
+        self.assertEqual(moved, ())
+        self.assertEqual(stale.branch_id, self.lekki.pk)
+        self.assertEqual(self.moves().count(), 1)
 
     def test_a_rerun_of_the_term_already_billed_skips_them_and_moves_nothing(self):
-        """First Term again, after the move: Tunde was billed for it at Ikeja."""
+        """First Term again, after the roll changed: Tunde was billed for it at Ikeja."""
         again = self.post(self.gen_url(), {"students": [str(self.tunde.pk)]})
 
         self.assertEqual(again.status_code, 201, again.data)
         self.assertEqual(again.data["data"]["counts"]["created"], 0)
         self.account.refresh_from_db()
         self.assertEqual(self.account.branch_id, self.ikeja.pk)
+        self.assertFalse(self.moves().exists())
 
-    def test_a_preview_lists_the_move_and_makes_none(self):
+    def test_a_preview_lists_the_figures_and_moves_nothing(self):
+        from vs_finance.branch_ledger import ledger_lines
+        from vs_finance.models import Payment
+
+        lines = ledger_lines().count()
+        unearned = self.unearned_first_term()
+
         res = self.bill_second_term(self.tunde, dry_run=True)
 
         self.assertEqual(res.status_code, 200, res.data)
-        self.assertEqual(len(res.data["data"]["accounts_moved"]), 1)
+        self.assertEqual(
+            res.data["data"]["accounts_moved"], [self.expected_move(deferred=unearned)],
+        )
         self.account.refresh_from_db()
+        self.first_term_bill.refresh_from_db()
         self.assertEqual(self.account.branch_id, self.ikeja.pk)
+        self.assertEqual(self.first_term_bill.branch_id, self.ikeja.pk)
+        self.assertFalse(self.moves().exists())
+        self.assertFalse(Payment.objects.filter(branch=self.lekki).exists())
+        self.assertEqual(ledger_lines().count(), lines)
+
+        real = self.bill_second_term(self.tunde)
+        self.assertEqual(real.data["data"]["accounts_moved"], res.data["data"]["accounts_moved"])
+
+    # ---- reach -------------------------------------------------------------
+    def invoice_reader(self, email, branch):
+        user = self.user_for(self.corona, email, branch=branch)
+        self.grant(user, "finance.invoice.view", branch=branch)
+        return self.client_for(user)
+
+    def sees_first_term(self, client):
+        res = client.get(
+            f"/v1/finance/invoices/{self.first_term_bill.pk}/?entity=CORONA&tenant={self.slug}"
+        )
+        self.assertIn(res.status_code, (200, 404), res.data)
+        return res.status_code == 200
 
     def test_a_lekki_bursar_bills_a_pupil_who_attends_lekki_and_moves_the_account(self):
+        """Afterwards Lekki's bursar finds First Term on their books and Ikeja's does not."""
+        self.grant(self.lekki_bursar, "finance.invoice.view", branch=self.lekki)
+        lekki_reader = self.client_for(self.lekki_bursar)
+        ikeja_reader = self.invoice_reader("invoices-ikeja@corona.test", self.ikeja)
+        self.assertEqual(
+            (self.sees_first_term(lekki_reader), self.sees_first_term(ikeja_reader)),
+            (False, True),
+        )
         self.as_lekki_bursar()
 
         res = self.bill_second_term(self.tunde)
@@ -341,8 +612,11 @@ class AccountFollowsPupilTests(RouteFixture):
         self.assertEqual(self.second_term_bills(), {self.tunde.pk: self.lekki.pk})
         self.account.refresh_from_db()
         self.assertEqual(self.account.branch_id, self.lekki.pk)
+        self.assertEqual(
+            (self.sees_first_term(lekki_reader), self.sees_first_term(ikeja_reader)),
+            (True, False),
+        )
 
-    # ---- reach -------------------------------------------------------------
     def yaba_bursar(self):
         from vs_tenants.models import Branch
 
@@ -356,8 +630,11 @@ class AccountFollowsPupilTests(RouteFixture):
 
     def assertNothingMoved(self):
         self.account.refresh_from_db()
+        self.first_term_bill.refresh_from_db()
         self.assertEqual(self.account.branch_id, self.ikeja.pk)
+        self.assertEqual(self.first_term_bill.branch_id, self.ikeja.pk)
         self.assertEqual(self.second_term_bills(), {})
+        self.assertFalse(self.moves().exists())
 
     def test_a_bursar_of_neither_branch_cannot_bill_or_move_them(self):
         user = self.yaba_bursar()
@@ -393,3 +670,4 @@ class AccountFollowsPupilTests(RouteFixture):
         amaka_account.refresh_from_db()
         self.assertEqual(amaka_account.branch_id, self.lekki.pk)
         self.assertEqual(self.second_term_bills(), {})
+        self.assertFalse(self.moves().exists())

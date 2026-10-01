@@ -552,9 +552,17 @@ class AccountMove:
     """A pupil's fee account a fee run re-filed at the branch they attend.
 
     Tunde attends Lekki and their account was filed at Ikeja: the run bills
-    them at Lekki and moves the account there, and this records it. Bills raised
-    before the move keep their branch. On a preview it is a move the run would
-    make.
+    them at Lekki and moves the account there with its open balance, and this
+    records it. On a preview it is a move the run would make, with the figures
+    it would carry.
+
+    The figures are integer kobo. ``amount`` is the net balance that moved:
+    open invoices and debit notes less the unapplied credit that went with
+    them, negative for a pupil in credit. ``invoice_count`` and
+    ``debit_note_count`` are the documents given the new branch,
+    ``credit_amount`` the unapplied credit that followed, and
+    ``deferred_amount`` the income on the moved invoices not yet earned, which
+    the new branch now earns. All are zero when the account held nothing open.
     """
 
     customer_ref: CustomerRef
@@ -564,6 +572,11 @@ class AccountMove:
     from_branch: str
     to_branch_ref: BranchRef
     to_branch: str
+    amount: int = 0
+    invoice_count: int = 0
+    debit_note_count: int = 0
+    credit_amount: int = 0
+    deferred_amount: int = 0
 
 
 @dataclass(frozen=True)
@@ -584,7 +597,8 @@ class InvoiceGenerationResult:
     ``None`` only from an implementation that does not resolve one.
 
     ``accounts_moved`` lists the pupils' accounts the run re-filed at the
-    branch the pupil attends (:class:`AccountMove`), so no move is silent.
+    branch the pupil attends, each with the balance that moved with it
+    (:class:`AccountMove`), so no move is silent.
     """
 
     fee_structure_ref: FeeStructureRef

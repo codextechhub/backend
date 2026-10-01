@@ -889,9 +889,9 @@ def _cohort_branches(structure, pairs, to_bill, *, raiser, run_branch):
       list and a family belongs to another branch, or to every branch.
 
     A pupil whose account is filed elsewhere is billed where they attend, and
-    their account follows them (:func:`_refile_accounts`). Only pupils about to
-    be billed move: one already billed for this period is skipped, so a rerun
-    bills nobody twice and moves nobody. An account every branch shares stays
+    their account and open balance follow them (:func:`_refile_accounts`).
+    Only pupils about to be billed move: one already billed for this period is
+    skipped, so a rerun bills nobody twice and moves nobody. An account every branch shares stays
     shared; its bill names the pupil's branch.
 
     The branch is not part of the billing key. A rerun finds a pupil's invoice
@@ -939,52 +939,111 @@ def _cohort_branches(structure, pairs, to_bill, *, raiser, run_branch):
     return branches, moves
 
 
-def _refile_accounts(to_bill, moves, *, actor_user):
-    """Re-file each pupil's account in ``moves`` at the branch they attend.
+def _balance_words(amount):
+    """A moved balance as an audit entry says it: owed, in credit, or nothing owed."""
+    from vs_finance.money import format_naira
 
-    The account is a shared record that follows its pupil, so the run that bills
-    Tunde at Lekki files Tunde's account at Lekki in the same transaction.
-    Nothing already raised moves: Tunde's First Term bill stays Ikeja's, and
-    Ikeja keeps chasing it.
+    if amount > 0:
+        return f"{format_naira(amount)} owed"
+    if amount < 0:
+        return f"{format_naira(-amount)} in credit"
+    return "nothing owed"
 
-    Each move goes through :func:`vs_finance.customers.update_customer`, the
-    one way an account is changed, under its row lock, and is written to the
-    finance audit trail once for each side, because a branch-bound reader sees
-    only their own branches' entries:
+
+def _move_key(structure, period_key, customer_id, from_id, to_id):
+    """The receivable move's idempotency key: one pupil, one branch pair, one run.
+
+    ``fee-run:F<structure>:<period key>:C<customer>:B<from>-B<to>``. A run of the
+    same structure for the same period that reaches the same move names the same
+    key, so the engine answers it with the move already booked rather than
+    booking a second; a different structure or period, or a different pair of
+    branches, is a different move. The key is at most 96 characters long.
+    """
+    return f"fee-run:F{structure.pk}:{period_key}:C{customer_id}:B{from_id}-B{to_id}"[:96]
+
+
+def _refile_accounts(to_bill, moves, *, actor_user, structure, period_key, on):
+    """Re-file each pupil's account in ``moves`` at the branch they attend, balance and all.
+
+    The account is a shared record that follows its pupil, and so does what the
+    pupil owes: the run that bills Tunde at Lekki files Tunde's account at Lekki
+    and hands Lekki their open balance, in the same transaction, so one branch
+    chases everything Tunde owes. The balance moves through
+    :func:`vs_finance.inter_branch.transfer_open_receivables`: open invoices and
+    debit notes are given Lekki's branch (Tunde's First Term bill becomes
+    Lekki's to collect), unapplied credit follows as a receipt at Lekki, and the
+    income on a moved bill not yet earned at ``on`` moves with it. Income
+    already earned stays Ikeja's, and Lekki owes Ikeja for it through the
+    inter-branch account. ``on`` is the run's invoice date, so the move and the
+    bills it precedes are booked on the same day.
+
+    Each account is locked, in id order, before its move is decided, and the
+    move runs from the branch the locked row names. A run that queued behind
+    another that already moved the account finds it at the branch the pupil
+    attends and moves nothing. The engine's move is keyed per pupil, branch
+    pair, structure and period (:func:`_move_key`), which the database holds
+    unique, so no two runs of one structure and period can each book the move.
+
+    The account is changed through :func:`vs_finance.customers.update_customer`,
+    the one way an account is changed, and the move is written to the finance
+    audit trail once for each side, because a branch-bound reader sees only
+    their own branches' entries:
 
     * the entry ``update_customer`` writes is the arriving side, filed under
-      Lekki ("moved from Ikeja"), the account's branch as it now stands;
+      Lekki ("moved from Ikeja with N145,000.00 owed"), the account's branch as
+      it now stands;
     * a second entry is the leaving side, filed under Ikeja ("moved to Lekki,
-      where the pupil attends"), so Ikeja's bursar, wondering why Tunde left
-      their list while still owing First Term, finds the reason.
+      where the pupil attends, with N145,000.00 owed"), so Ikeja's bursar,
+      wondering why Tunde and their First Term bill left the list, finds the
+      reason.
 
-    Both carry the branch ids before and after and no money figure. Returns
-    the moves as :class:`~schools.core.fal.contracts.AccountMove` values, in
-    the order the run bills.
+    Both carry the branch ids before and after and the net balance that moved
+    (negative for a pupil in credit), and no other figure: what each branch
+    earned or holds is in its own books, not in the other's trail. Returns the
+    moves as :class:`~schools.core.fal.contracts.AccountMove` values, in the
+    order the run bills, each with the balance that moved.
     """
     from vs_finance.audit import record
     from vs_finance.constants import FinanceAuditAction
     from vs_finance.customers import update_customer
+    from vs_finance.inter_branch import transfer_open_receivables
+    from vs_finance.models import Customer
     from vs_tenants.models import Branch
 
     if not moves:
         return ()
+    filed = dict(
+        Customer.objects.select_for_update(of=("self",))
+        .filter(pk__in=list(moves)).order_by("pk").values_list("pk", "branch_id")
+    )
     names = dict(
         Branch.all_objects.filter(
-            pk__in={c.branch_id for c in to_bill if c.pk in moves} | set(moves.values()),
+            pk__in={b for b in filed.values() if b is not None} | set(moves.values()),
         ).values_list("pk", "name")
     )
     done = []
     for customer in to_bill:
         if customer.pk not in moves or customer.pk in {m.customer_ref for m in done}:
             continue
-        from_id, to_id = customer.branch_id, moves[customer.pk]
-        details = {"from_branch": names[from_id], "to_branch": names[to_id]}
+        from_id, to_id = filed[customer.pk], moves[customer.pk]
+        customer.branch_id = from_id
+        if from_id is None or from_id == to_id:
+            continue
+        moved = transfer_open_receivables(
+            customer, from_id, to_id, actor_user, move_date=on,
+            move_key=_move_key(structure, period_key, customer.pk, from_id, to_id),
+            purpose=f"Fee run: pupil attends {names[to_id]}",
+        )
+        balance = _balance_words(moved.amount)
+        details = {
+            "from_branch": names[from_id], "to_branch": names[to_id],
+            "amount": moved.amount, "receivable_move_id": moved.transfer_id,
+        }
         update_customer(
             customer, {"branch_id": to_id}, actor_user=actor_user,
             message=(
                 f"Customer {customer.code} ({customer.name}) moved from "
-                f"{names[from_id]}, billed here where the pupil attends."
+                f"{names[from_id]} with {balance}, billed here where the pupil attends."
             ),
             **details,
         )
@@ -993,8 +1052,7 @@ def _refile_accounts(to_bill, moves, *, actor_user):
             actor_user=actor_user, target=customer, branch=from_id,
             message=(
                 f"Customer {customer.code} ({customer.name}) moved to "
-                f"{names[to_id]}, where the pupil attends. Bills raised here "
-                f"stay here."
+                f"{names[to_id]}, where the pupil attends, with {balance}."
             ),
             before={"branch_id": from_id}, after={"branch_id": to_id}, **details,
         )
@@ -1002,6 +1060,9 @@ def _refile_accounts(to_bill, moves, *, actor_user):
             customer_ref=customer.pk, student_ref=customer.source_id,
             name=customer.name, from_branch_ref=from_id, from_branch=names[from_id],
             to_branch_ref=to_id, to_branch=names[to_id],
+            amount=moved.amount, invoice_count=moved.invoice_count,
+            debit_note_count=moved.debit_note_count, credit_amount=moved.credit_amount,
+            deferred_amount=moved.deferred_amount,
         ))
     return tuple(done)
 
@@ -1071,8 +1132,9 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
         they attend on the roll, and the run refuses, before anything is
         written, a pupil outside the raiser's reach and a family off a branch
         structure's price list. A pupil whose account is filed at another
-        branch is billed where they attend and their account moves with them
-        (:func:`_refile_accounts`); a preview lists the moves it would make.
+        branch is billed where they attend, and their account and open balance
+        move with them (:func:`_refile_accounts`); a preview lists the moves it
+        would make, with the balance each would carry.
         """
         from vs_finance import fees
         from vs_finance.models import Customer
@@ -1134,8 +1196,11 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
             branches, moves = _cohort_branches(
                 structure, pairs, to_bill, raiser=raiser, run_branch=run_branch,
             )
+            # One date for the run: the pinned branch's day, else the school's.
+            invoice_date = branch_today(structure.entity.tenant, structure.branch_id)
             accounts_moved = _refile_accounts(
                 to_bill, moves, actor_user=effective_user or raiser,
+                structure=structure, period_key=link.period_key, on=invoice_date,
             )
 
             # The school's own rule, resolved here rather than in the engine.
@@ -1143,8 +1208,6 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
             # this structure bills is known at exactly this point; vs_finance
             # gets the answer as a plain date and stays ignorant of terms.
             basis, days_after = policy_for(structure.entity.tenant_id)
-            # One date for the run: the pinned branch's day, else the school's.
-            invoice_date = branch_today(structure.entity.tenant, structure.branch_id)
             due_date = resolve_due_date(
                 basis=basis, days_after=days_after, invoice_date=invoice_date,
                 term_end=link.term.end_date if link.term_id else None,

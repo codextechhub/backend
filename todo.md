@@ -553,13 +553,24 @@ MUST SAY:
   BRANCH_REQUIRED). The engine refuses a fee bill with no branch or one
   contradicting its account. The branch is not part of the billing key, so a
   rerun bills nobody twice.
-- Account follows the pupil (M17, owner decision). When a pupil's fee account is
-  filed at another branch than the one they attend, the run bills them where they
-  attend and moves the account there in the same transaction; earlier bills keep
-  their branch. Each move is in the run's accounts_moved (preview included, where
-  nothing moves) and is audited under both branches ("moved to Lekki" under the
-  old, "moved from Ikeja" under the new), with no money figures. One mismatch
-  never blocks the run. The school-fe preview lists the moves by name and branch.
+- Account and balance follow the pupil (M17, M19, owner decisions; d94af2e9).
+  When a pupil's fee account is filed at another branch than the one they
+  attend, the run bills them where they attend and, in the same transaction,
+  moves the account there with its whole open balance through
+  transfer_open_receivables: open invoices and debit notes are re-branched to
+  the new branch, unapplied credit follows as a receipt there, and income on the
+  moved bills not yet earned on the run's invoice date moves too; income already
+  earned stays with the old branch, which the new one owes for it through
+  inter-branch entries (1260). The move is keyed per pupil, branch pair, fee
+  structure and billing period and decided on the locked account, so a rerun or
+  a queued run moves nothing twice. Each move is in the run's accounts_moved with
+  amount (net kobo, negative in credit), invoice_count, debit_note_count,
+  credit_amount and deferred_amount (a preview gives what would move and moves
+  nothing), and is audited under both branches ("moved to Lekki, where the pupil
+  attends, with N145,000.00 owed" under the old, "moved from Ikeja with
+  N145,000.00 owed" under the new), naming the net balance and no other figure.
+  One mismatch never blocks the run. The school-fe preview lists the moves by
+  name and branch; it does not yet show the figures.
 - Reach (M17, M04). The roll decides who may bill a pupil: a branch-bound bursar
   bills only pupils attending their branches, however a pupil id is written (one
   canonical spelling, "42"; "+42" or "042" no longer name pupil 42); the reach,
