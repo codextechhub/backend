@@ -32,7 +32,9 @@ reads:
   platform's books, but the settlement row sits in the tenant's: its ``entity``
   is the tenant's books, which record the money arriving, so a tenant reads its
   own settlements by entity as it reads its gateway records, and never another
-  tenant's.
+  tenant's;
+* a **held balance** is the branch whose money the platform holds. It carries a
+  tenant rather than an entity, so it is read by the entity's tenant.
 
 Every payments list, detail, summary and status change starts from
 :class:`PaymentsReach`, never from ``Model.objects``, so a new view cannot forget
@@ -55,6 +57,7 @@ from vs_rbac.scoping import (
 
 from .models import (
     CollectionIntent,
+    HeldBalance,
     HeldSettlement,
     PaymentEvent,
     PayoutBatch,
@@ -125,6 +128,24 @@ class PaymentsReach:
         branch-bound caller reaches their own branches' settlements and no other.
         """
         return self.scope.filter(HeldSettlement.objects.filter(entity=self.entity))
+
+    def held_balances(self):
+        """What the platform holds for each of this tenant's branches in reach.
+
+        A held balance is one branch's money, so a branch-bound caller reaches
+        their own branches' balances and never another branch's, nor a total
+        that includes one.
+        """
+        return self.scope.filter(HeldBalance.objects.filter(tenant_id=self.entity.tenant_id))
+
+    def branches(self):
+        """The tenant's branches this caller reaches: every one for a whole-school caller."""
+        from vs_tenants.models import Branch
+
+        qs = Branch.all_objects.filter(tenant_id=self.entity.tenant_id)
+        if not self.is_narrowed:
+            return qs
+        return qs.filter(pk__in=sorted(self.scope.branch_ids))
 
     def events(self):
         """The transactions log, less every action on a record outside reach.

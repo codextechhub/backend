@@ -1031,14 +1031,91 @@ class HeldSettlementsStayWithinReachTests(_FinanceBranchFixture):
             row.save()
 
 
+class CustodySettingsStayWithinReachTests(_FinanceBranchFixture):
+    """The custody settings screen lists only the branches its reader reaches.
+
+    The platform holds N12,400 for Corona's Ikeja Branch, paid into Ikeja GTBank,
+    and N5,000 for Lekki Branch, paid into Lekki Zenith; Yaba has neither. Rival
+    Group's Ikeja Branch has N9,000 held and banks with Rival Access. Mrs Bello,
+    Lekki's bursar, may view the payment settings: she sees Lekki's row and
+    nothing of Ikeja's, neither its balance nor its bank. Corona's school-wide
+    bursar sees every Corona branch. Nobody at Corona sees Rival's.
+    """
+
+    KEYS = ("payments.settings.view",)
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_finance.models import BankAccount
+
+        from .models import HeldBalance
+
+        super().setUpTestData()
+        for entity, branch, code, bank, held in (
+                (cls.books, cls.ikeja, "1191", "Ikeja GTBank", 1_240_000),
+                (cls.books, cls.lekki, "1192", "Lekki Zenith", 500_000),
+                (cls.rival_books, cls.rival_branch, "1191", "Rival Access", 900_000)):
+            gl = Account.objects.create(entity=entity, code=code, name=bank,
+                                        account_type="ASSET", is_postable=True)
+            BankAccount.objects.create(entity=entity, name=bank, branch=branch, gl_account=gl,
+                                       bank_name=bank, is_primary_collection=True)
+            HeldBalance.objects.create(tenant=entity.tenant, branch=branch, balance=held)
+
+    def reader(self, tenant, branch, email):
+        return TenantAPIClient(user=self.grant(
+            self.user_for(tenant, email), *self.KEYS,
+            tenant=tenant, role_key=email.split("@")[0], branch=branch,
+        ))
+
+    def rows(self, client, books=None):
+        """``{branch name: (collection bank name, held balance)}`` as the screen lists them."""
+        response = client.get(f"/v1/payments/settings/custody/?entity={(books or self.books).code}")
+        self.assertEqual(response.status_code, 200, response.data)
+        return response, {
+            row["branch_name"]: ((row["collection_account"] or {}).get("name"), row["held_balance"])
+            for row in response.data["data"]["branches"]
+        }
+
+    def test_a_branch_reader_sees_only_their_branchs_row(self):
+        bello = self.reader(self.tenant, self.lekki, "bello@corona.test")
+        response, rows = self.rows(bello)
+        self.assertEqual(rows, {"Lekki Branch": ("Lekki Zenith", 500_000)})
+        body = str(response.data)
+        for unseen in ("Ikeja", "1240000", "Yaba"):
+            self.assertNotIn(unseen, body)
+        self.assertIn("mode", response.data["data"]["settings"])
+
+    def test_a_whole_school_reader_sees_every_branch(self):
+        _, rows = self.rows(self.reader(self.tenant, None, "bursar@corona.test"))
+        self.assertEqual(rows, {
+            "Ikeja Branch": ("Ikeja GTBank", 1_240_000),
+            "Lekki Branch": ("Lekki Zenith", 500_000),
+            "Yaba Branch": (None, 0),
+        })
+
+    def test_another_schools_rows_never_appear(self):
+        """Rival's Ikeja Branch shares a name with Corona's and nothing else."""
+        for client in (self.reader(self.tenant, self.ikeja, "ikeja@corona.test"),
+                       self.reader(self.tenant, None, "school@corona.test")):
+            response, rows = self.rows(client)
+            self.assertNotIn("Rival Access", str(response.data))
+            self.assertNotIn(900_000, [held for _, held in rows.values()])
+            refused = client.get(f"/v1/payments/settings/custody/?entity={self.rival_books.code}")
+            self.assertEqual(refused.status_code, 404, refused.data)
+
+        _, rows = self.rows(self.reader(self.rival_tenant, self.rival_branch, "rival@rival.test"),
+                            self.rival_books)
+        self.assertEqual(rows, {"Ikeja Branch": ("Rival Access", 900_000)})
+
+
 class PaymentsViewsStartFromTheReachTests(SimpleTestCase):
     """No payments view reaches a gateway table except through :class:`PaymentsReach`.
 
-    A view that filtered ``CollectionIntent.objects`` or ``HeldSettlement.objects``
-    itself would show Ikeja's clerk the whole school again, and nothing else would
-    notice. The only exceptions read at platform scope, for platform staff only:
-    webhook events matched to no tenant, and every tenant's held settlements for
-    the operators who put them forward.
+    A view that filtered ``CollectionIntent.objects``, ``HeldSettlement.objects`` or
+    ``HeldBalance.objects`` itself would show Ikeja's clerk the whole school again,
+    and nothing else would notice. The only exceptions read at platform scope, for
+    platform staff only: webhook events matched to no tenant, and every tenant's
+    held settlements for the operators who put them forward.
     """
 
     def test_views_name_no_gateway_manager(self):
@@ -1058,7 +1135,7 @@ class PaymentsViewsStartFromTheReachTests(SimpleTestCase):
                 source = source.replace(inspect.getsource(reader), "")
             found = re.findall(
                 r"\b(CollectionIntent|VirtualAccount|PayoutInstruction|PayoutBatch|PaymentEvent"
-                r"|WebhookEvent|HeldSettlement)\.(?:objects|all_objects)\b",
+                r"|WebhookEvent|HeldSettlement|HeldBalance)\.(?:objects|all_objects)\b",
                 source)
             with self.subTest(module=module.__name__):
                 self.assertEqual(found, [], "Start from vs_payments.reach.PaymentsReach instead.")
