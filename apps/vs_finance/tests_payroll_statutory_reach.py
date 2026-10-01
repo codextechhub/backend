@@ -144,3 +144,205 @@ class PayslipYearToDateTests(_ReachFixture):
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["data"]["ytd"]["gross"], format_naira(54_321 * N))
+
+
+def _prepare(entity, code):
+    """January's draft return for the obligation ``code``."""
+    from vs_finance.tax_filing import prepare_filing
+
+    obligation = TaxObligation.objects.get(entity=entity, code=code)
+    return prepare_filing(obligation, period_start=_date(1, 1), period_end=_date(1, 31))
+
+
+class LekkiBursarSeesNothingOfIkejaTests(_ReachFixture):
+    """Ngozi, pinned to Lekki, in every place a salary or a statutory figure is read."""
+
+    def ok(self, path):
+        response = self.get(self.ngozi, path)
+        self.assertEqual(response.status_code, 200, getattr(response, "data", response))
+        self.assert_nothing_of_ikeja(response)
+        return response.data["data"]
+
+    def lekki_lines(self):
+        return [self.line(self.bola), self.line(self.tunde_lekki)]
+
+    def test_the_run_holds_lekkis_lines_and_lekkis_totals_only(self):
+        data = self.ok(f"payroll-runs/{self.payroll_run.pk}/")
+
+        lekki = self.lekki_lines()
+        self.assertTrue(data["partial_view"])
+        self.assertEqual(sorted(row["id"] for row in data["lines"]), sorted(l.pk for l in lekki))
+        for total, field in (("gross_total", "gross_amount"), ("paye_total", "paye_amount"),
+                             ("other_deductions_total", "other_deductions_amount"),
+                             ("employer_contributions_total", "employer_contributions_amount"),
+                             ("net_total", "net_amount")):
+            self.assertEqual(data[total], sum(getattr(l, field) for l in lekki), total)
+        self.assertEqual([s["branch_name"] for s in data["branch_shares"]], ["Lekki Branch"])
+
+    def test_the_runs_list_and_the_summary_count_lekki_alone(self):
+        (row,) = self.ok("payroll-runs/")
+        net = sum(l.net_amount for l in self.lekki_lines())
+        self.assertEqual(row["net_total"], net)
+
+        summary = self.ok("payroll-runs/summary/")
+        self.assertEqual((summary["employees"], summary["net"]), (2, net))
+
+    def test_the_roster_lists_lekkis_staff_only(self):
+        rows = self.ok("employee-salaries/")
+        self.assertEqual(sorted(r["id"] for r in rows), sorted([self.bola.pk, self.tunde_lekki.pk]))
+
+    def test_every_record_of_an_ikeja_person_is_not_found(self):
+        for salary in (self.ada, self.tunde_ikeja):
+            line = self.line(salary)
+            for path in (
+                f"employee-salaries/{salary.pk}/history/",
+                f"employee-salaries/{salary.pk}/deductions/",
+                f"employee-salaries/{salary.pk}/tax-summary/?year=2026",
+                f"employee-salaries/{salary.pk}/tax-summary/?year=2026&output=pdf",
+                f"payroll-runs/{self.payroll_run.pk}/lines/{line.pk}/payslip/",
+                f"payroll-runs/{self.payroll_run.pk}/lines/{line.pk}/payslip/?output=json",
+            ):
+                with self.subTest(person=salary.name, path=path):
+                    response = self.get(self.ngozi, path)
+                    self.assertEqual(response.status_code, 404)
+                    self.assert_nothing_of_ikeja(response)
+
+    def test_lekkis_own_records_open(self):
+        self.ok(f"employee-salaries/{self.bola.pk}/history/")
+        summary = self.ok(f"employee-salaries/{self.bola.pk}/tax-summary/?year=2026")
+        self.assertEqual(summary["totals"]["gross"], 80_000 * N)
+
+    def test_the_paye_schedule_holds_lekkis_people_and_lekkis_amounts(self):
+        filing = _prepare(self.books, "PAYE-LA")
+
+        data = self.ok(f"tax-filings/{filing.pk}/schedule/")
+
+        self.assertIn("Bola Lawal", [r["employee_name"] for r in data["rows"]])
+        self.assertEqual({r["branch_name"] for r in data["rows"]}, {"Lekki Branch"})
+        lekki_share = filing.shares.get(branch=self.lekki)
+        self.assertEqual(data["total"], lekki_share.gross_liability)
+        self.assertEqual(data["employee_total"], sum(r["employee_amount"] for r in data["rows"]))
+
+    def test_the_return_reads_lekkis_share_only(self):
+        filing = _prepare(self.books, "PAYE-LA")
+
+        data = self.ok(f"tax-filings/{filing.pk}/")
+
+        self.assertEqual(data["gross_liability"], filing.shares.get(branch=self.lekki).gross_liability)
+
+    def test_a_return_with_no_lekki_share_is_not_found(self):
+        for code in ("PAYE-OG", "PENSION-STANBIC"):
+            filing = _prepare(self.books, code)
+            for path in (f"tax-filings/{filing.pk}/", f"tax-filings/{filing.pk}/schedule/"):
+                with self.subTest(path=path):
+                    response = self.get(self.ngozi, path)
+                    self.assertEqual(response.status_code, 404)
+                    self.assert_nothing_of_ikeja(response)
+
+    def test_the_audit_trail_names_none_of_ikejas_staff(self):
+        rows = self.ok("audit-logs/?page_size=100")
+        self.assertIn("Added Bola Lawal to the payroll.", [r["message"] for r in rows])
+
+
+class WholeSchoolReaderTests(_ReachFixture):
+    """Mr Bello reads every branch's staff, whole, as before."""
+
+    def ok(self, path):
+        response = self.get(self.bello, path)
+        self.assertEqual(response.status_code, 200, getattr(response, "data", response))
+        return response.data["data"] if hasattr(response, "data") else response
+
+    def test_the_run_is_whole(self):
+        data = self.ok(f"payroll-runs/{self.payroll_run.pk}/")
+        self.assertFalse(data["partial_view"])
+        self.assertEqual(len(data["lines"]), 5)
+        self.assertEqual(data["gross_total"], (123_456 + 90_000 + 80_000 + 234_567 + 54_321) * N)
+
+    def test_an_ikeja_persons_records_open(self):
+        history = self.ok(f"employee-salaries/{self.ada.pk}/history/")
+        self.assertEqual([v["gross_amount"] for v in history], [123_456 * N])
+        deductions = self.ok(f"employee-salaries/{self.ada.pk}/deductions/")
+        self.assertEqual([d["amount"] for d in deductions], [7_777 * N])
+        summary = self.ok(f"employee-salaries/{self.ada.pk}/tax-summary/?year=2026")
+        self.assertEqual((summary["tax_id"], summary["totals"]["gross"]), ("TIN-ADA", 123_456 * N))
+        payslip = self.ok(
+            f"payroll-runs/{self.payroll_run.pk}/lines/{self.line(self.ada).pk}/payslip/?output=json")
+        self.assertEqual(payslip["pension_pin"], "PEN-ADA")
+        pdf = self.ok(f"payroll-runs/{self.payroll_run.pk}/lines/{self.line(self.ada).pk}/payslip/")
+        self.assertTrue(pdf.content.startswith(b"%PDF"))
+
+    def test_the_paye_schedule_is_every_branchs(self):
+        filing = _prepare(self.books, "PAYE-LA")
+
+        data = self.ok(f"tax-filings/{filing.pk}/schedule/")
+
+        self.assertIn("Ada Obi", [r["employee_name"] for r in data["rows"]])
+        self.assertIn("Bola Lawal", [r["employee_name"] for r in data["rows"]])
+        self.assertEqual(data["total"], filing.gross_liability)
+
+
+class OwnPayslipTests(_ReachFixture):
+    """Staff read their own payslips through my-payslips, and nobody else's, whatever their role."""
+
+    def mine(self, user, path=""):
+        return TenantAPIClient(user=user).get(f"/v1/finance/my-payslips/{path}")
+
+    def test_the_list_holds_the_callers_own_only(self):
+        response = self.mine(self.bola_user)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual([p["id"] for p in response.data["data"]],
+                         [Payslip.objects.get(salary=self.bola).pk])
+        self.assert_nothing_of_ikeja(response)
+
+    def test_a_colleagues_payslip_is_not_found_by_id_or_as_a_pdf(self):
+        ada_payslip = Payslip.objects.get(salary=self.ada).pk
+        for path in (f"{ada_payslip}/", f"{ada_payslip}/?output=pdf"):
+            with self.subTest(path=path):
+                response = self.mine(self.bola_user, path)
+                self.assertEqual(response.status_code, 404)
+                self.assert_nothing_of_ikeja(response)
+
+    def test_a_payroll_role_does_not_widen_my_payslips(self):
+        ada_payslip = Payslip.objects.get(salary=self.ada).pk
+        self.assertEqual(self.mine(self.bello_user).data["data"], [])
+        for path in (f"{ada_payslip}/", f"{ada_payslip}/?output=pdf"):
+            with self.subTest(path=path):
+                self.assertEqual(self.mine(self.bello_user, path).status_code, 404)
+
+    def test_the_tax_summary_is_the_callers_own(self):
+        for output in ("", "&output=pdf"):
+            with self.subTest(output=output):
+                response = TenantAPIClient(user=self.bola_user).get(
+                    f"/v1/finance/my-tax-summary/?year=2026{output}")
+                self.assertEqual(response.status_code, 200)
+                self.assert_nothing_of_ikeja(response)
+
+
+class AnotherTenantTests(_ReachFixture):
+    """Rival Group's bursar holds every payroll key and reaches none of Corona's records."""
+
+    def setUp(self):
+        super().setUp()
+        self.rival = TenantAPIClient(user=self.grant(
+            self.user_for(self.rival_tenant, "rival-bursar@rival.test"), *self.KEYS,
+            "finance.audit.view", tenant=self.rival_tenant, role_key="reach-rival"))
+
+    def test_nothing_of_corona_is_found(self):
+        filing = _prepare(self.books, "PAYE-LA")
+        line = self.line(self.bola)
+        paths = (
+            f"payroll-runs/{self.payroll_run.pk}/",
+            f"payroll-runs/{self.payroll_run.pk}/lines/{line.pk}/payslip/",
+            f"employee-salaries/{self.bola.pk}/history/",
+            f"employee-salaries/{self.bola.pk}/deductions/",
+            f"employee-salaries/{self.bola.pk}/tax-summary/?year=2026",
+            f"tax-filings/{filing.pk}/schedule/",
+        )
+        for books in (self.books, self.rival_books):
+            for path in paths:
+                with self.subTest(books=books.code, path=path):
+                    response = self.get(self.rival, path, books=books)
+                    self.assertEqual(response.status_code, 404)
+                    self.assertNotIn("Bola Lawal", str(getattr(response, "data", "")))
+        payslip = Payslip.objects.get(salary=self.bola).pk
+        self.assertEqual(self.rival.get(f"/v1/finance/my-payslips/{payslip}/").status_code, 404)
