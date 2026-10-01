@@ -24,8 +24,9 @@ When no source answers:
   an administrator. The main branch is never assumed: a Lekki pupil's invoice
   filed under Ikeja because Ikeja is the main branch would move Lekki's fee
   income into Ikeja's year result, and nothing afterwards would say so;
-* a tenant that owns no branch breaks the rule that every tenant keeps one, so
-  it is reported as blocked and nothing is derived until it has one.
+* a tenant that owns no branch is a data error, because every tenant must own
+  one. It is reported as one, alongside every other tenant's plan rather than
+  ending the run, and nothing of it is derived until it has a branch.
 
 Derivations chain. An RFQ reads its requisition's branch, including a branch
 the same run has derived but not yet written, which is what makes a dry run
@@ -784,17 +785,17 @@ def describe(plan: EntityPlan, *, flagged_limit: int = 0) -> list[str]:
 
     written = [p for p in plan.targets if p.target.has_branch_column and p.blank]
     reported = [p for p in plan.targets if not p.target.has_branch_column and p.blank]
-    if not written and not reported:
-        lines.append("  no unbranched rows")
-        return lines
     if plan.owns_no_branch:
         total = sum(p.blank for p in written)
         lines.append(
-            f"  BLOCKED: {total} unbranched row(s) and no branch to give them. "
-            f"Prerequisite: create this tenant's branch first."
+            f"  This tenant owns no branch, which every tenant must; this is a data error. "
+            f"Its {total} unbranched row(s) are left untouched until it has one."
         )
         for p in written:
             lines.append(f"    {p.target.model_label:<40} {p.blank:>6}")
+        return lines
+    if not written and not reported:
+        lines.append("  no unbranched rows")
         return lines
 
     header = f"  {'model':<40} {'blank':>6} {'derived':>8} {'one-branch':>11} {'needs admin':>12}"

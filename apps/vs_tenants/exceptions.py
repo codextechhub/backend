@@ -25,6 +25,29 @@ class TenantsError(Exception):
         super().__init__(self.message)
 
 
+class BranchlessTenantError(RuntimeError):
+    """A tenant is asked which branch something belongs to and owns no branch.
+
+    Every tenant owns at least one branch: a school is created with its main
+    branch, and the platform tenant owns Lagos. A tenant with none is therefore
+    a data fault rather than a request to refuse, and the data needs fixing,
+    not the caller. It is deliberately not a :class:`TenantsError`, so no view
+    turns it into a 4xx and nothing is written without a branch; it surfaces as
+    a server error naming the tenant.
+
+    Raised by :func:`vs_rbac.scoping.only_branch_id_or_several`, the one check
+    every engine shares, and re-exported as
+    :class:`vs_finance.exceptions.BranchlessTenantError`.
+    """
+
+    def __init__(self, tenant):
+        self.tenant = tenant
+        super().__init__(
+            f"Tenant {tenant} owns no branch. Every tenant keeps at least one, and its "
+            f"records are kept by branch; create the tenant's branch before using its books."
+        )
+
+
 class BranchLifecycleError(TenantsError):
     """Base for branch status-transition refusals.
 

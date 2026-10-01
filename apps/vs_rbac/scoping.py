@@ -251,6 +251,31 @@ def only_branch_id(tenant) -> Optional[int]:
     return ids[0] if len(ids) == 1 else None
 
 
+def only_branch_id_or_several(tenant) -> Optional[int]:
+    """The id of *tenant*'s one branch, or ``None`` when it owns several.
+
+    *tenant* is a tenant or its id. Counted as :func:`only_branch_id` counts,
+    over every branch the tenant owns whatever its status. This is the check for
+    a caller about to write something that must name a branch: a transaction,
+    or a ledger line, bank account or payroll line not yet given one, is that
+    branch's at a tenant with one, and at a tenant with several belongs to none
+    until somebody gives it one.
+
+    Raises :class:`~vs_tenants.exceptions.BranchlessTenantError` when the tenant
+    owns no branch. Every tenant owns at least one, so that is a data fault, and
+    ``None`` here always means several branches: nothing is ever written without
+    a branch because the tenant had none to give. One query, reading at most
+    two ids.
+    """
+    from vs_tenants.exceptions import BranchlessTenantError
+    from vs_tenants.models import Branch
+
+    ids = list(Branch.all_objects.filter(tenant=tenant).values_list("pk", flat=True)[:2])
+    if not ids:
+        raise BranchlessTenantError(tenant)
+    return ids[0] if len(ids) == 1 else None
+
+
 def _only_branch_id(user, tenant) -> Optional[int]:
     """:func:`only_branch_id`, memoised on the user instance, keyed by tenant.
 
@@ -946,8 +971,7 @@ def raised_branch(request, tenant, body, *, field: str = "branch",
 
     For a record where no branch is a first-class answer meaning every branch: a
     customer, a vendor, a fee structure. A transaction asks
-    :func:`raised_transaction_branch` instead, which answers ``None`` only for a
-    tenant with no branch at all.
+    :func:`raised_transaction_branch` instead, which never answers ``None``.
 
     A caller bound to one branch always creates for that branch; naming a
     different one is refused rather than silently retargeted. A caller who is not
@@ -999,7 +1023,7 @@ def raised_branch(request, tenant, body, *, field: str = "branch",
 
 
 def raised_transaction_branch(request, tenant, body, *, field: str = "branch"):
-    """The branch a newly raised transaction belongs to, for every school.
+    """The branch a newly raised transaction belongs to, at every tenant.
 
     A transaction always names a real branch. Who decides it:
 
@@ -1013,23 +1037,22 @@ def raised_transaction_branch(request, tenant, body, *, field: str = "branch"):
       and Lekki, raising a refund without saying whose, has raised it for one of
       them, and filing it under neither would hide it from both branches' staff.
 
-    The one ``None`` is a tenant with no branch at all, which no school is: the
-    platform's own books, kept by the console, have no branch to name.
+    Never ``None``. Every tenant owns at least one branch, the platform tenant
+    included, so a whole-tenant caller naming none at a tenant that owns no
+    branch raises :class:`~vs_tenants.exceptions.BranchlessTenantError`
+    (:func:`only_branch_id_or_several`): a data fault answered with a server
+    error, never a transaction raised without a branch.
     """
     from rest_framework.exceptions import ValidationError
 
-    from vs_tenants.models import Branch
-
     raw = body.get(field) if hasattr(body, "get") else None
     if caller_branch_ids(request) is WHOLE_TENANT and raw in (None, ""):
-        ids = list(Branch.all_objects.filter(tenant=tenant).values_list("pk", flat=True)[:2])
-        if not ids:
-            return None
-        if len(ids) > 1:
+        only = only_branch_id_or_several(tenant)
+        if only is None:
             raise ValidationError(
                 {field: "Name the branch this is for; the school has more than one."},
             )
-        return resolve_branch(tenant, ids[0], field)
+        return resolve_branch(tenant, only, field)
     return raised_branch(request, tenant, body, field=field)
 
 

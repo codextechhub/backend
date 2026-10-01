@@ -87,13 +87,13 @@ def _default_stages_payload(
     terminal APPROVED decision with no human involved. Parked work is made reachable
     again by the workflow parking service once somebody joins the group.
 
-    Both stages are ``approver_scope="BRANCH"``, which is what makes a multi-site
+    Both stages are ``approver_scope="BRANCH"``, which is what makes a multi-branch
     tenant route correctly: the engine forwards the *document's own* branch to the
-    approver lookup, so a request raised at one site resolves to that site's approvers
-    plus anybody eligible tenant-wide, and never to another site's approvers. A
-    document with no branch (raised for the entity as a whole) forwards ``None`` and
-    therefore resolves to tenant-wide holders only, which is also exactly what a
-    tenant with no branches at all does.
+    approver lookup, so a request raised at one branch resolves to that branch's
+    approvers plus anybody eligible tenant-wide, and never to another branch's
+    approvers. A document not yet given its branch (one raised before documents
+    carried a branch) forwards ``None`` and therefore resolves to tenant-wide
+    holders only.
     """
     return [
         {

@@ -611,6 +611,34 @@ class InheritedBranchTests(_WriteFixture):
             )
         self.assertFalse(Invoice.objects.filter(reference="FEE:INHB").exists())
 
+    def test_a_fee_run_at_a_tenant_that_owns_no_branch_is_a_data_fault(self):
+        """Every tenant owns a branch, so books whose tenant owns none bill nobody.
+
+        A fee run there raises the shared data-fault error naming the tenant,
+        rather than filing the Adeyemi family's bill under no branch.
+        """
+        from vs_finance.exceptions import BranchlessTenantError
+        from vs_finance.fees import generate_invoices
+        from vs_finance.models import FeeItem, Invoice
+        from vs_tenants.models import Tenant
+
+        bare = Tenant.objects.create(
+            name="Bare Books", slug="fee-bare-books", kind="ORGANIZATION", status="ACTIVE")
+        books = self.build_books("FEEBARE", bare)
+        structure = FeeStructure.objects.create(entity=books, code="BARE", name="BARE")
+        FeeItem.objects.create(
+            structure=structure, line_no=1, description="Tuition",
+            revenue_account=Account.objects.get(entity=books, code="4100"),
+            amount=300_000,
+        )
+
+        with self.assertRaises(BranchlessTenantError):
+            generate_invoices(
+                structure, [self.customer(books, "CBARE", None)],
+                invoice_date=datetime.date(2026, 1, 12),
+            )
+        self.assertFalse(Invoice.objects.filter(entity=books).exists())
+
 
 class WriteThenReadTests(_WriteFixture):
     """The two halves closing on each other, which is the point of the change.

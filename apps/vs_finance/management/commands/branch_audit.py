@@ -9,8 +9,9 @@ Reads only; it never writes. For each set of books it prints, per transaction
 model, how many rows have no branch, how many a backfill would derive from facts
 on the books, how many a one-branch tenant would file under its only branch, and
 how many need an administrator, followed by those rows with the reason for each.
-A tenant that owns no branch is reported as blocked, with its branch listed as a
-prerequisite. The derivation rules are :mod:`vs_finance.branch_derivation`'s;
+A tenant that owns no branch is a data error, because every tenant must own one:
+it is reported as one, listed again at the end, and the rest of the run goes on.
+The derivation rules are :mod:`vs_finance.branch_derivation`'s;
 ``branch_backfill`` applies the same plan.
 """
 from __future__ import annotations
@@ -33,7 +34,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **opts):
         books = entities(tenant_slug=opts.get("tenant"), entity_code=opts.get("entity"))
-        blocked, blank, flagged = [], 0, 0
+        branchless, blank, flagged = [], 0, 0
         for entity in books:
             plan = plan_entity(entity)
             for line in describe(plan, flagged_limit=opts["flagged_limit"]):
@@ -42,13 +43,15 @@ class Command(BaseCommand):
             written = [p for p in plan.targets if p.target.has_branch_column]
             blank += sum(p.blank for p in written)
             flagged += sum(len(p.flags) for p in written)
-            if plan.owns_no_branch and any(p.blank for p in written):
-                blocked.append(f"{entity.tenant.name} [{entity.tenant.slug}] books {entity.code}")
+            if plan.owns_no_branch:
+                branchless.append(f"{entity.tenant.name} [{entity.tenant.slug}] books {entity.code}")
         self.stdout.write(
             f"{len(books)} set(s) of books; {blank} unbranched row(s); "
             f"{flagged} need an administrator."
         )
-        if blocked:
-            self.stdout.write(self.style.WARNING("Prerequisites (tenant owns no branch; create one first):"))
-            for line in blocked:
+        if branchless:
+            self.stdout.write(self.style.ERROR(
+                "Data errors: these tenants own no branch, which every tenant must:"
+            ))
+            for line in branchless:
                 self.stdout.write(f"  {line}")

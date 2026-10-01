@@ -660,6 +660,35 @@ class RaisedTransactionBranchTests(_RowFixture):
         self.assertEqual(self.raised(unpinned, tenant=self.solo_tenant), self.solo_main)
         self.assertEqual(self.raised(pinned, tenant=self.solo_tenant), self.solo_main)
 
+    def test_a_tenant_that_owns_no_branch_is_a_data_fault_not_an_unbranched_transaction(self):
+        """Every tenant owns a branch, so Harbour Primary's books with none raise.
+
+        Their bursar, whole-tenant and naming no branch, gets a server error naming
+        the tenant rather than ``None``, so no refund is raised without a branch
+        while the missing branch goes unnoticed.
+        """
+        from vs_tenants.exceptions import BranchlessTenantError
+
+        bare = make_school(slug="rt-bare", name="Harbour Primary").tenant
+        bursar = self.whole_tenant(bare, "rt-bare@t.com")
+
+        with self.assertRaises(BranchlessTenantError) as caught:
+            self.raised(bursar, tenant=bare)
+        self.assertIs(caught.exception.tenant, bare)
+
+    def test_the_shared_check_answers_one_branch_several_or_a_data_fault(self):
+        """``None`` from the shared check always means several branches, never none."""
+        from vs_rbac.scoping import only_branch_id_or_several
+        from vs_tenants.exceptions import BranchlessTenantError
+
+        bare = make_school(slug="rt-bare-check", name="Bare Check").tenant
+
+        self.assertEqual(only_branch_id_or_several(self.solo_tenant), self.solo_main.pk)
+        self.assertEqual(only_branch_id_or_several(self.solo_tenant.pk), self.solo_main.pk)
+        self.assertIsNone(only_branch_id_or_several(self.tenant))
+        with self.assertRaises(BranchlessTenantError):
+            only_branch_id_or_several(bare)
+
     def test_another_tenants_branch_is_reported_like_an_unknown_one(self):
         from rest_framework.exceptions import ValidationError
 

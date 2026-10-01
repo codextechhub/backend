@@ -150,17 +150,21 @@ def _collection_deposit(request, entity, ref, *, customer, invoice=None, noun):
     several, and no invoice), the account decides it: Mr Bello's top-up for the
     Adeyemi family, deposited into Lekki's collection account, is Lekki's money.
     Such a collection must therefore name an account that is a branch's, or its
-    receipt would be booked to no branch at all. Books with no branch (the
-    platform's) have none to name and are not asked.
+    receipt would be booked to no branch at all.
+
+    Every tenant owns a branch, so where the account would decide, a tenant that
+    owns none raises :class:`~vs_tenants.exceptions.BranchlessTenantError`
+    (:func:`vs_rbac.scoping.only_branch_id_or_several`) rather than taking any
+    deposit account it is given and booking a receipt to no branch.
     """
-    from vs_tenants.models import Branch
+    from vs_rbac.scoping import only_branch_id_or_several
 
     branch_id = services.collection_branch_id(customer=customer, invoice=invoice)
-    has_branches = Branch.all_objects.filter(tenant_id=entity.tenant_id).exists()
-    if branch_id is not None or customer is None or not has_branches:
+    if branch_id is not None or customer is None:
         return _resolve_account(
             request, entity, ref, "deposit_account",
             document_branch=branch_id, noun=noun, verb="Deposit it into")
+    only_branch_id_or_several(entity.tenant_id)  # Raises for a tenant that owns no branch.
     deposit = _resolve_account(request, entity, ref, "deposit_account")
     if services.deposit_branch_id(deposit) is None:
         raise ValidationError({"deposit_account": (

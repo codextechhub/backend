@@ -3,7 +3,12 @@
 All engine errors carry a typed ``error_code``, matching the platform convention (see
 ``vs_workflow.exceptions`` and the duck-typed ``core.exceptions.custom_exception_handler``,
 which renders ``error_code`` + ``message`` + ``extra`` at ``http_status``).  # Keep errors machine-readable across the stack.
+
+:class:`BranchlessTenantError` is re-exported from :mod:`vs_tenants.exceptions`:
+a tenant that owns no branch is a data fault every engine reports the same way,
+and deliberately not a :class:`FinanceError`.
 """
+from vs_tenants.exceptions import BranchlessTenantError  # noqa: F401
 
 
 class FinanceError(Exception):
@@ -16,24 +21,6 @@ class FinanceError(Exception):
         self.message = message or self.default_message  # Store the user-facing message.
         self.extra = kwargs  # Preserve structured context for the exception handler.
         super().__init__(self.message)  # Initialize the base Exception with the message.
-
-
-class BranchlessTenantError(RuntimeError):
-    """A tenant's books are read by branch and the tenant owns no branch.
-
-    Every tenant owns at least one branch, the platform tenant included, so this
-    is a broken invariant rather than a request to refuse: the data needs fixing,
-    not the caller. It is deliberately not a :class:`FinanceError`, so no view
-    turns it into a 4xx and nothing writes a journal without a branch; it
-    surfaces as a server error naming the tenant.
-    """
-
-    def __init__(self, tenant):
-        self.tenant = tenant
-        super().__init__(
-            f"Tenant {tenant} owns no branch. Every tenant keeps at least one, and its "
-            f"books are kept by branch; create the tenant's branch before using its books."
-        )
 
 
 class PostingError(FinanceError):
