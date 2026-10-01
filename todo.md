@@ -451,7 +451,7 @@ MUST SAY:
   unbranched and flagged for an administrator, not given its source account's
   branch.
 
-### D93. CodeX holds a held school's money in its own books, pays each branch on schedule, and only two CodeX people can release it (hash pending, 2026-10-01)
+### D93. CodeX holds a held school's money in its own books, pays each branch on schedule, and only two CodeX people can release it (59e43f6c, 2026-10-01)
 MODULES: M18 payments and collections, M19 finance and accounting, M02 xvision
 admin console (CodeX operators), M08 notifications and delivery, M04 roles and
 permissions, MRD.
