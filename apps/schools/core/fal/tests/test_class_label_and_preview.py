@@ -126,7 +126,7 @@ class ClassLabelTests(FALFixture):
             receivable_account=_receivable_account(entity),
             source_type=SOURCE_TYPE_STUDENT, source_id=str(chidi.pk),
         )
-        fees.generate_invoices(self.structure, [legacy])
+        fees.generate_invoices(self.structure, [legacy], branch=self.ikeja)
 
         page = self.reader.debtors(self.corona.pk).unwrap()
         rows = self._rows_by_student(page)
@@ -134,10 +134,10 @@ class ClassLabelTests(FALFixture):
 
     def test_a_reference_that_names_nobody_is_left_alone(self):
         """Books imported before the roll keep opaque refs, and must not break."""
-        self.student_customer(self.corona_books, "legacy-ref-99")
+        self.student_customer(self.corona_books, "legacy-ref-99", branch=self.ikeja)
         DjangoFeeTermBridgeAdapter().generate_cohort_invoices(
             self.structure.pk, ("legacy-ref-99",),
-        )
+        ).unwrap()
         page = self.reader.debtors(self.corona.pk).unwrap()
         rows = self._rows_by_student(page)
         self.assertEqual(rows["legacy-ref-99"].class_label, "")

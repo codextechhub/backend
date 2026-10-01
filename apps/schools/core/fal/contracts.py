@@ -105,6 +105,28 @@ GuardianRef = LooseRef    # a future parent/guardian record
 #: against a model that does not exist, and nothing downstream notices.
 SOURCE_TYPE_STUDENT = "vs_students.Student"
 
+
+def student_pk(ref) -> Optional[int]:
+    """The roll's primary key a student reference names, or ``None``.
+
+    A reference names pupil 42 only when it is spelled exactly ``"42"``. Python's
+    ``int()`` also reads ``"+42"``, ``"042"``, ``"4_2"`` and ``"٤٢"`` as 42, while
+    the same reference is stored and matched as a string in
+    ``Customer.source_id``. Parsing loosely would give one child several
+    spellings, and every spelling opens an AR account of its own: the billing key
+    is per account, so Tunde billed as ``"42"`` is billed again as ``"+42"``, and
+    a branch check that reads only the plain spelling is walked round by another.
+
+    Every place that turns a reference or a ``source_id`` into a pupil reads it
+    here, so a reference names the same pupil, or nobody, everywhere. Anything
+    else is a loose reference the ledger merely stores (an imported receivable).
+    """
+    text = "" if ref is None else str(ref)
+    if not (text.isascii() and text.isdigit()) or text != str(int(text)):
+        return None
+    return int(text)
+
+
 T = TypeVar("T")
 
 
@@ -526,6 +548,25 @@ class FeeTermLink:
 
 
 @dataclass(frozen=True)
+class AccountMove:
+    """A pupil's fee account a fee run re-filed at the branch they attend.
+
+    Tunde attends Lekki and their account was filed at Ikeja: the run bills
+    them at Lekki and moves the account there, and this records it. Bills raised
+    before the move keep their branch. On a preview it is a move the run would
+    make.
+    """
+
+    customer_ref: CustomerRef
+    student_ref: StudentRef
+    name: str
+    from_branch_ref: BranchRef
+    from_branch: str
+    to_branch_ref: BranchRef
+    to_branch: str
+
+
+@dataclass(frozen=True)
 class InvoiceGenerationResult:
     """Outcome of generating invoices for a student cohort from a fee structure.
 
@@ -541,6 +582,9 @@ class InvoiceGenerationResult:
     on a preview as well, so the date a bursar is shown is the one the posting
     writes rather than one worked out against whichever term is running today.
     ``None`` only from an implementation that does not resolve one.
+
+    ``accounts_moved`` lists the pupils' accounts the run re-filed at the
+    branch the pupil attends (:class:`AccountMove`), so no move is silent.
     """
 
     fee_structure_ref: FeeStructureRef
@@ -551,6 +595,7 @@ class InvoiceGenerationResult:
     students_to_bill: tuple[StudentRef, ...] = ()
     dry_run: bool = False
     due_date: Optional[date] = None
+    accounts_moved: tuple[AccountMove, ...] = ()
 
 
 # --------------------------------------------------------------------------- #

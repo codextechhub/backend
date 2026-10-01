@@ -73,7 +73,7 @@ def require_unique_source(customer):
 
 
 @transaction.atomic
-def update_customer(customer, changes: dict, *, actor_user=None):
+def update_customer(customer, changes: dict, *, actor_user=None, message="", **metadata):
     """Apply ``changes`` (field -> new value) to ``customer``, audited, under a row lock.
 
     Refuses a change to a field in :data:`FIXED_AFTER_ACTIVITY` once the customer has
@@ -81,6 +81,10 @@ def update_customer(customer, changes: dict, *, actor_user=None):
     account that is not an asset of the customer's books. ``is_active`` goes through
     :func:`set_customer_active` so leaving and returning are audited as such.
     Returns the customer.
+
+    ``message`` replaces the audit entry's generated summary and ``metadata`` is
+    stored on it, for an owner layer that changes an account for a reason of its
+    own and says so in the trail.
     """
     from .accounts import require_account_kind
     from .models import Customer
@@ -114,9 +118,10 @@ def update_customer(customer, changes: dict, *, actor_user=None):
         record(
             entity=locked.entity, action=FinanceAuditAction.CUSTOMER_UPDATED,
             actor_user=actor_user, target=locked,
-            message=f"Updated customer {locked.code}: {', '.join(sorted(changed))}.",
+            message=message or f"Updated customer {locked.code}: {', '.join(sorted(changed))}.",
             before={f: _plain(before[f]) for f in sorted(changed)},
             after={f: _plain(after[f]) for f in sorted(changed)},
+            **metadata,
         )
     customer.refresh_from_db()
     return customer

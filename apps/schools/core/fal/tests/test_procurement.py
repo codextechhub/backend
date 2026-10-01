@@ -22,6 +22,7 @@ from schools.core.fal.contracts import (
 from schools.core.fal.exceptions import (
     ApprovalNotParkedError,
     ApprovalTemplateMissingError,
+    BranchRequiredError,
     CrossBranchError,
     CrossTenantError,
     OverrideNotPermittedError,
@@ -31,6 +32,9 @@ from schools.core.fal.exceptions import (
 from .base import FALFixture
 
 LINES = (BillLine(description="Exercise books", quantity=100, unit_price=25_000),)
+
+#: ``raise_one`` choosing the branch its raiser would.
+_DEFAULT = object()
 
 
 class _ProcFixture(FALFixture):
@@ -59,10 +63,20 @@ class _ProcFixture(FALFixture):
         for school in schools:
             ensure_tenant_approval_templates(school.tenant)
 
-    def raise_one(self, *, books=None, raiser=None, branch_ref=None, lines=LINES):
+    def raise_one(self, *, books=None, raiser=None, branch_ref=_DEFAULT, lines=LINES):
+        """Raise a requisition; Corona's school-wide bursar raises it at Ikeja.
+
+        Corona runs two branches, so a school-wide raiser there names one, and
+        Ikeja is Corona's main branch. Everyone else's branch comes from their
+        grants or their school's only branch unless the test names one.
+        """
         books = books or self.corona_books
+        raiser = raiser or self.bursar
+        if branch_ref is _DEFAULT:
+            corona_wide = raiser == self.bursar and books == self.corona_books
+            branch_ref = self.ikeja.pk if corona_wide else None
         return self.port.raise_requisition(
-            entity_ref=books.entity_ref, raiser_ref=(raiser or self.bursar).pk,
+            entity_ref=books.entity_ref, raiser_ref=raiser.pk,
             lines=lines, branch_ref=branch_ref, narration="Termly stationery",
         ).unwrap()
 
@@ -97,13 +111,42 @@ class _ProcFixture(FALFixture):
 
 
 class RaiseRequisitionTests(_ProcFixture):
-    def test_a_school_level_raiser_writes_no_branch(self):
-        """An empty branch is a head-office purchase, not a validation failure."""
-        document = self.raise_one()
+    def test_a_school_wide_raiser_at_a_school_with_several_branches_names_one(self):
+        """Head Office is a branch like any other; no requisition names none."""
+        from vs_procurement.models import PurchaseRequisition
 
-        self.assertIsNone(document.ref.branch_ref)
+        with self.assertRaises(BranchRequiredError) as caught:
+            self.raise_one(branch_ref=None)
+        self.assertEqual(caught.exception.field, "branch_ref")
+        self.assertFalse(PurchaseRequisition.objects.exists())
+
+        document = self.raise_one()
+        self.assertEqual(document.ref.branch_ref, self.ikeja.pk)
         self.assertIs(document.ref.doc_type, ProcDocType.REQUISITION)
         self.assertEqual(document.total, 2_500_000)
+
+    def test_a_raiser_pinned_by_their_grant_raises_for_that_branch_only(self):
+        """Mrs Eze's role is granted at Lekki; their staff record names no branch.
+
+        The grant decides, not the profile field: they raise for Lekki when they
+        name nothing, and may not raise for Ikeja.
+        """
+        eze = self.user_for(self.corona, "eze@corona.test")
+        self.grant(eze, "procurement.requisition.create", branch=self.lekki)
+
+        with self.assertRaises(CrossBranchError):
+            self.raise_one(raiser=eze, branch_ref=self.ikeja.pk)
+        self.assertEqual(self.raise_one(raiser=eze).ref.branch_ref, self.lekki.pk)
+
+    def test_a_school_wide_grant_outranks_a_home_branch_on_the_staff_record(self):
+        """Mr Obi works from Lekki but holds their role for the whole school."""
+        obi = self.user_for(self.corona, "obi@corona.test", branch=self.lekki)
+        self.grant(obi, "procurement.requisition.create")
+
+        document = self.raise_one(raiser=obi, branch_ref=self.ikeja.pk)
+        self.assertEqual(document.ref.branch_ref, self.ikeja.pk)
+        with self.assertRaises(BranchRequiredError):
+            self.raise_one(raiser=obi, branch_ref=None)
 
     def test_a_branch_bound_raiser_writes_their_own_branch(self):
         document = self.raise_one(raiser=self.lekki_bursar)
@@ -131,12 +174,12 @@ class RaiseRequisitionTests(_ProcFixture):
         with self.assertRaises(ProcurementStateError):
             self.raise_one(lines=())
 
-    def test_a_single_branch_school_works_the_same_way(self):
+    def test_a_single_branch_school_raises_at_its_only_branch(self):
         """Greenfield has one branch, which is the common shape in production."""
         document = self.raise_one(books=self.greenfield_books,
                                   raiser=self.greenfield_bursar)
 
-        self.assertIsNone(document.ref.branch_ref)
+        self.assertEqual(document.ref.branch_ref, self.greenfield_main.pk)
         self.assertEqual(document.total, 2_500_000)
 
 

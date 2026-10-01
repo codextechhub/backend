@@ -20,6 +20,7 @@ from schools.core.fal.contracts import (
     Unit,
 )
 from schools.core.fal.exceptions import CrossTenantError, InvalidFilterError
+from vs_tenants.models import Branch
 
 from .base import FALFixture
 
@@ -33,6 +34,10 @@ class _ReadFixture(FALFixture):
         from vs_finance.models import Invoice
 
         bridge = DjangoFeeTermBridgeAdapter()
+        # A branch that bills nothing, for the reads of an empty scope.
+        cls.yaba = Branch.objects.create(
+            tenant=cls.corona.tenant, name="Yaba", is_main=False, status="ACTIVE",
+        )
         cls.session, cls.term = cls.session_and_term(cls.corona)
         cls.structure = cls.fee_structure(cls.corona_books, amount=300_000)
         bridge.link_term(cls.structure.pk, cls.session.pk, cls.term.pk)
@@ -40,8 +45,10 @@ class _ReadFixture(FALFixture):
         cls.ada = cls.student_customer(cls.corona_books, "stu-ada", branch=cls.ikeja)
         cls.tunde = cls.student_customer(cls.corona_books, "stu-tunde", branch=cls.lekki)
         cls.shared = cls.student_customer(cls.corona_books, "stu-shared")
+        # The shared family's bill still names a branch: Ikeja, where it is run.
         bridge.generate_cohort_invoices(
             cls.structure.pk, ("stu-ada", "stu-tunde", "stu-shared"),
+            branch_ref=cls.ikeja.pk,
         )
 
         # Greenfield's own books, so every Corona assertion has something to
@@ -101,7 +108,7 @@ class HeadlineKpiTests(_ReadFixture):
         self.assertTrue(rate.is_available)
 
         empty = self.reader.collection_rate(
-            self.greenfield.pk, branch_ref=self.greenfield_main.pk,
+            self.corona.pk, branch_ref=self.yaba.pk,
         ).unwrap()
         self.assertEqual(empty.value, 10000)
 
@@ -195,9 +202,7 @@ class DetailListTests(_ReadFixture):
         self.assertEqual(page.items[0].outstanding, 300_000)
 
     def test_a_page_carries_its_counts_and_an_empty_page_is_still_a_page(self):
-        page = self.reader.debtors(
-            self.greenfield.pk, branch_ref=self.greenfield_main.pk,
-        ).unwrap()
+        page = self.reader.debtors(self.corona.pk, branch_ref=self.yaba.pk).unwrap()
 
         self.assertEqual(page.items, ())
         self.assertEqual(page.total_items, 0)

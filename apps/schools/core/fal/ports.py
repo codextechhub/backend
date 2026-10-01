@@ -128,6 +128,7 @@ from .contracts import (
     ProcurementSnapshot,
     Receipt,
     ReceiptLine,
+    Ref,
     SchoolRef,
     Series,
     SessionRef,
@@ -243,6 +244,7 @@ class FeeTermBridgePort(ABC):
     def generate_cohort_invoices(
         self, fee_structure_ref: FeeStructureRef, student_refs: tuple[StudentRef, ...],
         *, period: Optional[Period] = None, dry_run: bool = False,
+        raiser_ref: Optional[UserRef] = None, branch_ref: Optional[BranchRef] = None,
     ) -> FinanceResult[InvoiceGenerationResult]:
         """Generate one posted invoice per student in the cohort.
 
@@ -264,7 +266,32 @@ class FeeTermBridgePort(ABC):
         source for a child's name; the refusal survives only for a reference that
         names nobody.
 
+        **Every invoice names a branch, and the run decides it.** A pupil is
+        billed in the branch they attend on the roll, so a run for the whole
+        school bills Tunde at Ikeja and Amaka at Lekki. A family with no pupil
+        behind it (a receivable imported before the roll) gives its account's
+        branch, and one shared by every branch takes the raiser's:
+        ``branch_ref``, which a raiser pinned to one branch may leave out, and
+        which a school-wide raiser at a school with several branches must name
+        for such a family (a school with one branch gives its only one).
+
+        ``raiser_ref`` is the person running it, and their grants bound it: a
+        bursar pinned to Lekki bills only Lekki's families, by the roll. Left
+        out, the effective user of the request in progress is the raiser.
+
+        A pupil whose account is filed at a branch other than the one they
+        attend is billed where they attend, and the account is re-filed there
+        in the same transaction, audited and listed in ``accounts_moved``.
+        Bills raised before keep their branch.
+
         :raises TermNotLinkedError: the structure has no linked term.
+        :raises CrossBranchError: a family belongs to a branch the raiser cannot
+            reach, or ``branch_ref`` is not one of theirs.
+        :raises BranchRequiredError: a family shared by every branch is billed
+            and nothing decides which branch the invoice names.
+        :raises OffPriceListError: the structure is one branch's price list and
+            a family belongs to another.
+
         :raises CustomerNotProvisioned: a reference names no child on the roll,
             so no account can be opened for it.
         :raises CrossTenantError: a student attends another school.
@@ -647,12 +674,17 @@ class ProcurementActionPort(ABC):
     ) -> FinanceResult[ProcDocument]:
         """Create a DRAFT purchase requisition.
 
-        ``branch_ref`` defaults to the raiser's branch when omitted; an empty
-        branch for a school-level raiser is a valid head-office requisition, not
-        an error.
+        The requisition names a branch, decided by the raiser's grants: a raiser
+        pinned to one branch raises for it when ``branch_ref`` is left out, and a
+        school with one branch gives its only one. A raiser covering several
+        branches, or a school-wide raiser at a school with several, names one.
+        Head Office is a branch like any other.
 
-        :raises CrossTenantError: ``entity_ref`` is not the raiser's school's.
+        :raises CrossTenantError: ``entity_ref`` is not the raiser's school's,
+            or ``branch_ref`` is another school's branch.
         :raises CrossBranchError: a branch-bound raiser named another branch.
+        :raises BranchRequiredError: the raiser has a choice of branches and
+            named none.
         :raises ProcurementStateError: no lines, or a line the engine refuses.
         """
 
@@ -762,7 +794,7 @@ class ProcurementActionPort(ABC):
     @abstractmethod
     def pay_supplier(
         self, bill: ProcDocRef, *, actor_ref: UserRef, amount: Kobo,
-        payment_date: date,
+        payment_date: date, bank_account_ref: Optional[Ref] = None,
     ) -> FinanceResult[ProcDocument]:
         """Record a vendor payment against a bill, still DRAFT and unposted.
 
@@ -773,9 +805,15 @@ class ProcurementActionPort(ABC):
         settles the bill the school chose rather than the oldest one. ``amount``
         is integer kobo, and part-payment is allowed.
 
-        :raises ProcurementStateError: the amount is not positive, or the engine
-            refused the payment.
-        :raises CrossTenantError / CrossBranchError: scope violation.
+        The payment names the bill's branch and leaves from that branch's own
+        bank account: ``bank_account_ref`` (a ``vs_finance`` BankAccount the
+        actor can reach), or, left out, the branch's one active account.
+
+        :raises ProcurementStateError: the amount is not positive, the account
+            named is another branch's, the branch has no account or several and
+            none was named, or the engine refused the payment.
+        :raises CrossTenantError / CrossBranchError: scope violation, including
+            a bank account outside the actor's reach.
         """
 
     @abstractmethod

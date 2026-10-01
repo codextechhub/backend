@@ -59,6 +59,8 @@ from schools.vs_academics.services.words import term_word
 from ..due_dates import policy_for, resolve_due_date
 from ..contracts import (
     SOURCE_TYPE_STUDENT,
+    student_pk,
+    AccountMove,
     AgeingBucket,
     AgeingRow,
     ApprovalDecision,
@@ -99,6 +101,7 @@ from ..exceptions import (
     AmbiguousPrimaryEntity,
     ApprovalNotParkedError,
     ApprovalTemplateMissingError,
+    BranchRequiredError,
     CrossBranchError,
     CrossTenantError,
     CustomerCreationRace,
@@ -107,6 +110,7 @@ from ..exceptions import (
     GuardianLinkNotConfigured,
     InvalidFilterError,
     InvalidTermLinkError,
+    OffPriceListError,
     OverrideNotPermittedError,
     PaymentGatewayError,
     ProcurementStateError,
@@ -519,13 +523,6 @@ def _receivable_account(entity):
     )
 
 
-def _cash_account(entity):
-    """The entity's cash/bank account, without which nothing can be paid out."""
-    from vs_finance.constants import AccountMappingKey
-
-    return _mapped_account(entity, AccountMappingKey.CASH_BANK, "cash or bank")
-
-
 def _student_row(student_ref):
     """The child this reference names, as the three facts the FAL needs, or None.
 
@@ -538,9 +535,8 @@ def _student_row(student_ref):
     """
     from schools.vs_students.models import Student
 
-    try:
-        student_id = int(student_ref)
-    except (TypeError, ValueError):
+    student_id = student_pk(student_ref)
+    if student_id is None:
         return None
     return (
         Student.all_objects.filter(pk=student_id)
@@ -596,12 +592,8 @@ def _class_labels(student_refs, tenant_id):
     """
     from schools.vs_students.models import ClassEnrolment
 
-    by_id = {}
-    for ref in student_refs:
-        try:
-            by_id[int(ref)] = ref
-        except (TypeError, ValueError):
-            continue
+    by_id = {student_pk(ref): ref for ref in student_refs}
+    by_id.pop(None, None)
     if not by_id:
         return {}
 
@@ -781,6 +773,239 @@ def _link_dto(link):
     )
 
 
+def _translate_branch_refusal(exc, field):
+    """Turn a DRF refusal from :mod:`vs_rbac.scoping`'s branch rules into a FAL one.
+
+    The scoping helpers speak DRF because the screens call them; the FAL's
+    callers speak its own exceptions. A 400 asks the caller to name a branch, a
+    403 is a branch outside their reach, and anything else is not a branch
+    refusal and is returned untouched.
+    """
+    from rest_framework.exceptions import PermissionDenied
+    from rest_framework.exceptions import ValidationError as DRFValidationError
+
+    if isinstance(exc, DRFValidationError):
+        return BranchRequiredError(_drf_message(exc.detail), field=field)
+    if isinstance(exc, PermissionDenied):
+        return CrossBranchError(str(exc.detail))
+    return exc
+
+
+def _raised_transaction_branch_id(user, tenant, branch_ref, *, field="branch_ref"):
+    """The branch a transaction *user* raises in *tenant* names, by their grants.
+
+    :func:`vs_rbac.scoping.raised_transaction_branch`, the rule every screen
+    raises a transaction by, asked for a caller the FAL holds as a user rather
+    than a request: a caller pinned to one branch raises for it and may name no
+    other; a caller covering several, or a school-wide caller at a school with
+    several, must name one; a school with one branch gives its only one. A
+    branch of another school is :class:`CrossTenantError`, as everywhere in the
+    FAL, before any of that is asked.
+
+    ``user`` may be ``None`` for a run with nobody behind it, which reaches the
+    whole school.
+    """
+    from types import SimpleNamespace
+
+    from rest_framework.exceptions import APIException
+
+    from vs_rbac.scoping import raised_transaction_branch
+
+    if branch_ref is not None:
+        _branch(branch_ref, tenant)
+    try:
+        branch = raised_transaction_branch(
+            SimpleNamespace(user=user), tenant, {"branch": branch_ref},
+        )
+    except APIException as exc:
+        raise _translate_branch_refusal(exc, field) from exc
+    return getattr(branch, "pk", None)
+
+
+def _cohort_raiser(raiser_ref, effective_user, tenant):
+    """Whose reach bounds a fee run: the named raiser, else the request's user.
+
+    A named raiser of another school is refused. Without one, the effective user
+    of the request in progress is the raiser when they belong to this school;
+    otherwise nobody is, and the run is bounded by the school alone, as for a
+    management command.
+    """
+    if raiser_ref is not None:
+        user = _user(raiser_ref)
+        if user is None or user.tenant_id != tenant.pk:
+            raise CrossTenantError("That user does not belong to this school.")
+        return user
+    if getattr(effective_user, "tenant_id", None) == tenant.pk:
+        return effective_user
+    return None
+
+
+class _RunBranch:
+    """The branch a fee run names for a family that gives none of its own.
+
+    A pupil's invoice names the pupil's branch, so most runs never ask this. A
+    family every branch shares with no pupil behind it (a receivable imported
+    before the roll) has no branch to give, and their invoice takes the
+    raiser's, by :func:`_raised_transaction_branch_id`. A named ``branch_ref``
+    is checked at once, so a bad one is refused whoever the cohort holds; an
+    absent one is asked about only when such a family is billed.
+    """
+
+    def __init__(self, raiser, tenant, branch_ref):
+        self._raiser, self._tenant, self._ref = raiser, tenant, branch_ref
+        self._resolved = False
+        self._id = None
+        if branch_ref is not None:
+            self.id()
+
+    def id(self):
+        if not self._resolved:
+            self._id = _raised_transaction_branch_id(self._raiser, self._tenant, self._ref)
+            self._resolved = True
+        return self._id
+
+
+def _cohort_branches(structure, pairs, to_bill, *, raiser, run_branch):
+    """Every invoice's branch, and the pupils' accounts the run re-files.
+
+    Returns ``({customer id: branch id}, {customer id: branch id})``: the branch
+    each invoice this run raises names, and, for each pupil about to be billed
+    whose account is filed at a branch other than the one they attend, the
+    branch that account moves to.
+
+    A pupil's own branch on the roll comes first: ``Student.branch`` is never
+    null and a child attends exactly one branch, while a class may be shared by
+    several. A family with no pupil behind it gives its account's branch, and
+    one with neither takes the run's (:class:`_RunBranch`).
+
+    Two refusals, each before anything is written and each over the whole
+    cohort, so a run bills everyone named or nobody:
+
+    * :class:`CrossBranchError` (404) for a family whose branch the raiser
+      cannot reach. The roll decides, not the account: Tunde attends Ikeja, so a
+      Lekki-bound bursar who names them is refused exactly as for an id that
+      names nobody, wherever Tunde's account happens to be filed.
+    * :class:`OffPriceListError` (409) when the structure is one branch's price
+      list and a family belongs to another branch, or to every branch.
+
+    A pupil whose account is filed elsewhere is billed where they attend, and
+    their account follows them (:func:`_refile_accounts`). Only pupils about to
+    be billed move: one already billed for this period is skipped, so a rerun
+    bills nobody twice and moves nobody. An account every branch shares stays
+    shared; its bill names the pupil's branch.
+
+    The branch is not part of the billing key. A rerun finds a pupil's invoice
+    for the period by account, structure and period whichever branch it names.
+    """
+    from schools.vs_students.models import Student
+    from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
+
+    tenant = structure.entity.tenant
+    ids = {student_pk(ref) for ref, _customer in pairs} - {None}
+    pupils = dict(
+        Student.all_objects.filter(tenant=tenant, pk__in=ids).values_list("pk", "branch_id")
+    ) if ids else {}
+
+    own = {}
+    for ref, customer in pairs:
+        pupil_branch = pupils.get(student_pk(ref))
+        own[customer.pk] = (
+            pupil_branch if pupil_branch is not None else customer.branch_id
+        )
+
+    reach = visible_branch_ids(raiser, tenant) if raiser is not None else WHOLE_TENANT
+    if reach is not WHOLE_TENANT and any(
+        branch_id is not None and branch_id not in reach for branch_id in own.values()
+    ):
+        raise CrossBranchError("No such student.")
+
+    if structure.branch_id:
+        off = sum(1 for branch_id in own.values() if branch_id != structure.branch_id)
+        if off:
+            raise OffPriceListError(
+                f"{off} of the children named attend another branch. This fee "
+                f"structure prices one branch only; bill them from their own "
+                f"branch's structure."
+            )
+
+    moves = {
+        customer.pk: own[customer.pk] for customer in to_bill
+        if customer.branch_id is not None and own[customer.pk] != customer.branch_id
+    }
+    branches = {
+        customer.pk: own[customer.pk] if own[customer.pk] is not None else run_branch.id()
+        for customer in to_bill
+    }
+    return branches, moves
+
+
+def _refile_accounts(to_bill, moves, *, actor_user):
+    """Re-file each pupil's account in ``moves`` at the branch they attend.
+
+    The account is a shared record that follows its pupil, so the run that bills
+    Tunde at Lekki files Tunde's account at Lekki in the same transaction.
+    Nothing already raised moves: Tunde's First Term bill stays Ikeja's, and
+    Ikeja keeps chasing it.
+
+    Each move goes through :func:`vs_finance.customers.update_customer`, the
+    one way an account is changed, under its row lock, and is written to the
+    finance audit trail once for each side, because a branch-bound reader sees
+    only their own branches' entries:
+
+    * the entry ``update_customer`` writes is the arriving side, filed under
+      Lekki ("moved from Ikeja"), the account's branch as it now stands;
+    * a second entry is the leaving side, filed under Ikeja ("moved to Lekki,
+      where the pupil attends"), so Ikeja's bursar, wondering why Tunde left
+      their list while still owing First Term, finds the reason.
+
+    Both carry the branch ids before and after and no money figure. Returns
+    the moves as :class:`~schools.core.fal.contracts.AccountMove` values, in
+    the order the run bills.
+    """
+    from vs_finance.audit import record
+    from vs_finance.constants import FinanceAuditAction
+    from vs_finance.customers import update_customer
+    from vs_tenants.models import Branch
+
+    if not moves:
+        return ()
+    names = dict(
+        Branch.all_objects.filter(
+            pk__in={c.branch_id for c in to_bill if c.pk in moves} | set(moves.values()),
+        ).values_list("pk", "name")
+    )
+    done = []
+    for customer in to_bill:
+        if customer.pk not in moves or customer.pk in {m.customer_ref for m in done}:
+            continue
+        from_id, to_id = customer.branch_id, moves[customer.pk]
+        details = {"from_branch": names[from_id], "to_branch": names[to_id]}
+        update_customer(
+            customer, {"branch_id": to_id}, actor_user=actor_user,
+            message=(
+                f"Customer {customer.code} ({customer.name}) moved from "
+                f"{names[from_id]}, billed here where the pupil attends."
+            ),
+            **details,
+        )
+        record(
+            entity=customer.entity, action=FinanceAuditAction.CUSTOMER_UPDATED,
+            actor_user=actor_user, target=customer, branch=from_id,
+            message=(
+                f"Customer {customer.code} ({customer.name}) moved to "
+                f"{names[to_id]}, where the pupil attends. Bills raised here "
+                f"stay here."
+            ),
+            before={"branch_id": from_id}, after={"branch_id": to_id}, **details,
+        )
+        done.append(AccountMove(
+            customer_ref=customer.pk, student_ref=customer.source_id,
+            name=customer.name, from_branch_ref=from_id, from_branch=names[from_id],
+            to_branch_ref=to_id, to_branch=names[to_id],
+        ))
+    return tuple(done)
+
+
 class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
     """Component 2 over the FAL-owned link table and ``vs_finance.fees``."""
 
@@ -820,7 +1045,7 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
 
     @envelope
     def generate_cohort_invoices(self, fee_structure_ref, student_refs, *, period=None,
-                                 dry_run=False):
+                                 dry_run=False, raiser_ref=None, branch_ref=None):
         """Bill a cohort against a fee structure, or preview what billing would do.
 
         A preview runs the real thing and throws the writes away, deliberately
@@ -840,6 +1065,14 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
         Second Term fees billed in December for a term that starts in January are
         therefore deferred income in December and revenue month by month from
         January; a term already under way is billed as revenue on the day.
+
+        Every invoice names its branch, decided here and handed to the engine
+        per customer (:func:`_cohort_branches`): a pupil is billed in the branch
+        they attend on the roll, and the run refuses, before anything is
+        written, a pupil outside the raiser's reach and a family off a branch
+        structure's price list. A pupil whose account is filed at another
+        branch is billed where they attend and their account moves with them
+        (:func:`_refile_accounts`); a preview lists the moves it would make.
         """
         from vs_finance import fees
         from vs_finance.models import Customer
@@ -847,6 +1080,12 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
         from ..models import FeeStructureTermLink
 
         structure = _fee_structure(fee_structure_ref)
+        tenant = structure.entity.tenant
+        # The effective user, not the actor: where a CodeX operator is acting
+        # inside a school's session, the bill is the school's act.
+        _actor, effective_user, _proxy = get_current_audit_identity()
+        raiser = _cohort_raiser(raiser_ref, effective_user, tenant)
+        run_branch = _RunBranch(raiser, tenant, branch_ref)
         link = (
             FeeStructureTermLink.objects
             .filter(fee_structure=structure)
@@ -892,14 +1131,12 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
             skipped = tuple(ref for ref, c in pairs if c.pk in already)
             billable = tuple(ref for ref, c in pairs if c.pk not in already)
             to_bill = [c for _ref, c in pairs if c.pk not in already]
-
-            # The effective user, not the actor: where a CodeX operator is acting
-            # inside a school's session, the bill is the school's act and its
-            # ledger should say so. Read from the request context rather than a
-            # port argument, because every caller of this bridge is already
-            # inside an authenticated request and none of them should have to
-            # remember to thread an identity through to be attributed.
-            _actor, effective_user, _proxy = get_current_audit_identity()
+            branches, moves = _cohort_branches(
+                structure, pairs, to_bill, raiser=raiser, run_branch=run_branch,
+            )
+            accounts_moved = _refile_accounts(
+                to_bill, moves, actor_user=effective_user or raiser,
+            )
 
             # The school's own rule, resolved here rather than in the engine.
             # Three of the four bases are academic-calendar facts, and the term
@@ -919,7 +1156,8 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
             # dates and defers what is billed before they start.
             taught = link.term if link.term_id else link.session
             invoices = fees.generate_invoices(
-                structure, to_bill, actor_user=effective_user,
+                structure, to_bill, actor_user=effective_user or raiser,
+                invoice_branches=branches,
                 invoice_date=invoice_date, due_date=due_date,
                 billing_period=link.period_key, billing_period_label=link.label,
                 service_start=taught.start_date, service_end=taught.end_date,
@@ -934,6 +1172,7 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
                 students_to_bill=billable,
                 dry_run=dry_run,
                 due_date=due_date,
+                accounts_moved=accounts_moved,
             )
 
         if not dry_run:
@@ -1485,10 +1724,12 @@ class DjangoGuardianLinkAdapter(GuardianLinkPort):
     def owns(self, guardian_ref, student_ref):
         from schools.vs_students.models import StudentGuardian
 
+        student_id = student_pk(student_ref)
         try:
             guardian_id = int(guardian_ref)
-            student_id = int(student_ref)
         except (TypeError, ValueError):
+            return False
+        if student_id is None:
             return False
         return StudentGuardian.all_objects.filter(
             guardian_id=guardian_id, student_id=student_id,
@@ -1805,22 +2046,52 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
             raise CrossTenantError("That user does not belong to this school.")
         return user
 
-    def _raised_branch(self, entity, user, branch_ref):
-        """The branch a new document captures, following the raiser.
+    def _resolve_for(self, doc: ProcDocRef, actor_ref):
+        """The document, its books and the acting user, when the user may act on it.
 
-        A branch-bound raiser writes their own branch and may not name another. A
-        school-level raiser writes whatever they name, including nothing at all:
-        an empty branch is a head-office purchase, not a validation failure.
+        The reach every procurement action screen applies
+        (:func:`vs_procurement.views.base._document_or_404`): a branch-bound user
+        acts only on their own branches' documents, and one in another branch is
+        :class:`CrossBranchError`, exactly as an id that names nothing. Mrs Eze's
+        role is granted at Lekki, so they cannot submit, release, order against,
+        receive, bill or pay an Ikeja requisition's chain through the FAL any
+        more than through the procurement screens.
+
+        Approving and declining do not come through here: who may decide a
+        document is the approval ladder's question, and a named approver can sit
+        at any branch.
         """
-        caller_branch_id = getattr(user, "branch_id", None)
-        if branch_ref is None:
-            return caller_branch_id
-        _branch(branch_ref, entity.tenant)
-        if caller_branch_id is not None and caller_branch_id != branch_ref:
-            raise CrossBranchError(
-                "A branch-bound user cannot raise a document for another branch."
+        from types import SimpleNamespace
+
+        from rest_framework.exceptions import NotFound
+
+        from vs_procurement.views.base import _document_or_404
+
+        entity, document = self._resolve(doc)
+        user = self._actor(entity, actor_ref)
+        try:
+            _document_or_404(
+                SimpleNamespace(user=user), type(document).objects.filter(entity=entity),
+                document.pk, "No such document.",
             )
-        return branch_ref
+        except NotFound as exc:
+            raise CrossBranchError(
+                f"{doc.doc_type.value} {doc.doc_ref!r} belongs to another branch."
+            ) from exc
+        return entity, document, user
+
+    def _raised_branch(self, entity, user, branch_ref):
+        """The branch a new document names, by the raiser's grants.
+
+        The rule every procurement screen raises by
+        (:func:`_raised_transaction_branch_id`): a raiser pinned to one branch
+        raises for it and may name no other (:class:`CrossBranchError`); one
+        covering several, or a school-wide raiser at a school with several, must
+        name one (:class:`BranchRequiredError`); a school with one branch gives
+        its only one. Head Office is a branch like any other, so a head-office
+        purchase names Head Office rather than no branch.
+        """
+        return _raised_transaction_branch_id(user, entity.tenant, branch_ref)
 
     # ----- raise ----------------------------------------------------------- #
     @envelope
@@ -1859,8 +2130,7 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
     def submit_for_approval(self, doc, *, actor_ref):
         from vs_procurement import approvals
 
-        entity, document = self._resolve(doc)
-        user = self._actor(entity, actor_ref)
+        entity, document, user = self._resolve_for(doc, actor_ref)
         try:
             instance = approvals.submit_for_approval(document, actor_user=user)
         except Exception as exc:
@@ -1874,8 +2144,7 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
     def approve_without_review(self, doc, *, actor_ref, reason):
         from vs_procurement import approval_override
 
-        entity, document = self._resolve(doc)
-        user = self._actor(entity, actor_ref)
+        entity, document, user = self._resolve_for(doc, actor_ref)
         try:
             row = approval_override.release_parked_document(
                 document, actor_user=user, reason=reason,
@@ -1938,8 +2207,7 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
         from vs_procurement import purchasing
         from vs_procurement.models import Vendor
 
-        entity, document = self._resolve(requisition)
-        user = self._actor(entity, actor_ref)
+        entity, document, user = self._resolve_for(requisition, actor_ref)
         vendor = Vendor.objects.filter(pk=vendor_ref, entity=entity).first()
         if vendor is None:
             raise CrossTenantError(f"Vendor {vendor_ref!r} is not in this school's books.")
@@ -1967,8 +2235,7 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
 
         from vs_procurement.views.receiving import _write_grn_lines
 
-        entity, order = self._resolve(po)
-        user = self._actor(entity, actor_ref)
+        entity, order, user = self._resolve_for(po, actor_ref)
         if not lines:
             raise ProcurementStateError("A goods receipt needs at least one line.")
 
@@ -1999,8 +2266,7 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
             PurchaseOrderLine, Vendor, VendorInvoice, VendorInvoiceLine,
         )
 
-        entity, order = self._resolve(po)
-        user = self._actor(entity, actor_ref)
+        entity, order, user = self._resolve_for(po, actor_ref)
         vendor = Vendor.objects.filter(pk=vendor_ref, entity=entity).first()
         if vendor is None:
             raise CrossTenantError(f"Vendor {vendor_ref!r} is not in this school's books.")
@@ -2055,26 +2321,60 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
             raise _translate_procurement(exc) from exc
         return _available(_proc_document(bill, overridden=False))
 
+    def _supplier_bank(self, entity, user, invoice, bank_account_ref):
+        """The bank account a payment of *invoice* leaves from.
+
+        A document is paid only from its own branch's bank account, which the
+        caller can reach (:func:`vs_finance.views_ops.base._resolve_bank_account`,
+        the check every money-out screen makes). Named, it is checked; not
+        named, the branch's one active account in reach is used, and a branch
+        with none or several is asked to name one. The account is chosen when
+        the payment is recorded, not when it posts: a payment recorded against
+        the wrong account would otherwise wait for approval and then be
+        refused.
+        """
+        from types import SimpleNamespace
+
+        from vs_finance.models import BankAccount
+        from vs_finance.views_ops.base import _resolve_bank_account
+        from vs_rbac.scoping import transaction_branch_match_q, transaction_branch_q_for_user
+
+        if bank_account_ref is not None:
+            return _resolve_bank_account(
+                SimpleNamespace(user=user), entity, bank_account_ref,
+                document_branch=invoice.branch_id, noun="supplier payment",
+            )
+        candidates = list(
+            BankAccount.objects
+            .filter(transaction_branch_q_for_user(user), entity=entity, is_active=True)
+            .filter(transaction_branch_match_q(entity.tenant, invoice.branch_id))
+            .select_related("gl_account")[:2]
+        )
+        if len(candidates) != 1:
+            raise ProcurementStateError(
+                "Name the bank account this payment leaves from (bank_account_ref): "
+                "the bill's branch has "
+                + ("no bank account." if not candidates else "more than one.")
+            )
+        return candidates[0]
+
     @envelope
-    def pay_supplier(self, bill, *, actor_ref, amount, payment_date):
+    def pay_supplier(self, bill, *, actor_ref, amount, payment_date,
+                     bank_account_ref=None):
         from vs_procurement.models import VendorPayment, VendorPaymentAllocation
 
-        entity, invoice = self._resolve(bill)
-        user = self._actor(entity, actor_ref)
+        entity, invoice, user = self._resolve_for(bill, actor_ref)
         if not amount or amount <= 0:
             raise ProcurementStateError("A supplier payment must be a positive amount.")
 
         try:
             with transaction.atomic():
+                bank = self._supplier_bank(entity, user, invoice, bank_account_ref)
                 payment = VendorPayment.objects.create(
                     entity=entity, branch_id=invoice.branch_id, vendor=invoice.vendor,
                     payment_date=payment_date, gross_amount=amount,
                     wht_amount=0, net_amount=amount, created_by=user,
-                    # Without this the payment records fine and then refuses to
-                    # post, days later, after somebody has approved it. The
-                    # account the money leaves from is part of recording the
-                    # payment, not part of posting it.
-                    payment_account=_cash_account(entity),
+                    payment_account=bank.gl_account,
                 )
                 # A draft allocation row, which the engine calls an approval
                 # instruction: it names the bill this money is for, survives the

@@ -5778,6 +5778,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         # and the one the school bridge uses.
         from vs_finance.fees import generate_invoices
         from vs_finance.models import Customer, FeeStructure
+        from vs_tenants.models import Branch
 
         made10 = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
@@ -5789,6 +5790,8 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
             FeeStructure.objects.get(entity=entity, code="JSS2T1"),
             [Customer.objects.get(entity=entity, code="STU10")],
             invoice_date=_dt.date(2026, 3, 1),
+            # A customer every branch shares is billed in a named branch.
+            branch=Branch.all_objects.filter(tenant=entity.tenant).first(),
         )
         self.assertEqual(len(raised), 1)
         self.assertEqual(raised[0].due_date, _dt.date(2026, 3, 31))

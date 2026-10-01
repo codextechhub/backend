@@ -322,7 +322,7 @@ class FeeTermBridgeTests(FALFixture):
     def test_a_cohort_is_billed_once_however_often_the_run_repeats(self):
         self.bridge.link_term(self.structure.pk, self.session.pk, self.term.pk)
         for ref in ("stu-1", "stu-2"):
-            self.student_customer(self.corona_books, ref)
+            self.student_customer(self.corona_books, ref, branch=self.ikeja)
 
         first = self.bridge.generate_cohort_invoices(
             self.structure.pk, ("stu-1", "stu-2"),

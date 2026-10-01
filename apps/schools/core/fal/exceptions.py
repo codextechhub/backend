@@ -23,6 +23,9 @@ Mapping at the API edge (the consuming module's responsibility):
     CustomerNotProvisioned    -> 409 (student has no AR account to bill)
     TermNotLinkedError        -> 409 (fee structure has no term to bill against)
     InvalidTermLinkError      -> 400 (the named term is not in the named session)
+    BranchRequiredError       -> 400 naming ``field`` (a transaction needs a branch
+                                 and the caller has a choice to make)
+    OffPriceListError         -> 409 (a branch's fee structure billing another's)
     InvalidFilterError        -> 400 (bad report/list filter)
     PaymentGatewayError       -> 502-class (gateway rejected the session)
     ApprovalTemplateMissing   -> 409 (no approval rule configured at all)
@@ -130,6 +133,32 @@ class InvalidTermLinkError(FALError):
     (``schools.vs_academics.AcademicSession`` and ``AcademicTerm``), not opaque
     strings, so a term belonging to a different session is a caller error the
     FAL can and should catch.
+    """
+
+
+# --------------------------------------------------------------------------- #
+# Branch errors (components 2 and 7)
+# --------------------------------------------------------------------------- #
+class BranchRequiredError(FALError):
+    """A transaction is being raised and nothing decides its branch.
+
+    Every invoice, requisition and payment names a real branch. The caller's
+    grants decide it when they work in one branch, and a school with one branch
+    gives its only one; a school-wide caller at a school with several, or a
+    caller covering several, has a choice to make and is asked rather than
+    defaulted. Rendered 400 naming :attr:`field`, the input that answers it.
+    """
+
+    def __init__(self, message: str, *, field: str = "branch_ref") -> None:
+        super().__init__(message)
+        self.field = field
+
+
+class OffPriceListError(FALError):
+    """A fee structure filed under one branch was asked to bill another's family.
+
+    A structure with a branch is that branch's price list: Ikeja's JSS 1 fee is
+    not Lekki's. Rendered 409.
     """
 
 

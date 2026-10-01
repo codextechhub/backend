@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from vs_finance.branch_derivation import register_customer_source
 
-from .contracts import SOURCE_TYPE_STUDENT
+from .contracts import SOURCE_TYPE_STUDENT, student_pk
 
 PUPIL_ON_THE_ROLL = "the pupil on the roll"
 
@@ -32,10 +32,9 @@ def pupil_branches(ctx, customer_ids):
         pk__in=customer_ids, entity=ctx.entity, source_type=SOURCE_TYPE_STUDENT,
     ).values_list("pk", "source_id")
     for customer_id, source_id in rows:
-        try:
-            pupils[customer_id] = int(source_id)
-        except (TypeError, ValueError):
-            continue
+        student_id = student_pk(source_id)
+        if student_id is not None:
+            pupils[customer_id] = student_id
     if not pupils:
         return {}
     branches = dict(

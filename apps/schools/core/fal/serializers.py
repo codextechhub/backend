@@ -24,6 +24,10 @@ class GenerateInvoicesSerializer(serializers.Serializer):
     "bill everyone" default: the neutral engine's own batch-generate bills every
     active customer, and that is exactly the behaviour a school must never get
     by omission. A cohort is named or nothing is billed.
+
+    ``branch`` is not where the cohort is billed: each child is billed in the
+    branch they attend. It answers only for a family every branch shares that
+    has no child on the roll behind it.
     """
 
     students = serializers.ListField(
@@ -32,6 +36,8 @@ class GenerateInvoicesSerializer(serializers.Serializer):
         max_length=2000,
     )
     dry_run = serializers.BooleanField(default=False)
+    #: Where a family shared by every branch, with no child behind it, is billed.
+    branch = serializers.IntegerField(min_value=1, required=False, allow_null=True)
 
     def validate_students(self, value):
         # A caller who names the same child twice means to bill them once. The
@@ -79,6 +85,18 @@ def generation_payload(result) -> dict:
         "total_billed": result.total_billed,
         # ISO date, or null from a bridge that resolves none.
         "due_date": result.due_date.isoformat() if result.due_date else None,
+        "accounts_moved": [
+            {
+                "customer": move.customer_ref,
+                "student": move.student_ref,
+                "name": move.name,
+                "from_branch": move.from_branch,
+                "from_branch_id": move.from_branch_ref,
+                "to_branch": move.to_branch,
+                "to_branch_id": move.to_branch_ref,
+            }
+            for move in result.accounts_moved
+        ],
         "counts": {
             "to_bill": len(result.students_to_bill),
             "skipped": len(result.students_skipped),

@@ -36,12 +36,16 @@ from vs_finance.models import FeeStructure
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 from vs_rbac.scoping import assert_caller_may_configure, branch_q
 
+from .contracts import student_pk
 from .exceptions import (
+    BranchRequiredError,
+    CrossBranchError,
     CrossTenantError,
     CustomerNotProvisioned,
     EntityNotProvisioned,
     FALError,
     InvalidTermLinkError,
+    OffPriceListError,
     TermNotLinkedError,
 )
 from .due_dates import due_basis_label, resolve_due_date
@@ -62,6 +66,7 @@ _REFUSALS = {
     InvalidTermLinkError: (status.HTTP_400_BAD_REQUEST, "INVALID_TERM_LINK"),
     CustomerNotProvisioned: (status.HTTP_400_BAD_REQUEST, "CUSTOMER_NOT_PROVISIONED"),
     EntityNotProvisioned: (status.HTTP_409_CONFLICT, "ENTITY_NOT_PROVISIONED"),
+    OffPriceListError: (status.HTTP_409_CONFLICT, "WRONG_BRANCH"),
 }
 
 
@@ -104,15 +109,18 @@ class _FalView(APIView):
         are read exclusively, as they are everywhere else: a child always
         belongs to one branch.
 
-        Only references that name a student row are checked. A reference that
-        is not a student's primary key is an imported receivable the bridge
-        resolves by entity, and a child of another school is the bridge's
-        ``CrossTenantError``, which also answers 404.
+        Only references that name a student row are checked, read by
+        :func:`~schools.core.fal.contracts.student_pk` exactly as the bridge
+        reads them, so no spelling of a child's id names them to the bridge and
+        nobody here. A reference that is not a student's primary key is an
+        imported receivable the bridge resolves by entity, and a child of
+        another school is the bridge's ``CrossTenantError``, which also answers
+        404.
         """
         from schools.vs_students.models import Student
         from schools.vs_students.services.scoping import scope_students
 
-        ids = {int(ref) for ref in student_refs if str(ref).isdigit()}
+        ids = {student_pk(ref) for ref in student_refs} - {None}
         if not ids:
             return
         tenant = self.request.tenant
@@ -121,30 +129,19 @@ class _FalView(APIView):
         if named.exclude(pk__in=visible).exists():
             raise NotFound("No such student.")
 
-    def students_off_the_price_list(self, structure, student_refs):
-        """How many named children attend a branch other than the structure's.
-
-        A structure with a branch is that branch's price list: Lekki's JSS 1
-        fee is not Ikeja's. A caller who sees every branch can still name any
-        child, so the rule is held here rather than left to the screen that
-        lists the classes. A school-wide structure (no branch) prices every
-        branch and is never refused.
-        """
-        from schools.vs_students.models import Student
-
-        if not structure.branch_id:
-            return 0
-        ids = {int(ref) for ref in student_refs if str(ref).isdigit()}
-        return (
-            Student.all_objects.filter(tenant=self.request.tenant, pk__in=ids)
-            .exclude(branch_id=structure.branch_id)
-            .count()
-        )
-
     def refuse(self, exc: FALError):
         for kind, (code, slug) in _REFUSALS.items():
             if isinstance(exc, kind):
                 return error_response(str(exc), status=code, code=slug)
+        if isinstance(exc, BranchRequiredError):
+            # The body field that answers it is this route's ``branch``.
+            return error_response(
+                str(exc), error={"branch": [str(exc)]},
+                status=status.HTTP_400_BAD_REQUEST, code="BRANCH_REQUIRED",
+            )
+        if isinstance(exc, CrossBranchError):
+            # Another branch's child, answered like a child who does not exist.
+            raise NotFound("No such student.")
         if isinstance(exc, CrossTenantError):
             # The port caught what the view's scoping should already have. Say
             # nothing about the other tenant.
@@ -232,33 +229,40 @@ class GenerateInvoicesView(_FalView):
     ``dry_run`` runs the real generation inside a transaction that is rolled
     back, so the total shown is priced by the code that posts rather than by a
     second implementation that would quote a pre-tax figure.
+
+    Each child is billed in the branch they attend, so a run for the whole
+    school needs no branch named. The caller is the raiser, and the bridge
+    holds the branch rules over their grants (see
+    :meth:`~schools.core.fal.ports.FeeTermBridgePort.generate_cohort_invoices`):
+    another branch's child is a 404, and a child off a branch structure's price
+    list a 409 ``WRONG_BRANCH``. A child whose account is filed at another branch
+    is billed where they attend, and the account moves with them
+    (``accounts_moved`` in the response). The optional ``branch`` names where a
+    family shared by every branch, with no child behind it, is billed; a
+    school-wide bursar at a school with several branches who bills such a family
+    without it gets a 400 ``BRANCH_REQUIRED`` naming the field.
     """
 
     rbac_permission = "finance.feestructure.generate"
 
     def post(self, request, pk):
+        from vs_rbac.scoping import resolve_branch
+
         structure = self.get_structure(pk)
         payload = GenerateInvoicesSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         dry_run = payload.validated_data["dry_run"]
         self.refuse_unseen_students(payload.validated_data["students"])
-        off_list = self.students_off_the_price_list(
-            structure, payload.validated_data["students"],
-        )
-        if off_list:
-            return error_response(
-                f"{off_list} of the children named attend another branch. "
-                "This fee structure prices one branch only; bill them from "
-                "their own branch's structure.",
-                status=status.HTTP_409_CONFLICT,
-                code="WRONG_BRANCH",
-            )
+        named = payload.validated_data.get("branch")
+        branch = resolve_branch(request.tenant, named) if named is not None else None
 
         try:
             result = get_fee_term_bridge().generate_cohort_invoices(
                 structure.pk,
                 tuple(payload.validated_data["students"]),
                 dry_run=dry_run,
+                raiser_ref=request.user.pk,
+                branch_ref=branch.pk if branch is not None else None,
             )
         except FALError as exc:
             return self.refuse(exc)

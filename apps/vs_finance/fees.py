@@ -52,8 +52,8 @@ def already_billed_customer_ids(structure, customer_ids, billing_period: str = "
 @transaction.atomic
 # Handle the generate invoices workflow.
 def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
-                      actor_user=None, branch=None, billing_period="",
-                      billing_period_label="", service_start=None,
+                      actor_user=None, branch=None, invoice_branches=None,
+                      billing_period="", billing_period_label="", service_start=None,
                       service_end=None):  # Generate posted invoices from a fee structure.
     """Raise one posted invoice per customer from ``structure``'s fee items.
 
@@ -87,9 +87,16 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
     makes that true for every caller, including the owner layer's bridge, which bills
     a cohort and passes no date.
 
-    Each invoice belongs to its customer's branch. ``branch`` is the branch for a
-    customer every branch shares, who has none to give; a caller billing such a
-    customer passes it, because an invoice is a transaction and names a branch.
+    **Every invoice names a branch.** It is, in order: the branch
+    ``invoice_branches`` names for that customer (``{customer id: branch id}``),
+    the customer's own branch, then ``branch``, the one branch a run gives every
+    customer the branches share. An owner layer that knows each customer's branch
+    better than the customer record does (a school knows each pupil's) names it
+    per customer, and the engine refuses a name that contradicts a customer's own
+    branch rather than choosing between the two. An invoice left with no branch
+    is refused whenever the tenant owns one, so a run never files a bill under no
+    branch by omission; only books with no branch at all (none exist today) raise
+    one without.
 
     An omitted ``invoice_date`` is today at the branch each invoice is raised
     for, so a family billed at a branch that keeps its own time zone is billed on
@@ -128,6 +135,8 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
         if customer.entity_id != structure.entity_id:
             raise FinanceError(
                 f"Customer {customer.code} is not in entity {structure.entity.code}.")
+    named = {cid: getattr(b, "pk", b) for cid, b in (invoice_branches or {}).items()}
+    shared_branch_id = getattr(branch, "pk", branch)
     billed = already_billed_customer_ids(
         structure, [customer.pk for customer in customers], billing_period)
     optional_ids = [item.pk for item in items if item.is_optional]
@@ -137,6 +146,7 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
         ).values_list("item_id", "customer_id")
     ) if optional_ids else set()
     created = []  # Collect generated posted invoices for the return value.
+    tenant_has_branches = None  # Looked up once, only if an invoice lacks a branch.
 
     for customer in customers:  # Generate at most one invoice per selected customer.
         if customer.pk in billed or not customer.is_active:  # Billed already, or left.
@@ -148,13 +158,20 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
         if not lines:  # Nothing on this structure applies to this customer.
             continue
 
-        invoice_branch = customer.branch if customer.branch_id is not None else branch
-        dated = invoice_date or branch_today(
-            structure.entity.tenant, getattr(invoice_branch, "pk", None))
+        branch_id = _invoice_branch_id(customer, named, shared_branch_id)
+        if branch_id is None:
+            if tenant_has_branches is None:
+                from vs_tenants.models import Branch
+                tenant_has_branches = Branch.all_objects.filter(
+                    tenant_id=structure.entity.tenant_id).exists()
+            if tenant_has_branches:  # A transaction always names a branch.
+                raise PostingError(
+                    f"Customer {customer.code} is shared by every branch, so say "
+                    f"which branch their {structure.code} invoice belongs to.")
+        dated = invoice_date or branch_today(structure.entity.tenant, branch_id)
         invoice = Invoice.objects.create(
             entity=structure.entity, customer=customer,  # Scope invoice to the structure entity and customer.
-            # The customer decides the branch, not the structure.
-            branch=invoice_branch,
+            branch_id=branch_id,
             invoice_date=dated, due_date=due_date or dated + due_after,  # Billing and due dates.
             source="MANUAL", reference=reference,  # Mark source and statement reference.
             billing_key=billing_key, billing_period=billing_period or "",
@@ -178,3 +195,17 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
         created.append(invoice)  # Include the posted invoice in the result list.
 
     return created  # Return all newly created posted invoices.
+
+
+def _invoice_branch_id(customer, named, shared_branch_id):
+    """The branch id a fee invoice for *customer* names; see :func:`generate_invoices`."""
+    if customer.pk in named:
+        branch_id = named[customer.pk]
+        if customer.branch_id is not None and customer.branch_id != branch_id:
+            raise FinanceError(
+                f"Customer {customer.code} is filed under another branch than the "
+                f"one named for their invoice.")
+        return branch_id
+    if customer.branch_id is not None:
+        return customer.branch_id
+    return shared_branch_id

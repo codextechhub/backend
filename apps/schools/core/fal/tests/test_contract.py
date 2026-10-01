@@ -28,6 +28,7 @@ from schools.core.fal.contracts import (
 from schools.core.fal.exceptions import (
     ApprovalNotParkedError,
     ApprovalTemplateMissingError,
+    BranchRequiredError,
     CrossBranchError,
     FALNotConfiguredError,
     OverrideNotPermittedError,
@@ -47,7 +48,7 @@ LINES = (BillLine(description="Books", quantity=10, unit_price=1_000),)
 
 class ContractShapeTests(SimpleTestCase):
     def test_the_version_is_declared(self):
-        self.assertEqual(FAL_CONTRACT_VERSION, "1.1.3")
+        self.assertEqual(FAL_CONTRACT_VERSION, "1.1.4")
 
     def test_every_dto_is_frozen(self):
         """A consumer holds a snapshot, and cannot mutate finance through it."""
@@ -255,14 +256,20 @@ class FakeParityTests(SimpleTestCase):
                 entity_ref=7, raiser_ref=1, lines=LINES, branch_ref=66,
             )
 
-    def test_a_school_level_user_raises_with_no_branch(self):
-        fake = FakeProcurementActions(seeded_entities={7})
+    def test_a_school_level_user_names_a_branch_where_there_is_a_choice(self):
+        fake = FakeProcurementActions(
+            seeded_entities={7, 8}, entity_branches={7: (55, 66), 8: (77,)},
+        )
 
-        document = fake.raise_requisition(
-            entity_ref=7, raiser_ref=1, lines=LINES,
+        with self.assertRaises(BranchRequiredError):
+            fake.raise_requisition(entity_ref=7, raiser_ref=1, lines=LINES)
+        named = fake.raise_requisition(
+            entity_ref=7, raiser_ref=1, lines=LINES, branch_ref=66,
         ).unwrap()
+        only = fake.raise_requisition(entity_ref=8, raiser_ref=1, lines=LINES).unwrap()
 
-        self.assertIsNone(document.ref.branch_ref)
+        self.assertEqual(named.ref.branch_ref, 66)
+        self.assertEqual(only.ref.branch_ref, 77)
 
     def test_a_bill_is_not_posted_before_it_is_approved(self):
         """Parity with the adapter, which the engine forces to work this way."""
