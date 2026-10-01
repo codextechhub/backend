@@ -332,7 +332,10 @@ account.
 
 ### The selector
 
-The entity selector also offers the branches:
+Finance uses the branch and session selector the rest of the product already
+has in its menu, not the entity selector. A tenant keeps one set of books, so
+the entity selector offers a school a single option and finance does not show
+it.
 
 | Option | What the caller gets |
 | --- | --- |
@@ -340,12 +343,24 @@ The entity selector also offers the branches:
 | **Ikeja / Lekki / Abuja** | That branch's own lists, statements, bank accounts, transfers and close. |
 
 - The options are the branches in the caller's reach. A caller with one option
-  sees no selector; at a one-branch tenant nobody does.
+  sees no branch choice; at a one-branch tenant nobody does.
+- **The session applies to fee screens only.** Bills, collections, debtors, fee
+  runs and concessions follow the selected session or term, which the schools
+  product maps to its billing periods; the engine never learns what a session
+  is. The accounting screens (journals, trial balance, income statement,
+  balance sheet, tax, payroll, bank and close) keep their own financial year and
+  period picker and hide the session: a session runs September to July and
+  spans two financial years, so a session view would match neither the closed
+  accounts nor the returns filed.
 - **Creating a record.** With one branch selected, the form shows that branch and
   sends it with the record. Under All branches the form asks for the branch and
   preselects none.
-- The selection lives in the page address beside `?entity=`, never in stored
-  preferences, so two tabs can sit on two branches without interfering.
+- **Each tab keeps its own selection** (owner decision of 2026-10-01). The
+  branch and session live in the page address (`?branch=`, and the session on
+  fee screens), never in stored preferences, so Mrs Bello can keep Ikeja in one
+  tab and Lekki in another. A link into finance from another part of the
+  product carries the branch selected there, so opening finance starts where
+  the caller already was.
 
 ### Backend
 
@@ -414,7 +429,8 @@ Existing books were kept with blank branches. Moving them:
 8. Pupil branch move (students app, FAL operation, customer branch sync) and
    receivable transfers.
 9. Goods transfers from a central store, and one-order-per-branch buying.
-10. The branch selector and the transfer and pair-balance reports.
+10. The branch selector (the product's own branch and session selector, section 11)
+    and the transfer and pair-balance reports.
 
 Built so far from this order: 3 (cash transfers, approval, pair balances
 `/finance/inter-branch-balances/`, the register `/finance/inter-branch-transfers/`,
