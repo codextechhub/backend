@@ -389,6 +389,48 @@ MUST SAY:
   account on that mapping until repointed; a family paying for several children
   as one payer is not built; FinPro lacks these screens.
 
+### D91. Online money is tracked in transit, every payment record names its branch, and a school can settle straight to its own bank (b5ea87c7, 2026-10-01)
+MODULES: M18 payments and collections, M19 finance and accounting, M17 billing and
+invoicing (pay-to account), M04 roles and permissions, MRD.
+From the CFO review of finance (report artifact SCWwN56CiQZyAXLVFWpvcF); design in
+docs/payments/payment_custody_design.md (phase A of two).
+MUST SAY:
+- Branch on payment records (M18). CollectionIntent, VirtualAccount, PayoutBatch and
+  PayoutInstruction carry a branch, set at creation (a collection from its
+  invoice's branch, a payout from its source bank's, a batch from its lines' single
+  branch) and backfilled by branch_backfill. Migration vs_payments 0009.
+- Collection account per branch (M17, M19). One primary collection account per
+  branch instead of per entity; documents print the pay-to account of the
+  document's branch. Bank accounts carry a provider subaccount code. Migration
+  vs_finance 0045.
+- Gateway clearing (M18, M19). A confirmed online payment debits Gateway clearing
+  (mapping GATEWAY_CLEARING, starter code 1125, a control account; migration
+  vs_finance 0046 adds it to existing charts, using the next free 11xx code where
+  1125 is taken), not the bank. POST /v1/payments/settlements/ books a bank line
+  as the settlement of the collections it carries: Dr bank (net), Dr bank charges
+  (the provider's fee), Cr gateway clearing (gross), in the bank account's branch;
+  refused if the fees do not explain the shortfall or the settlement predates a
+  payment. The settlement report suggests settlements. A non-blocking close check
+  warns on collections in clearing beyond the tenant's threshold (default 7 days).
+  Collections confirmed before clearing existed keep the old matching.
+- Custody setting (M18). GET/PATCH /v1/payments/settings/custody/ (whole-tenant
+  write): mode HELD (default) or DIRECT, a change taking effect from the next month
+  start; settlement_interval_days 1-7 (default 1, used by the held settlement run);
+  clearing warning days. DIRECT cannot be scheduled until every branch's collection
+  account has a subaccount.
+- Direct mode (M18). POST /v1/payments/subaccounts/ creates or refreshes a branch
+  collection account's Paystack subaccount (whole-tenant). A DIRECT tenant's
+  checkouts and virtual accounts name the collection's branch subaccount with the
+  subaccount bearing the fee; a branch without one gets 409
+  COLLECTION_SUBACCOUNT_MISSING; payouts are refused with 409
+  ONLINE_PAYOUTS_NOT_OFFERED.
+- Keys: payments.settings.view, payments.settings.update, payments.settlement.create.
+- Needs Attention: held mode (per-branch held liability in CodeX's books, the
+  settlement run, payout funds check), switching (new virtual accounts on
+  held-to-direct, final settlement), and refusing online refunds in direct mode are
+  phase B; the Paystack field names listed in the adapter are to be confirmed
+  against Paystack's documentation.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.
