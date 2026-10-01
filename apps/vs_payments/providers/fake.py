@@ -54,6 +54,8 @@ class FakeProvider(Provider):
         self.subaccounts: dict[str, dict] = {}
         # The fee (kobo) every transfer costs the sender's balance.
         self.transfer_fee_kobo: int = 0
+        # What ``available_balance`` reports, by currency; a test sets it.
+        self.balances: dict[str, int] = {}
 
     def healthcheck(self) -> bool:
         return True
@@ -136,6 +138,9 @@ class FakeProvider(Provider):
     def transfer_fee(self, amount):
         return self.transfer_fee_kobo
 
+    def available_balance(self, currency="NGN"):
+        return int(self.balances.get(currency.upper(), 0))
+
     def verify_transfer(self, *, reference, provider_reference=""):
         status = self.forced_status.get(reference, "PROCESSING")
         return TransferResult(  # Return a deterministic transfer verification result.
@@ -174,6 +179,9 @@ class FakeProvider(Provider):
             else "COLLECTION"
         )
         status = data.get("status", "")
+        if direction == "DISPUTE" and data.get("resolution"):  # Mirrors Paystack's resolve event.
+            status = {"declined": "WON", "merchant-accepted": "LOST",
+                      "auto-accepted": "LOST"}.get(data["resolution"], status)
         return WebhookParseResult(  # Return a neutral parse result for the webhook pipeline.
             event_type=payload.get("event", ""),
             direction=direction,  # Route to the collection or payout flow.
@@ -196,16 +204,20 @@ class FakeProvider(Provider):
     # Handle the build webhook workflow.
     def build_webhook(self, *, event: str, reference: str, status: str,
                       amount: int = 0, currency: str = "NGN", provider_id: str = "1",
-                      receiver_account_number: str = ""):
+                      receiver_account_number: str = "", resolution: str = ""):
         """Return ``(raw_body: bytes, headers: dict)`` for a correctly-signed event.
 
         Pass ``receiver_account_number`` to build a dedicated virtual-account deposit
-        (the unsolicited-transfer event); leave it out for an ordinary charge.
+        (the unsolicited-transfer event); leave it out for an ordinary charge. Pass
+        ``resolution`` (``declined`` for a dispute the merchant won,
+        ``merchant-accepted`` for one it lost) with ``charge.dispute.resolve``.
         """
         data = {  # Build the event data block in the shape the parser expects.
             "reference": reference, "status": status, "amount": amount,  # Core event fields.
             "currency": currency, "id": provider_id,  # Provider id used by the parser.
         }
+        if resolution:  # Only a dispute resolution carries one.
+            data["resolution"] = resolution
         if receiver_account_number:  # Only deposits carry a receiving account.
             data["receiver_account_number"] = receiver_account_number  # Name the destination NUBAN.
         body = json.dumps({"event": event, "data": data}).encode()  # Encode the payload as bytes.

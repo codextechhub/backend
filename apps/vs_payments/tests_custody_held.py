@@ -32,7 +32,7 @@ from vs_finance.seed import seed_chart_of_accounts, seed_fiscal_year
 from vs_procurement.models import Vendor
 from vs_tenants.models import Branch
 
-from . import custody, held, services, settlement, webhooks
+from . import custody, held, held_reconciliation, services, settlement, webhooks
 from .constants import (
     CollectionStatus,
     CustodyMode,
@@ -51,6 +51,7 @@ from .models import (
     HeldBalance,
     PayoutBatch,
     HeldMovement,
+    HeldReconciliation,
     HeldSettlement,
     PaymentCustodySettings,
     PaymentEvent,
@@ -487,14 +488,85 @@ class PlatformSettlementApprovalTests(_HeldFixture):
 class HeldChargebackTests(_HeldFixture):
     """A chargeback on held money comes off the branch at once, in both books."""
 
-    def chargeback(self, intent, amount, event="charge.dispute.create"):
+    def chargeback(self, intent, amount, event="charge.dispute.create", resolution=""):
         body, headers = self.fake.build_webhook(
             event=event, reference=intent.reference,
-            status="awaiting-merchant-feedback", amount=amount)
+            status="resolved" if resolution else "awaiting-merchant-feedback", amount=amount,
+            resolution=resolution)
         with patch("vs_payments.alerts._notify", return_value=["n"]) as notify:
             event = webhooks.ingest_webhook(provider="PAYSTACK", raw_body=body, headers=headers)
             webhooks.process_stored_event(event.pk)
         return notify
+
+    def resolve(self, intent, resolution):
+        """Paystack's resolution: ``declined`` is a dispute won, ``merchant-accepted`` one lost."""
+        return self.chargeback(intent, 0, event="charge.dispute.resolve", resolution=resolution)
+
+    def resolution_audit(self):
+        return PaymentEvent.objects.get(action=PaymentAuditAction.PROVIDER_DISPUTE_RESOLVED)
+
+    def test_a_dispute_won_gives_the_chargeback_back_in_both_books_once(self):
+        intent = self.paid(self.books, self.adeyemi, 180_000, fee=2_000)
+        self.chargeback(intent, 30_000)
+        notify = self.resolve(intent, "declined")
+
+        self.assertEqual(held.held_balance(self.lekki.pk), 178_000)
+        won = HeldMovement.objects.get(collection=intent, kind=HeldMovementKind.DISPUTE_WON)
+        self.assertEqual((won.amount, won.tenant_journal.branch_id), (30_000, self.lekki.pk))
+        chargebacks = Account.objects.get(entity=self.books, code="5520")
+        self.assertEqual(self.balance(chargebacks, self.lekki), 0)
+        self.assertEqual(self.balance(self.clearing(self.books), self.lekki), 180_000)
+        self.assertEqual(self.platform_line_total("2180"), -178_000)
+        self.assertEqual(self.resolution_audit().metadata["outcome"], "WON")
+        context = notify.call_args_list[0].kwargs["context"]
+        self.assertEqual(context["kind_label"], "Chargeback won")
+        self.assertIn("₦300.00 was given back", context["booking"])
+
+        self.assertEqual(held.restore_held_chargeback(intent), won)  # Once per dispute.
+        self.assertEqual(held.held_balance(self.lekki.pk), 178_000)
+        self.assert_books_agree()
+
+    def test_a_won_dispute_repays_the_shortfall_first(self):
+        first = self.paid(self.books, self.adeyemi, 180_000, fee=2_000)
+        self.yesterday(first)
+        run, _ = held.build_settlement(self.books, self.lekki.pk)
+        self.confirm(self.dispatch(run.batch), amount=178_000)
+        self.paid(self.books, self.adeyemi, 50_000, fee=0)
+        self.chargeback(first, 180_000)
+        self.assertEqual(held.held_balance(self.lekki.pk), -130_000)
+        self.assertEqual(held.platform_owed_balance(), 130_000)
+
+        notify = self.resolve(first, "declined")
+        self.assertEqual(held.held_balance(self.lekki.pk), 50_000)
+        self.assertEqual(held.platform_owed_balance(), 0)
+        self.assertEqual(held.platform_liability_balance(), 50_000)
+        won = HeldMovement.objects.get(collection=first, kind=HeldMovementKind.DISPUTE_WON)
+        self.assertEqual(held.repaid_by_restore(won), 130_000)
+        self.assertIn("₦1,300.00 of it repaid what the branch owed",
+                      notify.call_args_list[0].kwargs["context"]["booking"])
+        self.assert_books_agree()
+
+    def test_a_dispute_lost_stays_as_booked(self):
+        intent = self.paid(self.books, self.adeyemi, 180_000, fee=2_000)
+        self.chargeback(intent, 30_000)
+        notify = self.resolve(intent, "merchant-accepted")
+        self.assertEqual(held.held_balance(self.lekki.pk), 148_000)
+        self.assertFalse(HeldMovement.objects.filter(kind=HeldMovementKind.DISPUTE_WON).exists())
+        chargebacks = Account.objects.get(entity=self.books, code="5520")
+        self.assertEqual(self.balance(chargebacks, self.lekki), 30_000)
+        self.assertEqual(self.resolution_audit().metadata["outcome"], "LOST")
+        self.assertEqual(notify.call_args_list[0].kwargs["context"]["kind_label"], "Chargeback lost")
+        self.assert_books_agree()
+
+    def test_a_direct_tenants_resolution_is_recorded_only(self):
+        self.settle_directly()
+        intent = self.paid(self.books, self.adeyemi, 180_000)
+        self.chargeback(intent, 30_000)
+        self.resolve(intent, "declined")
+        self.assertFalse(HeldMovement.objects.exists())
+        audit_row = self.resolution_audit()
+        self.assertEqual((audit_row.metadata["outcome"], audit_row.metadata["custody_mode"]),
+                         ("WON", CustodyMode.DIRECT))
 
     def test_a_chargeback_within_the_held_balance(self):
         intent = self.paid(self.books, self.adeyemi, 180_000, fee=2_000)
@@ -802,3 +874,86 @@ class HeldSettlementEndpointTests(_HeldFixture):
             f"/v1/payments/movements/summary/?entity={self.platform.code}").data["data"]
         self.assertEqual((codex_summary["out7d"]["kobo"], codex_summary["transfers7d"]["kobo"]),
                          (0, 178_000))
+
+
+class HeldReconciliationTests(_HeldFixture):
+    """Each day the platform's books are compared with what Paystack says it holds."""
+
+    def setUp(self):
+        super().setUp()
+        notify = patch.object(held_reconciliation, "_notify_operators", return_value=1)
+        self.notify = notify.start()
+        self.addCleanup(notify.stop)
+
+    def open_incidents(self):
+        from vs_health.models import Incident
+
+        return Incident.objects.filter(fault_key=held_reconciliation.FAULT_KEY).exclude(
+            status=Incident.Status.RESOLVED)
+
+    def test_agrees_disagrees_raises_once_then_agrees_again_and_resolves(self):
+        self.paid(self.books, self.adeyemi, 180_000, fee=2_000)
+        self.paid(self.solo_books, self.solo_parent, 40_000, fee=600)
+        self.fake.balances["NGN"] = 217_400
+
+        row = held_reconciliation.reconcile_held_ledger()
+        self.assertEqual((row.provider_balance, row.books_balance, row.held_total, row.difference,
+                          row.agrees), (217_400, 217_400, 217_400, 0, True))
+        self.assertFalse(self.open_incidents().exists())
+
+        self.fake.balances["NGN"] = 217_350  # A N0.50 fee nobody booked.
+        row = held_reconciliation.reconcile_held_ledger()
+        self.assertEqual((row.difference, row.agrees), (-50, False))
+        incident = self.open_incidents().get()
+        self.assertEqual(row.incident_code, incident.code)
+        self.assertIn("a difference of", incident.summary)
+        again = held_reconciliation.reconcile_held_ledger()  # The same day, run again.
+        self.assertEqual((again.pk, again.incident_code), (row.pk, incident.code))
+        self.assertEqual(self.open_incidents().count(), 1)
+        self.assertEqual(self.notify.call_count, 1)  # Operators are told once.
+
+        self.fake.balances["NGN"] = 217_400
+        row = held_reconciliation.reconcile_held_ledger()
+        self.assertTrue(row.agrees)
+        self.assertFalse(self.open_incidents().exists())
+        self.assertEqual(HeldReconciliation.objects.count(), 1)  # One row per day.
+
+    def test_a_difference_within_the_tolerance_agrees(self):
+        self.paid(self.books, self.adeyemi, 180_000, fee=2_000)
+        self.fake.balances["NGN"] = 177_950
+        with patch.object(held_reconciliation, "tolerance", return_value=100):
+            row = held_reconciliation.reconcile_held_ledger()
+        self.assertEqual((row.difference, row.tolerance, row.agrees), (-50, 100, True))
+
+    def test_a_movement_not_yet_posted_is_a_disagreement(self):
+        with patch.object(held, "platform_books", return_value=None):
+            self.paid(self.books, self.adeyemi, 180_000, fee=2_000)
+        self.fake.balances["NGN"] = 178_000
+        row = held_reconciliation.reconcile_held_ledger()
+        self.assertEqual((row.provider_account, row.held_total, row.agrees), (0, 178_000, False))
+        self.assertIn("not yet posted", self.open_incidents().get().summary)
+
+    def test_a_provider_that_cannot_answer_is_recorded_not_raised(self):
+        from .exceptions import ProviderError
+
+        with patch.object(self.fake, "available_balance",
+                          side_effect=ProviderError("Paystack is down.", provider="PAYSTACK")):
+            row = held_reconciliation.reconcile_held_ledger()
+        self.assertEqual((row.provider_balance, row.difference, row.agrees, row.error),
+                         (None, None, False, "Paystack is down."))
+        self.assertFalse(self.open_incidents().exists())
+
+    def test_platform_staff_read_the_checks_and_nobody_else(self):
+        self.fake.balances["NGN"] = 0
+        held_reconciliation.reconcile_held_ledger()
+        codex = self.platform.tenant
+        staff = self.grant(self.user_for(codex, "recon@codex.test"),
+                           "payments.platform_settlement.view", tenant=codex, role_key="recon")
+        response = TenantAPIClient(user=staff).get("/v1/payments/platform/held-reconciliations/")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual([row["agrees"] for row in response.data["data"]], [True])
+        bursar = self.grant(self.user_for(self.tenant, "recon@corona.test"),
+                            "payments.platform_settlement.view", tenant=self.tenant,
+                            role_key="recon-corona")
+        self.assertEqual(TenantAPIClient(user=bursar).get(
+            "/v1/payments/platform/held-reconciliations/").status_code, 403)

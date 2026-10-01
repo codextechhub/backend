@@ -301,7 +301,15 @@ no vendor payment; the platform's books move only through the held movement abov
 **Chargeback on held money** (`held.book_held_chargeback`, once per dispute): the
 tenant's books Dr payment chargebacks (`CHARGEBACKS`, 5520), Cr gateway clearing, in
 the branch; the platform's books Dr client funds held (what the branch held), Dr owed
-by clients (`CLIENT_FUNDS_OWED`, the rest), Cr provider balance.
+by clients (`CLIENT_FUNDS_OWED`, the rest), Cr provider balance. A dispute the
+platform wins reverses both (`held.restore_held_chargeback`, once), repaying what the
+branch owed first; a lost one stays as booked.
+
+**Daily held-ledger reconciliation** (`held_reconciliation.reconcile_held_ledger`)
+compares the provider's reported balance with the platform's books and records it
+(`HeldReconciliation`); a disagreement beyond the tolerance opens one health incident,
+resolved by the next agreeing check. Read at `GET /platform/held-reconciliations/`
+(platform staff, `payments.platform_settlement.view`).
 
 **Settlement match** (`settle_collections`, source `BANK`, the bank account's branch):
 

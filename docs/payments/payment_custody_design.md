@@ -177,6 +177,28 @@ settlement report *(confirm the field)*; the settlement match books it.
   The receipt and invoice are left for finance staff to pursue the payer. A
   balance below zero is what the branch owes Codex: payouts are refused, and its
   next payments repay it before anything is settled to it again.
+- **A dispute Codex wins** (`charge.dispute.resolve` with `resolution: declined`
+  *(confirm the field and values)*) gives the chargeback back, once per dispute:
+  the branch's held balance rises by it, repaying any shortfall it owes Codex
+  first (Dr provider balance, Cr owed by clients, then Cr client funds held), and
+  the school's books reverse their entry (Dr gateway clearing, Cr payment
+  chargebacks). A dispute lost (`merchant-accepted`, `auto-accepted`) stays as
+  booked. Both outcomes are audited (`PROVIDER_DISPUTE_RESOLVED`) and raised; at a
+  direct tenant the outcome is only recorded and raised.
+- **Daily reconciliation** (`vs_payments.reconcile_held_ledger`, 07:15). Codex's
+  books say its Paystack balance should hold its provider balance account (which
+  mirrors the held-funds sub-ledger) plus its own online takings still in transit,
+  each less its fee; Paystack says what it holds (`GET /balance` *(confirm)*). Each
+  day's comparison is recorded (`HeldReconciliation`: date, Paystack's figure, the
+  books' figure and its parts, the difference, the tolerance). A difference above
+  the platform setting `payments.held_reconciliation_tolerance_kobo` (default 0),
+  or a provider balance account that differs from the sub-ledger, opens one
+  system-health incident (`payments.held-ledger-mismatch`) and tells Codex's
+  health and settlement operators once; the next agreeing check resolves it. A day
+  Paystack could not be asked is recorded with its error and changes no incident.
+  Codex staff read the checks at `GET /v1/payments/platform/held-reconciliations/`.
+  The check assumes Paystack keeps Codex's balance rather than sweeping it to
+  Codex's bank each day *(confirm the account setting)*.
 - **Money already held** before the sub-ledger started is entered once per branch
   by a Codex operator from Paystack's records: `manage.py
   record_held_opening_balance --by <operator email>`; it is audited under that
@@ -265,10 +287,14 @@ Steps 1 to 3 are phase A and steps 4 and 5 are phase B; all five are built.
 
 Open questions:
 
-- **Reconciling to the Paystack balance.** The sub-ledger and Codex's journal agree
-  with each other; nothing yet compares them with the balance Paystack reports.
-- **A dispute Codex wins.** The chargeback is booked when the dispute opens; a
-  later resolution in the merchant's favour is raised but gives nothing back.
+- **Paystack's balance sweep.** The daily reconciliation compares Codex's books
+  with Paystack's available balance, which only holds if Paystack keeps the money
+  rather than settling it to Codex's bank each day *(confirm the account setting)*;
+  Codex's own online payouts to its own suppliers, if it makes any, are not yet in
+  the books' figure.
+- **Paystack field names to confirm:** the dispute resolution (`resolution`:
+  `declined`, `merchant-accepted`, `auto-accepted`) and the balance response
+  (`GET /balance`, a list of `{currency, balance}` in kobo).
 - **Paystack's transfer fee schedule** is the adapter's own table *(confirm)*;
   the fee actually charged is not read back from Paystack.
 - **The held balance when the dispatch-time debit and the confirmed amount

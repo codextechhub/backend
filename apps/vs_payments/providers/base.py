@@ -108,7 +108,9 @@ class WebhookParseResult:
     ``"COLLECTION"`` or ``"PAYOUT"``, whose ``status`` is the matching neutral status
     value, or ``"DISPUTE"`` (a chargeback) or ``"REFUND"`` (a refund made at the
     provider), which name the earlier payment they concern by ``reference`` or
-    ``provider_reference``. ``dedupe_key`` is the stable idempotency key extracted
+    ``provider_reference``. A dispute event that resolves the dispute carries a
+    :class:`~vs_payments.constants.DisputeOutcome` as its ``status``; any other
+    carries the provider's own status. ``dedupe_key`` is the stable idempotency key extracted
     from the event.
     """
 
@@ -222,6 +224,15 @@ class PayoutProvider(WebhookCapable):
     def verify_transfer(self, *, reference: str,
                         provider_reference: str = "") -> TransferResult:
         ...  # Re-check transfer status with the PSP.
+
+    def available_balance(self, currency: str = "NGN") -> int:
+        """Kobo the provider holds for the merchant in ``currency``, available to transfer.
+
+        A provider that keeps no balance (or cannot report one) raises
+        :class:`NotImplementedError`; the held-ledger reconciliation records that
+        as a check it could not make.
+        """
+        raise NotImplementedError(f"{self.name or 'This provider'} reports no balance.")
 
     def transfer_fee(self, amount: int) -> int:
         """Kobo the provider charges, on top of ``amount``, to transfer it to a bank account.

@@ -225,6 +225,18 @@ class PaystackProvider(Provider):
                 return fee
         return 0
 
+    def available_balance(self, currency="NGN"):
+        """The merchant's Paystack balance in ``currency``, in kobo (``GET /balance``).
+
+        Paystack answers a list of ``{currency, balance}`` rows *(confirm the
+        shape and that it is kobo)*; a currency it does not list holds nothing.
+        """
+        data = self._require_ok(self._get("/balance"))
+        for row in data if isinstance(data, list) else []:
+            if str(row.get("currency", "")).upper() == currency.upper():
+                return int(row.get("balance") or 0)
+        return 0
+
     def verify_transfer(self, *, reference, provider_reference=""):
         data = self._require_ok(self._get(f"/transfer/verify/{reference}"))  # Re-query the final transfer state.
         status = (data.get("status") or "").lower()
@@ -260,6 +272,9 @@ class PaystackProvider(Provider):
         event = payload.get("event", "")
         data = payload.get("data", {})
         if event.startswith("charge.dispute") or event.startswith("refund"):
+            status = str(data.get("status", "") or "")
+            if event == "charge.dispute.resolve":
+                status = _dispute_outcome(data) or status
             transaction_block = data.get("transaction") or {}
             if not isinstance(transaction_block, dict):
                 transaction_block = {}
@@ -270,7 +285,7 @@ class PaystackProvider(Provider):
                 direction="DISPUTE" if event.startswith("charge.dispute") else "REFUND",
                 reference=reference,
                 provider_reference=str(transaction_block.get("id", "") or ""),
-                status=str(data.get("status", "") or ""),
+                status=status,
                 amount=int(data.get("refund_amount") or data.get("amount")
                            or transaction_block.get("amount") or 0),
                 currency=data.get("currency", "NGN"),
@@ -309,6 +324,21 @@ class PaystackProvider(Provider):
             ),
             raw=payload,  # Keep the original normalized payload.
         )
+
+
+#: Paystack's ``data.resolution`` on ``charge.dispute.resolve`` *(confirm the values)*:
+#: a dispute ``declined`` went the merchant's way; one the merchant accepted, or
+#: that was accepted for it, went the payer's.
+_DISPUTE_RESOLUTIONS = {
+    "declined": "WON",
+    "merchant-accepted": "LOST",
+    "auto-accepted": "LOST",
+}
+
+
+def _dispute_outcome(data: dict) -> str:
+    """The neutral outcome a dispute resolution reports, or "" when it names none."""
+    return _DISPUTE_RESOLUTIONS.get(str(data.get("resolution", "") or "").strip().lower(), "")
 
 
 def _kobo_or_none(value):

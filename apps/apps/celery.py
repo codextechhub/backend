@@ -122,6 +122,12 @@ app.conf.beat_schedule = {
         "task": "vs_payments.run_held_settlements",
         "schedule": crontab(hour=6, minute=30),
     },
+    # Daily: compare the platform's books with the provider balance it reports.
+    # A disagreement opens one health incident; the next agreeing check resolves it.
+    "payments-reconcile-held-ledger": {
+        "task": "vs_payments.reconcile_held_ledger",
+        "schedule": crontab(hour=7, minute=15),
+    },
 
     # --- vs_exports (Export Centre) --------------------------------------
     # Every five minutes: start any schedule whose moment has come. The window
