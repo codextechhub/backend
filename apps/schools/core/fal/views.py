@@ -236,8 +236,9 @@ class GenerateInvoicesView(_FalView):
     :meth:`~schools.core.fal.ports.FeeTermBridgePort.generate_cohort_invoices`):
     another branch's child is a 404, and a child off a branch structure's price
     list a 409 ``WRONG_BRANCH``. A child whose account is filed at another branch
-    is billed where they attend, and the account moves with them
-    (``accounts_moved`` in the response). The optional ``branch`` names where a
+    is billed where they attend, and the account and its open balance move with
+    them (``accounts_moved`` in the response, with the figures each move
+    carried, or on a preview would carry). The optional ``branch`` names where a
     family shared by every branch, with no child behind it, is billed; a
     school-wide bursar at a school with several branches who bills such a family
     without it gets a 400 ``BRANCH_REQUIRED`` naming the field.

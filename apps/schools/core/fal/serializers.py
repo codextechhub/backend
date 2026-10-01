@@ -94,6 +94,11 @@ def generation_payload(result) -> dict:
                 "from_branch_id": move.from_branch_ref,
                 "to_branch": move.to_branch,
                 "to_branch_id": move.to_branch_ref,
+                "amount": move.amount,
+                "invoice_count": move.invoice_count,
+                "debit_note_count": move.debit_note_count,
+                "credit_amount": move.credit_amount,
+                "deferred_amount": move.deferred_amount,
             }
             for move in result.accounts_moved
         ],
