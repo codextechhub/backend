@@ -615,7 +615,7 @@ class EmployeeDeductionListCreateView(_FinanceBase):
         record(
             entity=entity, action=FinanceAuditAction.PAYROLL_DEDUCTION_CHANGED,
             actor_user=request.user, target=salary, branch=salary.branch_id,
-            message=f"Added {kind.name} of {amount} kobo a month for {salary.name}.",
+            message=f"Added {kind.name} for {salary.name}.",
             after=dict(EmployeeDeductionSerializer(row).data),
         )
         return success_response(

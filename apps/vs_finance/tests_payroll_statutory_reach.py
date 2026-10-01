@@ -386,3 +386,92 @@ class DeductionFieldAccessTests(_ReachFixture):
     def test_a_role_with_the_pay_breakdown_on_sees_the_amount(self):
         row = self.deductions(self.open_user)
         self.assertEqual(row["amount"], 7_777 * N)
+
+
+class AuditTrailFieldAccessTests(_ReachFixture):
+    """A person's pay reaches the audit trails only where Field Access lets it.
+
+    Mr Bello sets Ada's PAYE to N5,555 by override and adds a staff loan of
+    N3,333 a month. Corona's internal auditor reads the finance trail with every
+    pay figure switched off: they see that Ada was added, overridden and given
+    a loan, by whom and when, and none of her pay, tax ID or pension PIN. The
+    platform trail, which an audit officer reads with no finance key at all,
+    carries no figure in its summaries. An auditor with the figures switched on
+    reads them.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_rbac.tests.helpers import install_declared_fields, set_field_access
+
+        super().setUpTestData()
+        keys = install_declared_fields("finance.salary")
+        cls.closed_user = cls.grant(cls.user_for(cls.tenant, "audit-closed@corona.test"),
+                                    "finance.audit.view", tenant=cls.tenant, role_key="audit-closed")
+        cls.open_user = cls.grant(cls.user_for(cls.tenant, "audit-open@corona.test"),
+                                  "finance.audit.view", tenant=cls.tenant, role_key="audit-open")
+        set_field_access(TenantRoleTemplate.objects.get(tenant=cls.tenant, key="audit-open"),
+                         *keys, read=True, write=False)
+
+    def setUp(self):
+        super().setUp()
+        loan = Account.objects.create(entity=self.books, code="1310", name="Staff loans",
+                                      account_type="ASSET", is_postable=True)
+        kind = PayrollDeductionType.objects.create(
+            entity=self.books, code="LOAN", name="Staff loan", liability_account=loan)
+        for path, body in (
+            (f"employee-salaries/{self.ada.pk}/",
+             {"paye_override": 5_555 * N, "paye_override_reason": "Bureau figure"}),
+            (f"employee-salaries/{self.ada.pk}/deductions/",
+             {"deduction_type": kind.pk, "amount": 3_333 * N}),
+        ):
+            method = self.bello.patch if path.endswith(f"{self.ada.pk}/") else self.bello.post
+            response = method(f"/v1/finance/{path}?entity={self.books.code}", body, format="json")
+            self.assertIn(response.status_code, (200, 201), response.data)
+
+    def trail(self, user):
+        response = self.get(TenantAPIClient(user=user), "audit-logs/?page_size=100")
+        self.assertEqual(response.status_code, 200, response.data)
+        return [row for row in response.data["data"] if row["target_type"] == "EmployeeSalary"
+                and str(row["target_id"]) == str(self.ada.pk)]
+
+    def test_the_closed_auditor_reads_what_happened_and_none_of_the_pay(self):
+        rows = self.trail(self.closed_user)
+
+        self.assertEqual(len(rows), 3)
+        for row in rows:
+            for leaked in ("12345600", "555500", "333300", "5555", "3333", "TIN-ADA", "PEN-ADA",
+                           "Bureau figure"):
+                self.assertNotIn(leaked, str(row))
+        created = next(row for row in rows if row["action"] == "SALARY_CREATED")
+        self.assertEqual(created["after"]["name"], "Ada Obi")
+
+    def test_one_entry_opened_alone_is_filtered_too(self):
+        entry = next(row for row in self.trail(self.closed_user) if row["action"] == "SALARY_CREATED")
+
+        response = self.get(TenantAPIClient(user=self.closed_user), f"audit-logs/{entry['id']}/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertNotIn("gross_amount", response.data["data"]["after"])
+        self.assertNotIn("TIN-ADA", str(response.data))
+
+    def test_the_open_auditor_reads_the_figures(self):
+        rows = {row["action"]: row for row in self.trail(self.open_user)}
+
+        self.assertEqual(rows["SALARY_CREATED"]["after"]["gross_amount"], 123_456 * N)
+        self.assertEqual(rows["SALARY_CREATED"]["after"]["tax_id"], "TIN-ADA")
+        self.assertEqual(rows["PAYE_OVERRIDE_CHANGED"]["after"]["paye_override"], 5_555 * N)
+        self.assertEqual(rows["PAYROLL_DEDUCTION_CHANGED"]["after"]["amount"], 3_333 * N)
+
+    def test_the_platform_trail_carries_no_persons_figure(self):
+        from vs_audit.models import AuditEvent
+
+        summaries = list(AuditEvent.objects.filter(
+            entity_type="vs_finance.EmployeeSalary", entity_id=str(self.ada.pk),
+        ).values_list("summary", flat=True))
+
+        self.assertGreaterEqual(len(summaries), 3)
+        for summary in summaries:
+            self.assertNotIn("555500", summary)
+            self.assertNotIn("333300", summary)
