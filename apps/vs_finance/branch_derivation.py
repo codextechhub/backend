@@ -31,9 +31,9 @@ Derivations chain. An RFQ reads its requisition's branch, including a branch
 the same run has derived but not yet written, which is what makes a dry run
 report exactly what an applied run writes.
 
-A few models carry no branch column yet (the payment gateway's records). They
-are registered with ``has_branch_column=False``: every row is planned and
-reported, and nothing is written.
+A model with no branch column of its own may be registered with
+``has_branch_column=False``: every row is planned and reported, and nothing is
+written.
 
 Registration
 ------------
