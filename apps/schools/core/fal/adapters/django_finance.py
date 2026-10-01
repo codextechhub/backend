@@ -1978,6 +1978,40 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
             raise CrossTenantError("That user does not belong to this school.")
         return user
 
+    def _resolve_for(self, doc: ProcDocRef, actor_ref):
+        """The document, its books and the acting user, when the user may act on it.
+
+        The reach every procurement action screen applies
+        (:func:`vs_procurement.views.base._document_or_404`): a branch-bound user
+        acts only on their own branches' documents, and one in another branch is
+        :class:`CrossBranchError`, exactly as an id that names nothing. Mrs Eze's
+        role is granted at Lekki, so they cannot submit, release, order against,
+        receive, bill or pay an Ikeja requisition's chain through the FAL any
+        more than through the procurement screens.
+
+        Approving and declining do not come through here: who may decide a
+        document is the approval ladder's question, and a named approver can sit
+        at any branch.
+        """
+        from types import SimpleNamespace
+
+        from rest_framework.exceptions import NotFound
+
+        from vs_procurement.views.base import _document_or_404
+
+        entity, document = self._resolve(doc)
+        user = self._actor(entity, actor_ref)
+        try:
+            _document_or_404(
+                SimpleNamespace(user=user), type(document).objects.filter(entity=entity),
+                document.pk, "No such document.",
+            )
+        except NotFound as exc:
+            raise CrossBranchError(
+                f"{doc.doc_type.value} {doc.doc_ref!r} belongs to another branch."
+            ) from exc
+        return entity, document, user
+
     def _raised_branch(self, entity, user, branch_ref):
         """The branch a new document names, by the raiser's grants.
 
@@ -2028,8 +2062,7 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
     def submit_for_approval(self, doc, *, actor_ref):
         from vs_procurement import approvals
 
-        entity, document = self._resolve(doc)
-        user = self._actor(entity, actor_ref)
+        entity, document, user = self._resolve_for(doc, actor_ref)
         try:
             instance = approvals.submit_for_approval(document, actor_user=user)
         except Exception as exc:
@@ -2043,8 +2076,7 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
     def approve_without_review(self, doc, *, actor_ref, reason):
         from vs_procurement import approval_override
 
-        entity, document = self._resolve(doc)
-        user = self._actor(entity, actor_ref)
+        entity, document, user = self._resolve_for(doc, actor_ref)
         try:
             row = approval_override.release_parked_document(
                 document, actor_user=user, reason=reason,
@@ -2107,8 +2139,7 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
         from vs_procurement import purchasing
         from vs_procurement.models import Vendor
 
-        entity, document = self._resolve(requisition)
-        user = self._actor(entity, actor_ref)
+        entity, document, user = self._resolve_for(requisition, actor_ref)
         vendor = Vendor.objects.filter(pk=vendor_ref, entity=entity).first()
         if vendor is None:
             raise CrossTenantError(f"Vendor {vendor_ref!r} is not in this school's books.")
@@ -2136,8 +2167,7 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
 
         from vs_procurement.views.receiving import _write_grn_lines
 
-        entity, order = self._resolve(po)
-        user = self._actor(entity, actor_ref)
+        entity, order, user = self._resolve_for(po, actor_ref)
         if not lines:
             raise ProcurementStateError("A goods receipt needs at least one line.")
 
@@ -2168,8 +2198,7 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
             PurchaseOrderLine, Vendor, VendorInvoice, VendorInvoiceLine,
         )
 
-        entity, order = self._resolve(po)
-        user = self._actor(entity, actor_ref)
+        entity, order, user = self._resolve_for(po, actor_ref)
         vendor = Vendor.objects.filter(pk=vendor_ref, entity=entity).first()
         if vendor is None:
             raise CrossTenantError(f"Vendor {vendor_ref!r} is not in this school's books.")
@@ -2228,8 +2257,7 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
     def pay_supplier(self, bill, *, actor_ref, amount, payment_date):
         from vs_procurement.models import VendorPayment, VendorPaymentAllocation
 
-        entity, invoice = self._resolve(bill)
-        user = self._actor(entity, actor_ref)
+        entity, invoice, user = self._resolve_for(bill, actor_ref)
         if not amount or amount <= 0:
             raise ProcurementStateError("A supplier payment must be a positive amount.")
 

@@ -12,7 +12,11 @@ import datetime
 
 from schools.core.fal.adapters.django_finance import DjangoProcurementActionAdapter
 from schools.core.fal.contracts import BillLine, ProcApprovalState, ReceiptLine
-from schools.core.fal.exceptions import CrossTenantError, ProcurementStateError
+from schools.core.fal.exceptions import (
+    CrossBranchError,
+    CrossTenantError,
+    ProcurementStateError,
+)
 
 from .base import FALFixture
 
@@ -228,6 +232,50 @@ class ProcurementChainTests(FALFixture):
         ).unwrap()
 
         self.assertEqual(order.ref.branch_ref, self.lekki.pk)
+
+    def test_a_lekki_bursar_cannot_submit_an_ikeja_requisition(self):
+        """Acting on another branch's document is refused as for a missing one."""
+        from vs_procurement.models import PurchaseRequisition
+
+        document = self.port.raise_requisition(
+            entity_ref=self.corona_books.entity_ref, raiser_ref=self.bursar.pk,
+            lines=(BillLine(description="Chalk", quantity=10, unit_price=1_000),),
+            branch_ref=self.ikeja.pk,
+        ).unwrap()
+
+        with self.assertRaises(CrossBranchError):
+            self.port.submit_for_approval(document.ref, actor_ref=self.lekki_bursar.pk)
+        self.assertEqual(
+            PurchaseRequisition.objects.get(pk=document.ref.doc_ref).approval_state,
+            ProcApprovalState.NOT_SUBMITTED.value,
+        )
+
+    def test_a_lekki_bursar_cannot_continue_an_ikeja_chain(self):
+        """No order, receipt, bill or payment against Ikeja's documents from Lekki."""
+        from vs_procurement.models import PurchaseOrder
+
+        requisition = self._approved_requisition()
+        with self.assertRaises(CrossBranchError):
+            self.port.raise_purchase_order(
+                requisition.ref, vendor_ref=self.vendor.pk,
+                actor_ref=self.lekki_bursar.pk, order_date=datetime.date(2026, 10, 1),
+            )
+        self.assertFalse(PurchaseOrder.objects.exists())
+
+        order = self._approved_order(requisition)
+        po_line = self._po_line(order)
+        with self.assertRaises(CrossBranchError):
+            self.port.receive_goods(
+                order.ref, actor_ref=self.lekki_bursar.pk,
+                lines=(ReceiptLine(po_line_ref=po_line.pk, quantity_received=1),),
+            )
+        with self.assertRaises(CrossBranchError):
+            self.port.record_supplier_bill(
+                order.ref, vendor_ref=self.vendor.pk, actor_ref=self.lekki_bursar.pk,
+                lines=(BillLine(description="Exercise books", quantity=1,
+                                unit_price=25_000, po_line_ref=po_line.pk),),
+                invoice_date=datetime.date(2026, 10, 8),
+            )
 
     # ----- helpers --------------------------------------------------------- #
     def _approved_order(self, requisition, *, actor=None):
