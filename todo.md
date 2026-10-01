@@ -883,7 +883,7 @@ Verified: vs_finance.tests_inter_branch 58 OK, vs_finance.tests_accruals 42 OK,
 vs_finance 1643 OK, schools.core.fal 293 OK, vs_payments 403 OK. The full suite
 was not run.
 
-### D104. A credit or discount on any moved bill comes off the books that booked it, and a moved debt written off is the collecting branch's loss (hash pending, 2026-10-01)
+### D104. A credit or discount on any moved bill comes off the books that booked it, and a moved debt written off is the collecting branch's loss (a79e56e4, 2026-10-01)
 MODULES: M19 finance and accounting (revenue, VAT shares, inter-branch), M20
 adjustments and concessions (credit notes, concessions, write-offs), MRD.
 Owner decisions of 2026-10-01.
