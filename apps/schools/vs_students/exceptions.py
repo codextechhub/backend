@@ -164,6 +164,23 @@ class ReasonRequired(StudentsError):
     http_status = 422
 
 
+class SuspensionEndsBeforeItStarts(StudentsError):
+    """A suspension asked to end on or before the day it begins.
+
+    A one-day suspension is a suspension that starts on Monday and ends on
+    Tuesday, so the two dates are never the same day either. ``extra`` carries
+    both dates, because the start is often the one that was mistyped and the
+    screen has to say which pair it is refusing.
+    """
+
+    error_code = "SUSPENSION_ENDS_BEFORE_IT_STARTS"
+    default_message = (
+        "A suspension has to end after it starts. Pick a day the student comes "
+        "back that falls after the day the suspension begins."
+    )
+    http_status = 422
+
+
 class DestinationRequired(StudentsError):
     error_code = "DESTINATION_REQUIRED"
     default_message = "Say which school the student is transferring to."

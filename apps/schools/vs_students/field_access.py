@@ -43,6 +43,31 @@ A name switch covers the student's own record, list row and profile, where
 ``full_name`` is rebuilt from the parts the caller may read. A name printed on
 another module's document (an invoice, a class list) is that module's field.
 
+The reason a pupil's status changed is sensitive, so a role reads it only where
+a school has turned the Read switch on. It is free text a member of staff
+writes about a child, of the same kind as the medical fields beside it: why
+this pupil was suspended, withdrawn, transferred out or brought back. It
+reaches a client as ``reason``, on the status history and inside the
+``suspension`` block of a profile, and it is registered under a name of its own
+because ``reason`` alone says nothing on a screen listing a pupil's fields.
+
+Nothing writes it through a serializer of this resource, so it is declared
+unwritable and offers no Write switch. The reason arrives on the status routes,
+each behind its own key (``school.students.suspend``, ``.transfer``,
+``.transition``, ``.reactivate``), and a Write switch over it would bar a role
+from typing a reason while leaving them able to move the pupil: a transfer out
+and a withdrawal refuse a blank reason, so such a role could not move a pupil
+at all, and a suspension, where the reason is optional, would be recorded
+without one. Who may change a pupil's standing is the permission key's
+question, and the switch answers only who reads the words afterwards.
+
+``send_reason`` on the suspend route is a different decision and no switch
+governs it. It is the choice the person suspending a pupil makes about what
+that pupil's family is told, taken once per suspension, while Field Access
+decides which of the school's own roles read the record. A school can
+therefore send a mother the reason her daughter was suspended and still keep
+it off the screen a class teacher opens.
+
 ``school.guardians`` carries fields and no permission keys. A guardian is read
 with ``school.students.view`` and corrected with ``school.students.update``
 (``views/guardians.py``), so the resource exists to hang switches on and mints
@@ -51,6 +76,11 @@ nothing new. ``core.seed_school_permissions`` registers it.
 from vs_rbac.field_registry import FieldSpec, register_fields
 
 _TENANT = "TENANT"
+
+#: The registry key of the reason behind a pupil's status change, for the
+#: profile's suspension block, which includes or omits the whole key rather
+#: than carrying it as a field of a serializer.
+STATUS_REASON_FIELD = "school.students.status_reason"
 
 
 def register():
@@ -64,6 +94,7 @@ def register():
             "schools.vs_students.serializers.StudentWriteSerializer",
             "schools.vs_students.serializers.EnrolmentWriteSerializer",
             "schools.vs_students.serializers.SearchHitSerializer",
+            "schools.vs_students.serializers.StatusLogSerializer",
         ),
         fields=(
             FieldSpec("first_name", "First name", group="Name", scope=_TENANT,
@@ -105,6 +136,12 @@ def register():
                       sensitive=True, scope=_TENANT, sort_order=30),
             FieldSpec("enrolment_date", "Enrolment date", group="Enrolment",
                       scope=_TENANT, sort_order=10, open_on_create=True),
+            FieldSpec("status_reason", "Status change reason", group="Status",
+                      sensitive=True, writable=False, scope=_TENANT,
+                      sort_order=10, api_names=("reason",),
+                      description="Why a pupil was suspended, withdrawn, "
+                                  "transferred out or brought back, in the "
+                                  "words of the member of staff who moved them."),
         ),
     )
     register_fields(

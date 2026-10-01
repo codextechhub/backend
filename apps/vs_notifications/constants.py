@@ -305,13 +305,29 @@ EVENT_TYPE_REGISTRY = [
         "is_active": False,  # no vs_students emitter yet
     },
     {
-        "key": "student.deactivated",
-        "label": "Student deactivated",
-        "description": "Fires when a student is withdrawn, suspended, or marked inactive.",
+        "key": "student.suspended",
+        "label": "Student suspended",
+        "description": (
+            "Fires when a student is suspended, and carries the notice the "
+            "school's guardians receive. Who is written to is the school's own "
+            "setting, students.suspension.notice."
+        ),
         "source_module": "vs_students",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
-        "is_active": False,  # no vs_students emitter yet
+    },
+    {
+        "key": "student.deactivated",
+        "label": "Student deactivated",
+        "description": (
+            "Fires when a student is withdrawn or marked inactive. A "
+            "suspension is student.suspended, which a guardian reads and this "
+            "does not."
+        ),
+        "source_module": "vs_students",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "is_active": False,  # no vs_students emitter
     },
     {
         "key": "student.class_transferred",

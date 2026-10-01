@@ -37,6 +37,7 @@ from ..serializers import (
     StatusChangeSerializer,
     StatusLogSerializer,
     StudentDetailSerializer,
+    SuspendSerializer,
     TransferOutSerializer,
 )
 from ..services import enrolment as enrolment_service
@@ -193,11 +194,18 @@ class SuspendStudentView(_StudentAction):
     their seat, and that is the whole difference between suspending and
     withdrawing.
 
+    The body is ``{"reason"?, "send_reason"?, "effective_date"?,
+    "return_date"?}``, and every field of it is optional. A ``return_date``
+    returns the pupil on that day without anybody acting (``tasks.py``);
+    without one the suspension stands until somebody lifts it. ``send_reason``
+    decides whether the guardian's notice repeats the reason, and defaults to
+    withholding it.
+
     docstring-name: Suspend a student
     """
 
     key = PERM_SUSPEND
-    serializer_class = ReasonOnlySerializer
+    serializer_class = SuspendSerializer
 
     @transaction.atomic
     def post(self, request, pk):
@@ -205,7 +213,10 @@ class SuspendStudentView(_StudentAction):
         student = self.student(pk)
         transition(
             student, StudentStatus.SUSPENDED, actor=request.user,
-            reason=data["reason"], effective_date=data.get("effective_date"),
+            reason=data.get("reason", ""),
+            effective_date=data.get("effective_date"),
+            return_date=data.get("return_date"),
+            send_reason=data.get("send_reason", False),
         )
         return self.done(student, f"{student.full_name} is suspended.")
 

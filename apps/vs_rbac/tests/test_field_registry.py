@@ -9,9 +9,11 @@ is a switch that changes nothing.
 What each field used to be guarded by is no longer readable off a serializer,
 so these tests read it from :mod:`vs_rbac.field_conversion`, the written
 record of which key decided which field before the switches took over. The
-conversion is the reason a field's ``sensitive`` flag has to match it exactly:
-sensitive means closed by default, so a field that nothing used to hide must
-not be sensitive, and one that a key did hide must be.
+conversion is the reason a field's ``sensitive`` flag has to match it: sensitive
+means closed by default, so a field that nothing used to hide must not be
+sensitive, and one that a key did hide must be. A field declared closed on
+purpose rather than inherited from a key is named in
+:data:`SENSITIVE_BEYOND_THE_CONVERSION` with the reason it is.
 
 They lock the registry to the code in both directions, and pin the behaviour
 of ``sync_field_registry``, which writes it to the database.
@@ -156,6 +158,27 @@ NESTING_ONLY_SURFACES = {
         "which DRF hands the root context and which is filtered as its own "
         "resource. The link's own fields are the relationship and the primary "
         "flag, and neither is registered.",
+}
+
+#: Sensitive fields no permission key ever hid, each with the reason it is
+#: declared closed anyway. Every entry must still name a real sensitive field.
+#:
+#: The conversion record explains every field a key guarded before Field Access
+#: enforced anything, and a field declared outside that record is in neither
+#: half of it. A field may still be born closed, when its value is one a school
+#: should have to open per role rather than one every holder of the resource's
+#: view key reads. Such a field is named here with the reason, because the
+#: alternative is a check that cannot tell a deliberate closure from a
+#: declaration that forgot the conversion it belonged to.
+SENSITIVE_BEYOND_THE_CONVERSION = {
+    "school.students.status_reason": (
+        "Free text a member of staff writes about a child: why this pupil was "
+        "suspended, withdrawn, transferred out or brought back. It is the same "
+        "kind of fact as the medical fields beside it, so a school opens it per "
+        "role as it opens those. Every holder of school.students.view read it "
+        "before it was registered, so turning the switch on for the roles that "
+        "need it is part of adopting the field."
+    ),
 }
 
 
@@ -310,18 +333,27 @@ class RegistryMatchesTheSerializersTests(SimpleTestCase):
     def test_sensitive_means_the_old_key_hid_it(self):
         """Read-guarded fields are sensitive; write-only guarded ones are not.
 
-        The default a field starts from is the whole of what release day does
+        The default a field starts from is the whole of what enforcement does
         to a role that holds no switch row: a sensitive field starts closed,
         so declaring one sensitive that nothing hid would take it away from
         everybody, and declaring one open that a key hid would hand it to
         everybody.
+
+        A field declared closed on purpose rather than because a key hid it is
+        named in :data:`SENSITIVE_BEYOND_THE_CONVERSION` with the reason, and
+        every name there has to be a field that is still sensitive.
         """
         hidden_before = _converted(READ)
+        deliberate = set()
         for declaration in all_declarations():
             for spec in declaration.fields:
                 key = declaration.key_for(spec)
+                closed = key in SENSITIVE_BEYOND_THE_CONVERSION
+                if closed and spec.sensitive:
+                    deliberate.add(key)
                 with self.subTest(key=key):
-                    self.assertEqual(spec.sensitive, key in hidden_before)
+                    self.assertEqual(spec.sensitive, key in hidden_before or closed)
+        self.assertEqual(set(SENSITIVE_BEYOND_THE_CONVERSION) - deliberate, set())
 
     def test_every_export_link_names_a_registered_field_of_the_same_sensitivity(self):
         registry = {

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from vs_rbac.field_enforcement import FieldAccessMixin
+from vs_rbac.field_enforcement import FieldAccessMixin, can_read
 
 from .constants import (
     AGE_RULE_CEILING,
@@ -50,6 +50,7 @@ from .constants import (
     StudentStatus,
     TransferReason,
 )
+from .field_access import STATUS_REASON_FIELD
 from .models import (
     ClassEnrolment,
     Guardian,
@@ -522,6 +523,7 @@ class StudentDetailSerializer(FieldAccessMixin, _AdmissionStageFields, _BranchAw
     )
     photo_url = serializers.SerializerMethodField()
     allowed_transitions = serializers.SerializerMethodField()
+    suspension = serializers.SerializerMethodField()
 
     class Meta:
         model = Student
@@ -535,7 +537,8 @@ class StudentDetailSerializer(FieldAccessMixin, _AdmissionStageFields, _BranchAw
             "branch", "branch_name", "class_name", "level_name", "session_name",
             "applied_for", "applied_for_name", "applied_on",
             *ADMISSION_STAGE_FIELDS,
-            "photo_url", "allowed_transitions", "created_at", "updated_at",
+            "photo_url", "allowed_transitions", "suspension",
+            "created_at", "updated_at",
         ]
         read_only_fields = [
             "status", "branch", "applied_on", "stage_entered_on", "offer_expires_on",
@@ -573,6 +576,44 @@ class StudentDetailSerializer(FieldAccessMixin, _AdmissionStageFields, _BranchAw
 
     def get_photo_url(self, obj):
         return document_service.face_url(obj, request=self.context.get("request"))
+
+    def get_suspension(self, obj):
+        """The suspension the pupil is serving, or ``None``.
+
+        ``return_date`` is the day they are expected back, and a null is a
+        suspension that stands until somebody lifts it rather than an unknown
+        date. ``due_back`` says that day has arrived at the pupil's own
+        branch, which is a question a screen cannot answer for itself: the
+        branch keeps its own calendar, so a client comparing the date with the
+        reader's clock gets a pupil expected back a day early or a day late.
+        It stays true until the return is recorded, so a suspension whose day
+        has passed reads as a pupil who should be in school.
+
+        ``reason`` is a registered field of ``school.students`` and this block
+        is built by hand, so the key is left out entirely for a caller whose
+        roles do not grant Read, rather than sent as a null: a null would say
+        the school recorded no reason. The rest of the block answers either
+        way, because when a pupil is back is not a confidential fact.
+
+        One query, and only for a pupil who is actually suspended, so every
+        other profile read costs nothing. Absent on a record read as at a past
+        day, which carries no status move either.
+        """
+        if self.context.get("as_at") or obj.status != StudentStatus.SUSPENDED:
+            return None
+        row = (
+            obj.status_logs.filter(to_status=StudentStatus.SUSPENDED)
+            .order_by("-changed_at", "-id").first()
+        )
+        if row is None:
+            return None
+        today = self._today(obj)
+        block = {"effective_date": row.effective_date}
+        if can_read(self.context.get("request"), STATUS_REASON_FIELD):
+            block["reason"] = row.reason
+        block["return_date"] = row.return_date
+        block["due_back"] = bool(row.return_date and row.return_date <= today)
+        return block
 
     def get_allowed_transitions(self, obj):
         from .services.status import IMPACT, allowed_from
@@ -787,6 +828,32 @@ class ReasonOnlySerializer(serializers.Serializer):
     effective_date = serializers.DateField(required=False)
 
 
+class SuspendSerializer(serializers.Serializer):
+    """The one status route that does not insist on a reason.
+
+    A school suspending a pupil pending an investigation has nothing truthful
+    to type yet, and a required field buys a placeholder rather than a record.
+    Withdrawal, transfer and graduation still require one: each is a child
+    leaving the roll, and none of them is ever recorded before the school
+    knows why.
+
+    ``return_date`` is the day the pupil is expected back, and it is optional
+    too. With one, the pupil returns on that day without anybody acting; with
+    none, the suspension stands until a person lifts it. It is refused on or
+    before the day the suspension begins.
+
+    ``send_reason`` decides only whether the guardian's notice repeats the
+    reason, never whether the history keeps it, which it always does. It
+    defaults to withholding, because an unweighed sentence about a child in an
+    email cannot be taken back.
+    """
+
+    reason = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    send_reason = serializers.BooleanField(default=False)
+    effective_date = serializers.DateField(required=False)
+    return_date = serializers.DateField(required=False, allow_null=True)
+
+
 class TransferOutSerializer(serializers.Serializer):
     destination_school = serializers.CharField(max_length=200)
     reason = serializers.CharField(max_length=200)
@@ -827,7 +894,21 @@ class ConfirmSerializer(serializers.Serializer):
 
 # ── reads that hang off the profile ────────────────────────────────────────
 
-class StatusLogSerializer(serializers.ModelSerializer):
+class StatusLogSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One move in a pupil's status history.
+
+    The reason is a registered field of ``school.students``, so a role reads
+    the words a colleague wrote about a child only where the school has turned
+    the switch on. Every other column stays: a reader who may not see why a
+    pupil was suspended still sees that they were, when it took effect and who
+    recorded it, which is what the history tab is for.
+
+    A list serializer, so it names no ``_read_only_fields``: a history row is
+    only ever read, and the reason is written on the status routes.
+    """
+
+    field_resource = "school.students"
+
     from_label = serializers.SerializerMethodField()
     to_label = serializers.CharField(source="get_to_status_display", read_only=True)
     actor = serializers.SerializerMethodField()
@@ -835,8 +916,8 @@ class StatusLogSerializer(serializers.ModelSerializer):
     class Meta:
         model = StudentStatusLog
         fields = ["id", "from_status", "from_label", "to_status", "to_label",
-                  "reason", "effective_date", "destination_school", "actor",
-                  "changed_at"]
+                  "reason", "effective_date", "return_date",
+                  "destination_school", "actor", "changed_at"]
 
     def get_from_label(self, obj):
         return StudentStatus(obj.from_status).label if obj.from_status else ""

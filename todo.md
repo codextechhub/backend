@@ -643,6 +643,112 @@ MUST SAY:
   nothing until its day.
 - Deploy: run sync_field_registry.
 
+### D99. A guardian is told when their child is suspended, and the school chooses who (not yet committed, 2026-10-01)
+MODULES: M11 students (the suspension panel and the new setting), M04 roles and
+permissions only if the settings key needs listing, MRD. Also whichever FRD
+carries the notification event catalogue: the new event type belongs in it.
+The suspension panel printed "Guardians are notified by email" and nothing was
+sent. A `student.suspended` event type now carries the notice, in-app and email,
+and fires on a transition into SUSPENDED and on no other move.
+A suspension also now carries an optional end date, and a pupil whose end date
+has passed is put back on the roll by a nightly job rather than by somebody
+remembering.
+MUST SAY: for M11, the notice, the setting and its three answers, that no
+guardian is written to in place of an unreachable one, the optional end date and
+what a null one means, the automatic return and what dates it, and that the
+suspension reason reaches a family only where the person suspending chose to
+send it. Remove any Needs Attention or known-limitation item saying guardians are
+notified of nothing by this module, or that the panel's sentence is unmet. For
+the notifications FRD, the new event type, active, in-app and email. Also correct
+anything describing `student.deactivated` as covering suspension: its description
+is narrowed to withdrawal and inactivity, and it stays inert.
+SETTING: `students.suspension.notice`, CHOICE, school-scoped with no branch
+override, default PRIMARY_GUARDIAN, options PRIMARY_GUARDIAN, ALL_GUARDIANS,
+NOBODY. No stored value and an unrecognised stored value both read as
+PRIMARY_GUARDIAN, so a missing choice never reads as silence. There is no bespoke
+endpoint: a school sets it through the generic `/v1/config/values/` route.
+THE END DATE lives on the suspension's own `StudentStatusLog` row as
+`return_date`, nullable, with a check constraint that it falls after the
+effective date and a partial index carrying the nightly sweep. A null is not an
+unknown date: it is a suspension that stands until a person lifts it, which is
+what every pre-existing row keeps, so none of them is ever swept.
+THE AUTOMATIC RETURN is a daily Celery task, `vs_students.return_ended_suspensions`,
+registered in the beat schedule at 01:00. It returns a pupil to the status they
+were suspended from, dated THE DAY IT WAS DUE rather than the day the job ran, so
+a worker that misses a night records a late return and never a wrong one. Whether
+the date has passed is asked on the pupil's own branch's day, never the server's.
+It acts only where the pupil's current status is still SUSPENDED, so a pupil
+suspended and then withdrawn is never resurrected, and it sends no notification.
+THE REASON is optional to type on the suspend route only (withdrawal, transfer,
+graduation, rejection and the generic and bulk status routes still require one),
+and `send_reason` on that route, default false, decides whether the family's
+message carries it. The reason is written to the history either way.
+API: `POST /v1/students/<id>/suspend/` takes `reason`, `send_reason`,
+`effective_date` and `return_date`, all optional. `GET /v1/students/<id>/` gains a
+`suspension` block (`effective_date`, `reason`, `return_date`, `due_back`), null
+unless the pupil is serving one and null on an as-at read; `due_back` is the
+backend answering whether the day has arrived at the pupil's branch, which a
+client cannot work out from its own clock. Status-history rows gain `return_date`.
+TWO RESIDUAL LIMITS to record rather than fix: the sweep runs at one daily UTC
+hour, so a school far west sees the row flip mid-afternoon local (the dates
+recorded are always right; only the hour the status changes is late, and the fix
+if it ever matters is running it hourly); and `send_reason` is not offered on the
+generic or bulk status routes, so a school suspending through those cannot send
+the reason, which is the quiet default rather than a refusal.
+A DECISION THE USER MADE, recorded so it is not re-opened as an oversight: a
+suspension being lifted, whether by hand or by the nightly job, sends nothing.
+Asked directly and answered "No need for the auto send email for return".
+FIELD ACCESS: the reason a pupil's standing changed is now a sensitive field,
+`school.students.status_reason` (label "Status change reason", group "Status",
+`api_names=("reason",)`, `writable=False`). Named for the whole column it governs,
+not for suspension alone, because `StudentStatusLog.reason` carries the reason for
+a withdrawal and a transfer out as well, and one switch closes all of them.
+Read-only on purpose: who may change a pupil's standing is already answered per
+action by `school.students.suspend`, `.transfer`, `.transition` and `.reactivate`,
+and a Write switch would have stopped a year head moving a leaving pupil at all,
+since withdrawal and transfer refuse a blank reason.
+It is covered in both places it is read: the profile's `suspension` block omits
+the `reason` key (rather than sending a null) when the caller may not read it,
+through `vs_rbac.field_enforcement.can_read`, and `StatusLogSerializer` is now a
+declared Field Access surface so the status-history rows drop the same key. The
+rest of the block and every other history column answer either way: withholding
+when a child is due back would have a class teacher marking them absent on the
+day the school said they return.
+RELEASE NOTE, because this is a visible regression on deploy day: sensitive means
+closed until a school opens it, so when `sync_field_registry` runs EVERY role
+loses the reason on screen, the school administrator included, until somebody
+turns Read on for the roles that need it. The reason is still recorded, still on
+the history row, and still reaches a family where the suspender chose to send it.
+A default grant for `school_admin` was deliberately not seeded: the user asked for
+it to be "intentionally added for field access to different roles".
+TWO SHARED TEST FILES CHANGED, both at a choke point rather than around the case:
+`vs_rbac/tests/test_field_registry.py` locked `sensitive` to a one-time conversion
+record, which made any newly sensitive field impossible to declare, so deliberate
+closures are now named in `SENSITIVE_BEYOND_THE_CONVERSION` with their reason and
+a reverse assertion fails if an entry stops naming a sensitive field; and
+`vs_rbac/tests/helpers.py::set_field_access` now grants Write only where the field
+is writable, because the model rightly refuses a write switch on a read-only field
+and two callers that open a whole resource at once would otherwise break on the
+next read-only declaration (one had already been hand-patched in vs_finance).
+STILL OPEN, worth a decision: the audit summary carries the reason in plain text
+(`services/status.py` appends it), so a holder of the audit keys reads it whatever
+the field switch says. The audit metadata does not carry it. Left alone on purpose:
+an audit trail that hides what a person wrote is a worse audit trail, and the
+audience is already narrow, but it does mean the switch is not the only door.
+Verified: schools.vs_students 646 OK, vs_rbac 973 OK, core 193 OK,
+vs_finance.tests_payroll_roster_rules 16 OK and vs_procurement.tests 512 OK (the
+only two callers of the changed helper that ask for Write), plus the new module's
+own 7 OK. The full repository suite was not run.
+DEPLOYMENT NOTE: seed notification event types BEFORE templates, and run
+`seed_config_catalogue`. Two migrations: `vs_students 0012` declares the setting
+(the same shape as `0010_promotion_settings`) and `0013` adds the end date.
+Verified for the suspension work itself: schools.vs_students 639 OK on the full
+form with the slow migration classes included, vs_notifications 226 OK, vs_config
+164 OK, schools.core.fal 288 OK, and the two beat-schedule readers
+(core.test_scheduler_checks, vs_admin_console.tests_tasks) 34 OK. Nothing outside
+vs_students imports `StudentStatusLog` or `transition` except the FAL, which was
+run, and the only beat-schedule readers were run by name.
+
 ### D100. A person is paid by one branch, pay is changed only by a role allowed to, and a dated move takes effect on its date (af4b1518, 2026-10-01)
 MODULES: M19 finance and accounting (payroll), M12 staff management, M04 roles and
 permissions (field access), MRD.
@@ -677,10 +783,20 @@ The full suite was not run.
 
 ## Undone
 
-Four items. Each says what is wrong, how to fix it, and what is stopping it.
-Verified against the code on 2026-09-13, re-checked 2026-09-14; eight earlier
-items were removed because they were finished or no longer true, and what
-replaced them is noted at the end.
+Three items. Each says what is wrong, how to fix it, and what is stopping it.
+Verified against the code on 2026-10-01. An item is removed from here once the
+work lands, and the commit that closed it is named in the Documents owed entry
+that carries it, so this section holds only what is genuinely still open.
+
+Two were removed on 2026-10-01 after being checked against the code rather than
+remembered, both of them stale rather than wrong when written: billing on
+withdrawal (closed by 58c30eb0, carried as D86, and recorded under item 2 above
+because its panel promise was half of that item), and the staff import's Role
+column (closed by ec907841 on 2026-09-29, three days after the item was filed:
+the seeded staff template now carries twelve columns and no Role among them, and
+`schools/vs_staff/imports.py` grants the school's starting role through
+`starting_role_for_import`, which is the Add form's own rule, so the two cannot
+disagree).
 
 ### 1. FAL write ports for payments and concessions (deferred on purpose)
 Payments and concessions bypass the FAL and reach /v1/finance/ directly, so a
@@ -690,30 +806,26 @@ FIX: write ports - `apply_payment`, and something for concessions.
 BLOCKED BY: the fees backend step, deliberately, so that the design says what a
 payment screen and a waiver screen need before the port is shaped.
 
-### 2. Two screens promise things the backend does not do (WANTED, NOT NOW, 2026-08-30)
-Both are honest in the API and dishonest only if a screen types the sentence off
-the mockup rather than reading the response.
-(a) TELL A GUARDIAN WHEN THEIR CHILD IS SUSPENDED. The suspension panel prints
-"Guardians are notified by email" and no guardian-facing event type exists
-anywhere. FIX: a student.suspended event type with templates, plus a decision on
-who receives it (primary guardian only, or every linked guardian) and whether a
-school may turn it off. BLOCKED BY: that product decision.
-(b) STOP BILLING WHEN A STUDENT IS WITHDRAWN. The withdrawal panel prints
-"Billing stops at the effective date" and nothing stops: vs_finance is
-domain-neutral and has no fee assignment to suspend. FIX: a fee-assignment
-concept in Finance first, then the seam through the FAL's StudentCustomerPort.
-BLOCKED BY: that Finance work, which is much larger than (a).
+### 2. A guardian is not told when their child is suspended (2026-08-30, decided 2026-10-01)
+The suspension panel prints "Guardians are notified by email" and no
+guardian-facing event type exists anywhere, so the screen promises a message the
+backend never sends. The API itself is honest; only a screen reading the mockup
+instead of the response says otherwise.
+DECIDED: who receives it is the school's own setting, defaulting to the primary
+guardian alone. A school that wants every linked adult told may say so.
+FIX: a student.suspended event type with templates, a per-tenant setting for the
+audience, and dispatch from the suspension path.
+BLOCKED BY: nothing.
+WAS ALSO HERE, NOW DONE: billing did not stop when a child was withdrawn, and
+the withdrawal panel's "Billing stops at the effective date" was untrue. Closed
+by 58c30eb0 (2026-09-30, carried as D86): withdrawal, transfer and graduation
+deactivate the pupil's finance customer through the FAL's `set_customer_active`,
+so no fee run and no "bill all active" selection bills them again, while what
+they still owe stays owed and on the debtor list; readmission reactivates them.
+The fee-assignment concept this entry said Finance needed first was not the
+shape the answer took, so do not go looking for it.
 
-### 3. The staff import still lets the uploader pick each person's role (2026-09-26)
-Adding one person at a live school grants Teacher and refuses any other role
-(D13), but the staff import resolves a Role column per row, so a file can make
-its bursar Payout Approver from day one with no role admin ever choosing it.
-FIX: drop the Role column from the seeded staff template, have the row handler
-grant the starting role through `roles.starting_role` exactly as the single add
-does, and update `schools/vs_staff/tests/test_imports.py`.
-BLOCKED BY: nothing; deferred to keep the Add staff change small.
-
-### 4. School settings left out until the gradebook exists (2026-09-27)
+### 3. School settings left out until the gradebook exists (2026-09-27)
 The school Settings console (/settings) was surveyed for every rule a school
 might want to set its own way. Three were left out on purpose; revisit them
 when the gradebook is built.

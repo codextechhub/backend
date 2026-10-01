@@ -578,6 +578,42 @@ def _build_default_templates() -> dict:
             ),
         },
 
+        # ── student.suspended ───────────────────────────────────────────────
+        # Every optional line is guarded, because each is absent on a notice
+        # some school will send: the branch at a school with one, the return
+        # date on a suspension that stands until somebody lifts it, and the
+        # reason wherever the person suspending the pupil did not choose to
+        # send it. Which of them is sent and why is in
+        # schools/vs_students/services/suspension_notice.py.
+        ("student.suspended", C.IN_APP): {
+            "subject": (
+                "{{ student_first_name }} {{ student_last_name }} is suspended "
+                "from {{ effective_date }}"
+            ),
+            "body": (
+                "{% if branch_name %}{{ branch_name }}. {% endif %}"
+                "{% if return_date %}Expected back on {{ return_date }}. {% endif %}"
+                "{% if reason %}Reason: {{ reason }} {% endif %}"
+                "Please contact the school to discuss it."
+            ),
+        },
+        ("student.suspended", C.EMAIL): {
+            "subject": "Suspension notice - {{ student_first_name }} {{ student_last_name }}",
+            "body": (
+                "Dear Parent or Guardian,\n\n"
+                "{{ student_first_name }} {{ student_last_name }} has been "
+                "suspended from {{ effective_date }}.\n\n"
+                "  Pupil         : {{ student_first_name }} {{ student_last_name }}\n"
+                "{% if student_id %}  Student ID    : {{ student_id }}\n{% endif %}"
+                "{% if branch_name %}  Branch        : {{ branch_name }}\n{% endif %}"
+                "  Suspended from: {{ effective_date }}\n"
+                "{% if return_date %}  Expected back : {{ return_date }}\n{% endif %}"
+                "{% if reason %}  Reason        : {{ reason }}\n{% endif %}"
+                "\nPlease contact the school to discuss it.\n\n"
+                "{{ school_name }} via CodeX Vision"
+            ),
+        },
+
         # ── student.deactivated ─────────────────────────────────────────────
         ("student.deactivated", C.IN_APP): {
             "subject": "{{ student_first_name }} {{ student_last_name }} is no longer active",

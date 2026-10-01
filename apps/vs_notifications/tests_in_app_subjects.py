@@ -52,6 +52,7 @@ _ALREADY_TITLED = {
     "workflow.approver_removed",
     "payments.dispute_received",
     "payroll.payslip_ready",
+    "student.suspended",
 }
 
 

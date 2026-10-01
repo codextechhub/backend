@@ -170,6 +170,31 @@ class PromotionCapacityMode(models.TextChoices):
     OFF = "OFF", "Do not check"
 
 
+# Who the school tells when a pupil is suspended
+# (``services/suspension_notice.py``). The default writes to the one guardian
+# marked as the pupil's main contact, which is the narrowest audience that
+# still tells the family.
+CFG_SUSPENSION_NOTICE = "students.suspension.notice"
+
+
+class SuspensionNotice(models.TextChoices):
+    """Who is written to when a pupil is suspended.
+
+    PRIMARY_GUARDIAN writes to the one guardian marked as the pupil's main
+    contact, and to nobody else: a child's suspension reaching an adult the
+    school did not choose is worse than reaching nobody, so a primary contact
+    with neither an account nor an email address means the notice is not sent
+    rather than redirected. ALL_GUARDIANS writes to every guardian on the
+    pupil's record, for a school that treats both parents as equally
+    responsible. NOBODY sends nothing, for a school that tells families itself
+    by phone or in person.
+    """
+
+    PRIMARY_GUARDIAN = "PRIMARY_GUARDIAN", "The main contact only"
+    ALL_GUARDIANS = "ALL_GUARDIANS", "Every guardian on the record"
+    NOBODY = "NOBODY", "Nobody - the school tells the family itself"
+
+
 class GuardianMatching(models.TextChoices):
     """How a guardian typed in is recognised as one the school already holds.
 
@@ -248,6 +273,15 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     StudentStatus.TRANSFERRED: frozenset(),
     StudentStatus.REJECTED: frozenset(),
 }
+
+#: Destinations a school may record without typing a sentence. Every other
+#: status change is a decision somebody has to account for later, so the
+#: history may not hold it unexplained. A suspension is the exception because
+#: it is the one move whose explanation is sometimes the thing being
+#: established: a school suspending a pupil pending an investigation has
+#: nothing truthful to type yet, and forcing a sentence out of them buys a
+#: placeholder rather than a record.
+REASON_OPTIONAL = frozenset({StudentStatus.SUSPENDED})
 
 #: A student who is on the roll: countable, placeable, promotable.
 ON_ROLL = frozenset({

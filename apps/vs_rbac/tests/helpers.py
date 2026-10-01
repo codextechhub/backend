@@ -278,13 +278,27 @@ def install_declared_fields(*resources):
 
 
 def set_field_access(role, *keys, read=True, write=True):
-    """Turn Read and Write on or off for *role* over each registered *keys*."""
-    from vs_rbac.models import RoleFieldAccess
+    """Turn Read and Write on or off for *role* over each registered *keys*.
 
+    Write is granted only where the field itself is writable. The model refuses
+    a write switch on a field nothing can write, so a caller that opens every
+    field of a resource at once (a nurse who reads and corrects a child's
+    record, a vendor manager who maintains its bank details) would otherwise
+    stop working the day one of those fields is declared read-only. A test
+    about that refusal writes the row itself rather than coming through here.
+    """
+    from vs_rbac.models import FieldDefinition, RoleFieldAccess
+
+    writable = set(
+        FieldDefinition.objects
+        .filter(key__in=keys, writable=True)
+        .values_list("key", flat=True)
+    )
     rows = []
     for key in keys:
         row, _ = RoleFieldAccess.objects.update_or_create(
-            role=role, field_id=key, defaults={"can_read": read, "can_write": write},
+            role=role, field_id=key,
+            defaults={"can_read": read, "can_write": write and key in writable},
         )
         rows.append(row)
     return rows

@@ -186,6 +186,17 @@ app.conf.beat_schedule = {
         "schedule": crontab(hour=4, minute=30, day_of_week=0),
     },
 
+    # --- vs_students (suspensions that have run their course) -------------
+    # Daily, early: put back every pupil whose suspension reached the end date
+    # the school gave it. Judged on each pupil's own branch's day, and each
+    # return is dated the day it was due, so a day the worker misses costs a
+    # late record and never a wrong one. Idempotent: a pupil already on the
+    # roll is not swept, and one withdrawn since is never resurrected.
+    "students-return-ended-suspensions": {
+        "task": "vs_students.return_ended_suspensions",
+        "schedule": crontab(hour=1, minute=0),
+    },
+
     # --- vs_health (platform health) -------------------------------------
     # Synthetic probes, queue snapshots, and alert evaluation. All idempotent
     # and safe to miss in eager environments.

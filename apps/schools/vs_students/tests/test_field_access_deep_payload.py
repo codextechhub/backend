@@ -16,7 +16,12 @@ import datetime as dt
 from django.db.models import Count
 
 from schools.vs_students.constants import Relationship
-from schools.vs_students.models import Guardian, Student, StudentGuardian
+from schools.vs_students.models import (
+    Guardian,
+    Student,
+    StudentGuardian,
+    StudentStatusLog,
+)
 from vs_rbac.tests.deep_payload import DeepPayloadChecks, Sample
 
 from .base import StudentsFixture
@@ -37,6 +42,7 @@ class StudentsDeepPayloadTests(DeepPayloadChecks, StudentsFixture):
         _SURFACE + "GuardianWriteSerializer",
         _SURFACE + "GuardianLinkSerializer",
         _SURFACE + "SearchHitSerializer",
+        _SURFACE + "StatusLogSerializer",
     })
 
     #: A student and a guardian each have a phone, an email and an address.
@@ -78,11 +84,20 @@ class StudentsDeepPayloadTests(DeepPayloadChecks, StudentsFixture):
                 tenant=tenant, student=pupil, guardian=guardian,
                 relationship=Relationship.FATHER, is_primary=True,
             )
-            cls.records.append((tenant, pupil, guardian, link))
+            # A suspension already served, so the history row carries the
+            # reason a member of staff wrote about this child.
+            log = StudentStatusLog.all_objects.create(
+                tenant=tenant, student=pupil,
+                from_status="ACTIVE", to_status="SUSPENDED",
+                reason="Fighting in the dining hall on Tuesday.",
+                effective_date=dt.date(2025, 1, 20),
+                return_date=dt.date(2025, 1, 27),
+            )
+            cls.records.append((tenant, pupil, guardian, link, log))
 
     def samples(self):
         samples = []
-        for tenant, pupil, guardian, link in self.records:
+        for tenant, pupil, guardian, link, log in self.records:
             multi_branch = tenant.pk == self.tenant.pk
             context = {"multi_branch": multi_branch}
             pupils = Student.all_objects.filter(pk=pupil.pk).prefetch_related(
@@ -131,6 +146,8 @@ class StudentsDeepPayloadTests(DeepPayloadChecks, StudentsFixture):
                        {**context, "siblings": {}, "class_names": {}},
                        many=True, tenant=tenant),
                 Sample(_SURFACE + "SearchHitSerializer", pupils, context,
+                       many=True, tenant=tenant),
+                Sample(_SURFACE + "StatusLogSerializer", [log], context,
                        many=True, tenant=tenant),
             ]
         return samples

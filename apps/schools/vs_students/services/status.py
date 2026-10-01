@@ -23,6 +23,7 @@ from ..constants import (
     ALLOWED_TRANSITIONS,
     LEAVES_THE_ROLL,
     ON_ROLL,
+    REASON_OPTIONAL,
     EnrolmentOutcome,
     StudentStatus,
 )
@@ -30,6 +31,7 @@ from ..exceptions import (
     DestinationRequired,
     InvalidStatusTransition,
     ReasonRequired,
+    SuspensionEndsBeforeItStarts,
     TerminalStatus,
 )
 from ..models import StudentStatusLog
@@ -105,7 +107,7 @@ def assert_can_change(student):
 @transaction.atomic
 def transition(
     student, to_status, *, actor, reason="", effective_date=None,
-    destination_school="", system=False,
+    destination_school="", return_date=None, send_reason=False, system=False,
 ):
     """Move *student* to *to_status*, or refuse and write nothing at all.
 
@@ -113,8 +115,17 @@ def transition(
     by a test rather than assumed, because a log row without a reason is worse
     than no log row: it looks like a decision somebody made.
 
-    ``system=True`` is the promotion batch, which supplies its own sentence and
-    has no human actor to attribute the change to.
+    ``system=True`` is a batch, such as the promotion run or the automatic
+    return from suspension, which supplies its own sentence and has no human
+    actor to attribute the change to.
+
+    ``return_date`` belongs to a suspension and is cleared on every other
+    destination, in the same way ``destination_school`` is: a field that means
+    nothing for the move being recorded is not kept on the row because a
+    caller sent it. ``send_reason`` decides only what the family reads, never
+    what the history holds: the reason is written to the record either way,
+    and it reaches a guardian's notice only where the person suspending the
+    pupil chose to send it.
     """
     from_status = student.status
     if to_status == from_status:
@@ -132,7 +143,7 @@ def transition(
         )
 
     reason = (reason or "").strip()
-    if not reason and not system:
+    if not reason and not system and to_status not in REASON_OPTIONAL:
         raise ReasonRequired()
 
     destination_school = (destination_school or "").strip()
@@ -142,6 +153,13 @@ def transition(
         destination_school = ""
 
     effective_date = effective_date or branch_today(student.tenant, student.branch_id)
+
+    if to_status != StudentStatus.SUSPENDED:
+        return_date = None
+    if return_date is not None and return_date <= effective_date:
+        raise SuspensionEndsBeforeItStarts(
+            effective_date=str(effective_date), return_date=str(return_date),
+        )
 
     student.status = to_status
     student.save(update_fields=["status", "updated_at"])
@@ -154,6 +172,7 @@ def transition(
         tenant=student.tenant, student=student,
         from_status=from_status, to_status=to_status,
         reason=reason, effective_date=effective_date,
+        return_date=return_date,
         destination_school=destination_school,
         changed_by=None if system else actor,
     )
@@ -165,6 +184,11 @@ def transition(
     )
     if destination_school:
         summary += f" Destination: {destination_school}."
+    if return_date:
+        summary += (
+            f" Expected back on "
+            f"{format_date(return_date, student.tenant)}."
+        )
     if reason:
         summary += f" Reason: {reason}"
 
@@ -178,10 +202,41 @@ def transition(
         metadata={
             "from": from_status, "to": to_status,
             "effective_date": str(effective_date),
+            "return_date": str(return_date) if return_date else "",
             "destination_school": destination_school,
         },
     )
+
+    _notify_guardians(
+        student, to_status, effective_date,
+        return_date=return_date, reason=reason if send_reason else "",
+    )
     return student
+
+
+def _notify_guardians(student, to_status, effective_date, *, return_date, reason):
+    """Tell the pupil's guardians about a suspension, and about nothing else.
+
+    Only a move INTO SUSPENDED writes to a family, which a destination of
+    SUSPENDED is enough to establish: a move to the status a pupil already
+    holds is refused before anything is written. A suspension being lifted
+    sends nothing, by hand or by the automatic return: there is no event for
+    it, and a school lifting one has already spoken to the family it suspended
+    the pupil from.
+
+    *reason* arrives already emptied where the person suspending the pupil did
+    not choose to send it, so this function never decides what a family reads.
+
+    Who is written to, what the notice says and why a failure cannot block the
+    suspension all live in :mod:`schools.vs_students.services.suspension_notice`.
+    """
+    from .suspension_notice import send_suspension_notice
+
+    if to_status != StudentStatus.SUSPENDED:
+        return
+    send_suspension_notice(
+        student, effective_date, return_date=return_date, reason=reason,
+    )
 
 
 def _sync_billing(student, from_status, to_status, *, actor):

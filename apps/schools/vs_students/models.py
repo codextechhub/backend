@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from django.conf import settings
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
 from django.db.models.functions import Lower
 from django.utils import timezone
 
@@ -449,6 +449,16 @@ class StudentStatusLog(_Owned):
     history, read by a school user on the profile screen; it is not a
     substitute for vs_audit and does not replace it. Both are required and
     neither is the other's backup.
+
+    ``return_date`` is the one field here that describes a status the pupil has
+    not reached yet, and it belongs on this row rather than on ``Student``. A
+    suspension's start, its reason and the day it ends are one decision a
+    school made on one day, so they are read, printed and argued about
+    together; a column on the pupil would answer "when is this child back"
+    while answering nothing about which of their suspensions it belonged to,
+    and would have to be blanked by hand every time a status moved. The
+    history already carries the start date and the reason, and it is already
+    the row a pupil's second suspension appends to rather than overwrites.
     """
 
     tenant = models.ForeignKey(
@@ -466,6 +476,12 @@ class StudentStatusLog(_Owned):
     #: ``changed_at``, which is when the system recorded it. No default: every
     #: write names the day, the student's branch's unless the caller chose another.
     effective_date = models.DateField()
+    #: Set only on a suspension, where it is the day the pupil is expected
+    #: back. Optional, and a null is not "unknown": it is a suspension that
+    #: stands until a person lifts it, which is the honest record of a school
+    #: suspending a pupil pending an investigation nobody can date the end of.
+    #: A date here returns the pupil on that day without anybody acting.
+    return_date = models.DateField(null=True, blank=True)
     #: Required when to_status is TRANSFERRED, blank otherwise. Free text: the
     #: receiving school is not a tenant of this platform.
     destination_school = models.CharField(max_length=200, blank=True, default="")
@@ -476,7 +492,24 @@ class StudentStatusLog(_Owned):
     changed_at = models.DateTimeField(default=timezone.now, editable=False)
 
     class Meta(_Owned.Meta):
-        indexes = [models.Index(fields=["student", "changed_at"])]
+        indexes = [
+            models.Index(fields=["student", "changed_at"]),
+            # The automatic-return sweep reads the whole platform, so it is
+            # held to the few rows that can be due rather than to every status
+            # change every school has ever made.
+            models.Index(
+                fields=["to_status", "return_date"],
+                condition=Q(return_date__isnull=False),
+                name="idx_statuslog_due_return",
+            ),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(return_date__isnull=True)
+                | Q(return_date__gt=F("effective_date")),
+                name="ck_statuslog_return_after_effective",
+            ),
+        ]
         ordering = ["-changed_at"]
 
 

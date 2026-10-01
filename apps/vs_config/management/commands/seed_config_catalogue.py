@@ -271,6 +271,17 @@ SCHOOL_SCOPED_DEFINITIONS = [
         {"choices": ["FOLLOW_ENROLMENT", "WARN", "HARD", "OFF"]},
     ),
     (
+        "students.suspension.notice", "Who Is Told When A Pupil Is Suspended",
+        "Who the school writes to when a pupil is suspended. "
+        "PRIMARY_GUARDIAN tells the one guardian marked as the pupil's main "
+        "contact; ALL_GUARDIANS tells every guardian on the pupil's record; "
+        "NOBODY sends nothing, for a school that tells families itself. A "
+        "guardian the school holds no email address and no account for cannot "
+        "be written to, and nobody is written to in their place.",
+        "CHOICE", "PRIMARY_GUARDIAN",
+        {"choices": ["PRIMARY_GUARDIAN", "ALL_GUARDIANS", "NOBODY"]},
+    ),
+    (
         "staff.number.required", "Staff Number Required",
         "Whether every new member of staff must be given a staff number, on "
         "the Add form, on the import and when an edit would blank one.",
