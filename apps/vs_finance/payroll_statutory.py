@@ -743,19 +743,23 @@ def record_override_change(salary, before_amount, before_reason, *, actor_user=N
     """Audit setting, changing or clearing a person's PAYE override.
 
     An override replaces the computed PAYE on every run until it is cleared, so
-    it is recorded on its own with its reason, apart from ordinary edits.
+    it is recorded on its own with its reason, apart from ordinary edits. The
+    amount and reason travel in ``before``/``after`` under the salary row's
+    field names, where the trail applies Field Access, and never in the
+    message, which is mirrored to the platform trail and cannot be filtered.
     """
     if before_amount == salary.paye_override and before_reason == salary.paye_override_reason:
         return
     if salary.paye_override is None:
         message = f"Cleared {salary.name}'s PAYE override; PAYE is computed again."
     else:
-        message = f"Set {salary.name}'s PAYE to {salary.paye_override} kobo a month by override."
+        message = f"Set {salary.name}'s PAYE by override."
     record(
         entity=salary.entity, action=FinanceAuditAction.PAYE_OVERRIDE_CHANGED,
         actor_user=actor_user, target=salary, branch=salary.branch_id, message=message,
-        before={"paye_override": before_amount, "reason": before_reason},
-        after={"paye_override": salary.paye_override, "reason": salary.paye_override_reason},
+        before={"paye_override": before_amount, "paye_override_reason": before_reason},
+        after={"paye_override": salary.paye_override,
+               "paye_override_reason": salary.paye_override_reason},
     )
 
 

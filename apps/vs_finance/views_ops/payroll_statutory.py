@@ -584,7 +584,8 @@ class EmployeeDeductionListCreateView(_FinanceBase):
         salary = _resolve_salary(request, entity, pk)
         rows = salary.deductions.select_related("deduction_type").order_by("deduction_type__code", "id")
         return success_response(
-            "Employee deductions retrieved.", data=EmployeeDeductionSerializer(rows, many=True).data,
+            "Employee deductions retrieved.",
+            data=EmployeeDeductionSerializer(rows, many=True, context={"request": request}).data,
         )
 
     @transaction.atomic
@@ -614,11 +615,12 @@ class EmployeeDeductionListCreateView(_FinanceBase):
         record(
             entity=entity, action=FinanceAuditAction.PAYROLL_DEDUCTION_CHANGED,
             actor_user=request.user, target=salary, branch=salary.branch_id,
-            message=f"Added {kind.name} of {amount} kobo a month for {salary.name}.",
+            message=f"Added {kind.name} for {salary.name}.",
             after=dict(EmployeeDeductionSerializer(row).data),
         )
         return success_response(
-            "Employee deduction added.", data=EmployeeDeductionSerializer(row).data, status=201,
+            "Employee deduction added.",
+            data=EmployeeDeductionSerializer(row, context={"request": request}).data, status=201,
         )
 
 
@@ -668,7 +670,10 @@ class EmployeeDeductionDetailView(_FinanceBase):
             message=f"Changed {row.deduction_type.name} for {row.salary.name}.",
             before=before, after=after,
         )
-        return success_response("Employee deduction updated.", data=after)
+        return success_response(
+            "Employee deduction updated.",
+            data=EmployeeDeductionSerializer(row, context={"request": request}).data,
+        )
 
     @transaction.atomic
     def delete(self, request, pk):

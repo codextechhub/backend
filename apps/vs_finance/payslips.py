@@ -54,14 +54,23 @@ def _issuer_name(entity) -> str:
 
 
 def _person_lines(entity, line):
-    """Every line of the same person on ``entity``'s counted runs."""
+    """Every line of ``line``'s roster row on ``entity``'s counted runs.
+
+    The row is the person whose year to date a payslip prints, counted exactly
+    as the PAYE working counts it (:func:`vs_finance.payroll_statutory.year_to_date`):
+    the lines naming the row, and any line of the same account written before
+    lines named a row. Somebody on two branches' rosters has two rows and two
+    years to date. Tunde teaches at Ikeja and at Lekki: his Lekki payslip
+    counts what Lekki paid him, which is what his Lekki PAYE was worked out on,
+    and Lekki's bursar, who opens it, never reads Ikeja's pay inside a total.
+    """
     from .models import PayrollLine
 
     person = Q(pk=line.pk)
     if line.salary_id:
         person |= Q(salary_id=line.salary_id)
     if line.employee_id:
-        person |= Q(employee_id=line.employee_id)
+        person |= Q(salary__isnull=True, employee_id=line.employee_id)
     return PayrollLine.objects.filter(person, run__entity=entity, run__run_status__in=_COUNTED)
 
 
@@ -247,7 +256,13 @@ def queue_payslip_delivery(payslip_ids) -> bool:
 def deliver_payslips(payslip_ids) -> dict:
     """Send each payslip's in-app notice and email as the tenant's settings say.
 
-    The PDF attached to an email is kept in storage under the payslip's
+    The notice names the person, the issuer and the period, and no figure. Its
+    text comes from a template the tenant may edit and is kept, rendered, in a
+    notification history read across every branch, so a pay figure offered to
+    the template could be printed there for every member of staff. The pay
+    travels only in the PDF attached to the employee's own email.
+
+    The attached PDF is kept in storage under the payslip's
     ``email_attachment`` key for the email task to read; it is never served from
     there.
     """
@@ -270,7 +285,6 @@ def deliver_payslips(payslip_ids) -> dict:
             "employee_name": payslip.line.employee_name,
             "issuer_name": _issuer_name(payslip.entity),
             "period_label": payslip.period_label or payslip.pay_date.isoformat(),
-            "net_pay": format_naira(payslip.line.net_amount),
         }
         if policy.payslip_in_app and user is not None:
             try:

@@ -13,7 +13,7 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from core.media import signed_url
-from vs_rbac.field_enforcement import FieldAccessMixin
+from vs_rbac.field_enforcement import FieldAccessMixin, visible
 
 from .models import (
     Account,
@@ -1679,7 +1679,16 @@ class PayrollDeductionTypeSerializer(serializers.ModelSerializer):
         fields = ["id", "code", "name", "liability_account", "liability_account_id", "is_active"]
 
 
-class EmployeeDeductionSerializer(serializers.ModelSerializer):
+class EmployeeDeductionSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One person's voluntary deduction; its amount and limit are their pay breakdown.
+
+    Which deduction a person has is not a pay figure. How much it takes from
+    their pay is, and travels behind ``finance.salary``'s pay breakdown switch,
+    as the same deduction does on their payroll line.
+    """
+
+    field_resource = "finance.salary"
+
     deduction_type_code = serializers.CharField(source="deduction_type.code", read_only=True)
     deduction_type_name = serializers.CharField(source="deduction_type.name", read_only=True)
 
@@ -1800,6 +1809,11 @@ class FixedAssetSerializer(serializers.ModelSerializer):
 # Audit log                                                                   #
 # --------------------------------------------------------------------------- #
 
+#: Audit targets whose snapshots carry registered fields, and the Field Access
+#: resource those fields are registered under.
+AUDIT_SNAPSHOT_FIELDS = {"EmployeeSalary": "finance.salary"}
+
+
 class FinanceAuditLogSerializer(serializers.ModelSerializer):
     """One row of the finance trail.
 
@@ -1818,6 +1832,13 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
     carried a branch. One share of a central payroll run or of the tenant's tax
     return is its own entry, so a whole-school reader tells the shares apart by
     this column.
+
+    An entry about a roster row snapshots that person's pay, tax ID and pension
+    PIN under the row's own field names, so ``before``/``after`` are filtered
+    through the reader's Field Access on ``finance.salary``
+    (:data:`AUDIT_SNAPSHOT_FIELDS`): an auditor with pay figures switched off
+    reads that Ada was added and by whom, and none of her pay. A render with no
+    request in its context keeps the snapshot whole.
     """
 
     actor = serializers.CharField(source="actor.email", read_only=True, default=None)
@@ -1839,6 +1860,15 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
         from core.attribution import audit_row_attribution
 
         return audit_row_attribution(obj)
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        resource = AUDIT_SNAPSHOT_FIELDS.get(obj.target_type)
+        if resource is not None:
+            request = self.context.get("request")
+            data["before"] = visible(request, resource, data.get("before") or {})
+            data["after"] = visible(request, resource, data.get("after") or {})
+        return data
 
     def get_real_actor_name(self, obj) -> str | None:
         return self._attribution(obj)["real_actor_name"]
