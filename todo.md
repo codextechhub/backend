@@ -804,7 +804,7 @@ MUST SAY:
   person's retired structure.
 Verified: vs_finance 1585 OK, vs_rbac 981 OK. The full suite was not run.
 
-### D102. Branches lend, forward, recharge and move stock between themselves, and a pupil's whole account moves with them (hash pending, 2026-10-01)
+### D102. Branches lend, forward, recharge and move stock between themselves, and a pupil's whole account moves with them (92aaa411, 2026-10-01)
 MODULES: M19 finance and accounting (inter-branch transfers, receivables, period
 close, chart of accounts), M20 procurement and inventory (stock transfers), M04
 roles and permissions (the finance.interbranch keys), M11 students only for the
