@@ -643,7 +643,7 @@ MUST SAY:
   nothing until its day.
 - Deploy: run sync_field_registry.
 
-### D100. A person is paid by one branch, pay is changed only by a role allowed to, and a dated move takes effect on its date (hash pending, 2026-10-01)
+### D100. A person is paid by one branch, pay is changed only by a role allowed to, and a dated move takes effect on its date (af4b1518, 2026-10-01)
 MODULES: M19 finance and accounting (payroll), M12 staff management, M04 roles and
 permissions (field access), MRD.
 MUST SAY:
