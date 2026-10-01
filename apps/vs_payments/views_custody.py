@@ -21,6 +21,8 @@
   the platform operators' list of settlements to act on across every tenant, and
   putting one forward for the platform's two-person approval. Platform staff only
   (``IsVisionStaff``), with ``payments.platform_settlement.view`` / ``.submit``.
+* ``platform/held-reconciliations/``: the daily checks of the platform's books
+  against its provider balance, for the same platform staff.
 """
 from __future__ import annotations
 
@@ -334,3 +336,35 @@ class PlatformHeldSettlementSubmitView(APIView):
             **_settlement_row(row, platform=True),
             "approval": release_svc.approval_block(instance),
         })
+
+
+class PlatformHeldReconciliationListView(APIView):
+    """GET: the daily checks of the platform's books against its provider balance, newest first.
+
+    Each row is one day's check (:mod:`vs_payments.held_reconciliation`): what
+    the provider reported, what the books say and why, the difference against
+    the tolerance, whether it agrees, and the incident a disagreement opened.
+    ``?agrees=false`` lists only the disagreements; ``?limit=`` caps the page (at
+    most 200). Platform staff with ``payments.platform_settlement.view`` only.
+
+    docstring-name: Held-ledger reconciliations
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff & HasRBACPermission]
+    rbac_permission = "payments.platform_settlement.view"
+
+    def get(self, request):
+        from .models import HeldReconciliation
+
+        rows = HeldReconciliation.objects.order_by("-checked_on", "-id")
+        agrees = str(request.query_params.get("agrees") or "").strip().lower()
+        if agrees in ("true", "false"):
+            rows = rows.filter(agrees=agrees == "true")
+        return success_response("Held-ledger reconciliations retrieved.", data=[{
+            "id": row.pk, "checked_on": row.checked_on.isoformat(), "provider": row.provider,
+            "currency": row.currency, "provider_balance": row.provider_balance,
+            "books_balance": row.books_balance, "provider_account": row.provider_account,
+            "held_total": row.held_total, "own_in_transit": row.own_in_transit,
+            "difference": row.difference, "tolerance": row.tolerance, "agrees": row.agrees,
+            "error": row.error or None, "incident_code": row.incident_code or None,
+        } for row in rows[:_limit(request)]])

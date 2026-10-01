@@ -26,6 +26,8 @@ urlpatterns = [
     path("platform/held-settlements/<int:pk>/submit/",
          views_custody.PlatformHeldSettlementSubmitView.as_view(),
          name="payments-platform-held-settlement-submit"),
+    path("platform/held-reconciliations/", views_custody.PlatformHeldReconciliationListView.as_view(),
+         name="payments-platform-held-reconciliations"),
     path("settings/custody/", views_custody.CustodySettingsView.as_view(),
          name="payments-custody-settings"),
     path("subaccounts/", views_custody.CollectionSubaccountView.as_view(),

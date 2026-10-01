@@ -500,6 +500,34 @@ MUST SAY:
   balance; nothing yet compares CodeX's held ledger with Paystack's reported
   balance; Paystack's transfer fee table and dispute fields are to be confirmed.
 
+### D94. A dispute CodeX wins gives the branch its money back, and CodeX's held ledger is checked against Paystack every day (hash pending, 2026-10-01)
+MODULES: M18 payments and collections, M30 system health and monitoring, M06
+configuration and capability, M08 notifications and delivery, MRD.
+MUST SAY:
+- Disputes (M18). Paystack's charge.dispute.resolve (data.resolution: declined =
+  merchant won; merchant-accepted or auto-accepted = lost; to confirm with
+  Paystack) is recorded and audited (PROVIDER_DISPUTE_RESOLVED) and sent to the
+  tenant's finance staff and CodeX operators. On held money a won dispute restores
+  the branch's held balance once per dispute: any amount the branch owed CodeX is
+  repaid first, the rest is held again, and the school's chargeback entry is
+  reversed (Dr gateway clearing, Cr Payment Chargebacks). A lost dispute stays
+  booked. Direct-mode outcomes are recorded and raised only.
+- Held-ledger reconciliation (M18, M30). A daily beat task
+  (vs_payments.reconcile_held_ledger, payments-reconcile-held-ledger, 07:15)
+  compares Paystack's reported balance (GET /balance through the adapter) with
+  CodeX's books (provider balance account plus CodeX's own online payments not yet
+  settled, less fees) and checks the provider balance against the per-branch held
+  balances. Each check is a HeldReconciliation row per provider, currency and day.
+  A difference above payments.held_reconciliation_tolerance_kobo (a platform
+  vs_config value, default 0) opens one system-health incident
+  (payments.held-ledger-mismatch) and notifies CodeX's health and settlement
+  operators once; the next agreeing check resolves it. GET
+  /v1/payments/platform/held-reconciliations/ (?agrees, ?limit) for CodeX staff
+  with payments.platform_settlement.view. Migration vs_payments 0011.
+- Needs Attention: the check assumes CodeX's Paystack balance is kept, not swept
+  to CodeX's bank daily (confirm the Paystack setting before go-live); CodeX's own
+  online supplier payouts from the balance are not yet in the books' figure.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

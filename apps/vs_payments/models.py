@@ -605,6 +605,10 @@ class HeldMovement(TimeStampedModel):
                 name="uniq_payments_held_dispute_once",
             ),
             models.UniqueConstraint(
+                fields=["collection"], condition=models.Q(kind="DISPUTE_WON"),
+                name="uniq_payments_held_dispute_won_once",
+            ),
+            models.UniqueConstraint(
                 fields=["branch"], condition=models.Q(kind="OPENING"),
                 name="uniq_payments_held_opening_once",
             ),
@@ -701,6 +705,52 @@ class HeldSettlement(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"Settlement {self.pk} to branch {self.branch_id}: {self.amount} kobo ({self.status})"
+
+
+class HeldReconciliation(TimeStampedModel):
+    """One day's check that the platform's books agree with its provider balance.
+
+    ``provider_balance`` is what the provider reports holding (``None`` when it
+    could not be asked, with ``error`` saying why). ``books_balance`` is what the
+    platform's books say it should hold: its provider balance account
+    (``provider_account``) plus its own online takings still in transit
+    (``own_in_transit``, its own payments less their fees, not yet settled to
+    its bank). ``held_total`` is the held-funds sub-ledger's sum, which the
+    provider balance account mirrors. ``difference`` is the provider's figure
+    less the books'. The check agrees when the difference is within
+    ``tolerance`` and the account equals the sub-ledger; otherwise it opens a
+    system-health incident (``incident_code``) that the next agreeing check
+    resolves (:mod:`vs_payments.held_reconciliation`).
+
+    One row per provider, currency and day: a check run again the same day
+    replaces that day's figures.
+    """
+
+    provider = models.CharField(max_length=16, choices=PaymentProvider.choices)
+    currency = models.CharField(max_length=3, default="NGN")
+    checked_on = models.DateField()
+    provider_balance = models.BigIntegerField(null=True, blank=True)
+    provider_account = models.BigIntegerField(default=0)
+    held_total = models.BigIntegerField(default=0)
+    own_in_transit = models.BigIntegerField(default=0)
+    books_balance = models.BigIntegerField(default=0)
+    difference = models.BigIntegerField(null=True, blank=True)
+    tolerance = models.BigIntegerField(default=0)
+    agrees = models.BooleanField(default=False)
+    error = models.CharField(max_length=255, blank=True, default="")
+    incident_code = models.CharField(max_length=32, blank=True, default="")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider", "currency", "checked_on"],
+                name="uniq_payments_held_reconciliation_day",
+            ),
+        ]
+        ordering = ["-checked_on", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.provider} {self.checked_on}: {'agrees' if self.agrees else self.difference}"
 
 
 class WebhookEvent(TimeStampedModel):

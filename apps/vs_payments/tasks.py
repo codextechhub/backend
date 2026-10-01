@@ -136,6 +136,20 @@ def run_held_settlements():
     return summary
 
 
+@shared_task(name="vs_payments.reconcile_held_ledger")
+# Compare the platform's books with the provider balance it reports.
+def reconcile_held_ledger():
+    """See :func:`vs_payments.held_reconciliation.reconcile_held_ledger`. Safe to re-run."""
+    from .held_reconciliation import reconcile_held_ledger as reconcile
+
+    row = reconcile()
+    if not row.agrees:
+        logger.warning("reconcile_held_ledger: %s", row)
+    return {"checked_on": row.checked_on.isoformat(), "agrees": row.agrees,
+            "difference": row.difference, "error": row.error,
+            "incident": row.incident_code}
+
+
 @shared_task(name="vs_payments.apply_custody_switches", acks_late=True, reject_on_worker_lost=True)
 # Apply custody changes whose month has come, or say why they wait.
 def apply_custody_switches():

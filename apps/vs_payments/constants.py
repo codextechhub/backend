@@ -188,6 +188,7 @@ class PaymentAuditAction(models.TextChoices):
     HELD_OPENING_BALANCE = "HELD_OPENING_BALANCE", "Held opening balance"  # Platform recorded money it already held.
     VIRTUAL_ACCOUNT_REISSUED = "VIRTUAL_ACCOUNT_REISSUED", "Virtual account reissued"  # Old number retired.
     PROVIDER_DISPUTE_RECEIVED = "PROVIDER_DISPUTE_RECEIVED", "Chargeback or refund received"  # Raised, not booked.
+    PROVIDER_DISPUTE_RESOLVED = "PROVIDER_DISPUTE_RESOLVED", "Chargeback resolved"  # Won or lost.
 
 
 class CustodyMode(models.TextChoices):
@@ -201,6 +202,23 @@ class CustodyMode(models.TextChoices):
 
     DIRECT = "DIRECT", "Direct to each branch's bank"
     HELD = "HELD", "Held by the platform"
+
+
+class DisputeOutcome(models.TextChoices):
+    """How a chargeback dispute ended, as a resolution event reports it.
+
+    ``WON``: the dispute went the merchant's way and the payer's bank gives the
+    money back. ``LOST``: the merchant accepted it, or it was decided for the
+    payer, and the money stays gone. A dispute event that is not a resolution
+    carries neither.
+    """
+
+    WON = "WON", "Won by the merchant"
+    LOST = "LOST", "Lost to the payer"
+
+
+#: The ``status`` a parsed dispute event carries when it resolves the dispute.
+DISPUTE_RESOLUTIONS = frozenset({DisputeOutcome.WON, DisputeOutcome.LOST})
 
 
 class PayoutPurpose(models.TextChoices):
@@ -224,6 +242,7 @@ class HeldMovementKind(models.TextChoices):
     RELEASE = "RELEASE", "Payout or settlement failed"  # Gives back what a failed transfer reserved.
     OPENING = "OPENING", "Opening balance"  # Money already held when the ledger started.
     DISPUTE = "DISPUTE", "Chargeback"  # A payer's bank took a held payment back.
+    DISPUTE_WON = "DISPUTE_WON", "Chargeback won back"  # The dispute went the merchant's way.
 
 
 class HeldSettlementStatus(models.TextChoices):

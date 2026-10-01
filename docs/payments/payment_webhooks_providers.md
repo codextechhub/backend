@@ -45,7 +45,13 @@ creating one), recorded as `PROVIDER_DISPUTE_RECEIVED`, raised to the tenant's
 finance staff and the platform's operators (`payments.dispute_received`), and
 marked PROCESSED (`held.record_dispute`). The first chargeback event on a payment the
 platform held also takes it from the branch's held balance, booked in both books,
-once (`held.book_held_chargeback`); nothing else is booked. The Paystack fields
+once (`held.book_held_chargeback`). A `charge.dispute.resolve` carries its outcome
+(`DisputeOutcome`: `declined` is WON, `merchant-accepted` or `auto-accepted` LOST,
+to confirm): a won dispute on held money gives the chargeback back, once
+(`held.restore_held_chargeback`), a lost one stays as booked, and both are audited
+as `PROVIDER_DISPUTE_RESOLVED`. Nothing else is booked. Each adapter also reports
+the merchant's balance (`available_balance`, Paystack's `GET /balance`), read by the
+daily held-ledger reconciliation (`vs_payments.held_reconciliation`). The Paystack fields
 they are read from (`data.transaction.reference`, `data.transaction_reference`,
 `data.refund_amount`) are to be confirmed.
 

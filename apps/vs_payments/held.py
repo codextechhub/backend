@@ -1062,17 +1062,43 @@ def record_dispute(event, intent, parsed):
     booked, because how that loss is borne is a decision for people. Either way
     the tenant's finance staff and the platform's operators are told
     (:func:`vs_payments.alerts.dispute_received`).
+
+    A resolution (:data:`~vs_payments.constants.DISPUTE_RESOLUTIONS`) books no
+    chargeback. It is recorded (``PROVIDER_DISPUTE_RESOLVED``) whatever the
+    tenant's mode; one the merchant won on held money gives the branch its
+    chargeback back (:func:`restore_held_chargeback`), and one it lost leaves
+    the chargeback as booked.
     """
     from .alerts import dispute_received
-    from .constants import PaymentDirection
+    from .constants import DISPUTE_RESOLUTIONS, DisputeOutcome, PaymentDirection
     from .custody import custody_mode
 
     entity = intent.entity if intent is not None else None
     tenant = entity.tenant if entity is not None and entity.tenant_id else None
     mode = custody_mode(tenant) if tenant is not None else CustodyMode.HELD
-    booked = None
-    if (parsed.direction == PaymentDirection.DISPUTE and intent is not None
-            and intent.held_by_platform):
+    booked = restored = None
+    held_money = intent is not None and intent.held_by_platform
+    is_dispute = parsed.direction == PaymentDirection.DISPUTE
+    if is_dispute and parsed.status in DISPUTE_RESOLUTIONS:
+        if held_money and parsed.status == DisputeOutcome.WON:
+            restored = restore_held_chargeback(intent)
+        audit.record(
+            action=PaymentAuditAction.PROVIDER_DISPUTE_RESOLVED, entity=entity,
+            provider=event.provider,
+            reference=intent.reference if intent is not None else parsed.reference,
+            message=(f"Dispute on {intent.reference if intent is not None else 'an unknown payment'} "
+                     f"{'won' if parsed.status == DisputeOutcome.WON else 'lost'}; "
+                     + ("the chargeback was given back to the branch." if restored else
+                        "nothing to give back." if parsed.status == DisputeOutcome.WON else
+                        "the chargeback stands."))[:255],
+            metadata={"event_id": event.pk, "event_type": parsed.event_type,
+                      "outcome": parsed.status, "custody_mode": mode,
+                      "held_by_platform": bool(held_money),
+                      "held_movement_id": getattr(restored, "pk", None)},
+        )
+        return dispute_received(event=event, intent=intent, parsed=parsed, custody_mode=mode,
+                                outcome=parsed.status, restored=restored)
+    if is_dispute and held_money:
         booked = book_held_chargeback(intent, parsed.amount)
     audit.record(
         action=PaymentAuditAction.PROVIDER_DISPUTE_RECEIVED, entity=entity,
@@ -1112,8 +1138,8 @@ def book_held_chargeback(intent, amount, *, actor_user=None):
     branch's clearing stands for. The receipt and the invoice it paid are left
     as they are, for finance staff to pursue the payer.
 
-    A later event for the same dispute (a reminder, a resolution) books nothing
-    again. A tenant journal the books cannot take is recorded on the movement
+    A later event for the same dispute (a reminder) books nothing again; its
+    resolution is :func:`record_dispute`'s to handle. A tenant journal the books cannot take is recorded on the movement
     (``journal_error``) rather than refused: the money has already gone.
     """
     from vs_finance.account_mappings import resolve_mapped_account
@@ -1167,6 +1193,80 @@ def book_held_chargeback(intent, amount, *, actor_user=None):
     movement.tenant_journal = entry
     movement.save(update_fields=["tenant_journal", "updated_at"])
     return movement
+
+
+@transaction.atomic
+def restore_held_chargeback(intent, *, actor_user=None):
+    """Give a branch back a chargeback the platform won, in both books, once per dispute.
+
+    The reverse of :func:`book_held_chargeback`, for the amount it took: the
+    branch's held balance rises by it, and the platform's journal splits the
+    rise where the balance crosses zero, so any shortfall the chargeback left the
+    branch owing is repaid first and only the rest is held for it again
+    (:func:`_post_platform_journal`). The tenant's books reverse their entry: Dr
+    gateway clearing, Cr payment chargebacks, in the branch. None when no
+    chargeback was booked for the payment (nothing to give back) and the
+    existing movement when it was already given back.
+    """
+    from vs_finance.account_mappings import resolve_mapped_account
+    from vs_finance.constants import AccountMappingKey, JournalSource
+    from vs_finance.models import JournalEntry, JournalLine
+    from vs_finance.posting import post_journal, resolve_period
+
+    from .models import HeldMovement
+
+    taken = HeldMovement.objects.filter(collection=intent, kind=HeldMovementKind.DISPUTE).first()
+    if taken is None:
+        return None
+    existing = HeldMovement.objects.filter(
+        collection=intent, kind=HeldMovementKind.DISPUTE_WON).first()
+    if existing is not None:
+        return existing
+    entity = intent.entity
+    tenant = entity.tenant
+    amount = -int(taken.amount)
+    today = _today(tenant)
+    movement = _move(
+        tenant=tenant, branch_id=taken.branch_id, kind=HeldMovementKind.DISPUTE_WON,
+        amount=amount, on=today, reference=intent.reference, collection=intent,
+        actor_user=actor_user,
+        narration=f"Chargeback on {intent.reference} won back for "
+                  f"{_branch_label(tenant, taken.branch_id)}",
+    )
+    try:
+        with transaction.atomic():
+            entry = JournalEntry.objects.create(
+                entity=entity, branch_id=taken.branch_id, date=today,
+                period=resolve_period(entity, today), source=JournalSource.BANK,
+                narration=f"Chargeback on online payment {intent.reference} won back"[:255],
+                reference=intent.reference, created_by=actor_user,
+            )
+            JournalLine.objects.create(
+                entry=entry, line_no=1, debit=amount, credit=0, description="Gateway clearing",
+                account=resolve_mapped_account(entity, AccountMappingKey.GATEWAY_CLEARING,
+                                               label="gateway clearing"))
+            JournalLine.objects.create(
+                entry=entry, line_no=2, debit=0, credit=amount, description="Chargeback won back",
+                account=resolve_mapped_account(entity, AccountMappingKey.CHARGEBACKS,
+                                               label="payment chargebacks"))
+            post_journal(entry, actor_user=actor_user)
+    except Exception as exc:  # noqa: BLE001 - the money is back; record, do not refuse.
+        movement.journal_error = f"Tenant books: {getattr(exc, 'message', exc)}"[:255]
+        movement.save(update_fields=["journal_error", "updated_at"])
+        logger.warning("Won chargeback %s not booked in the tenant's books: %s",
+                       intent.reference, movement.journal_error)
+        return movement
+    movement.tenant_journal = entry
+    movement.save(update_fields=["tenant_journal", "updated_at"])
+    return movement
+
+
+def repaid_by_restore(movement) -> int:
+    """Kobo of a won-back chargeback that repaid what the branch owed the platform."""
+    if movement is None:
+        return 0
+    before = int(movement.balance_after) - int(movement.amount)
+    return max(0, -before) - max(0, -int(movement.balance_after))
 
 
 # --------------------------------------------------------------------------- #
