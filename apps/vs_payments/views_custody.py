@@ -203,9 +203,10 @@ class HeldSettlementListView(APIView):
     """GET: the platform's settlement runs paying this tenant's branches what it held for them.
 
     Read with ``payments.report.view``, narrowed to the caller's branches as every
-    transaction is (:func:`vs_rbac.scoping.transaction_branch_q`): a Lekki bursar
-    sees Lekki's settlements only. ``?status=`` filters by ``PENDING``, ``PAID`` or
-    ``FAILED``; ``?limit=`` caps the page (at most 200). Newest first.
+    payments read is (:meth:`vs_payments.reach.PaymentsReach.held_settlements`): a
+    Lekki bursar sees Lekki's settlements only. ``?status=`` filters by
+    ``PENDING``, ``PAID`` or ``FAILED``; ``?limit=`` caps the page (at most 200).
+    Newest first.
 
     docstring-name: Held settlements
     """
@@ -214,14 +215,10 @@ class HeldSettlementListView(APIView):
     rbac_permission = "payments.report.view"
 
     def get(self, request):
-        from vs_rbac.scoping import transaction_branch_q
-
         from .constants import HeldSettlementStatus
-        from .models import HeldSettlement
 
         entity = resolve_entity(request)
-        rows = (HeldSettlement.objects.filter(entity=entity)
-                .filter(transaction_branch_q(request))
+        rows = (PaymentsReach.for_request(request, entity).held_settlements()
                 .select_related("branch", "bank_account", "batch")
                 .order_by("-id"))
         status = str(request.query_params.get("status") or "").strip().upper()

@@ -1064,19 +1064,6 @@ _MOVEMENT_COLS = [  # Common projection shape for the movements feed.
 ]
 
 
-# Support the movement querysets workflow.
-def _held_settlements(reach):
-    """The held settlements paying ``reach``'s entity, narrowed as its transactions are.
-
-    A settlement is the tenant's own money moving from the platform's balance to
-    a branch's bank, so it is read by the branch it pays, exactly as the
-    gateway records are (:class:`vs_payments.reach.PaymentsReach`).
-    """
-    from .models import HeldSettlement
-
-    return HeldSettlement.objects.filter(entity=reach.entity).filter(reach.scope.q(""))
-
-
 def _movement_querysets(reach, *, provider=None, group=None):
     """The collection (in), payout (out) and settlement (transfer) value-querysets, one shape.
 
@@ -1097,7 +1084,7 @@ def _movement_querysets(reach, *, provider=None, group=None):
 
     cols = reach.collections()
     pos = reach.payouts()
-    held = _held_settlements(reach)
+    held = reach.held_settlements()
     if provider:  # Optional PSP filter applied to every side.
         cols = cols.filter(provider=provider)
         pos = pos.filter(provider=provider)
@@ -1275,7 +1262,7 @@ class MovementsSummaryView(APIView):
             pending=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["PENDING"][1])),
             failed=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["FAILED"][1])),
         )
-        held_settled = _held_settlements(reach).filter(
+        held_settled = reach.held_settlements().filter(
             status="PAID", paid_at__gte=cutoff).aggregate(total=Coalesce(Sum("amount"), 0))["total"]
         transfers = p["settled7d"] + held_settled
         return success_response("Movements summary retrieved.", data={

@@ -27,12 +27,17 @@ reads:
   reference it carries, and a **webhook event** with the collection or payout
   it matched;
 * a **bank statement line** (settlement reconciliation) is reached with its
-  bank account.
+  bank account;
+* a **held settlement** is the branch it pays. The money is held in the
+  platform's books, but the settlement row sits in the tenant's: its ``entity``
+  is the tenant's books, which record the money arriving, so a tenant reads its
+  own settlements by entity as it reads its gateway records, and never another
+  tenant's.
 
 Every payments list, detail, summary and status change starts from
 :class:`PaymentsReach`, never from ``Model.objects``, so a new view cannot forget
-the narrowing; ``tests_branch_reach`` asserts ``views.py`` holds no other route to
-these tables. A row outside reach is therefore absent from a list, uncounted in a
+the narrowing; ``tests_branch_reach`` asserts ``views.py`` and ``views_custody.py``
+hold no other route to these tables. A row outside reach is therefore absent from a list, uncounted in a
 summary, and a 404 on a detail or an action, exactly like a row that does not
 exist. A caller who covers the whole school is not narrowed at all and gets the
 same querysets, and the same SQL, as an entity filter alone.
@@ -50,6 +55,7 @@ from vs_rbac.scoping import (
 
 from .models import (
     CollectionIntent,
+    HeldSettlement,
     PaymentEvent,
     PayoutBatch,
     PayoutInstruction,
@@ -108,6 +114,17 @@ class PaymentsReach:
 
     def batches(self):
         return self.scope.filter(PayoutBatch.objects.filter(entity=self.entity))
+
+    def held_settlements(self):
+        """The platform's settlements paying this tenant's branches what it held for them.
+
+        A settlement's ``entity`` is the tenant's books, which record the money
+        arriving, not the platform's books that send it. The entity filter alone
+        therefore keeps every other tenant's settlements out, as it does for the
+        gateway records. A settlement always names the branch it pays, so a
+        branch-bound caller reaches their own branches' settlements and no other.
+        """
+        return self.scope.filter(HeldSettlement.objects.filter(entity=self.entity))
 
     def events(self):
         """The transactions log, less every action on a record outside reach.
