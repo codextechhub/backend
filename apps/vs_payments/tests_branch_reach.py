@@ -1114,8 +1114,9 @@ class PaymentsViewsStartFromTheReachTests(SimpleTestCase):
     A view that filtered ``CollectionIntent.objects``, ``HeldSettlement.objects`` or
     ``HeldBalance.objects`` itself would show Ikeja's clerk the whole school again,
     and nothing else would notice. The only exceptions read at platform scope, for
-    platform staff only: webhook events matched to no tenant, and every tenant's
-    held settlements for the operators who put them forward.
+    platform staff only: webhook events matched to no tenant, every tenant's held
+    settlements for the operators who put them forward, and the daily checks of
+    the platform's books against its provider balance.
     """
 
     def test_views_name_no_gateway_manager(self):
@@ -1127,7 +1128,8 @@ class PaymentsViewsStartFromTheReachTests(SimpleTestCase):
         platform_scope = {
             views: (views._unattributed_webhooks,),
             views_custody: (views_custody.PlatformHeldSettlementListView,
-                            views_custody.PlatformHeldSettlementSubmitView),
+                            views_custody.PlatformHeldSettlementSubmitView,
+                            views_custody.PlatformHeldReconciliationListView),
         }
         for module, exempt in platform_scope.items():
             source = inspect.getsource(module)
