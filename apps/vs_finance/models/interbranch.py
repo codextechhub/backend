@@ -254,11 +254,11 @@ class InterBranchTransfer(FinanceDocument):
     :class:`ReceivableTransferItem` rows and journals say what each part was and
     who owes whom.
 
-    Income given back is booked by a credit note, concession or write-off
-    (``adjustment_entry``) that takes back a bill's income held at another
-    branch. ``branch`` is the adjusting document's branch, whose side is a line
+    Income given back is booked by a credit note or concession
+    (``adjustment_entry``) that cancels a moved bill's income another branch
+    booked. ``branch`` is the adjusting document's branch, whose side is a line
     of that document's own journal, so its leg carries no journal of its own;
-    ``to_branch`` holds the income and books its side on its receiving leg.
+    ``to_branch`` booked the income and books its side on its receiving leg.
 
     Every other kind posts two journals, one per branch, through its two
     :class:`InterBranchTransferLeg` rows. The cash kind on the sending side is
@@ -322,7 +322,7 @@ class InterBranchTransfer(FinanceDocument):
     adjustment_entry = models.ForeignKey(
         "JournalEntry", on_delete=models.PROTECT, related_name="income_given_back",
         null=True, blank=True,
-        help_text="For income given back: the credit note, concession or write-off journal that took it.",
+        help_text="For income given back: the credit note or concession journal that took it.",
     )
     requested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+",

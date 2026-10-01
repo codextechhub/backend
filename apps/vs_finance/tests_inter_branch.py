@@ -7,7 +7,9 @@ fee and recharges it by pupil numbers. Tunde moves from Ikeja to Lekki owing
 170k, and his whole position moves with him: his debit note, his unapplied
 credit and the part of his term not yet taught. When Lekki later cancels the
 term, January, which Ikeja earned and kept, is taken back from Ikeja rather than
-out of Lekki's books. Ikeja's central store sends Lekki textbooks.
+out of Lekki's books, and a credit on his textbook bill takes Ikeja's revenue
+and VAT back the same way; a write-off stays Lekki's loss. Ikeja's central
+store sends Lekki textbooks.
 
 Every one of those posts two journals, one per branch, so no entry ever mixes
 branches, and the inter-branch account nets to zero across the school. Each
@@ -887,9 +889,11 @@ class IncomeGivenBackTests(_TermFixture):
     """Tunde moves to Lekki on 25 January; Lekki then credits, concedes or writes off his term.
 
     The move leaves January's 100k at Ikeja, which earned it, and Lekki owes
-    Ikeja that 100k. Whatever Lekki takes back of January is taken from Ikeja,
-    through the inter-branch account, so neither branch's books carry the
-    other's income and the pair still agrees.
+    Ikeja that 100k. Whatever a credit note or concession at Lekki takes back of
+    January is taken from Ikeja, through the inter-branch account, so neither
+    branch's books carry the other's income and the pair still agrees. A
+    write-off is Lekki's loss alone: January stays earned at Ikeja, whenever the
+    release runs.
     """
 
     @classmethod
@@ -1022,14 +1026,34 @@ class IncomeGivenBackTests(_TermFixture):
 
             reverse_journal(transfer.legs.get(role=InterBranchLegRole.RECEIVING).journal)
 
-    def test_a_write_off_at_lekki_gives_back_ikejas_january_rather_than_expensing_it(self):
+    def write_off_and_release(self, on):
+        """Lekki writes Tunde's term off on ``on``; every month due is then released."""
         from .credit_notes import write_off_invoice
+        from .deferred_income import release_deferred_income
 
-        write_off_invoice(Invoice.objects.get(pk=self.term.pk), write_off_date=JAN_28)
+        write_off_invoice(Invoice.objects.get(pk=self.term.pk), write_off_date=on)
+        release_deferred_income(self.books, up_to=APR_30)
 
-        self.assert_branch_books(deferred=(0, 0), revenue=(0, 0), lekki_owes_ikeja=0)
-        self.assertEqual(net(Account.objects.get(entity=self.books, code="5350")), 0)
-        self.assertEqual(self.given_back().get().amount, 100_000)
+    def assert_lekki_bears_the_write_off(self):
+        """January stays earned at Ikeja; Lekki books the bad debt and still owes for it."""
+        bad_debt = Account.objects.get(entity=self.books, code="5350")
+        self.assert_branch_books(deferred=(0, 0), revenue=(-100_000, 0), lekki_owes_ikeja=100_000)
+        self.assertEqual((net(bad_debt, self.ikeja), net(bad_debt, self.lekki)), (0, 100_000))
+        self.assertEqual(net(self.ar, self.lekki), 0)
+        self.assertFalse(self.given_back().exists())
+
+    def test_a_write_off_before_january_is_released_leaves_january_earned_at_ikeja(self):
+        self.write_off_and_release(JAN_28)
+
+        self.assert_lekki_bears_the_write_off()
+
+    def test_a_write_off_after_january_is_released_books_the_same(self):
+        from .deferred_income import release_deferred_income
+
+        release_deferred_income(self.books, up_to=datetime.date(2026, 1, 31))
+        self.write_off_and_release(FEB_3)
+
+        self.assert_lekki_bears_the_write_off()
 
     def test_a_concession_at_lekki_gives_back_ikejas_january_and_its_void_restores_it(self):
         from .installments import post_concession
@@ -1066,6 +1090,152 @@ class IncomeGivenBackTests(_TermFixture):
         self.assertFalse(ledger_lines(self.solo_books).filter(account__code="1260").exists())
         self.assertFalse(InterBranchTransfer.objects.filter(entity=self.solo_books).exists())
         self.assertFalse(DeferredIncomeUnwind.objects.filter(after_release=True).exists())
+
+
+class MovedBillCreditTests(_InterBranchFixture):
+    """Tunde's 100k textbook bill (plus 7.5k VAT) is raised at Ikeja and moves to Lekki with him.
+
+    The books never arrive. Whatever Lekki credits or concedes on the bill comes
+    out of Ikeja's revenue and output VAT, which booked it, through the
+    inter-branch account; Lekki's revenue is untouched and what it owes Ikeja
+    for the bill falls by the same amount.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from .models import TaxCode
+
+        super().setUpTestData()
+        cls.vat = TaxCode.objects.get(entity=cls.books, code="VAT-STD")
+        cls.revenue = Account.objects.get(entity=cls.books, code="4100")
+        cls.output_vat = Account.objects.get(entity=cls.books, code="2200")
+        cls.tunde = cls.customer(cls.books, "TUNDE", cls.ikeja)
+        cls.textbooks = cls.taxed_invoice(cls.tunde, cls.ikeja)
+        cls.moved = transfer_open_receivables(cls.tunde, cls.ikeja, cls.lekki, None, move_date=JAN_15)
+
+    @classmethod
+    def taxed_invoice(cls, customer, branch):
+        invoice = Invoice.objects.create(
+            entity=cls.books, customer=customer, branch=branch,
+            invoice_date=datetime.date(2026, 1, 10), due_date=datetime.date(2026, 1, 25),
+        )
+        InvoiceLine.objects.create(
+            invoice=invoice, line_no=1, quantity=1, unit_price=100_000,
+            revenue_account=cls.revenue, tax_code=cls.vat,
+        )
+        post_invoice(invoice)
+        invoice.refresh_from_db()
+        return invoice
+
+    def credit(self, amount, *, invoice=None, branch=None):
+        from .credit_notes import post_credit_note
+
+        invoice = Invoice.objects.get(pk=(invoice or self.textbooks).pk)
+        note = CreditNote.objects.create(
+            entity=self.books, customer=invoice.customer, branch=branch or self.lekki,
+            kind=CreditNoteKind.CREDIT, note_date=JAN_20, invoice=invoice,
+            reason="Books never delivered",
+        )
+        CreditNoteLine.objects.create(
+            note=note, line_no=1, quantity=1, unit_price=amount, revenue_account=self.revenue,
+            tax_code=self.vat,
+        )
+        post_credit_note(note)
+        note.refresh_from_db()
+        return note
+
+    def vat_shares(self):
+        """Each branch's output VAT on January's return, ``{branch_id: kobo}``."""
+        from .models import TaxObligation
+        from .tax_filing import prepare_filing
+
+        filing = prepare_filing(
+            TaxObligation.objects.get(entity=self.books, code="VAT"),
+            period_start=datetime.date(2026, 1, 1), period_end=datetime.date(2026, 1, 31),
+        )
+        return {share.branch_id: int(share.gross_liability) for share in filing.shares.all()}
+
+    def assert_books(self, *, ikeja_revenue, ikeja_vat, lekki_owes_ikeja):
+        """Ikeja's revenue and output VAT as credits; Lekki's are always untouched."""
+        from .inter_branch import inter_branch_close_check
+
+        self.assertEqual((-net(self.revenue, self.ikeja), -net(self.output_vat, self.ikeja)),
+                         (ikeja_revenue, ikeja_vat))
+        self.assertEqual((net(self.revenue, self.lekki), net(self.output_vat, self.lekki)), (0, 0))
+        self.assertEqual(net(self.ib, self.ikeja, self.lekki), lekki_owes_ikeja)
+        self.assertEqual(net(self.ar, self.lekki), lekki_owes_ikeja)
+        check = inter_branch_close_check(self.books, FiscalPeriod.objects.get(entity=self.books, period_no=1))
+        self.assertTrue(check.passed, check.detail)
+        self.assertEqual(net(self.ib), 0)
+
+    def test_crediting_the_whole_bill_takes_revenue_and_vat_back_from_ikeja(self):
+        note = self.credit(100_000)
+
+        self.assert_books(ikeja_revenue=0, ikeja_vat=0, lekki_owes_ikeja=0)
+        self.assertEqual(self.vat_shares(), {self.ikeja.pk: 0})
+        self.assertEqual(
+            [(line.account.code, line.debit, line.credit, line.counterparty_branch_id)
+             for line in note.journal.lines.order_by("line_no")],
+            [("1260", 107_500, 0, self.ikeja.pk), ("1200", 0, 107_500, None)],
+        )
+        transfer = InterBranchTransfer.objects.get(kind=InterBranchTransferKind.INCOME_GIVEN_BACK)
+        ikeja_side = transfer.legs.get(role=InterBranchLegRole.RECEIVING).journal
+        self.assertEqual(
+            sorted((line.account.code, line.debit, line.credit) for line in ikeja_side.lines.all()),
+            [("1260", 0, 107_500), ("2200", 7_500, 0), ("4100", 100_000, 0)],
+        )
+
+    def test_a_part_credit_lowers_ikejas_revenue_vat_share_and_what_lekki_owes(self):
+        self.credit(40_000)
+
+        self.assert_books(ikeja_revenue=60_000, ikeja_vat=4_500, lekki_owes_ikeja=64_500)
+        self.assertEqual(self.vat_shares(), {self.ikeja.pk: 4_500})
+
+    def test_voiding_the_credit_note_restores_ikejas_income_and_the_balance(self):
+        from .voids import void_credit_note
+
+        note = self.credit(100_000)
+
+        void_credit_note(note, date=JAN_20)
+
+        self.assert_books(ikeja_revenue=100_000, ikeja_vat=7_500, lekki_owes_ikeja=107_500)
+        self.assertEqual(self.vat_shares(), {self.ikeja.pk: 7_500})
+        self.assertEqual(
+            InterBranchTransfer.objects.get(kind=InterBranchTransferKind.INCOME_GIVEN_BACK).status,
+            DocumentStatus.REVERSED,
+        )
+
+    def test_a_concession_at_lekki_comes_out_of_ikejas_allowances_and_its_void_restores_it(self):
+        from .installments import post_concession
+        from .models import Concession
+        from .voids import void_concession
+
+        allowances = Account.objects.get(entity=self.books, code="4910")
+        concession = Concession.objects.create(
+            entity=self.books, customer=self.tunde, invoice=Invoice.objects.get(pk=self.textbooks.pk),
+            branch=self.lekki, concession_date=JAN_20, amount=30_000,
+        )
+        post_concession(concession)
+
+        self.assertEqual((net(allowances, self.ikeja), net(allowances, self.lekki)), (30_000, 0))
+        self.assert_books(ikeja_revenue=100_000, ikeja_vat=7_500, lekki_owes_ikeja=77_500)
+        void_concession(concession, date=JAN_20)
+        self.assertEqual(net(allowances), 0)
+        self.assert_books(ikeja_revenue=100_000, ikeja_vat=7_500, lekki_owes_ikeja=107_500)
+
+    def test_a_bill_that_never_moved_is_credited_at_its_own_branch_as_before(self):
+        yinka = self.customer(self.books, "YINKA", self.lekki)
+        own = self.taxed_invoice(yinka, self.lekki)
+
+        note = self.credit(40_000, invoice=own)
+
+        self.assertEqual(
+            [(line.account.code, line.debit, line.credit, line.counterparty_branch_id)
+             for line in note.journal.lines.order_by("line_no")],
+            [("4100", 40_000, 0, None), ("2200", 3_000, 0, None), ("1200", 0, 43_000, None)],
+        )
+        self.assertFalse(InterBranchTransfer.objects.filter(
+            kind=InterBranchTransferKind.INCOME_GIVEN_BACK).exists())
 
 
 class InterBranchCloseCheckTests(_InterBranchFixture):

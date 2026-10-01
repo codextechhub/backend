@@ -787,8 +787,8 @@ class InterBranchTransferKind(models.TextChoices):
     balance and leave cash where it is; the owing branch settles later with a
     cash transfer the other way.
 
-    INCOME_GIVEN_BACK is booked by a credit note, concession or write-off that
-    takes back a bill's income held at another branch
+    INCOME_GIVEN_BACK is booked by a credit note or concession that cancels a
+    moved bill's income another branch booked
     (:func:`vs_finance.inter_branch.book_income_given_back`), and is voided only
     with that document.
     """

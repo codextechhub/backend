@@ -30,10 +30,11 @@ The kinds, and the two journals each posts (sending branch first):
   expense`` and ``Dr expense, Cr inter-branch [A]``.
 * **Goods** (``A``'s store issues stock to ``B``'s): ``Dr inter-branch [B], Cr
   inventory`` and ``Dr inventory, Cr inter-branch [A]``, at moving-average cost.
-* **Income given back** (a credit note, concession or write-off at ``A`` takes
-  back a bill's income ``B`` holds): ``Dr inter-branch [B]`` as a line of the
-  adjusting document's own journal, and ``Dr deferred income or revenue, Cr
-  inter-branch [A]`` at ``B`` (:func:`book_income_given_back`).
+* **Income given back** (a credit note or concession at ``A`` cancels a moved
+  bill's income ``B`` booked): ``Dr inter-branch [B]`` as a line of the
+  adjusting document's own journal, and ``Dr deferred income, revenue or
+  allowance and output tax, Cr inter-branch [A]`` at ``B``
+  (:func:`book_income_given_back`).
 
 Both branches must be open on the transfer's date (:func:`ensure_branches_open`).
 A tenant with one branch has no other branch to transfer to, so every service
@@ -1114,39 +1115,41 @@ def moved_document_refusal(document):
     )
 
 
-def book_income_given_back(adjustment_entry, *, holder_branch_id, invoice, deferred=0, revenue=None,
+def book_income_given_back(adjustment_entry, *, holder_branch_id, invoice, deferred=0, lines=None,
                            label="", actor_user=None):
-    """Book the holding branch's side of a bill's income an adjustment took back from it.
+    """Book the side of an adjustment that another branch's books bear.
 
-    A receivable move leaves a month already earned at the old branch while the
-    bill and the months to come move on. A credit note, concession or write-off
-    raised at the new branch that reaches that month cannot debit the new
-    branch's deferred income, which never held it. Its own journal debits the
-    inter-branch account naming the holding branch instead
-    (:func:`vs_finance.deferred_income.unwind_debits`), and this posts the
-    holding branch's journal: ``Dr deferred income`` for the waiting shares and
-    ``Dr revenue`` (per account and cost centre the release credited) for shares
-    already released, ``Cr inter-branch [adjusting branch]`` for the total.
+    A receivable move carries a bill to a new branch while the revenue and
+    output tax its invoice journal booked, and any month already earned, stay at
+    the old branch. A credit note or concession raised at the new branch cancels
+    that income, so the branch that booked it gives it back
+    (:mod:`vs_finance.bill_adjustments`): the adjusting journal debits the
+    inter-branch account naming that branch, and this posts that branch's
+    journal: ``Dr deferred income`` for the waiting shares it holds, a debit on
+    each account in ``lines`` (``{(account_id, cost_center_id): kobo}``: revenue
+    or allowance, and output tax), and ``Cr inter-branch [adjusting branch]``
+    for the total.
 
-    Tunde's 400k term moved from Ikeja to Lekki on 25 January, leaving January's
-    100k unreleased at Ikeja and Lekki owing Ikeja 100k. Lekki's 400k credit note
-    debits ``inter-branch [Ikeja] 100k`` among its lines, and Ikeja books ``Dr
-    deferred income 100k, Cr inter-branch [Lekki] 100k``: Ikeja keeps no January
-    income, Lekki owes it nothing, and the pair agrees.
+    Tunde's 100k textbook bill (plus 7.5k VAT) moved from Ikeja to Lekki, and
+    Lekki owes Ikeja 107.5k for it. Lekki credits it in full: its credit note
+    debits ``inter-branch [Ikeja] 107.5k`` against the receivable, and Ikeja
+    books ``Dr revenue 100k, Dr output VAT 7.5k, Cr inter-branch [Lekki]
+    107.5k``. Ikeja keeps no income for books never delivered, its share of the
+    VAT return falls by 7.5k, Lekki owes it nothing, and the pair agrees.
 
     One ``INCOME_GIVEN_BACK`` transfer records it, from the adjusting branch to
-    the holding branch, linked to the adjusting journal. The adjusting branch's
-    leg carries no journal, because its side is a line of the adjusting
-    document's own journal. Voided only with that document
+    the branch giving the income back, linked to the adjusting journal. The
+    adjusting branch's leg carries no journal, because its side is a line of the
+    adjusting document's own journal. Voided only with that document
     (:func:`vs_finance.deferred_income.restore_unwinds`). Returns the transfer,
     or ``None`` when nothing is given back.
     """
     from .models import Account, InterBranchTransferLeg
 
     entity = adjustment_entry.entity
-    revenue = {key: int(value) for key, value in (revenue or {}).items() if value}
+    lines = {key: int(value) for key, value in (lines or {}).items() if value}
     deferred = int(deferred or 0)
-    amount = deferred + sum(revenue.values())
+    amount = deferred + sum(lines.values())
     if amount <= 0:
         return None
     giver = tenant_branch(entity, adjustment_entry.branch_id)
@@ -1155,7 +1158,7 @@ def book_income_given_back(adjustment_entry, *, holder_branch_id, invoice, defer
     transfer = _new_transfer(
         entity, kind=InterBranchTransferKind.INCOME_GIVEN_BACK, from_branch_id=giver.pk,
         to_branch_id=holder.pk, amount=amount, transfer_date=adjustment_entry.date,
-        purpose=f"Income of invoice {invoice.document_number} held at {holder.name}, "
+        purpose=f"Income of invoice {invoice.document_number} booked at {holder.name}, "
                 f"taken back by {label} at {giver.name}",
         actor_user=actor_user, customer_id=invoice.customer_id,
         adjustment_entry=adjustment_entry, reference=label,
@@ -1164,25 +1167,25 @@ def book_income_given_back(adjustment_entry, *, holder_branch_id, invoice, defer
         transfer=transfer, role=InterBranchLegRole.SENDING, branch_id=giver.pk,
         counterparty_branch_id=holder.pk, journal=None,
     )
-    accounts = Account.objects.in_bulk([account_id for account_id, _ in revenue])
-    lines = []
+    accounts = Account.objects.in_bulk([account_id for account_id, _ in lines])
+    posting = []
     if deferred:
-        lines.append((resolve_mapped_account(entity, AccountMappingKey.DEFERRED_INCOME), deferred, 0, None))
-    for (account_id, cost_center_id), value in sorted(revenue.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0)):
-        lines.append((accounts[account_id], value, 0, None, cost_center_id))
-    lines.append((inter_branch_account(entity), 0, amount, giver.pk))
+        posting.append((resolve_mapped_account(entity, AccountMappingKey.DEFERRED_INCOME), deferred, 0, None))
+    for (account_id, cost_center_id), value in lines.items():
+        posting.append((accounts[account_id], value, 0, None, cost_center_id))
+    posting.append((inter_branch_account(entity), 0, amount, giver.pk))
     _post_leg(
         transfer, role=InterBranchLegRole.RECEIVING, branch_id=holder.pk, counterparty_id=giver.pk,
-        source=JournalSource.SALES, actor_user=actor_user, lines=lines,
+        source=JournalSource.SALES, actor_user=actor_user, lines=posting,
         narration=f"Income of invoice {invoice.document_number} given back for {label} at {giver.name}",
     )
     _finish(transfer)
     _audit_both(
         transfer, FinanceAuditAction.INCOME_GIVEN_BACK,
         f"{label} at {giver.name} took back {format_naira(amount)} of invoice "
-        f"{invoice.document_number}'s income held at {holder.name}.",
+        f"{invoice.document_number}'s income booked at {holder.name}.",
         actor_user=actor_user, invoice_id=invoice.pk, adjustment_journal_id=adjustment_entry.pk,
-        deferred=deferred, revenue=sum(revenue.values()),
+        deferred=deferred, other=sum(lines.values()),
     )
     return transfer
 

@@ -197,18 +197,19 @@ class DeferredIncomeUnwind(TimeStampedModel):
     document reverses its journal and restores the amount to the schedule
     (``restored``), so the income is released again when its month comes.
 
-    A share held at a branch other than the adjusting journal's is taken back
-    from the branch holding it: the adjusting journal debits the inter-branch
-    account naming that branch instead, and the holding branch books its own side
-    through an ``INCOME_GIVEN_BACK`` transfer
-    (:func:`vs_finance.inter_branch.book_income_given_back`).
+    A credit note or concession takes a share held at a branch other than the
+    adjusting journal's back from the branch holding it: the adjusting journal
+    debits the inter-branch account naming that branch instead, and the holding
+    branch books its own side through an ``INCOME_GIVEN_BACK`` transfer
+    (:mod:`vs_finance.bill_adjustments`). A write-off takes only its own
+    branch's shares.
 
-    ``after_release`` marks a share a credit note took back after its release, on
-    a bill whose shares sit at more than one branch
-    (:func:`vs_finance.deferred_income.plan_released_takeback`). Its revenue,
-    not the liability, is what was debited, so the share's own figures are left
-    alone; the row only records how much of the released share is already taken
-    back, so a later credit note does not take it twice.
+    ``after_release`` marks a share a credit note or concession took back after
+    its release, on a bill a receivable move has carried between branches
+    (:func:`vs_finance.deferred_income.plan_released_takeback`). Revenue or
+    allowance, not the liability, is what was debited, so the share's own
+    figures are left alone; the row only records how much of the released share
+    is already taken back, so a later adjustment does not take it twice.
     """
 
     entry = models.ForeignKey(

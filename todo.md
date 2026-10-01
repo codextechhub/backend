@@ -876,13 +876,41 @@ MUST SAY:
 - A receivable move's key is unique only among moves still standing, so a voided
   move no longer answers for it and a redone fee run moves the new bill.
 - Migration vs_finance 0054.
-OWNER DECISIONS OF 2026-10-01, being built: a credit on ANY moved bill (not only a
-deferred one) takes its revenue and output tax back from the branch that booked
-it; and a write-off of a moved debt is always borne by the branch holding the debt
-(the earned share at the old branch stays earned and owed, whatever the release
-timing).
+OWNER DECISIONS OF 2026-10-01, built under D104: a credit on ANY moved bill takes
+its revenue and output tax back from the branch that booked it; a write-off of a
+moved debt is always borne by the branch holding the debt.
 Verified: vs_finance.tests_inter_branch 58 OK, vs_finance.tests_accruals 42 OK,
 vs_finance 1643 OK, schools.core.fal 293 OK, vs_payments 403 OK. The full suite
+was not run.
+
+### D104. A credit or discount on any moved bill comes off the books that booked it, and a moved debt written off is the collecting branch's loss (hash pending, 2026-10-01)
+MODULES: M19 finance and accounting (revenue, VAT shares, inter-branch), M20
+adjustments and concessions (credit notes, concessions, write-offs), MRD.
+Owner decisions of 2026-10-01.
+MUST SAY:
+- Credit notes and concessions on a moved bill (M20, M19). Taken latest service
+  first: unreleased deferred months from the branch holding them; months already
+  released from the branch that released them; everything else, and the credit
+  note's output VAT, from the branch whose invoice journal booked the bill. Each
+  part another branch bears goes through INTER_BRANCH and an INCOME_GIVEN_BACK
+  transfer posting that branch's own journal, so the old branch's revenue and its
+  per-branch VAT share come down and what the new branch owes it drops. A
+  concession reaching released income is booked at the old branch as a discount,
+  not a revenue reversal. Voiding the credit note or concession restores both
+  branches. A bill that never moved, and a credit note tied to no bill, are
+  unchanged.
+- Tunde: textbooks 100k plus 7.5k VAT raised at Ikeja, moved to Lekki. Full credit
+  at Lekki: Ikeja revenue 0, Ikeja VAT share 0, Lekki revenue untouched, Lekki owes
+  Ikeja 0. Credit of 40k plus 3k VAT: Ikeja keeps 60k and 4.5k, Lekki owes 64.5k.
+- Write-offs of a moved debt (M20, M19). Borne by the branch holding the debt: it
+  reverses only the unreleased months it holds and books the rest as bad debt;
+  the old branch keeps its earned share and is still owed it, whatever the
+  release timing. A credit note cancels the service, so the booking branch gives
+  income back; a write-off records money not collected, so the collecting branch
+  bears it.
+- Migration vs_finance 0055 (field description only).
+Verified: tests_inter_branch 64 OK, tests_accruals 42 OK, tests_tax_returns 28 OK,
+vs_finance 1649 OK, schools.core.fal 293 OK, vs_payments 403 OK. The full suite
 was not run.
 
 ## Undone

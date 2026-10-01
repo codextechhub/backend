@@ -331,7 +331,9 @@ def _post_concession_atomic(concession, *, actor_user=None):
          that much of the invoice. Where the bill's income is still deferred, the
          unreleased part is reduced first (``Dr deferred income``), so a discount on
          service still to come lowers the income those months will release rather
-         than this month's.
+         than this month's. On a bill a receivable move brought from another
+         branch, the branch that booked the income bears the part it booked,
+         through the inter-branch account (:mod:`vs_finance.bill_adjustments`).
       4. **Finalise.** Link the journal, flip status to POSTED, update the invoice's
          ``amount_credited`` and refresh any live payment plan, then write a
          CONCESSION_POSTED audit record. Returns the updated ``concession``.
@@ -407,25 +409,37 @@ def _post_concession_atomic(concession, *, actor_user=None):
         narration=concession.reason or f"{label} {concession.document_number or ''}".strip(),  # Narration from reason/kind.
         reference=concession.reference, created_by=actor_user,  # External reference and actor.
     )
-    from .deferred_income import apply_unwind, plan_unwind, unwind_debits
+    from .account_mappings import resolve_mapped_account
+    from .bill_adjustments import give_back, plan_adjustment
+    from .constants import AccountMappingKey
 
-    unwind_plan = plan_unwind(invoice, amount)  # Income not yet recognised is reduced first.
-    unwound = 0
+    # Deferred income first, and on a moved bill the branch that booked it bears it.
+    adjustment = plan_adjustment(
+        invoice, branch_id=entry.branch_id, debits=[((allowance.pk, None), amount)],
+    )
     line_no = 0
-    for account, value, holder in unwind_debits(unwind_plan, entity=concession.entity,
-                                                branch_id=entry.branch_id):
+    if adjustment.deferred_here:
         line_no += 1
         JournalLine.objects.create(
-            entry=entry, debit=value, credit=0, line_no=line_no, account=account,
-            counterparty_branch_id=holder,
-            description=(f"{label} of deferred income: {customer.code}" if holder is None
-                         else f"{label} of income held at another branch: {customer.code}"),
+            entry=entry, debit=adjustment.deferred_here, credit=0, line_no=line_no,
+            account=resolve_mapped_account(
+                concession.entity, AccountMappingKey.DEFERRED_INCOME, label="deferred income"),
+            description=f"{label} of deferred income: {customer.code}",
         )
-        unwound += value
-    if amount - unwound:
+    if adjustment.inter_branch:
+        from .inter_branch import inter_branch_account
+
+        for holder, value in adjustment.inter_branch:
+            line_no += 1
+            JournalLine.objects.create(
+                entry=entry, account=inter_branch_account(concession.entity), debit=value, credit=0,
+                counterparty_branch_id=holder, line_no=line_no,
+                description=f"{label} of income booked at another branch: {customer.code}",
+            )
+    if adjustment.here.get((allowance.pk, None)):
         line_no += 1
         JournalLine.objects.create(
-            entry=entry, account=allowance, debit=amount - unwound, credit=0,  # Dr allowance.
+            entry=entry, account=allowance, debit=adjustment.here[(allowance.pk, None)], credit=0,  # Dr allowance.
             description=f"{label}: {customer.code}", line_no=line_no,  # Line label and order.
         )
     JournalLine.objects.create(
@@ -433,11 +447,10 @@ def _post_concession_atomic(concession, *, actor_user=None):
         description=f"AR {label.lower()}: {customer.code}", line_no=line_no + 1,  # Line label and order.
     )
     post_journal(entry, actor_user=actor_user)  # Validate and post concession journal.
-    if unwind_plan:
-        apply_unwind(
-            unwind_plan, adjustment_entry=entry, actor_user=actor_user,
-            label=f"{label.lower()} {concession.document_number or concession.pk}",
-        )
+    give_back(
+        adjustment, adjustment_entry=entry, invoice=invoice, actor_user=actor_user,
+        label=f"{label.lower()} {concession.document_number or concession.pk}",
+    )
 
     concession.allowance_account = allowance  # Persist account used.
     concession.journal = entry  # Link concession to journal.
