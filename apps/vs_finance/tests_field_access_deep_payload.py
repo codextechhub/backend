@@ -17,12 +17,14 @@ from django.test import TestCase
 from vs_finance.models import (
     Account,
     BankAccount,
+    EmployeeDeduction,
     EmployeeSalary,
     EmployeeSalaryVersion,
     PayrollLineItem,
     FiscalPeriod,
     FiscalYear,
     LedgerEntity,
+    PayrollDeductionType,
     PayrollLine,
     PayrollRun,
 )
@@ -40,6 +42,7 @@ class FinanceDeepPayloadTests(DeepPayloadChecks, TestCase):
         _SURFACE + "PayrollLineSerializer",
         _SURFACE + "EmployeeSalarySerializer",
         _SURFACE + "EmployeeSalaryVersionSerializer",
+        _SURFACE + "EmployeeDeductionSerializer",
     })
 
     @classmethod
@@ -99,15 +102,23 @@ class FinanceDeepPayloadTests(DeepPayloadChecks, TestCase):
             salary=salary, effective_from=datetime.date(2026, 1, 1), branch=branch,
             gross_amount=250_000_00, paye_amount=20_000_00, pension_amount=20_000_00,
         )
-        return bank, line, salary, version
+        deduction = EmployeeDeduction.objects.create(
+            salary=salary, amount=5_000_00, total_limit=60_000_00,
+            deduction_type=PayrollDeductionType.objects.create(
+                entity=entity, code="LOAN", name="Staff loan",
+                liability_account=Account.objects.get(entity=entity, code="2400"),
+            ),
+        )
+        return bank, line, salary, version, deduction
 
     def samples(self):
         samples = []
-        for tenant, (bank, line, salary, version) in self.records:
+        for tenant, (bank, line, salary, version, deduction) in self.records:
             samples += [
                 Sample(_SURFACE + "BankAccountSerializer", bank, tenant=tenant),
                 Sample(_SURFACE + "PayrollLineSerializer", line, tenant=tenant),
                 Sample(_SURFACE + "EmployeeSalarySerializer", salary, tenant=tenant),
                 Sample(_SURFACE + "EmployeeSalaryVersionSerializer", version, tenant=tenant),
+                Sample(_SURFACE + "EmployeeDeductionSerializer", deduction, tenant=tenant),
             ]
         return samples

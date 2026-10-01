@@ -1679,7 +1679,16 @@ class PayrollDeductionTypeSerializer(serializers.ModelSerializer):
         fields = ["id", "code", "name", "liability_account", "liability_account_id", "is_active"]
 
 
-class EmployeeDeductionSerializer(serializers.ModelSerializer):
+class EmployeeDeductionSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One person's voluntary deduction; its amount and limit are their pay breakdown.
+
+    Which deduction a person has is not a pay figure. How much it takes from
+    their pay is, and travels behind ``finance.salary``'s pay breakdown switch,
+    as the same deduction does on their payroll line.
+    """
+
+    field_resource = "finance.salary"
+
     deduction_type_code = serializers.CharField(source="deduction_type.code", read_only=True)
     deduction_type_name = serializers.CharField(source="deduction_type.name", read_only=True)
 

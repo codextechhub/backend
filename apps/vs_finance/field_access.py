@@ -20,7 +20,9 @@ that may not sees neither: on a line, the person's tax ID and pension PIN go
 with their name, taxable pay with gross, the PAYE working with PAYE, and the
 deduction and contribution items with the pay breakdown; on a salary row, the
 tax ID, annual rent and any PAYE override go with PAYE, and the pension PIN
-with pension.
+with pension. A person's voluntary deduction (a staff loan, cooperative
+savings) is a line of their pay breakdown wherever it is read, so its amount
+and limit go with the pay breakdown on the roster too.
 """
 from vs_rbac.field_registry import FieldSpec, register_fields
 
@@ -66,6 +68,7 @@ def register():
         surfaces=(
             "vs_finance.serializers.EmployeeSalarySerializer",
             "vs_finance.serializers.EmployeeSalaryVersionSerializer",
+            "vs_finance.serializers.EmployeeDeductionSerializer",
         ),
         fields=(
             FieldSpec("gross_amount", "Gross pay", group="Pay", sensitive=True,
@@ -79,6 +82,7 @@ def register():
             FieldSpec("net_amount", "Net pay", group="Pay", sensitive=True,
                       writable=False, scope=_TENANT, sort_order=40),
             FieldSpec("components", "Pay breakdown", group="Pay", sensitive=True,
-                      writable=False, scope=_TENANT, sort_order=50),
+                      writable=False, scope=_TENANT, sort_order=50,
+                      api_names=("components", "amount", "total_limit")),
         ),
     )

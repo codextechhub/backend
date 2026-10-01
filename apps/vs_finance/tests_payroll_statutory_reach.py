@@ -346,3 +346,43 @@ class AnotherTenantTests(_ReachFixture):
                     self.assertNotIn("Bola Lawal", str(getattr(response, "data", "")))
         payslip = Payslip.objects.get(salary=self.bola).pk
         self.assertEqual(self.rival.get(f"/v1/finance/my-payslips/{payslip}/").status_code, 404)
+
+
+class DeductionFieldAccessTests(_ReachFixture):
+    """A voluntary deduction's amount is part of the pay breakdown, behind its switch.
+
+    Corona's HR officer keeps the roster (who works where, which state, which
+    PFA) with every pay figure switched off. Ada's cooperative deduction of
+    N7,777 a month is hidden from them on the run, under the pay breakdown, and
+    stays hidden where the deduction itself is listed.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_rbac.tests.helpers import install_declared_fields, set_field_access
+
+        super().setUpTestData()
+        keys = install_declared_fields("finance.salary")
+        cls.closed_user = cls.grant(cls.user_for(cls.tenant, "hr-closed@corona.test"),
+                                    "finance.salary.view", tenant=cls.tenant, role_key="hr-closed")
+        cls.open_user = cls.grant(cls.user_for(cls.tenant, "hr-open@corona.test"),
+                                  "finance.salary.view", tenant=cls.tenant, role_key="hr-open")
+        set_field_access(TenantRoleTemplate.objects.get(tenant=cls.tenant, key="hr-open"),
+                         *keys, read=True, write=False)
+
+    def deductions(self, user):
+        response = self.get(TenantAPIClient(user=user), f"employee-salaries/{self.ada.pk}/deductions/")
+        self.assertEqual(response.status_code, 200, response.data)
+        (row,) = response.data["data"]
+        return row
+
+    def test_a_role_with_the_pay_breakdown_off_sees_the_deduction_but_not_its_amount(self):
+        row = self.deductions(self.closed_user)
+        self.assertEqual(row["deduction_type_code"], "COOP")
+        self.assertNotIn("amount", row)
+        self.assertNotIn("total_limit", row)
+
+    def test_a_role_with_the_pay_breakdown_on_sees_the_amount(self):
+        row = self.deductions(self.open_user)
+        self.assertEqual(row["amount"], 7_777 * N)
