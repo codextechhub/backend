@@ -25,6 +25,7 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("1000", "Assets", AccountType.ASSET, False, False),  # Asset section header.
     ("1100", "Cash & Bank", AccountType.ASSET, True, False),  # Main cash/bank account.
     ("1110", "Petty Cash", AccountType.ASSET, True, False),  # Petty cash account.
+    ("1125", "Gateway Clearing", AccountType.ASSET, True, False),  # Confirmed online payments not yet settled to a bank.
     ("1200", "Accounts Receivable", AccountType.ASSET, True, False),  # AR control account.
     ("1290", "Allowance for Doubtful Debts", AccountType.ASSET, True, True),  # Contra-asset against 1200.
     # Vendor advances is the asset mirror of 2140 Customer Credit, numbered to match
@@ -104,6 +105,7 @@ DEFAULT_TAX_CODES = [
 DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory presentation lines.
     # Assets  # Default asset presentation mappings.
     "1100": IFRSLine.CASH, "1110": IFRSLine.CASH,  # Cash and petty cash.
+    "1125": IFRSLine.CASH,  # Money in transit from a payment provider.
     "1200": IFRSLine.TRADE_RECEIVABLES,  # Accounts receivable.
     "1290": IFRSLine.TRADE_RECEIVABLES,  # Allowance nets against the receivables it covers.
     # "Trade and other receivables" carries supplier advances under IFRS for SMEs,
@@ -132,7 +134,7 @@ DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory present
 
 #: parent_code by child_code - wires the tree after the flat create.
 _PARENTS = {  # Parent account code by child account code.
-    "1100": "1000", "1110": "1000", "1200": "1000", "1290": "1000", "1240": "1000",  # Asset children.
+    "1100": "1000", "1110": "1000", "1125": "1000", "1200": "1000", "1290": "1000", "1240": "1000",  # Asset children.
     "1300": "1000",
     "1400": "1000", "1500": "1000", "1900": "1000",  # More asset children.
     "2100": "2000", "2140": "2000", "2150": "2000", "2160": "2000", "2170": "2000",  # Liability children.

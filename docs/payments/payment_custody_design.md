@@ -1,8 +1,10 @@
 # payment_custody_design
 
-**Status:** design, not built. Every decision below is agreed. Facts about
+**Status:** phase A (build steps 1 to 3) is built; held mode's own machinery and
+switching (steps 4 and 5) are not. Every decision below is agreed. Facts about
 Paystack marked *(confirm)* are to be checked against Paystack's documentation or
-account manager before the step that depends on them is built.
+account manager before a tenant takes payments directly; the adapter's docstring
+(`vs_payments/providers/paystack.py`) lists each field it relies on.
 
 Online money has to reach the school's own bank, and the books have to say where
 it is at every moment. Today every tenant's checkouts settle into one Codex
@@ -50,7 +52,7 @@ Mrs Adeyemi pays N180,000 online for Tunde's fees at Bright Star Lekki.
 | Paystack confirms the payment | Dr Gateway clearing N180,000, Cr Receivable N180,000. The invoice is paid. |
 | The money reaches a bank (direct: Lekki's bank; held: Codex pays Lekki in the settlement run) | Dr Bank N178,000, Dr Bank charges N2,000, Cr Gateway clearing N180,000 |
 
-"Gateway clearing" (a `FinanceAccountMapping` key, for example code 1150) holds
+"Gateway clearing" (the `FinanceAccountMapping` key `GATEWAY_CLEARING`, starter code 1125) holds
 money a payment provider has confirmed but that has not reached a bank. It is a
 current asset, shown per branch, and should read zero once every settlement is in.
 A clearing balance older than the provider's settlement cycle is a close-check
@@ -113,14 +115,38 @@ settlement report *(confirm the field)*; the settlement match books it.
 
 ## 6. Build order
 
-1. **Gateway clearing (both modes).** Confirmed payments book to clearing, not the
-   bank; the settlement match moves clearing to the bank and books the fee; a
-   close check warns on stale clearing. This alone fixes the bank reconciliation.
-2. **Mode setting and settlement interval**, whole-tenant only, with the
-   month-start rule.
-3. **Direct mode.** Subaccount per branch collection account, subaccount on every
-   checkout and virtual account, bearer on the subaccount, payout screens and
-   endpoints refused for direct-mode tenants.
+Steps 1 to 3 are phase A and are built; steps 4 and 5 are phase B.
+
+1. **Gateway clearing (both modes). Built.** A confirmed payment books Dr gateway
+   clearing (mapping key `GATEWAY_CLEARING`, starter code 1125, a control account a
+   hand journal cannot touch), Cr receivable, in the payment's branch, and stores the
+   provider's fee on the collection. `POST /v1/payments/settlements/` matches a bank
+   statement line to the payments it carries and books Dr bank (what arrived), Dr
+   bank charges (the fee), Cr clearing (the payments) in the bank account's branch,
+   reconciling the line; unmatching it in the bank reconciliation reverses the journal
+   and puts the payments back in clearing. The settlement report proposes the day's
+   payments each unmatched inflow carries. The period close warns (not blocking)
+   when a payment has waited in clearing longer than the tenant's
+   `clearing_stale_days` (default 7) before the period's end.
+2. **Mode setting and settlement interval. Built.** `GET/PATCH
+   /v1/payments/settings/custody/`, written only by a whole-tenant caller: `mode`
+   (`DIRECT` or `HELD`, default `HELD`), stored as pending from the next month start;
+   `settlement_interval_days` (1 to 7, default 1, read by step 4);
+   `clearing_stale_days` (1 to 60, default 7). Moving to direct is refused until
+   every branch's collection account has a subaccount.
+3. **Direct mode. Built.** Each branch names one collection account
+   (`is_primary_collection` is unique per branch), which its documents print as "pay
+   to". `POST /v1/payments/subaccounts/` (whole-tenant) creates or refreshes the
+   Paystack subaccount behind it (no percentage to Codex) and stores its code on the
+   bank account. A direct tenant's checkouts and dedicated virtual accounts name the
+   collection's branch's subaccount with `bearer: "subaccount"`; a branch without one
+   is refused with a 409 (`COLLECTION_SUBACCOUNT_MISSING`). Payout creation and
+   dispatch are refused with a 409 (`ONLINE_PAYOUTS_NOT_OFFERED`) telling the tenant
+   to pay suppliers from the bank and record the payment. Every collection, virtual
+   account, payout and payout batch carries the branch it belongs to; a batch whose
+   lines leave two branches' banks is refused.
 4. **Held mode.** Codex-side liability per branch, the settlement run on the
    tenant's interval, and the payout funds check at dispatch.
-5. **Switching,** including the final settlement from held to direct.
+5. **Switching,** including the final settlement from held to direct. Until then a
+   dedicated virtual account created while a tenant was held keeps settling to
+   Codex's balance after the tenant moves to direct.

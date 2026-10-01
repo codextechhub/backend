@@ -29,4 +29,8 @@ class VsPaymentsConfig(AppConfig):
         from .provisioning import provision_payout_approval
 
         register_entity_provisioner(provision_payout_approval)
+        # Warn the period close about online payments left in gateway clearing.
+        from .settlement import register as register_close_checks
+
+        register_close_checks()
 

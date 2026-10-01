@@ -165,6 +165,31 @@ class PaymentAuditAction(models.TextChoices):
     PAYOUT_BATCH_SUBMITTED = "PAYOUT_BATCH_SUBMITTED", "Payout batch submitted"  # Bulk payout sent to provider.
     WEBHOOK_RECEIVED = "WEBHOOK_RECEIVED", "Webhook received"  # Valid inbound provider event stored.
     WEBHOOK_REJECTED = "WEBHOOK_REJECTED", "Webhook rejected"  # Signature or authenticity failure.
+    COLLECTIONS_SETTLED = "COLLECTIONS_SETTLED", "Collections settled to a bank"  # Clearing moved to a bank.
+    SUBACCOUNT_SAVED = "SUBACCOUNT_SAVED", "Collection subaccount saved"  # Provider subaccount created or refreshed.
+    CUSTODY_SETTINGS_UPDATED = "CUSTODY_SETTINGS_UPDATED", "Custody settings updated"  # Mode or interval changed.
+
+
+class CustodyMode(models.TextChoices):
+    """Where a tenant's online money is held between the payer and its bank.
+
+    ``DIRECT``: a provider subaccount per branch settles each payment straight to
+    that branch's collection bank account, so nothing waits in a provider
+    balance and the tenant makes no online payouts. ``HELD``: payments settle to
+    the platform's own provider balance, and online payouts draw on it.
+    """
+
+    DIRECT = "DIRECT", "Direct to each branch's bank"
+    HELD = "HELD", "Held by the platform"
+
+
+#: Settlement interval (days) a held-mode tenant is paid on, and its bounds.
+DEFAULT_SETTLEMENT_INTERVAL_DAYS = 1
+SETTLEMENT_INTERVAL_RANGE = (1, 7)
+
+#: Days a confirmed collection may wait in gateway clearing before the close warns.
+DEFAULT_CLEARING_STALE_DAYS = 7
+CLEARING_STALE_DAYS_RANGE = (1, 60)
 
 
 #: Default currency (matches the ledger default).  # Use naira by default.

@@ -190,6 +190,8 @@ RESOURCE_BANDS = {
     ("payments", "report"): PLUS,
     ("payments", "payout_batch"): ADVANCED,
     ("payments", "unattributed_webhook"): ADVANCED,
+    ("payments", "settings"): CORE,
+    ("payments", "settlement"): CORE,
 
     # ---- the pricing controls themselves ---------------------------------
     ("config", "capability"): PLATFORM,

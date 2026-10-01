@@ -9,6 +9,14 @@ same entity, so operators can see at a glance:  # Compare gateway truth with ban
 * which gateway transactions have **not** yet appeared on the bank (unsettled), and
 * which bank lines have **no** matching gateway record (unexplained).
 
+A collection booked to gateway clearing (every collection confirmed since clearing
+exists) settles only through its settlement journal (:mod:`vs_payments.settlement`):
+the provider pays a day's payments as one amount less fees, so no single payment's
+gross ever equals a bank line. Such a row is settled when its settlement journal is
+posted, against the statement line that journal was booked from, and the report
+proposes which waiting payments each unmatched inflow carries
+(``suggested_settlements``). Everything else matches as before.
+
 Matching is deliberately conservative: first on a shared reference, then - for anything
 still open - on an exact signed-amount match within the date window. Money stays integer
 **kobo**; the bank line's ``amount`` is signed (+inflow/-outflow) and we sign each gateway
@@ -24,13 +32,15 @@ import datetime
 from dataclasses import dataclass, field
 
 from vs_config.clock import tenant_zone
-from vs_finance.models import BankStatementLine
+from vs_finance.constants import BankLineStatus, DocumentStatus
+from vs_finance.models import BankStatementLine, JournalEntry
 from vs_finance.money import format_naira
 from vs_rbac.scoping import UNNARROWED
 
 from .constants import CollectionStatus, PayoutStatus
 from .reach import PaymentsReach
 from .services import payout_sent_amount
+from .settlement import awaiting_settlement_q, suggest_settlements
 
 
 @dataclass
@@ -52,6 +62,9 @@ class SettlementRow:
     settlement_reference: str = ""       # the matched bank line's reference  # Bank-side reference.
     settlement_date: datetime.date | None = None
     settlement_description: str = ""               # the matched bank line's description  # Bank-side description.
+    via_clearing: bool = False      # booked to gateway clearing; settles by its settlement journal
+    reported_fee: int | None = None  # the provider's fee on this payment, when it reported one
+    settlement_entry_id: int | None = None
 
     @property
     # Handle the amount naira workflow.
@@ -108,6 +121,7 @@ class SettlementReconciliation:
     provider: str  # Optional provider filter.
     rows: list = field(default_factory=list)  # Matched gateway rows.
     unmatched_bank_lines: list = field(default_factory=list)  # Bank lines with no gateway match.
+    suggested_settlements: list = field(default_factory=list)  # Inflows and the payments they likely carry.
 
     @property
     # Handle the settled count workflow.
@@ -175,6 +189,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
 
     for ci in collections.only(  # Iterate only over the fields needed for the report.
         "id", "reference", "provider", "provider_reference", "amount", "confirmed_at",
+        "clearing_account", "settlement_entry", "fee",
     ):
         confirmed = ci.confirmed_at  # Confirmation timestamp for the collection.
         if not _date_in_window(confirmed, start_date, end_date, zone):  # Skip rows outside the window.
@@ -183,6 +198,8 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
             kind="COLLECTION", gateway_id=ci.id, reference=ci.reference,
             provider=ci.provider, provider_reference=ci.provider_reference,
             amount=int(ci.amount), confirmed_at=confirmed,
+            via_clearing=ci.clearing_account_id is not None,
+            reported_fee=ci.fee, settlement_entry_id=ci.settlement_entry_id,
         ))
     for po in payouts.only(  # Iterate over paid payouts using only the required columns.
         "id", "reference", "provider", "provider_reference", "amount", "status",
@@ -203,8 +220,9 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
         bank_qs = bank_qs.filter(txn_date__gte=start_date)
     if end_date is not None:  # Apply the end date filter only when provided.
         bank_qs = bank_qs.filter(txn_date__lte=end_date)
-    bank_lines = list(bank_qs.only(  # Materialize the bank lines for matching.
-        "id", "bank_account_id", "txn_date", "description", "reference", "amount",
+    bank_lines = list(bank_qs.select_related("bank_account").only(  # Materialize the bank lines for matching.
+        "id", "bank_account_id", "bank_account__branch_id", "txn_date", "description",
+        "reference", "amount", "status",
     ))
 
     # Index bank lines by reference and by signed amount for two-pass matching.  # Build lookup tables up front.
@@ -216,6 +234,32 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
         by_amount.setdefault(int(line.amount), []).append(line)  # Group by exact signed amount.
 
     consumed: set[int] = set()  # Bank line ids already matched.
+
+    # Pass 0: a payment booked to clearing is settled by its posted settlement journal.
+    journals = {r.settlement_entry_id for r in rows if r.via_clearing and r.settlement_entry_id}
+    posted = set(
+        JournalEntry.objects.filter(pk__in=journals, status=DocumentStatus.POSTED)
+        .values_list("pk", flat=True)
+    ) if journals else set()
+    settling_lines = {
+        line.adjusting_journal_id: line
+        for line in reach.bank_lines(BankStatementLine.objects.filter(
+            bank_account__entity=entity, adjusting_journal_id__in=posted,
+        ))
+    } if posted else {}
+    for row in rows:
+        line = settling_lines.get(row.settlement_entry_id) if row.via_clearing else None
+        if line is None:
+            continue
+        consumed.add(line.id)
+        row.matched_bank_line_id = line.id
+        row.match_basis = "settlement"
+        row.settled = True
+        row.settled_amount = (
+            row.amount - row.reported_fee if row.reported_fee is not None else None)
+        row.settlement_reference = line.reference
+        row.settlement_date = line.txn_date
+        row.settlement_description = line.description
 
     # Support the take workflow.
     def _take(candidates):
@@ -252,6 +296,8 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
 
     # Pass 1: reference match (our reference or the provider's reference).  # Prefer explicit identifiers.
     for row in rows:  # Examine each gateway row once.
+        if row.via_clearing:  # Settles only through its settlement journal (pass 0).
+            continue
         keys = [k for k in (row.reference, row.provider_reference) if k]  # Try our reference first, then PSP reference.
         for key in keys:  # A row may match on either value.
             cand = _take(by_reference.get(key.strip(), []))
@@ -267,7 +313,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
 
     # Pass 2: exact signed-amount match for anything still open.  # Fall back to amount matching.
     for row in rows:  # Revisit only the rows still unmatched.
-        if row.settled:  # Skip rows already resolved by reference.
+        if row.settled or row.via_clearing:  # Resolved already, or settles by its journal.
             continue
         cand = _closest(row, by_amount.get(row.amount, []))
         if cand is not None:  # Amount match found.
@@ -288,10 +334,21 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
         for line in bank_lines if line.id not in consumed  # Preserve only unmatched bank lines.
     ]
 
+    waiting = reach.collections().filter(awaiting_settlement_q())
+    if provider:
+        waiting = waiting.filter(provider=provider)
+    suggestions = suggest_settlements(
+        entity, list(waiting.only(
+            "id", "reference", "provider_reference", "amount", "fee", "branch", "confirmed_at")),
+        [line for line in bank_lines
+         if line.id not in consumed and line.status == BankLineStatus.UNMATCHED],
+        zone=zone,
+    )
+
     return SettlementReconciliation(  # Return the full reconciliation snapshot.
         entity_id=entity.id, entity_code=entity.code,
         start_date=start_date, end_date=end_date, provider=provider or "",
-        rows=rows, unmatched_bank_lines=unmatched,
+        rows=rows, unmatched_bank_lines=unmatched, suggested_settlements=suggestions,
     )
 
 

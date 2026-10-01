@@ -11,8 +11,8 @@ school's screens do. Each document is built when it is asked for, so it follows
 the setting in force at that moment.
 
 Issuer identity comes from the entity's originating school (platform books have none,
-so those fields fall back to blanks); the 'pay to' bank is the entity's primary
-collection account (:func:`primary_collection_account`).
+so those fields fall back to blanks); the 'pay to' bank is the collection account of
+the document's branch (:func:`primary_collection_account`).
 """
 from __future__ import annotations
 
@@ -39,18 +39,38 @@ def render_document_html(template_name: str, context: dict, *, request=None) -> 
 
 
 # Resolve the bank account printed on finance documents.
-def primary_collection_account(entity):
-    """Return the entity's primary fee-collection :class:`BankAccount`, or a fallback.
+def primary_collection_account(entity, branch=None):
+    """Return the :class:`BankAccount` a document of ``branch`` prints as "pay to", or None.
 
-    Preference order: the account flagged ``is_primary_collection`` → the first active
-    account → ``None``. This is what the invoice/receipt print as the 'pay to' bank.
+    Money paid against a branch's invoice belongs in that branch's bank, so the
+    document prints that branch's account and never another's: a Lekki invoice
+    naming Ikeja's GTBank would send the Adeyemis' fees into Ikeja's books. In
+    order, the branch's flagged collection account, then its first active account,
+    where an account not yet given a branch counts as the branch's only at a
+    tenant with one branch (:func:`vs_rbac.scoping.same_transaction_branch`) and
+    otherwise only after every account of the branch's own. ``None`` when the
+    branch has no account to print.
+
+    With no ``branch`` (the platform's books, or a document with none) the
+    entity's flagged account, else its first active one, as a single set of books
+    has one.
     """
+    from vs_rbac.scoping import transaction_branch_match_q
+
     from .models import BankAccount
 
     qs = BankAccount.objects.filter(entity=entity)
-    return (  # Prefer explicit primary account, fallback to first active account.
-        qs.filter(is_primary_collection=True).first()
-        or qs.filter(is_active=True).order_by("id").first()
+    branch_id = getattr(branch, "pk", branch)
+    if branch_id is None:
+        return (
+            qs.filter(is_primary_collection=True).order_by("id").first()
+            or qs.filter(is_active=True).order_by("id").first()
+        )
+    own = qs.filter(transaction_branch_match_q(entity.tenant_id, branch_id))
+    unbranched_last = ("branch_id", "id")  # Nulls sort last, so the branch's own account wins.
+    return (
+        own.filter(is_primary_collection=True).order_by(*unbranched_last).first()
+        or own.filter(is_active=True).order_by(*unbranched_last).first()
     )
 
 
@@ -70,8 +90,8 @@ def _issuer_block(entity, *, branch=None) -> dict:
       school (its customer), the school sees CodeX's details.
     * Any other school-less entity falls back to the ledger entity's name.
 
-    The pay-to bank is always the entity's primary collection account regardless of
-    which identity is used.
+    The pay-to bank is the collection account of the document's branch
+    (:func:`primary_collection_account`) regardless of which identity is used.
 
     The account number in that block is a registered field
     (``finance.bankaccount.account_number``), and this render is the declared
@@ -132,7 +152,7 @@ def _issuer_block(entity, *, branch=None) -> dict:
         address = branch_address  # Only a branch address (if any) is available.
         website = ""  # No website available.
 
-    bank = primary_collection_account(entity)  # Pay-to bank is the entity's primary collection account.
+    bank = primary_collection_account(entity, branch)  # Pay-to bank is the branch's collection account.
     bank_block = {  # Template-friendly bank block; blanks when no account is configured.
         "bank_name": getattr(bank, "bank_name", "") or "",  # Bank name.
         "account_name": getattr(bank, "name", "") or "",  # Account name (the BankAccount.name).

@@ -49,6 +49,13 @@ class BankAccount(TimeStampedModel):
     child of it); this model adds the banking-side metadata (bank name, number) and is
     the anchor for statement import and reconciliation. Money still only ever moves via
     journals against ``gl_account`` - this is not a second source of truth for balance.
+
+    Each branch names one account as its collection account
+    (``is_primary_collection``): the one its invoices and receipts print as "pay
+    to", and the one a payment provider settles the branch's online payments into
+    when the tenant takes them directly. ``gateway_subaccount_code`` is the
+    provider's handle for that settlement route; payments reads and writes it,
+    finance only stores it.
     """
 
     entity = models.ForeignKey(
@@ -74,8 +81,17 @@ class BankAccount(TimeStampedModel):
         default=False, help_text="The entity's main operating account (at most one).")
     is_primary_collection = models.BooleanField(
         default=False,
-        help_text="The entity's primary fee-collection account - the one printed as "
-                  "'pay to' on customer invoices/receipts. At most one per entity.",
+        help_text="The branch's fee-collection account - the one printed as 'pay to' "
+                  "on its customer invoices/receipts. At most one per branch.",
+    )
+    gateway_subaccount_code = models.CharField(
+        max_length=64, blank=True, default="",
+        help_text="The payment provider's subaccount that settles online payments "
+                  "straight into this account.",
+    )
+    gateway_subaccount_provider = models.CharField(
+        max_length=16, blank=True, default="",
+        help_text="The payment provider that issued the subaccount.",
     )
 
     class Meta:
@@ -83,10 +99,18 @@ class BankAccount(TimeStampedModel):
             models.UniqueConstraint(
                 fields=["entity", "name"], name="uniq_finance_bank_entity_name",
             ),
-            # At most one primary collection account per entity (partial unique).
+            # At most one pay-to account per branch, and one among the accounts
+            # not yet given a branch (partial uniques; a null branch never equals
+            # another in an ordinary unique index).
             models.UniqueConstraint(
-                fields=["entity"], condition=models.Q(is_primary_collection=True),
-                name="uniq_finance_primary_collection_per_entity",
+                fields=["entity", "branch"],
+                condition=models.Q(is_primary_collection=True, branch__isnull=False),
+                name="uniq_finance_primary_collection_per_branch",
+            ),
+            models.UniqueConstraint(
+                fields=["entity"],
+                condition=models.Q(is_primary_collection=True, branch__isnull=True),
+                name="uniq_finance_primary_collection_unbranched",
             ),
         ]
         indexes = [models.Index(fields=["entity", "is_active"])]

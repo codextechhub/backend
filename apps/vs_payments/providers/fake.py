@@ -21,6 +21,7 @@ from .base import (
     CheckoutResult,
     CollectionStatusResult,
     Provider,
+    SubaccountResult,
     TransferResult,
     VirtualAccountResult,
     WebhookParseResult,
@@ -44,13 +45,23 @@ class FakeProvider(Provider):
         self.forced_amount: dict[str, int] = {}
         # Lets a test say when the provider records the payment as made, per reference.
         self.forced_paid_at: dict = {}
+        # The fee (kobo) verify reports per reference; ``default_fee`` for the rest.
+        self.forced_fee: dict[str, int] = {}
+        self.default_fee: int | None = 0
+        # Every subaccount named on a checkout or virtual account, by reference.
+        self.subaccounts_named: dict[str, str] = {}
+        # Subaccounts created or refreshed, by code: the bank details they settle to.
+        self.subaccounts: dict[str, dict] = {}
 
     def healthcheck(self) -> bool:
         return True
 
     # -- collection --------------------------------------------------------- #  # Money-in behavior.
     def create_checkout(self, *, reference, amount, currency, customer_email="",
-                        customer_name="", narration="", callback_url="", metadata=None):
+                        customer_name="", narration="", callback_url="", metadata=None,
+                        subaccount=""):
+        if subaccount:  # Remember the settlement route a test may assert on.
+            self.subaccounts_named[reference] = subaccount
         return CheckoutResult(  # Return a deterministic hosted checkout result.
             reference=reference,  # Echo the merchant reference.
             provider_reference=f"FAKE-{reference}",  # Fake provider-side reference.
@@ -61,7 +72,9 @@ class FakeProvider(Provider):
         )
 
     def create_virtual_account(self, *, reference, customer_name, customer_email="",
-                               bank_code="", metadata=None):
+                               bank_code="", metadata=None, subaccount=""):
+        if subaccount:  # Remember the settlement route a test may assert on.
+            self.subaccounts_named[reference] = subaccount
         # Deterministic 10-digit NUBAN from the reference.  # Keep account generation repeatable.
         digits = str(abs(hash(reference)) % 10_000_000_000).rjust(10, "0")  # Normalize the hash into a 10-digit string.
         return VirtualAccountResult(  # Return a predictable virtual account payload.
@@ -80,8 +93,31 @@ class FakeProvider(Provider):
             status=status,  # Return the forced or default status.
             amount=self.forced_amount.get(reference, 0),  # Report the forced settled amount (0 = not reported).
             paid_at=self.forced_paid_at.get(reference),  # None unless a test names the paid instant.
+            fee=self.forced_fee.get(reference, self.default_fee),
             raw={"forced": status},  # Show where the verification status came from.
         )
+
+    # -- settlement subaccounts ------------------------------------------- #
+    def create_subaccount(self, *, business_name, settlement_bank_code, account_number,
+                          percentage_charge=0):
+        code = f"ACCT_FAKE{len(self.subaccounts) + 1:04d}"
+        self.subaccounts[code] = {
+            "business_name": business_name, "settlement_bank": settlement_bank_code,
+            "account_number": account_number, "percentage_charge": percentage_charge,
+        }
+        return SubaccountResult(subaccount_code=code, account_name=business_name,
+                                raw={"subaccount_code": code, **self.subaccounts[code]})
+
+    def update_subaccount(self, *, subaccount_code, business_name, settlement_bank_code,
+                          account_number):
+        self.subaccounts[subaccount_code] = {
+            **self.subaccounts.get(subaccount_code, {}),
+            "business_name": business_name, "settlement_bank": settlement_bank_code,
+            "account_number": account_number,
+        }
+        return SubaccountResult(subaccount_code=subaccount_code, account_name=business_name,
+                                raw={"subaccount_code": subaccount_code,
+                                     **self.subaccounts[subaccount_code]})
 
     # -- payout ------------------------------------------------------------- #  # Money-out behavior.
     # Handle the create transfer workflow.

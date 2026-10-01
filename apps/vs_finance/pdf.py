@@ -396,7 +396,7 @@ def statement_pdf(customer, *, start_date=None, end_date=None, note: str = "",
     statement = customer_statement(
         customer, start_date=start_date, end_date=end_date, scope=scope,
     )
-    issuer = _issuer_block(customer.entity)
+    issuer = _issuer_block(customer.entity, branch=customer.branch)
     tenant = customer.entity.tenant
     styles = _styles()
 

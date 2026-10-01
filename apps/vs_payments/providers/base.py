@@ -57,12 +57,26 @@ class CollectionStatusResult:
     amount: int = 0                  # kobo, as reported by the provider  # Settled amount in kobo.
     currency: str = "NGN"  # Settlement currency code.
     paid_at: datetime | None = None  # Aware instant the payer paid, when the provider says.
+    fee: int | None = None  # Kobo the provider kept from the payment; None when unreported.
     raw: dict = field(default_factory=dict)  # Full provider payload preserved verbatim.
 
     @property
     # Handle the paid workflow.
     def paid(self) -> bool:
         return self.status == "SUCCEEDED"  # Only succeeded collections count as paid.
+
+
+@dataclass
+class SubaccountResult:
+    """Outcome of creating or refreshing a settlement subaccount.
+
+    A subaccount is the provider's route for settling a payment straight into one
+    bank account instead of the merchant's own balance.
+    """
+
+    subaccount_code: str  # The provider's handle, named on each checkout it settles.
+    account_name: str = ""  # The account holder's name as the provider resolved it.
+    raw: dict = field(default_factory=dict)  # Raw provider response for traceability.
 
 
 @dataclass
@@ -143,15 +157,41 @@ class CollectionProvider(WebhookCapable):
     def create_checkout(self, *, reference: str, amount: int, currency: str,
                         customer_email: str = "", customer_name: str = "",
                         narration: str = "", callback_url: str = "",
-                        metadata: dict | None = None) -> CheckoutResult:
-        ...  # Create a hosted checkout session.
+                        metadata: dict | None = None, subaccount: str = "") -> CheckoutResult:
+        """Create a hosted checkout session.
+
+        ``subaccount``, when given, settles the payment to that subaccount's bank
+        account, and the subaccount bears the provider's fee. Callers pass it only
+        when set, so an adapter written before subaccounts still serves the rest.
+        """
 
     @abc.abstractmethod
     # Handle the create virtual account workflow.
     def create_virtual_account(self, *, reference: str, customer_name: str,
                                customer_email: str = "", bank_code: str = "",
-                               metadata: dict | None = None) -> VirtualAccountResult:
-        ...  # Provision a dedicated collection account.
+                               metadata: dict | None = None,
+                               subaccount: str = "") -> VirtualAccountResult:
+        """Provision a dedicated collection account, settling to ``subaccount`` when given."""
+
+    def create_subaccount(self, *, business_name: str, settlement_bank_code: str,
+                          account_number: str, percentage_charge: float = 0) -> SubaccountResult:
+        """Create a subaccount that settles into ``account_number`` at ``settlement_bank_code``.
+
+        ``percentage_charge`` is the share of each payment kept by the main account;
+        zero keeps nothing back. A provider without subaccounts refuses.
+        """
+        from ..exceptions import ProviderError
+
+        raise ProviderError(f"{self.name or 'This provider'} does not offer settlement subaccounts.",
+                            provider=self.name)
+
+    def update_subaccount(self, *, subaccount_code: str, business_name: str,
+                          settlement_bank_code: str, account_number: str) -> SubaccountResult:
+        """Point an existing subaccount at the given bank account. Refused where unsupported."""
+        from ..exceptions import ProviderError
+
+        raise ProviderError(f"{self.name or 'This provider'} does not offer settlement subaccounts.",
+                            provider=self.name)
 
     @abc.abstractmethod
     # Handle the verify collection workflow.

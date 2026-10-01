@@ -14,13 +14,19 @@ dependency direction is vs_payments → vs_finance, never the reverse.
 from __future__ import annotations
 
 from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
 from vs_finance.models import MoneyField, TimeStampedModel
 
 from .constants import (
+    CLEARING_STALE_DAYS_RANGE,
+    DEFAULT_CLEARING_STALE_DAYS,
+    DEFAULT_SETTLEMENT_INTERVAL_DAYS,
+    SETTLEMENT_INTERVAL_RANGE,
     CollectionChannel,
     CollectionStatus,
+    CustodyMode,
     PaymentAuditAction,
     PaymentProvider,
     PayoutBatchStatus,
@@ -36,10 +42,20 @@ class VirtualAccount(TimeStampedModel):
     Money paid into this account is attributable to one payer/customer without a
     checkout step: the provider notifies us by webhook and we book a receipt. One
     customer can hold at most one active account per provider.
+
+    ``branch`` is set when the account is provisioned
+    (:func:`vs_payments.services.virtual_account_branch_id`) and is the branch
+    whose subaccount the provider settles deposits to when the tenant takes
+    payments directly.
     """
 
     entity = models.ForeignKey(
         "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="virtual_accounts",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        related_name="payment_virtual_accounts", null=True, blank=True,
+        help_text="The branch whose money arrives here: its customer's, else its deposit bank's.",
     )
     provider = models.CharField(max_length=16, choices=PaymentProvider.choices)
     customer = models.ForeignKey(
@@ -97,10 +113,28 @@ class CollectionIntent(TimeStampedModel):
     reference); ``provider_reference`` is what the provider returns. When settlement is
     confirmed (by webhook or verify), the intent transitions to ``SUCCEEDED`` and a
     ``vs_finance.Payment`` receipt is booked and linked via ``payment``.
+
+    The receipt debits gateway clearing, not a bank (``clearing_account``): the
+    provider has the money, the bank does not yet. ``settlement_entry`` names
+    the journal that later moved it to a bank, and the collection is in clearing
+    while that is empty or reversed (:attr:`awaits_settlement`). A collection
+    booked before clearing existed debited its bank directly and has no
+    ``clearing_account``, so it never awaits settlement.
+
+    That journal belongs to the bank statement line it was booked from, which is
+    the only thing that may reverse it (unmatching the line). The field is
+    deliberately not named ``*journal*``: finance reads a journal's owning document
+    from the foreign keys so named (:func:`vs_finance.posting._journal_document_owner`),
+    and one here would claim the journal for this collection instead.
     """
 
     entity = models.ForeignKey(
         "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="collection_intents",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        related_name="payment_collections", null=True, blank=True,
+        help_text="The branch the money belongs to (vs_payments.services.collection_branch_id).",
     )
     provider = models.CharField(max_length=16, choices=PaymentProvider.choices)
     channel = models.CharField(
@@ -147,6 +181,20 @@ class CollectionIntent(TimeStampedModel):
         related_name="collection_intents", null=True, blank=True,
         help_text="The customer receipt booked when this collection settled.",
     )  # The FK to the booked receipt (if any, when the collection is confirmed).
+    fee = MoneyField(
+        null=True, blank=True, default=None,
+        help_text="Kobo the provider kept from this payment, as it reported on confirmation.",
+    )
+    clearing_account = models.ForeignKey(
+        "vs_finance.Account", on_delete=models.PROTECT,
+        related_name="clearing_collections", null=True, blank=True,
+        help_text="The gateway clearing account the receipt debited, until settlement.",
+    )
+    settlement_entry = models.ForeignKey(
+        "vs_finance.JournalEntry", on_delete=models.PROTECT,
+        related_name="settled_collections", null=True, blank=True,
+        help_text="The journal that moved this payment from clearing to a bank.",
+    )
     metadata = models.JSONField(default=dict, blank=True)
     raw_response = models.JSONField(default=dict, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
@@ -160,6 +208,7 @@ class CollectionIntent(TimeStampedModel):
             models.Index(fields=["entity", "status"]),
             models.Index(fields=["provider", "provider_reference"]),
             models.Index(fields=["customer"]),
+            models.Index(fields=["entity", "branch", "status"]),
         ]
         ordering = ["-id"]
 
@@ -172,6 +221,21 @@ class CollectionIntent(TimeStampedModel):
         from .constants import COLLECTION_TERMINAL
         return self.status in COLLECTION_TERMINAL
 
+    @property
+    def awaits_settlement(self) -> bool:
+        """True while this collection's money sits in gateway clearing.
+
+        The row form of :func:`vs_payments.settlement.awaiting_settlement_q`.
+        """
+        from vs_finance.constants import DocumentStatus
+
+        if self.clearing_account_id is None or self.payment_id is None:
+            return False
+        if self.status != CollectionStatus.SUCCEEDED or self.payment.status != DocumentStatus.POSTED:
+            return False
+        return (self.settlement_entry_id is None
+                or self.settlement_entry.status != DocumentStatus.POSTED)
+
 
 class PayoutBatch(TimeStampedModel):
     """A bulk disbursement: one envelope grouping many :class:`PayoutInstruction` rows.
@@ -182,6 +246,11 @@ class PayoutBatch(TimeStampedModel):
     the batch tracks the aggregate so a partially-settled run is visible at a glance.
     ``total_amount``/``item_count`` are denormalised sums of the child instructions, kept
     in sync by the services layer.
+
+    A batch pays from one branch's money: ``branch`` is its lines' branch, and a
+    batch whose lines would leave two branches' banks is refused when it is
+    assembled (:func:`vs_payments.services.create_payout_batch`). The approval
+    engine reads it as the document's branch.
     """
 
     # vs_workflow document-type token. Every provider submission must carry the exact
@@ -195,6 +264,11 @@ class PayoutBatch(TimeStampedModel):
 
     entity = models.ForeignKey(
         "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="payout_batches",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        related_name="payout_batches", null=True, blank=True,
+        help_text="The one branch every line of the batch pays from.",
     )
     provider = models.CharField(max_length=16, choices=PaymentProvider.choices)
     reference = models.CharField(
@@ -250,10 +324,6 @@ class PayoutBatch(TimeStampedModel):
         return f"{self.reference} · {self.item_count} items · {self.total_amount} kobo · {self.status}"
 
     @property
-    def branch(self):  # The engine reads document.branch; batches have none.
-        return None  # Payout batches are not branch-scoped.
-
-    @property
     def is_terminal(self) -> bool:
         from .constants import PAYOUT_BATCH_TERMINAL
         return self.status in PAYOUT_BATCH_TERMINAL
@@ -270,6 +340,11 @@ class PayoutInstruction(TimeStampedModel):
 
     entity = models.ForeignKey(
         "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="payout_instructions",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        related_name="payout_instructions", null=True, blank=True,
+        help_text="The branch whose bank account the money leaves (its source account's).",
     )
     batch = models.ForeignKey(
         PayoutBatch, on_delete=models.PROTECT, related_name="instructions",
@@ -330,6 +405,55 @@ class PayoutInstruction(TimeStampedModel):
     def is_terminal(self) -> bool:
         from .constants import PAYOUT_TERMINAL
         return self.status in PAYOUT_TERMINAL
+
+
+class PaymentCustodySettings(TimeStampedModel):
+    """How one tenant's online money is held, and when that changes.
+
+    One row per tenant, binding every branch. ``mode`` is the arrangement in
+    force from ``effective_from``; a change is never immediate but is stored as
+    ``pending_mode`` from ``pending_from``, always the first day of a month, and
+    takes over on that day (:func:`vs_payments.custody.custody_mode`). A tenant
+    with no row is ``HELD``, which is where every tenant's money has always been.
+
+    ``settlement_interval_days`` is how often a held-mode tenant is paid what the
+    platform holds for it. ``clearing_stale_days`` is how long a confirmed payment
+    may sit in gateway clearing before the period close warns.
+    """
+
+    tenant = models.OneToOneField(
+        "vs_tenants.Tenant", on_delete=models.CASCADE, related_name="payment_custody",
+    )
+    mode = models.CharField(max_length=8, choices=CustodyMode.choices, default=CustodyMode.HELD)
+    effective_from = models.DateField(null=True, blank=True)
+    pending_mode = models.CharField(
+        max_length=8, choices=CustodyMode.choices, blank=True, default="",
+    )
+    pending_from = models.DateField(null=True, blank=True)
+    settlement_interval_days = models.PositiveSmallIntegerField(
+        default=DEFAULT_SETTLEMENT_INTERVAL_DAYS,
+        validators=[
+            MinValueValidator(SETTLEMENT_INTERVAL_RANGE[0]),
+            MaxValueValidator(SETTLEMENT_INTERVAL_RANGE[1]),
+        ],
+    )
+    clearing_stale_days = models.PositiveSmallIntegerField(
+        default=DEFAULT_CLEARING_STALE_DAYS,
+        validators=[
+            MinValueValidator(CLEARING_STALE_DAYS_RANGE[0]),
+            MaxValueValidator(CLEARING_STALE_DAYS_RANGE[1]),
+        ],
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        related_name="+", null=True, blank=True,
+    )
+
+    class Meta:
+        verbose_name_plural = "payment custody settings"
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}: {self.mode}"
 
 
 class WebhookEvent(TimeStampedModel):

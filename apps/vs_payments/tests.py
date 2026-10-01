@@ -1202,6 +1202,20 @@ class PayoutBatchTests(_PaymentsFixtureMixin, TestCase):
 
 # Group tests for Settlement Reconciliation Tests.
 class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
+    """Reference and amount matching, for rows that settle one by one.
+
+    A collection confirmed today is booked to gateway clearing and settles only
+    through a settlement match (``tests_custody.GatewayClearingTests``). These
+    tests cover the rows that still match a bank line of their own: payouts, and
+    collections booked straight to a bank before clearing existed, which
+    :meth:`_confirm_before_clearing` stands in for.
+    """
+
+    def _confirm_before_clearing(self, intent):
+        """Confirm ``intent`` as a collection booked before gateway clearing existed."""
+        services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+        CollectionIntent.objects.filter(pk=intent.pk).update(clearing_account=None)
+
     # Support the bank account workflow.
     def _bank_account(self, entity):
         from vs_finance.models import BankAccount
@@ -1222,7 +1236,7 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
     def test_reference_match_settles_a_collection(self):
         entity, customer, _ = self.build()
         intent = services.initiate_collection(entity=entity, amount=40000, customer=customer)
-        services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+        self._confirm_before_clearing(intent)
         intent.refresh_from_db()
         ba = self._bank_account(entity)
         self._bank_line(ba, amount=40000, reference=intent.reference)
@@ -1239,7 +1253,7 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
         PSP fee (gross − net) and the bank settlement reference on the matched row."""
         entity, customer, _ = self.build()
         intent = services.initiate_collection(entity=entity, amount=40000, customer=customer)
-        services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+        self._confirm_before_clearing(intent)
         intent.refresh_from_db()
         ba = self._bank_account(entity)
         # Bank received 39,100 net of a 900 PSP fee, under a settlement reference.
@@ -1257,7 +1271,7 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
         # (gross − net) would go negative - it must clamp to 0 instead.
         entity, customer, _ = self.build()
         intent = services.initiate_collection(entity=entity, amount=40000, customer=customer)
-        services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+        self._confirm_before_clearing(intent)
         intent.refresh_from_db()
         ba = self._bank_account(entity)
         self._bank_line(ba, amount=40500, reference=intent.reference)  # Bank shows MORE than gateway.
@@ -1288,10 +1302,10 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
         confirmation, not by insertion order."""
         entity, customer, _ = self.build()
         intentA = services.initiate_collection(entity=entity, amount=40000, customer=customer)
-        services.confirm_collection(intentA, status=CollectionStatus.SUCCEEDED)
+        self._confirm_before_clearing(intentA)
         intentA.refresh_from_db()
         intentB = services.initiate_collection(entity=entity, amount=40000, customer=customer)
-        services.confirm_collection(intentB, status=CollectionStatus.SUCCEEDED)
+        self._confirm_before_clearing(intentB)
         intentB.refresh_from_db()
         # Push the two confirmations well apart so the nearest-date choice is unambiguous.
         intentA.confirmed_at = timezone.now() - datetime.timedelta(days=5)
@@ -1321,7 +1335,7 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
         entity, customer, vendor = self.build()
         # A reference-matched collection - trusted, not flagged.
         c = services.initiate_collection(entity=entity, amount=40000, customer=customer)
-        services.confirm_collection(c, status=CollectionStatus.SUCCEEDED)
+        self._confirm_before_clearing(c)
         c.refresh_from_db()
         # An amount-only-matched payout - ambiguous, flagged.
         p = self.make_processing_payout(entity, vendor, amount=15000)
@@ -1576,17 +1590,24 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
             entity=entity, name="Operations",
             gl_account=Account.objects.get(entity=entity, code="1100"),
         )
-        BankStatementLine.objects.create(
+        line = BankStatementLine.objects.create(
             bank_account=ba, txn_date=tenant_today(entity.tenant),
             reference=intent.reference, amount=40000,
         )
-        resp = self.client.get(
-            f"/v1/payments/reports/settlement-reconciliation/?entity={entity.code}"
-        )
+        url = f"/v1/payments/reports/settlement-reconciliation/?entity={entity.code}"
+        waiting = self.client.get(url).json()["data"]
+        self.assertFalse(waiting["is_reconciled"])
+        self.assertEqual(waiting["suggested_settlements"][0]["collection_ids"], [intent.pk])
+
+        from .settlement import settle_collections
+
+        settle_collections(line, [intent.pk])
+        resp = self.client.get(url)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()["data"]
         self.assertTrue(data["is_reconciled"])
         self.assertEqual(data["summary"]["settled_count"], 1)
+        self.assertEqual(data["rows"][0]["match_basis"], "settlement")
 
     # Verify transactions log endpoint behavior.
     def test_transactions_log_endpoint(self):

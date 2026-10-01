@@ -50,6 +50,12 @@ PAYMENTS_RESOURCES = [
     # No approver keys: who may release a payout is the workflow stage's answer,
     # not a permission's. See the note in the finance seeder.
     ("payout_batch",    "bulk payout batches", [("submit", "SENSITIVE")]),
+    # How the tenant's online money is held and which subaccount settles each
+    # branch's payments. Changing it redirects money, so the write is CRITICAL.
+    ("settings",        "payment settings",    [("view", "NORMAL"), ("update", "CRITICAL")]),
+    # Matching a bank line to the online payments it settles posts a journal
+    # moving gateway clearing to the bank and booking the provider's fees.
+    ("settlement",      "gateway settlements", [("create", "SENSITIVE")]),
 ]
 
 

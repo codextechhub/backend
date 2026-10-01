@@ -162,6 +162,11 @@ SETTLED_ELSEWHERE = {
         "that owns the invoice the caller named, itself resolved within her "
         "branches. The collection belongs to that invoice's branch, so the "
         "invoice answers the branch question; any other family is still refused.",
+    "vs_payments/views_custody.py::post::BankAccount":
+        "Naming the collection account to set up with the payment provider. The "
+        "view is a whole-tenant write (WholeTenantWriteMixin refuses any caller "
+        "whose reach is not the whole tenant before the handler runs), so every "
+        "bank account of the books is one the caller may name.",
 }
 
 #: Flagged lookups nothing answers.

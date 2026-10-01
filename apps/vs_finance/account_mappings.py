@@ -40,6 +40,9 @@ ACCOUNT_MAPPING_SPECS = {
     AccountMappingKey.DOUBTFUL_DEBT_ALLOWANCE: ("1290", AccountType.ASSET),
     AccountMappingKey.BAD_DEBT_RECOVERED: ("4810", AccountType.INCOME),
     AccountMappingKey.FORFEITED_DEPOSIT_INCOME: ("4820", AccountType.INCOME),
+    # Money a payment provider has confirmed that has not yet reached a bank. It
+    # empties as each settlement lands, so a balance here is money in transit.
+    AccountMappingKey.GATEWAY_CLEARING: ("1125", AccountType.ASSET),
 }
 
 DEFAULT_CODE_TO_MAPPING_KEY = {

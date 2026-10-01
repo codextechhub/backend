@@ -106,6 +106,11 @@ ACCOUNT_MAPPING_CONSUMERS = {
         "vs_finance.deposits.forfeit_unclaimed_deposits",
         "Receives deposits left unclaimed past the entity's limit.",
     ),
+    AccountMappingKey.GATEWAY_CLEARING: _consumer(
+        "Online collections",
+        "vs_payments.services._book_receipt; vs_payments.settlement.settle_collections",
+        "Holds confirmed online payments until the provider's settlement reaches a bank.",
+    ),
 }
 
 
@@ -118,7 +123,7 @@ DOCUMENT_SETTING_CONSUMERS = {
     "primary_collection_bank_account": _consumer(
         "Invoice and receipt presentation",
         "vs_finance.documents._issuer_block",
-        "Prints the preferred payment destination on customer documents.",
+        "Prints each branch's payment destination on its customer documents.",
     ),
     "default_invoice_narration": _consumer(
         "Manual invoicing",

@@ -845,6 +845,7 @@ class AccountMappingKey(models.TextChoices):
     DOUBTFUL_DEBT_ALLOWANCE = "DOUBTFUL_DEBT_ALLOWANCE", "Allowance for doubtful debts"
     BAD_DEBT_RECOVERED = "BAD_DEBT_RECOVERED", "Bad debts recovered"
     FORFEITED_DEPOSIT_INCOME = "FORFEITED_DEPOSIT_INCOME", "Forfeited deposits income"
+    GATEWAY_CLEARING = "GATEWAY_CLEARING", "Gateway clearing"
 
 #: Reserved code for CodeX's own platform set of books (the operator's entity).
 #: An uppercase identifier (like all entity codes); the display name is "CodeX".

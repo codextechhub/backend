@@ -18,13 +18,20 @@ with no checkout step, and the deposit self-attributes to them.
 
 Nothing in this slice is itself an accounting entry. A `CollectionIntent` only
 records *what we asked the provider to do and what it told us*. The authoritative
-money movement is a **`vs_finance.Payment` receipt** (Dr bank, Cr AR), and it is
-booked **only when the collection is confirmed** - never at initiation
-(`services.py:59-64`, `services.py:172-216`).
+money movement is a **`vs_finance.Payment` receipt** (Dr gateway clearing, Cr AR),
+and it is booked **only when the collection is confirmed** - never at initiation.
+The money reaches a bank later, when the provider's settlement is matched to it
+(`vs_payments/settlement.py`, see `payment_settlement` §6).
+
+How a tenant's online money is held (direct to each branch's bank, or held by the
+platform) is the custody setting (`vs_payments/custody.py`,
+`docs/payments/payment_custody_design.md`).
 
 This does **NOT**:
 - move money by itself - the provider does; we book the ledger mirror after the
   fact.
+- debit a bank on confirmation - the receipt debits gateway clearing, because the
+  provider still holds the money.
 - book anything at `initiate` time - a `PENDING`/`PROCESSING` intent has no
   `payment` (`services.py:78-120`).
 - reconcile against the bank statement - that is `SettlementReconciliation`
@@ -40,11 +47,21 @@ One request to collect money in. Money is integer **kobo** (`amount`, a
 
 Key fields:
 - `entity` → `vs_finance.LedgerEntity` (PROTECT) - the tenant scope (`models.py:97-99`).
+- `branch` → `vs_tenants.Branch` - the branch the money belongs to, set at creation
+  from `services.collection_branch_id` (the invoice's, else the customer's, else the
+  tenant's only branch, else the deposit bank's).
+- `fee` (nullable kobo) - what the provider kept, as its verify response reported it
+  on confirmation; `None` when it did not say.
+- `clearing_account` → `vs_finance.Account` - the gateway clearing account the
+  receipt debited; `settlement_entry` → `vs_finance.JournalEntry` - the journal
+  that moved it to a bank. The collection is in clearing while its receipt is posted
+  and the settlement journal is empty or reversed (`awaits_settlement`). A
+  collection confirmed before clearing existed has no `clearing_account`.
 - `reference` - **our** merchant reference / idempotency key, `unique` globally
   (`CXP-<tenant_id><YYMMDD><daily_sequence>`, generated from the entity's tenant
   at `services.py:42-48`); `provider_reference` is what the
   PSP returns (`models.py:104-108`).
-- `provider` (`PaymentProvider`: OPAY / PAYSTACK / FAKE), `channel`
+- `provider` (`PaymentProvider`: PAYSTACK / FAKE), `channel`
   (`CollectionChannel`: CHECKOUT / VIRTUAL_ACCOUNT / CARD / BANK_TRANSFER / USSD),
   `constants.py:15-37`.
 - `status` (`CollectionStatus`, default `PENDING`) - `PENDING → PROCESSING →
@@ -65,8 +82,10 @@ Indexes: `(entity, status)`, `(provider, provider_reference)`, `(customer)`
 
 ### `VirtualAccount` - `models.py:33-85`
 A dedicated NUBAN issued by a provider for self-reconciling collection.
-- `entity` (PROTECT), `provider`, `customer` (nullable), `deposit_account`
-  (nullable - GL account collections into this NUBAN land in), `currency`.
+- `entity` (PROTECT), `branch` (its customer's, else the tenant's only branch, else
+  its deposit bank's; set at provisioning), `provider`, `customer` (nullable),
+  `deposit_account` (nullable - the bank the NUBAN's deposits are expected in),
+  `currency`.
 - `account_number`, `bank_name`, `account_name` - the funding coordinates
   (`account_number`/`account_name` are **FLS-masked**, see §9).
 - `provider_reference`, `status` (`VirtualAccountStatus`: ACTIVE / INACTIVE,
@@ -96,6 +115,9 @@ and use the platform envelope + RBAC, except where noted. Request body lists
 | `POST /virtual-accounts/` | `payments.virtual_account.create` | provision a dedicated NUBAN | `customer`(**required**), `deposit_account`, `provider`, `bank_code` | `success_response(data=VirtualAccountSerializer, 201)` |
 | `GET /virtual-accounts/<pk>/` | `payments.virtual_account.view` | fetch one VA | - | `success_response(data=VirtualAccountSerializer)` |
 | `PATCH /virtual-accounts/<pk>/` | `payments.virtual_account.manage` | activate / deactivate (local only) | `status` (ACTIVE/INACTIVE) | `success_response(data=VirtualAccountSerializer)` |
+| `GET /settings/custody/` | `payments.settings.view` | the custody setting in force, any pending change, and each branch's collection account with whether its subaccount exists | - | `success_response(data={settings, branches})` |
+| `PATCH /settings/custody/` | `payments.settings.update` + whole-tenant reach | change the mode (from the next month start), the settlement interval or the clearing warning days | `mode`, `settlement_interval_days`, `clearing_stale_days` | same as GET |
+| `POST /subaccounts/` | `payments.settings.update` + whole-tenant reach | create or refresh the provider subaccount of a branch's collection account | `bank_account`(**required**), `settlement_bank_code`(**required**), `business_name`, `provider` | `success_response(data={id, name, bank_name, subaccount_ready, subaccount_provider, branch})` |
 
 Notes:
 - **`amount`, `customer`, `invoice`, `deposit_account` are the only body fields
@@ -109,6 +131,13 @@ Notes:
   every other list in this app.
 - There is no `?entity` exception here - every collections/VA route is
   entity-scoped (unlike `vs_finance` currencies/fx-rates).
+- **Direct custody.** When the tenant's mode in force is `DIRECT`,
+  `initiate_collection` and `create_virtual_account` name the collection's
+  branch's provider subaccount (`custody.branch_subaccount`), and a deposit
+  account left blank becomes that branch's collection account. A branch with no
+  collection account, or one not set up with the provider, is refused with a 409
+  `COLLECTION_SUBACCOUNT_MISSING` before anything is written. A held tenant's
+  checkouts name no subaccount.
 
 ## 4. Lifecycle / state machine
 
@@ -169,25 +198,31 @@ distinct providers.
 
 ## 6. What posting does to the ledger
 
-Only a **SUCCEEDED** collection posts. `_book_receipt` (`services.py:219-241`)
-builds a draft `vs_finance.Payment` and calls
-`vs_finance.receivables.post_payment` (`receivables.py:226-245, 330-398`).
+Only a **SUCCEEDED** collection posts. `_book_receipt` builds a draft
+`vs_finance.Payment` and calls `vs_finance.receivables.post_payment`.
 
-Journal (source `BANK`), for a receipt of `A` kobo with `applied` allocated to
-invoices and `excess = A − applied`:
+Journal (source `BANK`, in the collection's branch), for a receipt of `A` kobo with
+`applied` allocated to invoices and `excess = A − applied`:
 
 | Dr / Cr | account | amount |
 |---|---|---|
-| **Dr** | `deposit_account` (the intent's, else fallback `1100` Cash & bank) | `A` |
+| **Dr** | gateway clearing (mapping `GATEWAY_CLEARING`, starter `1125`) | `A` |
 | **Cr** | customer's AR control (`customer.receivable_account`) | `applied` |
 | **Cr** | customer credit `2140` (liability) | `excess` (only if > 0) |
 
+The bank is debited later, by the settlement match (`payment_settlement` §6): Dr
+bank (what arrived), Dr bank charges (the provider's fee), Cr clearing (`A`).
+
 Carried vs dropped on the way to the ledger:
-- **`amount`, `customer`, `currency`, `reference`, `narration`, `deposit_account`**
-  carry onto the `Payment` (`services.py:231-237`).
-- **`deposit_account` fallback:** if the intent has none, the receipt debits
-  `resolve_account(entity, CASH_BANK_CODE="1100")` (`services.py:228-230`,
-  `vs_finance/constants.py:564`).
+- **`amount`, `customer`, `currency`, `reference`, `narration`** carry onto the
+  `Payment`; its `deposit_account` is the clearing account, which the intent also
+  records as `clearing_account`. The intent's own `deposit_account` stays the bank
+  the money is expected in, and decides the branch of a collection naming no invoice.
+- **Fee:** the provider's reported fee is stored on the intent (`fee`) for the
+  settlement, never posted at confirmation.
+- **Missing clearing account:** books whose chart has no usable clearing account
+  fail the booking with `MissingAccountError`, as any missing mapped role does;
+  migration `vs_finance.0046` gives every seeded chart one.
 - **Allocation:** if the intent has an `invoice`, `allocations = [(invoice, amount)]`
   - a fixed split against that invoice. **If it has no invoice, `_book_receipt`
   now passes `auto_allocate=False`** (`services.py:259-264`), so a standalone
@@ -229,8 +264,8 @@ Using the `FakeProvider` (test wiring, `tests.py:119-151`,
    `GET /collections/1/?verify=1` → `confirm_collection` polls
    `verify_collection` → SUCCEEDED → `_book_receipt`.
    Resulting journal (`post_payment`):
-   - Dr `1100`/deposit 50 000 · Cr `1200` AR 50 000 (fully allocated to invoice 7;
-     `excess = 0`, no `2140` line).
+   - Dr `1125` gateway clearing 50 000 · Cr `1200` AR 50 000 (fully allocated to
+     invoice 7; `excess = 0`, no `2140` line).
    Intent → `status=SUCCEEDED`, `payment_id` set, `confirmed_at` stamped; invoice
    `amount_paid = 50 000`. (Asserted in `tests.py:144-150`.)
 
@@ -288,10 +323,26 @@ Using the `FakeProvider` (test wiring, `tests.py:119-151`,
    `account_number` (`views.py:235-238`), so presence can be probed without the
    sensitive grant. **Open** - low severity; revisit in the settlement/FLS review.
 
+9. ✅ **Online receipts no longer claim money the bank does not have.** A
+   confirmed collection debits gateway clearing, not the bank, and the provider's
+   fee is kept on the collection; the settlement match moves it to the bank and
+   books the fee (`payment_settlement` §6). Collections confirmed before this keep
+   their original bank debit and never await settlement. Tests:
+   `tests_custody.GatewayClearingTests`.
+
+10. ⚠️ **Refunds and chargebacks under direct custody are not built.** A direct
+    tenant's payment settles to the branch's bank, while a provider refund comes out
+    of the platform's balance (to confirm with Paystack). Which side funds it is
+    decided when refunds are built.
+
 ## 9. Permissions & tenant isolation
 
-RBAC keys, seeded by `seed_payments_permissions.py:26-33` and granted to
+RBAC keys, seeded by `seed_payments_permissions.py` and granted to
 `xvs_super_admin` / `xvs_platform_admin`:
+- `payments.settings.view` (NORMAL) / `payments.settings.update` (**CRITICAL**) -
+  the custody setting and branch subaccounts. Writes also need whole-tenant reach
+  (`WholeTenantWriteMixin`, 403 `SHARED_RECORD_READ_ONLY` otherwise), because the
+  mode binds every branch and a subaccount decides where a branch's money is paid.
 - `payments.collection.view` (NORMAL) - list/detail/summary.
 - `payments.collection.create` (**CRITICAL**) - POST initiate.
 - `payments.virtual_account.view` (NORMAL) - list/detail.
@@ -325,7 +376,11 @@ server-side.
 
 ## 10. Code map
 
-- `models.py:33-168` - `VirtualAccount`, `CollectionIntent`.
+- `models.py` - `VirtualAccount`, `CollectionIntent`, `PaymentCustodySettings`.
+- `custody.py` - the mode in force (`custody_mode`, `is_direct`), each branch's
+  collection account and subaccount, `update_custody_settings`,
+  `save_collection_subaccount`, and the direct-mode payout refusal.
+- `views_custody.py` - custody settings, subaccounts and settlement endpoints.
 - `constants.py:15-60,103-131` - providers, channels, collection statuses +
   terminal set, VA status, audit actions.
 - `views.py:91-313` - collection list/create/summary/detail + VA list/create/detail
@@ -342,9 +397,11 @@ server-side.
 
 ## 11. Test coverage & gaps
 
-Full `vs_payments` app suite: **139 green** (`python manage.py test vs_payments
---settings=apps.settings.local --noinput`, one app at a time with a unique
-`DB_NAME`). Collections/VA-relevant:
+Collections/VA-relevant (run `manage.py test vs_payments` for the current count):
+- `tests_custody`: clearing on confirmation (one-branch and several), direct
+  checkouts and virtual accounts naming the branch's subaccount, the 409 for a
+  branch without one, the month-start mode change, and the whole-tenant 403 on
+  the settings and subaccount endpoints.
 - `CollectionTests`: initiate → PROCESSING + checkout + audit row; verify → books
   receipt & settles invoice; failed collection books nothing; **confirm
   idempotency**; plus the five hardening tests - `test_settled_amount_overrides_

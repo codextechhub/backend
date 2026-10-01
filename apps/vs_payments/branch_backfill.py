@@ -1,14 +1,17 @@
-"""The payment gateway's records, as the branch backfill would derive them.
+"""The payment gateway's records, as the branch backfill derives them.
 
-None of these models carries a branch column, so each is registered with
-``has_branch_column=False``: the audit reports how many of their rows would
-derive a branch and how many would need an administrator, and the backfill
-writes nothing to them. That report is the evidence a later schema change needs.
+Every gateway record carries a branch, set when it is created: a collection its
+:func:`vs_payments.services.collection_branch_id`, a virtual account its
+customer's or its deposit bank's, a payout instruction its source bank
+account's and a payout batch its lines' one branch. Rows written before those
+columns existed are blank, and the backfill fills them from the same facts, in
+the same order, and records each change.
 
 An online payment for an invoice belongs to the invoice's branch, so a
 collection reads its invoice first. A payout reads the supplier payment it
 settles, named by a loose id because payments does not import procurement,
-then the bank account the money leaves from.
+then the bank account the money leaves from. A batch reads its payouts, and only
+when they all agree.
 """
 from __future__ import annotations
 
@@ -34,17 +37,17 @@ _TARGETS = (
             customer(),
             bank_behind("the deposit bank account", "deposit_account"),
         ),
-        order=950, has_branch_column=False,
+        order=950,
     ),
     Target(
         VIRTUAL_ACCOUNT,
         (customer(), bank_behind("the deposit bank account", "deposit_account")),
-        order=950, has_branch_column=False,
+        order=950,
     ),
     Target(
         PAYOUT_INSTRUCTION,
         (*_vendor_payment, bank_behind("the source bank account", "source_account")),
-        order=950, has_branch_column=False,
+        order=950,
     ),
     Target(
         "vs_payments.PayoutBatch",
@@ -52,7 +55,7 @@ _TARGETS = (
             agreeing("the batch's payouts", PAYOUT_INSTRUCTION, "batch", ("id", PAYOUT_INSTRUCTION)),
             bank_behind("the source bank account", "source_account"),
         ),
-        order=960, has_branch_column=False,
+        order=960,
     ),
 )
 

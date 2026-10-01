@@ -332,6 +332,8 @@ class JournalDerivationTests(_BackfillFixture):
         not_owners = {
             ("vs_finance.JournalEntry", "reverses"),
             ("vs_finance.JournalLine", "entry"),
+            # Points at the settlement journal its bank statement line owns and raised.
+            ("vs_payments.CollectionIntent", "settlement_entry"),
         }
         checked = 0
         for field in JournalEntry._meta.related_objects:

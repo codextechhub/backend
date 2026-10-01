@@ -953,9 +953,12 @@ class SettlementReconciliationView(APIView):
                     "settlement_reference": r.settlement_reference,
                     "settlement_date": r.settlement_date.isoformat() if r.settlement_date else None,
                     "settlement_description": r.settlement_description,
+                    "via_clearing": r.via_clearing,  # Settles by a settlement match, not a line of its own.
+                    "reported_fee": r.reported_fee,
                 }
                 for r in recon.rows  # Iterate through the relevant records.
             ],
+            "suggested_settlements": recon.suggested_settlements,
             "unmatched_bank_lines": [
                 {
                     "bank_line_id": b.bank_line_id, "bank_account_id": b.bank_account_id,

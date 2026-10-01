@@ -1,7 +1,7 @@
 """URL routes for vs_payments (mounted at /v1/payments/)."""
 from django.urls import path
 
-from . import views
+from . import views, views_custody
 
 urlpatterns = [
     path("collections/", views.CollectionListCreateView.as_view(), name="payments-collections"),
@@ -18,6 +18,11 @@ urlpatterns = [
          name="payments-payout-batch-submit-for-approval"),
     path("reports/settlement-reconciliation/", views.SettlementReconciliationView.as_view(),
          name="payments-settlement-reconciliation"),
+    path("settlements/", views_custody.SettlementCreateView.as_view(), name="payments-settlements"),
+    path("settings/custody/", views_custody.CustodySettingsView.as_view(),
+         name="payments-custody-settings"),
+    path("subaccounts/", views_custody.CollectionSubaccountView.as_view(),
+         name="payments-subaccounts"),
     path("transactions/", views.TransactionsLogView.as_view(), name="payments-transactions"),
     path("movements/", views.MovementsView.as_view(), name="payments-movements"),
     path("movements/summary/", views.MovementsSummaryView.as_view(), name="payments-movements-summary"),

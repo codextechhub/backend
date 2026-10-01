@@ -7,6 +7,27 @@ already (Paystack's NGN minor unit), so no conversion. Webhooks are signed with
 
 All network I/O goes through :func:`vs_payments.providers.http.request_json`, which tests
 patch - so this client is fully exercised without ever calling Paystack.  # Keep HTTP interactions centralized and testable.
+
+Paystack facts this adapter relies on for settlement subaccounts and fees, each to
+confirm against Paystack's documentation (or its account manager) before a tenant
+takes payments directly:
+
+* ``POST /transaction/initialize`` accepts ``subaccount`` (a subaccount code) and
+  ``bearer``, and ``bearer: "subaccount"`` makes the subaccount bear Paystack's fee,
+  so the branch receives the payment less the fee and the main account keeps none.
+* ``POST /dedicated_account`` accepts ``subaccount``, so a dedicated virtual account's
+  deposits settle to that subaccount's bank account; whether ``bearer`` is honoured
+  there too is to be confirmed (it is sent).
+* ``GET /transaction/verify/<reference>`` reports the fee Paystack kept, in kobo, as
+  ``data.fees``.
+* ``POST /subaccount`` takes ``business_name``, ``settlement_bank`` (the bank's
+  code), ``account_number`` and ``percentage_charge`` (the main account's share of
+  each payment, 0 for none), and answers ``data.subaccount_code``; the resolved
+  holder name is read from ``data.account_name`` when present.
+* ``PUT /subaccount/<code>`` takes the same fields to point an existing subaccount
+  at a new bank account.
+* A subaccount settles to its bank on Paystack's own schedule, usually the next
+  working day, as one amount per settlement for the payments it covers.
 """
 from __future__ import annotations
 
@@ -19,6 +40,7 @@ from .base import (
     CheckoutResult,
     CollectionStatusResult,
     Provider,
+    SubaccountResult,
     TransferResult,
     VirtualAccountResult,
     WebhookParseResult,
@@ -66,6 +88,10 @@ class PaystackProvider(Provider):
         return request_json("GET", f"{self.base_url}{path}", headers=self._headers(),  # Send an authenticated GET.
                             provider=self.name)  # Include provider name for better error context.
 
+    def _put(self, path: str, body: dict) -> dict:
+        return request_json("PUT", f"{self.base_url}{path}", headers=self._headers(),
+                            body=body, provider=self.name)
+
     @staticmethod
     # Support the require ok workflow.
     def _require_ok(resp: dict):
@@ -81,8 +107,9 @@ class PaystackProvider(Provider):
 
     # -- collection --------------------------------------------------------- #  # Collection-side operations.
     def create_checkout(self, *, reference, amount, currency, customer_email="",
-                        customer_name="", narration="", callback_url="", metadata=None):
-        data = self._require_ok(self._post("/transaction/initialize", {  # Start a hosted payment checkout.
+                        customer_name="", narration="", callback_url="", metadata=None,
+                        subaccount=""):
+        body = {
             "email": customer_email or "customer@example.com",  # Paystack expects an email value.
             "amount": amount,  # Amount is already in kobo.
             "currency": currency,  # Forward the requested currency as-is.
@@ -90,7 +117,11 @@ class PaystackProvider(Provider):
             "callback_url": callback_url,  # Return URL after checkout.
             "metadata": {**(metadata or {}), "narration": narration,  # Preserve caller metadata.
                          "customer_name": customer_name},  # Attach the display name for support.
-        }))
+        }
+        if subaccount:  # Settle to the branch's bank, the branch bearing the fee.
+            body["subaccount"] = subaccount
+            body["bearer"] = "subaccount"
+        data = self._require_ok(self._post("/transaction/initialize", body))  # Start a hosted payment checkout.
         return CheckoutResult(
             reference=reference,  # Echo our merchant reference back to the caller.
             provider_reference=str(data.get("reference", reference)),
@@ -101,7 +132,7 @@ class PaystackProvider(Provider):
         )
 
     def create_virtual_account(self, *, reference, customer_name, customer_email="",
-                               bank_code="", metadata=None):
+                               bank_code="", metadata=None, subaccount=""):
         # Paystack requires a Customer first, then a dedicated account against it.  # Two-step account setup.
         first, _, last = (customer_name or "Customer").partition(" ")  # Split the display name into first/last names.
         customer = self._require_ok(self._post("/customer", {  # Create the upstream Paystack customer.
@@ -111,6 +142,9 @@ class PaystackProvider(Provider):
         body = {"customer": customer.get("customer_code", "")}
         if bank_code:  # Only include preferred bank when the caller supplied one.
             body["preferred_bank"] = bank_code  # Ask Paystack to prefer that bank.
+        if subaccount:  # Deposits settle to the branch's bank, the branch bearing the fee.
+            body["subaccount"] = subaccount
+            body["bearer"] = "subaccount"
         data = self._require_ok(self._post("/dedicated_account", body))  # Request the dedicated account.
         acct = data.get("dedicated_account", data)
         bank = acct.get("bank", {}) if isinstance(acct.get("bank"), dict) else {}
@@ -132,8 +166,31 @@ class PaystackProvider(Provider):
             amount=int(data.get("amount", 0) or 0),
             currency=data.get("currency", "NGN"),
             paid_at=_instant(data.get("paid_at") or data.get("paidAt")),
+            fee=_kobo_or_none(data.get("fees")),
             raw=data,  # Keep the raw response payload.
         )
+
+    # -- settlement subaccounts ------------------------------------------- #
+    def create_subaccount(self, *, business_name, settlement_bank_code, account_number,
+                          percentage_charge=0):
+        data = self._require_ok(self._post("/subaccount", {
+            "business_name": business_name,
+            "settlement_bank": settlement_bank_code,
+            "account_number": account_number,
+            "percentage_charge": percentage_charge,
+        }))
+        return _subaccount_result(data)
+
+    def update_subaccount(self, *, subaccount_code, business_name, settlement_bank_code,
+                          account_number):
+        data = self._require_ok(self._put(f"/subaccount/{subaccount_code}", {
+            "business_name": business_name,
+            "settlement_bank": settlement_bank_code,
+            "account_number": account_number,
+        }))
+        result = _subaccount_result(data)
+        return result if result.subaccount_code else SubaccountResult(
+            subaccount_code=subaccount_code, account_name=result.account_name, raw=data)
 
     # -- payout ------------------------------------------------------------- #  # Payout-side operations.
     # Handle the create transfer workflow.
@@ -214,6 +271,26 @@ class PaystackProvider(Provider):
             ),
             raw=payload,  # Keep the original normalized payload.
         )
+
+
+def _kobo_or_none(value):
+    """An integer kobo figure from a Paystack field, or None when absent or unreadable."""
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _subaccount_result(data: dict) -> SubaccountResult:
+    """The neutral result for a Paystack subaccount response body."""
+    data = data if isinstance(data, dict) else {}
+    return SubaccountResult(
+        subaccount_code=str(data.get("subaccount_code", "") or ""),
+        account_name=str(data.get("account_name", "") or ""),
+        raw=data,
+    )
 
 
 # Support the dedicated nuban workflow.

@@ -26,15 +26,17 @@ class CollectionIntentSerializer(serializers.ModelSerializer):
     deposit_account_name = serializers.CharField(source="deposit_account.name", read_only=True, default=None)
     amount_naira = serializers.SerializerMethodField()
     payment_id = serializers.IntegerField(read_only=True)
+    branch = serializers.IntegerField(source="branch_id", read_only=True)
+    settlement_entry_id = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = CollectionIntent
         fields = [
-            "id", "entity_code", "provider", "channel", "reference", "provider_reference",
+            "id", "entity_code", "branch", "provider", "channel", "reference", "provider_reference",
             "amount", "amount_naira", "status", "customer_code", "customer_name", "invoice_id",
             "deposit_account_code", "deposit_account_name",
             "payer_email", "payer_name", "narration", "checkout_url", "payment_id",
-            "confirmed_at", "created_at",
+            "fee", "settlement_entry_id", "confirmed_at", "created_at",
         ]
 
     def get_amount_naira(self, obj):
@@ -58,11 +60,12 @@ class VirtualAccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
     deposit_account_code = serializers.CharField(source="deposit_account.code", read_only=True, default=None)
     deposit_account_name = serializers.CharField(source="deposit_account.name", read_only=True, default=None)
     currency_code = serializers.CharField(source="currency.code", read_only=True, default=None)
+    branch = serializers.IntegerField(source="branch_id", read_only=True)
 
     class Meta:
         model = VirtualAccount
         fields = [
-            "id", "entity_code", "provider", "customer_code", "customer_name",
+            "id", "entity_code", "branch", "provider", "customer_code", "customer_name",
             "account_number", "bank_name", "account_name", "provider_reference",
             "deposit_account_code", "deposit_account_name", "currency_code",
             "status", "created_at",
@@ -90,11 +93,12 @@ class PayoutInstructionSerializer(FieldAccessMixin, serializers.ModelSerializer)
     # real settlement journal (Dr Accounts payable / Cr this account).
     source_account_code = serializers.CharField(source="source_account.code", read_only=True, default=None)
     source_account_name = serializers.CharField(source="source_account.name", read_only=True, default=None)
+    branch = serializers.IntegerField(source="branch_id", read_only=True)
 
     class Meta:
         model = PayoutInstruction
         fields = [
-            "id", "entity_code", "batch_id", "provider", "reference", "provider_reference",
+            "id", "entity_code", "branch", "batch_id", "provider", "reference", "provider_reference",
             "amount", "amount_naira", "status", "beneficiary_name",
             "beneficiary_account_number", "beneficiary_bank_code", "narration",
             "source_account_code", "source_account_name", "wht_amount",
@@ -112,11 +116,12 @@ class PayoutBatchSerializer(serializers.ModelSerializer):
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     total_amount_naira = serializers.SerializerMethodField()
     instructions = PayoutInstructionSerializer(many=True, read_only=True)
+    branch = serializers.IntegerField(source="branch_id", read_only=True)
 
     class Meta:
         model = PayoutBatch
         fields = [
-            "id", "entity_code", "provider", "reference", "title", "narration", "status",
+            "id", "entity_code", "branch", "provider", "reference", "title", "narration", "status",
             "total_amount", "total_amount_naira", "item_count", "submitted_at",
             "created_at", "instructions",
         ]
@@ -139,6 +144,7 @@ EVENT_METADATA_FIELDS = (
     "submitted", "failed",  # A batch submission's outcome counts.
     "overturned_status",  # The no-money answer a confirmed collection overturned.
     "paid_on", "booked_on", "booked_late_reason",  # When money moved and was booked.
+    "gross", "fee", "net",  # A settlement's payments, the provider's fees and what arrived.
 )
 
 #: Actions whose message names a virtual account by its number.

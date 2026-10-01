@@ -34,7 +34,8 @@ This does **NOT**:
 - trust the event body's status/amount - it re-verifies (§4/§8).
 - book the ledger here - it delegates to `confirm_collection` / `confirm_payout`
   (slices 1/2), and does so **off the request path** on a Celery worker (§4/§8.1).
-- hold per-entity PSP credentials - one platform-level secret per provider (§8).
+- hold per-entity PSP credentials - one platform-level secret per provider (§8);
+  a direct-custody tenant's money is routed per branch by subaccount instead (§8.3).
 - make live network calls in tests - all HTTP funnels through one patchable
   function (`providers/http.py`).
 
@@ -131,14 +132,17 @@ inner txn state) can't book money unless the PSP's API also confirms it. Pinned 
 The neutral contract is `Provider = CollectionProvider + PayoutProvider`
 (`providers/base.py:154-156`), speaking **kobo** and our own status strings, with
 the raw PSP payload preserved on `.raw`. Result dataclasses: `CheckoutResult`,
-`VirtualAccountResult`, `CollectionStatusResult`, `TransferResult` (now carries
-`amount`, slice 2 §8.3), `WebhookParseResult`.
+`VirtualAccountResult`, `CollectionStatusResult` (carries the provider's `fee`, or
+`None` when unreported), `SubaccountResult`, `TransferResult` (carries `amount`,
+slice 2 §8.3), `WebhookParseResult`.
 
 | Capability | method | Paystack | OPay | Fake |
 |---|---|---|---|---|
-| create checkout | `create_checkout` | `POST /transaction/initialize` | `POST <create_path>` (signed) | deterministic URL |
-| provision VA | `create_virtual_account` | `POST /customer` then `/dedicated_account` | **raises** `ProviderError` (not wired) | deterministic NUBAN |
-| verify collection | `verify_collection` | `GET /transaction/verify/<ref>` | `POST <status_path>` (public key) | forced status/amount |
+| create checkout | `create_checkout` | `POST /transaction/initialize` (+ `subaccount`, `bearer: "subaccount"` when given) | `POST <create_path>` (signed) | deterministic URL; records the subaccount named |
+| provision VA | `create_virtual_account` | `POST /customer` then `/dedicated_account` (+ `subaccount`, `bearer` when given) | **raises** `ProviderError` (not wired) | deterministic NUBAN; records the subaccount named |
+| verify collection | `verify_collection` | `GET /transaction/verify/<ref>`; fee from `data.fees` | `POST <status_path>` (public key) | forced status/amount/fee (`default_fee` 0) |
+| create subaccount | `create_subaccount` | `POST /subaccount` (`business_name`, `settlement_bank`, `account_number`, `percentage_charge` 0) | not offered (base refuses) | deterministic `ACCT_FAKE0001` codes |
+| refresh subaccount | `update_subaccount` | `PUT /subaccount/<code>` | not offered (base refuses) | updates the stored details |
 | create transfer | `create_transfer` | `/transferrecipient` then `/transfer` | `POST <transfer_path>` (signed) | fixed PROCESSING |
 | verify transfer | `verify_transfer` | `GET /transfer/verify/<ref>` | `POST <transfer_status_path>` | forced status/amount |
 | verify signature | `verify_signature` | HMAC-SHA512(body, secret) vs `x-paystack-signature` | HMAC-SHA512(sorted inner JSON, secret) vs body `sha512`/`Authorization` | HMAC-SHA512(body, secret) vs `x-fake-signature` |
@@ -216,11 +220,16 @@ Paystack collection webhook (from `test_webhook_confirms_collection`,
    still reprocessed (and can now match) on re-delivery - just without the duplicate
    audit line. Test: `test_ingest_is_idempotent_and_audits_once`.
 
-3. **One platform-level PSP secret per provider - no per-entity credentials.**
-   `get_provider(provider)` builds the client from global settings
-   (`registry.py:33-62`), so every entity's webhooks verify against the same
-   Paystack/OPay account. **By design** (single merchant account per PSP); revisit
-   only if the platform ever onboards per-tenant PSP sub-accounts.
+3. **One platform-level PSP secret per provider; money routed per branch by
+   subaccount.** `get_provider(provider)` builds the client from global settings, so
+   every entity's webhooks verify against the same Paystack account, which stays the
+   merchant of record. What differs per tenant is where the money settles: a
+   direct-custody tenant's checkouts and virtual accounts name the collection's
+   branch's subaccount, which settles to that branch's bank; a held tenant's settle
+   to the platform balance (`docs/payments/payment_custody_design.md`). The
+   subaccount fields and the `fees` field are Paystack facts to confirm against its
+   documentation before a tenant goes direct; the adapter's module docstring lists
+   each one.
 
 4. **OPay virtual-account provisioning is unsupported.**
    `OPayProvider.create_virtual_account` raises `ProviderError`
@@ -275,7 +284,7 @@ Paystack collection webhook (from `test_webhook_confirms_collection`,
 - `providers/base.py` - neutral interface + result dataclasses.
 - `providers/registry.py` - `get_provider` / `register` / `unregister`.
 - `providers/http.py` - `request_json` (the single patchable network surface).
-- `providers/paystack.py`, `providers/opay.py`, `providers/fake.py` - the adapters.
+- `providers/paystack.py`, `providers/fake.py` - the adapters.
 - `exceptions.py` - `ProviderError` (502), `ProviderNotConfiguredError` (503),
   `WebhookSignatureError` (401), `DuplicateWebhookError` (200), `PaymentStateError`
   (409).
@@ -294,12 +303,13 @@ Full `vs_payments` app suite: **139 green** (`python manage.py test vs_payments
   nothing** (forged-success guard); `WEBHOOK_RECEIVED` attributed to the entity;
   **`test_ingest_is_idempotent_and_audits_once`** (audit-once + one receipt across
   two deliveries).
-- **`PaystackAdapterTests`** (6) and **`OPayAdapterTests`** (7): drive the real
-  adapters with recorded PSP payloads by patching `request_json` *at the point of
-  use* (`providers.paystack.request_json` / `providers.opay.request_json`, since the
-  adapters bind it via `from .http import`) - checkout, verify collection/transfer,
-  non-ok → `ProviderError`, OPay VA unsupported, signature verify (pos/neg),
-  `parse_webhook` direction routing.
+- **`PaystackAdapterTests`**: drive the real adapter with recorded PSP payloads by
+  patching `request_json` *at the point of use* (`providers.paystack.request_json`,
+  since the adapter binds it via `from .http import`) - checkout, verify
+  collection/transfer, non-ok → `ProviderError`, signature verify (pos/neg),
+  `parse_webhook` direction routing. `tests_custody.PaystackSubaccountWireTests`
+  pins the subaccount wire format the same way: checkout `subaccount`/`bearer`,
+  `POST /subaccount`, `PUT /subaccount/<code>` and the verify `fees` field.
 - `WebhookProviderResolutionTests` (1): unknown provider → `ProviderNotConfiguredError`.
 - `PaymentsAPITests.test_webhook_endpoint_processes_and_dedupes` - the public
   endpoint processes then dedupes to a 200.

@@ -149,13 +149,15 @@ class BankAccountListCreateView(_FinanceBase):
         is_primary = _bool(body.get("is_primary", False), default=False)
         is_primary_collection = _bool(body.get("is_primary_collection", False), default=False)
         currency = _resolve_currency(body.get("currency"))
+        branch = _transaction_branch(request, entity, body)
         with transaction.atomic():
-            if is_primary_collection:
-                BankAccount.objects.filter(entity=entity, is_primary_collection=True).update(
-                    is_primary_collection=False)
+            if is_primary_collection:  # At most one pay-to account per branch.
+                BankAccount.objects.filter(
+                    entity=entity, branch=branch, is_primary_collection=True,
+                ).update(is_primary_collection=False)
             bank = BankAccount.objects.create(
                 entity=entity, name=name,
-                branch=_transaction_branch(request, entity, body),
+                branch=branch,
                 bank_name=body.get("bank_name", ""),
                 account_number=body.get("account_number", ""),
                 gl_account=gl_account,
@@ -284,10 +286,11 @@ class BankAccountDetailView(_FinanceBase):
             make_primary_collection = _bool(
                 body.get("is_primary_collection"), default=bank.is_primary_collection)
             bank.is_primary_collection = make_primary_collection
-            if make_primary_collection:
+            if make_primary_collection:  # At most one pay-to account per branch.
                 with transaction.atomic():
                     BankAccount.objects.filter(
-                        entity=bank.entity, is_primary_collection=True).exclude(
+                        entity=bank.entity, branch_id=bank.branch_id,
+                        is_primary_collection=True).exclude(
                         pk=bank.pk).update(is_primary_collection=False)
                     bank.save()
             else:

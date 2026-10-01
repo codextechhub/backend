@@ -107,8 +107,11 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
     def hidden_document_ids(self, user, tenant):
         """The batches with a line paying a vendor another branch keeps from ``user``.
 
-        A batch carries no branch, so the engine files its approval school-wide
-        and would show it to every approver on the ladder. Its reach is the one
+        A batch names the branch it pays from, but a line paying a vendor filed
+        under another branch still makes it unreadable to a caller bound to the
+        batch's branch alone, and a batch raised before batches carried a branch
+        names none. So the engine's own branch filing is not the whole answer,
+        and approvers are kept to the batches they may read. Its reach is the one
         the payout screens read it by (:class:`vs_payments.reach.PaymentsReach`):
         a batch Lekki's vendor is paid from is absent from an Ikeja-only
         approver's inbox, and approving or rejecting it answers 404.

@@ -1,9 +1,9 @@
-"""The branch backfill's report on the payment gateway's records.
+"""The branch backfill on the payment gateway's records.
 
-These models carry no branch column. The backfill plans them so the audit can
-say how many would derive a branch, and writes nothing. An online payment for
-an invoice belongs to the invoice's branch, which is the first thing a
-collection reads.
+Every gateway record carries a branch, set when it is made; rows made before
+that are blank, and the backfill fills them from the facts already on them. An
+online payment for an invoice belongs to the invoice's branch, which is the
+first thing a collection reads.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ class PaymentsBackfillReportTests(_FinanceBranchFixture):
         )
         plan = plan_entity(self.books)
         target = self.target(plan, CollectionIntent)
-        self.assertFalse(target.target.has_branch_column)
+        self.assertTrue(target.target.has_branch_column)
         self.assertEqual(target.blank, 2)
         self.assertEqual(target.assign[intent.pk], (self.lekki.pk, "the invoice"))
         self.assertEqual(target.assign[by_customer.pk], (self.yaba.pk, "the customer"))
@@ -41,8 +41,11 @@ class PaymentsBackfillReportTests(_FinanceBranchFixture):
         self.assertEqual([f.pk for f in target.flags], [account.pk])
         self.assertEqual(target.flags[0].reason, "no branch on the customer")
 
-    def test_nothing_is_written_for_a_model_with_no_branch_column(self):
+    def test_a_blank_collection_is_given_its_derived_branch(self):
         customer = self.customer(self.books, "C1", self.lekki)
-        CollectionIntent.objects.create(entity=self.books, provider="FAKE", reference="CX-1", customer=customer)
+        intent = CollectionIntent.objects.create(
+            entity=self.books, provider="FAKE", reference="CX-1", customer=customer)
         result = apply_plan(plan_entity(self.books))
-        self.assertNotIn("vs_payments.CollectionIntent", result.written)
+        self.assertEqual(result.written["vs_payments.CollectionIntent"], 1)
+        intent.refresh_from_db()
+        self.assertEqual(intent.branch_id, self.lekki.pk)

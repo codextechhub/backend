@@ -2,8 +2,9 @@
 
 This is where a confirmed *gateway* event becomes an authoritative *ledger* posting:
 
-* a confirmed **collection** books a ``vs_finance.Payment`` receipt (Dr bank, Cr AR) via
-  ``vs_finance.receivables.post_payment``;
+* a confirmed **collection** books a ``vs_finance.Payment`` receipt (Dr gateway
+  clearing, Cr AR) via ``vs_finance.receivables.post_payment``; the money reaches a
+  bank later, when its settlement is matched (:mod:`vs_payments.settlement`);
 * a confirmed **payout** books a ``vs_procurement.VendorPayment`` (Dr AP, Cr bank, Cr WHT)
   via ``vs_procurement.payables.post_vendor_payment``.
 
@@ -27,7 +28,7 @@ from vs_finance.accounts import resolve_account
 from vs_finance.constants import CASH_BANK_CODE, PaymentMethod
 from vs_finance.exceptions import FinanceError
 
-from . import audit
+from . import audit, custody
 from .constants import (
     COLLECTION_PROVISIONAL_FAILURES,
     COLLECTION_SETTLED,
@@ -180,6 +181,13 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
     Returns the intent with ``checkout_url`` (and ``provider_reference``) populated. No
     ledger entry is made yet - the receipt is booked only when the collection is
     *confirmed* (webhook or verify).
+
+    The intent carries its branch from the start (:func:`collection_branch_id`).
+    When the tenant takes payments directly (:mod:`vs_payments.custody`) the
+    checkout names that branch's provider subaccount, so the money settles to the
+    branch's own collection account, and a branch without one is refused with a
+    409 before anything is written. With no deposit account named, a direct
+    payment is expected in that collection account.
     """
     channel = channel or CollectionChannel.CHECKOUT  # Default to a checkout-style collection.
     provider_name = resolve_provider_name(provider)  # Refuse a provider this deployment does not offer.
@@ -202,8 +210,17 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
         if amount > invoice.balance_due:
             raise ValidationError({"amount": "The collection cannot exceed the invoice balance."})
 
+    branch_id = collection_branch_id(customer=customer, invoice=invoice, deposit_account=deposit_account)
+    subaccount = ""
+    if custody.is_direct(entity):  # Settle straight to the branch's own bank.
+        subaccount = custody.branch_subaccount(entity, branch_id, provider_name)
+        if deposit_account is None:
+            deposit_account = custody.branch_collection_account(entity, branch_id).gl_account
+        metadata = {**(metadata or {}), "settlement_subaccount": subaccount}
+
     intent = CollectionIntent.objects.create(
-        entity=entity, provider=provider_name, channel=channel, reference=reference,
+        entity=entity, branch_id=branch_id,
+        provider=provider_name, channel=channel, reference=reference,
         amount=amount, currency=currency, customer=customer, invoice=invoice,
         deposit_account=deposit_account, payer_email=payer_email or
         (customer.billing_email if customer else ""),
@@ -218,6 +235,7 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
             currency=getattr(currency, "code", currency) or "NGN",
             customer_email=intent.payer_email, customer_name=intent.payer_name,
             narration=narration, callback_url=callback_url, metadata=metadata or {},
+            **({"subaccount": subaccount} if subaccount else {}),
         )
     except FinanceError as exc:  # Mirror provider failure locally so retries see the correct terminal state.
         intent.status = CollectionStatus.FAILED  # Mark the intent failed when checkout creation is rejected.
@@ -280,6 +298,8 @@ def record_virtual_account_deposit(*, virtual_account, reference, amount,
         reference=reference,  # Unique in the table: the DB itself enforces once-only creation.
         defaults=dict(
             entity=entity, provider=virtual_account.provider,
+            branch_id=virtual_account.branch_id or collection_branch_id(
+                customer=customer, deposit_account=virtual_account.deposit_account),
             channel=CollectionChannel.VIRTUAL_ACCOUNT,  # Not a checkout: money arrived by bank transfer.
             provider_reference=provider_reference, amount=amount,
             currency=virtual_account.currency or _entity_currency(entity),
@@ -309,9 +329,21 @@ def record_virtual_account_deposit(*, virtual_account, reference, amount,
 # Handle the create virtual account workflow.
 def create_virtual_account(*, entity, customer, provider=None, deposit_account=None,
                            bank_code="", actor_user=None):
-    """Provision a dedicated virtual NUBAN for ``customer`` and store it."""
+    """Provision a dedicated virtual NUBAN for ``customer`` and store it.
+
+    The account belongs to the branch its deposits do
+    (:func:`virtual_account_branch_id`). When the tenant takes payments directly
+    it is created against that branch's provider subaccount, and a branch without
+    one is refused with a 409 before the provider is asked.
+    """
     provider_name = resolve_provider_name(provider)  # Refuse a provider this deployment does not offer.
-    
+    branch_id = virtual_account_branch_id(customer=customer, deposit_account=deposit_account)
+    subaccount = ""
+    if custody.is_direct(entity):  # Deposits settle straight to the branch's own bank.
+        subaccount = custody.branch_subaccount(entity, branch_id, provider_name)
+        if deposit_account is None:
+            deposit_account = custody.branch_collection_account(entity, branch_id).gl_account
+
     if VirtualAccount.objects.filter(
         entity=entity, provider=provider_name, customer=customer,
         status=VirtualAccountStatus.ACTIVE,
@@ -324,10 +356,11 @@ def create_virtual_account(*, entity, customer, provider=None, deposit_account=N
     result = client.create_virtual_account(  # Ask the PSP to provision the account.
         reference=reference, customer_name=customer.name,
         customer_email=customer.billing_email, bank_code=bank_code,
+        **({"subaccount": subaccount} if subaccount else {}),
     )
 
     va = VirtualAccount.objects.create(
-        entity=entity, provider=provider_name, customer=customer,
+        entity=entity, branch_id=branch_id, provider=provider_name, customer=customer,
         deposit_account=deposit_account, account_number=result.account_number,
         bank_name=result.bank_name, account_name=result.account_name,
         currency=_entity_currency(entity), provider_reference=result.provider_reference,
@@ -439,6 +472,7 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
 
     verify_raw = None
     paid_at = None
+    fee = None
     if status is None:  # When no explicit status is supplied, verify with the PSP.
         client = get_provider(intent.provider)  # Resolve the provider using the stored intent value.
         result = client.verify_collection(  # Ask the PSP for the final collection state.
@@ -455,10 +489,11 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
         amount = result.amount or intent.amount  # Fall back to the original amount if the PSP omits it.
         verify_raw = result.raw  # Carried into the locked half; applied to the row it re-reads.
         paid_at = getattr(result, "paid_at", None)  # The day the payer paid dates the receipt.
+        fee = getattr(result, "fee", None)  # What the provider kept; the settlement books it.
 
     return _confirm_collection_atomic(
         intent.pk, status=status, amount=amount, verify_raw=verify_raw,
-        actor_user=actor_user, paid_at=paid_at,
+        actor_user=actor_user, paid_at=paid_at, fee=fee,
     )
 
 
@@ -469,7 +504,7 @@ def _collection_is_settled(intent) -> bool:
 
 @transaction.atomic
 def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_user,
-                               paid_at=None):
+                               paid_at=None, fee=None):
     """Take the lock, re-check, and book. Every write in the flow happens here.
 
     A non-success answer changes the row only when it is news: FAILED or
@@ -493,6 +528,9 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
     retries a call that can never succeed. A payment against a future-dated
     invoice is a prepayment: it parks as customer credit and is applied once
     the invoice exists.
+
+    ``fee`` is what the provider says it kept, stored for the settlement that
+    later moves the payment out of clearing; ``None`` when it did not say.
     """
     intent = CollectionIntent.objects.select_for_update().get(pk=intent_id)
     # The real idempotency guarantee. Another worker may have booked this while we
@@ -523,11 +561,14 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
         intent.metadata = {**(intent.metadata or {}), "requested_amount": intent.amount}  # Store the pre-settlement amount.
         intent.amount = settled  # Replace the receipt amount with the actual settled amount.
 
+    if fee is not None and fee >= 0:
+        intent.fee = fee
     _book_receipt(intent, actor_user=actor_user, paid_at=paid_at)  # Create and post the corresponding receipt.
     intent.status = CollectionStatus.SUCCEEDED  # Mark the gateway event as settled.
     intent.confirmed_at = timezone.now()
     intent.save(update_fields=[
-        "status", "payment", "amount", "metadata", "confirmed_at", "raw_response", "updated_at",
+        "status", "payment", "amount", "metadata", "confirmed_at", "raw_response",
+        "fee", "clearing_account", "branch", "updated_at",
     ])
 
     audit_metadata = {"payment_id": intent.payment_id}
@@ -642,6 +683,17 @@ def collection_branch_id(*, customer=None, invoice=None, deposit_account=None):
     )
 
 
+def virtual_account_branch_id(*, customer=None, deposit_account=None):
+    """The branch a virtual account's deposits belong to.
+
+    A virtual account names no invoice, so it is its customer's branch, else the
+    tenant's only branch, else the branch of the bank account it deposits into:
+    the rule of :func:`collection_branch_id` for a collection naming no invoice,
+    so every deposit it receives lands in the account's own branch.
+    """
+    return collection_branch_id(customer=customer, deposit_account=deposit_account)
+
+
 def deposit_branch_id(deposit_account):
     """The branch of the bank account behind a deposit ledger account, or None."""
     if deposit_account is None:
@@ -693,6 +745,14 @@ def _book_receipt(intent, *, actor_user=None, paid_at=None):
     its customer's, else the branch whose account it lands in. It settles its invoice at once unless that invoice is dated
     after the receipt, in which case the money parks as customer credit (see
     :func:`_confirm_collection_atomic`).
+
+    The receipt debits gateway clearing (the ``GATEWAY_CLEARING`` account
+    mapping), never the bank: when the provider confirms, the money is with the
+    provider, and it reaches a bank a day or more later, less the provider's fee.
+    Debiting the bank now would have the books claim money the statement does not
+    show. The settlement match (:func:`vs_payments.settlement.settle_collections`)
+    moves it on. ``intent.deposit_account`` stays the bank the money is expected
+    in, which is what decides the branch of a collection naming no invoice.
     """
     from vs_finance.models import Payment
     from vs_finance.receivables import post_payment
@@ -707,13 +767,17 @@ def _book_receipt(intent, *, actor_user=None, paid_at=None):
             "Cannot book a receipt: the collection has no customer (AR sub-ledger).",
         )
     
-    deposit = intent.deposit_account or resolve_account(  # Use the configured cash/bank account when none was provided.
-        intent.entity, CASH_BANK_CODE, label="Cash & bank",
-    )
+    from vs_finance.account_mappings import resolve_mapped_account
+    from vs_finance.constants import AccountMappingKey
+
+    clearing = resolve_mapped_account(
+        intent.entity, AccountMappingKey.GATEWAY_CLEARING, label="gateway clearing")
 
     # The receipt's branch dates it too, so it reads on the day it belongs to.
-    receipt_branch_id = collection_branch_id(
+    receipt_branch_id = intent.branch_id or collection_branch_id(
         customer=intent.customer, invoice=intent.invoice, deposit_account=intent.deposit_account)
+    intent.branch_id = receipt_branch_id
+    intent.clearing_account = clearing
     received, dating = _booking_date(intent.entity, paid_at, branch=receipt_branch_id)
     if dating:  # Keep the true paid day beside the receipt, however it was booked.
         intent.metadata = {**(intent.metadata or {}), **dating}
@@ -721,7 +785,7 @@ def _book_receipt(intent, *, actor_user=None, paid_at=None):
         entity=intent.entity, customer=intent.customer,
         branch_id=receipt_branch_id,
         payment_date=received, currency=intent.currency,
-        method=PaymentMethod.ONLINE, amount=intent.amount, deposit_account=deposit,
+        method=PaymentMethod.ONLINE, amount=intent.amount, deposit_account=clearing,
         reference=intent.reference,
         narration=intent.narration or f"Gateway collection {intent.reference}",
     )
@@ -1228,10 +1292,18 @@ def create_payout_batch(
     omitted ``wht_amount`` is computed from the vendor's WHT code (see
     :func:`_item_wht`); the figure, its source and its code are kept on the
     instruction's metadata, where dispatch and booking read them.
+
+    Each line names the branch whose bank account it leaves
+    (:func:`payout_branch_id`) and the batch names their one branch; lines
+    leaving two branches' banks are refused with a 400, because one approval
+    would then spend two branches' money. A tenant whose online payments settle
+    directly has no provider balance to pay from, and is refused with a 409
+    (:func:`vs_payments.custody.assert_online_payouts_allowed`).
     """
     items = list(items)  # Materialize the iterable so it can be counted and iterated safely.
     if not items:  # A batch with no items is not meaningful.
         raise PaymentStateError("A payout batch must contain at least one item.")
+    custody.assert_online_payouts_allowed(entity)  # A direct tenant has no balance to pay from.
 
     provider_name = resolve_provider_name(provider)  # Refuse a provider this deployment does not offer.
     currency = currency or _entity_currency(entity)  # Default the batch currency to the entity currency.
@@ -1261,6 +1333,11 @@ def create_payout_batch(
                 raise ValidationError({"amount": "Each payout item needs a positive amount (kobo)."})
             snapshots.append(_eligible_vendor_snapshot(entity, item.get("vendor"), item))
             withholdings.append(_item_wht(item, amount=amount))
+        line_branches = [
+            payout_branch_id(entity, item.get("source_account") or source_account)
+            for item in items
+        ]
+        batch_branch_id = _batch_branch_id(entity, line_branches)
 
         get_provider(provider_name)  # Validate configuration without sending money.
         batch_reference = _new_reference(entity)  # Use one reference for the whole batch.
@@ -1269,7 +1346,8 @@ def create_payout_batch(
             # be read without leaving the surrounding creation transaction broken.
             with transaction.atomic():
                 batch = PayoutBatch.objects.create(
-                    entity=entity, provider=provider_name, reference=batch_reference,
+                    entity=entity, branch_id=batch_branch_id,
+                    provider=provider_name, reference=batch_reference,
                     idempotency_key=idempotency_key, request_fingerprint=fingerprint,
                     title=str(title or "").strip(), narration=str(narration or "").strip(),
                     currency=currency, source_account=source_account,
@@ -1288,11 +1366,12 @@ def create_payout_batch(
 
         total = 0  # Accumulate the batch total as each instruction is added.
         wht_lines = []  # Per-line WHT and how it was arrived at, for the audit row.
-        for item, snapshot, wht in zip(items, snapshots, withholdings):  # Each dict becomes one payout instruction.
+        for item, snapshot, wht, line_branch in zip(items, snapshots, withholdings, line_branches):
             amount = int(item.get("amount") or 0)
             vendor = item.get("vendor")
             instruction = PayoutInstruction.objects.create(
-                entity=entity, batch=batch, provider=provider_name,
+                entity=entity, branch_id=line_branch or batch_branch_id,
+                batch=batch, provider=provider_name,
                 reference=_new_reference(entity), amount=amount, currency=currency,
                 beneficiary_name=snapshot["beneficiary_name"],
                 beneficiary_account_number=snapshot["beneficiary_account_number"],
@@ -1384,6 +1463,7 @@ def _prepare_batch_dispatch(batch, approved_instance) -> _PreparedDispatch:
     from vs_procurement.models import Vendor
 
     batch = PayoutBatch.objects.select_for_update().get(pk=batch.pk)
+    custody.assert_online_payouts_allowed(batch.entity)  # The tenant may have moved to direct since approval.
     approved_instance = _validate_approved_instance(batch, approved_instance)
     instructions = list(batch.instructions.select_for_update().order_by("pk"))
     if batch.item_count != len(instructions) or batch.total_amount != sum(
@@ -1711,6 +1791,43 @@ def _refresh_batch(payout):
         _recompute_batch_status(
             PayoutBatch.objects.select_for_update().get(pk=payout.batch_id)
         )
+
+
+def payout_branch_id(entity, account):
+    """The branch a payout leaving ledger ``account`` belongs to.
+
+    The branch of the bank account behind it, or, where that account names no
+    branch (or none is named and the default cash account is used), the
+    tenant's only branch. ``None`` is left only at a tenant with several
+    branches paying from an account not yet given one; the branch backfill
+    fills it once the account has its branch.
+    """
+    from vs_finance.models import Account
+    from vs_rbac.scoping import only_branch_id
+
+    if account is None:
+        account = Account.objects.filter(entity=entity, code=CASH_BANK_CODE).first()
+    branch_id = _paying_branch_id(account)
+    if branch_id is None and entity.tenant_id:
+        branch_id = only_branch_id(entity.tenant_id)
+    return branch_id
+
+
+def _batch_branch_id(entity, line_branch_ids):
+    """The one branch a batch's lines pay from, or a 400 when they name two.
+
+    Compared as :func:`vs_rbac.scoping.same_transaction_branch` compares
+    transactions, so a line with no branch yet sits with any other at a tenant
+    with one branch.
+    """
+    from vs_rbac.scoping import same_transaction_branch
+
+    if not same_transaction_branch(entity.tenant_id, *line_branch_ids):
+        raise ValidationError({"source_account": (
+            "These payouts leave the bank accounts of different branches. Put each "
+            "branch's payouts in a batch of its own."
+        )})
+    return next((b for b in line_branch_ids if b is not None), None)
 
 
 def _paying_branch_id(account):

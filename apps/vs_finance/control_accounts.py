@@ -13,7 +13,8 @@ account, an opening supplier bill, says so explicitly with ``allow_control_accou
 Which accounts are kept is read from the books, never from a list kept by hand:
 
 * the entity's account mappings for the roles a sub-ledger owns (receivables,
-  payables, customer credit, vendor advances, GR/IR, inventory, output VAT and WHT);
+  payables, customer credit, vendor advances, GR/IR, inventory, output VAT, WHT
+  and gateway clearing);
 * the owning rows: every customer's receivable account, every bank account's and
   petty cash fund's ledger, and every tax obligation's payable and recoverable
   accounts;
@@ -48,6 +49,8 @@ _MAPPED_ROLES = {
         "the tax ledger", "the invoice or bill that carries the tax, or a tax filing"),
     AccountMappingKey.WHT_PAYABLE: (
         "the tax ledger", "the vendor payment that withholds it, or a tax filing"),
+    AccountMappingKey.GATEWAY_CLEARING: (
+        "the payment gateway", "an online collection or a gateway settlement"),
 }
 
 _BANK = ("its bank account", "a receipt, a vendor payment or a bank transaction")

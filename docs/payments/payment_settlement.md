@@ -28,14 +28,24 @@ Entities provisioned before that commit are the one exception (§8.1).
 
 The *settlement reconciliation*, *movements feed*, and *transactions log* are
 **read-only** reports over the gateway records (and, for reconciliation, the
-imported bank statement).
+imported bank statement). The *settlement match* (`POST /settlements/`,
+`vs_payments/settlement.py`) is the one write here: it books a bank statement line
+as the arrival of the online payments it carries, moving them out of gateway
+clearing (§6).
+
+Online payouts exist only for a tenant whose payments are held by the platform. A
+tenant whose payments settle directly to each branch's bank
+(`docs/payments/payment_custody_design.md`) has no provider balance to pay from:
+payout creation and dispatch are refused with a 409 `ONLINE_PAYOUTS_NOT_OFFERED`,
+and it pays suppliers from its bank and records the payment.
 
 This does **NOT**:
 - move money itself - the PSP does; we book the ledger mirror after confirmation.
 - book anything at `initiate`/`submit` time - a `PENDING`/`PROCESSING` payout has
   no `vendor_payment_id` (`services.py:404-414`).
-- **write** during reconciliation - it never mutates a bank line or books a
-  journal; matching is advisory (`reconciliation.py:16`).
+- **write** during the reconciliation report - it never mutates a bank line or
+  books a journal, and its suggested settlements are proposals; only
+  `POST /settlements/` books one.
 - leave money-out ungated when a template is absent - request creation rolls back,
   direct batch submission returns a typed 409, and `initiate_payout` is an explicit
   refusal. Nothing calls a provider until the exact batch has terminal human approval.
@@ -48,6 +58,9 @@ This does **NOT**:
 One request to send money out. Money is integer **kobo** (`amount`).
 - `entity` (PROTECT) - tenant scope; `batch` → `PayoutBatch` (nullable, the bulk
   envelope this belongs to).
+- `branch` - the branch whose bank account the money leaves: the source account's
+  bank's branch, or the tenant's only branch (`services.payout_branch_id`), set at
+  creation.
 - `reference` - our merchant reference / idempotency key, `unique`
   (`CXP-<tenant_id><YYMMDD><daily_sequence>`, allocated per tenant/local day);
   `provider_reference` / `recipient_code` - the PSP's ids (`services.py:43-49`).
@@ -74,7 +87,9 @@ One request to send money out. Money is integer **kobo** (`amount`).
 
 ### `PayoutBatch` - `models.py:176-257`
 A bulk-disbursement envelope grouping many instructions.
-- `entity` (PROTECT), `provider`, `reference` (`unique`), `title`, `narration`.
+- `entity` (PROTECT), `branch` (its lines' one branch; lines leaving two branches'
+  banks are refused with a 400 at assembly), `provider`, `reference` (`unique`),
+  `title`, `narration`.
 - `idempotency_key` plus `request_fingerprint` bind a tenant-scoped request key to
   one normalized payload. An exact replay returns the original batch; changed data
   under the same key returns `PAYOUT_IDEMPOTENCY_CONFLICT`.
@@ -86,7 +101,8 @@ A bulk-disbursement envelope grouping many instructions.
 - `source_account` (default bank/cash GL for the children), `currency`,
   `submitted_at`, `metadata` (carries `approval_status`), `created_by`.
 - **Workflow bridge:** `workflow_document_type = "payments.payout_batch"`; the
-  entity supplies the tenant used by the approval engine and `branch` is `None`.
+  entity supplies the tenant used by the approval engine and `branch` is the
+  batch's own branch.
 
 ### `PaymentEvent` - `models.py:381-421`
 Append-only, immutable gateway action log (the transactions log). `save()` on an
@@ -110,7 +126,8 @@ Base `/v1/payments/`; all require `?entity=<id|code>`, platform envelope + RBAC.
 | `GET /payout-batches/<pk>/` | `payments.payout.view` | one batch **with** its child instructions | - | `success_response(data=PayoutBatchSerializer)` |
 | `POST /payout-batches/<pk>/` | `payments.payout.create` | retired direct provider route, always refused | - | `409 PAYOUT_APPROVAL_REQUIRED` |
 | `POST /payout-batches/<pk>/submit-for-approval/` | `payments.payout_batch.submit` | route the batch through the vs_workflow approval engine | - | `success_response(data=PayoutBatchSerializer)` |
-| `GET /reports/settlement-reconciliation/` | `payments.report.view` | gateway-confirmed movements vs. imported bank lines | query: `start_date`, `end_date` (ISO, inclusive), `provider` | `success_response(data={…, summary, rows[], unmatched_bank_lines[]})` |
+| `GET /reports/settlement-reconciliation/` | `payments.report.view` | gateway-confirmed movements vs. imported bank lines, with suggested settlements | query: `start_date`, `end_date` (ISO, inclusive), `provider` | `success_response(data={…, summary, rows[], unmatched_bank_lines[], suggested_settlements[]})` |
+| `POST /settlements/` | `payments.settlement.create` | book a bank statement line as the settlement of the online payments it carries | `statement_line`**, `collections`** (ids), `posting_date` | `success_response(data={journal_id, journal_number, date, statement_line, collections, gross, fee, net}, 201)` |
 | `GET /transactions/` | `payments.report.view` | the append-only gateway action log | query: `action`, `provider`, `succeeded` | `{pagination, data:[PaymentEventSerializer]}` |
 | `GET /movements/` | `payments.report.view` | unified in+out feed, newest first; payout PII FLS-masked | query: `direction` (in/out), `group`, `provider` | `{pagination, data:[row]}` |
 | `GET /movements/summary/` | `payments.report.view` | in7d / out7d / pending / failed across both gateways | query: `provider` | `success_response(data={in7d, out7d, pending, failed})` |
@@ -191,12 +208,31 @@ the one rule the manual vendor payment uses too):
 computed once at assembly (`services.py:519-522`); not recomputed on child failure
 (a FAILED child still counts toward `total_amount`).
 
+**Settlement of online payments** (`settlement.settle_collections`), kobo:
+- `gross = Σ collection.amount`, `net = statement line amount`, `fee = gross − net`.
+- Refused when `fee < 0` (more arrived than the payments named), when the
+  provider reported a fee for every payment and `Σ fee ≠ gross − net` (the line
+  carries other money, or not all of these), and when the settlement would be
+  booked before a payment it settles was received.
+- Example: 180 000 and 50 000 confirmed with fees 2 000 and 750 settle to a
+  227 250 line: Dr bank 227 250, Dr bank charges 2 750, Cr clearing 230 000.
+
 **Reconciliation, signed kobo** (`reconciliation.py`):
 - Gateway sign: collection `+amount`, payout `−amount` (`reconciliation.py:174,188`);
   bank line `amount` is already signed (+in/−out). A correct pairing nets to zero.
-- Matching is two-pass: **reference** first (our ref or the PSP ref), then an exact
-  signed-**amount** fallback that picks the **date-nearest** bank line among equal
-  amounts (`_closest`, `reconciliation.py:219-241`; see §8.4).
+- A collection booked to gateway clearing is settled only by its posted settlement
+  journal, against the line that journal was booked from (`match_basis
+  "settlement"`, `settled_amount = amount − reported fee`). A provider pays a day's
+  payments as one amount less fees, so no payment's gross ever equals a line.
+- Everything else matches in two passes: **reference** first (our ref or the PSP
+  ref), then an exact signed-**amount** fallback that picks the **date-nearest**
+  bank line among equal amounts (`_closest`; see §8.4).
+- `suggested_settlements` (`settlement.suggest_settlements`), each with a `basis`:
+  `reference` when an unmatched inflow names one waiting payment's reference and
+  brings no more than it (exactly the payment less its fee, where the fee was
+  reported); then `day`, for the rest grouped by branch and confirmation day, when
+  a group's `Σ (amount − fee)` equals an unmatched inflow on a same-branch bank
+  account dated that day or later. A group with an unreported fee is not proposed.
 - `fee_amount = |gateway amount| − |settled bank amount|` - the PSP fee
   (`reconciliation.py:57-61`). Example: gross `40 000` settles to a `39 100` bank
   line → fee `900`.
@@ -219,6 +255,24 @@ net `N = G − W` (and `N` is exactly what the transfer sent):
 | **Dr** | vendor AP control (`vendor.payable_account`) | `G` |
 | **Cr** | `source_account` (else fallback `1100` Cash & bank) | `N` |
 | **Cr** | WHT payable (tax-code `collected_account`, else `WHT_PAYABLE_CODE`) | `W` (only if > 0) |
+
+**Settlement match** (`settle_collections`, source `BANK`, the bank account's branch):
+
+| Dr / Cr | account | amount |
+|---|---|---|
+| **Dr** | the bank account's ledger account | `net` (the statement line) |
+| **Dr** | bank charges (mapping `BANK_CHARGES`, `5500`) | `fee` (only if > 0) |
+| **Cr** | gateway clearing (each payment's `clearing_account`) | `gross` |
+
+Every payment must be of the bank account's branch
+(`same_transaction_branch`), so a Lekki payment never settles into Ikeja's bank.
+The journal is dated the line's day, or the first open day after it when that
+period is closed (`resolve_adjustment_date`). The line is reconciled to the
+journal's bank line as an adjustment (`adjusting_journal`, `match_source
+ADJUSTMENT`), so unmatching it in finance's bank reconciliation reverses the
+journal and the payments wait in clearing again. A `COLLECTIONS_SETTLED` gateway
+action (filed under the first payment's reference) and a finance
+`BANK_RECONCILED` audit row are written.
 
 Carried vs dropped:
 - `amount → gross_amount`, `metadata.wht_amount → wht_amount`,
@@ -350,6 +404,28 @@ PENDING instruction, then returns the active approval. Paystack has not been cal
     still signs a payout row as `-amount` (the gross), while the bank line for a WHT
     payout is the net, so such a payout reads as a PSP fee equal to its WHT.
 
+12. ✅ **Online payments reconcile to the bank through clearing.** A confirmed
+    collection sits in gateway clearing until `POST /settlements/` matches the
+    provider's settlement line to it, booking the fee as a bank charge; the report
+    proposes the day's payments each inflow carries. A payment left in clearing
+    longer than the tenant's `clearing_stale_days` (default 7) before a period's end
+    is a non-blocking close warning (`gateway_clearing_current`). Tests:
+    `tests_custody.GatewayClearingTests`.
+
+13. ✅ **A direct-custody tenant cannot pay out online.** `create_payout_batch` and
+    `_prepare_batch_dispatch` refuse with 409 `ONLINE_PAYOUTS_NOT_OFFERED`, so a
+    batch approved before the tenant moved to direct is not sent either. Test:
+    `tests_custody.CustodyModeTests.test_a_direct_tenant_has_no_online_payouts`.
+
+14. ✅ **Payouts and batches carry their branch.** Each line names its source
+    bank's branch and a batch refuses lines from two branches. Test:
+    `tests_custody.GatewayRecordBranchTests.test_a_batch_pays_from_one_branch`.
+
+15. ⚠️ **Held custody has no per-branch funds check yet.** Payouts for a held tenant
+    still draw on the platform's pooled balance with no check that the branch
+    collected that money; that check, the platform-side liability per branch and the
+    settlement run are held custody's own build step (phase B).
+
 ## 9. Permissions & tenant isolation
 
 Keys (`seed_payments_permissions.py:27-48`), granted to `xvs_super_admin` /
@@ -361,6 +437,9 @@ Keys (`seed_payments_permissions.py:27-48`), granted to `xvs_super_admin` /
   and bank code
   (serializer FLS + movements masking).
 - `payments.report.view` (NORMAL) - reconciliation, transactions, movements.
+- `payments.settlement.create` (SENSITIVE) - book a settlement match. The line and
+  every payment must be within the caller's branches (`PaymentsReach`); another
+  branch's line answers 404.
 - `payments.payout_batch.submit` (SENSITIVE) - route a batch for approval
   (`views.py:651`).
 - `payments.payout_batch.approve` / `.approve_high_value` (**CRITICAL**) remain
@@ -402,6 +481,9 @@ its payout beneficiary fields.
 - `workflow_handlers.py` - `PayoutBatchApprovalHandler` (the approval gate and
   explicit refusal of continue-without-approval).
 - `reconciliation.py` - `settlement_reconciliation` + the row/summary dataclasses.
+- `settlement.py` - `settle_collections` (the settlement journal),
+  `suggest_settlements`, `awaiting_settlement_q`, and the `gateway_clearing_current`
+  close check registered from `apps.py`.
 - `views.py:359-1033` - payout, batch (+ submit-for-approval), reconciliation,
   transactions, movements views; `_movement_querysets` (`views.py:907-937`).
 - `serializers.py:67-151` - payout / batch / batch-summary / payment-event
