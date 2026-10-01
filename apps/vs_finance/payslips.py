@@ -59,10 +59,11 @@ def _person_lines(entity, line):
     The row is the person whose year to date a payslip prints, counted exactly
     as the PAYE working counts it (:func:`vs_finance.payroll_statutory.year_to_date`):
     the lines naming the row, and any line of the same account written before
-    lines named a row. Somebody on two branches' rosters has two rows and two
-    years to date. Tunde teaches at Ikeja and at Lekki: his Lekki payslip
-    counts what Lekki paid him, which is what his Lekki PAYE was worked out on,
-    and Lekki's bursar, who opens it, never reads Ikeja's pay inside a total.
+    lines named a row. A person has one active row, which follows them between
+    branches, so the year counts every branch's months: Tunde, paid by Ikeja
+    from January to March and by Lekki from April, has an April payslip whose
+    year to date includes Ikeja's three months, the same figures his April PAYE
+    was worked out on, whoever opens it.
     """
     from .models import PayrollLine
 

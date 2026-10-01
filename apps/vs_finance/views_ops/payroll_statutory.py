@@ -63,9 +63,10 @@ from ..serializers import (
     PayslipSerializer,
     SalaryComponentSerializer,
 )
+from ..payroll_statutory import owning_branch_id
 from ..views import resolve_entity
 from .base import _FinanceBase, _bool, _date, _int, _money, _resolve_account
-from .payroll import _resolve_salary, _runs_in_reach
+from .payroll import PayFieldWriteMixin, _resolve_salary, _runs_in_reach
 
 
 # --------------------------------------------------------------------------- #
@@ -569,7 +570,7 @@ class PayrollDeductionTypeDetailView(WholeTenantWriteMixin, _FinanceBase):
         return success_response("Payroll deduction type updated.", data=after)
 
 
-class EmployeeDeductionListCreateView(_FinanceBase):
+class EmployeeDeductionListCreateView(PayFieldWriteMixin, _FinanceBase):
     """GET / POST one person's voluntary deductions, within the caller's branch reach.
 
     docstring-name: Employee deductions
@@ -614,7 +615,7 @@ class EmployeeDeductionListCreateView(_FinanceBase):
         )
         record(
             entity=entity, action=FinanceAuditAction.PAYROLL_DEDUCTION_CHANGED,
-            actor_user=request.user, target=salary, branch=salary.branch_id,
+            actor_user=request.user, target=salary, branch=owning_branch_id(salary),
             message=f"Added {kind.name} for {salary.name}.",
             after=dict(EmployeeDeductionSerializer(row).data),
         )
@@ -624,7 +625,7 @@ class EmployeeDeductionListCreateView(_FinanceBase):
         )
 
 
-class EmployeeDeductionDetailView(_FinanceBase):
+class EmployeeDeductionDetailView(PayFieldWriteMixin, _FinanceBase):
     """PATCH or DELETE (stop) one person's voluntary deduction, within branch reach.
 
     docstring-name: Employee deductions
@@ -666,7 +667,7 @@ class EmployeeDeductionDetailView(_FinanceBase):
         after = dict(EmployeeDeductionSerializer(row).data)
         record(
             entity=entity, action=FinanceAuditAction.PAYROLL_DEDUCTION_CHANGED,
-            actor_user=request.user, target=row.salary, branch=row.salary.branch_id,
+            actor_user=request.user, target=row.salary, branch=owning_branch_id(row.salary),
             message=f"Changed {row.deduction_type.name} for {row.salary.name}.",
             before=before, after=after,
         )
@@ -684,7 +685,7 @@ class EmployeeDeductionDetailView(_FinanceBase):
         row.save(update_fields=["is_active", "updated_at"])
         record(
             entity=entity, action=FinanceAuditAction.PAYROLL_DEDUCTION_CHANGED,
-            actor_user=request.user, target=row.salary, branch=row.salary.branch_id,
+            actor_user=request.user, target=row.salary, branch=owning_branch_id(row.salary),
             message=f"Stopped {row.deduction_type.name} for {row.salary.name}.",
         )
         return success_response("Employee deduction stopped.", data={})

@@ -632,6 +632,61 @@ def assert_branch_required(entity, branch_id, is_active) -> None:
         )})
 
 
+def owning_branch_id(salary, date=None):
+    """The branch that owns ``salary`` on ``date``, by default the tenant's today.
+
+    :meth:`EmployeeSalary.branch_on` on the tenant's clock. The audit trail of a
+    roster row files each entry under this branch, so a change made in March
+    to somebody moving from April is in the trail of the branch paying them in
+    March.
+    """
+    if date is None:
+        from vs_config.clock import tenant_today
+
+        date = tenant_today(salary.entity.tenant)
+    return salary.branch_on(date)
+
+
+def assert_one_active_row(salary) -> None:
+    """Refuse ``salary`` being active while its person already has an active row.
+
+    Each member of staff is paid in full by one branch, so PAYE is worked out
+    once on their whole pay. Tunde with N234,567 on an Ikeja row and N54,321 on
+    a Lekki row would have each row taxed on its own, and the Lekki part falls
+    under the tax-free band. A person changing branch keeps their row and is
+    moved on it; the refusal says so.
+
+    Called wherever a row becomes active for a person: added, linked to an
+    account, or put back on the payroll. The person's account is locked first,
+    so two officers adding the same person at the same moment cannot both
+    succeed, which also holds on a database still waiting for the constraint
+    (see :class:`~vs_finance.models.EmployeeSalary`). A row with no person
+    linked, or an inactive row, is never refused.
+    """
+    from django.contrib.auth import get_user_model
+
+    from .models import EmployeeSalary
+
+    if not salary.is_active or salary.employee_id is None:
+        return
+    list(get_user_model().objects.select_for_update().filter(pk=salary.employee_id))
+    other = (
+        EmployeeSalary.objects.filter(employee_id=salary.employee_id, is_active=True)
+        .exclude(pk=salary.pk).select_related("entity").order_by("pk").first()
+    )
+    if other is None:
+        return
+    from vs_tenants.models import Branch
+
+    branch = Branch.objects.filter(pk=owning_branch_id(other)).values_list("name", flat=True).first()
+    where = f"at {branch}" if branch else "without a branch"
+    raise ValidationError({"employee": (
+        f"{other.name} is already on the payroll {where}. Each person is paid by one "
+        f"branch: to move them, change the branch on their existing salary record "
+        f"instead of adding another."
+    )})
+
+
 def _terms_snapshot(source) -> dict:
     return {name: getattr(source, name) for name in TERM_FIELDS}
 
@@ -680,7 +735,7 @@ def change_terms(salary, values: dict, *, effective_from=None, reason="", actor_
     _mirror_latest(salary)
     record(
         entity=salary.entity, action=FinanceAuditAction.SALARY_CHANGED, actor_user=actor_user,
-        target=salary, branch=salary.branch_id,
+        target=salary, branch=owning_branch_id(salary),
         message=f"Changed {salary.name}'s pay terms from {effective_from.isoformat()}.",
         before=_jsonable({k: before.get(k) for k in changed}),
         after=_jsonable(changed), effective_from=effective_from.isoformat(),
@@ -718,7 +773,7 @@ def record_creation(salary, *, effective_from=None, actor_user=None) -> None:
     )
     record(
         entity=salary.entity, action=FinanceAuditAction.SALARY_CREATED, actor_user=actor_user,
-        target=salary, branch=salary.branch_id,
+        target=salary, branch=owning_branch_id(salary),
         message=f"Added {salary.name} to the payroll.",
         after=_jsonable({**_terms_snapshot(salary), **{k: getattr(salary, k) for k in PROFILE_FIELDS}}),
         effective_from=effective_from.isoformat(),
@@ -733,7 +788,7 @@ def record_profile_change(salary, before: dict, *, actor_user=None) -> None:
         return
     record(
         entity=salary.entity, action=FinanceAuditAction.SALARY_CHANGED, actor_user=actor_user,
-        target=salary, branch=salary.branch_id,
+        target=salary, branch=owning_branch_id(salary),
         message=f"Changed {salary.name}'s payroll details.",
         before=_jsonable({k: before[k] for k in changed}), after=_jsonable(changed),
     )
@@ -756,7 +811,7 @@ def record_override_change(salary, before_amount, before_reason, *, actor_user=N
         message = f"Set {salary.name}'s PAYE by override."
     record(
         entity=salary.entity, action=FinanceAuditAction.PAYE_OVERRIDE_CHANGED,
-        actor_user=actor_user, target=salary, branch=salary.branch_id, message=message,
+        actor_user=actor_user, target=salary, branch=owning_branch_id(salary), message=message,
         before={"paye_override": before_amount, "paye_override_reason": before_reason},
         after={"paye_override": salary.paye_override,
                "paye_override_reason": salary.paye_override_reason},
@@ -772,7 +827,7 @@ def deactivate_salary(salary, *, actor_user=None):
     salary.save(update_fields=["is_active", "updated_at"])
     record(
         entity=salary.entity, action=FinanceAuditAction.SALARY_DEACTIVATED,
-        actor_user=actor_user, target=salary, branch=salary.branch_id,
+        actor_user=actor_user, target=salary, branch=owning_branch_id(salary),
         message=f"Took {salary.name} off the payroll.",
     )
     return salary

@@ -643,6 +643,38 @@ MUST SAY:
   nothing until its day.
 - Deploy: run sync_field_registry.
 
+### D100. A person is paid by one branch, pay is changed only by a role allowed to, and a dated move takes effect on its date (hash pending, 2026-10-01)
+MODULES: M19 finance and accounting (payroll), M12 staff management, M04 roles and
+permissions (field access), MRD.
+MUST SAY:
+- One salary record per person (M19, M12). A person has at most one active roster
+  row across the tenant, at any branch; a second is refused and the refusal says
+  to move them on their existing record. PAYE is worked out once on their whole
+  pay. Kept by the application and by a partial unique index; where a database
+  already holds duplicates the migration leaves the index out, and
+  `report_duplicate_roster_rows` lists them and installs it (`--install`) once
+  they are resolved. A row with no linked account (a contractor) is not covered.
+- Pay writes (M19, M04). Every payroll and salary write checks the field-access
+  write switches first: salary create and edit, deductions, salary structures and
+  hand-typed run lines. State of residence travels with the PAYE switch, pension
+  fund administrator with Pension, structure with Pay breakdown. A pay field the
+  caller cannot write is refused (403 `field_write_denied`) even when its value
+  is unchanged, so edit forms send only changed fields. Pay breakdown is writable;
+  migration `vs_finance 0051` gives its write switch to roles that can already
+  change gross pay, and every other role stays read-only.
+- Dated moves (M19, M12). The branch owning a roster row on a day is the branch
+  on the terms in force that day, on the reader's branch clock. It decides the
+  roster read, the `?branch=` filter, the record's displayed branch, the audit
+  trail's branch, which branch run covers the person, and the journal branch of
+  older lines. A move entered 10 February dated 1 April leaves the person with
+  the old branch until 1 April.
+- Deploy: run `sync_field_registry` after migrating, then
+  `report_duplicate_roster_rows`.
+Verified: vs_finance 1576 OK (16 new in tests_payroll_roster_rules), vs_rbac 973
+OK, schools.core.fal 288 OK. schools.vs_staff 543 with one error in
+test_as_at's leave test, which fails identically on e85e53fd without this change.
+The full suite was not run.
+
 ## Undone
 
 Four items. Each says what is wrong, how to fix it, and what is stopping it.

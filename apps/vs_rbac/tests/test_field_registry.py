@@ -103,6 +103,9 @@ WRITE_PATH_ALLOWLIST = {
     ("schools.vs_students.serializers.EnrolmentWriteSerializer", "address"):
         "The pupil's own address on the enrol form, not a guardian's; see the phone "
         "entry above.",
+    ("vs_finance.views_ops.banking._BankStatementCorrectionLineSerializer", "amount"):
+        "A corrected bank statement line's amount, not anybody's pay; it shares only "
+        "the name of a voluntary deduction's amount.",
     ("schools.vs_staff.serializers.EmailChangeSerializer", "email"):
         "Behind school.administrators.update on an endpoint of its own, the key that "
         "changes an account's sign-in address; the staff edit form cannot.",

@@ -62,6 +62,33 @@ UNASSIGNED_REFS = ("unassigned", "none", "null")
 SHARED_RUN = "a payroll run for the whole school"
 
 
+class PayFieldWriteMixin:
+    """Checks the caller's Field Access write switches on a payroll or salary write.
+
+    Every view that writes pay figures carries this, so the check is made in
+    one place, before the handler runs and before anything is written
+    (:func:`vs_finance.field_access.assert_pay_writable`). ``pay_field_resource``
+    names the registered resource the body's fields belong to;
+    ``pay_field_rows`` names a key holding a list of rows whose fields are
+    written too (a hand-typed run's ``lines``). A POST is a create, so a field
+    declared open on create is allowed there. Reads and deletes submit no
+    field and are not checked.
+    """
+
+    pay_field_resource = "finance.salary"
+    pay_field_rows = ""
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        if request.method in ("POST", "PUT", "PATCH"):
+            from ..field_access import assert_pay_writable
+
+            assert_pay_writable(
+                request, self.pay_field_resource, request.data,
+                creating=request.method == "POST", rows_key=self.pay_field_rows,
+            )
+
+
 def _runs_in_reach(request, entity):
     """The runs the caller may open: their branches' own, and central ones through their share.
 
@@ -157,8 +184,13 @@ def _line_branch(request, entity, run_branch, ref, where):
 
 
 # Support the branch filter workflow.
-def _filter_by_branch(qs, request, entity, *, field: str = "branch"):
+def _filter_by_branch(qs, request, entity, *, field: str = "branch", column: str | None = None):
     """Narrow *qs* by a ``?branch=`` parameter, or leave it alone.
+
+    ``field`` names the parameter; ``column`` the relation it filters, without
+    its ``_id`` (the parameter's own name when left out). The roster filters on
+    ``branch_on``, the branch owning each row today
+    (:meth:`~vs_finance.models.EmployeeSalaryQuerySet.with_branch_on`).
 
     One helper for the roster and the runs list because the parameter has to
     mean the same thing on both. ``?branch=unassigned`` finds the people no
@@ -170,23 +202,27 @@ def _filter_by_branch(qs, request, entity, *, field: str = "branch"):
     A branch the caller may not work in is reported exactly like one that does
     not exist, so the parameter cannot be used to enumerate a school's sites.
     """
+    column = column or field
     branch_ref = request.query_params.get(field)
     if not branch_ref:
         return qs
     if str(branch_ref).lower() in UNASSIGNED_REFS:
-        return qs.filter(**{f"{field}__isnull": True})
+        return qs.filter(**{f"{column}_id__isnull": True})
     branch = _resolve_branch(entity.tenant, branch_ref)
     if branch is None or not caller_may_use_branch(request, branch):
         raise ValidationError({field: "No such branch for this entity."})
-    return qs.filter(**{field: branch})
+    return qs.filter(**{f"{column}_id": branch.pk})
 
 
 # Group endpoint behavior for Payroll Run List Create View.
-class PayrollRunListCreateView(_FinanceBase):
+class PayrollRunListCreateView(PayFieldWriteMixin, _FinanceBase):
     """GET (list) / POST (create draft) payroll runs for an entity.
 
     docstring-name: Payroll runs
     """
+
+    pay_field_resource = "finance.payrollrun"
+    pay_field_rows = "lines"
 
     @property
     # Handle the rbac permission workflow.
@@ -470,16 +506,61 @@ class PayrollRunCancelView(_PayrollActionBase):
 # Employee salary roster                                                      #
 # --------------------------------------------------------------------------- #
 
+def _reader_today(request, entity):
+    """The day the caller reads the roster on: their branch's, or the school's.
+
+    A caller working in one branch reads on that branch's clock
+    (:func:`vs_config.clock.branch_today`); anybody else on the school's
+    (:func:`vs_config.clock.tenant_today`). For a school whose branches share a
+    time zone, which is nearly every school, the two are the same day.
+    """
+    from vs_config.clock import branch_today, tenant_today
+
+    reach = caller_branch_ids(request)
+    if reach is not None and len(reach) == 1:
+        return branch_today(entity.tenant, next(iter(reach)))
+    return tenant_today(entity.tenant)
+
+
 def _salary_rows(request, entity):
     """The salary rows the caller may read: their own branches' staff only.
 
-    A salary follows its employee's branch, read exclusively like every money
-    record (:func:`vs_rbac.scoping.transaction_branch_q`). Mrs Bello keeps Lekki's
+    A salary belongs to the branch on the version of its terms in force on the
+    reader's today (:meth:`~vs_finance.models.EmployeeSalaryQuerySet.with_branch_on`),
+    read exclusively like every money record
+    (:func:`vs_rbac.scoping.transaction_branch_q`). Mrs Bello keeps Lekki's
     payroll, so they see Lekki's teachers' pay and never an Ikeja teacher's, nor
     the pay of somebody nobody has given a branch yet: that row could be anyone's,
     and placing it is the whole-school bursar's job, who sees every row.
+
+    A move is dated, and the row changes hands on that date. Tunde is moved
+    from Ikeja to Lekki on 10 February, dated 1 April. Until 1 April Ikeja
+    still pays him and still opens his record; Lekki finds nothing. From
+    1 April Lekki opens it, with his whole year behind it, and Ikeja finds
+    nothing.
+
+    Every row carries ``branch_on_id`` and ``branch_on_name``, which the roster's
+    serializer reports as the row's branch.
     """
-    return EmployeeSalary.objects.filter(transaction_branch_q(request), entity=entity)
+    return (
+        EmployeeSalary.objects.filter(entity=entity)
+        .with_branch_on(_reader_today(request, entity))
+        .filter(transaction_branch_q(request, field="branch_on"))
+    )
+
+
+def _salary_data(request, entity, sal):
+    """One roster row as the roster serializer shows it, with its branch as of today.
+
+    Read again rather than serialized from the instance in hand, which carries
+    the branch as it stood before a write.
+    """
+    fresh = (
+        EmployeeSalary.objects.with_branch_on(_reader_today(request, entity))
+        .select_related("cost_center", "structure", "branch", "residence_state", "pfa")
+        .get(pk=sal.pk)
+    )
+    return EmployeeSalarySerializer(fresh, context={"request": request}).data
 
 
 # Support the resolve salary workflow.
@@ -594,7 +675,7 @@ def _resolve_structure(entity, raw, *, required=False):
 
 
 # Group endpoint behavior for Employee Salary List Create View.
-class EmployeeSalaryListCreateView(_FinanceBase):
+class EmployeeSalaryListCreateView(PayFieldWriteMixin, _FinanceBase):
     """GET (list) / POST (add) employee salaries - the roster a run is generated from.
 
     Rows are read by the employee's branch, exclusively (:func:`_salary_rows`).
@@ -626,7 +707,7 @@ class EmployeeSalaryListCreateView(_FinanceBase):
             qs = qs.filter(is_active=active == "true")
         if (search := request.query_params.get("search")):
             qs = qs.filter(name__icontains=search)
-        qs = _filter_by_branch(qs, request, entity)
+        qs = _filter_by_branch(qs, request, entity, column="branch_on")
         return success_response(
             "Employee salaries retrieved.",
             data=EmployeeSalarySerializer(qs.order_by("name"), many=True,
@@ -636,7 +717,11 @@ class EmployeeSalaryListCreateView(_FinanceBase):
     # Handle POST requests for this endpoint.
     @transaction.atomic
     def post(self, request):
-        from ..payroll_statutory import record_creation, record_override_change
+        from ..payroll_statutory import (
+            assert_one_active_row,
+            record_creation,
+            record_override_change,
+        )
 
         entity = resolve_entity(request)
         body = request.data or {}
@@ -652,7 +737,7 @@ class EmployeeSalaryListCreateView(_FinanceBase):
         if not name:
             raise ValidationError({"name": "An employee name is required."})
         override, override_reason = _override(body)
-        sal = EmployeeSalary.objects.create(
+        sal = EmployeeSalary(
             entity=entity, name=name, employee=employee,
             # Every new hire names a branch; see the view's docstring.
             branch=_transaction_branch(request, entity, body),
@@ -669,6 +754,8 @@ class EmployeeSalaryListCreateView(_FinanceBase):
             annual_rent=_money(body.get("annual_rent", 0), "annual_rent"),
             paye_override=override, paye_override_reason=override_reason,
         )
+        assert_one_active_row(sal)
+        sal.save()
         record_creation(
             sal, effective_from=_date(body.get("effective_from"), "effective_from"),
             actor_user=request.user,
@@ -677,12 +764,12 @@ class EmployeeSalaryListCreateView(_FinanceBase):
             record_override_change(sal, None, "", actor_user=request.user)
         return success_response(
             f"Employee salary for {name} added.",
-            data=EmployeeSalarySerializer(sal, context={"request": request}).data, status=201,
+            data=_salary_data(request, entity, sal), status=201,
         )
 
 
 # Group endpoint behavior for Employee Salary Detail View.
-class EmployeeSalaryDetailView(_FinanceBase):
+class EmployeeSalaryDetailView(PayFieldWriteMixin, _FinanceBase):
     """PATCH / DELETE one employee salary.
 
     ``branch`` places or moves a person under the same rule a new row is filed
@@ -720,6 +807,7 @@ class EmployeeSalaryDetailView(_FinanceBase):
         from ..payroll_statutory import (
             PROFILE_FIELDS,
             assert_branch_required,
+            assert_one_active_row,
             change_terms,
             deactivate_salary,
             record_override_change,
@@ -759,6 +847,7 @@ class EmployeeSalaryDetailView(_FinanceBase):
             if active and not sal.is_active:
                 assert_branch_required(entity, sal.branch_id, True)
                 sal.is_active = True
+        assert_one_active_row(sal)
         sal.save()
 
         terms = {}
@@ -786,10 +875,8 @@ class EmployeeSalaryDetailView(_FinanceBase):
         record_override_change(sal, *override_before, actor_user=request.user)
         if deactivate:
             deactivate_salary(sal, actor_user=request.user)
-        sal.refresh_from_db()
         return success_response(
-            "Employee salary updated.",
-            data=EmployeeSalarySerializer(sal, context={"request": request}).data,
+            "Employee salary updated.", data=_salary_data(request, entity, sal),
         )
 
     # Handle DELETE requests for this endpoint.
@@ -935,7 +1022,7 @@ def _structure_data(structure):
 
 
 # Group endpoint behavior for Salary Structure List Create View.
-class SalaryStructureListCreateView(_FinanceBase):
+class SalaryStructureListCreateView(PayFieldWriteMixin, _FinanceBase):
     """GET (list) / POST (create) reusable salary structures for an entity.
 
     Lists show each structure's current lines; ``effective_from`` on a create
@@ -995,7 +1082,7 @@ class SalaryStructureListCreateView(_FinanceBase):
 
 
 # Group endpoint behavior for Salary Structure Detail View.
-class SalaryStructureDetailView(_FinanceBase):
+class SalaryStructureDetailView(PayFieldWriteMixin, _FinanceBase):
     """GET / PATCH / DELETE one salary structure.
 
     ``components`` on a PATCH replaces the current lines from ``effective_from``

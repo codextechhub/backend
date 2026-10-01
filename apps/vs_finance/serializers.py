@@ -1545,7 +1545,10 @@ class EmployeeSalarySerializer(FieldAccessMixin, serializers.ModelSerializer):
     # to be readable by whoever is assigning branches before a school can switch to
     # per-branch payroll. ``branch_name`` is null for an unassigned row, which is
     # the state the frontend filters on to find who is still blocking the switch.
-    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    # Where the roster annotated it, the branch owning the row today, so a move
+    # dated from next month shows the branch still paying the person.
+    branch_id = serializers.SerializerMethodField()
+    branch_name = serializers.SerializerMethodField()
     # The account this row is for, where one is known. Not a registered field: WHO a
     # roster row is about is not a pay figure, and it is what lets a caller ask
     # whether the person being paid still works here. Null on every row written
@@ -1591,6 +1594,14 @@ class EmployeeSalarySerializer(FieldAccessMixin, serializers.ModelSerializer):
                 }
             obj._derived_cache = cache
         return cache
+
+    def get_branch_id(self, obj):
+        return getattr(obj, "branch_on_id", obj.branch_id)
+
+    def get_branch_name(self, obj):
+        if hasattr(obj, "branch_on_name"):
+            return obj.branch_on_name
+        return obj.branch.name if obj.branch_id else None
 
     def get_paye_amount(self, obj) -> int:
         return self._derived(obj)["paye"]

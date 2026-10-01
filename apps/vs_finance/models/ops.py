@@ -1564,6 +1564,42 @@ class SalaryComponent(TimeStampedModel):
         return f"{self.name} ({self.kind})"
 
 
+class EmployeeSalaryQuerySet(models.QuerySet):
+    """Roster rows, with the branch that owns each one on a given day."""
+
+    def with_branch_on(self, date):
+        """Annotate ``branch_on_id`` and ``branch_on_name``: the branch owning each row on ``date``.
+
+        The queryset form of :meth:`EmployeeSalary.branch_on`, and the same
+        rule: the branch of the version in force on ``date``; for a row whose
+        first version starts later, that first version's branch; for a row
+        with no versions, its own column. Every payroll read narrows the roster
+        by ``branch_on`` (``transaction_branch_q(request, field="branch_on")``),
+        so a move dated from April leaves the row with its old branch until
+        April, whatever day it was entered.
+        """
+        from django.db.models import Case, Exists, F, OuterRef, Subquery, When
+
+        from .payroll_statutory import EmployeeSalaryVersion
+
+        versions = EmployeeSalaryVersion.objects.filter(salary=OuterRef("pk"))
+        in_force = versions.filter(effective_from__lte=date).order_by("-effective_from", "-id")
+        first = versions.order_by("effective_from", "id")
+
+        def owning(path, output_field):
+            return Case(
+                When(Exists(in_force), then=Subquery(in_force.values(path)[:1])),
+                When(Exists(versions), then=Subquery(first.values(path)[:1])),
+                default=F(path),
+                output_field=output_field,
+            )
+
+        return self.annotate(
+            branch_on_id=owning("branch_id", models.BigIntegerField()),
+            branch_on_name=owning("branch__name", models.CharField()),
+        )
+
+
 class EmployeeSalary(TimeStampedModel):
     """An employee's standard monthly pay - the roster a payroll run is generated from.
 
@@ -1572,11 +1608,29 @@ class EmployeeSalary(TimeStampedModel):
     posts on its own; :func:`vs_finance.payroll.generate_run_from_roster` copies the
     active rows into a draft :class:`PayrollRun`.
 
-    ``branch`` is the branch the employee works in. It decides who a branch run
-    covers (:func:`vs_finance.payroll.roster_for`), which branch's journal a
-    central run books the pay to, and who may read the row: the roster is read
-    exclusively, like every money record, so a branch officer sees their own
-    branch's staff only.
+    **One active row per person.** Each member of staff is paid in full by one
+    branch, so a person (``employee``) has at most one active row across the
+    tenant's books. PAYE is worked out per row on the row's whole pay; a second
+    row would split the pay and leave the smaller part untaxed (N234,567 at
+    Ikeja and N54,321 at Lekki: the Lekki row falls under the tax-free band).
+    A person who changes branch keeps their row and is moved on it
+    (:func:`vs_finance.payroll_statutory.change_terms`). The rule is kept by
+    :func:`vs_finance.payroll_statutory.assert_one_active_row` and by the
+    partial unique constraint below. Where a database held duplicates before
+    the constraint, the migration leaves it uninstalled rather than fail or
+    merge anybody's pay, and ``manage.py report_duplicate_roster_rows`` lists
+    them and installs it once they are resolved. A row with no person linked
+    (a contractor without an account) is not covered: there is nobody to
+    match it to.
+
+    ``branch`` is the branch the employee works in, as last changed. Which
+    branch *owns* the row on a given day is the branch of the version in force
+    that day (:meth:`branch_on`, and :meth:`EmployeeSalaryQuerySet.with_branch_on`
+    for a queryset): that decides who a branch run covers, which branch's
+    journal a central run books the pay to, and who may read the row. The
+    roster is read exclusively, like every money record, so a branch officer
+    sees their own branch's staff only, and a move dated from April hands the
+    row to the new branch in April, not on the day it was entered.
 
     Null does **not** mean "shared across the school". Head office is a branch
     in this product, so there is no such person as an employee who belongs to no
@@ -1650,7 +1704,16 @@ class EmployeeSalary(TimeStampedModel):
     )
     paye_override_reason = models.CharField(max_length=255, blank=True, default="")
 
+    objects = EmployeeSalaryQuerySet.as_manager()
+
     class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["employee"],
+                condition=models.Q(is_active=True, employee__isnull=False),
+                name="uniq_active_roster_row_per_person",
+            ),
+        ]
         indexes = [
             models.Index(fields=["entity", "is_active"]),
             # The branch run's own filter: entity + branch + is_active. Without it
@@ -1680,6 +1743,21 @@ class EmployeeSalary(TimeStampedModel):
         if not due:
             return None
         return max(due, key=lambda v: (v.effective_from, v.pk))
+
+    def branch_on(self, date):
+        """The id of the branch that owns this row on ``date``.
+
+        The branch of the terms in force then (:meth:`terms_on`). A row whose
+        first version starts after ``date`` (a hire dated from next month)
+        belongs to that first version's branch, so whoever added it can still
+        read it before it starts. :meth:`EmployeeSalaryQuerySet.with_branch_on`
+        answers the same question in SQL.
+        """
+        terms = self.terms_on(date)
+        if terms is not None:
+            return terms.branch_id
+        first = min(self.versions.all(), key=lambda v: (v.effective_from, v.pk))
+        return first.branch_id
 
     def __str__(self) -> str:
         return f"{self.name}: gross {self.gross_amount}"

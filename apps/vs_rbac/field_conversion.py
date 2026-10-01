@@ -306,6 +306,7 @@ WRITE_REACHED_BY: dict[str, tuple[str, ...]] = {
     "finance.salary.gross_amount": ("finance.salary.create", "finance.salary.update"),
     "finance.salary.paye_amount": ("finance.salary.create", "finance.salary.update"),
     "finance.salary.pension_amount": ("finance.salary.create", "finance.salary.update"),
+    "finance.salary.components": ("finance.salary.create", "finance.salary.update"),
     "import.batches.file": ("import.batches.create",),
     "import.templates.validation_rules": ("import.templates.manage",),
 }
@@ -362,6 +363,7 @@ ACCEPTED_DIFFERENCES: tuple[AcceptedDifference, ...] = (
     _clamped("finance.salary.gross_amount"),
     _clamped("finance.salary.paye_amount"),
     _clamped("finance.salary.pension_amount"),
+    _clamped("finance.salary.components"),
     _clamped("import.batches.file"),
     AcceptedDifference(
         field_key="platform.staff_profile.bank_name", access=WRITE, old=True, new=False,

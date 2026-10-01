@@ -280,7 +280,7 @@ def guard_payroll_scope(value, *, tenant=None, branch=None) -> None:
         assert_roster_fully_assigned(tenant)
 
 
-def roster_for(entity, branch=None):
+def roster_for(entity, branch=None, *, on=None):
     """The active salary rows a run for *branch* covers, as a queryset.
 
     ``branch=None`` covers the whole entity - every active row, branched or not.
@@ -303,14 +303,21 @@ def roster_for(entity, branch=None):
     Nobody is stranded by that choice, because a school cannot reach PER_BRANCH
     with an unassigned row in the first place - see
     :func:`assert_roster_fully_assigned`.
+
+    A row is the branch's when the branch owns it on ``on`` (the tenant's today
+    when left out), by the terms in force that day
+    (:meth:`~vs_finance.models.EmployeeSalaryQuerySet.with_branch_on`): a move
+    dated from April leaves the person on the old branch's roster until April.
     """
+    from vs_config.clock import tenant_today
+
     from .models import EmployeeSalary
 
     qs = EmployeeSalary.objects.filter(entity=entity, is_active=True)
     if branch is not None:
-        # ``branch_id`` rather than ``branch``: the caller may hold either, and
-        # this avoids a pointless fetch when it holds a bare id.
-        qs = qs.filter(branch_id=getattr(branch, "pk", branch))
+        qs = qs.with_branch_on(on or tenant_today(entity.tenant)).filter(
+            branch_on_id=getattr(branch, "pk", branch),
+        )
     return qs
 
 
@@ -476,7 +483,7 @@ def generate_run_from_roster(entity, *, pay_date, branch=None, period_label="",
         terms = row.terms_on(period_end)
         if terms is None:
             continue
-        if branch_id is not None and terms.branch_id != branch_id:
+        if branch_id is not None and row.branch_on(period_end) != branch_id:
             continue
         due.append((row, terms))
     if not due:
@@ -598,13 +605,19 @@ def _line_branch_ids(run) -> dict:
     if run.branch_id is not None:
         return {line: run.branch_id for line in lines}
 
+    from .payroll_statutory import payroll_period
+
     only = only_branch_id_or_several(run.entity.tenant_id)
     employees = {line.employee_id for line in lines if line.branch_id is None and line.employee_id}
-    salary_branch = dict(
-        EmployeeSalary.objects.filter(
-            entity=run.entity, employee_id__in=employees, branch__isnull=False,
-        ).order_by("-is_active", "-id").values_list("employee_id", "branch_id")
-    ) if employees else {}
+    salary_branch = {}
+    if employees:
+        payroll_date = payroll_period(run.entity, run.pay_date)[1]
+        rows = (
+            EmployeeSalary.objects.filter(entity=run.entity, employee_id__in=employees)
+            .with_branch_on(payroll_date).filter(branch_on_id__isnull=False)
+            .order_by("is_active", "id").values_list("employee_id", "branch_on_id")
+        )
+        salary_branch = dict(rows)
 
     out = {}
     for line in lines:

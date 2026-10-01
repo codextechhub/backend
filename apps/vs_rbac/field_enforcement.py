@@ -378,7 +378,10 @@ def field_access_payload(user, tenant) -> dict:
     return payload
 
 
-def assert_writable(request, resource: str, body: Mapping, *, creating: bool = False) -> None:
+def assert_writable(
+    request, resource: str, body, *, creating: bool = False,
+    aliases: Mapping[str, str] | None = None,
+) -> None:
     """Raise :class:`FieldWriteDenied` for keys of *body* the caller may not write.
 
     For a view that applies ``request.data`` without a serializer. Stricter
@@ -387,6 +390,12 @@ def assert_writable(request, resource: str, body: Mapping, *, creating: bool = F
     applies the body as it stands, so here an empty value for a field the
     caller cannot write is refused rather than dropped. Pass ``creating=True``
     on a create path, where a field declared ``open_on_create`` is allowed.
+    *body* is a mapping or any iterable of the names submitted.
+
+    ``aliases`` maps a submitted name that is not a registered name to the
+    registered name whose write switch governs it: a value that is not itself
+    a figure the switch hides but that changes one when written. The refusal
+    names the submitted name.
 
     ``request=None`` is the escape hatch the module docstring names: a write
     made for nobody is refused nothing.
@@ -395,9 +404,10 @@ def assert_writable(request, resource: str, body: Mapping, *, creating: bool = F
         return
     access = _access_for(request)
     entries = _entries_for(request, resource)
+    aliases = aliases or {}
     denied = []
     for name in body:
-        entry = entries.get(name)
+        entry = entries.get(aliases.get(name, name))
         if entry is None or access.can_write(entry.key):
             continue
         if creating and entry.open_on_create:
