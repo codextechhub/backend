@@ -261,6 +261,10 @@ _TARGETS = (
         (via("the bank account that received it", "bank_account", BANK_ACCOUNT),), order=20,
     ),
     Target(
+        "vs_finance.PayerPayment",
+        (via("the bank account that received it", "bank_account", BANK_ACCOUNT),), order=20,
+    ),
+    Target(
         "vs_finance.InterBranchRecharge", (), order=20,
         no_source_note="a recharge names the branch that paid the cost; an administrator decides which",
     ),

@@ -951,6 +951,43 @@ Verified: tests_petty_cash_returns 32 OK, vs_finance 1681 OK (on b6d8dec7); the
 agent also ran vs_workflow 538, core 193, schools.core.fal 293, vs_payments 403,
 vs_procurement 727, vs_rbac 981, all OK. The full suite was not run.
 
+### D106. One payer's payment is split across the customers it pays for (hash pending, 2026-10-02)
+MODULES: M18 payments and collections (payer payments), M17 billing and invoicing
+(fee runs skip payer accounts), M19 finance (held receipts, inter-branch), M11
+students only once the FAL links guardians to payers, MRD.
+MUST SAY:
+- Payer links (M18). A customer account may pay for others (PayerLink); a payer
+  may pay for many customers and a customer may have several payers; ending a
+  link switches it off. A payment covers only the payer and customers actively
+  linked to it.
+- Payer payment (M18, document code PA). Records one payment once, at the branch
+  of the bank account that received it, and makes one receipt per customer, each
+  settling only that customer's own bills. A share for a customer billed at
+  another branch is held for that branch (HELD_FOR_OTHER_BRANCHES) and forwarded
+  through the normal approval route; no branch's receipt settles another's bill.
+- Settings (receivables policy, whole-tenant write): payer_payment_split
+  OLDEST_FIRST (default), PROPORTIONAL, AS_ENTERED; payer_payment_surplus
+  MOST_RECENT_BILL (default), PAYER. The bursar may always enter amounts per
+  customer; an amount entered above a customer's bills stays as that customer's
+  credit (owner decision 2026-10-01).
+- Voiding voids every receipt and held receipt together; none voids alone; refused
+  once a held share was forwarded or a statement line is matched.
+- Preview endpoint shows the split without writing. Branch reach: a bursar records
+  only into their own branch's bank, sees bill detail only for branches they
+  reach; audit entries per branch with that branch's figures (D89).
+- Fee runs that bill every active customer skip payer accounts (M17).
+- Routes under /v1/finance/: payer-links/ (GET, POST), payer-links/<id>/ (DELETE
+  ends), payer-payments/ (GET, POST), payer-payments/preview/, payer-payments/<id>/,
+  payer-payments/<id>/void/. Keys: the receipt and customer keys.
+- Migration vs_finance 0058.
+NOT BUILT: one online (Paystack) payment across branches (a checkout pays one
+branch's subaccount; recommended: one checkout per branch); the FAL linking
+guardians to payer accounts (schools side); a notice to the payer (owner: not
+now).
+Verified (merged over D105): tests_payer_payments 25 OK, tests_petty_cash_returns
+32 OK, vs_finance 1706 OK, vs_payments 403 OK, schools.core.fal 293 OK. The full
+suite was not run.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

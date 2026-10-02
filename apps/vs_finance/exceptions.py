@@ -354,3 +354,18 @@ class InterBranchUnavailableError(InterBranchError):
     default_message = (
         "There is only one branch, so there is no other branch to transfer to."
     )
+
+
+class PayerPaymentError(PostingError):
+    """A payment from a payer that cannot be split or voided as asked.
+
+    Raised for a request naming the wrong thing: a customer the payer does not pay
+    for, amounts that add up to more than was received, a bank account with no
+    branch, or a void after one of its held shares has been forwarded. A 400,
+    because the request can be corrected; a closed month still answers with its
+    own 409.
+    """
+
+    error_code = "PAYER_PAYMENT_REFUSED"
+    default_message = "This payment from a payer cannot be booked as asked."
+    http_status = 400

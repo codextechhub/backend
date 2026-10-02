@@ -161,7 +161,8 @@ def void_payment(payment, *, actor_user=None, date=None):
 
 
 @transaction.atomic
-def _void_payment_atomic(payment, *, actor_user=None, date=None, transfer=None, forwarded=None):
+def _void_payment_atomic(payment, *, actor_user=None, date=None, transfer=None, forwarded=None,
+                         payer_payment=None):
     """Void a receipt, unwinding every settlement it made and every journal it raised.
 
     A credit-transfer receipt is voided only through its transfer (``transfer``),
@@ -170,7 +171,9 @@ def _void_payment_atomic(payment, *, actor_user=None, date=None, transfer=None, 
     transfer (money forwarded from another branch, or credit a receivable move
     carried here) is voided only through that transfer (``forwarded``), which also
     reverses the other branch's side; voiding the receipt alone would leave the
-    other branch's books short.
+    other branch's books short. A receipt that is one customer's share of a
+    payer's payment is voided only with that payment (``payer_payment``), so the
+    payer's money is never left half booked.
     """
     from .installments import refresh_plans_for_invoice
     from .models import (
@@ -195,6 +198,11 @@ def _void_payment_atomic(payment, *, actor_user=None, date=None, transfer=None, 
         )
     _refuse_if_transferred(payment, "receipt")
     _refuse_if_moved(payment)
+    from .payer_payments import payer_payment_refusal
+
+    split_from = payer_payment_refusal("receipt", payment, payer_payment)
+    if split_from is not None:
+        raise PostingError(split_from)
     sender = InterBranchTransfer.objects.filter(receipt=payment).first()
     if sender is not None and (forwarded is None or forwarded.pk != sender.pk):
         raise PostingError(

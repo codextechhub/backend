@@ -1,4 +1,4 @@
-"""The entity's receivables policy: revenue recognition, provision bands and deposits.
+"""The entity's receivables policy: revenue recognition, provisions, deposits and payers.
 
 Read through :func:`resolve_receivables_policy`, which answers the model defaults
 for books that have never saved one. Written through
@@ -11,7 +11,9 @@ from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
 from .audit import record
-from .constants import FinanceAuditAction, RevenueRecognitionMethod
+from .constants import (
+    FinanceAuditAction, PayerPaymentSplit, PayerPaymentSurplus, RevenueRecognitionMethod,
+)
 from .models import FinanceReceivablesPolicy
 
 SETTING_FIELDS = (
@@ -19,7 +21,15 @@ SETTING_FIELDS = (
     "provision_bands",
     "deposits_offset_unpaid_bills",
     "unclaimed_deposit_years",
+    "payer_payment_split",
+    "payer_payment_surplus",
 )
+
+#: Settings that are a choice from a fixed list, with the list each is chosen from.
+CHOICE_SETTINGS = {
+    "payer_payment_split": PayerPaymentSplit,
+    "payer_payment_surplus": PayerPaymentSurplus,
+}
 
 #: Most bands a policy may hold; far beyond any real ageing ladder.
 MAX_PROVISION_BANDS = 10
@@ -51,6 +61,13 @@ def serialize_receivables_policy(policy):
         ],
         "deposits_offset_unpaid_bills": policy.deposits_offset_unpaid_bills,
         "unclaimed_deposit_years": policy.unclaimed_deposit_years,
+        **{
+            field: getattr(policy, field) for field in CHOICE_SETTINGS
+        },
+        **{
+            f"{field}_options": [{"value": value, "label": label} for value, label in choices.choices]
+            for field, choices in CHOICE_SETTINGS.items()
+        },
         "updated_at": policy.updated_at.isoformat() if policy.pk else None,
         "updated_by": policy.updated_by.email if policy.pk and policy.updated_by else None,
     }
@@ -121,6 +138,12 @@ def _validated_values(data):
             data["unclaimed_deposit_years"], "unclaimed_deposit_years", low=1, high=50,
             unit="years",
         )
+    for field, choices in CHOICE_SETTINGS.items():
+        if field in data:
+            value = str(data[field] or "").upper()
+            if value not in choices.values:
+                raise ValidationError({field: "Select one of the listed options."})
+            values[field] = value
     return values
 
 

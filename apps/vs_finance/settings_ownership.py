@@ -246,6 +246,16 @@ RECEIVABLES_SETTING_CONSUMERS = {
         "vs_finance.deposits.forfeit_unclaimed_deposits",
         "Years after a customer leaves before an unclaimed deposit may be taken to income.",
     ),
+    "payer_payment_split": _consumer(
+        "Payments from a payer",
+        "vs_finance.payer_payments.plan_payer_payment",
+        "Proposes how one payment from a payer is shared among the customers it pays for.",
+    ),
+    "payer_payment_surplus": _consumer(
+        "Payments from a payer",
+        "vs_finance.payer_payments.plan_payer_payment",
+        "Decides whose credit the part of a payer's payment that no bill takes becomes.",
+    ),
 }
 
 

@@ -567,14 +567,22 @@ def post_held_receipt(held, *, actor_user=None):
 
 
 @transaction.atomic
-def void_held_receipt(held, *, actor_user=None, date=None):
-    """Reverse a held receipt that was never forwarded and that no statement has matched."""
+def void_held_receipt(held, *, actor_user=None, date=None, payer_payment=None):
+    """Reverse a held receipt that was never forwarded and that no statement has matched.
+
+    One that is a customer's share of a payer's payment is voided only with that
+    payment (``payer_payment``), which voids every share together.
+    """
     from .banking import journal_is_reconciled
     from .models import HeldForBranchReceipt, InterBranchTransfer
+    from .payer_payments import payer_payment_refusal
 
     held = HeldForBranchReceipt.objects.select_for_update().get(pk=held.pk)
     if held.status != DocumentStatus.POSTED or held.journal_id is None:
         raise InterBranchError("Only a posted held receipt can be voided.")
+    split_from = payer_payment_refusal("held_receipt", held, payer_payment)
+    if split_from is not None:
+        raise InterBranchError(split_from)
     forward = InterBranchTransfer.objects.filter(
         held_receipt=held,
         status__in=(DocumentStatus.PENDING_APPROVAL, DocumentStatus.APPROVED, DocumentStatus.POSTED),

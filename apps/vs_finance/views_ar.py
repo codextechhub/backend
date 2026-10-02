@@ -1461,6 +1461,11 @@ class FeeStructureGenerateView(_FinanceBase):
       customers. A school-wide structure prices every branch and narrows
       nothing.
 
+    ``all_active`` leaves out every payer's own account (a customer that pays for
+    others, :class:`~vs_finance.models.PayerLink`): a run billing the customers
+    must not also bill the parent or sponsor who pays for them. A payer billed in
+    its own right is named in ``customers``.
+
     Every invoice raised belongs to a branch: its customer's, or, for a customer
     every branch shares, the branch the caller names or works in
     (:func:`_transaction_branch`), asked once for the run.
@@ -1492,6 +1497,8 @@ class FeeStructureGenerateView(_FinanceBase):
             raise ValidationError({"service_end": "The service period ends before it starts."})
         if body.get("all_active"):
             qs = _branch_visible(request, Customer.objects.filter(entity=entity, is_active=True))
+            # A payer's own account is not billed by a run meant for the customers it pays for.
+            qs = qs.exclude(pays_for_links__is_active=True)
             if structure.branch_id:  # A branch price list bills only that branch.
                 qs = qs.filter(branch_id=structure.branch_id)
             customers = list(qs.order_by("id"))

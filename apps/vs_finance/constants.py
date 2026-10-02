@@ -98,6 +98,7 @@ class DocType(models.TextChoices):
     HELD_RECEIPT = "HF", "Receipt Held for Another Branch"
     RECHARGE = "RG", "Inter-branch Recharge"
     PETTY_CASH_RETURN = "PB", "Petty Cash Returned to Bank"
+    PAYER_PAYMENT = "PA", "Payment Split Across a Payer's Customers"
 
 # Define Account Type values.
 class AccountType(models.TextChoices):
@@ -795,6 +796,9 @@ class FinanceAuditAction(models.TextChoices):
     PETTY_CASH_FUND_REOPENED = "PETTY_CASH_FUND_REOPENED", "Petty cash fund reopened"
     PETTY_CASH_FUND_UPDATED = "PETTY_CASH_FUND_UPDATED", "Petty cash fund details changed"
     PETTY_CASH_VOUCHER_CANCELLED = "PETTY_CASH_VOUCHER_CANCELLED", "Draft petty cash voucher cancelled"
+    PAYER_PAYMENT_POSTED = "PAYER_PAYMENT_POSTED", "Payment split across a payer's customers"
+    PAYER_PAYMENT_VOIDED = "PAYER_PAYMENT_VOIDED", "Payer payment voided"
+    PAYER_LINK_CHANGED = "PAYER_LINK_CHANGED", "Customers a payer pays for changed"
 
 
 class InterBranchTransferKind(models.TextChoices):
@@ -1055,3 +1059,33 @@ WF_EXPENSE_CLAIM_APPROVER_GROUP = "finance-expense-claim-approver"
 #: Overridable per call to ``ensure_tenant_approval_templates`` and on the seed
 #: command, so a tenant that wants every waiver approved sets it to zero.
 WF_ADJUSTMENT_THRESHOLD = 5_000_000
+
+
+# --------------------------------------------------------------------------- #
+# One payer paying for several customers (see vs_finance.payer_payments)       #
+# --------------------------------------------------------------------------- #
+
+class PayerPaymentSplit(models.TextChoices):
+    """How a payer's payment is shared among the customers it pays for.
+
+    Each is a proposal the bursar may always override with explicit amounts per
+    customer. ``OLDEST_FIRST`` walks every open bill of every customer the payer
+    pays for, oldest first, as one list. ``PROPORTIONAL`` gives each customer a
+    share in proportion to what they owe, oldest bill first within it.
+    ``AS_ENTERED`` proposes nothing: the bursar types each customer's amount.
+    """
+    OLDEST_FIRST = "OLDEST_FIRST", "Oldest bill first, across every customer"
+    PROPORTIONAL = "PROPORTIONAL", "In proportion to what each customer owes"
+    AS_ENTERED = "AS_ENTERED", "As the bursar enters it for each customer"
+
+
+class PayerPaymentSurplus(models.TextChoices):
+    """Whose credit the part of a payer's payment no bill takes becomes.
+
+    ``MOST_RECENT_BILL`` leaves it with the customer whose bill is newest, the one
+    most likely to be billed again, so the credit pays their next bill on its own
+    where the books apply credit automatically. ``PAYER`` leaves it on the payer's
+    own account, for a payer who wants to decide later where it goes.
+    """
+    MOST_RECENT_BILL = "MOST_RECENT_BILL", "The customer with the most recent bill"
+    PAYER = "PAYER", "The payer's own account"

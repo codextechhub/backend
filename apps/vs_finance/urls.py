@@ -676,3 +676,25 @@ urlpatterns = [
     path("audit-logs/facets/", FinanceAuditFacetsView.as_view(), name="finance-audit-facets"),
     path("audit-logs/<int:pk>/", FinanceAuditLogDetailView.as_view(), name="finance-audit-detail"),
 ]
+
+# One payer paying for several customers
+from .views_payers import (  # noqa: E402
+    PayerLinkDetailView,
+    PayerLinkListCreateView,
+    PayerPaymentDetailView,
+    PayerPaymentListCreateView,
+    PayerPaymentPreviewView,
+    PayerPaymentVoidView,
+)
+
+urlpatterns += [
+    path("payer-links/", PayerLinkListCreateView.as_view(), name="finance-payer-link-list"),
+    path("payer-links/<int:pk>/", PayerLinkDetailView.as_view(), name="finance-payer-link-detail"),
+    path("payer-payments/", PayerPaymentListCreateView.as_view(), name="finance-payer-payment-list"),
+    path("payer-payments/preview/", PayerPaymentPreviewView.as_view(),
+         name="finance-payer-payment-preview"),
+    path("payer-payments/<int:pk>/", PayerPaymentDetailView.as_view(),
+         name="finance-payer-payment-detail"),
+    path("payer-payments/<int:pk>/void/", PayerPaymentVoidView.as_view(),
+         name="finance-payer-payment-void"),
+]

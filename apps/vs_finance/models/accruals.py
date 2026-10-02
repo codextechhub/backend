@@ -35,6 +35,7 @@ from ..constants import (
     DocType,
     RevenueRecognitionMethod,
 )
+from ..constants import PayerPaymentSplit, PayerPaymentSurplus
 from ..money import MoneyField
 from .core import FinanceDocument, LedgerEntity, TimeStampedModel
 from .gl import Account, CostCenter
@@ -64,6 +65,10 @@ class FinanceReceivablesPolicy(TimeStampedModel):
     settle their unpaid bills before the rest is returned; off, the deposit is only
     ever returned. ``unclaimed_deposit_years`` is how long after a customer leaves
     an unclaimed deposit is held before it may be taken to income.
+
+    ``payer_payment_split`` proposes how one payment from a payer is shared among
+    the customers it pays for, and ``payer_payment_surplus`` whose credit the part
+    no bill takes becomes (:mod:`vs_finance.payer_payments`).
     """
 
     entity = models.OneToOneField(
@@ -81,6 +86,13 @@ class FinanceReceivablesPolicy(TimeStampedModel):
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="finance_receivables_policy_updates", null=True, blank=True,
+    )
+    payer_payment_split = models.CharField(
+        max_length=16, choices=PayerPaymentSplit.choices, default=PayerPaymentSplit.OLDEST_FIRST,
+    )
+    payer_payment_surplus = models.CharField(
+        max_length=16, choices=PayerPaymentSurplus.choices,
+        default=PayerPaymentSurplus.MOST_RECENT_BILL,
     )
 
     def __str__(self) -> str:
