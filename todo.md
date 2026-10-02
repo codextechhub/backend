@@ -1043,7 +1043,7 @@ Verified (on 28fa46b8): tests_payroll_previous_pay 41 OK, tests_payroll_statutor
 OK, tests_payroll_roster_rules 25 OK, vs_finance 1761 OK, vs_rbac 981 OK. The full
 suite was not run.
 
-### D109. Financial records are kept for their retention period, locked figures are sealed, audit trails are append-only, and old years can be archived (hash pending, 2026-10-02)
+### D109. Financial records are kept for their retention period, locked figures are sealed, audit trails are append-only, and old years can be archived (ea74e554, 2026-10-02)
 MODULES: M19 finance and accounting, M22/M23 procurement and payables (superseded
 evidence), M18 payments (payment records and events), M05 audit (append-only
 trails), M07 workflow (append-only approval log), M06 configuration (retention
