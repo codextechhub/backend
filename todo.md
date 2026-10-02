@@ -951,7 +951,7 @@ Verified: tests_petty_cash_returns 32 OK, vs_finance 1681 OK (on b6d8dec7); the
 agent also ran vs_workflow 538, core 193, schools.core.fal 293, vs_payments 403,
 vs_procurement 727, vs_rbac 981, all OK. The full suite was not run.
 
-### D106. One payer's payment is split across the customers it pays for (hash pending, 2026-10-02)
+### D106. One payer's payment is split across the customers it pays for (ef55d2b8, 2026-10-02)
 MODULES: M18 payments and collections (payer payments), M17 billing and invoicing
 (fee runs skip payer accounts), M19 finance (held receipts, inter-branch), M11
 students only once the FAL links guardians to payers, MRD.
