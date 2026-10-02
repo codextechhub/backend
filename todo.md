@@ -987,7 +987,7 @@ Verified (merged over D105): tests_payer_payments 25 OK, tests_petty_cash_return
 32 OK, vs_finance 1706 OK, vs_payments 403 OK, schools.core.fal 293 OK. The full
 suite was not run.
 
-### D107. A ready-made approval route for petty cash returns that a school may adopt (hash pending, 2026-10-02)
+### D107. A ready-made approval route for petty cash returns that a school may adopt (7259cded, 2026-10-02)
 MODULES: M19 finance (petty cash), M07 workflow and approval engine, MRD.
 Owner decision of 2026-10-01: not a default, a template.
 MUST SAY: GET/POST /v1/finance/petty-cash-returns/approval-template/?entity= shows
