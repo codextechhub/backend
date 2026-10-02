@@ -122,15 +122,25 @@ class FALFixture(TestCase):
 
     @classmethod
     def session_and_term(cls, school, *, name="2026/2027"):
-        from schools.vs_academics.models import AcademicSession, AcademicTerm
+        """A school year and its first term, both running on the school's today.
 
+        Spanned around today rather than pinned to calendar days, because the
+        invoices these tests raise are dated today and a bill outside its term
+        would be refused once the fixed dates passed.
+        """
+        from schools.vs_academics.models import AcademicSession, AcademicTerm
+        from vs_config.clock import tenant_today
+
+        today = tenant_today(school.tenant)
         session = AcademicSession.all_objects.create(
             tenant=school.tenant, name=name,
-            start_date=datetime.date(2026, 9, 1), end_date=datetime.date(2027, 7, 31),
+            start_date=today - datetime.timedelta(days=120),
+            end_date=today + datetime.timedelta(days=210),
         )
         term = AcademicTerm.all_objects.create(
             tenant=school.tenant, session=session, name="First Term", order_index=1,
-            start_date=datetime.date(2026, 9, 1), end_date=datetime.date(2026, 12, 15),
+            start_date=today - datetime.timedelta(days=30),
+            end_date=today + datetime.timedelta(days=75),
         )
         return session, term
 
@@ -227,18 +237,24 @@ class FALFixture(TestCase):
         return guardian
 
     @classmethod
-    def pay(cls, books, customer_ref, amount, *, invoice=None,
-            when=datetime.date(2026, 10, 1)):
+    def pay(cls, books, customer_ref, amount, *, invoice=None, when=None):
         """A real posted receipt, through the finance service, not a hand-built row.
 
         The branch is inherited from the customer, which is the engine's own rule:
         a receipt continues the family's chain, so the money lands in the branch
         that raised the debt (``vs_finance/views_ar.py``).
+
+        The receipt is dated with the invoice it pays, or the school's today when
+        it pays none, never a fixed calendar day: the invoices these tests raise
+        are dated today, and a receipt dated before its bill is refused.
         """
+        from vs_config.clock import tenant_today
         from vs_finance.models import Customer, Payment
         from vs_finance.receivables import post_payment
 
         customer = Customer.objects.get(pk=customer_ref)
+        if when is None:
+            when = invoice.invoice_date if invoice is not None else tenant_today(customer.entity.tenant)
         payment = Payment.objects.create(
             entity_id=books.entity_ref, customer=customer, payment_date=when,
             branch_id=customer.branch_id, amount=amount,
