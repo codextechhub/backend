@@ -930,9 +930,8 @@ MUST SAY:
 - The deposit is an ordinary bank register line, matchable on reconciliation; the
   fund register labels returns and count differences.
 - Approval (M07): its own route `finance.petty_cash_return`; with no route a return
-  posts directly. Owner decision 2026-10-01: no default approval for shortages; a
-  ready-made template (a step for shortages above N5,000) that a school may adopt
-  is being added.
+  posts directly. Owner decision 2026-10-01: no default approval for shortages,
+  only a ready-made route a school may adopt (built under D107).
 - Void (M19): reverses the return and reopens a closed fund; refused once the bank
   side is matched, if a later return stands, or if the float has changed since.
 - Fund edits refuse what only a return may do (lowering the float below the cash
@@ -987,6 +986,21 @@ now).
 Verified (merged over D105): tests_payer_payments 25 OK, tests_petty_cash_returns
 32 OK, vs_finance 1706 OK, vs_payments 403 OK, schools.core.fal 293 OK. The full
 suite was not run.
+
+### D107. A ready-made approval route for petty cash returns that a school may adopt (hash pending, 2026-10-02)
+MODULES: M19 finance (petty cash), M07 workflow and approval engine, MRD.
+Owner decision of 2026-10-01: not a default, a template.
+MUST SAY: GET/POST /v1/finance/petty-cash-returns/approval-template/?entity= shows
+and adopts a route for `finance.petty_cash_return`: one step requiring a second
+approver for a count shortage above N5,000 (the school chooses its own figure when
+adopting) and for every fund closure. No school has it until it adopts; with no
+route a return posts directly. Adopting creates the approver group
+`finance-petty-cash-approver` empty, never overwrites a route the school has
+edited, needs `workflow.template.publish` and a whole-school caller (at a
+one-branch school the branch's bursar). No migration.
+Verified: tests_petty_cash_return_route 14 OK, tests_petty_cash_returns 32 OK,
+tests_payer_payments 25 OK (on 7b7fad5c); the agent ran vs_workflow 538 and
+vs_finance 1695 OK on af290e51. The full suite was not run.
 
 ## Undone
 

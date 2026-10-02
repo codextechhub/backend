@@ -1089,3 +1089,15 @@ class PayerPaymentSurplus(models.TextChoices):
     """
     MOST_RECENT_BILL = "MOST_RECENT_BILL", "The customer with the most recent bill"
     PAYER = "PAYER", "The payer's own account"
+
+
+#: The approver group the ready-made petty cash return route names. Created empty
+#: when a tenant adopts the route, so the first return it stops parks until somebody
+#: is put in the group.
+WF_PETTY_CASH_RETURN_APPROVER_GROUP = "finance-petty-cash-approver"
+
+#: Kobo above which a petty cash count's shortage needs a second person, on the
+#: ready-made route a tenant may adopt. ₦5,000: small change lost from a busy tin
+#: posts on the custodian's word, a missing ₦26,000 does not. A tenant chooses its
+#: own figure when it adopts the route, and edits it like any other step afterwards.
+WF_PETTY_CASH_SHORTAGE_THRESHOLD = 500_000

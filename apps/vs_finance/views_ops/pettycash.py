@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from django.db import transaction
 from rest_framework.exceptions import NotFound, ValidationError
-from vs_rbac.scoping import transaction_branch_q
+from vs_rbac.scoping import WholeTenantWriteMixin, transaction_branch_q
 
 from core.response import success_response
 from vs_config.clock import branch_today
@@ -582,6 +582,105 @@ class PettyCashReturnVoidView(_FinanceBase):
         return success_response(
             f"Petty cash return {ret.document_number} voided.",
             data=PettyCashReturnSerializer(ret).data,
+        )
+
+
+class PettyCashReturnApprovalTemplateView(WholeTenantWriteMixin, _FinanceBase):
+    """GET/POST /finance/petty-cash-returns/approval-template/?entity= - the ready-made route.
+
+    GET shows the route a tenant may adopt (its step, the default shortage
+    threshold and the approver group it names) and whether this tenant has a route
+    for petty cash returns already. POST adopts it: optional body ``threshold``
+    (kobo; above it a short count needs a second person, default ₦5,000). Until a
+    tenant adopts it, no return of theirs is stopped
+    (:func:`vs_finance.approvals.adopt_petty_cash_return_template`).
+
+    A route binds every branch of the tenant, so adopting needs a caller who
+    reaches the whole tenant (403 ``SHARED_RECORD_READ_ONLY`` otherwise), and the
+    key that publishes any approval route, ``workflow.template.publish``. A route
+    already holding a step is left as configured (200).
+
+    docstring-name: Petty cash return approval route
+    """
+
+    shared_subject = "the tenant's approval routes"
+
+    @property
+    def rbac_permission(self):
+        from vs_workflow.constants import PERM_TEMPLATE_PUBLISH, PERM_TEMPLATE_VIEW
+
+        return PERM_TEMPLATE_PUBLISH if self.request.method == "POST" else PERM_TEMPLATE_VIEW
+
+    @staticmethod
+    def _payload(tenant, threshold):
+        from ..approvals import (
+            PETTY_CASH_RETURN_DOCUMENT_TYPE,
+            PETTY_CASH_RETURN_TEMPLATE_NAME,
+            petty_cash_return_route,
+            petty_cash_return_stages,
+        )
+        from ..constants import WF_DEFAULT_TEMPLATE_CODE, WF_PETTY_CASH_RETURN_APPROVER_GROUP
+
+        route = petty_cash_return_route(tenant)
+        return {
+            "document_type": PETTY_CASH_RETURN_DOCUMENT_TYPE,
+            "code": WF_DEFAULT_TEMPLATE_CODE,
+            "name": PETTY_CASH_RETURN_TEMPLATE_NAME,
+            "threshold": threshold,
+            "threshold_naira": format_naira(threshold),
+            "approver_group_code": WF_PETTY_CASH_RETURN_APPROVER_GROUP,
+            "stages": petty_cash_return_stages(
+                threshold=threshold, approver_group_code=WF_PETTY_CASH_RETURN_APPROVER_GROUP),
+            "adopted": bool(route and route.is_active
+                            and route.stages.filter(retired_at__isnull=True).exists()),
+            "route_id": route.pk if route else None,
+        }
+
+    def get(self, request):
+        from ..constants import WF_PETTY_CASH_SHORTAGE_THRESHOLD
+
+        entity = resolve_entity(request)
+        return success_response(
+            "Petty cash return approval route retrieved.",
+            data=self._payload(entity.tenant, WF_PETTY_CASH_SHORTAGE_THRESHOLD),
+        )
+
+    def post(self, request):
+        from ..approvals import adopt_petty_cash_return_template
+        from ..audit import record
+        from ..constants import FinanceAuditAction, WF_PETTY_CASH_SHORTAGE_THRESHOLD
+
+        entity = resolve_entity(request)
+        if entity.tenant_id is None:
+            raise ValidationError({"entity": "These books belong to no tenant to route for."})
+        body = request.data or {}
+        threshold = (
+            _money(body.get("threshold"), "threshold")
+            if body.get("threshold") not in (None, "") else WF_PETTY_CASH_SHORTAGE_THRESHOLD
+        )
+        with transaction.atomic():
+            template, created = adopt_petty_cash_return_template(
+                entity.tenant, threshold=threshold, created_by=request.user)
+            if created:
+                record(
+                    entity=entity, action=FinanceAuditAction.FINANCE_SETTINGS_UPDATED,
+                    actor_user=request.user, target_type="WorkflowTemplate",
+                    target_id=str(template.pk), branch=None,
+                    message=(
+                        f"Adopted the ready-made petty cash return route: a count more than "
+                        f"{format_naira(threshold)} short, or a closure, needs a second person."
+                    ),
+                    document_type=template.document_type, threshold=threshold,
+                )
+        if not created:
+            return success_response(
+                "This tenant already has its own petty cash return route; it is left as configured.",
+                data=self._payload(entity.tenant, threshold),
+            )
+        return success_response(
+            "Petty cash return approval route adopted. Put somebody in the approver group "
+            "so the returns it stops can be approved.",
+            data=self._payload(entity.tenant, threshold), status=201,
         )
 
 

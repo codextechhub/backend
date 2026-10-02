@@ -645,6 +645,112 @@ def ensure_tenant_expense_claim_template(
 
 
 # --------------------------------------------------------------------------- #
+# Petty cash returns: a ready-made route a tenant may adopt                    #
+# --------------------------------------------------------------------------- #
+
+PETTY_CASH_RETURN_DOCUMENT_TYPE = "finance.petty_cash_return"
+PETTY_CASH_RETURN_TEMPLATE_NAME = "Petty cash return approval"
+
+
+def petty_cash_return_stages(*, threshold: int, approver_group_code: str) -> list:
+    """The one step of the ready-made petty cash return route.
+
+    It stops a return whose count came up more than ``threshold`` kobo short, and
+    every closure, and asks a second person from ``approver_group_code`` to approve
+    it. Anything else (an exact count, a small shortage, an overage, a reduction)
+    meets no step, so ``approval_required`` answers False and it posts on the
+    custodian's word. ``skip_if_no_approvers`` is off, so an unstaffed group parks
+    the return rather than letting it approve itself.
+    """
+    return [{
+        "code": "second-approval",
+        "label": "Second approval of a short count or a closure",
+        "kind": "APPROVAL",
+        "order": 10,
+        "approver_source": "WORKFLOW_GROUP",
+        "approver_group_code": approver_group_code,
+        "approver_scope": "SCHOOL",
+        "advance_rule": "ANY",
+        "on_rejection": "TERMINAL",
+        "skip_if_no_approvers": False,
+        "inclusion_condition": {"any": [
+            {"op": "gt", "field": "shortage", "value": int(threshold)},
+            {"op": "eq", "field": "kind", "value": "CLOSE"},
+        ]},
+    }]
+
+
+def petty_cash_return_route(tenant):
+    """The tenant's own route for petty cash returns, or ``None`` when it has none."""
+    from vs_workflow.models import WorkflowTemplate
+
+    from .constants import WF_DEFAULT_TEMPLATE_CODE
+
+    return WorkflowTemplate.all_objects.filter(
+        tenant=tenant, branch=None, document_type=PETTY_CASH_RETURN_DOCUMENT_TYPE,
+        code=WF_DEFAULT_TEMPLATE_CODE,
+    ).first()
+
+
+def adopt_petty_cash_return_template(tenant, *, threshold: int | None = None,
+                                     approver_group_code: str | None = None,
+                                     created_by=None):
+    """Publish the ready-made petty cash return route for one tenant. Returns ``(template, created)``.
+
+    The route exists for nobody until a tenant asks for it: no tenant is provisioned
+    with it and no shared platform row carries it, so with no route a petty cash
+    return posts at once, as a top-up does. Adopting it publishes
+    :func:`petty_cash_return_stages` as the tenant's own route, scoped to the tenant
+    (``branch=None``), and creates the approver group it names, empty. From then on
+    it is the tenant's to edit on the approval screens like any route it built.
+
+    Non-destructive, as the other finance ladders are. A route already holding a
+    live step is somebody's decision and is left exactly as configured
+    (``created=False``). A route holding none is a placeholder, so adopting fills
+    it in.
+    """
+    from vs_workflow.services.groups import ensure_approver_group
+    from vs_workflow.services.templates import publish_template
+
+    from .constants import (
+        WF_DEFAULT_TEMPLATE_CODE,
+        WF_PETTY_CASH_RETURN_APPROVER_GROUP,
+        WF_PETTY_CASH_SHORTAGE_THRESHOLD,
+    )
+    from .money import format_naira
+
+    if tenant is None:
+        raise ValueError("A tenant is required to adopt the petty cash return route.")
+    threshold = WF_PETTY_CASH_SHORTAGE_THRESHOLD if threshold is None else int(threshold)
+    if threshold < 0:
+        raise ValueError("The shortage threshold is an amount in kobo and cannot be negative.")
+    approver_group_code = approver_group_code or WF_PETTY_CASH_RETURN_APPROVER_GROUP
+
+    existing = petty_cash_return_route(tenant)
+    if existing is not None and existing.stages.filter(retired_at__isnull=True).exists():
+        return existing, False
+
+    ensure_approver_group(
+        tenant, approver_group_code,
+        description="Approves petty cash returns whose count came up short, and fund "
+                    "closures. Empty until the tenant puts somebody in it, so those "
+                    "returns park until then.",
+    )
+    template = publish_template(
+        tenant=tenant, branch=None, document_type=PETTY_CASH_RETURN_DOCUMENT_TYPE,
+        code=WF_DEFAULT_TEMPLATE_CODE, name=PETTY_CASH_RETURN_TEMPLATE_NAME,
+        description=(
+            "A second person approves a petty cash return whose count is more than "
+            f"{format_naira(threshold)} short, and every fund closure. Other returns post at once."
+        ),
+        created_by=created_by,
+        stages_payload=petty_cash_return_stages(
+            threshold=threshold, approver_group_code=approver_group_code),
+    )
+    return template, True
+
+
+# --------------------------------------------------------------------------- #
 # Direct-post guard                                                            #
 # --------------------------------------------------------------------------- #
 def guard_direct_post(document, request, *, noun="document"):
