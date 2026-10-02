@@ -1002,7 +1002,7 @@ Verified: tests_petty_cash_return_route 14 OK, tests_petty_cash_returns 32 OK,
 tests_payer_payments 25 OK (on 7b7fad5c); the agent ran vs_workflow 538 and
 vs_finance 1695 OK on af290e51. The full suite was not run.
 
-### D108. Pay brought forward: a previous employer's figures and a school's own months before XVS count in PAYE, with an annual return (hash pending, 2026-10-02)
+### D108. Pay brought forward: a previous employer's figures and a school's own months before XVS count in PAYE, with an annual return (c335085b, 2026-10-02)
 MODULES: M19 finance and accounting (payroll), M12 staff management, M04 roles and
 permissions (field access), MRD.
 MUST SAY:
