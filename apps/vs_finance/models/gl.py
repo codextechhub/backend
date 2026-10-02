@@ -186,6 +186,13 @@ class FiscalYear(TimeStampedModel):
     Often a calendar year, but not necessarily: schools and many businesses run
     Sept–Aug or Apr–Mar years. The ``year`` integer is the label used in document
     numbers (``…-2026-00001``); ``start_date``/``end_date`` bound it.
+
+    ``archived_at`` marks a closed year put away (:mod:`vs_finance.archive`). An
+    archived year is never deleted and stays fully readable, reportable and
+    exportable; it only leaves the default lists and pickers, which show it
+    again when asked with ``?include_archived=true``. It is a separate column
+    rather than a status because a year is archived *as* closed or locked, and
+    unarchiving puts it back exactly as it was.
     """
 
     entity = models.ForeignKey(
@@ -196,6 +203,11 @@ class FiscalYear(TimeStampedModel):
     end_date = models.DateField()
     status = models.CharField(
         max_length=12, choices=PeriodStatus.choices, default=PeriodStatus.OPEN,
+    )
+    archived_at = models.DateTimeField(null=True, blank=True)
+    archived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_fiscal_years_archived", null=True, blank=True,
     )
 
     class Meta:

@@ -139,14 +139,21 @@ class _FiscalCalendarWriteMixin(WholeTenantWriteMixin):
 
 # Group behavior for Entity Scoped List Mixin.
 class EntityScopedListMixin:
-    """A ListAPIView whose queryset is filtered to the resolved entity via ``entity_qs``."""
+    """A ListAPIView whose queryset is filtered to the resolved entity via ``entity_qs``.
+
+    A list of finance documents leaves out those dated in an archived fiscal
+    year unless asked with ``?include_archived=true``
+    (:func:`vs_finance.archive.hide_archived`).
+    """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
     # Handle the get queryset workflow.
     def get_queryset(self):
+        from .archive import hide_archived
+
         self.entity = resolve_entity(self.request)
-        return self.entity_qs(self.entity)
+        return hide_archived(self.entity_qs(self.entity), self.request)
 
     # pragma: no cover - overridden
     def entity_qs(self, entity):
@@ -714,7 +721,8 @@ class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
 
     A year's closing period is left out unless ``?include_closing=true``: it opens
     and closes with its year, so it has no place among the months a person closes
-    or picks.
+    or picks. The months of an archived year are left out unless
+    ``?include_archived=true`` (:mod:`vs_finance.archive`).
 
     docstring-name: Fiscal periods
     """
@@ -743,7 +751,11 @@ class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
 
     # Handle the entity qs workflow.
     def entity_qs(self, entity):
+        from .archive import include_archived
+
         qs = FiscalPeriod.objects.filter(entity=entity).select_related("fiscal_year")
+        if not include_archived(self.request):
+            qs = qs.filter(fiscal_year__archived_at__isnull=True)  # Archived years stay out of pickers.
         if self.request.query_params.get("include_closing", "").lower() != "true":
             qs = qs.filter(is_closing=False)  # Closing periods open and close with their year.
         if (status_val := self.request.query_params.get("status")):
@@ -797,6 +809,7 @@ class FiscalYearListView(_FiscalCalendarWriteMixin, EntityScopedListMixin, gener
     """List fiscal years or open the next fiscal calendar for an entity.
 
     ``?status=OPEN`` narrows to open years (the ones a new budget can target).
+    Archived years are left out unless ``?include_archived=true``.
     ``POST`` accepts ``year``, ``start_month``, ``fiscal_start_day`` and
     ``frequency`` (MONTHLY/QUARTERLY), then provisions the complete set of periods.
 
@@ -822,7 +835,11 @@ class FiscalYearListView(_FiscalCalendarWriteMixin, EntityScopedListMixin, gener
     def entity_qs(self, entity):
         from .models import FiscalYear
 
+        from .archive import include_archived
+
         qs = FiscalYear.objects.filter(entity=entity)
+        if not include_archived(self.request):
+            qs = qs.filter(archived_at__isnull=True)
         if (status_val := self.request.query_params.get("status")):
             qs = qs.filter(status=status_val)
         return qs.order_by("-year")

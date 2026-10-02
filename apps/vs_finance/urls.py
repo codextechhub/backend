@@ -715,3 +715,21 @@ urlpatterns += [
     path("payer-payments/<int:pk>/void/", PayerPaymentVoidView.as_view(),
          name="finance-payer-payment-void"),
 ]
+
+# Keeping the books: retention settings, sealed figures and archived years.
+from .views_records import (  # noqa: E402
+    FiscalYearArchiveView,
+    FiscalYearUnarchiveView,
+    LedgerSealVerifyView,
+    RecordRetentionSettingsView,
+)
+
+urlpatterns += [
+    path("settings/records/", RecordRetentionSettingsView.as_view(),
+         name="finance-settings-records"),
+    path("seals/verify/", LedgerSealVerifyView.as_view(), name="finance-seal-verify"),
+    path("fiscal-years/<int:id>/archive/", FiscalYearArchiveView.as_view(),
+         name="finance-fiscal-year-archive"),
+    path("fiscal-years/<int:id>/unarchive/", FiscalYearUnarchiveView.as_view(),
+         name="finance-fiscal-year-unarchive"),
+]

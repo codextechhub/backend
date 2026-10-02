@@ -1,16 +1,24 @@
 """
 Management command: delete_user
 ================================
-Hard-deletes one or more users and every trace of their existence.
-Intended for local testing only - never expose this as an API endpoint.
+Hard-deletes one or more users and the working rows that hang off them.
+Intended for local and test data only - never expose this as an API endpoint.
 
 Relationship handling is fully automatic - no need to update this command
 when new models are added. Django's _meta.related_objects is used to discover
 all FK relationships to User at runtime:
 
   PROTECT  → deleted explicitly before the user, so the delete isn't blocked.
-  SET_NULL → deleted explicitly so no orphaned audit/log records remain.
+  SET_NULL → deleted explicitly so no orphaned working rows remain.
   CASCADE  → handled automatically by Django when the user is deleted.
+
+What it will not delete is the record of work that must be kept. A user who
+appears in an audit trail (finance, platform, payments or workflow approvals),
+or who raised, posted or was paid by a financial record still inside its
+retention period, is refused as a whole: nothing about them is deleted, and the
+command says why. Such a person is deactivated instead. The refusal comes from
+the same guards every other deletion meets: ``core.retention`` for kept records
+and the append-only triggers (``core.append_only``) for the trails.
 
 Usage
 -----
@@ -23,27 +31,13 @@ An address is unique PER TENANT, not platform-wide, so one address can name
 two unrelated accounts. Without --tenant_id (a tenant id or slug) this command
 refuses an ambiguous address and prints the tenants it belongs to, rather than
 hard-deleting whichever row came back first.
-
-Note
-----
-    Render gives you a shell into your running service. Two ways:
-
-    Option 1 - Render Dashboard Shell
-    1. Go to your web service on render.com
-    2. Click the Shell tab
-    3. Run it directly:
-    python manage.py delete_user --email user@example.com --force
-
-    Option 2 - Render CLI
-    render ssh <your-service-name>
-    # then inside:
-    python manage.py delete_user --email user@example.com --force
-
-    The command will run against whatever DATABASE_URL / DB env vars Render has configured for that service - so it hits the live Render DB.
 """
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import models, transaction
+from django.db import DatabaseError, models, transaction
+from django.db.models import ProtectedError
+
+from core.retention import RetentionError
 
 from vs_tenants.references import find_tenant
 from vs_user.email_normalization import normalize_email
@@ -174,8 +168,11 @@ class Command(BaseCommand):
         total_counts: dict[str, int] = {}
 
         for user in users:
-            with transaction.atomic():
-                self._delete_one(user, total_counts)
+            try:
+                with transaction.atomic():
+                    self._delete_one(user, total_counts)
+            except (RetentionError, ProtectedError, DatabaseError) as exc:
+                raise CommandError(_kept_record_refusal(user, exc)) from exc
 
         self.stdout.write(self.style.SUCCESS(f"\n✅  {len(users)} user(s) deleted.\n"))
         for label, count in total_counts.items():
@@ -214,3 +211,18 @@ class Command(BaseCommand):
         # ── 4. Delete the user (CASCADE handles everything else) ───────────────
         user.delete()
         self.stdout.write(f"  Deleted: {user.email}")
+
+
+def _kept_record_refusal(user, exc) -> str:
+    """Why ``user`` cannot be deleted, and what to do instead."""
+    if isinstance(exc, RetentionError):
+        why = exc.message
+    elif isinstance(exc, ProtectedError):
+        labels = sorted({obj._meta.label for obj in exc.protected_objects})
+        why = f"Records that must be kept refer to them ({', '.join(labels)})."
+    else:
+        why = "They appear in an audit trail, which can never be changed or deleted."
+    return (
+        f"{user.email} was not deleted, and nothing about them was. {why} "
+        f"Deactivate the account instead."
+    )

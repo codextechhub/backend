@@ -5,6 +5,13 @@ reverse relationships before deleting each object so ``PROTECT`` relationships
 inside the finance graph (for example child accounts and journal lines) do not
 leave a partially deleted entity.
 
+It never removes books that must be kept. A set of books holding any record
+inside its retention period (a posted document, a journal, a payslip, filed
+evidence) or any audit entry is refused whole: each entity is deleted in its own
+transaction, and the first kept row met rolls it back and names itself. The
+refusal comes from the guards every deletion meets (``core.retention`` and the
+append-only triggers), not from a list kept here.
+
 Usage::
 
     python manage.py delete_entity --entity LEKKI
@@ -17,7 +24,9 @@ Usage::
 from __future__ import annotations
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
+from django.db import DatabaseError, transaction
+
+from core.retention import RetentionError
 
 
 def _reverse_fk_relations(instance):
@@ -110,8 +119,15 @@ class Command(BaseCommand):
         total_counts: dict[str, int] = {}
         for entity in entities:
             code = entity.code
-            with transaction.atomic():
-                _delete_related_tree(entity, total_counts, set())
+            try:
+                with transaction.atomic():
+                    _delete_related_tree(entity, total_counts, set())
+            except RetentionError as exc:
+                raise CommandError(f"{code} was not deleted: {exc.message}") from exc
+            except (DatabaseError, ValueError) as exc:
+                raise CommandError(
+                    f"{code} was not deleted: its audit trail can never be changed or deleted."
+                ) from exc
             self.stdout.write(f"  Deleted: {code}")
 
         self.stdout.write(self.style.SUCCESS(f"\nDeleted {len(entities)} entity/entities.\n"))

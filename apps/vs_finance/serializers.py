@@ -269,9 +269,16 @@ class FiscalPeriodSerializer(serializers.ModelSerializer):
 
 
 class FiscalYearSerializer(serializers.ModelSerializer):
+    """A fiscal year; ``is_archived`` says whether it is put away (:mod:`vs_finance.archive`)."""
+
+    is_archived = serializers.SerializerMethodField()
+
     class Meta:
         model = FiscalYear
-        fields = ["id", "year", "start_date", "end_date", "status"]
+        fields = ["id", "year", "start_date", "end_date", "status", "is_archived", "archived_at"]
+
+    def get_is_archived(self, obj) -> bool:
+        return obj.archived_at is not None
 
 
 class JournalLineSerializer(serializers.ModelSerializer):

@@ -5355,9 +5355,10 @@ class AuthEventTenantIsolationTests(TestCase):
 
         populated = self.get(TenantAPIClient(self.parent))
 
-        # Queryset delete bypasses the model's append-only guard, which is what
-        # we want here: the point is an empty table, not an audited deletion.
-        AuditEvent.objects.all().delete()
+        # The point is an empty table, which the append-only trail only allows a test.
+        from core.test_utils import empty_audit_trail
+
+        empty_audit_trail()
         empty = self.get(TenantAPIClient(self.parent))
 
         self.assertEqual(populated.status_code, empty.status_code)

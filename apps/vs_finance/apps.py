@@ -61,4 +61,13 @@ class VsFinanceConfig(AppConfig):
         from .payroll import PAYROLL_SCOPE_KEY, guard_payroll_scope
 
         register_value_guard(PAYROLL_SCOPE_KEY, guard_payroll_scope)
+        # Books are kept for the statutory period: no kept row can be deleted,
+        # a tenant may lengthen the period but never shorten it, and every
+        # close is checked against the figures sealed before it.
+        from .retention import TENANT_YEARS_KEY, guard_retention_years, register_policies
+        from .seals import sealed_figures_close_check
+
+        register_policies()
+        register_value_guard(TENANT_YEARS_KEY, guard_retention_years)
+        register_close_check(sealed_figures_close_check)
 

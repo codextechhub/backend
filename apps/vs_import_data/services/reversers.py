@@ -269,9 +269,13 @@ def _tear_down_tenant(tenant) -> None:
     """
     from django.contrib.auth import get_user_model
 
+    from vs_audit.services import discard_trail_of_unused_tenant
+
     contact_ids: set[int] = set()
 
     try:
+        # The trail is append-only; an unused tenant's own creation events go first.
+        discard_trail_of_unused_tenant(tenant)
         school = getattr(tenant, "school_profile", None)
         if school is not None:
             contact_ids |= _contacts_of(getattr(school, "primary_admin", None))

@@ -24,6 +24,7 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from core.test_utils import empty_audit_trail
 from schools.vs_schools.models import School, SchoolStatus
 from vs_audit.models import AuditActionType, AuditEvent, AuditModuleKey
 from vs_rbac.tests.helpers import (
@@ -200,7 +201,7 @@ class ExpirySweepTests(TestCase):
         )
 
     def test_each_expiry_writes_one_audit_row(self):
-        AuditEvent.objects.all().delete()
+        empty_audit_trail()  # The trail is append-only; a test empties it explicitly.
 
         self.sweep()
 
@@ -700,7 +701,7 @@ class ReinstateServiceTests(TestCase):
         self.assertIsNone(School.objects.get(pk=self.school.pk).deactivated_at)
 
     def test_it_writes_one_audit_row(self):
-        AuditEvent.objects.all().delete()
+        empty_audit_trail()  # The trail is append-only; a test empties it explicitly.
 
         with self.captureOnCommitCallbacks(execute=True):
             reinstate_school(self.tenant)

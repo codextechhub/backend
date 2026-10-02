@@ -1083,8 +1083,9 @@ class WorkflowAuditLog(models.Model):
     """Append-only log of every material event in a workflow instance's lifecycle.
 
     One row is written for each significant engine event - submission, stage activation,
-    vote, approval, rejection, and so on. Rows are never updated or deleted. Used for
-    auditing, debugging, and driving notification dispatch.
+    vote, approval, rejection, and so on. Used for auditing, debugging, and driving
+    notification dispatch. It is the record of who approved what, so rows are never
+    updated or deleted: refused here in Python and at the database by triggers.
 
     Attributes:
         instance: The workflow instance this event belongs to.
@@ -1118,3 +1119,11 @@ class WorkflowAuditLog(models.Model):
             models.Index(fields=["instance", "event_type"]),
         ]
         ordering = ["-occurred_at"]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValueError("WorkflowAuditLog rows are immutable and cannot be updated.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("WorkflowAuditLog rows are immutable and cannot be deleted.")

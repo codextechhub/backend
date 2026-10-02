@@ -6,7 +6,9 @@ entity-and-branch choke point every other procurement detail endpoint uses - and
 subclass supplies only its queryset, permission prefix, and not-found wording.
 
 Reading an attachment list needs the document's ``view`` verb; adding or removing one
-needs a dedicated ``attach`` verb rather than ``update``. ``update`` is the wrong gate
+needs a dedicated ``attach`` verb rather than ``update``. Removing one from a document
+that has left draft supersedes it with a reason and deletes nothing
+(:func:`vs_procurement.attachments.remove_attachment`). ``update`` is the wrong gate
 twice over: it is refused on a posted document, and posted documents are exactly when
 the supplier's paper arrives - and it conflates rewriting a bill's amounts with filing
 its evidence, which are not the same authority.
@@ -60,12 +62,15 @@ class _AttachmentBase(_ProcBase):
             )
 
     def get(self, request, pk, attachment_id=None):
-        """List the document's attachments."""
+        """List the document's attachments; ``?include_superseded=true`` adds superseded ones."""
         self._reject_id_mismatch(attachment_id, required=False)
         document = self._document(request, pk)
+        include = str(request.query_params.get("include_superseded", "")).lower() == "true"
         return success_response(
             "Attachments retrieved.",
-            data={"attachments": attachment_service.serialize_attachments(document)},
+            data={"attachments": attachment_service.serialize_attachments(
+                document, include_superseded=include,
+            )},
         )
 
     def post(self, request, pk, attachment_id=None):
@@ -83,10 +88,19 @@ class _AttachmentBase(_ProcBase):
         return success_response("Attachment uploaded.", data=row, status=201)
 
     def delete(self, request, pk, attachment_id=None):
-        """Remove one attachment from this document."""
+        """Remove one attachment: deleted from a draft, superseded (``reason`` required) after.
+
+        The reason may come in the body or as ``?reason=``, since some clients
+        send no body with a DELETE.
+        """
         self._reject_id_mismatch(attachment_id, required=True)
         document = self._document(request, pk)
-        attachment_service.remove_attachment(document, attachment_id)
+        reason = (request.data or {}).get("reason") if hasattr(request.data, "get") else None
+        attachment_service.remove_attachment(
+            document, attachment_id,
+            reason=reason or request.query_params.get("reason"),
+            actor_user=request.user,
+        )
         # The document was loaded with its attachments prefetched, so that cache still
         # holds the row we just deleted; re-read the relation rather than echo it back.
         return success_response(
@@ -108,7 +122,7 @@ class VendorInvoiceAttachmentView(_AttachmentBase):
 
     def _queryset(self, entity):
         return VendorInvoice.objects.filter(entity=entity).prefetch_related(
-            "attachments__uploaded_by",
+            "attachments__uploaded_by", "attachments__superseded_by",
         )
 
 
@@ -123,5 +137,5 @@ class VendorPaymentAttachmentView(_AttachmentBase):
 
     def _queryset(self, entity):
         return VendorPayment.objects.filter(entity=entity).prefetch_related(
-            "attachments__uploaded_by",
+            "attachments__uploaded_by", "attachments__superseded_by",
         )

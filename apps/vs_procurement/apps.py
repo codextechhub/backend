@@ -54,6 +54,15 @@ class VsProcurementConfig(AppConfig):
             provision_default_stock_location,
         )
 
+        # Evidence filed against a kept bill or payment is kept with it.
+        from core import retention
+
+        from vs_finance.retention import held_with
+
+        from .models import VendorInvoiceAttachment, VendorPaymentAttachment
+
+        retention.register(VendorInvoiceAttachment, held_with("vendor_invoice"))
+        retention.register(VendorPaymentAttachment, held_with("payment"))
         register_entity_provisioner(provision_approval_ladders)
         # Stock lives at a location now, so every entity needs one to receive into.
         register_entity_provisioner(provision_default_stock_location)

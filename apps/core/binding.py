@@ -18,13 +18,14 @@ The same hook retires superseded files. When Corona replaces its logo, the
 previous upload keeps its own row and its own name, and nothing else in the
 system will ever mention it again - so if the URL stayed live it would be a
 permanent, unrevocable copy of a file the school believes it has replaced.
+The URL closes either way; the bytes go too, unless the record the file is
+evidence for is still inside its retention period (:mod:`core.retention`).
 """
 from __future__ import annotations
 
 from django.apps import apps as django_apps
 from django.db import models
 from django.db.models.signals import post_delete, post_save
-from django.utils import timezone
 
 
 def _file_fields(model) -> list[str]:
@@ -44,6 +45,7 @@ def bind_instance(instance, field_names, *, update_fields=None, created=False) -
     from django.contrib.contenttypes.models import ContentType
 
     from .models import StoredFile
+    from .retention import retire_files
 
     targets = (
         field_names if update_fields is None
@@ -72,7 +74,7 @@ def bind_instance(instance, field_names, *, update_fields=None, created=False) -
         )
         if current:
             superseded = superseded.exclude(name=current)
-        superseded.update(revoked_at=timezone.now(), content=b"", size=0)
+        retire_files(superseded)  # Held evidence keeps its bytes.
 
 
 def _make_post_save(field_names):

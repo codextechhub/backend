@@ -31,6 +31,7 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from core.test_utils import empty_audit_trail
 from schools.vs_schools.models import School, SchoolStatus
 from vs_audit.models import AuditActionType, AuditEvent, AuditModuleKey
 from vs_rbac.models import Permission
@@ -870,7 +871,7 @@ class ProvisioningTests(OnboardingFixture):
         )
 
     def test_provisioning_writes_one_audit_row(self):
-        AuditEvent.objects.all().delete()
+        empty_audit_trail()  # The trail is append-only; a test empties it explicitly.
 
         with self.captureOnCommitCallbacks(execute=True):
             provision_onboarding(self.tenant, actor=self.admin)
@@ -1191,7 +1192,7 @@ class TaskTransitionTests(OnboardingFixture):
 
     def test_the_refusal_writes_no_audit_row_and_no_notification(self):
         """A refused transition changed nothing, so it announces nothing."""
-        AuditEvent.objects.all().delete()
+        empty_audit_trail()  # The trail is append-only; a test empties it explicitly.
 
         with patch("schools.vs_onboarding.services.effects._send") as send:
             with self.captureOnCommitCallbacks(execute=True):
@@ -1236,7 +1237,7 @@ class TaskTransitionAuditTests(OnboardingFixture):
         )
 
     def _transition(self, key, status):
-        AuditEvent.objects.all().delete()
+        empty_audit_trail()  # The trail is append-only; a test empties it explicitly.
         with self.captureOnCommitCallbacks(execute=True):
             response = self.patch_task(key, status)
         self.assertEqual(response.status_code, 200, response.data)

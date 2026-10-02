@@ -799,6 +799,12 @@ class FinanceAuditAction(models.TextChoices):
     PAYER_PAYMENT_POSTED = "PAYER_PAYMENT_POSTED", "Payment split across a payer's customers"
     PAYER_PAYMENT_VOIDED = "PAYER_PAYMENT_VOIDED", "Payer payment voided"
     PAYER_LINK_CHANGED = "PAYER_LINK_CHANGED", "Customers a payer pays for changed"
+    FISCAL_YEAR_ARCHIVED = "FISCAL_YEAR_ARCHIVED", "Fiscal year archived"
+    FISCAL_YEAR_UNARCHIVED = "FISCAL_YEAR_UNARCHIVED", "Fiscal year unarchived"
+    ATTACHMENT_ADDED = "ATTACHMENT_ADDED", "Evidence file attached"
+    ATTACHMENT_SUPERSEDED = "ATTACHMENT_SUPERSEDED", "Evidence file superseded"
+    ATTACHMENT_REMOVED = "ATTACHMENT_REMOVED", "Evidence file removed from a draft"
+    RETENTION_SETTINGS_UPDATED = "RETENTION_SETTINGS_UPDATED", "Record retention settings updated"
 
 
 class InterBranchTransferKind(models.TextChoices):

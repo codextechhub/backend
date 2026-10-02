@@ -299,28 +299,29 @@ def revoke(names) -> int:
 
     Kept as an explicit helper because the platform archives rather than
     deletes: a record that is retired never fires ``post_delete``, so whoever
-    retires it has to say that its evidence goes with it.
+    retires it has to say that its evidence goes with it. Bytes behind a record
+    still inside its retention period are kept, with the URL closed
+    (:func:`core.retention.retire_files`).
     """
     from .models import StoredFile
+    from .retention import retire_files
 
     if isinstance(names, str):
         names = [names]
     names = [n for n in names if n]
     if not names:
         return 0
-    return StoredFile.objects.filter(
-        name__in=names, revoked_at__isnull=True,
-    ).update(revoked_at=timezone.now(), content=b"", size=0)
+    return retire_files(StoredFile.objects.filter(name__in=names))
 
 
 def revoke_for(owner) -> int:
-    """Revoke every stored file bound to ``owner``."""
+    """Revoke every stored file bound to ``owner``, keeping held evidence's bytes."""
     from django.contrib.contenttypes.models import ContentType
 
     from .models import StoredFile
+    from .retention import retire_files
 
     ct = ContentType.objects.get_for_model(type(owner))
-    return StoredFile.objects.filter(
+    return retire_files(StoredFile.objects.filter(
         owner_content_type=ct, owner_object_id=str(owner.pk),
-        revoked_at__isnull=True,
-    ).update(revoked_at=timezone.now(), content=b"", size=0)
+    ))

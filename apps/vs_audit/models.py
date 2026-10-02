@@ -309,9 +309,16 @@ class AuditEvent(models.Model):
     procurement event only when it names one of their branches, and one naming
     no branch only when they read the whole school
     (:func:`vs_audit.scoping.audit_scope_predicate`). Events of other modules
-    carry no branch and are read as before. Rows are append-only; the one
-    later write is ``manage.py branch_backfill`` filling a blank branch on an
-    old finance or procurement event.
+    carry no branch and are read as before.
+
+    Rows are append-only, refused here in Python and at the database by
+    triggers (migration ``0019``), so a queryset update or delete is refused
+    too. The triggers let exactly two writes through: ``manage.py
+    branch_backfill`` filling a blank branch on an old finance or procurement
+    event, and :func:`vs_audit.services.discard_trail_of_unused_tenant`
+    removing the trail of a tenant that is itself being deleted because nobody
+    ever used it. Because the trail outlives the people in it, the user columns
+    are PROTECT: a person who appears in it is deactivated, never deleted.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
@@ -348,14 +355,14 @@ class AuditEvent(models.Model):
     )
     actor_user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
+        on_delete=models.PROTECT,
         null=True,
         blank=True,
         related_name="performed_audit_events",
     )
     effective_user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
+        on_delete=models.PROTECT,
         null=True,
         blank=True,
         related_name="effective_audit_events",

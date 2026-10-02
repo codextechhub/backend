@@ -576,9 +576,14 @@ class _ProcBase(APIView):
         query for the whole page (rather than one per row) can be resolved after
         pagination has bounded the row set, without each list view re-implementing
         pagination.
+
+        Documents dated in an archived fiscal year are left out unless the caller
+        asks with ``?include_archived=true`` (:func:`vs_finance.archive.hide_archived`).
         """
         from core.pagination import XVSPagination
+        from vs_finance.archive import hide_archived
 
+        qs = hide_archived(qs, request)
         paginator = XVSPagination()
         # Bound list reads before serialization; serializers may traverse
         # preloaded relations supplied by their endpoint-specific queryset.

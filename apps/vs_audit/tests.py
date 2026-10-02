@@ -12,7 +12,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from core.models import StoredFile
-from core.test_utils import TenantAPIClient
+from core.test_utils import TenantAPIClient, append_only_unlocked
 from vs_admin_console.models import ImpersonationSession
 from vs_tenants.context import (
     clear_request_context,
@@ -607,9 +607,10 @@ class EventExplorerTenantFilterEndpointTests(AuditExportFileFixture, TestCase):
     def setUp(self):
         clear_request_context()
         self.make_events(2)
-        AuditEvent.objects.filter(entity_type="PurchaseOrder").update(
-            tenant=self.other_tenant,
-        )
+        with append_only_unlocked():  # Reshape the fixture: the trail is append-only.
+            AuditEvent.objects.filter(entity_type="PurchaseOrder").update(
+                tenant=self.other_tenant,
+            )
         self.client = TenantAPIClient(self.officer)
 
     @staticmethod
@@ -1214,9 +1215,10 @@ class AuditDashboardClockTests(AuditTenantIsolationFixture, TestCase):
         self.instant = two_days_ago.astimezone(dt.timezone.utc).replace(
             hour=23, minute=30, second=0, microsecond=0,
         )
-        AuditEvent.objects.filter(
-            id__in=[self.green_current.id, self.green_legacy.id],
-        ).update(event_at=self.instant)
+        with append_only_unlocked():  # The trail is append-only outside tests.
+            AuditEvent.objects.filter(
+                id__in=[self.green_current.id, self.green_legacy.id],
+            ).update(event_at=self.instant)
 
     def test_the_heatmap_and_the_daily_series_use_the_schools_zone(self):
         from zoneinfo import ZoneInfo
@@ -1615,11 +1617,12 @@ class RetiredTrailRollupTests(EntityTrailCounterFixture, TestCase):
     1690 against 399, and 10 trails describing entities with no events at all -
     and the platform console was the surface still reading the stored figure.
 
-    Both shapes are reproduced here through the same door that produced them
-    live: a bulk delete. ``AuditEvent.delete()`` refuses on the instance, but
-    ``queryset.delete()`` goes straight past it, which is exactly how migration
-    0003 removed every ``IMPERSONATED_REQUEST`` row and left the counters
-    standing.
+    Both shapes are reproduced here through the door that produced them live:
+    a bulk delete, which is how migration 0003 removed every
+    ``IMPERSONATED_REQUEST`` row and left the counters standing. The trail is
+    append-only at the database now, so the tests lift its triggers to stage
+    the shape (:class:`core.test_utils.append_only_unlocked`); trails emptied
+    by those migrations, and by an unused tenant's discarded trail, still exist.
     """
 
     @classmethod
@@ -1648,9 +1651,10 @@ class RetiredTrailRollupTests(EntityTrailCounterFixture, TestCase):
 
     def test_a_platform_caller_counts_what_is_there_after_a_bulk_delete(self):
         """The User:1 case, in miniature: 6 claimed, 2 deleted, 4 present."""
-        AuditEvent.objects.filter(
-            id__in=[event.id for event in self.green_seen[:2]],
-        ).delete()
+        with append_only_unlocked():  # The trail is append-only outside tests.
+            AuditEvent.objects.filter(
+                id__in=[event.id for event in self.green_seen[:2]],
+            ).delete()
 
         row = self._row(self.cx, *self.SHARED)
 
@@ -1666,9 +1670,10 @@ class RetiredTrailRollupTests(EntityTrailCounterFixture, TestCase):
     def test_the_dates_move_with_the_deletion_not_just_the_count(self):
         """first/last are derived too, so a high-water timestamp cannot survive."""
         survivors = self.bright_seen + [self.nobodys]
-        AuditEvent.objects.filter(
-            id__in=[event.id for event in self.green_seen],
-        ).delete()
+        with append_only_unlocked():  # The trail is append-only outside tests.
+            AuditEvent.objects.filter(
+                id__in=[event.id for event in self.green_seen],
+            ).delete()
 
         row = self._row(self.cx, *self.SHARED)
 
@@ -1688,9 +1693,10 @@ class RetiredTrailRollupTests(EntityTrailCounterFixture, TestCase):
         anywhere. Zero is the only true answer, and the trail is still listed,
         because "this entity was audited once" remains a fact worth keeping.
         """
-        AuditEvent.objects.filter(
-            entity_type=self.SHARED[0], entity_id=self.SHARED[1],
-        ).delete()
+        with append_only_unlocked():  # The trail is append-only outside tests.
+            AuditEvent.objects.filter(
+                entity_type=self.SHARED[0], entity_id=self.SHARED[1],
+            ).delete()
 
         row = self._row(self.cx, *self.SHARED)
 
@@ -1706,9 +1712,10 @@ class RetiredTrailRollupTests(EntityTrailCounterFixture, TestCase):
         every audited entity; Bright Star never saw a row it could open no event
         on and still does not.
         """
-        AuditEvent.objects.filter(
-            entity_type=self.SHARED[0], entity_id=self.SHARED[1],
-        ).delete()
+        with append_only_unlocked():  # The trail is append-only outside tests.
+            AuditEvent.objects.filter(
+                entity_type=self.SHARED[0], entity_id=self.SHARED[1],
+            ).delete()
 
         response = self.bright.get(
             "/v1/audit/entity-trails/", {"entity_type": self.SHARED[0]},
@@ -1719,9 +1726,10 @@ class RetiredTrailRollupTests(EntityTrailCounterFixture, TestCase):
 
     def test_the_detail_route_is_a_404_once_the_events_are_gone(self):
         """Not an empty trail with a stored count on top of it."""
-        AuditEvent.objects.filter(
-            entity_type=self.SHARED[0], entity_id=self.SHARED[1],
-        ).delete()
+        with append_only_unlocked():  # The trail is append-only outside tests.
+            AuditEvent.objects.filter(
+                entity_type=self.SHARED[0], entity_id=self.SHARED[1],
+            ).delete()
 
         response = self.cx.get(
             f"/v1/audit/entity-trails/{self.SHARED[0]}/{self.SHARED[1]}/",
@@ -1785,9 +1793,10 @@ class EntityTrailOrderingTests(EntityTrailCounterFixture, TestCase):
 
     def _touch(self, entity_id, *, when):
         """Move an entity's most recent event to ``when``, past the save guard."""
-        AuditEvent.objects.filter(
-            entity_type="PurchaseOrder", entity_id=entity_id,
-        ).update(event_at=when)
+        with append_only_unlocked():  # The trail is append-only outside tests.
+            AuditEvent.objects.filter(
+                entity_type="PurchaseOrder", entity_id=entity_id,
+            ).update(event_at=when)
 
     # Newest first, so this is the order the catalogue must produce.
     NEWEST_FIRST = ["PO-ANON", "PO-BRIGHT-2", "PO-GREEN-1", "PO-GREEN-2", "PO-BRIGHT-1"]
@@ -1825,7 +1834,8 @@ class EntityTrailOrderingTests(EntityTrailCounterFixture, TestCase):
 
         self.assertEqual(self._listed(self.cx, entity_type="PurchaseOrder")[0], "PO-ANON")
 
-        AuditEvent.objects.filter(entity_type="PurchaseOrder", entity_id="PO-ANON").delete()
+        with append_only_unlocked():  # Only a test can empty a trail.
+            AuditEvent.objects.filter(entity_type="PurchaseOrder", entity_id="PO-ANON").delete()
 
         self.assertEqual(
             self._listed(self.cx, entity_type="PurchaseOrder"),

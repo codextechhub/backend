@@ -522,3 +522,38 @@ class AuditDiffService:
             before_data=before_data,
             after_data=after_data,
         )
+
+
+#: The transaction-local setting the append-only trigger reads to admit one deletion.
+DISCARD_TENANT_SETTING = "vs_audit.discard_tenant"
+
+
+def discard_trail_of_unused_tenant(tenant) -> int:
+    """Delete the audit trail of a tenant that is being deleted, inside its transaction.
+
+    The platform trail is append-only at the database. The one deletion its
+    trigger admits is this: a tenant torn down because nobody ever used it (an
+    import rolled back before anyone signed in) takes the events its own
+    creation wrote with it, since the tenant row they point at goes too. The
+    caller has already proved the tenant unused and must hold the transaction
+    that deletes the tenant: the permission is a transaction-local setting
+    naming that one tenant, so it ends with the transaction and never reaches
+    another tenant's rows. Returns the rows deleted.
+    """
+    from django.db import connection
+
+    from .models import AuditEvent
+
+    if not connection.in_atomic_block:
+        raise RuntimeError("Discarding a tenant's audit trail needs the tenant's own transaction.")
+    postgres = connection.vendor == "postgresql"
+    if postgres:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config(%s, %s, true)", [DISCARD_TENANT_SETTING, str(tenant.pk)],
+            )
+    deleted, _ = AuditEvent.objects.filter(tenant=tenant).delete()
+    if postgres:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT set_config(%s, '', true)", [DISCARD_TENANT_SETTING])
+    return deleted

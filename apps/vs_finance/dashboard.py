@@ -143,9 +143,12 @@ def _current_period(entity, period=None):
     When the caller pins a ``period`` we use it. Otherwise the *default* is the
     period that **contains today** (so the as-of is the present day), falling back
     to the latest open period, then the latest period. A closing period is never
-    the anchor: it holds the year-end close, not a month of trading.
+    the anchor: it holds the year-end close, not a month of trading. Nor is a
+    month of an archived year (:mod:`vs_finance.archive`), unless pinned.
     """
-    qs = FiscalPeriod.objects.filter(entity=entity, is_closing=False).select_related("fiscal_year")
+    qs = FiscalPeriod.objects.filter(
+        entity=entity, is_closing=False, fiscal_year__archived_at__isnull=True,
+    ).select_related("fiscal_year")
     if period is not None:  # Caller explicitly pinned a period.
         return period
     today = tenant_today(entity.tenant)

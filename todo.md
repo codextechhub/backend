@@ -1043,6 +1043,65 @@ Verified (on 28fa46b8): tests_payroll_previous_pay 41 OK, tests_payroll_statutor
 OK, tests_payroll_roster_rules 25 OK, vs_finance 1761 OK, vs_rbac 981 OK. The full
 suite was not run.
 
+### D109. Financial records are kept for their retention period, locked figures are sealed, audit trails are append-only, and old years can be archived (hash pending, 2026-10-02)
+MODULES: M19 finance and accounting, M22/M23 procurement and payables (superseded
+evidence), M18 payments (payment records and events), M05 audit (append-only
+trails), M07 workflow (append-only approval log), M06 configuration (retention
+settings), M02 admin console (delete_user, delete_entity), MRD.
+MUST SAY:
+- Retention (M19 and every module with financial records). A record of financial
+  effect that has left draft cannot be deleted for the retention period, counted
+  from the end of its fiscal year, by any path: endpoint, queryset delete,
+  cascade, delete_user, delete_entity. A refused delete returns 409
+  RECORD_RETAINED with the date the hold ends. The floor is platform data
+  (`finance.retention.statutory_years`, 6; the accountant confirms 6 or 7); a
+  school may lengthen it (`finance.retention.years`), never shorten it. Uploaded
+  files keep their bytes while their record is kept.
+- Evidence (M22/M23). Removing a file from a supplier bill or payment that has
+  left draft needs a reason and marks it superseded; the file stays,
+  `?include_superseded=true` shows it, both actions are audited.
+- delete_user and delete_entity refuse for anyone or any books tied to kept
+  records or an audit trail ("deactivate instead"). People in a trail are
+  deactivated, never deleted.
+- Seals (M19). Every month close, month lock and year close stores each account's
+  balance per branch and a checksum over the period's ledger lines, chained to the
+  previous seal (balances before year-end closing entries).
+  GET /finance/seals/verify/ and `verify_ledger_seals` (optionally opening a VIGIL
+  incident) report any change; the close checklist warns (does not block).
+- Append-only (M05, M07, M18). Database triggers refuse changes and deletes on the
+  platform audit trail, the payments event log, the workflow approval log and the
+  seals, as on the finance and config audit logs; a test fails if any trigger is
+  missing or dropped by another migration.
+- Archiving (M19). A whole-school holder of `finance.fiscalyear.archive` archives a
+  closed or locked year older than `finance.archive.min_age_years` (default 2),
+  and unarchives it, with a reason, audited. An archived year leaves pickers,
+  document lists and the dashboard default, except bills still unpaid; everything
+  shows with `?include_archived=true`; it must be unarchived before reopening;
+  nothing is deleted.
+- Keys: finance.fiscalyear.archive (SENSITIVE), finance.seal.view. Routes:
+  GET/PATCH /v1/finance/settings/records/, GET /v1/finance/seals/verify/,
+  POST /v1/finance/fiscal-years/<id>/archive/ and /unarchive/.
+- Migrations: vs_finance 0060, vs_audit 0019, vs_payments 0012, vs_procurement
+  0044, vs_workflow 0024, vs_config 0015.
+OWNER QUESTIONS OPEN: 6 or 7 years (accountant); an erasure request by a former
+staff member (suggested: replace name and contacts with a placeholder, keep every
+record).
+NOT PROTECTED YET: raw SQL on posted journal lines (closed months show it through
+seals); supplier quotation attachments, purchase-order PDFs, the bank-statement
+import source file, raw webhook bodies; draft expense receipt removal is not
+audited; deleting an impersonation session needs only the view key; no purge after
+the retention period; read-only access for a suspended school (CONTROL-9).
+FRONTEND: FinPro's evidence removal must send a reason, and every delete must
+handle 409 RECORD_RETAINED.
+Verified (merged on 8d21509a): targeted retention, append-only, petty cash, payer
+and pay-brought-forward modules 126 OK; the FULL SUITE with --parallel 4: Ran 9136
+tests, FAILED (errors=7), all seven in schools.core.fal from a fixed receipt date
+of 2026-10-01 in schools/core/fal/tests/base.py `pay()`, which fail identically on
+main without this change (reported to the guides session). The agent ran
+vs_finance 1673, vs_procurement 728, vs_payments 403, vs_audit 108, vs_workflow
+538, core 197, vs_import_data 121, vs_config 164, schools.vs_onboarding 179,
+vs_user 427, vs_admin_console 177, all OK.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

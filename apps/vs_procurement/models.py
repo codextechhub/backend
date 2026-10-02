@@ -1879,6 +1879,12 @@ class VendorInvoiceAttachment(TimeStampedModel):
     Attachable at any point in the bill's life, including after POSTED. A supplier
     frequently sends the formal invoice after the charge has already been booked, and
     a document that locks its own evidence out at posting time collects nothing.
+
+    Once the bill has left draft its evidence is never deleted. Removing a file
+    marks it **superseded** (``superseded_at``, ``superseded_by`` and a required
+    ``superseded_reason``) and keeps the row and its bytes, so a mistaken upload
+    and the only copy of a paid bill's invoice can always be told apart
+    (:func:`vs_procurement.attachments.remove_attachment`).
     """
 
     vendor_invoice = models.ForeignKey(
@@ -1893,6 +1899,12 @@ class VendorInvoiceAttachment(TimeStampedModel):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         related_name="vendor_invoice_attachments", null=True, blank=True,
     )
+    superseded_at = models.DateTimeField(null=True, blank=True)
+    superseded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="vendor_invoice_attachments_superseded", null=True, blank=True,
+    )
+    superseded_reason = models.CharField(max_length=500, blank=True, default="")
 
     class Meta:
         ordering = ["vendor_invoice", "id"]
@@ -2072,7 +2084,8 @@ class VendorPaymentAttachment(TimeStampedModel):
     A receipt necessarily arrives *after* the payment is posted, so unlike the draft
     fields on this document there is no lifecycle state in which attaching one is
     disallowed - refusing the upload on a POSTED payment would reject every receipt
-    that actually exists.
+    that actually exists. Removal after draft supersedes rather than deletes, exactly
+    as on :class:`VendorInvoiceAttachment`.
     """
 
     payment = models.ForeignKey(
@@ -2087,6 +2100,12 @@ class VendorPaymentAttachment(TimeStampedModel):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         related_name="vendor_payment_attachments", null=True, blank=True,
     )
+    superseded_at = models.DateTimeField(null=True, blank=True)
+    superseded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="vendor_payment_attachments_superseded", null=True, blank=True,
+    )
+    superseded_reason = models.CharField(max_length=500, blank=True, default="")
 
     class Meta:
         ordering = ["payment", "id"]

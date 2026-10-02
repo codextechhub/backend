@@ -276,6 +276,12 @@ def require_reason(reason, *, act):
 
 # Apply and audit a period status transition.
 def _transition(period, new_status, *, actor_user, action, message, **metadata):
+    """Move ``period`` to ``new_status``, seal it when it closes or locks, and audit it.
+
+    A CLOSED or LOCKED period's figures are sealed in the same transaction
+    (:func:`vs_finance.seals.seal_period`), and the seal's checksum is written
+    on the audit row, so the figures that were closed can be proven later.
+    """
     period.status = new_status  # Set the new lifecycle status.
     fields = ["status", "updated_at"]  # Base fields changed by every transition.
     if new_status in (PeriodStatus.SOFT_CLOSED, PeriodStatus.CLOSED, PeriodStatus.LOCKED):  # Closing statuses capture actor/time.
@@ -283,6 +289,13 @@ def _transition(period, new_status, *, actor_user, action, message, **metadata):
         period.closed_by = actor_user  # Store the user who closed/locked the period.
         fields += ["closed_at", "closed_by"]  # Persist close metadata too.
     period.save(update_fields=fields)
+    if new_status in (PeriodStatus.CLOSED, PeriodStatus.LOCKED):
+        from .seals import seal_period
+
+        seal = seal_period(
+            period, locked=new_status == PeriodStatus.LOCKED, actor_user=actor_user,
+        )
+        metadata["seal_checksum"] = seal.seal_checksum
     record(  # Audit the transition.
         entity=period.entity, action=action, actor_user=actor_user, target=period,  # Entity, action, actor, target.
         message=message, target_type="FiscalPeriod",  # Human message and explicit target type.
@@ -557,6 +570,10 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
       (:func:`_lock_fiscal_year`), so postings into the year already in flight
       finish first and later ones see the year closed.
 
+    * Once sealed, the year's figures are recorded with a checksum
+      (:func:`vs_finance.seals.seal_fiscal_year`), so the closed year can later be
+      proven unchanged.
+
     Refuses a year already CLOSED/LOCKED. Returns ``(journals, net_income)``: the
     closing journals, one per branch with something to close (an empty list when
     the year had no P&L activity), and the net result across all of them in kobo
@@ -682,6 +699,9 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
 
     fiscal_year.status = PeriodStatus.CLOSED  # Seal the year.
     fiscal_year.save(update_fields=["status", "updated_at"])
+    from .seals import seal_fiscal_year
+
+    seal = seal_fiscal_year(fiscal_year, actor_user=actor_user)  # Prove the closed figures later.
     record(  # Audit the close with the net result and every closing journal.
         entity=entity, action=FinanceAuditAction.FISCAL_YEAR_CLOSED,
         actor_user=actor_user, target=fiscal_year, target_type="FiscalYear",
@@ -691,6 +711,7 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
         ),
         journal_ids=[j.pk for j in journals], net_by_branch=net_by_branch,
         fiscal_year=fiscal_year.year, net_income=net_income,
+        seal_checksum=seal.seal_checksum,
         **({"forced": True, "reason": reason,
             "overridden_checks": [i.name for i in checklist.failures]} if forced else {}),
     )
@@ -717,15 +738,19 @@ def reopen_fiscal_year(entity, fiscal_year, *, actor_user=None, reason=None):
     into Retained Earnings.
 
     Needs a ``reason`` (:func:`require_reason`), stored on the FISCAL_YEAR_REOPENED
-    audit row with the journals reversed. Refuses a LOCKED year, a year that is not
-    closed, and a year whose closing journal sits in a LOCKED period, where no
-    reversal can post. Returns ``(fiscal_year, reversals)``.
+    audit row with the journals reversed. Refuses an archived year (unarchive it
+    first), a LOCKED year, a year that is not closed, and a year whose closing
+    journal sits in a LOCKED period, where no reversal can post. Returns
+    ``(fiscal_year, reversals)``.
     """
     from .constants import DocumentStatus
     from .posting import reverse_journal
 
     reason = require_reason(reason, act=f"reopen FY{fiscal_year.year}")
     _lock_fiscal_year(fiscal_year)
+    if fiscal_year.archived_at is not None:
+        raise PeriodCloseError(
+            f"Fiscal year {fiscal_year.year} is archived. Unarchive it before re-opening it.")
     if fiscal_year.status == PeriodStatus.LOCKED:
         raise PeriodCloseError(
             f"Fiscal year {fiscal_year.year} is LOCKED and cannot be re-opened.")

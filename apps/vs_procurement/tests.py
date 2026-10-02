@@ -13785,6 +13785,55 @@ class VendorDocumentAttachmentTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(invoice.attachments.count(), 0)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_evidence_on_a_posted_bill_is_superseded_never_deleted(self, _permission):
+        """A clerk removing a paid bill's invoice leaves it, its bytes and a record of who."""
+        from core.models import StoredFile
+        from core.retention import RetentionError
+        from vs_finance.constants import FinanceAuditAction
+        from vs_finance.models import FinanceAuditLog
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+        client = self._client(entity, email="supersede@test.com")
+        base = f"/v1/procurement/vendor-invoices/{invoice.id}/attachments/"
+        row = client.post(
+            f"{base}?entity={entity.code}",
+            {"file": self._upload("acme-invoice.pdf", self.PDF)}, format="multipart",
+        ).data["data"]
+        invoice.status = DocumentStatus.POSTED
+        invoice.save(update_fields=["status", "updated_at"])
+
+        no_reason = client.delete(f"{base}{row['id']}/?entity={entity.code}")
+        self.assertEqual(no_reason.status_code, 400)
+
+        removed = client.delete(
+            f"{base}{row['id']}/?entity={entity.code}",
+            {"reason": "Uploaded against the wrong bill."}, format="json",
+        )
+        self.assertEqual(removed.status_code, 200, removed.data)
+        self.assertEqual(removed.data["data"]["attachments"], [])
+        kept = invoice.attachments.get()
+        self.assertIsNotNone(kept.superseded_at)
+        self.assertEqual(kept.superseded_reason, "Uploaded against the wrong bill.")
+        stored = StoredFile.objects.get(name=kept.file.name)
+        self.assertEqual(bytes(stored.content), self.PDF)
+
+        everything = client.get(f"{base}?entity={entity.code}&include_superseded=true")
+        self.assertTrue(everything.data["data"]["attachments"][0]["superseded"])
+        actions = set(FinanceAuditLog.objects.filter(
+            entity=entity, target_id=str(invoice.pk),
+        ).values_list("action", flat=True))
+        self.assertTrue({FinanceAuditAction.ATTACHMENT_ADDED,
+                         FinanceAuditAction.ATTACHMENT_SUPERSEDED} <= actions)
+
+        from django.db import transaction
+
+        with self.assertRaises(RetentionError), transaction.atomic():
+            kept.delete()
+        with self.assertRaises(RetentionError), transaction.atomic():
+            kept.file.delete(save=False)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_receipt_attaches_to_a_vendor_payment(self, _permission):
         entity, _, vendor, _, _ = self.build_p2p()
         payment = self._payment(entity, vendor)

@@ -808,7 +808,9 @@ class PaymentEvent(TimeStampedModel):
     Complements the ledger's own immutable journals and ``vs_finance.FinanceAuditLog``:
     those capture the *accounting*; this captures the *gateway* actions around it
     (initiation, confirmation, failure, webhook receipt) including rejected attempts.
-    Rows are never updated or deleted.
+    Rows are never updated or deleted: refused here in Python and at the database by
+    triggers, so a queryset write is refused too. The user columns are PROTECT, so a
+    person who appears in the log is deactivated, never deleted.
 
     ``actor_user`` is the person in whose name the action ran. Under a proxy (an
     impersonation session) that is the impersonated person, and ``proxied_by``
@@ -826,11 +828,11 @@ class PaymentEvent(TimeStampedModel):
     message = models.CharField(max_length=255, blank=True, default="")
     metadata = models.JSONField(default=dict, blank=True)
     actor_user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="+", null=True, blank=True,
     )
     proxied_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="+", null=True, blank=True,
     )
 

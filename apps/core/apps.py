@@ -11,6 +11,11 @@ class CoreConfig(AppConfig):
 
         binding.connect_all()
 
+        # Stored files are kept while the record they are evidence for is kept.
+        from . import retention
+
+        retention.connect()
+
         # Importing the module registers its @register() check, which reports a
         # production deployment in which no scheduled task can ever run.
         from . import checks  # noqa: F401

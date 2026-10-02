@@ -471,9 +471,15 @@ class _FinanceBase(APIView):
         one of its own. A serializer only knows whose response it is building
         from the context, and a list built without it would hand every caller
         the same rows whatever their Field Access says.
+
+        Documents dated in an archived fiscal year are left out unless the caller
+        asks with ``?include_archived=true`` (:func:`vs_finance.archive.hide_archived`).
         """
         from core.pagination import XVSPagination
 
+        from ..archive import hide_archived
+
+        qs = hide_archived(qs, request)
         paginator = XVSPagination()  # Instantiate platform paginator.
         paginator.page_size = 25  # Default finance page size.
         page = paginator.paginate_queryset(qs, request, view=self)  # Slice queryset for current request.

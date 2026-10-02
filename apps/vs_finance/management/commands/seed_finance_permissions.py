@@ -41,7 +41,8 @@ FINANCE_RESOURCES = [
                                                 ("close", "CRITICAL"), ("force_close", "CRITICAL"),
                                                 ("reopen", "CRITICAL"), ("lock", "CRITICAL")]),
     # Reopening a closed year takes its whole result back out of Retained Earnings.
-    ("fiscalyear",   "fiscal years",           [("reopen", "CRITICAL")]),
+    # ``archive`` puts a closed year away and brings it back; it deletes nothing.
+    ("fiscalyear",   "fiscal years",           [("reopen", "CRITICAL"), ("archive", "SENSITIVE")]),
     ("journal",      "journal entries",        [("view", "NORMAL"), ("post", "CRITICAL"), ("reverse", "CRITICAL"),
                                                 # ``submit`` hands a draft to the approval engine.
                                                 # No approver keys. Who may approve is decided by the
@@ -179,6 +180,10 @@ FINANCE_RESOURCES = [
     # CodeX for everybody, so both keys are platform-scoped and the views also
     # require platform staff. Reading needs no key of its own.
     ("statutory",    "national payroll tax data", [("create", "CRITICAL"), ("update", "CRITICAL")]),
+    # Reading the sealed figures of closed periods and verifying them against the
+    # ledger. Read-only, but it shows every branch's balances, so the view also
+    # requires whole-tenant reach.
+    ("seal",         "sealed period figures",  [("view", "NORMAL")]),
 ]
 
 
