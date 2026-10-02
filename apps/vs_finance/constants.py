@@ -1101,3 +1101,20 @@ WF_PETTY_CASH_RETURN_APPROVER_GROUP = "finance-petty-cash-approver"
 #: posts on the custodian's word, a missing ₦26,000 does not. A tenant chooses its
 #: own figure when it adopts the route, and edits it like any other step afterwards.
 WF_PETTY_CASH_SHORTAGE_THRESHOLD = 500_000
+
+
+class PayBroughtForwardSource(models.TextChoices):
+    """Whose pay a person's figures brought forward into a tax year are.
+
+    * ``PREVIOUS_EMPLOYER``: another employer's, before the person joined. They
+      count in the person's cumulative PAYE and are reported by that employer,
+      never in this one's returns or year to date.
+    * ``THIS_EMPLOYER``: this employer's own, for the months of the year before
+      its payroll ran on these books. They count in cumulative PAYE and in this
+      employer's year to date and annual return, and in no monthly remittance
+      schedule, because those months were remitted from wherever payroll ran
+      then.
+    """
+
+    PREVIOUS_EMPLOYER = "PREVIOUS_EMPLOYER", "Previous employer"
+    THIS_EMPLOYER = "THIS_EMPLOYER", "This employer, before payroll ran here"

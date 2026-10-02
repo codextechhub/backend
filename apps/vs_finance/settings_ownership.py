@@ -332,4 +332,14 @@ PAYROLL_SETTING_CONSUMERS = {
         "Payslip delivery", "vs_finance.payslips.deliver_payslips",
         "Emails each employee their payslip as a PDF when the run is paid.",
     ),
+    "previous_pay_required": _consumer(
+        "Earlier pay from a previous employer", "vs_finance.payroll.generate_run_from_roster",
+        "Refuses a run that would pay somebody who joined after January before their earlier "
+        "pay that tax year is recorded. Off, they are listed as a warning instead.",
+    ),
+    "payroll_moved_here_on": _consumer(
+        "Payroll moved here mid-year", "vs_finance.payroll_statutory.starters_without_previous_pay",
+        "The first payroll month run here by a tenant that ran payroll elsewhere earlier in "
+        "the year. Staff first paid in that month are its own, not mid-year joiners.",
+    ),
 }

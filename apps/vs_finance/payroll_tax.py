@@ -15,6 +15,25 @@ if the whole year had been N100,000. A month in which the year's tax to date is
 below what was already withheld deducts nothing (no refund through payroll); the
 next month's figure accounts for the excess automatically.
 
+**A person who joined mid-year brings their earlier months with them.** Their
+previous employer's figures for the year (``brought_forward``, from
+:class:`~vs_finance.models.PayBroughtForward`) are added to the year to date
+on every side: gross and taxable pay to the income, their pension and NHF to
+the contribution reliefs, their PAYE to what was already deducted. The bands
+still accrue from 1 January, so Aisha, who earned N900,000 elsewhere from
+January to March, is taxed in April on all N1.2 million against four months of
+bands, not on one month's pay against four months of bands. Where the previous
+employer deducted more than the tax due to date, this month deducts nothing and
+the excess stays counted in what was already deducted, so it is used up against
+the later months of the same year (``excess_withheld`` in the working says how
+much is left). Payroll never refunds it: whatever is still unused at the end of
+the year is the person's to reclaim from the revenue service.
+
+**So does a tenant that moved its payroll here mid-year.** Its own months
+before payroll ran on these books (``opening``) enter the year to date the
+same way, so Ngozi, paid January to May on Bright Star's old payroll, is taxed
+in June on her whole year.
+
 **Reliefs are data.** Each :class:`~vs_finance.models.PayeTaxRelief` of the table
 is applied by kind (:class:`~vs_finance.constants.PayeReliefKind`): pension and
 NHF contributions are deducted as actually made to date; a percentage relief
@@ -47,6 +66,23 @@ class YearToDate:
     paye: int = 0
     pension: int = 0
     nhf: int = 0
+
+    def plus(self, other) -> "YearToDate":
+        """The two years to date added together, figure by figure."""
+        if other is None:
+            return self
+        return YearToDate(
+            gross=self.gross + other.gross, taxable_pay=self.taxable_pay + other.taxable_pay,
+            paye=self.paye + other.paye, pension=self.pension + other.pension,
+            nhf=self.nhf + other.nhf,
+        )
+
+    def as_dict(self) -> dict:
+        """The figures as a payroll line's working records them."""
+        return {
+            "gross": self.gross, "taxable_pay": self.taxable_pay, "paye": self.paye,
+            "pension": self.pension, "nhf": self.nhf,
+        }
 
 
 @dataclass
@@ -139,14 +175,21 @@ def reliefs_to_date(reliefs, *, month, gross_to_date, pension_to_date, nhf_to_da
 
 
 def compute_paye(snapshot, *, month, prior, gross_now, taxable_now, pension_now, nhf_now,
-                 annual_rent) -> PayeResult:
+                 annual_rent, brought_forward=None, opening=None) -> PayeResult:
     """This month's PAYE under the table ``snapshot`` (:meth:`PayeTaxTable.snapshot`).
 
     ``month`` is the payroll month's number in the tax year (1 to 12); ``prior``
-    is a :class:`YearToDate` of the earlier months. Returns the amount to withhold
-    this month and the working: income, reliefs and tax to date, what was already
-    withheld, and the table it was priced on.
+    is a :class:`YearToDate` of the earlier months run on these books;
+    ``brought_forward`` one of a previous employer's months of the same year,
+    and ``opening`` one of this employer's own months before its payroll ran
+    on these books, each or None. Returns the amount to withhold this month and
+    the working: income, reliefs and tax to date, what was already withheld,
+    and the table it was priced on. The working keeps the three apart
+    (``inputs``, ``brought_forward`` and ``opening``) so a payslip can say
+    which figures are whose.
     """
+    this_employer = prior
+    prior = prior.plus(brought_forward).plus(opening)
     fraction = Fraction(month, 12)
     gross_to_date = prior.gross + int(gross_now)
     taxable_to_date = prior.taxable_pay + int(taxable_now)
@@ -174,6 +217,7 @@ def compute_paye(snapshot, *, month, prior, gross_now, taxable_now, pension_now,
 
     tax_to_date_kobo = _round(tax_to_date)
     amount = max(tax_to_date_kobo - prior.paye, 0)
+    excess_withheld = max(prior.paye - tax_to_date_kobo, 0)
     working = {
         "method": "cumulative",
         "tax_year": snapshot["tax_year"],
@@ -189,11 +233,11 @@ def compute_paye(snapshot, *, month, prior, gross_now, taxable_now, pension_now,
             "pension_this_month": int(pension_now),
             "nhf_this_month": int(nhf_now),
             "annual_rent": int(annual_rent or 0),
-            "gross_before": prior.gross,
-            "taxable_before": prior.taxable_pay,
-            "pension_before": prior.pension,
-            "nhf_before": prior.nhf,
-            "paye_before": prior.paye,
+            "gross_before": this_employer.gross,
+            "taxable_before": this_employer.taxable_pay,
+            "pension_before": this_employer.pension,
+            "nhf_before": this_employer.nhf,
+            "paye_before": this_employer.paye,
         },
         "reliefs": [
             {"code": code, "name": name, "amount": _round(amount)} for code, name, amount in reliefs
@@ -204,6 +248,10 @@ def compute_paye(snapshot, *, month, prior, gross_now, taxable_now, pension_now,
         "exempt": exempt,
         "minimum_tax_applied": minimum_applied,
         "tax_to_date": tax_to_date_kobo,
+        "excess_withheld": excess_withheld,
         "paye_this_month": amount,
     }
+    for key, earlier in (("brought_forward", brought_forward), ("opening", opening)):
+        if earlier is not None:
+            working[key] = earlier.as_dict()
     return PayeResult(amount=amount, working=working)

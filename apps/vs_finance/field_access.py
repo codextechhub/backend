@@ -40,6 +40,16 @@ tax ID, annual rent and any PAYE override go with PAYE, and the pension PIN
 with pension. A person's voluntary deduction (a staff loan, cooperative
 savings) is a line of their pay breakdown wherever it is read, so its amount
 and limit go with the pay breakdown on the roster too.
+
+A person's pay brought forward into a tax year, whether a previous
+employer's or this employer's own from before its payroll ran here
+(:class:`~vs_finance.models.PayBroughtForward`), is read and written under the
+switch of the same figure of their pay here: its gross and taxable pay with
+gross pay, the PAYE deducted with PAYE, its pension with pension, and its NHF
+with the pay breakdown, as NHF is on a payroll line. The body keys carry a
+``brought_forward_`` prefix so that neither a form nor the audit trail can
+mistake them for the person's current pay. On a payroll line and a payslip
+they travel inside the PAYE working, so they go with PAYE there.
 """
 from collections.abc import Mapping
 
@@ -123,20 +133,24 @@ def register():
             "vs_finance.serializers.EmployeeSalarySerializer",
             "vs_finance.serializers.EmployeeSalaryVersionSerializer",
             "vs_finance.serializers.EmployeeDeductionSerializer",
+            "vs_finance.serializers.PayBroughtForwardSerializer",
         ),
         fields=(
             FieldSpec("gross_amount", "Gross pay", group="Pay", sensitive=True,
-                      scope=_TENANT, sort_order=10),
+                      scope=_TENANT, sort_order=10,
+                      api_names=("gross_amount", "brought_forward_gross_amount",
+                                 "brought_forward_taxable_pay")),
             FieldSpec("paye_amount", "PAYE", group="Pay", sensitive=True,
                       scope=_TENANT, sort_order=20,
                       api_names=("paye_amount", "paye_override", "paye_override_reason",
-                                 "annual_rent", "tax_id")),
+                                 "annual_rent", "tax_id", "brought_forward_paye_amount")),
             FieldSpec("pension_amount", "Pension", group="Pay", sensitive=True,
-                      scope=_TENANT, sort_order=30, api_names=("pension_amount", "pension_pin")),
+                      scope=_TENANT, sort_order=30,
+                      api_names=("pension_amount", "pension_pin", "brought_forward_pension_amount")),
             FieldSpec("net_amount", "Net pay", group="Pay", sensitive=True,
                       writable=False, scope=_TENANT, sort_order=40),
             FieldSpec("components", "Pay breakdown", group="Pay", sensitive=True,
                       scope=_TENANT, sort_order=50,
-                      api_names=("components", "amount", "total_limit")),
+                      api_names=("components", "amount", "total_limit", "brought_forward_nhf_amount")),
         ),
     )

@@ -39,7 +39,7 @@ import re
 from dataclasses import dataclass, field
 
 from django.db import transaction
-from django.db.models import Q, Sum
+from django.db.models import Min, Q, Sum
 from rest_framework.exceptions import ValidationError
 
 from .audit import record
@@ -52,6 +52,7 @@ from .constants import (
     NSITF_EXPENSE_CODE,
     NSITF_PAYABLE_CODE,
     PAYE_PAYABLE_CODE,
+    PayBroughtForwardSource,
     PENSION_PAYABLE_CODE,
     PayeMethod,
     PayeSource,
@@ -248,6 +249,308 @@ def voluntary_due(salaries, *, period_start, period_end) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Pay brought forward into the tax year                                       #
+# --------------------------------------------------------------------------- #
+
+#: The figures of pay brought forward, as body keys, model fields and the
+#: :class:`~vs_finance.payroll_tax.YearToDate` attribute each one adds to.
+PAY_BROUGHT_FORWARD_FIGURES = (
+    ("brought_forward_gross_amount", "gross_amount", "gross"),
+    ("brought_forward_taxable_pay", "taxable_pay", "taxable_pay"),
+    ("brought_forward_paye_amount", "paye_amount", "paye"),
+    ("brought_forward_pension_amount", "pension_amount", "pension"),
+    ("brought_forward_nhf_amount", "nhf_amount", "nhf"),
+)
+
+#: The words that describe a record, kept on it beside the figures.
+PAY_BROUGHT_FORWARD_DETAILS = ("employer_name", "evidence_reference")
+
+
+#: What each kind of record is called in the audit trail and in a refusal.
+_BROUGHT_FORWARD_WORDS = {
+    PayBroughtForwardSource.PREVIOUS_EMPLOYER: "earlier pay from a previous employer",
+    PayBroughtForwardSource.THIS_EMPLOYER: "pay from before payroll ran here",
+}
+
+
+def pay_brought_forward_for(salaries, tax_year) -> dict:
+    """``{salary_id: {source: PayBroughtForward}}`` of each person's records for ``tax_year``."""
+    from .models import PayBroughtForward
+
+    ids = [getattr(s, "pk", s) for s in salaries]
+    if not ids:
+        return {}
+    out: dict = {}
+    for row in PayBroughtForward.objects.filter(salary_id__in=ids, tax_year=tax_year):
+        out.setdefault(row.salary_id, {})[row.source] = row
+    return out
+
+
+def opening_for(salary, tax_year):
+    """``salary``'s own pay of ``tax_year`` from before payroll ran on these books, or None."""
+    from .models import PayBroughtForward
+
+    if salary is None:
+        return None
+    return PayBroughtForward.objects.filter(
+        salary=salary, tax_year=tax_year, source=PayBroughtForwardSource.THIS_EMPLOYER,
+    ).first()
+
+
+def brought_forward_as_year_to_date(record):
+    """A :class:`PayBroughtForward` as the year to date it adds, or None for no record."""
+    from .payroll_tax import YearToDate
+
+    if record is None:
+        return None
+    return YearToDate(**{
+        attr: int(getattr(record, field) or 0) for _, field, attr in PAY_BROUGHT_FORWARD_FIGURES
+    })
+
+
+def _lines_of(salaries):
+    """The live lines of ``salaries``, with how to tell whose each one is.
+
+    A line is a person's when it names their salary row, or, for a line written
+    before lines named one, the same user account, as :func:`year_to_date`
+    counts them.
+    """
+    ids = [s.pk for s in salaries]
+    by_user = {s.employee_id: s.pk for s in salaries if s.employee_id}
+    lines = _live_lines().filter(
+        Q(salary_id__in=ids) | Q(salary__isnull=True, employee_id__in=list(by_user)),
+    )
+    return lines, lambda salary_id, employee_id: salary_id or by_user.get(employee_id)
+
+
+def first_months_in_year(entity, salaries, tax_year) -> dict:
+    """``{salary_id: n}``: the payroll month (1 to 12) each person was first paid in ``tax_year``.
+
+    Read from the live lines of the entity's runs. A person not paid in the year
+    is left out.
+    """
+    if not salaries:
+        return {}
+    lines, whose = _lines_of(salaries)
+    firsts: dict = {}
+    for row in (
+        lines.filter(run__entity=entity, run__pay_date__year=tax_year)
+        .values("salary_id", "employee_id").annotate(first=Min("run__pay_date"))
+    ):
+        salary_id = whose(row["salary_id"], row["employee_id"])
+        if salary_id is not None:
+            firsts[salary_id] = min(firsts.get(salary_id, row["first"]), row["first"])
+    return {sid: payroll_period(entity, first)[1].month for sid, first in firsts.items()}
+
+
+def paid_in_year(entity, salaries, year) -> set:
+    """The salary ids of ``salaries`` a live run of the entity paid in ``year``."""
+    if not salaries:
+        return set()
+    lines, whose = _lines_of(salaries)
+    rows = lines.filter(run__entity=entity, run__pay_date__year=year).values_list(
+        "salary_id", "employee_id").distinct()
+    return {sid for sid in (whose(s, e) for s, e in rows) if sid is not None}
+
+
+def starters_without_previous_pay(entity, salaries, *, tax_year, upcoming_month=None) -> list:
+    """Those of ``salaries`` who joined after January of ``tax_year`` with no earlier pay recorded.
+
+    A person joined mid-year when the entity's runs did not pay them in the year
+    before, and their first payroll month this tax year is after January: the
+    month of their first line, or ``upcoming_month`` (the month a run is about to
+    pay) for somebody not paid yet this year. Somebody not paid in the year at
+    all is left out when no ``upcoming_month`` is given. Somebody with a
+    :class:`~vs_finance.models.PayBroughtForward` row of either kind for the
+    year, even one of zeros, is never listed.
+
+    A tenant that moved its payroll onto these books part-way through the year
+    says so in its payroll settings (``payroll_moved_here_on``), and a person
+    first paid in or before that month is its own staff carried over, not a
+    joiner: Bright Star moves its payroll here in June 2026 and its 40 staff,
+    all first paid here in June, are not listed, while a teacher it hires in
+    July is. Without that setting a tenant that begins here part-way through a
+    year sees everybody listed for that year: their earlier months are not on
+    these books either, and their PAYE is worked out as though they had earned
+    nothing since January.
+
+    Returns ``[(salary, first_month)]`` in the order given.
+    """
+    if not salaries:
+        return []
+    recorded = pay_brought_forward_for(salaries, tax_year)
+    pending = [s for s in salaries if s.pk not in recorded]
+    if not pending:
+        return []
+    carried_over = carried_over_month(entity, tax_year)
+    firsts = first_months_in_year(entity, pending, tax_year)
+    last_year = paid_in_year(entity, pending, tax_year - 1)
+    out = []
+    for salary in pending:
+        if salary.pk in last_year:
+            continue
+        month = firsts.get(salary.pk, upcoming_month)
+        if month is None or month <= max(1, carried_over):
+            continue
+        out.append((salary, month))
+    return out
+
+
+def carried_over_month(entity, tax_year) -> int:
+    """The payroll month of ``tax_year`` the entity moved its payroll here in, or 0.
+
+    Read from the tenant's ``payroll_moved_here_on`` setting; 0 when it is
+    empty or falls in another year.
+    """
+    moved = payroll_settings(entity).payroll_moved_here_on
+    if moved is None:
+        return 0
+    end = payroll_period(entity, moved)[1]
+    return end.month if end.year == tax_year else 0
+
+
+def assert_pay_brought_forward_editable(salary, tax_year) -> None:
+    """Refuse a change to earlier pay while a draft run of that year already counts the old figures.
+
+    A run is worked out when it is raised, and a draft is never priced again,
+    so a correction made while a draft holding the person is waiting to be
+    posted would leave that draft taxing them on the figures being replaced.
+    The change waits until the draft is voided and raised again. A posted run
+    is the books, so it is never recomputed: the correction reaches the next
+    run raised, whose cumulative PAYE puts the year to date right.
+    """
+    from .models import PayrollLine
+
+    draft = (
+        PayrollLine.objects.filter(
+            salary=salary, run__pay_date__year=tax_year, run__run_status=PayrollRunStatus.DRAFT,
+        )
+        .select_related("run").order_by("run__pay_date").first()
+    )
+    if draft is not None:
+        run = draft.run
+        raise ValidationError({"tax_year": (
+            f"Draft payroll run {run.document_number or run.pk} already works out "
+            f"{salary.name}'s PAYE for {tax_year} on the figures held now. Void it and raise "
+            f"it again after this change, so it is priced on the corrected figures."
+        )})
+
+
+def _brought_forward_snapshot(record) -> dict:
+    """A record as the audit trail keeps it: under its registered body keys."""
+    if record is None:
+        return {}
+    data = {key: int(getattr(record, field) or 0) for key, field, _ in PAY_BROUGHT_FORWARD_FIGURES}
+    data.update({name: getattr(record, name) for name in PAY_BROUGHT_FORWARD_DETAILS})
+    data["tax_year"] = record.tax_year
+    data["source"] = record.source
+    return data
+
+
+def validate_pay_brought_forward(values: dict, source) -> None:
+    """Refuse figures that cannot be one employer's pay for some months.
+
+    The taxable pay is part of the gross, and the PAYE, pension and NHF were
+    deducted from it. A previous employer's row with any figure names that
+    employer; a row of this employer's own names nobody, since it is this
+    employer's.
+    """
+    gross, taxable = values["gross_amount"], values["taxable_pay"]
+    if taxable > gross:
+        raise ValidationError({"brought_forward_taxable_pay": "Taxable pay cannot exceed the gross pay."})
+    for key, field in (("brought_forward_paye_amount", "paye_amount"),
+                       ("brought_forward_pension_amount", "pension_amount"),
+                       ("brought_forward_nhf_amount", "nhf_amount")):
+        if values[field] > gross:
+            raise ValidationError({key: "A deduction cannot exceed the gross pay it came from."})
+    name = str(values.get("employer_name") or "").strip()
+    if source == PayBroughtForwardSource.THIS_EMPLOYER:
+        if name:
+            raise ValidationError({"employer_name": (
+                "These are this employer's own months, so they name no other employer."
+            )})
+        return
+    figures = any(values[field] for _, field, _ in PAY_BROUGHT_FORWARD_FIGURES)
+    if figures and not name:
+        raise ValidationError({"employer_name": "Name the employer these figures come from."})
+
+
+@transaction.atomic
+def save_pay_brought_forward(salary, tax_year, values: dict, *,
+                             source=PayBroughtForwardSource.PREVIOUS_EMPLOYER,
+                             record_row=None, actor_user=None):
+    """Record or correct a person's pay brought forward into ``tax_year``, audited.
+
+    ``values`` maps model fields (:data:`PAY_BROUGHT_FORWARD_FIGURES`,
+    :data:`PAY_BROUGHT_FORWARD_DETAILS`) to what the record holds after the
+    write; ``record_row`` is the row being corrected (whose own ``source``
+    then applies), or None to record one of ``source``. The figures travel in
+    the trail's ``before``/``after`` under their body keys, where Field Access
+    applies, and never in the message, which is mirrored to the platform trail
+    and cannot be filtered. A correction reaches the runs raised after it
+    (:func:`assert_pay_brought_forward_editable`).
+    """
+    from .models import PayBroughtForward
+
+    if record_row is not None:
+        source = record_row.source
+    if source not in PayBroughtForwardSource.values:
+        raise ValidationError({"source": "Choose PREVIOUS_EMPLOYER or THIS_EMPLOYER."})
+    words = _BROUGHT_FORWARD_WORDS[source]
+    assert_pay_brought_forward_editable(salary, tax_year)
+    validate_pay_brought_forward(values, source)
+    before = _brought_forward_snapshot(record_row)
+    if record_row is None:
+        if PayBroughtForward.objects.filter(
+            salary=salary, tax_year=tax_year, source=source,
+        ).exists():
+            raise ValidationError({"tax_year": (
+                f"{salary.name}'s {words} for {tax_year} is already recorded. "
+                f"Correct that record instead of adding another."
+            )})
+        record_row = PayBroughtForward(
+            salary=salary, tax_year=tax_year, source=source, created_by=actor_user,
+        )
+    for name, value in values.items():
+        setattr(record_row, name, value)
+    record_row.updated_by = actor_user
+    record_row.save()
+    after = _brought_forward_snapshot(record_row)
+    changed = {k for k in after if before.get(k) != after[k]}
+    if not changed:
+        return record_row
+    record(
+        entity=salary.entity, action=FinanceAuditAction.SALARY_CHANGED, actor_user=actor_user,
+        target=salary, branch=owning_branch_id(salary),
+        message=(
+            f"Corrected {salary.name}'s {words} for {tax_year}." if before else
+            f"Recorded {salary.name}'s {words} for {tax_year}."
+        ),
+        before={k: before[k] for k in changed if k in before},
+        after={k: after[k] for k in changed},
+    )
+    return record_row
+
+
+@transaction.atomic
+def delete_pay_brought_forward(record_row, *, actor_user=None) -> None:
+    """Remove a person's pay brought forward for a year, audited with what it held."""
+    salary = record_row.salary
+    assert_pay_brought_forward_editable(salary, record_row.tax_year)
+    before = _brought_forward_snapshot(record_row)
+    record_row.delete()
+    record(
+        entity=salary.entity, action=FinanceAuditAction.SALARY_CHANGED, actor_user=actor_user,
+        target=salary, branch=owning_branch_id(salary),
+        message=(
+            f"Removed {salary.name}'s {_BROUGHT_FORWARD_WORDS[before['source']]} for "
+            f"{before['tax_year']}."
+        ),
+        before=before, after={},
+    )
+
+
+# --------------------------------------------------------------------------- #
 # One person's line                                                           #
 # --------------------------------------------------------------------------- #
 
@@ -278,13 +581,19 @@ def _pct(base, rate_bps) -> int:
 
 
 def work_out_line(salary, terms, *, policy, period_end, ytd, voluntary, branch, jurisdictions,
-                  table=None) -> LineFigures:
+                  table=None, brought_forward=None) -> LineFigures:
     """One person's pay for the month whose payroll date is ``period_end``.
 
     ``terms`` are the pay terms in force on that date; ``ytd`` the
     :class:`~vs_finance.payroll_tax.YearToDate` of the earlier months;
     ``voluntary`` the ``[(assignment, amount)]`` due; ``table`` the national tax
-    table (required when PAYE is computed).
+    table (required when PAYE is computed); ``brought_forward`` the person's
+    ``{source: PayBroughtForward}`` of the year, or None. Computed PAYE counts
+    both kinds as part of the year to date. The working records a previous
+    employer's months under ``brought_forward``, with the employer's name, and
+    this employer's own months before payroll ran here under ``opening``,
+    whatever the PAYE method, since those are part of this employer's year to
+    date. A payslip prints both from there.
 
     Under a COMPUTED policy the employee pension is the policy rate of pensionable
     pay and PAYE comes from the table, unless the salary row carries an explicit
@@ -348,6 +657,9 @@ def work_out_line(salary, terms, *, policy, period_end, ytd, voluntary, branch, 
         item(PayrollItemKind.EMPLOYER, code, amount, basis=base, rate=rate)
 
     taxable = split["taxable"]
+    earlier = brought_forward or {}
+    previous = earlier.get(PayBroughtForwardSource.PREVIOUS_EMPLOYER)
+    opening = earlier.get(PayBroughtForwardSource.THIS_EMPLOYER)
     basis: dict = {}
     if supplied:
         source = PayeSource.SUPPLIED
@@ -358,14 +670,25 @@ def work_out_line(salary, terms, *, policy, period_end, ytd, voluntary, branch, 
             table.snapshot(), month=period_end.month, prior=ytd, gross_now=gross,
             taxable_now=taxable, pension_now=pension, nhf_now=nhf,
             annual_rent=salary.annual_rent,
+            brought_forward=brought_forward_as_year_to_date(previous),
+            opening=brought_forward_as_year_to_date(opening),
         )
         paye, basis, source = result.amount, result.working, PayeSource.COMPUTED
+        if previous is not None:
+            basis["brought_forward"].update({
+                name: getattr(previous, name) for name in PAY_BROUGHT_FORWARD_DETAILS
+            })
         if salary.paye_override is not None:
             basis["override"] = {
                 "amount": int(salary.paye_override), "reason": salary.paye_override_reason,
                 "computed": paye,
             }
             paye, source = int(salary.paye_override), PayeSource.OVERRIDE
+    if opening is not None:
+        basis["opening"] = {
+            **brought_forward_as_year_to_date(opening).as_dict(),
+            "evidence_reference": opening.evidence_reference,
+        }
     item(PayrollItemKind.DEDUCTION, PayrollItemCode.PAYE, paye)
 
     return LineFigures(

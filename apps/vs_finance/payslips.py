@@ -20,6 +20,15 @@ deductions and net, with the year's totals and the state and tax number the
 PAYE was remitted under. It is what the person, and the revenue service, need
 at the end of the year.
 
+**Only this employer's pay is this employer's.** A person who joined mid-year
+has their previous employer's figures counted in their PAYE, and both
+documents print them, apart, as brought forward; the year to date and the
+totals are this employer's alone. A tenant that moved its payroll here
+mid-year has its own earlier months counted the other way: they are its pay,
+so they are inside the year to date, the totals and the annual return
+(:func:`annual_paye_return`), and shown apart as brought forward from before
+payroll ran here. No monthly remittance schedule carries them.
+
 Who may open either is decided by the endpoints: the employee, for their own;
 a payroll reader who may see every pay figure, for anybody's.
 """
@@ -75,8 +84,56 @@ def _person_lines(entity, line):
     return PayrollLine.objects.filter(person, run__entity=entity, run__run_status__in=_COUNTED)
 
 
+#: The figures of a previous employer's pay a payslip and tax summary print.
+PAYSLIP_EARLIER_FIGURES = ("gross", "taxable_pay", "paye", "pension")
+
+
+def brought_forward_of(line) -> dict | None:
+    """The previous employer's figures ``line``'s PAYE was worked out on, or None.
+
+    Read from the line's PAYE working, not from the record as it stands now,
+    so a payslip explains the PAYE it shows: a correction made after April was
+    paid changes May's working, and April's payslip still shows what April
+    counted. A line whose PAYE was not computed, or that counted no earlier
+    pay, has none.
+    """
+    working = (line.tax_basis or {}).get("brought_forward")
+    if not working:
+        return None
+    return {
+        "employer_name": working.get("employer_name", ""),
+        **{k: int(working.get(k) or 0) for k in PAYSLIP_EARLIER_FIGURES},
+    }
+
+
+def opening_of(line) -> dict | None:
+    """This employer's own pay from before its payroll ran here, as ``line`` recorded it, or None.
+
+    Read from the line's working, where every generated line records it
+    whatever the PAYE method, for the same reason as :func:`brought_forward_of`.
+    """
+    working = (line.tax_basis or {}).get("opening")
+    if not working:
+        return None
+    return {
+        "evidence_reference": working.get("evidence_reference", ""),
+        **{k: int(working.get(k) or 0) for k in PAYSLIP_EARLIER_FIGURES},
+    }
+
+
 def payslip_context(line) -> dict:
-    """Everything a payslip shows, as formatted text and kobo figures."""
+    """Everything a payslip shows, as formatted text and kobo figures.
+
+    ``ytd`` is this employer's year to date and nothing else's, so the payslip
+    is honest about what this employer paid and deducted. For a tenant that
+    moved its payroll here mid-year it includes the employer's own months from
+    before (``opening``, :func:`opening_of`), which are shown again apart, as
+    brought forward from before payroll ran here; ``ytd["net"]`` is the net
+    paid through this payroll alone, since those months carry no net figure.
+    A person who joined mid-year also has ``brought_forward``: the previous
+    employer's figures their PAYE counted (:func:`brought_forward_of`),
+    printed apart and never added to this employer's year to date.
+    """
     run = line.run
     entity = run.entity
     tenant = entity.tenant
@@ -94,10 +151,15 @@ def payslip_context(line) -> dict:
         ytd["paye"] += other.paye_amount
         ytd["pension"] += other.pension_amount
         ytd["net"] += other.net_amount
+    opening = opening_of(line)
+    if opening is not None:
+        for key in ("gross", "paye", "pension"):
+            ytd[key] += opening[key]
 
     def money(kobo):
         return format_naira(kobo)
 
+    brought = brought_forward_of(line)
     return {
         "issuer": _issuer_name(entity),
         "document_number": f"{run.document_number or run.pk}/{line.line_no}",
@@ -125,11 +187,20 @@ def payslip_context(line) -> dict:
         "paye_source": line.get_paye_source_display(),
         "tax_table": line.tax_table.name if line.tax_table_id else "",
         "ytd": {k: money(v) for k, v in ytd.items()},
+        "brought_forward": None if brought is None else {
+            "employer_name": brought["employer_name"],
+            **{k: money(brought[k]) for k in PAYSLIP_EARLIER_FIGURES},
+        },
+        "opening": None if opening is None else {
+            k: money(opening[k]) for k in PAYSLIP_EARLIER_FIGURES
+        },
         "figures": {
             "gross": line.gross_amount, "paye": line.paye_amount,
             "pension": line.pension_amount, "other_deductions": line.other_deductions_amount,
             "employer_contributions": line.employer_contributions_amount,
             "net": line.net_amount,
+            "brought_forward": brought,
+            "opening": opening,
         },
     }
 
@@ -146,8 +217,18 @@ def tax_summary(entity, *, year, salary=None, employee=None) -> dict:
     The person is a salary row (with any line of theirs written before lines
     named one, by user account) or a user account. Only posted and paid runs
     count: a draft has paid nobody.
+
+    ``months`` are the months paid through this payroll. ``totals`` are this
+    employer's year, the figures its annual return declares: those months plus
+    its own months from before its payroll ran here (``opening``), whose gross,
+    taxable pay, PAYE, pension and NHF (under other deductions) are added in;
+    ``totals["net"]`` is the net paid through this payroll alone, since those
+    months carry no net figure. Earlier pay from a previous employer is
+    ``brought_forward``, never added to the totals: that employer declares it
+    in its own returns. Both are read from the person's records as they stand,
+    so the year-end figures carry every correction.
     """
-    from .models import PayrollLine
+    from .models import EmployeeSalary, PayrollLine
 
     qs = PayrollLine.objects.filter(
         run__entity=entity, run__run_status__in=_COUNTED, run__pay_date__year=year,
@@ -158,9 +239,12 @@ def tax_summary(entity, *, year, salary=None, employee=None) -> dict:
             person |= Q(salary__isnull=True, employee_id=salary.employee_id)
         qs = qs.filter(person)
         name = salary.name
+        rows = [salary]
     else:
         qs = qs.filter(employee=employee)
         name = " ".join(p for p in (employee.first_name, employee.last_name) if p) or employee.email
+        rows = list(EmployeeSalary.objects.filter(entity=entity, employee=employee))
+    previous, opening = earlier_pay(rows, year)
     lines = list(qs.select_related("run", "tax_state").order_by("run__pay_date", "id"))
     months, totals = [], {
         "gross": 0, "taxable_pay": 0, "paye": 0, "pension": 0, "other_deductions": 0, "net": 0,
@@ -179,6 +263,10 @@ def tax_summary(entity, *, year, salary=None, employee=None) -> dict:
         months.append(row)
         for key in totals:
             totals[key] += row[key]
+    if opening is not None:
+        for key in ("gross", "taxable_pay", "paye", "pension"):
+            totals[key] += opening[key]
+        totals["other_deductions"] += opening["nhf"]
     latest = lines[-1] if lines else None
     return {
         "year": int(year), "employee_name": name, "issuer": _issuer_name(entity),
@@ -186,6 +274,113 @@ def tax_summary(entity, *, year, salary=None, employee=None) -> dict:
         "tax_id": latest.tax_id if latest else (salary.tax_id if salary is not None else ""),
         "tax_states": sorted({row["tax_state"] for row in months if row["tax_state"]}),
         "months": months, "totals": totals,
+        "opening": opening, "brought_forward": previous,
+    }
+
+
+def earlier_pay(salaries, year) -> tuple:
+    """``(previous employer, this employer before payroll ran here)`` of ``salaries`` for ``year``.
+
+    Each is a dict of kobo figures summed over the rows given (a person has
+    one row, but an older inactive one may hold a record too), with the
+    previous employer's name and the evidence references, or None where
+    neither row holds one.
+    """
+    from .constants import PayBroughtForwardSource
+    from .models import PayBroughtForward
+
+    out = {}
+    for record in PayBroughtForward.objects.filter(
+        salary__in=[s.pk for s in salaries], tax_year=year,
+    ).order_by("pk"):
+        sums = out.setdefault(record.source, {
+            "gross": 0, "taxable_pay": 0, "paye": 0, "pension": 0, "nhf": 0,
+            "employer_name": "", "evidence_reference": "",
+        })
+        for key, field in (("gross", "gross_amount"), ("taxable_pay", "taxable_pay"),
+                           ("paye", "paye_amount"), ("pension", "pension_amount"),
+                           ("nhf", "nhf_amount")):
+            sums[key] += int(getattr(record, field) or 0)
+        sums["employer_name"] = sums["employer_name"] or record.employer_name
+        sums["evidence_reference"] = sums["evidence_reference"] or record.evidence_reference
+    return (
+        out.get(PayBroughtForwardSource.PREVIOUS_EMPLOYER),
+        out.get(PayBroughtForwardSource.THIS_EMPLOYER),
+    )
+
+
+def annual_paye_return(entity, *, year, branch_ids=None) -> dict:
+    """Each person's year on ``entity``'s books, for the employer's annual PAYE return.
+
+    One row per person paid by a posted or paid run of ``year`` or holding pay
+    of their own from before payroll ran here: gross, taxable pay, PAYE and
+    pension, each including those earlier months of this employer (shown again
+    under ``opening_*``), because they are this employer's pay and tax even
+    though no run here paid them. A previous employer's figures are never in
+    it: that employer files them. The monthly remittance schedules are
+    different: they list only what a run here deducted, so a month this
+    payroll did not run is in none of them.
+
+    ``branch_ids`` narrows to a branch-bound reader's branches: the months a
+    run paid from those branches, and the earlier months of a person whose
+    record a branch there owned at the end of the year.
+    """
+    import datetime
+
+    from .constants import PayBroughtForwardSource
+    from .models import EmployeeSalary, PayBroughtForward, PayrollLine
+
+    lines = PayrollLine.objects.filter(
+        run__entity=entity, run__run_status__in=_COUNTED, run__pay_date__year=year,
+    ).select_related("tax_state", "salary")
+    if branch_ids is not None:
+        lines = lines.filter(branch_id__in=tuple(sorted(branch_ids)))
+    people: dict = {}
+
+    def person(key, name, tax_id):
+        return people.setdefault(key, {
+            "salary_id": key[1] if key[0] == "salary" else None,
+            "employee_name": name, "tax_id": tax_id, "tax_states": set(),
+            "gross": 0, "taxable_pay": 0, "paye": 0, "pension": 0, "months": 0,
+            "opening_gross": 0, "opening_paye": 0,
+        })
+
+    for line in lines.order_by("run__pay_date", "id"):
+        key = ("salary", line.salary_id) if line.salary_id else ("user", line.employee_id or line.pk)
+        row = person(key, line.employee_name, line.tax_id)
+        row["tax_id"] = line.tax_id or row["tax_id"]
+        if line.tax_state_id:
+            row["tax_states"].add(line.tax_state.name)
+        row["gross"] += line.gross_amount
+        row["taxable_pay"] += line.taxable_pay
+        row["paye"] += line.paye_amount
+        row["pension"] += line.pension_amount
+        row["months"] += 1
+
+    year_end = datetime.date(int(year), 12, 31)
+    openings = PayBroughtForward.objects.filter(
+        salary__entity=entity, tax_year=year, source=PayBroughtForwardSource.THIS_EMPLOYER,
+    ).select_related("salary").prefetch_related("salary__versions")
+    for record in openings:
+        salary = record.salary
+        if branch_ids is not None and salary.branch_on(year_end) not in branch_ids:
+            continue
+        row = person(("salary", salary.pk), salary.name, salary.tax_id)
+        row["gross"] += record.gross_amount
+        row["taxable_pay"] += record.taxable_pay
+        row["paye"] += record.paye_amount
+        row["pension"] += record.pension_amount
+        row["opening_gross"] += record.gross_amount
+        row["opening_paye"] += record.paye_amount
+    rows = sorted(people.values(), key=lambda r: (r["employee_name"], r["salary_id"] or 0))
+    for row in rows:
+        row["tax_states"] = sorted(row["tax_states"])
+    return {
+        "year": int(year), "entity": entity.code, "issuer": _issuer_name(entity),
+        "rows": rows,
+        "totals": {k: sum(r[k] for r in rows) for k in (
+            "gross", "taxable_pay", "paye", "pension", "opening_gross", "opening_paye",
+        )},
     }
 
 

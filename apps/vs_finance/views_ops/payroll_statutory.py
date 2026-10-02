@@ -40,6 +40,7 @@ from vs_rbac.scoping import WholeTenantWriteMixin, caller_branch_ids
 from ..constants import (
     AccountType,
     FinanceAuditAction,
+    PayBroughtForwardSource,
     PayeReliefBasis,
     PayeReliefKind,
 )
@@ -724,6 +725,238 @@ class EmployeeDeductionDetailView(PayFieldWriteMixin, _FinanceBase):
 
 
 # --------------------------------------------------------------------------- #
+# Earlier pay from a previous employer                                        #
+# --------------------------------------------------------------------------- #
+
+def _brought_forward_values(body):
+    """``(submitted, values)`` of a body recording a person's earlier pay.
+
+    ``submitted`` maps each body key to what the record would hold after the
+    write, parsed as the write parses it (or
+    :data:`~vs_rbac.field_enforcement.UNPARSED`), for the Field Access judge;
+    ``values`` maps the model fields given to their values, parsed again, so
+    a value that does not read is refused, only once the judge has passed.
+    """
+    from ..payroll_statutory import PAY_BROUGHT_FORWARD_DETAILS, PAY_BROUGHT_FORWARD_FIGURES
+
+    if not isinstance(body, Mapping):
+        return {}, lambda: {}
+    submitted = dict(body)
+    for key, _, _ in PAY_BROUGHT_FORWARD_FIGURES:
+        if key in body:
+            submitted[key] = _parsed(lambda raw, key=key: _money(raw, key), body.get(key))
+
+    def values():
+        out = {
+            field: _money(body.get(key), key)
+            for key, field, _ in PAY_BROUGHT_FORWARD_FIGURES if key in body
+        }
+        out.update({
+            name: str(body.get(name) or "").strip()
+            for name in PAY_BROUGHT_FORWARD_DETAILS if name in body
+        })
+        return out
+
+    return submitted, values
+
+
+def _brought_forward_held(row) -> dict:
+    """What ``row`` holds for each figure, under its body key (zeros for a new row)."""
+    from ..payroll_statutory import PAY_BROUGHT_FORWARD_FIGURES
+
+    return {key: int(getattr(row, field) or 0) if row is not None else 0
+            for key, field, _ in PAY_BROUGHT_FORWARD_FIGURES}
+
+
+def _brought_forward_write(row, values) -> dict:
+    """Every field of the record after the write: ``values`` over what ``row`` holds now."""
+    from ..payroll_statutory import PAY_BROUGHT_FORWARD_DETAILS, PAY_BROUGHT_FORWARD_FIGURES
+
+    out = {}
+    for _, field, _ in PAY_BROUGHT_FORWARD_FIGURES:
+        out[field] = values[field] if field in values else int(getattr(row, field, 0) or 0)
+    for name in PAY_BROUGHT_FORWARD_DETAILS:
+        value = values[name] if name in values else getattr(row, name, "")
+        limit = 160 if name == "employer_name" else 120
+        if len(value) > limit:
+            raise ValidationError({name: f"Use at most {limit} characters."})
+        out[name] = value
+    return out
+
+
+class PayBroughtForwardListCreateView(PayFieldWriteMixin, _FinanceBase):
+    """GET / POST a person's pay brought forward into a tax year, one record of each kind a year.
+
+    ``source`` is ``PREVIOUS_EMPLOYER`` (the default: another employer's
+    months before the person joined) or ``THIS_EMPLOYER`` (this employer's own
+    months before its payroll ran here). The record belongs to the salary row
+    and is reached through it, within the caller's branch reach
+    (:func:`~vs_finance.views_ops.payroll._resolve_salary`). A POST names
+    ``tax_year``, ``source`` and any of ``brought_forward_gross_amount``,
+    ``brought_forward_taxable_pay`` (before reliefs),
+    ``brought_forward_paye_amount``, ``brought_forward_pension_amount`` and
+    ``brought_forward_nhf_amount`` in kobo, with ``employer_name`` (a previous
+    employer only) and ``evidence_reference``. Every figure is judged against
+    the caller's write switch for it before anything is written.
+
+    docstring-name: Employee salaries
+    """
+
+    @property
+    def rbac_permission(self):
+        return "finance.salary.create" if self.request.method == "POST" else "finance.salary.view"
+
+    def get(self, request, pk):
+        from ..serializers import PayBroughtForwardSerializer
+
+        entity = resolve_entity(request)
+        salary = _resolve_salary(request, entity, pk)
+        rows = salary.pay_brought_forward.select_related("created_by", "updated_by")
+        return success_response(
+            "Earlier pay retrieved.",
+            data=PayBroughtForwardSerializer(
+                rows.order_by("-tax_year", "source"), many=True, context={"request": request}).data,
+        )
+
+    @transaction.atomic
+    def post(self, request, pk):
+        from ..payroll_statutory import save_pay_brought_forward
+        from ..serializers import PayBroughtForwardSerializer
+
+        entity = resolve_entity(request)
+        salary = _resolve_salary(request, entity, pk)
+        body = request.data or {}
+        submitted, values = _brought_forward_values(body)
+        self.judge_pay_write(submitted, current=_brought_forward_held(None), creating=True)
+        tax_year = _int(body.get("tax_year"), "tax_year", minimum=2000, maximum=2100)
+        if tax_year is None:
+            raise ValidationError({"tax_year": "Name the tax year these figures belong to."})
+        source = str(body.get("source") or PayBroughtForwardSource.PREVIOUS_EMPLOYER).upper()
+        row = save_pay_brought_forward(
+            salary, tax_year, _brought_forward_write(None, values()), source=source,
+            actor_user=request.user,
+        )
+        return success_response(
+            "Earlier pay recorded.",
+            data=PayBroughtForwardSerializer(row, context={"request": request}).data,
+            status=201,
+        )
+
+
+class PayBroughtForwardDetailView(PayFieldWriteMixin, _FinanceBase):
+    """GET, PATCH (correct) or DELETE one record of a person's earlier pay, within branch reach.
+
+    A correction reaches every run raised after it; a posted run is never
+    recomputed, and a draft run already holding the person must be voided
+    first (:func:`vs_finance.payroll_statutory.assert_pay_brought_forward_editable`).
+
+    docstring-name: Employee salaries
+    """
+
+    @property
+    def rbac_permission(self):
+        if self.request.method == "DELETE":
+            return "finance.salary.delete"
+        return "finance.salary.update" if self.request.method == "PATCH" else "finance.salary.view"
+
+    def _row(self, request, pk, *, lock=False):
+        from ..models import PayBroughtForward
+
+        entity = resolve_entity(request)
+        qs = PayBroughtForward.objects.filter(pk=pk, salary__entity=entity)
+        if lock:
+            # Locked, so the values judged are the values the write replaces.
+            qs = qs.select_for_update(of=("self",))
+        row = qs.select_related("salary", "created_by", "updated_by").first()
+        if row is None:
+            raise NotFound("Earlier pay record not found for this entity.")
+        _resolve_salary(request, entity, row.salary_id)
+        return row
+
+    def get(self, request, pk):
+        from ..serializers import PayBroughtForwardSerializer
+
+        row = self._row(request, pk)
+        return success_response(
+            "Earlier pay retrieved.",
+            data=PayBroughtForwardSerializer(row, context={"request": request}).data,
+        )
+
+    @transaction.atomic
+    def patch(self, request, pk):
+        from ..payroll_statutory import save_pay_brought_forward
+        from ..serializers import PayBroughtForwardSerializer
+
+        row = self._row(request, pk, lock=True)
+        body = request.data or {}
+        submitted, values = _brought_forward_values(body)
+        self.judge_pay_write(submitted, current=_brought_forward_held(row))
+        row = save_pay_brought_forward(
+            row.salary, row.tax_year, _brought_forward_write(row, values()),
+            record_row=row, actor_user=request.user,
+        )
+        return success_response(
+            "Earlier pay corrected.",
+            data=PayBroughtForwardSerializer(row, context={"request": request}).data,
+        )
+
+    @transaction.atomic
+    def delete(self, request, pk):
+        from ..payroll_statutory import delete_pay_brought_forward
+
+        delete_pay_brought_forward(self._row(request, pk, lock=True), actor_user=request.user)
+        return success_response("Earlier pay removed.", data={})
+
+
+class PreviousPayMissingView(_FinanceBase):
+    """GET who joined after January of a tax year (``?year=``) with no earlier pay recorded.
+
+    The roster warning behind the tenant's ``previous_pay_required`` setting:
+    active people in the caller's branch reach whose first payroll month on
+    these books this year is after January, or who have not been paid yet this
+    year while the year is past January, and who were not paid here the year
+    before (:func:`vs_finance.payroll_statutory.starters_without_previous_pay`).
+    Their PAYE is worked out as though they earned nothing before joining until
+    their earlier pay is recorded. ``required`` says whether the tenant refuses
+    to pay them until then.
+
+    docstring-name: Employee salaries
+    """
+
+    rbac_permission = "finance.salary.view"
+
+    def get(self, request):
+        from vs_config.clock import tenant_today
+
+        from ..payroll_statutory import payroll_settings, starters_without_previous_pay
+        from .payroll import _salary_rows
+
+        entity = resolve_entity(request)
+        year = _year(request)
+        today = tenant_today(entity.tenant)
+        rows = list(
+            _salary_rows(request, entity).filter(is_active=True).order_by("name", "pk")
+        )
+        upcoming = today.month if year == today.year else None
+        people = starters_without_previous_pay(
+            entity, rows, tax_year=year, upcoming_month=upcoming,
+        )
+        return success_response("Earlier pay still to record.", data={
+            "tax_year": year,
+            "required": payroll_settings(entity).previous_pay_required,
+            "people": [
+                {
+                    "salary_id": salary.pk, "name": salary.name,
+                    "branch_id": salary.branch_on_id,
+                    "branch_name": getattr(salary, "branch_on_name", None),
+                    "first_month": month,
+                }
+                for salary, month in people
+            ],
+        })
+
+
+# --------------------------------------------------------------------------- #
 # History                                                                     #
 # --------------------------------------------------------------------------- #
 
@@ -854,6 +1087,41 @@ class TaxFilingScheduleView(_FinanceBase):
             "employer_total": sum(r["employer_amount"] for r in rows),
             "total": sum(r["total"] for r in rows),
         })
+
+
+#: The roster figures an annual return prints beside the payroll lines' own.
+ANNUAL_RETURN_SALARY_FIELDS = (
+    "finance.salary.gross_amount", "finance.salary.paye_amount", "finance.salary.pension_amount",
+)
+
+
+class AnnualPayeReturnView(_FinanceBase):
+    """GET each person's year for the employer's annual PAYE return (``?year=``).
+
+    This employer's pay and PAYE for the year, person by person, including its
+    own months from before its payroll ran here and never a previous
+    employer's (:func:`vs_finance.payslips.annual_paye_return`). A
+    branch-bound reader sees their own branches' part. Refused to a caller who
+    may not read every pay figure on it.
+
+    docstring-name: Tax filings
+    """
+
+    rbac_permission = "finance.tax.view"
+
+    def get(self, request):
+        from ..payslips import annual_paye_return
+
+        entity = resolve_entity(request)
+        _require_pay_figures(request)
+        if not all(can_read(request, key) for key in ANNUAL_RETURN_SALARY_FIELDS):
+            raise PermissionDenied(
+                "This return shows each person's pay, and your role may not see every "
+                "figure on it.",
+            )
+        return success_response("Annual PAYE return retrieved.", data=annual_paye_return(
+            entity, year=_year(request), branch_ids=caller_branch_ids(request),
+        ))
 
 
 # --------------------------------------------------------------------------- #

@@ -1002,6 +1002,47 @@ Verified: tests_petty_cash_return_route 14 OK, tests_petty_cash_returns 32 OK,
 tests_payer_payments 25 OK (on 7b7fad5c); the agent ran vs_workflow 538 and
 vs_finance 1695 OK on af290e51. The full suite was not run.
 
+### D108. Pay brought forward: a previous employer's figures and a school's own months before XVS count in PAYE, with an annual return (hash pending, 2026-10-02)
+MODULES: M19 finance and accounting (payroll), M12 staff management, M04 roles and
+permissions (field access), MRD.
+MUST SAY:
+- Pay brought forward (M19). One record per person per tax year per source:
+  PREVIOUS_EMPLOYER (another employer earlier in the year) or THIS_EMPLOYER (this
+  school's own months before its payroll ran on XVS; owner: optional). Gross,
+  taxable pay, PAYE, pension, NHF, employer name (previous employer only) and an
+  evidence reference. Added, corrected and removed with audit (no figures in
+  messages); a correction applies from the next run and is refused while a draft
+  run holds the person; posted runs are never recomputed.
+- Cumulative PAYE counts both: bands accrue from 1 January; brought-forward gross
+  and taxable pay enter income to date, pension and NHF enter reliefs, PAYE enters
+  tax already deducted. An over-deduction by a previous employer is used up
+  against later months in the year; payroll never refunds it. Taxable pay is
+  entered before reliefs (reliefs are worked once over the year).
+- Aisha joins 1 April after N900,000 and N45,000 PAYE elsewhere: April N95,330,
+  May to December N30,830 each. Ngozi at a school on XVS from June 2026 with
+  N1,000,000 and N84,250 PAYE for January to May: June to December N16,850 each,
+  N202,200 for the year.
+- Payslips and the yearly tax summary keep this school's figures as its own and
+  show brought-forward figures separately ("Earlier this tax year with ...",
+  "Before this payroll"). Monthly remittance schedules carry only what this school
+  deducted. A new annual PAYE return (GET payroll/annual-return/?year=,
+  finance.tax.view plus pay read switches) includes this school's own earlier
+  months and never a previous employer's.
+- Field Access: brought-forward gross and taxable pay under Gross pay, PAYE under
+  PAYE, pension under Pension, NHF under Pay breakdown; writes judged by change.
+  Branch: follows the salary record's owning branch.
+- Settings (payroll settings, whole-school write): previous_pay_required (default
+  off; when off, people who joined after January with no record are listed as a
+  warning on each run and at GET employee-salaries/previous-pay-missing/; when on,
+  the run is refused); payroll_moved_here_on (default empty; staff first paid in or
+  before that month are existing staff, not joiners).
+- Routes under /v1/finance/: employee-salaries/<pk>/pay-brought-forward/ (GET,
+  POST), employee-pay-brought-forward/<pk>/ (GET, PATCH, DELETE). Migration
+  vs_finance 0059. Deploy: sync_field_registry.
+Verified (on 28fa46b8): tests_payroll_previous_pay 41 OK, tests_payroll_statutory 44
+OK, tests_payroll_roster_rules 25 OK, vs_finance 1761 OK, vs_rbac 981 OK. The full
+suite was not run.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

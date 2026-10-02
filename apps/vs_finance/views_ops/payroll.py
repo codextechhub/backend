@@ -1100,6 +1100,11 @@ class PayrollRunGenerateView(_FinanceBase):
             {"name": name if named else None, "run": other.document_number or other.pk}
             for name, other in getattr(run, "skipped", [])
         ]
+        # People paid for the first time this tax year after January with no
+        # earlier pay recorded; the names only for a caller who may read them.
+        data["previous_pay_missing"] = [
+            name if named else None for name in getattr(run, "previous_pay_missing", [])
+        ]
         return success_response(
             f"Payroll run {run.document_number} generated from {run.lines.count()} employee(s).",
             data=data, status=201,

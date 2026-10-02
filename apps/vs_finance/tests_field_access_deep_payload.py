@@ -27,6 +27,7 @@ from vs_finance.models import (
     PayrollDeductionType,
     PayrollLine,
     PayrollRun,
+    PayBroughtForward,
 )
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies
 from vs_rbac.tests.deep_payload import DeepPayloadChecks, Sample
@@ -43,6 +44,7 @@ class FinanceDeepPayloadTests(DeepPayloadChecks, TestCase):
         _SURFACE + "EmployeeSalarySerializer",
         _SURFACE + "EmployeeSalaryVersionSerializer",
         _SURFACE + "EmployeeDeductionSerializer",
+        _SURFACE + "PayBroughtForwardSerializer",
     })
 
     @classmethod
@@ -109,16 +111,22 @@ class FinanceDeepPayloadTests(DeepPayloadChecks, TestCase):
                 liability_account=Account.objects.get(entity=entity, code="2400"),
             ),
         )
-        return bank, line, salary, version, deduction
+        previous = PayBroughtForward.objects.create(
+            salary=salary, tax_year=2026, employer_name="Greenfield Academy",
+            gross_amount=900_000_00, taxable_pay=900_000_00, paye_amount=45_000_00,
+            pension_amount=72_000_00, nhf_amount=5_000_00,
+        )
+        return bank, line, salary, version, deduction, previous
 
     def samples(self):
         samples = []
-        for tenant, (bank, line, salary, version, deduction) in self.records:
+        for tenant, (bank, line, salary, version, deduction, previous) in self.records:
             samples += [
                 Sample(_SURFACE + "BankAccountSerializer", bank, tenant=tenant),
                 Sample(_SURFACE + "PayrollLineSerializer", line, tenant=tenant),
                 Sample(_SURFACE + "EmployeeSalarySerializer", salary, tenant=tenant),
                 Sample(_SURFACE + "EmployeeSalaryVersionSerializer", version, tenant=tenant),
                 Sample(_SURFACE + "EmployeeDeductionSerializer", deduction, tenant=tenant),
+                Sample(_SURFACE + "PayBroughtForwardSerializer", previous, tenant=tenant),
             ]
         return samples

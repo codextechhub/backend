@@ -9,6 +9,8 @@ binds every branch that pays staff from these books.
 """
 from __future__ import annotations
 
+import datetime
+
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
@@ -21,6 +23,7 @@ from .payroll_statutory import payroll_settings
 BOOLEAN_FIELDS = (
     "employee_pension_enabled", "employer_pension_enabled", "nhf_enabled",
     "nsitf_enabled", "itf_enabled", "payslip_in_app", "payslip_email",
+    "previous_pay_required",
 )
 
 #: Rates in basis points, by name.
@@ -29,7 +32,10 @@ RATE_FIELDS = (
     "nsitf_rate_bps", "itf_rate_bps",
 )
 
-SETTING_FIELDS = ("paye_method", "tax_country") + BOOLEAN_FIELDS + RATE_FIELDS
+#: Dates, by name, written and read as ``YYYY-MM-DD`` or null.
+DATE_FIELDS = ("payroll_moved_here_on",)
+
+SETTING_FIELDS = ("paye_method", "tax_country") + BOOLEAN_FIELDS + RATE_FIELDS + DATE_FIELDS
 
 
 def resolve_finance_payroll_settings(entity):
@@ -39,6 +45,8 @@ def resolve_finance_payroll_settings(entity):
 
 def serialize_finance_payroll_settings(settings):
     data = {field: getattr(settings, field) for field in SETTING_FIELDS}
+    for field in DATE_FIELDS:
+        data[field] = data[field].isoformat() if data[field] else None
     data["paye_method_label"] = PayeMethod(settings.paye_method).label
     data["updated_at"] = settings.updated_at.isoformat() if settings.pk else None
     data["updated_by"] = settings.updated_by.email if settings.pk and settings.updated_by else None
@@ -82,6 +90,16 @@ def _validated_values(data):
             if not 0 <= value <= 10000:
                 raise ValidationError({field: "Use a value from 0 to 10,000 basis points."})
             values[field] = value
+    for field in DATE_FIELDS:
+        if field in data:
+            raw = data[field]
+            if raw in (None, ""):
+                values[field] = None
+                continue
+            try:
+                values[field] = datetime.date.fromisoformat(str(raw))
+            except ValueError as exc:
+                raise ValidationError({field: "Use a date as YYYY-MM-DD, or null."}) from exc
     return values
 
 

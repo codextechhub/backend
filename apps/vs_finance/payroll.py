@@ -448,6 +448,17 @@ def generate_run_from_roster(entity, *, pay_date, branch=None, period_label="",
     The salary rows are locked first, so two officers raising runs at the same
     moment cannot both take the same person. Raises :class:`PayrollError` when
     nobody is left to pay.
+
+    **Pay brought forward.** Each person's
+    :class:`~vs_finance.models.PayBroughtForward` rows of the tax year (a
+    previous employer's months, and this employer's own months before its
+    payroll ran here) enter their computed PAYE. Somebody on the run who joined
+    after January of the tax year with neither recorded
+    (:func:`~vs_finance.payroll_statutory.starters_without_previous_pay`) is
+    listed in ``run.previous_pay_missing`` (their names), on every run until it
+    is recorded; a tenant whose payroll settings require the record
+    (``previous_pay_required``) is refused the run instead, while PAYE is
+    computed.
     """
     from .models import PayrollLine, PayrollLineItem, PayrollRun
     from .models import EmployeeSalary
@@ -455,6 +466,8 @@ def generate_run_from_roster(entity, *, pay_date, branch=None, period_label="",
         active_jurisdictions,
         payroll_period,
         payroll_settings,
+        pay_brought_forward_for,
+        starters_without_previous_pay,
         voluntary_due,
         work_out_line,
         year_to_date,
@@ -513,6 +526,19 @@ def generate_run_from_roster(entity, *, pay_date, branch=None, period_label="",
     ytd = year_to_date(
         entity, people, year_start=period_end.replace(month=1, day=1), period_start=period_start,
     )
+    previous = pay_brought_forward_for(people, period_end.year)
+    missing = [
+        salary for salary, _ in starters_without_previous_pay(
+            entity, people, tax_year=period_end.year, upcoming_month=period_end.month,
+        )
+    ]
+    if missing and policy.previous_pay_required and policy.paye_method != PayeMethod.SUPPLIED:
+        raise PayrollError(
+            f"{len(missing)} person(s) on this run joined after January and have no earlier "
+            f"pay recorded for {period_end.year}. This school requires it before they are "
+            f"paid, so their PAYE counts what a previous employer already taxed: record it "
+            f"on their salary record (zeros where there was none), then raise the run.",
+        )
     voluntary = voluntary_due(people, period_start=period_start, period_end=period_end)
     jurisdictions = active_jurisdictions(policy.tax_country)
 
@@ -526,7 +552,7 @@ def generate_run_from_roster(entity, *, pay_date, branch=None, period_label="",
         figures = work_out_line(
             row, terms, policy=policy, period_end=period_end, ytd=ytd[row.pk],
             voluntary=voluntary.get(row.pk, []), branch=line_branch,
-            jurisdictions=jurisdictions, table=table,
+            jurisdictions=jurisdictions, table=table, brought_forward=previous.get(row.pk),
         )
         line = PayrollLine.objects.create(
             run=run, line_no=i, employee_id=row.employee_id, employee_name=row.name,
@@ -545,6 +571,7 @@ def generate_run_from_roster(entity, *, pay_date, branch=None, period_label="",
     compute_payroll(run)
     run.refresh_from_db()
     run.skipped = skipped
+    run.previous_pay_missing = [salary.name for salary in missing]
     return run
 
 

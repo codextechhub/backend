@@ -470,8 +470,18 @@ def _facts(pairs, styles):
     return table
 
 
+def _previous_heading(brought) -> str:
+    """The heading over a previous employer's figures, naming the employer where known."""
+    name = (brought.get("employer_name") or "").strip()
+    return f"Earlier this tax year with {name}" if name else "Earlier this tax year elsewhere"
+
+
 def payslip_pdf(context) -> bytes:
-    """Render one person's payslip from :func:`vs_finance.payslips.payslip_context`."""
+    """Render one person's payslip from :func:`vs_finance.payslips.payslip_context`.
+
+    The year to date is this employer's; a previous employer's figures the
+    PAYE counted print in their own table beneath it.
+    """
     styles = _styles()
     issuer = {"name": context["issuer"]}
     story = [
@@ -509,13 +519,32 @@ def payslip_pdf(context) -> bytes:
             Spacer(1, 5 * mm),
             _grid(["Paid by your employer on top of your pay", "Amount (NGN)"], employer, widths, styles),
         ]
-    ytd = context["ytd"]
+    ytd, opening = context["ytd"], context.get("opening")
+    ytd_rows = [
+        ["Gross pay", _bare(ytd["gross"])], ["PAYE", _bare(ytd["paye"])],
+        ["Pension", _bare(ytd["pension"])],
+        ["Net pay through this payroll" if opening else "Net pay", _bare(ytd["net"])],
+    ]
+    if opening:
+        ytd_rows += [
+            ["Of which gross brought forward from before this payroll", _bare(opening["gross"])],
+            ["Of which PAYE brought forward from before this payroll", _bare(opening["paye"])],
+        ]
     story += [
         Spacer(1, 5 * mm),
-        _grid(["Year to date", "Amount (NGN)"], [
-            ["Gross pay", _bare(ytd["gross"])], ["PAYE", _bare(ytd["paye"])],
-            ["Pension", _bare(ytd["pension"])], ["Net pay", _bare(ytd["net"])],
-        ], widths, styles),
+        _grid(["Year to date", "Amount (NGN)"], ytd_rows, widths, styles),
+    ]
+    brought = context.get("brought_forward")
+    if brought:
+        story += [
+            Spacer(1, 3 * mm),
+            _grid([_previous_heading(brought), "Amount (NGN)"], [
+                ["Gross pay", _bare(brought["gross"])],
+                ["Taxable pay", _bare(brought["taxable_pay"])],
+                ["PAYE", _bare(brought["paye"])], ["Pension", _bare(brought["pension"])],
+            ], widths, styles),
+        ]
+    story += [
         Spacer(1, 6 * mm),
         Paragraph(_text(
             f"PAYE: {context['paye_source']}"
@@ -526,7 +555,12 @@ def payslip_pdf(context) -> bytes:
 
 
 def tax_summary_pdf(summary) -> bytes:
-    """Render a person's yearly tax summary from :func:`vs_finance.payslips.tax_summary`."""
+    """Render a person's yearly tax summary from :func:`vs_finance.payslips.tax_summary`.
+
+    This employer's own months from before its payroll ran here head the
+    table, inside the totals; their net is left blank, as it is not known. A
+    previous employer's figures print in their own table beneath.
+    """
     from .money import format_naira
 
     styles = _styles()
@@ -547,7 +581,13 @@ def tax_summary_pdf(summary) -> bytes:
          _bare(format_naira(row["pension"])), _bare(format_naira(row["net"]))]
         for row in summary["months"]
     ]
-    totals = summary["totals"]
+    totals, opening = summary["totals"], summary.get("opening")
+    if opening:
+        rows.insert(0, [
+            "Before this payroll", _bare(format_naira(opening["gross"])),
+            _bare(format_naira(opening["taxable_pay"])), _bare(format_naira(opening["paye"])),
+            _bare(format_naira(opening["pension"])), "",
+        ])
     rows.append([
         "Total", _bare(format_naira(totals["gross"])), _bare(format_naira(totals["taxable_pay"])),
         _bare(format_naira(totals["paye"])), _bare(format_naira(totals["pension"])),
@@ -558,4 +598,16 @@ def tax_summary_pdf(summary) -> bytes:
         ["Month", "Gross (NGN)", "Taxable (NGN)", "PAYE (NGN)", "Pension (NGN)", "Net (NGN)"],
         rows, widths, styles,
     ))
+    brought = summary.get("brought_forward")
+    if brought:
+        half = [CONTENT_WIDTH * 0.7, CONTENT_WIDTH * 0.3]
+        story += [
+            Spacer(1, 5 * mm),
+            _grid([_previous_heading(brought), "Amount (NGN)"], [
+                ["Gross pay", _bare(format_naira(brought["gross"]))],
+                ["Taxable pay", _bare(format_naira(brought["taxable_pay"]))],
+                ["PAYE", _bare(format_naira(brought["paye"]))],
+                ["Pension", _bare(format_naira(brought["pension"]))],
+            ], half, styles),
+        ]
     return _build(story, title=f"Tax summary {summary['year']}")

@@ -162,6 +162,12 @@ from .views_ops.payroll_statutory import (
     TaxJurisdictionDetailView,
     TaxJurisdictionListCreateView,
 )
+from .views_ops.payroll_statutory import (
+    PayBroughtForwardDetailView,
+    PayBroughtForwardListCreateView,
+    PreviousPayMissingView,
+    AnnualPayeReturnView,
+)
 from .views_ops import (
     BankAccountDetailView,
     BankAccountListCreateView,
@@ -653,6 +659,14 @@ urlpatterns = [
     path("my-payslips/", MyPayslipListView.as_view(), name="finance-my-payslips"),
     path("my-payslips/<int:pk>/", MyPayslipDetailView.as_view(), name="finance-my-payslip-detail"),
     path("my-tax-summary/", MyTaxSummaryView.as_view(), name="finance-my-tax-summary"),
+    path("employee-salaries/previous-pay-missing/", PreviousPayMissingView.as_view(),
+         name="finance-previous-pay-missing"),
+    path("employee-salaries/<int:pk>/pay-brought-forward/", PayBroughtForwardListCreateView.as_view(),
+         name="finance-pay-brought-forward-list"),
+    path("employee-pay-brought-forward/<int:pk>/", PayBroughtForwardDetailView.as_view(),
+         name="finance-pay-brought-forward-detail"),
+    path("payroll/annual-return/", AnnualPayeReturnView.as_view(),
+         name="finance-payroll-annual-return"),
 
     # Budgets
     path("budgets/", BudgetListCreateView.as_view(), name="finance-budget-list"),

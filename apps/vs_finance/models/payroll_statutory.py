@@ -29,6 +29,7 @@ from ..constants import (
     PayrollItemCode,
     PayrollItemKind,
     PayslipEmailStatus,
+    PayBroughtForwardSource,
 )
 from ..money import MoneyField
 from .core import LedgerEntity, TimeStampedModel
@@ -52,6 +53,7 @@ __all__ = [
     "EmployeeDeduction",
     "PayrollLineItem",
     "Payslip",
+    "PayBroughtForward",
 ]
 
 
@@ -243,6 +245,19 @@ class FinancePayrollSettings(TimeStampedModel):
       employer).
     * Payslip delivery: shown in the app to the employee, and emailed to them;
       either can be turned off.
+    * ``previous_pay_required``: whether somebody whose first month on these
+      books in a tax year is after January must have their earlier pay that
+      year recorded (:class:`PayBroughtForward`) before a run pays them. Off
+      by default: such people are listed as a warning instead.
+    * ``payroll_moved_here_on``: for a tenant that ran payroll somewhere else
+      earlier in the tax year, a day in the first payroll month it ran here.
+      Bright Star moves its payroll onto these books in June 2026 with 40
+      staff; every one of them is first paid here in June, exactly like a
+      teacher hired in June from another school. Only the tenant knows which
+      it is: a tenant that opened in June has only new joiners, one that moved
+      its payroll has its own staff carried over. So it is said here, and a
+      person first paid in that month is not taken for a mid-year joiner.
+      Empty by default: nobody is carried over.
 
     The rates are the tenant's because whether a levy applies, and at what rate,
     can turn on the tenant's own circumstances (how many staff, an exemption, a
@@ -273,6 +288,17 @@ class FinancePayrollSettings(TimeStampedModel):
     itf_rate_bps = models.PositiveIntegerField(default=100, validators=[MaxValueValidator(10000)])
     payslip_in_app = models.BooleanField(default=True)
     payslip_email = models.BooleanField(default=True)
+    previous_pay_required = models.BooleanField(
+        default=False,
+        help_text="Refuse to pay somebody first paid after January of a tax year until "
+                  "their earlier pay that year is recorded (zeros where there was none).",
+    )
+    payroll_moved_here_on = models.DateField(
+        null=True, blank=True,
+        help_text="For a tenant that ran payroll elsewhere earlier in a tax year: a day in "
+                  "the first payroll month run on these books. Staff first paid in that "
+                  "month are its own staff carried over, not mid-year joiners.",
+    )
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="finance_payroll_settings_updates", null=True, blank=True,
@@ -328,6 +354,88 @@ class EmployeeSalaryVersion(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.salary_id} from {self.effective_from}: gross {self.gross_amount}"
+
+
+class PayBroughtForward(TimeStampedModel):
+    """A person's pay and tax for months of a tax year that no run on these books paid.
+
+    PAYE is cumulative over the tax year: each month taxes everything earned
+    since 1 January against the bands accrued since then, and takes off the
+    tax already deducted (:func:`vs_finance.payroll_tax.compute_paye`). Months
+    missing from the books shelter the pay of the months that follow behind
+    bands accrued since January, so the person is under-taxed every month to
+    December. Two kinds of month are missing (``source``,
+    :class:`~vs_finance.constants.PayBroughtForwardSource`):
+
+    * **A previous employer's.** Aisha joins in April with January to March
+      earned and taxed at another employer, copied from its tax deduction
+      card. That employer reports them, so they appear in no return or year to
+      date of this one.
+    * **This employer's own, before its payroll ran here.** Bright Star runs
+      payroll on these books from June; its January to May ran elsewhere. Those
+      months are its own pay: they belong in its year to date and its annual
+      return, and in no monthly remittance schedule, because they were remitted
+      from wherever payroll ran then. Optional: nothing requires them.
+
+    At most one row of each kind per person per tax year, and every run of that
+    year counts both (:func:`vs_finance.payroll_statutory.pay_brought_forward_for`).
+
+    ``taxable_pay`` is the taxable part **before reliefs**, with the pension
+    and NHF contributions made beside it, because the reliefs are worked once
+    over the whole year to date here: the pension and NHF reliefs from the
+    contributions actually made, and a percentage relief (rent relief, or an
+    older regime's consolidated relief) on the whole year's gross or rent. A
+    figure already net of reliefs would have those months' rent relief given
+    twice.
+
+    The row belongs to the salary record and follows its owning branch on
+    every read and write (:meth:`EmployeeSalary.branch_on`); one active record
+    per person keeps it to one person's year. Every figure is a pay figure
+    under Field Access (:mod:`vs_finance.field_access`). A previous-employer
+    row of zeros states that the person had no earlier taxable pay that year,
+    which answers the tenant's ``previous_pay_required`` setting.
+    ``employer_name`` names the previous employer, and is blank on a row of
+    this employer's own.
+    """
+
+    salary = models.ForeignKey(
+        EmployeeSalary, on_delete=models.CASCADE, related_name="pay_brought_forward",
+    )
+    tax_year = models.PositiveSmallIntegerField()
+    source = models.CharField(
+        max_length=20, choices=PayBroughtForwardSource.choices,
+        default=PayBroughtForwardSource.PREVIOUS_EMPLOYER,
+    )
+    employer_name = models.CharField(max_length=160, blank=True, default="")
+    evidence_reference = models.CharField(
+        max_length=120, blank=True, default="",
+        help_text="Where the figures come from: a previous employer's tax card number, or a note.",
+    )
+    gross_amount = MoneyField(help_text="Gross pay of the months brought forward, in kobo.")
+    taxable_pay = MoneyField(help_text="Its taxable part before reliefs, in kobo.")
+    paye_amount = MoneyField(help_text="PAYE deducted in those months, in kobo.")
+    pension_amount = MoneyField(help_text="Employee pension deducted in those months, in kobo.")
+    nhf_amount = MoneyField(help_text="NHF deducted in those months, in kobo.")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_pay_brought_forward_created", null=True, blank=True,
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_pay_brought_forward_updated", null=True, blank=True,
+    )
+
+    class Meta:
+        ordering = ["salary", "-tax_year", "source"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["salary", "tax_year", "source"],
+                name="uniq_finance_pay_brought_forward",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.salary_id} {self.tax_year} {self.source}: {self.taxable_pay}"
 
 
 # --------------------------------------------------------------------------- #

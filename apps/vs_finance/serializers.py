@@ -70,6 +70,7 @@ from .models import (
     PayrollTaxJurisdiction,
     PensionFundAdministrator,
     Payslip,
+    PayBroughtForward,
     SalaryStructure,
     PettyCashFund,
     PettyCashReturn,
@@ -1751,6 +1752,37 @@ class EmployeeDeductionSerializer(FieldAccessMixin, serializers.ModelSerializer)
             "id", "salary_id", "deduction_type_id", "deduction_type_code",
             "deduction_type_name", "amount", "start_date", "end_date", "total_limit",
             "reference", "is_active",
+        ]
+
+
+class PayBroughtForwardSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """A person's pay brought forward into a tax year, figures behind their switches.
+
+    ``source`` says whose months they are: a previous employer's, or this
+    employer's own from before its payroll ran here. Each figure travels under
+    the ``finance.salary`` switch of the same figure of the person's own pay
+    (:mod:`vs_finance.field_access`); whose months they are, the employer's
+    name and where the figures come from are not pay figures.
+    """
+
+    field_resource = "finance.salary"
+    field_access_detail = True
+
+    brought_forward_gross_amount = serializers.IntegerField(source="gross_amount", read_only=True)
+    brought_forward_taxable_pay = serializers.IntegerField(source="taxable_pay", read_only=True)
+    brought_forward_paye_amount = serializers.IntegerField(source="paye_amount", read_only=True)
+    brought_forward_pension_amount = serializers.IntegerField(source="pension_amount", read_only=True)
+    brought_forward_nhf_amount = serializers.IntegerField(source="nhf_amount", read_only=True)
+    created_by = serializers.CharField(source="created_by.email", read_only=True, default=None)
+    updated_by = serializers.CharField(source="updated_by.email", read_only=True, default=None)
+
+    class Meta:
+        model = PayBroughtForward
+        fields = [
+            "id", "salary_id", "tax_year", "source", "employer_name", "evidence_reference",
+            "brought_forward_gross_amount", "brought_forward_taxable_pay", "brought_forward_paye_amount",
+            "brought_forward_pension_amount", "brought_forward_nhf_amount",
+            "created_by", "updated_by", "created_at", "updated_at",
         ]
 
 
