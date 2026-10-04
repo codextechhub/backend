@@ -408,6 +408,28 @@ class ProxiedAuditAttributionTests(TestCase):
         self.assertEqual(event.effective_user, self.target)
         self.assertEqual(event.impersonation_session, self.session)
 
+    def test_actor_and_effective_user_carry_separate_exit_flags(self):
+        from vs_audit.serializers import AuditEventListSerializer
+        from vs_user.models import PlatformStaffProfile
+
+        PlatformStaffProfile.objects.create(
+            user=self.proxier,
+            employment_status=PlatformStaffProfile.EmploymentStatus.EXITED,
+        )
+        PlatformStaffProfile.objects.create(
+            user=self.target,
+            employment_status=PlatformStaffProfile.EmploymentStatus.SUSPENDED,
+        )
+        set_current_audit_identity(
+            actor_user=self.proxier, effective_user=self.target,
+            impersonation_session=self.session,
+        )
+        event = self._emit(self.target)
+
+        row = AuditEventListSerializer([event], many=True).data[0]
+        self.assertTrue(row["actor_user"]["is_exited"])
+        self.assertFalse(row["effective_user"]["is_exited"])
+
     def test_authoritative_module_audit_uses_proxier_and_preserves_target_metadata(self):
         from vs_rbac.audit import record_rbac_audit
 

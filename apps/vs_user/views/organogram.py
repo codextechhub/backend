@@ -31,7 +31,7 @@ from core.mixins import (
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
 from ..models import (
-    PlatformStaffProfile, OrgNode, Position,
+    User, PlatformStaffProfile, OrgNode, Position,
     PositionAssignment, MatrixReport,
 )
 from ..serializers import (
@@ -329,17 +329,27 @@ class PlatformStaffProfileViewSet(
         required because /media/ sits outside the API's /v1 prefix.
         """
         tenant = getattr(request, 'tenant', None) or request.user.tenant
-        rows = (
-            PlatformStaffProfile.objects
-            .filter(user__tenant=tenant, profile_photo__isnull=False)
-            .exclude(profile_photo='')
-            .only('user_id', 'profile_photo')
+        if tenant.kind != Tenant.Kind.PLATFORM:
+            response = success_response(message="Staff photos retrieved successfully.", data={})
+            response.data['is_exited'] = {}
+            return response
+        rows = PlatformStaffProfile.objects.filter(user__tenant=tenant).only(
+            'user_id', 'profile_photo', 'employment_status',
         )
         mapping = {
             str(p.user_id): signed_url(p.profile_photo.name, absolute_for=request)
-            for p in rows
+            for p in rows if p.profile_photo
         }
-        return success_response(message="Staff photos retrieved successfully.", data=mapping)
+        states = {str(user_id): False for user_id in User.objects.filter(
+            tenant=tenant,
+        ).values_list('pk', flat=True)}
+        states.update({
+            str(p.user_id): p.employment_status == PlatformStaffProfile.EmploymentStatus.EXITED
+            for p in rows
+        })
+        response = success_response(message="Staff photos retrieved successfully.", data=mapping)
+        response.data['is_exited'] = states
+        return response
 
 
 # =============================================================================
@@ -600,7 +610,9 @@ class PositionAssignmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             }
             for assignment in queryset
         ]
-        serializer = OrganogramCurrentAssignmentSerializer(data, many=True)
+        serializer = OrganogramCurrentAssignmentSerializer(
+            data, many=True, context={'request': request},
+        )
         return success_response(
             message="Current organogram assignments retrieved successfully.",
             data=serializer.data,

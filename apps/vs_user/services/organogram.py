@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from django.db import transaction
+from django.db.models import Prefetch
 
 from vs_config.clock import tenant_today
 
@@ -155,11 +156,19 @@ class OrganogramService:
         OrgTreeNodeSerializer. If `root` is given, builds the subtree under
         it; otherwise returns all top-level positions (reports_to IS NULL).
         """
+        current = (
+            PositionAssignment.objects
+            .filter(end_date__isnull=True, user__is_active=True)
+            .select_related('user')
+            .order_by('-is_primary', 'id')
+        )
         positions = list(
             Position.objects
             .filter(is_active=True)
             .select_related('org_node')
-            .prefetch_related('assignments__user')
+            .prefetch_related(
+                Prefetch('assignments', queryset=current, to_attr='_current_assignments')
+            )
         )
         active_ids = {pos.id for pos in positions}
         children_by_parent: dict = {}
@@ -172,13 +181,14 @@ class OrganogramService:
             children_by_parent.setdefault(parent_id, []).append(pos)
 
         def node_for(pos: Position) -> dict:
+            assignments = getattr(pos, '_current_assignments', ())
             return {
                 'id': pos.id,
                 'title': pos.title,
                 'code': pos.code,
                 'org_node': pos.org_node,
-                'holders': pos.current_holders,
-                'is_vacant': pos.is_vacant,
+                'holders': [assignment.user for assignment in assignments],
+                'is_vacant': not assignments,
                 'direct_reports': [
                     node_for(child)
                     for child in children_by_parent.get(pos.id, [])
@@ -186,7 +196,8 @@ class OrganogramService:
             }
 
         if root is not None:
-            return [node_for(root)]
+            selected = next((pos for pos in positions if pos.pk == root.pk), root)
+            return [node_for(selected)]
 
         for pos in children_by_parent.get(None, []):
             roots.append(node_for(pos))

@@ -489,14 +489,21 @@ class ApproversOverviewTests(_Fixture):
              "may_change": True, "quorum_count": None},
         )
         self.assertEqual(active["approvers"], [
-            {"id": self.funke.pk, "name": "Funke Adeyemi", "on_behalf_of": None, "vote": None},
+            {"id": self.funke.pk, "name": "Funke Adeyemi", "on_behalf_of": None,
+             "vote": None, "is_exited": False},
         ])
         self.assertEqual((upcoming["state"], upcoming["preview"]), ("UPCOMING", False))
         self.assertEqual(upcoming["assignment"]["reason"], "Tunde is away")
-        self.assertEqual(upcoming["assignment"]["set_by"], {"id": self.admin.pk, "name": "Ada Obi"})
+        self.assertEqual(upcoming["assignment"]["set_by"], {
+            "id": self.admin.pk, "name": "Ada Obi", "is_exited": False,
+        })
         self.assertEqual([a["id"] for a in upcoming["approvers"]], [self.okafor.pk])
-        self.assertEqual(body["history"][0]["removed"], {"id": self.tunde.pk, "name": "Tunde Bello"})
-        self.assertEqual(body["history"][0]["added"], {"id": self.okafor.pk, "name": "Chidi Okafor"})
+        self.assertEqual(body["history"][0]["removed"], {
+            "id": self.tunde.pk, "name": "Tunde Bello", "is_exited": False,
+        })
+        self.assertEqual(body["history"][0]["added"], {
+            "id": self.okafor.pk, "name": "Chidi Okafor", "is_exited": False,
+        })
         self.assertEqual(body["history"][0]["stage_label"], "Bursar")
 
     def test_a_stage_nobody_chose_previews_who_would_approve_it(self):
@@ -662,13 +669,16 @@ class InstanceListTests(_Fixture):
         rows = {row["id"]: row for row in response.data["data"]}
         waiting, cancelled = rows[self.r1.pk], rows[self.r3.pk]
         self.assertEqual(waiting["waiting_on"], [
-            {"id": self.funke.pk, "name": "Funke Adeyemi", "on_behalf_of": None}])
+            {"id": self.funke.pk, "name": "Funke Adeyemi", "is_exited": False,
+             "on_behalf_of": None}])
         self.assertIsNotNone(waiting["waiting_since"])
         self.assertEqual(waiting["stage_position"], {"index": 1, "total": 2})
         self.assertEqual(waiting["branch"], {"id": self.ikeja.pk, "name": "Ikeja Branch"})
         self.assertIsNone(waiting["request_for"])
         self.assertEqual(rows[self.r2.pk]["stage_position"], {"index": 2, "total": 2})
-        self.assertEqual(cancelled["request_for"], {"id": self.bola.pk, "name": "Bola Lekki"})
+        self.assertEqual(cancelled["request_for"], {
+            "id": self.bola.pk, "name": "Bola Lekki", "is_exited": False,
+        })
         self.assertEqual((cancelled["waiting_on"], cancelled["waiting_since"]), ([], None))
 
     def test_a_page_costs_the_same_however_many_rows_it_holds(self):
@@ -720,7 +730,9 @@ class DelegationReachTests(_Fixture):
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual((response.data["delegator"], response.data["applied_to_waiting"]),
                          (self.funke.pk, 1))
-        self.assertEqual(response.data["created_by"], {"id": self.admin.pk, "name": "Ada Obi"})
+        self.assertEqual(response.data["created_by"], {
+            "id": self.admin.pk, "name": "Ada Obi", "is_exited": False,
+        })
         self.assertEqual(self.seats(request),
                          {(self.funke.pk, None), (self.tunde.pk, self.funke.pk)})
         self.assertEqual(self.told(dispatch, NOTIF_EVENT_STAGE_ACTIVATED), {str(self.tunde.pk)})

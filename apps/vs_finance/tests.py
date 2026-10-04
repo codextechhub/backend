@@ -5716,6 +5716,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         )
         self.assertEqual(created.status_code, 201, created.content)
         self.assertEqual(created.json()["data"]["total"], 10000000)
+        self.assertFalse(created.json()["data"]["created_by_is_exited"])
 
         # Generate → one posted invoice for the customer.
         gen = self.client.post(
@@ -11716,6 +11717,7 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
+        self.assertFalse(body["data"]["requested_by_is_exited"])
         delivery = FinanceDocumentDelivery.objects.get(pk=body["data"]["id"])
         self.assertEqual(delivery.document_type, FinanceDeliveryDocument.INVOICE)
         self.assertEqual(delivery.recipients, ["payer@example.com"])

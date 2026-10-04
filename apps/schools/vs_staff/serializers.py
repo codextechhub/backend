@@ -58,15 +58,21 @@ def _media_link(field, request):
     return signed_url(field.name, absolute_for=request) or None
 
 
-def _actor(user):
-    """An id and a display name, and never an email address.
+def _actor(user, context):
+    """An id, display name and employment flag, and never an email address.
 
     A history is the most widely read part of a profile, and the platform
     already applies this rule to ``created_by`` everywhere else.
     """
     if user is None:
         return None
-    return {"id": user.pk, "name": _full_name(user)}
+    from core.person_exit import person_is_exited
+
+    return {
+        "id": user.pk,
+        "name": _full_name(user),
+        "is_exited": person_is_exited(context, user.pk),
+    }
 
 
 def _is_own_record(staff, user) -> bool:
@@ -201,6 +207,7 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
     #: mean "has left" are decided in one place rather than re-derived by every
     #: screen that wants to draw a finished row differently.
     on_roll = serializers.BooleanField(source="is_on_roll", read_only=True)
+    is_exited = serializers.SerializerMethodField()
     display_employment_status = serializers.SerializerMethodField()
     display_employment_status_label = serializers.SerializerMethodField()
     on_leave_today = serializers.SerializerMethodField()
@@ -233,7 +240,7 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
             # the finance engine is domain-neutral and knows nothing about
             # staff. Without it a bursar cannot tie a salary to a person.
             "id", "user_id", "full_name", "email", "staff_number", "job_title",
-            "employment_status", "employment_status_label", "on_roll",
+            "employment_status", "employment_status_label", "on_roll", "is_exited",
             "display_employment_status", "display_employment_status_label",
             "employment_type",
             "account_status", "account_flag", "roles", "branch_id",
@@ -244,6 +251,9 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
 
     def get_full_name(self, obj) -> str:
         return _full_name(obj.user)
+
+    def get_is_exited(self, obj) -> bool:
+        return obj.employment_status in (EmploymentStatus.RESIGNED, EmploymentStatus.TERMINATED)
 
     def get_roles(self, obj) -> list:
         """Every distinct role name, from the prefetched grants.
@@ -428,6 +438,26 @@ class QualificationSerializer(serializers.ModelSerializer):
         return value
 
 
+class StaffActorListSerializer(serializers.ListSerializer):
+    """Resolve history actors once for a nested staff-record section."""
+
+    actor_fields = ("uploaded_by_id", "changed_by_id", "requested_by_id")
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        rows = list(data.all()) if hasattr(data, "all") else list(data)
+        ids = {
+            getattr(row, field, None)
+            for row in rows for field in self.actor_fields
+        }
+        for row in rows:
+            change = self.context.get("leave_changes", {}).get(getattr(row, "pk", None))
+            ids.add(getattr(change, "actor_user_id", None))
+        prime_exit_states(self.context, ids)
+        return super().to_representation(rows)
+
+
 class DocumentSerializer(serializers.ModelSerializer):
     """A file, emitted as a media path.
 
@@ -445,6 +475,7 @@ class DocumentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = StaffDocument
+        list_serializer_class = StaffActorListSerializer
         fields = [
             "id", "document_type", "document_type_label", "title", "file_url",
             "file_retired", "uploaded_by", "created_at",
@@ -460,7 +491,7 @@ class DocumentSerializer(serializers.ModelSerializer):
         return obj.pk in self.context.get("retired_document_ids", ())
 
     def get_uploaded_by(self, obj):
-        return _actor(obj.uploaded_by)
+        return _actor(obj.uploaded_by, self.context)
 
 
 class DocumentCreateSerializer(serializers.ModelSerializer):
@@ -509,6 +540,7 @@ class EmploymentEventSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = StaffEmploymentEvent
+        list_serializer_class = StaffActorListSerializer
         fields = [
             "id", "from_status", "from_status_label", "to_status",
             "to_status_label", "reason", "effective_date", "last_working_day",
@@ -521,7 +553,7 @@ class EmploymentEventSerializer(serializers.ModelSerializer):
         return dict(EmploymentStatus.choices).get(obj.from_status, obj.from_status)
 
     def get_changed_by(self, obj):
-        return _actor(obj.changed_by)
+        return _actor(obj.changed_by, self.context)
 
 
 class LeaveSerializer(serializers.ModelSerializer):
@@ -542,6 +574,7 @@ class LeaveSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = LeaveRequest
+        list_serializer_class = StaffActorListSerializer
         fields = [
             "id", "staff_id", "staff_name", "leave_type", "leave_type_label",
             "start_date", "end_date", "resumption_date", "resumption_is_estimate",
@@ -555,7 +588,7 @@ class LeaveSerializer(serializers.ModelSerializer):
         return obj.display_status(as_at.date if as_at else None)
 
     def get_requested_by(self, obj):
-        return _actor(obj.requested_by)
+        return _actor(obj.requested_by, self.context)
 
     def get_staff_name(self, obj) -> str:
         return _full_name(obj.staff.user)
@@ -565,7 +598,7 @@ class LeaveSerializer(serializers.ModelSerializer):
 
     def get_last_changed_by(self, obj):
         change = self.context.get("leave_changes", {}).get(obj.pk)
-        return _actor(change.actor_user) if change else None
+        return _actor(change.actor_user, self.context) if change else None
 
     def get_last_changed_at(self, obj):
         change = self.context.get("leave_changes", {}).get(obj.pk)
@@ -748,7 +781,7 @@ class StaffDetailSerializer(StaffListSerializer):
         return _media_link(obj.photo, self.context.get("request"))
 
     def get_created_by(self, obj):
-        return _actor(obj.created_by)
+        return _actor(obj.created_by, self.context)
 
     def get_tenure(self, obj):
         """Derived from the hire date, and absent where there is none.
@@ -869,7 +902,10 @@ class StaffDetailSerializer(StaffListSerializer):
         edit drawer opens those boxes and no others without keeping its own
         copy. Absent on anybody else's record.
         """
+        from core.person_exit import prime_exit_states
         from .services.visibility import shape_record
+
+        prime_exit_states(self.context, (instance.created_by_id,))
 
         data = super().to_representation(instance)
         request = self.context.get("request")
@@ -1390,8 +1426,9 @@ def staff_holder(staff, context) -> dict:
     ``id`` is the account's id, because that is what the rest of the platform
     links a person by; ``staff_id`` is the staff record, for opening it. The
     photograph is a signed URL bound to the viewer, as every media link is.
-    ``is_suspended`` is true while their employment or their account is
-    suspended: they keep their post on the chart and the chart says so.
+    ``is_exited`` comes only from the employment record. ``is_suspended`` is
+    true while their employment or account is suspended: they keep their post
+    on the chart and the chart says so.
     """
     from core.media import signed_url
     from vs_user.models import User
@@ -1409,6 +1446,9 @@ def staff_holder(staff, context) -> dict:
         "full_name": _full_name(user),
         "photo": photo,
         "job_title": staff.job_title,
+        "is_exited": staff.employment_status in (
+            EmploymentStatus.RESIGNED, EmploymentStatus.TERMINATED,
+        ),
         "is_suspended": (
             staff.employment_status == EmploymentStatus.SUSPENDED
             or user.status == User.Status.SUSPENDED

@@ -60,3 +60,7 @@ class VsStaffConfig(AppConfig):
         from .services.organogram import StaffOrganogramService
 
         register_tenant_organogram(Tenant.Kind.SCHOOL, StaffOrganogramService)
+
+        from .person_exit import register as register_person_exit
+
+        register_person_exit()

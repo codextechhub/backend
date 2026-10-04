@@ -118,6 +118,28 @@ class ProxiedVoteTests(_ProxyVoteFixture):
         self.assertEqual(log_row["effective_user"], self.chioma.pk)
         self.assertTrue(EXISTING_AUDIT_KEYS <= set(log_row))
 
+    def test_proxy_timeline_marks_each_person_from_employment(self):
+        from vs_user.models import PlatformStaffProfile
+
+        PlatformStaffProfile.objects.create(
+            user=self.ada,
+            employment_status=PlatformStaffProfile.EmploymentStatus.EXITED,
+        )
+        PlatformStaffProfile.objects.create(
+            user=self.chioma,
+            employment_status=PlatformStaffProfile.EmploymentStatus.SUSPENDED,
+        )
+        self.proxy()
+        vote = self.approve(self.chioma)
+        clear_request_context()
+
+        row = WorkflowStageActionReadSerializer(vote).data
+        log = WorkflowAuditLogReadSerializer(self.acted_log()).data
+        self.assertTrue(row["proxied_by_is_exited"])
+        self.assertFalse(row["actor_is_exited"])
+        self.assertTrue(log["actor_is_exited"])
+        self.assertFalse(log["effective_user_is_exited"])
+
     def test_a_vote_by_someone_other_than_the_proxied_person_is_not_attributed(self):
         other = _person("other-proxy@test.com", "Tunde", "Bello")
         _make_approver(self.si, other)

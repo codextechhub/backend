@@ -456,6 +456,17 @@ class FeeItemSerializer(serializers.ModelSerializer):
         return format_naira(obj.amount)
 
 
+class FeeStructurePeopleListSerializer(serializers.ListSerializer):
+    """Resolve fee-structure creators once for a page."""
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        rows = list(data)
+        prime_exit_states(self.context, (row.created_by_id for row in rows))
+        return super().to_representation(rows)
+
+
 class FeeStructureSerializer(serializers.ModelSerializer):
     items = FeeItemSerializer(many=True, read_only=True)
     total = serializers.IntegerField(read_only=True)
@@ -473,16 +484,18 @@ class FeeStructureSerializer(serializers.ModelSerializer):
     # Usage/activity - only computed for the detail view (context with_usage=True),
     # so the list endpoint stays a single query per page.
     created_by_name = serializers.SerializerMethodField()
+    created_by_is_exited = serializers.SerializerMethodField()
     usage = serializers.SerializerMethodField()
 
     class Meta:
         model = FeeStructure
+        list_serializer_class = FeeStructurePeopleListSerializer
         fields = [
             "id", "code", "name", "applies_to", "applies_to_display",
             "branch_id", "description", "is_active", "items",
             "total", "total_naira", "tax_total", "tax_total_naira",
             "total_with_tax", "total_with_tax_naira",
-            "created_at", "created_by_name", "usage",
+            "created_at", "created_by_name", "created_by_is_exited", "usage",
         ]
 
     def get_total_naira(self, obj) -> str:
@@ -501,6 +514,11 @@ class FeeStructureSerializer(serializers.ModelSerializer):
         name = " ".join(filter(None, [
             getattr(u, "first_name", ""), getattr(u, "last_name", "")])).strip()
         return name or getattr(u, "email", None)
+
+    def get_created_by_is_exited(self, obj):
+        from core.person_exit import person_is_exited
+
+        return person_is_exited(self.context, obj.created_by_id)
 
     def get_usage(self, obj):
         """Invoices raised from this structure (reference 'FEE:<code>'). Detail only."""
@@ -1412,17 +1430,19 @@ class PayrollLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """
 
     field_resource = "finance.payrollrun"
+    field_aliases = {"employee_is_exited": "employee_name"}
 
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
     tax_state = serializers.CharField(source="tax_state.code", read_only=True, default=None)
     tax_state_name = serializers.CharField(source="tax_state.name", read_only=True, default=None)
     pfa_name = serializers.CharField(source="pfa.name", read_only=True, default=None)
     items = PayrollLineItemSerializer(many=True, read_only=True)
+    employee_is_exited = serializers.SerializerMethodField()
 
     class Meta:
         model = PayrollLine
         fields = [
-            "id", "line_no", "employee_id", "employee_name", "salary_id",
+            "id", "line_no", "employee_id", "employee_name", "employee_is_exited", "salary_id",
             "gross_amount", "paye_amount", "pension_amount", "other_deductions_amount",
             "employer_contributions_amount", "net_amount", "taxable_pay",
             "paye_source", "tax_table_id", "tax_basis", "items",
@@ -1431,6 +1451,30 @@ class PayrollLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
         ]
 
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+
+    def get_employee_is_exited(self, obj):
+        from core.person_exit import person_is_exited
+
+        return person_is_exited(self.context, obj.employee_id)
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        if obj.employee_id is None:
+            data.pop("employee_is_exited", None)
+        return data
+
+
+class PayrollRunPeopleListSerializer(serializers.ListSerializer):
+    """Read employment flags for a page of runs with one grouped lookup."""
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        runs = list(data)
+        prime_exit_states(self.context, (
+            line.employee_id for run in runs for line in run.lines.all()
+        ))
+        return super().to_representation(runs)
 
 
 class PayrollRunBranchSerializer(serializers.ModelSerializer):
@@ -1479,6 +1523,7 @@ class PayrollRunSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PayrollRun
+        list_serializer_class = PayrollRunPeopleListSerializer
         fields = [
             "id", "document_number", "pay_date", "period_label", "narration",
             "run_status", "status", "gross_total", "paye_total", "pension_total",
@@ -1511,6 +1556,9 @@ class PayrollRunSerializer(serializers.ModelSerializer):
         return None if reach is None else frozenset(reach)
 
     def to_representation(self, obj):
+        from core.person_exit import prime_exit_states
+
+        prime_exit_states(self.context, (line.employee_id for line in obj.lines.all()))
         data = super().to_representation(obj)
         reach = self._part_reach(obj)
         if reach is None:
@@ -1906,6 +1954,20 @@ class FixedAssetSerializer(serializers.ModelSerializer):
 AUDIT_SNAPSHOT_FIELDS = {"EmployeeSalary": "finance.salary"}
 
 
+class FinanceAuditPeopleListSerializer(serializers.ListSerializer):
+    """Resolve the named actors for one finance trail page in bulk."""
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        rows = list(data)
+        prime_exit_states(self.context, (
+            user_id for row in rows
+            for user_id in (row.actor_id, row.effective_user_id)
+        ))
+        return super().to_representation(rows)
+
+
 class FinanceAuditLogSerializer(serializers.ModelSerializer):
     """One row of the finance trail.
 
@@ -1939,14 +2001,28 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
     real_actor_name = serializers.SerializerMethodField()
     proxied_user_name = serializers.SerializerMethodField()
     acted_label = serializers.SerializerMethodField()
+    actor_is_exited = serializers.SerializerMethodField()
+    effective_user_is_exited = serializers.SerializerMethodField()
 
     class Meta:
         model = FinanceAuditLog
+        list_serializer_class = FinanceAuditPeopleListSerializer
         fields = [
             "id", "action", "action_display", "status", "actor", "target_type",
             "target_id", "document_number", "message", "before", "after", "created_at",
             "real_actor_name", "proxied_user_name", "acted_label", "branch_id", "branch_name",
+            "actor_is_exited", "effective_user_is_exited",
         ]
+
+    def get_actor_is_exited(self, obj):
+        from core.person_exit import person_is_exited
+
+        return person_is_exited(self.context, obj.actor_id)
+
+    def get_effective_user_is_exited(self, obj):
+        from core.person_exit import person_is_exited
+
+        return person_is_exited(self.context, obj.effective_user_id)
 
     def _attribution(self, obj) -> dict:
         from core.attribution import audit_row_attribution
@@ -1976,6 +2052,17 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
 # Customer document email deliveries                                          #
 # --------------------------------------------------------------------------- #
 
+class FinanceDeliveryPeopleListSerializer(serializers.ListSerializer):
+    """Resolve delivery requesters once for a history list."""
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        rows = list(data)
+        prime_exit_states(self.context, (row.requested_by_id for row in rows))
+        return super().to_representation(rows)
+
+
 class FinanceDocumentDeliverySerializer(serializers.ModelSerializer):
     """One attempt to email a customer document.
 
@@ -1991,16 +2078,19 @@ class FinanceDocumentDeliverySerializer(serializers.ModelSerializer):
     document_type_display = serializers.CharField(source="get_document_type_display", read_only=True)
     source_display = serializers.CharField(source="get_source_display", read_only=True)
     requested_by_name = serializers.SerializerMethodField()
+    requested_by_is_exited = serializers.SerializerMethodField()
     recipient_count = serializers.SerializerMethodField()
     can_retry = serializers.SerializerMethodField()
 
     class Meta:
         model = FinanceDocumentDelivery
+        list_serializer_class = FinanceDeliveryPeopleListSerializer
         fields = [
             "id", "customer_id", "customer_code", "customer_name",
             "document_type", "document_type_display", "document_id", "document_number",
             "period_start", "period_end", "source", "source_display", "status",
-            "requested_by_name", "recipients", "recipient_count", "bcc", "note",
+            "requested_by_name", "requested_by_is_exited",
+            "recipients", "recipient_count", "bcc", "note",
             "queued_at", "sent_at", "failure_reason", "can_retry", "created_at",
         ]
 
@@ -2011,6 +2101,11 @@ class FinanceDocumentDeliverySerializer(serializers.ModelSerializer):
             # reads as missing data.
             return "System"
         return (getattr(user, "full_name", "") or getattr(user, "email", "")).strip()
+
+    def get_requested_by_is_exited(self, obj):
+        from core.person_exit import person_is_exited
+
+        return person_is_exited(self.context, obj.requested_by_id)
 
     def get_recipient_count(self, obj) -> int:
         return len(obj.recipients or [])

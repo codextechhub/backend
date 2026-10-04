@@ -36,8 +36,12 @@ def _assessor_name(user):
     return getattr(user, "full_name", "") or user.get_full_name() or user.email
 
 
-def _assessment_json(a):
+def _assessment_json(a, states=None):
     """Serialize one assessment: raw scores + the computed overall_score/grade."""
+    if states is None:
+        from core.person_exit import prime_exit_states
+
+        states = prime_exit_states({}, (a.assessor_id,))
     return {
         "id": a.id,
         "vendor_id": a.vendor_id,
@@ -45,6 +49,7 @@ def _assessment_json(a):
         "vendor_name": a.vendor.name,
         "assessment_date": str(a.assessment_date),
         "assessor": _assessor_name(a.assessor),
+        "assessor_is_exited": states.get(a.assessor_id) if a.assessor_id else None,
         "on_time_delivery": a.on_time_delivery,
         "quality_acceptance": a.quality_acceptance,
         "invoice_accuracy": a.invoice_accuracy,
@@ -81,9 +86,13 @@ class VendorAssessmentListCreateView(_ProcBase):
             # _resolve_vendor is entity-scoped - a foreign vendor 404s rather than leaking.
             qs = qs.filter(vendor=_resolve_vendor(request, entity, vendor_ref))
         # Model Meta already orders newest-first (-assessment_date, -id).
+        rows = list(qs)
+        from core.person_exit import prime_exit_states
+
+        states = prime_exit_states({}, (row.assessor_id for row in rows))
         return success_response(
             "Vendor assessments retrieved.",
-            data=[_assessment_json(a) for a in qs],
+            data=[_assessment_json(a, states) for a in rows],
         )
 
     def post(self, request):

@@ -962,10 +962,26 @@ def approver_overview(instance: WorkflowInstance) -> dict:
                                        "on_behalf_of", "changed_by")
                        .order_by("-changed_at", "-pk"))
     ]
-    return {
+    result = {
         "instance_id": str(instance.pk),
         "may_change": is_open,
         "blocked_reason": blocked_reason(instance),
         "stages": stages,
         "history": history,
     }
+    from core.person_exit import mark_named_people
+
+    people = []
+    for stage in stages:
+        for approver in stage["approvers"]:
+            people.extend((approver, approver.get("on_behalf_of")))
+        assignment = stage["assignment"]
+        if assignment is not None:
+            people.extend(assignment["approvers"])
+            people.append(assignment["set_by"])
+    for change in history:
+        people.extend(
+            change[key] for key in ("removed", "added", "on_behalf_of", "by")
+        )
+    mark_named_people(people)
+    return result

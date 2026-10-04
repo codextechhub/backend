@@ -33,3 +33,7 @@ class VsUserConfig(AppConfig):
         from .history import register as register_history
 
         register_history()
+
+        from .person_exit import register as register_person_exit
+
+        register_person_exit()

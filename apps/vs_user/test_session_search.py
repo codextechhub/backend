@@ -48,6 +48,14 @@ class LiveSessionSearchTests(TestCase):
             device_label="Grace's tablet",
             user_agent="Mozilla/5.0 OtherBrowser/1.0",
         )
+        for index in range(10):
+            user = make_vision_user(email=f"session.person{index}@codex.test")
+            LoginSession.objects.create(
+                user=user,
+                tenant=user.tenant,
+                ip_address=f"198.51.100.{index + 20}",
+                device_label=f"Device {index}",
+            )
 
     def setUp(self):
         self.client = APIClient()
@@ -75,3 +83,15 @@ class LiveSessionSearchTests(TestCase):
 
     def test_search_excludes_sessions_that_do_not_match(self):
         self.assertEqual(self._returned_ids("no such live session"), set())
+
+    def test_session_people_are_resolved_in_bounded_queries(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get("/v1/user/sessions/?page_size=100")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(len(response.json()["data"]), 12)
+        self.assertTrue(all("is_exited" in row["user"] for row in response.json()["data"]))
+        self.assertLess(len(queries), 20)

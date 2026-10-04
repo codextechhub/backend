@@ -421,6 +421,16 @@ def _pending_approvals(entity, user, branch_filter) -> list:
         for doc_type, model in models.items()
     }
 
+    from core.person_exit import prime_exit_states
+
+    states = prime_exit_states({}, (
+        user_id for snap, _object_id in usable
+        for user_id in (
+            snap.stage_instance.instance.requested_by_id,
+            snap.on_behalf_of_id,
+        )
+    ))
+
     items = []
     for snap, object_id in usable:
         stage = snap.stage_instance
@@ -445,10 +455,14 @@ def _pending_approvals(entity, user, branch_filter) -> list:
             "reference": document.document_number or str(document.pk),
             "title": title,
             "requester": _requester_name(instance.requested_by),
+            "requester_is_exited": states.get(instance.requested_by_id)
+            if instance.requested_by_id else None,
             "amount": _money(amount),
             "stage": getattr(instance.current_stage, "label", "") or "Approval",
             "awaiting_since": stage.activated_at.isoformat() if stage.activated_at else None,
             "on_behalf_of": str(snap.on_behalf_of_id) if snap.on_behalf_of_id else None,
+            "on_behalf_of_is_exited": states.get(snap.on_behalf_of_id)
+            if snap.on_behalf_of_id else None,
         })
     return items
 
@@ -461,7 +475,7 @@ def _recent_activity(entity) -> list:
     """
     from core.attribution import audit_row_attribution
 
-    rows = (
+    rows = list(
         FinanceAuditLog.objects.filter(
             entity=entity,
             action__in=PROCUREMENT_AUDIT_ACTIONS,
@@ -472,6 +486,12 @@ def _recent_activity(entity) -> list:
         # The Dashboard intentionally shows at most the five newest successful events.
         .order_by("-created_at", "-id")[:5]
     )
+    from core.person_exit import prime_exit_states
+
+    states = prime_exit_states({}, (
+        user_id for row in rows
+        for user_id in (row.actor_id, row.effective_user_id)
+    ))
     return [
         {
             "id": row.pk,
@@ -486,6 +506,10 @@ def _recent_activity(entity) -> list:
             ),
             "reference": row.document_number,
             "actor": _requester_name(row.actor),
+            "actor_is_exited": states.get(row.actor_id) if row.actor_id else None,
+            "effective_user_is_exited": (
+                states.get(row.effective_user_id) if row.effective_user_id else None
+            ),
             **audit_row_attribution(row, name=_requester_name),
             "occurred_at": row.created_at.isoformat(),
         }

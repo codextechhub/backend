@@ -162,6 +162,8 @@ class ColleagueTests(ProfileVisibilityFixture):
         self.assertEqual(data["visible_sections"], ["contact"])
         for key in ("full_name", "email", "phone", "photo_url", "organogram"):
             self.assertIn(key, data)
+        self.assertIn("is_exited", data)
+        self.assertFalse(data["is_exited"])
         self.assertEqual(data["organogram"]["position"]["title"], "Head of Sciences")
         for key in (
             "staff_number", "job_title", "hire_date", "employment_status",

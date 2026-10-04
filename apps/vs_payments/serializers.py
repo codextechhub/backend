@@ -152,6 +152,20 @@ _VIRTUAL_ACCOUNT_ACTIONS = ("VIRTUAL_ACCOUNT_CREATED", "VIRTUAL_ACCOUNT_STATUS_C
 _VIRTUAL_ACCOUNT_NUMBER = re.compile(r"^Virtual account \S+ ")
 
 
+class PaymentEventPeopleListSerializer(serializers.ListSerializer):
+    """Resolve the named people for one transaction-log page in bulk."""
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        rows = list(data)
+        prime_exit_states(self.context, (
+            user_id for row in rows
+            for user_id in (row.actor_user_id, row.proxied_by_id)
+        ))
+        return super().to_representation(rows)
+
+
 class PaymentEventSerializer(serializers.ModelSerializer):
     """Read serializer for the append-only gateway action log (transactions log).
 
@@ -161,8 +175,9 @@ class PaymentEventSerializer(serializers.ModelSerializer):
     number is left out of the message, as it is absent from the account's own
     record, so the log says no more than the record would.
 
-    ``actor_email`` is the person in whose name the action ran. An action taken
-    under a proxy also says who really did it: ``real_actor_name``,
+    ``actor_email`` is the person in whose name the action ran. Each named
+    person has a separate employment-exit flag. An action taken under a proxy
+    also says who really did it: ``real_actor_name``,
     ``proxied_user_name`` and the ready ``acted_label`` ("Ada Obi for Chioma
     Okafor") come from :mod:`core.attribution`.
     """
@@ -175,14 +190,34 @@ class PaymentEventSerializer(serializers.ModelSerializer):
     real_actor_name = serializers.SerializerMethodField()
     proxied_user_name = serializers.SerializerMethodField()
     acted_label = serializers.SerializerMethodField()
+    actor_user_is_exited = serializers.SerializerMethodField()
+    proxied_by_is_exited = serializers.SerializerMethodField()
 
     class Meta:
         model = PaymentEvent
+        list_serializer_class = PaymentEventPeopleListSerializer
         fields = [
             "id", "entity_code", "provider", "action", "action_display", "reference",
             "succeeded", "message", "metadata", "actor_email", "created_at",
             "real_actor_name", "proxied_user_name", "acted_label",
+            "actor_user_is_exited", "proxied_by_is_exited",
         ]
+
+    def to_representation(self, obj):
+        from core.person_exit import prime_exit_states
+
+        prime_exit_states(self.context, (obj.actor_user_id, obj.proxied_by_id))
+        return super().to_representation(obj)
+
+    def get_actor_user_is_exited(self, obj):
+        from core.person_exit import person_is_exited
+
+        return person_is_exited(self.context, obj.actor_user_id)
+
+    def get_proxied_by_is_exited(self, obj):
+        from core.person_exit import person_is_exited
+
+        return person_is_exited(self.context, obj.proxied_by_id)
 
     def get_message(self, obj):
         message = obj.message or ""

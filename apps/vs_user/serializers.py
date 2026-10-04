@@ -87,14 +87,32 @@ class TenantSlimSerializer(serializers.Serializer):
     name = serializers.CharField(read_only=True)
 
 
+class UserInlineExitListSerializer(serializers.ListSerializer):
+    """Resolve employment flags once for a nested person list."""
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        users = list(data.all()) if hasattr(data, 'all') else list(data)
+        prime_exit_states(self.context, (user.pk for user in users))
+        return super().to_representation(users)
+
+
 class UserInlineSerializer(serializers.ModelSerializer):
     """Minimal nested user representation for related objects (sessions, lockouts, etc.)."""
     full_name = serializers.CharField(read_only=True)
+    is_exited = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ('id', 'email', 'first_name', 'last_name', 'full_name')
+        list_serializer_class = UserInlineExitListSerializer
+        fields = ('id', 'email', 'first_name', 'last_name', 'full_name', 'is_exited')
         read_only_fields = fields
+
+    def get_is_exited(self, obj):
+        from core.person_exit import person_is_exited
+
+        return person_is_exited(self.context, obj.pk)
 
 
 def _raise_password_error(exc: DjangoValidationError):
@@ -138,6 +156,7 @@ class UserReadSerializer(FieldAccessMixin, serializers.ModelSerializer):
     invited_by_name  = serializers.SerializerMethodField()
     position_id      = serializers.SerializerMethodField()
     position_title   = serializers.SerializerMethodField()
+    is_exited = serializers.SerializerMethodField()
 
     class Meta:
         model  = User
@@ -153,6 +172,7 @@ class UserReadSerializer(FieldAccessMixin, serializers.ModelSerializer):
             'phone',
             'role',
             'status',
+            'is_exited',
             'tenant_slug',
             'tenant_name',
             'branch_id',
@@ -171,6 +191,11 @@ class UserReadSerializer(FieldAccessMixin, serializers.ModelSerializer):
     def get_full_name(self, obj) -> str:
         return obj.full_name
 
+    def get_is_exited(self, obj) -> bool:
+        from core.person_exit import person_is_exited
+
+        return person_is_exited(self.context, obj.pk)
+
     def get_invited_by_name(self, obj) -> str | None:
         if obj.invited_by:
             return obj.invited_by.full_name
@@ -183,6 +208,17 @@ class UserReadSerializer(FieldAccessMixin, serializers.ModelSerializer):
     def get_position_title(self, obj) -> str | None:
         profile = getattr(obj, 'platform_staff_profile', None)
         return profile.position.title if profile and profile.position_id else None
+
+
+class UserExitListSerializer(serializers.ListSerializer):
+    """Resolve employment flags once for an account-list page."""
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        users = list(data.all()) if hasattr(data, 'all') else list(data)
+        prime_exit_states(self.context, (user.pk for user in users))
+        return super().to_representation(users)
 
 
 class UserListSerializer(FieldAccessMixin, serializers.ModelSerializer):
@@ -209,19 +245,26 @@ class UserListSerializer(FieldAccessMixin, serializers.ModelSerializer):
     # the tab says for a whole page, this says per row. The human answer to
     # "who is this person here" is ``role``, beside it.
     tenant_kind  = serializers.CharField(source='tenant.kind', read_only=True)
+    is_exited = serializers.SerializerMethodField()
     invited_by_name         = serializers.SerializerMethodField()
     invitation_email_status = serializers.SerializerMethodField()
     invitation_expires_at   = serializers.SerializerMethodField()
 
     class Meta:
         model  = User
+        list_serializer_class = UserExitListSerializer
         fields = (
             'id', 'uid', 'email', 'full_name', 'gender', 'tenant_kind', 'role',
-            'status', 'school_id', 'school_name', 'branch_id', 'branch_name',
+            'status', 'is_exited', 'school_id', 'school_name', 'branch_id', 'branch_name',
             'invited_by_name', 'created_at',
             'invitation_email_status', 'invitation_expires_at',
         )
         read_only_fields = fields
+
+    def get_is_exited(self, obj) -> bool:
+        from core.person_exit import person_is_exited
+
+        return person_is_exited(self.context, obj.pk)
 
     def get_full_name(self, obj) -> str:
         return obj.full_name
@@ -767,12 +810,27 @@ class UserInvitationReadSerializer(serializers.ModelSerializer):
 # Session, Lockout and Attempt serializers
 # =============================================================================
 
+class RelatedUserExitListSerializer(serializers.ListSerializer):
+    """Prime a page whose rows each expose their related ``user``."""
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        rows = list(data.all()) if hasattr(data, 'all') else list(data)
+        prime_exit_states(self.context, (
+            row['user'].pk if isinstance(row, dict) else row.user_id
+            for row in rows
+        ))
+        return super().to_representation(rows)
+
+
 class LoginSessionReadSerializer(serializers.ModelSerializer):
     user   = UserInlineSerializer(read_only=True)
     tenant = TenantSlimSerializer(read_only=True)
 
     class Meta:
         model  = LoginSession
+        list_serializer_class = RelatedUserExitListSerializer
         fields = (
             'id', 'user', 'tenant', 'ip_address', 'user_agent',
             'device_label', 'last_seen_at', 'is_active', 'ended_at',
@@ -844,6 +902,7 @@ class AuthAttemptReadSerializer(serializers.ModelSerializer):
 
     class Meta:
         model  = AuthAttempt
+        list_serializer_class = RelatedUserExitListSerializer
         fields = (
             'id', 'email_entered', 'user', 'tenant',
             'ip_address', 'user_agent', 'result', 'failure_code', 'metadata', 'created_at',
@@ -857,6 +916,7 @@ class AccountLockoutReadSerializer(serializers.ModelSerializer):
 
     class Meta:
         model  = AccountLockout
+        list_serializer_class = RelatedUserExitListSerializer
         fields = (
             'user', 'locked_until', 'locked_reason', 'failure_count',
             'last_failure_at', 'last_failure_ip', 'is_locked_now',
@@ -893,6 +953,7 @@ class PasswordResetAdminSerializer(serializers.ModelSerializer):
 
     class Meta:
         model  = PasswordResetRequest
+        list_serializer_class = RelatedUserExitListSerializer
         fields = (
             'id', 'user', 'tenant_id', 'tenant_slug', 'tenant_name',
             'requested_by', 'requested_ip',
@@ -937,6 +998,41 @@ def _profile_belongs_to(profile, user) -> bool:
     return getattr(profile, 'user_id', None) == getattr(user, 'id', None)
 
 
+class PlatformProfilePeopleListSerializer(serializers.ListSerializer):
+    """Prime profile subjects and line managers once for a staff page."""
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        rows = list(data.all()) if hasattr(data, 'all') else list(data)
+        manager_position_ids = {
+            row.position.reports_to_id for row in rows
+            if row.position_id and row.position.reports_to_id
+        }
+        managers = {}
+        for assignment in (
+            PositionAssignment.objects
+            .filter(
+                position_id__in=manager_position_ids,
+                end_date__isnull=True,
+                user__is_active=True,
+            )
+            .select_related('user')
+            .order_by('position_id', '-is_primary', '-start_date', 'pk')
+        ):
+            managers.setdefault(assignment.position_id, assignment.user)
+        for row in rows:
+            manager_position_id = (
+                row.position.reports_to_id if row.position_id else None
+            )
+            row.__dict__['_line_manager_as_at'] = managers.get(manager_position_id)
+        prime_exit_states(self.context, (
+            user_id for row in rows
+            for user_id in (row.user_id, getattr(row.current_line_manager, 'pk', None))
+        ))
+        return super().to_representation(rows)
+
+
 class PlatformStaffProfileListSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Slim representation for list endpoints - no sensitive payroll data.
 
@@ -948,6 +1044,7 @@ class PlatformStaffProfileListSerializer(FieldAccessMixin, serializers.ModelSeri
 
     field_resource = 'platform.staff_profile'
     owner_rule = staticmethod(_profile_belongs_to)
+    field_aliases = {'is_active_employee': 'employment_status'}
 
     user = StaffProfileAccountSerializer(read_only=True)
     position = PositionInlineSerializer(read_only=True)
@@ -955,15 +1052,20 @@ class PlatformStaffProfileListSerializer(FieldAccessMixin, serializers.ModelSeri
     department = OrgNodeInlineSerializer(read_only=True)
     division = OrgNodeInlineSerializer(read_only=True)
     is_active_employee = serializers.BooleanField(read_only=True)
+    is_exited = serializers.SerializerMethodField()
 
     class Meta:
         model = PlatformStaffProfile
+        list_serializer_class = PlatformProfilePeopleListSerializer
         fields = (
             'id', 'user', 'employee_id', 'job_title', 'position', 'org_node', 'department', 'division',
-            'employment_type', 'employment_status', 'is_active_employee',
+            'employment_type', 'employment_status', 'is_active_employee', 'is_exited',
             'created_at', 'updated_at',
         )
         read_only_fields = fields
+
+    def get_is_exited(self, obj) -> bool:
+        return obj.employment_status == PlatformStaffProfile.EmploymentStatus.EXITED
 
 
 class PlatformStaffProfileBriefSerializer(FieldAccessMixin, serializers.ModelSerializer):
@@ -979,6 +1081,7 @@ class PlatformStaffProfileBriefSerializer(FieldAccessMixin, serializers.ModelSer
 
     field_resource = 'platform.staff_profile'
     owner_rule = staticmethod(_profile_belongs_to)
+    field_aliases = {'is_active_employee': 'employment_status'}
 
     profile_view = serializers.SerializerMethodField()
     user = StaffProfileAccountSerializer(read_only=True)
@@ -988,19 +1091,24 @@ class PlatformStaffProfileBriefSerializer(FieldAccessMixin, serializers.ModelSer
     division = OrgNodeInlineSerializer(read_only=True)
     current_line_manager = UserInlineSerializer(read_only=True)
     is_active_employee = serializers.BooleanField(read_only=True)
+    is_exited = serializers.SerializerMethodField()
 
     class Meta:
         model = PlatformStaffProfile
+        list_serializer_class = PlatformProfilePeopleListSerializer
         fields = (
             'profile_view', 'id', 'user', 'profile_photo', 'employee_id',
             'job_title', 'position', 'org_node', 'department', 'division',
             'current_line_manager', 'employment_type', 'employment_status',
-            'is_active_employee',
+            'is_active_employee', 'is_exited',
         )
         read_only_fields = fields
 
     def get_profile_view(self, _obj) -> str:
         return 'brief'
+
+    def get_is_exited(self, obj) -> bool:
+        return obj.employment_status == PlatformStaffProfile.EmploymentStatus.EXITED
 
 
 class PlatformStaffProfileSerializer(FieldAccessMixin, serializers.ModelSerializer):
@@ -1019,6 +1127,7 @@ class PlatformStaffProfileSerializer(FieldAccessMixin, serializers.ModelSerializ
     field_resource = "platform.staff_profile"
     field_access_detail = True
     owner_rule = staticmethod(_profile_belongs_to)
+    field_aliases = {'is_active_employee': 'employment_status'}
 
     user            = StaffProfileAccountSerializer(read_only=True)
     user_id         = serializers.PrimaryKeyRelatedField(
@@ -1042,10 +1151,12 @@ class PlatformStaffProfileSerializer(FieldAccessMixin, serializers.ModelSerializ
     division             = OrgNodeInlineSerializer(read_only=True)
     current_line_manager = UserInlineSerializer(read_only=True)
     is_active_employee   = serializers.BooleanField(read_only=True)
+    is_exited = serializers.SerializerMethodField()
     profile_view         = serializers.SerializerMethodField()
 
     class Meta:
         model = PlatformStaffProfile
+        list_serializer_class = PlatformProfilePeopleListSerializer
         fields = (
             'profile_view', 'id', 'user', 'user_id',
             'date_of_birth', 'marital_status', 'nationality', 'state_of_origin',
@@ -1057,12 +1168,15 @@ class PlatformStaffProfileSerializer(FieldAccessMixin, serializers.ModelSerializ
             'division', 'employment_type', 'employment_status', 'date_joined', 'date_exited',
             'current_line_manager',
             'bank_name', 'account_name', 'account_number',
-            'is_active_employee', 'created_at', 'updated_at',
+            'is_active_employee', 'is_exited', 'created_at', 'updated_at',
         )
         read_only_fields = ('id', 'created_at', 'updated_at')
 
     def get_profile_view(self, _obj) -> str:
         return 'full'
+
+    def get_is_exited(self, obj) -> bool:
+        return obj.employment_status == PlatformStaffProfile.EmploymentStatus.EXITED
 
     def validate(self, attrs):
         # On create the target user must be supplied; on update it is fixed.
@@ -1086,6 +1200,22 @@ class PlatformStaffProfileSerializer(FieldAccessMixin, serializers.ModelSerializ
 # Organogram - OrgNode / Position / PositionAssignment / MatrixReport
 # =============================================================================
 
+class OrgNodeExitListSerializer(serializers.ListSerializer):
+    """Prime every head shown on an org-node page."""
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        rows = list(data.all()) if hasattr(data, 'all') else list(data)
+        ids = []
+        for row in rows:
+            position = row.head_position
+            assignments = getattr(position, '_current_assignments', ()) if position else ()
+            ids.extend(assignment.user_id for assignment in assignments[:1])
+        prime_exit_states(self.context, ids)
+        return super().to_representation(rows)
+
+
 class OrgNodeSerializer(serializers.ModelSerializer):
     """Full org-node serializer with tier (kind), parent + derived head."""
 
@@ -1104,6 +1234,7 @@ class OrgNodeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OrgNode
+        list_serializer_class = OrgNodeExitListSerializer
         fields = (
             'id', 'name', 'code', 'kind',
             'parent', 'parent_id',
@@ -1136,7 +1267,7 @@ class OrgNodeSerializer(serializers.ModelSerializer):
             user = pre[0].user if pre else None  # primary first (ordered)
         else:
             user = obj.head
-        return UserInlineSerializer(user).data if user else None
+        return UserInlineSerializer(user, context=self.context).data if user else None
 
     def validate(self, attrs):
         target = copy.copy(self.instance) if self.instance is not None else OrgNode()
@@ -1149,6 +1280,21 @@ class OrgNodeSerializer(serializers.ModelSerializer):
                 exc.message_dict if hasattr(exc, 'message_dict') else exc.messages
             )
         return attrs
+
+
+class PositionExitListSerializer(serializers.ListSerializer):
+    """Prime every holder shown on a position page."""
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        rows = list(data.all()) if hasattr(data, 'all') else list(data)
+        ids = [
+            assignment.user_id for row in rows
+            for assignment in getattr(row, '_current_assignments', ())
+        ]
+        prime_exit_states(self.context, ids)
+        return super().to_representation(rows)
 
 
 class PositionSerializer(serializers.ModelSerializer):
@@ -1174,6 +1320,7 @@ class PositionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Position
+        list_serializer_class = PositionExitListSerializer
         fields = (
             'id', 'title', 'code',
             'org_node', 'org_node_id',
@@ -1193,7 +1340,9 @@ class PositionSerializer(serializers.ModelSerializer):
         return [a.user for a in assignments]
 
     def get_current_holders(self, obj):
-        return UserInlineSerializer(self._current_users(obj), many=True).data
+        return UserInlineSerializer(
+            self._current_users(obj), many=True, context=self.context,
+        ).data
 
     def get_is_vacant(self, obj) -> bool:
         return len(self._current_users(obj)) == 0
@@ -1235,6 +1384,7 @@ class PositionAssignmentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PositionAssignment
+        list_serializer_class = RelatedUserExitListSerializer
         fields = (
             'id', 'user', 'user_id', 'position', 'position_id',
             'is_primary', 'is_acting', 'start_date', 'end_date',
@@ -1249,6 +1399,9 @@ class OrganogramCurrentAssignmentSerializer(serializers.Serializer):
     user = UserInlineSerializer(read_only=True)
     position = PositionInlineSerializer(read_only=True)
     is_acting = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        list_serializer_class = RelatedUserExitListSerializer
 
 
 class MatrixReportSerializer(serializers.ModelSerializer):
@@ -1287,6 +1440,25 @@ class MatrixReportSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class OrgTreeExitListSerializer(serializers.ListSerializer):
+    """Prime holders across a recursive organogram tree."""
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        rows = list(data)
+        ids = []
+
+        def collect(nodes):
+            for node in nodes:
+                ids.extend(user.pk for user in node.get('holders', ()))
+                collect(node.get('direct_reports', ()))
+
+        collect(rows)
+        prime_exit_states(self.context, ids)
+        return super().to_representation(rows)
+
+
 class OrgTreeNodeSerializer(serializers.Serializer):
     """
     Recursive read-only serializer for the position tree returned by
@@ -1301,6 +1473,9 @@ class OrgTreeNodeSerializer(serializers.Serializer):
     holders       = UserInlineSerializer(many=True)
     is_vacant     = serializers.BooleanField()
     direct_reports = serializers.SerializerMethodField()
+
+    class Meta:
+        list_serializer_class = OrgTreeExitListSerializer
 
     def get_direct_reports(self, obj):
         children = obj.get('direct_reports', [])

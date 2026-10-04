@@ -435,6 +435,16 @@ class WorkflowTemplateViewSet(
             }
 
         approvers = [{"user": _u(e.user), "on_behalf_of": _u(e.on_behalf_of)} for e in eligible]
+        from core.person_exit import prime_exit_states
+
+        states = prime_exit_states({}, (
+            user.pk for entry in eligible
+            for user in (entry.user, entry.on_behalf_of) if user is not None
+        ))
+        for item in approvers:
+            for key in ("user", "on_behalf_of"):
+                if item[key] is not None:
+                    item[key]["is_exited"] = states.get(int(item[key]["id"]), False)
         payload = {
             "approver_source": d["approver_source"],
             "organogram_target": d.get("organogram_target") or None,
@@ -1137,13 +1147,25 @@ class PendingApprovalsView(TenantScopedMixin, APIView):
         # Which snapshots are actionable lives in services/my_queue so the console
         # landing screen counts this queue by exactly the rules it lists it by.
         snaps = my_queue_svc.pending_approval_snapshots(request.user, self.get_tenant())
+        from core.person_exit import prime_exit_states
+
+        context = {"request": request}
+        states = prime_exit_states(context, (
+            user_id for snap in snaps
+            for user_id in (
+                snap.stage_instance.instance.requested_by_id,
+                snap.on_behalf_of_id,
+            )
+        ))
         results = []
         for snap in snaps:
             inst = snap.stage_instance.instance
-            results.append(WorkflowInstanceListSerializer(inst).data | {
+            results.append(WorkflowInstanceListSerializer(inst, context=context).data | {
                 "awaiting_on_stage": snap.stage_instance.stage.label,
                 "awaiting_since": snap.stage_instance.activated_at,
                 "on_behalf_of": str(snap.on_behalf_of_id) if snap.on_behalf_of_id else None,
+                "on_behalf_of_is_exited": states.get(snap.on_behalf_of_id)
+                if snap.on_behalf_of_id else None,
             })
         return Response({"results": results, "count": len(results)})
 
@@ -1315,6 +1337,9 @@ class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
 
         members = describe_group_members(group, request.tenant, branch)
         people = resolve_group_users(group, request.tenant, branch)
+        from core.person_exit import prime_exit_states
+
+        states = prime_exit_states({}, (user.pk for user in people))
         return Response({
             "group": {"id": str(group.pk), "code": group.code,
                       "name": group.name, "is_active": group.is_active},
@@ -1323,7 +1348,8 @@ class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
             "resolved_users": [
                 {"id": str(u.pk),
                  "name": getattr(u, "full_name", "") or u.get_username(),
-                 "email": u.email}
+                 "email": u.email,
+                 "is_exited": states.get(u.pk, False)}
                 for u in people
             ],
         })
@@ -1537,6 +1563,11 @@ class WorkflowDynamicRoleViewSet(TenantScopedMixin, ModelViewSet):
                       "email": getattr(u, "email", "")}}
             for u in users
         ]
+        from core.person_exit import prime_exit_states
+
+        states = prime_exit_states({}, (user.pk for user in users))
+        for item in approvers:
+            item["user"]["is_exited"] = states.get(int(item["user"]["id"]), False)
         return Response({"count": len(approvers), "approvers": approvers,
                          "dynamic_role": detail})
 

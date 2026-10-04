@@ -216,6 +216,7 @@ def describe_group_members(group, tenant, branch=None) -> list:
         if m.kind == GroupMemberKind.POSITION
     )
     rows = []
+    resolved_by_member = []
     for m in members:
         if m.kind == GroupMemberKind.USER:
             label = _display_name(m.user)
@@ -232,6 +233,15 @@ def describe_group_members(group, tenant, branch=None) -> list:
                 code, title = labels.get((group.tenant_id, m.tenant_position_id), (None, ""))
             label, target_code = title, code
             resolved = _tenant_members(_position_member_holders(m, tenant), tenant_id)
+        resolved_by_member.append((m, label, target_code, resolved))
+
+    from core.person_exit import prime_exit_states
+
+    states = prime_exit_states({}, (
+        user.pk for _member, _label, _target_code, resolved in resolved_by_member
+        for user in resolved
+    ))
+    for m, label, target_code, resolved in resolved_by_member:
         rows.append({
             "id": str(m.pk),
             "kind": m.kind,
@@ -239,7 +249,8 @@ def describe_group_members(group, tenant, branch=None) -> list:
             "target_code": target_code,
             "resolved_count": len(resolved),
             "resolved_users": [
-                {"id": str(u.pk), "name": _display_name(u), "email": u.email}
+                {"id": str(u.pk), "name": _display_name(u), "email": u.email,
+                 "is_exited": states.get(u.pk, False)}
                 for u in resolved
             ],
         })
