@@ -60,6 +60,9 @@ from vs_procurement.models import (
     RequestForQuotation,
     RfqInvitation,
     RfqLine,
+    SharedSourcingAllocation,
+    SharedSourcingGroup,
+    SharedSourcingOrder,
     StockItem,
     StockLocation,
     StockMovement,
@@ -4640,9 +4643,24 @@ class GRIRPoLinesTests(_P2PFixtureMixin, TestCase):
 class SourcingTests(_P2PFixtureMixin, TestCase):
     """RFQ lifecycle, quotation submission and award-into-PO conversion."""
 
+    @classmethod
+    def setUpTestData(cls):
+        from vs_tenants.models import Branch, Tenant
+
+        super().setUpTestData()
+        tenant = Tenant.objects.create(
+            slug="sourcing-tests", name="Sourcing Tests", kind=Tenant.Kind.ORGANIZATION,
+            status=Tenant.Status.ACTIVE,
+        )
+        cls.branch = Branch.objects.create(
+            tenant=tenant, name="Main Branch", is_main=True, status="ACTIVE",
+        )
+        cls._p2p_books[0].tenant = tenant
+        cls._p2p_books[0].save(update_fields=["tenant"])
+
     def _make_rfq(self, entity, *, lines=None, invite=None):
         rfq = RequestForQuotation.objects.create(
-            entity=entity, title="Office chairs",
+            entity=entity, branch=self.branch, title="Office chairs",
             issue_date=datetime.date(2026, 1, 3),
         )
         for i, (desc, qty) in enumerate(lines or [("Mesh chair", 10)], start=1):
@@ -4665,7 +4683,7 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
     def _make_quotation(self, entity, rfq, vendor, *, lines):
         """lines: [(description, qty, unit_price_kobo)]."""
         quo = VendorQuotation.objects.create(
-            entity=entity, rfq=rfq, vendor=vendor,
+            entity=entity, branch=rfq.branch, rfq=rfq, vendor=vendor,
             quote_date=datetime.date(2026, 1, 4),
         )
         rfq_lines = list(rfq.lines.all())
@@ -4834,7 +4852,7 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
             entity=entity, code="HEAD", name="RFQ owner",
         )
         origin = PurchaseRequisition.objects.create(
-            entity=entity, title="Origin", request_date=datetime.date(2026, 1, 2),
+            entity=entity, branch=self.branch, title="Origin", request_date=datetime.date(2026, 1, 2),
             cost_center=line_center,
         )
         origin_line = PurchaseRequisitionLine.objects.create(
@@ -4842,11 +4860,11 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
             estimated_unit_price=200_000, expense_account=self.acc(entity, "5300"), line_no=1,
         )
         header = PurchaseRequisition.objects.create(
-            entity=entity, title="RFQ header", request_date=datetime.date(2026, 1, 2),
+            entity=entity, branch=self.branch, title="RFQ header", request_date=datetime.date(2026, 1, 2),
             cost_center=header_center,
         )
         rfq = RequestForQuotation.objects.create(
-            entity=entity, requisition=header, title="Mixed ownership",
+            entity=entity, branch=self.branch, requisition=header, title="Mixed ownership",
             issue_date=datetime.date(2026, 1, 3),
         )
         RfqLine.objects.create(
@@ -10772,6 +10790,47 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
                 self.assertEqual(response.status_code, 403)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_whole_tenant_user_cannot_turn_an_unplaced_requisition_into_an_order(self, _permission):
+        hq_client = self.client_for(self.multi_school.tenant, "hq-legacy-po@test.com")
+        req = self.unbranched_requisition(hq_client, self.multi, approved=True)
+
+        with self.assertRaises(RequisitionError):
+            create_po_from_requisition(
+                req, vendor=self.multi.vendor, order_date=datetime.date(2026, 1, 12),
+            )
+        response = hq_client.post(
+            f"/v1/procurement/purchase-orders/?entity={self.multi.entity.code}",
+            {"requisition": req.pk, "vendor": self.multi.vendor.code,
+             "order_date": "2026-01-12"}, format="json",
+        )
+        self.assertEqual(response.status_code, 422, response.data)
+        self.assertFalse(PurchaseOrder.objects.filter(requisition=req).exists())
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_headerless_rfq_cannot_take_another_branchs_requisition_line(self, _permission):
+        hq_client = self.client_for(self.multi_school.tenant, "hq-rfq-line@test.com")
+        lekki_req, _ = self.make_requisition(hq_client, self.multi, branch=self.lekki.pk)
+        payload = {
+            "branch": self.ikeja.pk, "title": "Joint chairs", "issue_date": "2026-01-12",
+            "lines": [{"description": "Chair", "quantity": 2,
+                       "requisition_line": lekki_req.lines.get().pk,
+                       "expense_account": "5300"}],
+        }
+        response = hq_client.post(
+            f"/v1/procurement/rfqs/?entity={self.multi.entity.code}", payload,
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertFalse(RequestForQuotation.objects.filter(title="Joint chairs").exists())
+
+        payload["branch"] = self.lekki.pk
+        accepted = hq_client.post(
+            f"/v1/procurement/rfqs/?entity={self.multi.entity.code}", payload,
+            format="json",
+        )
+        self.assertEqual(accepted.status_code, 201, accepted.data)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_receipt_invoice_and_payment_follow_the_chain(self, _permission):
         entity, vendor = self.multi.entity, self.multi.vendor
         lekki_client = self.client_for(
@@ -10905,6 +10964,199 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         submit_quotation(quotation)
         po = award_quotation(quotation, competition_exception_reason="Single source.")
         self.assertEqual(po.branch_id, self.lekki.pk)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_legacy_unplaced_quotation_cannot_create_an_unplaced_order(self, _permission):
+        entity, vendor = self.multi.entity, self.multi.vendor
+        client = self.client_for(self.multi_school.tenant, "hq-legacy-award@test.com")
+        req = self.approved_requisition(client, self.multi, branch=self.lekki.pk)
+        rfq_response = client.post(
+            f"/v1/procurement/rfqs/?entity={entity.code}",
+            {"requisition": req.pk, "title": "Chairs", "issue_date": "2026-01-12",
+             "lines": [{"description": "Chair", "quantity": 2}]}, format="json",
+        )
+        self.assertEqual(rfq_response.status_code, 201, rfq_response.data)
+        rfq = RequestForQuotation.objects.get(pk=rfq_response.data["data"]["id"])
+        set_rfq_invitations(rfq, [vendor])
+        issue_rfq(rfq)
+        quote_response = client.post(
+            f"/v1/procurement/quotations/?entity={entity.code}",
+            {"rfq": rfq.pk, "vendor": vendor.code, "quote_date": "2026-01-13",
+             "lines": [{"description": "Chair", "quantity": 2, "unit_price": 100_000,
+                        "expense_account": "5300"}]}, format="json",
+        )
+        self.assertEqual(quote_response.status_code, 201, quote_response.data)
+        quotation = VendorQuotation.objects.get(pk=quote_response.data["data"]["id"])
+        submit_quotation(quotation)
+        RequestForQuotation.objects.filter(pk=rfq.pk).update(branch=None)
+        VendorQuotation.objects.filter(pk=quotation.pk).update(branch=None)
+
+        with self.assertRaises(SourcingError):
+            award_quotation(quotation, competition_exception_reason="Single source.")
+        self.assertFalse(PurchaseOrder.objects.filter(entity=entity).exists())
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_shared_rfq_is_one_vendor_event_and_awards_one_order_per_branch(self, _permission):
+        entity, vendor = self.multi.entity, self.multi.vendor
+        hq_client = self.client_for(self.multi_school.tenant, "hq-shared-rfq@test.com")
+        lekki_client = self.client_for(
+            self.multi_school.tenant, "lekki-shared-rfq@test.com", branch=self.lekki,
+        )
+        lekki_req = self.approved_requisition(
+            hq_client, self.multi, branch=self.lekki.pk,
+            lines=[{"description": "Chair", "quantity": 2,
+                    "estimated_unit_price": 100_000, "expense_account": "5300"}],
+        )
+        ikeja_req = self.approved_requisition(
+            hq_client, self.multi, branch=self.ikeja.pk,
+            lines=[{"description": "Chair", "quantity": 3,
+                    "estimated_unit_price": 100_000, "expense_account": "5300"}],
+        )
+        foreign_client = self.client_for(
+            self.foreign_school.tenant, "foreign-shared-rfq@test.com",
+            branch=self.foreign_branch,
+        )
+        foreign_req = self.approved_requisition(foreign_client, self.foreign)
+        shared_payload = {
+            "title": "Shared classroom chairs", "issue_date": "2026-01-12",
+            "invited_vendors": [vendor.code],
+            "lines": [{
+                "description": "Chair", "quantity": 5, "expense_account": "5300",
+                "allocations": [
+                    {"requisition_line": lekki_req.lines.get().pk, "quantity": 2},
+                    {"requisition_line": ikeja_req.lines.get().pk, "quantity": 3},
+                ],
+            }],
+        }
+        excessive_payload = {
+            **shared_payload,
+            "title": "Too many chairs",
+            "lines": [{
+                **shared_payload["lines"][0], "quantity": 6,
+                "allocations": [
+                    {"requisition_line": lekki_req.lines.get().pk, "quantity": 3},
+                    {"requisition_line": ikeja_req.lines.get().pk, "quantity": 3},
+                ],
+            }],
+        }
+        excessive = hq_client.post(
+            f"/v1/procurement/rfqs/?entity={entity.code}", excessive_payload, format="json",
+        )
+        self.assertEqual(excessive.status_code, 400, excessive.data)
+        under_payload = {
+            **shared_payload,
+            "title": "Too few chairs",
+            "lines": [{
+                **shared_payload["lines"][0], "quantity": 4,
+                "allocations": [
+                    {"requisition_line": lekki_req.lines.get().pk, "quantity": 1},
+                    {"requisition_line": ikeja_req.lines.get().pk, "quantity": 3},
+                ],
+            }],
+        }
+        under = hq_client.post(
+            f"/v1/procurement/rfqs/?entity={entity.code}", under_payload, format="json",
+        )
+        self.assertEqual(under.status_code, 400, under.data)
+        foreign_source = hq_client.post(
+            f"/v1/procurement/rfqs/?entity={entity.code}",
+            {
+                **shared_payload,
+                "title": "Foreign source",
+                "lines": [{
+                    **shared_payload["lines"][0], "quantity": 4,
+                    "allocations": [
+                        {"requisition_line": lekki_req.lines.get().pk, "quantity": 2},
+                        {"requisition_line": foreign_req.lines.get().pk, "quantity": 2},
+                    ],
+                }],
+            }, format="json",
+        )
+        self.assertEqual(foreign_source.status_code, 400, foreign_source.data)
+        partial_create = lekki_client.post(
+            f"/v1/procurement/rfqs/?entity={entity.code}", shared_payload, format="json",
+        )
+        self.assertEqual(partial_create.status_code, 403, partial_create.data)
+        response = hq_client.post(
+            f"/v1/procurement/rfqs/?entity={entity.code}", shared_payload, format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        rfq = RequestForQuotation.objects.get(pk=response.data["data"]["id"])
+        group = SharedSourcingGroup.objects.get(rfq=rfq)
+        self.assertEqual(group.allocations.count(), 2)
+        self.assertEqual(rfq.invitations.count(), 1)
+
+        rfq_url = f"/v1/procurement/rfqs/?entity={entity.code}"
+        for branch in (self.lekki, self.ikeja):
+            with self.subTest(selected_branch=branch.name):
+                selected = hq_client.get(f"{rfq_url}&branch={branch.pk}")
+                self.assertEqual(selected.status_code, 200, selected.data)
+                self.assertEqual([row["id"] for row in self.rows(selected)], [rfq.pk])
+                self.assertEqual(
+                    {row["id"] for row in self.rows(selected)[0]["shared_sourcing"]["participant_branches"]},
+                    {self.lekki.pk, self.ikeja.pk},
+                )
+
+        detail = hq_client.get(f"/v1/procurement/rfqs/{rfq.pk}/?entity={entity.code}")
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertEqual(len(detail.data["data"]["shared_sourcing"]["allocations"]), 2)
+        duplicate = hq_client.post(
+            f"/v1/procurement/rfqs/?entity={entity.code}",
+            {**shared_payload, "title": "Duplicate shared chairs"}, format="json",
+        )
+        self.assertEqual(duplicate.status_code, 400, duplicate.data)
+
+        hidden_list = lekki_client.get(rfq_url)
+        self.assertEqual(hidden_list.status_code, 200, hidden_list.data)
+        self.assertEqual(self.rows(hidden_list), [])
+        hidden_detail = lekki_client.get(f"/v1/procurement/rfqs/{rfq.pk}/?entity={entity.code}")
+        self.assertEqual(hidden_detail.status_code, 404, hidden_detail.data)
+
+        issue_rfq(rfq, competition_exception_reason="One invited supplier.")
+        rfq.refresh_from_db()
+        quote_response = hq_client.post(
+            f"/v1/procurement/quotations/?entity={entity.code}",
+            {
+                "rfq": rfq.pk, "vendor": vendor.code, "quote_date": "2026-01-13",
+                "lines": [{
+                    "rfq_line": rfq.lines.get().pk, "description": "Chair",
+                    "quantity": 5, "unit_price": 100_000, "expense_account": "5300",
+                }],
+            }, format="json",
+        )
+        self.assertEqual(quote_response.status_code, 201, quote_response.data)
+        quotation = VendorQuotation.objects.get(pk=quote_response.data["data"]["id"])
+        hidden_quote = lekki_client.get(
+            f"/v1/procurement/quotations/{quotation.pk}/?entity={entity.code}",
+        )
+        self.assertEqual(hidden_quote.status_code, 404, hidden_quote.data)
+        submit_quotation(quotation)
+        with self.assertRaises(SourcingError):
+            award_quotation(
+                quotation, actor_user=lekki_client.test_user,
+                competition_exception_reason="One submitted supplier.",
+            )
+        self.assertFalse(SharedSourcingOrder.objects.filter(group=group).exists())
+
+        with patch(
+            "vs_procurement.views.orders.user_has_rbac_permission", return_value=True,
+        ):
+            awarded = hq_client.post(
+                f"/v1/procurement/quotations/{quotation.pk}/award/?entity={entity.code}",
+                {"order_date": "2026-01-14",
+                 "competition_exception_reason": "One submitted supplier."},
+                format="json",
+            )
+        self.assertEqual(awarded.status_code, 201, awarded.data)
+        self.assertEqual(len(awarded.data["data"]), 2)
+        orders = PurchaseOrder.objects.filter(shared_sourcing_order__group=group).order_by("branch_id")
+        self.assertEqual(set(orders.values_list("branch_id", flat=True)), {self.lekki.pk, self.ikeja.pk})
+        self.assertFalse(orders.filter(branch__isnull=True).exists())
+        self.assertEqual(
+            {order.branch_id: order.lines.get().quantity for order in orders},
+            {self.lekki.pk: Decimal("2.0000"), self.ikeja.pk: Decimal("3.0000")},
+        )
+        self.assertEqual(SharedSourcingAllocation.objects.filter(group=group).count(), 2)
 
     # -- visibility ----------------------------------------------------------- #
 

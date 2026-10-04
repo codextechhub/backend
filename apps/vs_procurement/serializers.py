@@ -695,6 +695,37 @@ class RfqLineSerializer(serializers.ModelSerializer):
         ]
 
 
+def _shared_sourcing_payload(obj, *, include_allocations):
+    """Describe branch participation to buyers while the vendor sees one RFQ."""
+    if not hasattr(obj, "shared_sourcing_group"):
+        return None
+    allocations = list(obj.shared_sourcing_group.allocations.all())
+    branches = {}
+    for allocation in allocations:
+        requisition = allocation.requisition_line.requisition
+        branches[requisition.branch_id] = requisition.branch.name
+    payload = {
+        "participant_branches": [
+            {"id": branch_id, "name": branches[branch_id]}
+            for branch_id in sorted(branches)
+        ],
+    }
+    if include_allocations:
+        payload["allocations"] = [
+            {
+                "rfq_line_id": allocation.rfq_line_id,
+                "requisition_line_id": allocation.requisition_line_id,
+                "requisition_id": allocation.requisition_line.requisition_id,
+                "requisition_number": allocation.requisition_line.requisition.document_number,
+                "branch_id": allocation.requisition_line.requisition.branch_id,
+                "branch_name": allocation.requisition_line.requisition.branch.name,
+                "quantity": allocation.quantity,
+            }
+            for allocation in allocations
+        ]
+    return payload
+
+
 class RfqListSerializer(serializers.ModelSerializer):
     """Lean list row. ``line_count``/``response_count`` are queryset annotations
     (see :func:`RfqListCreateView.get`) - never per-row counts, so the list stays O(1)."""
@@ -708,6 +739,7 @@ class RfqListSerializer(serializers.ModelSerializer):
     line_count = serializers.IntegerField(read_only=True)
     response_count = serializers.IntegerField(read_only=True)
     invited_count = serializers.IntegerField(read_only=True)
+    shared_sourcing = serializers.SerializerMethodField()
 
     class Meta:
         model = RequestForQuotation
@@ -716,7 +748,11 @@ class RfqListSerializer(serializers.ModelSerializer):
             "branch_id", "branch_name",
             "requisition_id", "requisition_number", "issue_date", "response_due_date",
             "response_due_at", "version", "budget_estimate", "line_count", "response_count", "invited_count",
+            "shared_sourcing",
         ]
+
+    def get_shared_sourcing(self, obj):
+        return _shared_sourcing_payload(obj, include_allocations=False)
 
 
 class RfqQuotationSummarySerializer(serializers.ModelSerializer):
@@ -754,6 +790,7 @@ class RfqDetailSerializer(serializers.ModelSerializer):
     invitations = serializers.SerializerMethodField()
     quotations = serializers.SerializerMethodField()
     activity = serializers.SerializerMethodField()
+    shared_sourcing = serializers.SerializerMethodField()
 
     class Meta:
         model = RequestForQuotation
@@ -763,9 +800,13 @@ class RfqDetailSerializer(serializers.ModelSerializer):
             "requisition_id", "requisition_number", "issue_date", "response_due_date",
             "response_due_at", "version", "budget_estimate", "notes", "line_count", "response_count", "invited_count",
             "lines", "invitations", "quotations", "amendments", "activity",
+            "shared_sourcing",
         ]
 
     amendments = serializers.SerializerMethodField()
+
+    def get_shared_sourcing(self, obj):
+        return _shared_sourcing_payload(obj, include_allocations=True)
 
     def get_line_count(self, obj) -> int:
         return len(obj.lines.all())

@@ -350,6 +350,12 @@ def create_po_from_requisition(requisition, *, vendor, order_date, actor_user=No
             f"Requisition {requisition.document_number or requisition.pk} must be "
             f"APPROVED before raising a PO (is '{requisition.status}').",
         )
+    from vs_rbac.scoping import only_branch_id
+    branch_id = requisition.branch_id or only_branch_id(requisition.entity.tenant_id)
+    if branch_id is None:
+        raise RequisitionError(
+            "Place this requisition in a branch before raising a purchase order."
+        )
     if vendor.entity_id != requisition.entity_id:
         raise RequisitionError("The vendor and requisition must belong to the same entity.")
     # Serialize this commitment against vendor governance edits; the check and PO
@@ -367,7 +373,7 @@ def create_po_from_requisition(requisition, *, vendor, order_date, actor_user=No
     )
 
     po = PurchaseOrder.objects.create(
-        entity=requisition.entity, branch=requisition.branch,
+        entity=requisition.entity, branch_id=branch_id,
         vendor=vendor, requisition=requisition,
         order_date=order_date, expected_date=expected_date,
         delivery_address=delivery_address, payment_terms=payment_terms or vendor.payment_terms,

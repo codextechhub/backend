@@ -547,23 +547,37 @@ def _notify_quotation_buyer(rfq_id: int, quotation_id: int, revision: int) -> No
     """
     try:
         from vs_rbac.evaluator import has_permission, resolve_users_with_permission
+        from vs_rbac.scoping import caller_may_change
 
         rfq = RequestForQuotation.objects.select_related(
             "entity__tenant", "branch", "created_by",
         ).get(pk=rfq_id)
         quote = VendorQuotation.objects.select_related("vendor").get(pk=quotation_id, rfq=rfq)
         tenant = rfq.entity.tenant
+        if hasattr(rfq, "shared_sourcing_group"):
+            participant_ids = set(
+                rfq.shared_sourcing_group.allocations.values_list(
+                    "requisition_line__requisition__branch_id", flat=True,
+                )
+            )
+        else:
+            participant_ids = {rfq.branch_id}
+
+        def reaches_event(user):
+            return caller_may_change(user, tenant, participant_ids)
+
         creator = rfq.created_by
         if (
             creator is not None and creator.is_active and creator.tenant_id == tenant.pk
             and has_permission(creator, "procurement.quotation.view", tenant=tenant, branch=rfq.branch)
+            and reaches_event(creator)
         ):
             recipients = [creator]
         else:
-            recipients = list(resolve_users_with_permission(
+            recipients = [user for user in resolve_users_with_permission(
                 tenant=tenant, branch=rfq.branch,
                 permission_key="procurement.quotation.view",
-            ))
+            ) if reaches_event(user)]
         if not recipients:
             logger.warning("No authorized buyer can receive quotation %s", quote.pk)
             return

@@ -354,10 +354,12 @@ def award_quotation(
     the RFQ AWARDED, and flips every other still-in-contention quotation on the same RFQ
     to REJECTED. The PO carries each quoted line's price and expense account (falling back
     to the vendor's / category's default). Quotation, RFQ, vendor eligibility, PO creation,
-    loser rejection, and audit all commit or roll back together. Returns the created PO.
+    loser rejection, and audit all commit or roll back together. A shared RFQ returns
+    one PO per participating branch; an ordinary RFQ returns its single PO.
     """
     from .models import (
-        PurchaseOrder, PurchaseOrderLine, RequestForQuotation, Vendor, VendorQuotation,
+        PurchaseOrder, PurchaseOrderLine, RequestForQuotation, SharedSourcingGroup,
+        SharedSourcingOrder, Vendor, VendorQuotation,
     )
 
     # RFQ → quotation → vendor is the shared sourcing lock order. Two awards on the
@@ -372,6 +374,7 @@ def award_quotation(
         .select_related("vendor", "currency", "branch")
         .get(pk=quotation.pk)
     )
+    group = SharedSourcingGroup.objects.select_for_update().filter(rfq=rfq).first()
 
     if quotation.quotation_status != QuotationStatus.SUBMITTED:
         raise SourcingError(
@@ -383,6 +386,18 @@ def award_quotation(
             f"RFQ {rfq.document_number} is '{rfq.rfq_status}'; only an issued RFQ "
             f"can be awarded.",
         )
+    from vs_rbac.scoping import only_branch_id, same_transaction_branch
+    award_branch_id = rfq.branch_id or quotation.branch_id or only_branch_id(
+        quotation.entity.tenant_id,
+    )
+    if award_branch_id is None:
+        raise SourcingError(
+            "Place this quotation and its RFQ in a branch before awarding a purchase order."
+        )
+    if not same_transaction_branch(
+        quotation.entity.tenant_id, rfq.branch_id, quotation.branch_id, award_branch_id,
+    ):
+        raise SourcingError("The quotation and RFQ belong to different branches.")
     from .settings import resolve_procurement_settings
     policy = resolve_procurement_settings(quotation.entity)
     submitted_count = rfq.quotations.filter(
@@ -402,7 +417,7 @@ def award_quotation(
     # A lapsed offer is no longer a firm price - reject the award rather than commit to it.
     if (
         quotation.valid_until is not None
-        and quotation.valid_until < branch_today(quotation.entity.tenant, quotation.branch_id)
+        and quotation.valid_until < branch_today(quotation.entity.tenant, award_branch_id)
     ):
         raise SourcingError(
             f"Quotation {quotation.document_number} validity lapsed on "
@@ -423,48 +438,124 @@ def award_quotation(
             if vendor.category_id and vendor.category.is_active else None)
     )
 
-    po = PurchaseOrder.objects.create(
-        entity=quotation.entity, branch=quotation.branch,
-        vendor=vendor, requisition=rfq.requisition,
-        order_date=order_date or branch_today(quotation.entity.tenant, quotation.branch_id),
-        currency=quotation.currency, created_by=actor_user,
-        # Awarded POs inherit the vendor's configured terms when no buyer form is involved.
-        payment_terms=vendor.payment_terms,
-        reference=quotation.reference,
-        narration=f"From quotation {quotation.document_number} (RFQ {rfq.document_number}).",
-    )
     # Load the complete source-line chain once: cost-centre ownership follows the
     # originating requisition line when present, then the RFQ header requisition.
     # Assigning the FK id avoids a separate CostCenter lookup for every awarded line.
     header_cost_center_id = rfq.requisition.cost_center_id if rfq.requisition_id else None
-    quotation_lines = quotation.lines.exclude(
+    quotation_lines = list(quotation.lines.exclude(
         response_type="NO_BID",
     ).select_related(
         "expense_account", "tax_code", "rfq_line__requisition_line__requisition",
-    ).order_by("line_no", "id")
-    for qline in quotation_lines:
-        expense = qline.expense_account or default_expense
-        if expense is None:
-            raise SourcingError(
-                f"Quotation line '{qline.description}' has no expense account and the "
-                f"vendor has no default - set one before awarding.",
+    ).order_by("line_no", "id"))
+    if group is None:
+        for qline in quotation_lines:
+            source = qline.rfq_line.requisition_line if qline.rfq_line_id else None
+            if source is not None and not same_transaction_branch(
+                rfq.entity.tenant_id, award_branch_id, source.requisition.branch_id,
+            ):
+                raise SourcingError(
+                    "An RFQ source line belongs to another branch; correct it before award."
+                )
+        po = PurchaseOrder.objects.create(
+            entity=quotation.entity, branch_id=award_branch_id,
+            vendor=vendor, requisition=rfq.requisition,
+            order_date=order_date or branch_today(quotation.entity.tenant, award_branch_id),
+            currency=quotation.currency, created_by=actor_user,
+            payment_terms=vendor.payment_terms,
+            reference=quotation.reference,
+            narration=f"From quotation {quotation.document_number} (RFQ {rfq.document_number}).",
+        )
+        for qline in quotation_lines:
+            expense = qline.expense_account or default_expense
+            if expense is None:
+                raise SourcingError(
+                    f"Quotation line '{qline.description}' has no expense account and the "
+                    f"vendor has no default - set one before awarding.",
+                )
+            requisition_line = (
+                qline.rfq_line.requisition_line
+                if qline.rfq_line_id and qline.rfq_line.requisition_line_id else None
             )
-        requisition_line = (
-            qline.rfq_line.requisition_line
-            if qline.rfq_line_id and qline.rfq_line.requisition_line_id else None
-        )
-        cost_center_id = (
-            requisition_line.requisition.cost_center_id
-            if requisition_line is not None else header_cost_center_id
-        )
-        PurchaseOrderLine.objects.create(
-            purchase_order=po,
-            requisition_line=requisition_line,
-            description=qline.description, expense_account=expense,
-            quantity=qline.quantity, unit_price=qline.unit_price,
-            tax_code=qline.tax_code, cost_center_id=cost_center_id, line_no=qline.line_no,
-        )
-    price_po(po)
+            cost_center_id = (
+                requisition_line.requisition.cost_center_id
+                if requisition_line is not None else header_cost_center_id
+            )
+            PurchaseOrderLine.objects.create(
+                purchase_order=po,
+                requisition_line=requisition_line,
+                description=qline.description, expense_account=expense,
+                quantity=qline.quantity, unit_price=qline.unit_price,
+                tax_code=qline.tax_code, cost_center_id=cost_center_id, line_no=qline.line_no,
+            )
+        price_po(po)
+        purchase_orders = [po]
+    else:
+        from vs_rbac.scoping import caller_may_change
+        allocations = list(group.allocations.select_related(
+            "rfq_line", "requisition_line__requisition",
+        ).order_by("requisition_line__requisition__branch_id", "rfq_line__line_no", "id"))
+        participant_ids = {
+            allocation.requisition_line.requisition.branch_id for allocation in allocations
+        }
+        if None in participant_ids or len(participant_ids) < 2:
+            raise SourcingError("Every shared sourcing participant must belong to a branch.")
+        if actor_user is None or not caller_may_change(
+            actor_user, quotation.entity.tenant, participant_ids,
+        ):
+            raise SourcingError(
+                "The awarding buyer must have access to every participating branch."
+            )
+        allocations_by_line = {}
+        for allocation in allocations:
+            allocations_by_line.setdefault(allocation.rfq_line_id, []).append(allocation)
+        lines_by_branch = {branch_id: [] for branch_id in participant_ids}
+        for qline in quotation_lines:
+            line_allocations = allocations_by_line.get(qline.rfq_line_id, [])
+            if not line_allocations:
+                raise SourcingError(
+                    "Every awarded quotation line must match an allocated RFQ line."
+                )
+            if sum((allocation.quantity for allocation in line_allocations), 0) != qline.quantity:
+                raise SourcingError(
+                    f"Quotation line '{qline.description}' must price the full allocated quantity."
+                )
+            expense = qline.expense_account or default_expense
+            if expense is None:
+                raise SourcingError(
+                    f"Quotation line '{qline.description}' has no expense account and the "
+                    f"vendor has no default - set one before awarding.",
+                )
+            for allocation in line_allocations:
+                source = allocation.requisition_line
+                lines_by_branch[source.requisition.branch_id].append((qline, source, allocation.quantity, expense))
+        purchase_orders = []
+        for branch_id in sorted(lines_by_branch):
+            branch_lines = lines_by_branch[branch_id]
+            requisition_ids = {source.requisition_id for _, source, _, _ in branch_lines}
+            po = PurchaseOrder.objects.create(
+                entity=quotation.entity, branch_id=branch_id, vendor=vendor,
+                requisition_id=next(iter(requisition_ids)) if len(requisition_ids) == 1 else None,
+                order_date=order_date or branch_today(quotation.entity.tenant, branch_id),
+                currency=quotation.currency, created_by=actor_user,
+                payment_terms=vendor.payment_terms, reference=quotation.reference,
+                narration=f"From quotation {quotation.document_number} (RFQ {rfq.document_number}).",
+            )
+            for line_no, (qline, source, quantity, expense) in enumerate(branch_lines, start=1):
+                PurchaseOrderLine.objects.create(
+                    purchase_order=po, requisition_line=source,
+                    description=qline.description, expense_account=expense,
+                    quantity=quantity, unit_price=qline.unit_price,
+                    tax_code=qline.tax_code, cost_center_id=source.requisition.cost_center_id,
+                    line_no=line_no,
+                )
+            price_po(po)
+            SharedSourcingOrder.objects.create(
+                group=group, branch_id=branch_id, purchase_order=po,
+            )
+            purchase_orders.append(po)
+        group.awarded_quotation = quotation
+        group.save(update_fields=["awarded_quotation", "updated_at"])
+        po = purchase_orders[0]
 
     quotation.quotation_status = QuotationStatus.AWARDED
     quotation.awarded_po = po
@@ -481,12 +572,16 @@ def award_quotation(
     record(
         entity=quotation.entity, action=FinanceAuditAction.QUOTATION_AWARDED,
         actor_user=actor_user, target=quotation,
-        message=f"Awarded quotation {quotation.document_number} from {vendor.code} → "
-                f"PO {po.document_number} ({format_naira(po.total)}).",
-        rfq_id=rfq.pk, purchase_order_id=po.pk, total=po.total,
+        message=(
+            f"Awarded quotation {quotation.document_number} from {vendor.code} to "
+            f"{len(purchase_orders)} purchase order(s) ({format_naira(sum(p.total for p in purchase_orders))})."
+        ),
+        rfq_id=rfq.pk, purchase_order_id=po.pk,
+        purchase_order_ids=[row.pk for row in purchase_orders],
+        total=sum(row.total for row in purchase_orders),
         submitted_quotation_count=submitted_count,
         minimum_submitted_quotations=required_count,
         competition_exception=competition_exception,
         competition_exception_reason=exception_reason if competition_exception else "",
     )
-    return po
+    return po if group is None else purchase_orders
