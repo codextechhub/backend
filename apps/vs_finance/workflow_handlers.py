@@ -538,7 +538,10 @@ class InterBranchTransferHandler(_FinancePostOnApprove):
         from .inter_branch import ensure_branches_open, validate_money_transfer
 
         validate_money_transfer(document)
-        ensure_branches_open(document.entity, document.transfer_date)
+        ensure_branches_open(
+            document.entity, document.transfer_date,
+            document.branch_id, document.to_branch_id,
+        )
 
     def post(self, document, *, actor_user) -> None:
         from .inter_branch import post_inter_branch_transfer

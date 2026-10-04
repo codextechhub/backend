@@ -309,7 +309,7 @@ def suggest_settlements(entity, collections, bank_lines, *, zone):
     return suggestions
 
 
-def gateway_clearing_current(entity, period):
+def gateway_clearing_current(entity, period, branch=None):
     """Close warning: payments waiting in gateway clearing longer than the tenant allows.
 
     A provider settles within a day or two, so a payment confirmed more than the
@@ -324,8 +324,11 @@ def gateway_clearing_current(entity, period):
     from .custody import custody_row
     from .models import CollectionIntent
 
-    waiting = CollectionIntent.objects.filter(entity=entity).filter(awaiting_settlement_q())
-    if not CollectionIntent.objects.filter(entity=entity, clearing_account__isnull=False).exists():
+    collections = CollectionIntent.objects.filter(entity=entity)
+    if branch is not None:
+        collections = collections.filter(branch_id=getattr(branch, "pk", branch))
+    waiting = collections.filter(awaiting_settlement_q())
+    if not collections.filter(clearing_account__isnull=False).exists():
         return None
     tenant = entity.tenant if entity.tenant_id else None
     days = custody_row(tenant).clearing_stale_days
@@ -354,3 +357,6 @@ def register():
     from vs_finance.close import register_close_check
 
     register_close_check(gateway_clearing_current)
+
+
+gateway_clearing_current.supports_branch = True

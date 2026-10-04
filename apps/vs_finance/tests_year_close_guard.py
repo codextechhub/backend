@@ -64,6 +64,8 @@ from .constants import (
 from .exceptions import BranchlessTenantError, PeriodCloseError, PeriodClosedError, PostingError
 from .models import (
     Account,
+    BranchFiscalPeriod,
+    BranchFiscalYear,
     FinanceAuditLog,
     FiscalPeriod,
     FiscalYear,
@@ -227,8 +229,13 @@ class _YearFixture(TestCase):
 
     def send(self, user, path, body=None, books=None):
         books = books or self.books
+        body = dict(body or {})
+        if any(action in path for action in ("/close/", "/reopen/", "/lock/")):
+            body.setdefault(
+                "branch", self.ikeja.pk if books == self.books else self.harbour_main.pk,
+            )
         return TenantAPIClient(user=user).post(
-            f"/v1/finance/{path}?entity={books.code}", body or {}, format="json",
+            f"/v1/finance/{path}?entity={books.code}", body, format="json",
         )
 
 
@@ -530,7 +537,7 @@ class ReopenFiscalYearTests(_YearFixture):
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["data"]["fiscal_year"]["status"], PeriodStatus.OPEN)
-        self.assertEqual(len(response.data["data"]["reversals"]), 2)
+        self.assertEqual(len(response.data["data"]["reversals"]), 1)
         self.assertEqual(self.year().status, PeriodStatus.OPEN)
 
     def test_the_endpoint_needs_a_reason(self):
@@ -556,7 +563,7 @@ class ReopenFiscalYearTests(_YearFixture):
         )
         self.assertEqual(response.status_code, 403, response.data)
         self.assertEqual(response.data["error"]["code"], REFUSED)
-        self.assertEqual(response.data["message"], CALENDAR_MESSAGE)
+        self.assertEqual(response.data["message"], "You cannot change this branch's fiscal calendar.")
         self.assertEqual(self.year().status, PeriodStatus.CLOSED)
         self.assertEqual(self.retained(), 130000)
 
@@ -587,7 +594,9 @@ class ForceCloseAndReasonTests(_YearFixture):
 
         closed = self.send(self.femi, f"periods/{january.pk}/close/", body)
         self.assertEqual(closed.status_code, 200, closed.data)
-        self.assertEqual(self.month(1).status, PeriodStatus.CLOSED)
+        self.assertEqual(BranchFiscalPeriod.objects.get(
+            period=january, branch=self.ikeja,
+        ).status, PeriodStatus.CLOSED)
         audit = FinanceAuditLog.objects.get(
             entity=self.books, action=FinanceAuditAction.PERIOD_CLOSED, target_id=str(january.pk),
         )
@@ -630,7 +639,10 @@ class ForceCloseAndReasonTests(_YearFixture):
 
         closed = self.send(self.femi, path, {"force": True, "reason": REASON})
         self.assertEqual(closed.status_code, 200, closed.data)
-        self.assertEqual(self.year().status, PeriodStatus.CLOSED)
+        self.assertEqual(BranchFiscalYear.objects.get(
+            fiscal_year=self.year(), branch=self.ikeja,
+        ).status, PeriodStatus.CLOSED)
+        self.assertEqual(self.year().status, PeriodStatus.OPEN)
         audit = FinanceAuditLog.objects.get(
             entity=self.books, action=FinanceAuditAction.FISCAL_YEAR_CLOSED,
         )

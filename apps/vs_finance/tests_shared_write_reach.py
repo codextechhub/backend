@@ -48,6 +48,8 @@ from .constants import DocumentStatus, PeriodStatus, TaxFilingStatus
 from .models import (
     Account,
     BankAccount,
+    BranchFiscalPeriod,
+    BranchFiscalYear,
     CostCenter,
     Currency,
     Dimension,
@@ -151,16 +153,17 @@ class _SharedWriteFixture(TestCase):
 
 class FiscalCalendarWriteTests(_SharedWriteFixture):
     MESSAGE = "Only a school-wide administrator can change the fiscal periods and years."
+    BRANCH_MESSAGE = "You cannot change this branch's fiscal calendar."
 
     def test_a_branch_bound_holder_cannot_close_or_soft_close_a_period(self):
         jan = self.period()
         for body in (
-            {"force": True, "reason": "Close for the audit."},
-            {"soft": True, "force": True, "reason": "Close for the audit."},
+            {"branch": self.ikeja.pk, "force": True, "reason": "Close for the audit."},
+            {"branch": self.ikeja.pk, "soft": True, "force": True, "reason": "Close for the audit."},
         ):
             with self.subTest(body=body):
                 response = self.send(self.ngozi, "post", f"periods/{jan.pk}/close/", body=body)
-                self.assert_refused(response, self.MESSAGE)
+                self.assert_refused(response, self.BRANCH_MESSAGE)
                 jan.refresh_from_db()
                 self.assertEqual(jan.status, PeriodStatus.OPEN)
 
@@ -175,9 +178,9 @@ class FiscalCalendarWriteTests(_SharedWriteFixture):
             with self.subTest(action=action):
                 response = self.send(
                     self.ngozi, "post", f"periods/{jan.pk}/{action}/",
-                    body={"reason": "Correct January."},
+                    body={"branch": self.ikeja.pk, "reason": "Correct January."},
                 )
-                self.assert_refused(response, self.MESSAGE)
+                self.assert_refused(response, self.BRANCH_MESSAGE)
                 jan.refresh_from_db()
                 self.assertEqual(jan.status, PeriodStatus.CLOSED)
 
@@ -188,9 +191,9 @@ class FiscalCalendarWriteTests(_SharedWriteFixture):
 
         closed = self.send(
             self.ngozi, "post", f"fiscal-years/{self.year().pk}/close/",
-            body={"force": True, "reason": "Close for the audit."},
+            body={"branch": self.ikeja.pk, "force": True, "reason": "Close for the audit."},
         )
-        self.assert_refused(closed, self.MESSAGE)
+        self.assert_refused(closed, self.BRANCH_MESSAGE)
         self.assertEqual(self.year().status, PeriodStatus.OPEN)
 
     def test_a_whole_tenant_holder_moves_the_calendar(self):
@@ -204,10 +207,12 @@ class FiscalCalendarWriteTests(_SharedWriteFixture):
         )
         for action, body, status in steps:
             with self.subTest(action=action, status=status):
+                body["branch"] = self.ikeja.pk
                 response = self.send(self.adaeze, "post", f"periods/{jan.pk}/{action}/", body=body)
                 self.assertEqual(response.status_code, 200, response.data)
-                jan.refresh_from_db()
-                self.assertEqual(jan.status, status)
+                self.assertEqual(BranchFiscalPeriod.objects.get(
+                    period=jan, branch=self.ikeja,
+                ).status, status)
 
         opened = self.send(self.adaeze, "post", "fiscal-years/", body={"year": 2027})
         self.assertEqual(opened.status_code, 201, opened.data)
@@ -215,10 +220,13 @@ class FiscalCalendarWriteTests(_SharedWriteFixture):
 
         closed = self.send(
             self.adaeze, "post", f"fiscal-years/{self.year().pk}/close/",
-            body={"force": True, "reason": "Close for the audit."},
+            body={"branch": self.ikeja.pk, "force": True, "reason": "Close for the audit."},
         )
         self.assertEqual(closed.status_code, 200, closed.data)
-        self.assertEqual(self.year().status, PeriodStatus.CLOSED)
+        self.assertEqual(BranchFiscalYear.objects.get(
+            fiscal_year=self.year(), branch=self.ikeja,
+        ).status, PeriodStatus.CLOSED)
+        self.assertEqual(self.year().status, PeriodStatus.OPEN)
 
 
 class OneBranchTenantTests(_SharedWriteFixture):
@@ -234,14 +242,17 @@ class OneBranchTenantTests(_SharedWriteFixture):
         jan.refresh_from_db()
         self.assertEqual(jan.status, PeriodStatus.CLOSED)
 
-    def test_a_second_branch_makes_the_same_grant_branch_bound(self):
+    def test_a_second_branch_keeps_the_same_grant_on_its_own_branch(self):
         make_branch(self.harbour, name="Ajah Branch", is_main=False)
         jan = self.period(self.harbour_books)
         response = self.send(
             self.tolu, "post", f"periods/{jan.pk}/close/", self.harbour_books,
-            {"force": True, "reason": "Close for the audit."},
+            {"branch": self.harbour_main.pk, "force": True, "reason": "Close for the audit."},
         )
-        self.assert_refused(response, FiscalCalendarWriteTests.MESSAGE)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(BranchFiscalPeriod.objects.get(
+            period=jan, branch=self.harbour_main,
+        ).status, PeriodStatus.CLOSED)
         jan.refresh_from_db()
         self.assertEqual(jan.status, PeriodStatus.OPEN)
 

@@ -599,7 +599,7 @@ _CHECK_ASSET_LIMIT = 5
 _CHECK_DATE_LIMIT = 4
 
 
-def depreciation_posted_for_year(entity, fiscal_year):
+def depreciation_posted_for_year(entity, fiscal_year, branch=None):
     """Blocking year-close check: every depreciation charge dated in the year has posted.
 
     Once the year closes, a charge dated inside it can never post (the posting guard
@@ -618,7 +618,10 @@ def depreciation_posted_for_year(entity, fiscal_year):
     from .close import ChecklistItem
     from .models import DepreciationSchedule, FixedAsset
 
-    if not FixedAsset.objects.filter(entity=entity).exists():
+    assets = FixedAsset.objects.filter(entity=entity)
+    if branch is not None:
+        assets = assets.filter(branch_id=getattr(branch, "pk", branch))
+    if not assets.exists():
         return None
 
     rows = (
@@ -629,6 +632,7 @@ def depreciation_posted_for_year(entity, fiscal_year):
             depreciation_date__gte=fiscal_year.start_date,
             depreciation_date__lte=fiscal_year.end_date,
         )
+        .filter(**({"asset__branch_id": getattr(branch, "pk", branch)} if branch is not None else {}))
         .order_by("asset__name", "asset_id", "seq")
         .values_list("asset_id", "asset__name", "asset__document_number", "depreciation_date")
     )
@@ -661,6 +665,9 @@ def depreciation_posted_for_year(entity, fiscal_year):
             f"{format_date(fiscal_year.end_date, entity.tenant)} first."
         ),
     )
+
+
+depreciation_posted_for_year.supports_branch = True
 
 
 # Handle the dispose asset workflow.
