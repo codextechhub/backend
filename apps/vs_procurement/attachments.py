@@ -43,7 +43,7 @@ from .models import VendorInvoiceAttachment, VendorPaymentAttachment
 MAX_ATTACHMENTS_PER_DOCUMENT = 10
 
 
-def _serialize(row) -> dict:
+def _serialize(row, states) -> dict:
     """The shape both documents' detail payloads expose for one attachment."""
     return {
         "id": row.id,
@@ -53,10 +53,14 @@ def _serialize(row) -> dict:
         "caption": row.caption,
         "url": signed_url(row.file.name),
         "uploaded_by_name": _uploader_name(row.uploaded_by),
+        "uploaded_by_is_exited": states.get(row.uploaded_by_id) if row.uploaded_by_id else None,
         "uploaded_at": row.created_at,
         "superseded": row.superseded_at is not None,
         "superseded_at": row.superseded_at,
         "superseded_by_name": _uploader_name(row.superseded_by) if row.superseded_at else None,
+        "superseded_by_is_exited": (
+            states.get(row.superseded_by_id) if row.superseded_by_id else None
+        ),
         "superseded_reason": row.superseded_reason,
     }
 
@@ -73,10 +77,17 @@ def serialize_attachments(document, *, include_superseded=False) -> list[dict]:
 
     Superseded files are left out unless ``include_superseded``.
     """
-    return [
-        _serialize(row) for row in document.attachments.all()
+    from core.person_exit import prime_exit_states
+
+    rows = [
+        row for row in document.attachments.all()
         if include_superseded or row.superseded_at is None
     ]
+    states = prime_exit_states({}, (
+        user_id for row in rows
+        for user_id in (row.uploaded_by_id, row.superseded_by_id)
+    ))
+    return [_serialize(row, states) for row in rows]
 
 
 def _audit(document, action, row, message, **metadata):
@@ -125,7 +136,10 @@ def add_attachment(document, upload, *, caption="", actor_user=None) -> dict:
         document, FinanceAuditAction.ATTACHMENT_ADDED, row,
         f"Attached '{row.original_name}'.", actor_user=actor_user,
     )
-    return _serialize(row)
+    from core.person_exit import prime_exit_states
+
+    states = prime_exit_states({}, (row.uploaded_by_id,))
+    return _serialize(row, states)
 
 
 @transaction.atomic

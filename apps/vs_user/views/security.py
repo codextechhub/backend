@@ -368,7 +368,9 @@ class PasswordResetListView(APIView):
                 )
             resets = resets.filter(user__tenant_id=tenant_id)
 
-        ser = PasswordResetAdminSerializer(resets, many=True)
+        ser = PasswordResetAdminSerializer(
+            resets, many=True, context={'request': request},
+        )
         return success_response(
             message="Data retrieved successfully.",
             data=ser.data,

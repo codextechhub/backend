@@ -848,6 +848,20 @@ class OrganogramListQueryTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertLess(len(ctx.captured_queries), 20)
 
+    def test_position_tree_people_are_resolved_in_bounded_queries(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            resp = self.client.get("/v1/user/organogram/positions/tree/")
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(len(resp.json()["data"]), 12)
+        self.assertTrue(all(
+            "is_exited" in node["holders"][0] for node in resp.json()["data"]
+        ))
+        self.assertLess(len(ctx.captured_queries), 20)
+
 
 class SeedOrganogramCommandTests(TestCase):
     """`seed_organogram` builds a non-empty tree and seats CX staff - an empty

@@ -152,8 +152,15 @@ def _pending_snapshots(user, *, workflow_id=None):
     ]
 
 
-def _list_row(entity, snapshot, document, object_id):
+def _list_row(entity, snapshot, document, object_id, states=None):
     """Project one workflow snapshot into the procurement inbox response shape."""
+    if states is None:
+        from core.person_exit import prime_exit_states
+
+        states = prime_exit_states({}, (
+            snapshot.stage_instance.instance.requested_by_id,
+            snapshot.on_behalf_of_id,
+        ))
     instance = snapshot.stage_instance.instance
     amount_field = getattr(document, "workflow_amount_field", "")
     return {
@@ -164,6 +171,8 @@ def _list_row(entity, snapshot, document, object_id):
         "reference": document.document_number or str(document.pk),
         "title": _document_title(document, instance.document_type),
         "requester": _user_name(instance.requested_by),
+        "requester_is_exited": states.get(instance.requested_by_id)
+        if instance.requested_by_id else None,
         "amount": int(getattr(document, amount_field, 0) or 0),
         "currency": entity.base_currency_id,
         "submitted_at": instance.submitted_at,
@@ -171,6 +180,8 @@ def _list_row(entity, snapshot, document, object_id):
         "stage": snapshot.stage_instance.stage.label,
         "status": instance.status,
         "on_behalf_of": _user_name(snapshot.on_behalf_of) if snapshot.on_behalf_of_id else None,
+        "on_behalf_of_is_exited": states.get(snapshot.on_behalf_of_id)
+        if snapshot.on_behalf_of_id else None,
     }
 
 
@@ -190,7 +201,7 @@ def _pending_context(entity, user, workflow_id, branch_filter):
     return instance, snapshot, document, object_id
 
 
-def _stage_rows(instance):
+def _stage_rows(instance, states):
     """Serialize prefetched stage evidence without per-stage database queries.
 
     A vote's ``actor`` is the approver whose vote it is; a vote cast under a
@@ -204,7 +215,14 @@ def _stage_rows(instance):
                 "id": str(action.id),
                 "action": action.action,
                 "actor": _user_name(action.actor),
+                "actor_is_exited": states.get(action.actor_id) if action.actor_id else None,
                 "on_behalf_of": _user_name(action.on_behalf_of) if action.on_behalf_of_id else None,
+                "on_behalf_of_is_exited": (
+                    states.get(action.on_behalf_of_id) if action.on_behalf_of_id else None
+                ),
+                "proxied_by_is_exited": (
+                    states.get(action.proxied_by_id) if action.proxied_by_id else None
+                ),
                 **vote_attribution(action, name=_user_name),
                 "comment": action.comment,
                 "acted_at": action.acted_at,
@@ -236,16 +254,29 @@ def _stage_rows(instance):
 
 def _detail(entity, instance, snapshot, document, object_id):
     """Overlay workflow history on the entity-verified procurement summary row."""
-    data = _list_row(entity, snapshot, document, object_id)
+    from core.person_exit import prime_exit_states
+
+    ids = {instance.requested_by_id, snapshot.on_behalf_of_id}
+    for stage_instance in instance.stage_instances.all():
+        for action in stage_instance.actions.all():
+            ids.update((action.actor_id, action.on_behalf_of_id, action.proxied_by_id))
+    for log in instance.audit_logs.all():
+        ids.update((log.actor_id, log.effective_user_id))
+    states = prime_exit_states({}, ids)
+    data = _list_row(entity, snapshot, document, object_id, states)
     data.update({
         "document_status": getattr(document, "status", ""),
         "approval_state": getattr(document, "approval_state", ""),
         "next_stage": preview_next_approval_stage(instance),
-        "stages": _stage_rows(instance),
+        "stages": _stage_rows(instance, states),
         "activity": [{
             "id": str(log.id),
             "event_type": log.event_type,
             "actor": _user_name(log.actor) if log.actor_id else None,
+            "actor_is_exited": states.get(log.actor_id) if log.actor_id else None,
+            "effective_user_is_exited": (
+                states.get(log.effective_user_id) if log.effective_user_id else None
+            ),
             **audit_row_attribution(log, name=_user_name),
             "message": log.message,
             "occurred_at": log.occurred_at,
@@ -357,6 +388,8 @@ class ProcurementApprovalOverrideView(APIView):
             reason=request.data.get("reason"),
         )
         instance.refresh_from_db()
+        from core.person_exit import person_is_exited
+
         return success_response("Parked approval released by override.", data={
             "id": instance.id,
             "workflow_status": instance.status,
@@ -371,6 +404,7 @@ class ProcurementApprovalOverrideView(APIView):
                 "amount": override.amount,
                 "reason": override.reason,
                 "overridden_by": _user_name(request.user),
+                "overridden_by_is_exited": person_is_exited({}, request.user.pk),
                 "overridden_at": override.created_at,
             },
         })
@@ -395,12 +429,21 @@ class ProcurementApprovalListView(APIView):
         usable, documents = _document_map(
             entity, _pending_snapshots(request.user), _branch_q(request, entity),
         )
+        from core.person_exit import prime_exit_states
+
+        states = prime_exit_states({}, (
+            user_id for snapshot, _object_id in usable
+            for user_id in (
+                snapshot.stage_instance.instance.requested_by_id,
+                snapshot.on_behalf_of_id,
+            )
+        ))
         rows = []
         for snapshot, object_id in usable:
             instance = snapshot.stage_instance.instance
             document = documents[instance.document_type].get(object_id)
             if document is not None:
-                rows.append(_list_row(entity, snapshot, document, object_id))
+                rows.append(_list_row(entity, snapshot, document, object_id, states))
 
         document_type = request.query_params.get("document_type", "").strip()
         if document_type:

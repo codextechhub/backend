@@ -3,6 +3,7 @@
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from rest_framework import serializers
+from core.person_exit import person_is_exited, prime_exit_states
 
 from vs_workflow.conditions.fields import document_type_label
 
@@ -22,6 +23,41 @@ from vs_workflow.models import (
 )
 
 
+class WorkflowNamedUserListSerializer(serializers.ListSerializer):
+    """Prime linked users once for a rule or group-member list."""
+
+    def to_representation(self, data):
+        rows = list(data.all()) if hasattr(data, "all") else list(data)
+        prime_exit_states(self.context, (getattr(row, "user_id", None) for row in rows))
+        return super().to_representation(rows)
+
+
+class WorkflowContainerPeopleListSerializer(serializers.ListSerializer):
+    """Prime users nested under a page of approver groups or Dynamic Roles."""
+
+    def to_representation(self, data):
+        rows = list(data.all()) if hasattr(data, "all") else list(data)
+        ids = set()
+        for row in rows:
+            related = getattr(row, "members", None) or getattr(row, "rules", None)
+            if related is not None:
+                ids.update(item.user_id for item in related.all() if item.user_id)
+        prime_exit_states(self.context, ids)
+        return super().to_representation(rows)
+
+
+class WorkflowDelegationPeopleListSerializer(serializers.ListSerializer):
+    """Prime every person named by a delegation page in one lookup."""
+
+    def to_representation(self, data):
+        rows = list(data.all()) if hasattr(data, "all") else list(data)
+        prime_exit_states(self.context, (
+            user_id for row in rows
+            for user_id in (row.delegator_id, row.delegate_id, row.created_by_id)
+        ))
+        return super().to_representation(rows)
+
+
 class WorkflowStageDynamicRuleReadSerializer(serializers.ModelSerializer):
     role_name = serializers.CharField(source="role.name", read_only=True, default=None)
     is_fallback = serializers.BooleanField(read_only=True)
@@ -37,14 +73,16 @@ class WorkflowDynamicRoleRuleReadSerializer(serializers.ModelSerializer):
 
     role_name = serializers.CharField(source="role.name", read_only=True, default=None)
     user_name = serializers.SerializerMethodField()
+    user_is_exited = serializers.SerializerMethodField()
     group_code = serializers.CharField(source="group.code", read_only=True, default=None)
     group_name = serializers.CharField(source="group.name", read_only=True, default=None)
     is_fallback = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = WorkflowDynamicRoleRule
+        list_serializer_class = WorkflowNamedUserListSerializer
         fields = ["id", "order", "condition", "target_kind", "role_key", "role_name",
-                  "user", "user_name", "group", "group_code", "group_name",
+                  "user", "user_name", "user_is_exited", "group", "group_code", "group_name",
                   "label", "is_fallback"]
         read_only_fields = fields
 
@@ -52,6 +90,9 @@ class WorkflowDynamicRoleRuleReadSerializer(serializers.ModelSerializer):
         if obj.user is None:
             return None
         return getattr(obj.user, "full_name", "") or obj.user.get_username()
+
+    def get_user_is_exited(self, obj):
+        return person_is_exited(self.context, obj.user_id)
 
 
 class WorkflowDynamicRoleSummarySerializer(serializers.ModelSerializer):
@@ -334,7 +375,32 @@ class WorkflowStageActionReadSerializer(_ProxyAttributionFields, serializers.Mod
             "id", "action", "actor", "on_behalf_of", "comment", "attempt",
             "acted_at", "reversed_at", "reversed_by", "reversal_reason", "is_reversal_of",
             "proxied_by", "real_actor_name", "proxied_user_name", "acted_label",
+            "actor_is_exited", "on_behalf_of_is_exited", "proxied_by_is_exited",
+            "reversed_by_is_exited",
         ]
+
+    actor_is_exited = serializers.SerializerMethodField()
+    on_behalf_of_is_exited = serializers.SerializerMethodField()
+    proxied_by_is_exited = serializers.SerializerMethodField()
+    reversed_by_is_exited = serializers.SerializerMethodField()
+
+    def to_representation(self, obj):
+        prime_exit_states(self.context, (
+            obj.actor_id, obj.on_behalf_of_id, obj.proxied_by_id, obj.reversed_by_id,
+        ))
+        return super().to_representation(obj)
+
+    def get_actor_is_exited(self, obj):
+        return person_is_exited(self.context, obj.actor_id)
+
+    def get_on_behalf_of_is_exited(self, obj):
+        return person_is_exited(self.context, obj.on_behalf_of_id)
+
+    def get_proxied_by_is_exited(self, obj):
+        return person_is_exited(self.context, obj.proxied_by_id)
+
+    def get_reversed_by_is_exited(self, obj):
+        return person_is_exited(self.context, obj.reversed_by_id)
 
     def attribution(self, obj) -> dict:
         from core.attribution import vote_attribution
@@ -343,9 +409,23 @@ class WorkflowStageActionReadSerializer(_ProxyAttributionFields, serializers.Mod
 
 
 class WorkflowStageApproverReadSerializer(serializers.ModelSerializer):
+    user_is_exited = serializers.SerializerMethodField()
+    on_behalf_of_is_exited = serializers.SerializerMethodField()
+
     class Meta:
         model = WorkflowStageApprover
-        fields = ["id", "user", "on_behalf_of", "attempt", "recorded_at"]
+        fields = ["id", "user", "on_behalf_of", "user_is_exited",
+                  "on_behalf_of_is_exited", "attempt", "recorded_at"]
+
+    def to_representation(self, obj):
+        prime_exit_states(self.context, (obj.user_id, obj.on_behalf_of_id))
+        return super().to_representation(obj)
+
+    def get_user_is_exited(self, obj):
+        return person_is_exited(self.context, obj.user_id)
+
+    def get_on_behalf_of_is_exited(self, obj):
+        return person_is_exited(self.context, obj.on_behalf_of_id)
 
 
 class WorkflowStageInstanceReadSerializer(serializers.ModelSerializer):
@@ -376,12 +456,35 @@ class WorkflowAuditLogReadSerializer(_ProxyAttributionFields, serializers.ModelS
         model = WorkflowAuditLog
         fields = ["id", "event_type", "actor", "stage_instance",
                   "context", "message", "occurred_at",
-                  "effective_user", "real_actor_name", "proxied_user_name", "acted_label"]
+                  "effective_user", "real_actor_name", "proxied_user_name", "acted_label",
+                  "actor_is_exited", "effective_user_is_exited"]
+
+    actor_is_exited = serializers.SerializerMethodField()
+    effective_user_is_exited = serializers.SerializerMethodField()
+
+    def to_representation(self, obj):
+        prime_exit_states(self.context, (obj.actor_id, obj.effective_user_id))
+        return super().to_representation(obj)
+
+    def get_actor_is_exited(self, obj):
+        return person_is_exited(self.context, obj.actor_id)
+
+    def get_effective_user_is_exited(self, obj):
+        return person_is_exited(self.context, obj.effective_user_id)
 
     def attribution(self, obj) -> dict:
         from core.attribution import audit_row_attribution
 
         return audit_row_attribution(obj)
+
+
+class WorkflowListSerializer(serializers.ListSerializer):
+    """Fetch employment flags once for the people in an approval page."""
+
+    def to_representation(self, data):
+        rows = list(data)
+        prime_exit_states(self.context, (row.requested_by_id for row in rows))
+        return super().to_representation(rows)
 
 
 class WorkflowInstanceListSerializer(serializers.ModelSerializer):
@@ -399,16 +502,21 @@ class WorkflowInstanceListSerializer(serializers.ModelSerializer):
     current_stage_label = serializers.CharField(source="current_stage.label", read_only=True, default=None)
     document_type_label = serializers.SerializerMethodField()
     document_title      = serializers.SerializerMethodField()
+    requested_by_is_exited = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkflowInstance
+        list_serializer_class = WorkflowListSerializer
         fields = [
             "id", "document_type", "document_type_label", "document_title",
             "document_object_id",
             "template_code",
             "status", "current_stage_code", "current_stage_label",
-            "requested_by", "submitted_at", "completed_at", "updated_at",
+            "requested_by", "requested_by_is_exited", "submitted_at", "completed_at", "updated_at",
         ]
+
+    def get_requested_by_is_exited(self, obj):
+        return person_is_exited(self.context, obj.requested_by_id)
 
     def get_document_type_label(self, obj) -> str:
         return document_type_label(obj.document_type)
@@ -417,6 +525,21 @@ class WorkflowInstanceListSerializer(serializers.ModelSerializer):
         summary = obj.document_summary if isinstance(obj.document_summary, dict) else {}
         title = summary.get("title")
         return title if isinstance(title, str) else ""
+
+
+class WorkflowAdminListSerializer(serializers.ListSerializer):
+    """Prime employment flags for an approval page before rendering its people."""
+
+    def to_representation(self, data):
+        rows = list(data)
+        ids = set()
+        for row in rows:
+            ids.update((row.request_for_id, row.requested_by_id))
+            for stage in getattr(row, "waiting_stage_instances", ()):
+                for snap in stage.eligible_approvers.all():
+                    ids.update((snap.user_id, snap.on_behalf_of_id))
+        prime_exit_states(self.context, ids)
+        return super().to_representation(rows)
 
 
 class WorkflowInstanceAdminRowSerializer(WorkflowInstanceListSerializer):
@@ -442,6 +565,7 @@ class WorkflowInstanceAdminRowSerializer(WorkflowInstanceListSerializer):
     branch = serializers.SerializerMethodField()
 
     class Meta(WorkflowInstanceListSerializer.Meta):
+        list_serializer_class = WorkflowAdminListSerializer
         fields = WorkflowInstanceListSerializer.Meta.fields + [
             "request_for", "waiting_on", "waiting_since", "stage_position", "branch",
         ]
@@ -457,7 +581,10 @@ class WorkflowInstanceAdminRowSerializer(WorkflowInstanceListSerializer):
     def get_request_for(self, obj):
         from vs_workflow.services.reassignment import person
 
-        return person(obj.request_for)
+        result = person(obj.request_for)
+        if result is not None:
+            result["is_exited"] = person_is_exited(self.context, obj.request_for_id)
+        return result
 
     def get_waiting_on(self, obj):
         from vs_workflow.services.reassignment import person
@@ -472,7 +599,11 @@ class WorkflowInstanceAdminRowSerializer(WorkflowInstanceListSerializer):
                 if action.proxied_by_id:
                     decided.add(action.proxied_by_id)
         return [
-            {**person(snap.user), "on_behalf_of": person(snap.on_behalf_of)}
+            {**person(snap.user), "is_exited": person_is_exited(self.context, snap.user_id),
+             "on_behalf_of": (
+                 {**person(snap.on_behalf_of), "is_exited": person_is_exited(
+                     self.context, snap.on_behalf_of_id)}
+                 if snap.on_behalf_of_id else None)}
             for snap in si.eligible_approvers.all()
             if snap.attempt == si.attempt and snap.user_id not in decided
         ]
@@ -546,6 +677,19 @@ class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
             "document_summary", "document_details", "source_document_link",
             "next_stage", "stage_instances", "audit_logs",
         ]
+
+    def to_representation(self, obj):
+        ids = {obj.requested_by_id, obj.request_for_id}
+        for stage in obj.stage_instances.all():
+            for snap in stage.eligible_approvers.all():
+                ids.update((snap.user_id, snap.on_behalf_of_id))
+            for action in stage.actions.all():
+                ids.update((action.actor_id, action.on_behalf_of_id,
+                            action.proxied_by_id, action.reversed_by_id))
+        for row in obj.audit_logs.all():
+            ids.update((row.actor_id, row.effective_user_id))
+        prime_exit_states(self.context, ids)
+        return super().to_representation(obj)
 
     def get_next_stage(self, obj):
         from vs_workflow.services.routing import preview_next_approval_stage
@@ -668,11 +812,15 @@ class ApprovalDelegationSerializer(
     # Blank for a delegation that covers every document type.
     document_type_label = serializers.SerializerMethodField()
     created_by = serializers.SerializerMethodField()
+    delegator_is_exited = serializers.SerializerMethodField()
+    delegate_is_exited = serializers.SerializerMethodField()
 
     class Meta:
         model = ApprovalDelegation
+        list_serializer_class = WorkflowDelegationPeopleListSerializer
         fields = [
             "id", "delegator", "delegate", "starts_at", "ends_at",
+            "delegator_is_exited", "delegate_is_exited",
             "document_type", "document_type_label", "exclusive", "reason",
             "created_at", "created_by", "revoked_at",
         ]
@@ -684,7 +832,22 @@ class ApprovalDelegationSerializer(
     def get_created_by(self, obj):
         from vs_workflow.services.reassignment import person
 
-        return person(obj.created_by)
+        value = person(obj.created_by)
+        if value is not None:
+            value["is_exited"] = person_is_exited(self.context, obj.created_by_id)
+        return value
+
+    def to_representation(self, obj):
+        prime_exit_states(self.context, (
+            obj.delegator_id, obj.delegate_id, obj.created_by_id,
+        ))
+        return super().to_representation(obj)
+
+    def get_delegator_is_exited(self, obj):
+        return person_is_exited(self.context, obj.delegator_id)
+
+    def get_delegate_is_exited(self, obj):
+        return person_is_exited(self.context, obj.delegate_id)
 
     def validate(self, attrs):
         """Fallback tenancy check on the delegate, and a real document type.
@@ -814,12 +977,14 @@ class WorkflowApproverGroupMemberReadSerializer(serializers.ModelSerializer):
     position_code = serializers.SerializerMethodField()
     position_title = serializers.SerializerMethodField()
     user_name     = serializers.SerializerMethodField()
+    user_is_exited = serializers.SerializerMethodField()
     user_email    = serializers.CharField(source="user.email",     read_only=True, default=None)
 
     class Meta:
         model = WorkflowApproverGroupMember
+        list_serializer_class = WorkflowNamedUserListSerializer
         fields = [
-            "id", "kind", "user", "user_name", "user_email",
+            "id", "kind", "user", "user_name", "user_email", "user_is_exited",
             "role", "role_key", "role_name",
             "position", "position_code", "position_title", "added_at",
         ]
@@ -829,6 +994,9 @@ class WorkflowApproverGroupMemberReadSerializer(serializers.ModelSerializer):
         if obj.user is None:
             return None
         return getattr(obj.user, "full_name", "") or obj.user.get_username()
+
+    def get_user_is_exited(self, obj):
+        return person_is_exited(self.context, obj.user_id)
 
     def get_position_code(self, obj):
         label = self._position_label(obj)
@@ -875,6 +1043,7 @@ class WorkflowApproverGroupSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = WorkflowApproverGroup
+        list_serializer_class = WorkflowContainerPeopleListSerializer
         fields = [
             "id", "code", "name", "description", "branch", "is_active",
             "members", "member_count", "created_at", "updated_at",
@@ -1058,13 +1227,16 @@ class WorkflowDynamicRoleSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = WorkflowDynamicRole
+        list_serializer_class = WorkflowContainerPeopleListSerializer
         fields = ["id", "code", "name", "description", "document_types", "is_active",
                   "rules", "used_by", "created_at", "updated_at"]
         read_only_fields = ["id", "used_by", "created_at", "updated_at"]
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        data["rules"] = WorkflowDynamicRoleRuleReadSerializer(instance.rules.all(), many=True).data
+        data["rules"] = WorkflowDynamicRoleRuleReadSerializer(
+            instance.rules.all(), many=True, context=self.context,
+        ).data
         return data
 
     def get_used_by(self, obj):

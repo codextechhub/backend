@@ -212,7 +212,7 @@ def _vendor_payment_activity(entity, payment_id):
     :func:`vs_finance.audit.activity_actor`, so an action taken under a proxy reads
     "Ada Obi for Chioma Okafor" as it does on every other document drawer.
     """
-    from vs_finance.audit import activity_actor
+    from vs_finance.audit import activity_actor, prime_activity_actors
     from vs_finance.models import FinanceAuditLog
 
     return [{
@@ -220,9 +220,9 @@ def _vendor_payment_activity(entity, payment_id):
         "status": log.status,
         **activity_actor(log),
         "created_at": log.created_at,
-    } for log in FinanceAuditLog.objects.filter(
+    } for log in prime_activity_actors(FinanceAuditLog.objects.filter(
         entity=entity, target_type="VendorPayment", target_id=str(payment_id),
-    ).select_related("actor", "effective_user").order_by("-created_at")[:20]]
+    ).select_related("actor", "effective_user").order_by("-created_at")[:20])]
 
 
 def _serialize_detail(payment):

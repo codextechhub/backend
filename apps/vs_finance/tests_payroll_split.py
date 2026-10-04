@@ -13,6 +13,7 @@ one journal exactly as before.
 from __future__ import annotations
 
 import datetime
+from unittest.mock import patch
 
 from core.test_utils import TenantAPIClient
 from vs_finance.constants import DocumentStatus, PayrollRunStatus
@@ -107,6 +108,31 @@ class _SplitFixture(_FinanceBranchFixture):
 
 
 class OneJournalPerBranchTests(_SplitFixture):
+
+    @patch("core.person_exit.exited_states")
+    def test_payroll_line_marks_a_departed_employee(self, exited_states):
+        person = self.user_for(self.tenant, "departed-payroll@corona.test")
+        exited_states.side_effect = lambda _tenant, ids: {
+            user_id: user_id == person.pk for user_id in ids
+        }
+        self.salary(
+            self.books, "Departed Payroll", self.ikeja, gross=10_000,
+            employee=person,
+        )
+
+        response = self.generate()
+
+        self.assertEqual(response.status_code, 201, response.data)
+        line = next(
+            row for row in response.data["data"]["lines"]
+            if row["employee_name"] == "Departed Payroll"
+        )
+        self.assertTrue(line["employee_is_exited"])
+        anonymous = next(
+            row for row in response.data["data"]["lines"]
+            if row["employee_name"] == "Ada Obi"
+        )
+        self.assertNotIn("employee_is_exited", anonymous)
 
     def test_a_central_run_posts_one_journal_per_branch(self):
         run = self.posted_run()

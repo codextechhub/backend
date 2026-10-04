@@ -45,15 +45,35 @@ class UserSlimSerializer(serializers.ModelSerializer):
     Adjust fields if your User model uses different names.
     """
     full_name = serializers.CharField(read_only=True)
+    is_exited = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ("id", "email", "full_name")
+        fields = ("id", "email", "full_name", "is_exited")
+
+    def get_is_exited(self, obj):
+        from core.person_exit import person_is_exited
+
+        return person_is_exited(self.context, obj.pk)
 
 
 # -----------------------------------------------------------------------------
 # Audit Event Serializers
 # -----------------------------------------------------------------------------
+
+class AuditEventPeopleListSerializer(serializers.ListSerializer):
+    """Resolve actor employment for one audit page with a bulk lookup."""
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        rows = list(data)
+        ids = {user_id for row in rows
+               for user_id in (row.actor_user_id, row.effective_user_id)}
+        ids.update(user.pk for user in self.context.get("entity_users", {}).values())
+        prime_exit_states(self.context, ids)
+        return super().to_representation(rows)
+
 
 class AuditEventListSerializer(serializers.ModelSerializer):
     """
@@ -80,10 +100,14 @@ class AuditEventListSerializer(serializers.ModelSerializer):
         user = users_map.get(str(obj.entity_id))
         if not user:
             return None
-        return {"id": str(user.id), "full_name": user.full_name, "email": user.email}
+        from core.person_exit import person_is_exited
+
+        return {"id": str(user.id), "full_name": user.full_name, "email": user.email,
+                "is_exited": person_is_exited(self.context, user.pk)}
 
     class Meta:
         model = AuditEvent
+        list_serializer_class = AuditEventPeopleListSerializer
         fields = (
             "id",
             "module_key",
@@ -140,6 +164,12 @@ class AuditEventDetailSerializer(serializers.ModelSerializer):
             "metadata",
             "event_at",
         )
+
+    def to_representation(self, obj):
+        from core.person_exit import prime_exit_states
+
+        prime_exit_states(self.context, (obj.actor_user_id, obj.effective_user_id))
+        return super().to_representation(obj)
 
 
 # -----------------------------------------------------------------------------
@@ -255,6 +285,17 @@ class _ExportDownloadUrlMixin(serializers.Serializer):
         return reverse("audit-export-download", kwargs={"id": obj.id})
 
 
+class AuditExportPeopleListSerializer(serializers.ListSerializer):
+    """Resolve requesters once for an export-history page."""
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        rows = list(data)
+        prime_exit_states(self.context, (row.requested_by_id for row in rows))
+        return super().to_representation(rows)
+
+
 class AuditExportJobListSerializer(_ExportDownloadUrlMixin, serializers.ModelSerializer):
     """
     Lighter serializer for export history listing.
@@ -264,6 +305,7 @@ class AuditExportJobListSerializer(_ExportDownloadUrlMixin, serializers.ModelSer
 
     class Meta:
         model = AuditExportJob
+        list_serializer_class = AuditExportPeopleListSerializer
         fields = (
             "id",
             "requested_by",

@@ -161,6 +161,19 @@ def record_rejection(*, entity, action, exc, actor_user=None, target=None,
         pass  # Swallow logging failures so the original business error still surfaces.
 
 
+def prime_activity_actors(rows):
+    """Resolve employment flags once for a bounded document activity feed."""
+    from core.person_exit import prime_exit_states
+
+    rows = list(rows)
+    states = prime_exit_states({}, (
+        user_id for row in rows for user_id in (row.actor_id, row.effective_user_id)
+    ))
+    for row in rows:
+        row._person_exit_states = states
+    return rows
+
+
 def activity_actor(log) -> dict:
     """The "who did it" keys of one activity-feed row built from a finance audit row.
 
@@ -171,8 +184,17 @@ def activity_actor(log) -> dict:
     ``acted_label``. Callers select ``actor`` and ``effective_user`` with the rows.
     """
     from core.attribution import audit_row_attribution, person_name
+    from core.person_exit import prime_exit_states
+
+    states = getattr(log, "_person_exit_states", None)
+    if states is None:
+        states = prime_exit_states({}, (log.actor_id, log.effective_user_id))
 
     return {
         "actor_name": person_name(log.actor) if log.actor_id else "System",
+        "actor_is_exited": states.get(log.actor_id) if log.actor_id else None,
+        "effective_user_is_exited": (
+            states.get(log.effective_user_id) if log.effective_user_id else None
+        ),
         **audit_row_attribution(log),
     }

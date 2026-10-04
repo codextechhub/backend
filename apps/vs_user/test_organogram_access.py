@@ -292,6 +292,24 @@ class OrganogramAccessTests(TestCase):
         self.assertEqual(detail.status_code, 404, detail.content)
         self.assertEqual(photos.status_code, 200, photos.content)
         self.assertEqual(photos.json()["data"], {})
+        self.assertEqual(photos.json()["is_exited"], {})
+
+    def test_avatar_map_includes_exited_staff_without_a_photo(self):
+        self.profile.employment_status = PlatformStaffProfile.EmploymentStatus.EXITED
+        self.profile.save(update_fields=["employment_status"])
+
+        photos = self.client.get("/v1/user/platform-staff-profiles/photos/")
+        listing = self.client.get("/v1/user/platform-staff-profiles/?page_size=100")
+        detail = self.client.get(f"/v1/user/platform-staff-profiles/{self.profile.id}/")
+
+        self.assertEqual(photos.status_code, 200, photos.content)
+        self.assertIn("is_exited", photos.json())
+        self.assertNotIn(str(self.manager.pk), photos.json()["data"])
+        self.assertTrue(photos.json()["is_exited"][str(self.manager.pk)])
+        self.assertFalse(photos.json()["is_exited"][str(self.viewer.pk)])
+        row = next(item for item in listing.json()["data"] if item["id"] == self.profile.id)
+        self.assertTrue(row["is_exited"])
+        self.assertTrue(detail.json()["data"]["is_exited"])
 
 
 class _StubRequest:

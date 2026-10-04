@@ -328,6 +328,22 @@ MUST SAY:
 Verified in isolated worktree: focused groups 2, 39 and 52 OK; vs_procurement 732
 OK; migration and diff checks clean.
 
+### D113. Person payloads say when a staff member has exited so every avatar can mark them (e2ea8f34, 2026-10-04)
+MODULES: M01 identity and user management, M05 audit, M07 workflow, M12 staff,
+M18 payments, M19 finance and payroll, M22/M23 procurement, MRD.
+MUST SAY:
+- Staff lists, organograms, audit actors, workflow approvers and proxy actors,
+  payments, finance and payroll, procurement approvals, receiving, attachments and
+  assessments expose an explicit exit flag beside each resolvable person identity.
+- Bulk resolvers keep list responses bounded and engine modules do not import school
+  code. Historical free-text payroll names remain unmarked because they cannot be
+  resolved safely to one user.
+- A departed staff member remains deactivated and named on historical records. The
+  frontend uses the flag only to draw the distinct avatar outline and does not infer
+  exit from suspension, account status, a missing photo or a text name.
+Verified in isolated worktree: vs_user 430 OK; vs_workflow 539 OK; vs_audit 109 OK;
+schools.vs_staff 546 OK, plus focused contract suites.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

@@ -72,3 +72,26 @@ class PaymentEventProxyTests(TestCase):
         self.assertIsNone(row["real_actor_name"])
         self.assertIsNone(row["proxied_user_name"])
         self.assertTrue(EXISTING_EVENT_KEYS <= set(row))
+
+    def test_transaction_log_marks_each_named_person_from_employment(self):
+        from vs_user.models import PlatformStaffProfile
+
+        PlatformStaffProfile.objects.create(
+            user=self.ada,
+            employment_status=PlatformStaffProfile.EmploymentStatus.EXITED,
+        )
+        PlatformStaffProfile.objects.create(
+            user=self.chioma,
+            employment_status=PlatformStaffProfile.EmploymentStatus.SUSPENDED,
+        )
+        set_current_audit_identity(
+            actor_user=self.ada, effective_user=self.chioma,
+            impersonation_session=self.session,
+        )
+        event = record(action=self.action, reference="PO-3", actor_user=self.chioma)
+        clear_request_context()
+
+        row = PaymentEventSerializer(event).data
+
+        self.assertFalse(row["actor_user_is_exited"])
+        self.assertTrue(row["proxied_by_is_exited"])

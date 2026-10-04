@@ -55,6 +55,31 @@ from .models import (
 )
 
 
+class ProcurementPeopleListSerializer(serializers.ListSerializer):
+    """Resolve actor employment once for a page or nested activity list."""
+
+    person_id_fields = (
+        "created_by_id", "requested_by_id", "received_by_id",
+    )
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        rows = list(data.all()) if hasattr(data, "all") else list(data)
+        prime_exit_states(self.context, (
+            getattr(row, field, None)
+            for row in rows for field in self.person_id_fields
+        ))
+        return super().to_representation(rows)
+
+
+def _is_exited(context, user_id):
+    """Return the employment flag beside an already exposed Procurement actor."""
+    from core.person_exit import person_is_exited
+
+    return person_is_exited(context, user_id)
+
+
 # --------------------------------------------------------------------------- #
 # Master data                                                                 #
 # --------------------------------------------------------------------------- #
@@ -216,16 +241,16 @@ def _contract_activity(entity, contract_id):
     first, capped. Contract lifecycle *and* milestone-completion events both record with
     ``target=contract``, so they all land here. Only called on single-record detail reads.
     """
-    from vs_finance.audit import activity_actor
+    from vs_finance.audit import activity_actor, prime_activity_actors
     from vs_finance.models import FinanceAuditLog
 
     return [{
         "id": log.id, "action": log.action, "message": log.message, "status": log.status,
         **activity_actor(log),
         "created_at": log.created_at,
-    } for log in FinanceAuditLog.objects.filter(
+    } for log in prime_activity_actors(FinanceAuditLog.objects.filter(
         entity=entity, target_type="VendorContract", target_id=str(contract_id),
-    ).select_related("actor", "effective_user").order_by("-created_at")[:20]]
+    ).select_related("actor", "effective_user").order_by("-created_at")[:20])]
 
 
 class VendorContractListSerializer(serializers.ModelSerializer):
@@ -516,18 +541,21 @@ class StockMovementSerializer(serializers.ModelSerializer):
         source="cost_center.name", read_only=True, default=None,
     )
     created_by_name = serializers.SerializerMethodField()
+    created_by_is_exited = serializers.SerializerMethodField()
     value_amount_naira = serializers.SerializerMethodField()
     balance_value_naira = serializers.SerializerMethodField()
 
     class Meta:
         model = StockMovement
+        list_serializer_class = ProcurementPeopleListSerializer
         fields = [
             "id", "stock_item_id", "stock_item_code",
             "location_id", "location_code", "movement_type",
             "movement_date", "quantity", "value_amount", "value_amount_naira",
             "balance_qty", "balance_value", "balance_value_naira",
             "grn_id", "journal_id", "reference", "narration",
-            "cost_center_id", "cost_center_name", "created_by_name", "created_at",
+            "cost_center_id", "cost_center_name", "created_by_name",
+            "created_by_is_exited", "created_at",
         ]
 
     def get_created_by_name(self, obj) -> str:
@@ -539,6 +567,9 @@ class StockMovementSerializer(serializers.ModelSerializer):
             f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip()
             or getattr(user, "email", "System")
         )
+
+    def get_created_by_is_exited(self, obj):
+        return _is_exited(self.context, obj.created_by_id)
 
     def get_value_amount_naira(self, obj) -> str:
         return format_naira(obj.value_amount)
@@ -582,6 +613,7 @@ class RequisitionSerializer(serializers.ModelSerializer):
     )
     estimated_total_naira = serializers.SerializerMethodField()
     requested_by_name = serializers.SerializerMethodField()
+    requested_by_is_exited = serializers.SerializerMethodField()
     is_parked = serializers.SerializerMethodField()
     approved_by_override = serializers.SerializerMethodField()
     cost_center_code = serializers.CharField(source="cost_center.code", read_only=True, default=None)
@@ -589,10 +621,12 @@ class RequisitionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseRequisition
+        list_serializer_class = ProcurementPeopleListSerializer
         fields = [
             "id", "document_number", "status", "approval_state", "is_parked",
             "approved_by_override", "branch_id", "branch_name", "title",
             "request_date", "needed_by", "requested_by_id", "requested_by_name",
+            "requested_by_is_exited",
             "cost_center_id", "cost_center_code", "cost_center_name",
             "justification", "estimated_total", "estimated_total_naira", "created_at", "lines",
         ]
@@ -637,6 +671,9 @@ class RequisitionSerializer(serializers.ModelSerializer):
         # Prefer the platform display name, then Django's composed name, then the stable email identifier.
         return getattr(user, "full_name", "") or user.get_full_name() or user.email
 
+    def get_requested_by_is_exited(self, obj):
+        return _is_exited(self.context, obj.requested_by_id)
+
 
 # --------------------------------------------------------------------------- #
 # Sourcing - shared helpers                                                   #
@@ -649,16 +686,16 @@ def _sourcing_activity(entity, target_type, target_id):
     :class:`FinanceAuditLog` rows for this exact document, newest first, capped. Only
     called on single-record detail reads, so the bounded query is not an N+1 concern.
     """
-    from vs_finance.audit import activity_actor
+    from vs_finance.audit import activity_actor, prime_activity_actors
     from vs_finance.models import FinanceAuditLog
 
     return [{
         "id": log.id, "action": log.action, "message": log.message, "status": log.status,
         **activity_actor(log),
         "created_at": log.created_at,
-    } for log in FinanceAuditLog.objects.filter(
+    } for log in prime_activity_actors(FinanceAuditLog.objects.filter(
         entity=entity, target_type=target_type, target_id=str(target_id),
-    ).select_related("actor", "effective_user").order_by("-created_at")[:20]]
+    ).select_related("actor", "effective_user").order_by("-created_at")[:20])]
 
 
 def _quotation_is_expired(quotation, context=None) -> bool:
@@ -1072,13 +1109,16 @@ class PurchaseOrderVendorDeliverySerializer(serializers.ModelSerializer):
     """Operational history without exposing recipient addresses through ordinary PO reads."""
 
     requested_by_name = serializers.SerializerMethodField()
+    requested_by_is_exited = serializers.SerializerMethodField()
     recipient_count = serializers.SerializerMethodField()
     bcc_count = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseOrderVendorDelivery
+        list_serializer_class = ProcurementPeopleListSerializer
         fields = [
-            "id", "source", "status", "requested_by_name", "recipient_count", "bcc_count",
+            "id", "source", "status", "requested_by_name", "requested_by_is_exited",
+            "recipient_count", "bcc_count",
             "buyer_message", "queued_at", "sent_at", "cancelled_at", "failure_reason",
             "created_at", "parent_id",
         ]
@@ -1086,6 +1126,9 @@ class PurchaseOrderVendorDeliverySerializer(serializers.ModelSerializer):
     def get_requested_by_name(self, obj):
         user = obj.requested_by
         return (getattr(user, "full_name", "") or user.email) if user else "System"
+
+    def get_requested_by_is_exited(self, obj):
+        return _is_exited(self.context, obj.requested_by_id)
 
     def get_recipient_count(self, obj):
         return len(obj.recipients or [])
@@ -1235,6 +1278,7 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     purchase_order_number = serializers.CharField(source="purchase_order.document_number", read_only=True, default=None)
     received_by_name = serializers.SerializerMethodField()
+    received_by_is_exited = serializers.SerializerMethodField()
     receipt_status = serializers.SerializerMethodField()
     received_item_count = serializers.SerializerMethodField()
     ordered_item_count = serializers.SerializerMethodField()
@@ -1246,8 +1290,10 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = GoodsReceivedNote
+        list_serializer_class = ProcurementPeopleListSerializer
         fields = [
-            "id", "document_number", "status", "receipt_status", "vendor_id", "vendor_code", "vendor_name", "received_by_name",
+            "id", "document_number", "status", "receipt_status", "vendor_id", "vendor_code",
+            "vendor_name", "received_by_name", "received_by_is_exited",
             "branch_id", "branch_name",
             "purchase_order_id", "purchase_order_number", "received_date", "reference", "narration",
             "received_item_count", "ordered_item_count",
@@ -1264,6 +1310,9 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
         if user is None:
             return "System"
         return getattr(user, "full_name", "") or user.get_full_name() or user.email
+
+    def get_received_by_is_exited(self, obj):
+        return _is_exited(self.context, obj.received_by_id)
 
     def _expected_quantity(self, obj):
         """Resolve this receipt's expected quantity, including legacy fallbacks.
@@ -1499,6 +1548,7 @@ class VendorPaymentSerializer(serializers.ModelSerializer):
     bank_account_name = serializers.CharField(source="payment_account.bank_account.name", read_only=True, default=None)
     wht_tax_code_value = serializers.CharField(source="wht_tax_code.code", read_only=True, default=None)
     created_by_name = serializers.SerializerMethodField()
+    created_by_is_exited = serializers.SerializerMethodField()
     unallocated_amount = serializers.IntegerField(read_only=True)
     # The same kobo named for where they actually sit: unallocated gross was never
     # debited to AP, it is a vendor advance in 1240 until a bill draws it down.
@@ -1509,6 +1559,7 @@ class VendorPaymentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = VendorPayment
+        list_serializer_class = ProcurementPeopleListSerializer
         fields = [
             "id", "document_number", "status", "approval_state", "allocation_status",
             "branch_id", "branch_name",
@@ -1519,7 +1570,8 @@ class VendorPaymentSerializer(serializers.ModelSerializer):
             "payment_account_id", "payment_code",
             "payment_account_name", "bank_account_id", "bank_account_name",
             "wht_tax_code_id", "wht_tax_code_value", "reference", "narration",
-            "journal_id", "created_at", "created_by_name", "allocations", "attachments",
+            "journal_id", "created_at", "created_by_name", "created_by_is_exited",
+            "allocations", "attachments",
         ]
 
     def get_net_naira(self, obj) -> str:
@@ -1537,6 +1589,9 @@ class VendorPaymentSerializer(serializers.ModelSerializer):
             f"{getattr(obj.created_by, 'first_name', '')} {getattr(obj.created_by, 'last_name', '')}".strip()
             or getattr(obj.created_by, "email", "System")
         )
+
+    def get_created_by_is_exited(self, obj):
+        return _is_exited(self.context, obj.created_by_id)
 
     def get_allocation_status(self, obj) -> str:
         # Draft rows are a planned split; posted rows use the authoritative amount

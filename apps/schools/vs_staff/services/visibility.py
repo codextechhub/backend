@@ -229,7 +229,7 @@ FIELD_GROUPS = {
     **dict.fromkeys((
         "full_name", "first_name", "last_name", "email", "phone", "photo_url",
         "organogram", "branch_id", "branch_name", "posting_branch_ids",
-        "posted_school_wide", "posting_branches",
+        "posted_school_wide", "posting_branches", "is_exited",
     ), GROUP_CONTACT),
     **dict.fromkeys((
         "staff_number", "job_title", "employment_type", "hire_date", "exit_date",

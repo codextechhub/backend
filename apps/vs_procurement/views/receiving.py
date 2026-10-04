@@ -567,14 +567,16 @@ def _serialize_invoice_detail(invoice):
             return f"Posted bill from {invoice.vendor.code} ({format_naira(log.metadata['total'])})."
         return log.message
 
+    from vs_finance.audit import prime_activity_actors
+
     data["activity"] = [{
         "id": log.id, "action": log.action, "message": display_message(log),
         "status": log.status,
         **activity_actor(log),
         "created_at": log.created_at,
-    } for log in FinanceAuditLog.objects.filter(
+    } for log in prime_activity_actors(FinanceAuditLog.objects.filter(
         entity=invoice.entity, target_type="VendorInvoice", target_id=str(invoice.pk),
-    ).select_related("actor", "effective_user").order_by("-created_at")[:20]]
+    ).select_related("actor", "effective_user").order_by("-created_at")[:20])]
     return data
 
 class VendorInvoiceReferenceCheckView(_ProcBase):
