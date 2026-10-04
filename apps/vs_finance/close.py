@@ -46,8 +46,10 @@ def register_close_check(check):
 
     ``check`` is called as ``check(entity, period)`` and returns a
     :class:`ChecklistItem`, an iterable of them, or ``None`` when it has nothing to say
-    for that entity. Registration is idempotent, so a module imported twice does not
-    double the check.
+    for that entity. A check that can reconcile one branch sets ``supports_branch``
+    and accepts ``branch=``; branch close omits tenant-only checks rather than showing
+    another branch's result. Registration is idempotent, so a module imported twice
+    does not double the check.
 
     A check that raises is reported as a *failed* blocking item rather than being
     allowed to escape. A close is a control: a check that cannot answer is not the same
@@ -74,8 +76,9 @@ def register_year_close_check(check):
 
     ``check`` is called as ``check(entity, fiscal_year)`` and answers the way a
     period check does (:func:`register_close_check`): a :class:`ChecklistItem`, an
-    iterable of them, or ``None``. Registration is idempotent, and a check that
-    raises fails the close as a blocking item.
+    iterable of them, or ``None``. Branch-aware checks use the same
+    ``supports_branch`` and ``branch=`` contract. Registration is idempotent, and a
+    check that raises fails the close as a blocking item.
 
     A year close has checks of its own because some things can only go wrong at the
     year boundary: a charge dated in a closed year can never post afterwards. Finance
@@ -92,10 +95,10 @@ def registered_year_close_checks() -> list:
     return list(_REGISTERED_YEAR_CHECKS)
 
 
-def _run_registered_check(check, *args) -> list:
+def _run_registered_check(check, *args, **kwargs) -> list:
     """Run one registered check and return its items; a raising check fails, blocking."""
     try:
-        result = check(*args)
+        result = check(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001 - a broken check must not pass silently.
         return [ChecklistItem(
             name=getattr(check, "check_name", getattr(check, "__name__", "registered_check")),
@@ -142,7 +145,7 @@ def _date_in_period(period, date) -> bool:
 
 
 # Run pre-close integrity checks.
-def close_checklist(entity, period, *, extra_checks=None) -> CloseChecklist:
+def close_checklist(entity, period, *, branch=None, extra_checks=None) -> CloseChecklist:
     """Run the pre-close integrity checks for ``period`` and return the results.
 
     Every check registered through :func:`register_close_check` runs, plus anything
@@ -152,28 +155,33 @@ def close_checklist(entity, period, *, extra_checks=None) -> CloseChecklist:
     """
     from .models import JournalEntry, FixedAsset
     from .reports import reconcile_ar, trial_balance
+    from vs_rbac.scoping import BranchScope
+
+    branch_id = getattr(branch, "pk", branch)
+    scope = BranchScope(frozenset((branch_id,)), include_shared=False) if branch_id else None
 
     items: list[ChecklistItem] = []  # Accumulate checklist results in display order.
 
     # 1. Trial balance balances (it always should - a tripwire for corruption).  # Detect GL imbalance.
-    tb = trial_balance(entity, period=period)  # Compute trial balance for this period.
+    tb = trial_balance(entity, period=period, scope=scope)
     items.append(ChecklistItem(  # Add trial balance check result.
         name="trial_balance_balanced", passed=tb.is_balanced,  # Pass only when debits equal credits.
         detail=f"difference {tb.difference} kobo",  # Include imbalance amount for diagnostics.
     ))
 
     # 2. No draft journals dated within the period (un-posted work left behind).  # Warning-level close signal.
-    draft_count = JournalEntry.objects.filter(
+    drafts = JournalEntry.objects.filter(
         entity=entity, status=DocumentStatus.DRAFT,  # Scope to draft journals for this entity.
         date__gte=period.start_date, date__lte=period.end_date,  # Restrict to period dates.
-    ).count()
+    )
+    draft_count = drafts.filter(branch_id=branch_id).count() if branch_id else drafts.count()
     items.append(ChecklistItem(  # Add draft journal warning result.
         name="no_draft_journals", passed=draft_count == 0, blocking=False,  # Drafts warn but do not block.
         detail=f"{draft_count} draft journal(s) dated in period",  # Include count for the user.
     ))
 
     # 3. AR sub-ledger reconciles to the AR control account.  # Ensure receivables tie to GL.
-    ar = reconcile_ar(entity)  # Compute AR subledger/control reconciliation.
+    ar = reconcile_ar(entity, scope=scope)
     items.append(ChecklistItem(  # Add AR reconciliation result.
         name="ar_reconciled", passed=ar.is_reconciled,  # Pass only when subledger equals control.
         detail=f"sub-ledger {ar.subledger_total} vs control {ar.control_total} kobo",  # Include both balances.
@@ -181,7 +189,10 @@ def close_checklist(entity, period, *, extra_checks=None) -> CloseChecklist:
 
     # 4. All due depreciation has been posted up to the period end.  # Avoid closing with missing asset expense.
     unposted = 0  # Count due depreciation charges that are still unposted.
-    for asset in FixedAsset.objects.filter(entity=entity, asset_status=AssetStatus.ACTIVE):
+    assets = FixedAsset.objects.filter(entity=entity, asset_status=AssetStatus.ACTIVE)
+    if branch_id:
+        assets = assets.filter(branch_id=branch_id)
+    for asset in assets:
         unposted += asset.schedule.filter(
             is_posted=False, depreciation_date__lte=period.end_date,  # Due by period end and not posted.
         ).count()
@@ -202,6 +213,11 @@ def close_checklist(entity, period, *, extra_checks=None) -> CloseChecklist:
     # Checks contributed by dependent apps (procurement's AP and GR/IR reconciliations
     # today). A check that raises fails the close rather than vanishing from it.
     for check in _REGISTERED_CHECKS:
+        if branch_id:
+            if not getattr(check, "supports_branch", False):
+                continue
+            items.extend(_run_registered_check(check, entity, period, branch=branch_id))
+            continue
         items.extend(_run_registered_check(check, entity, period))
 
     return CloseChecklist(period_id=period.id, items=items)  # Return checklist summary.
@@ -218,17 +234,22 @@ class YearCloseChecklist:
     failures = CloseChecklist.failures
 
 
-def year_close_checklist(entity, fiscal_year) -> YearCloseChecklist:
+def year_close_checklist(entity, fiscal_year, *, branch=None) -> YearCloseChecklist:
     """Run every registered year-close check for ``fiscal_year`` (no side effects)."""
     items: list[ChecklistItem] = []
     for check in _REGISTERED_YEAR_CHECKS:
-        items.extend(_run_registered_check(check, entity, fiscal_year))
+        if branch is not None:
+            if not getattr(check, "supports_branch", False):
+                continue
+            items.extend(_run_registered_check(check, entity, fiscal_year, branch=branch))
+        else:
+            items.extend(_run_registered_check(check, entity, fiscal_year))
     return YearCloseChecklist(fiscal_year_id=fiscal_year.pk, items=items)
 
 
 @transaction.atomic
 # Post due depreciation during close.
-def run_period_depreciation(entity, period, *, actor_user=None):
+def run_period_depreciation(entity, period, *, actor_user=None, branch=None):
     """Post all depreciation due on/before this period's end (a close auto-posting).
 
     Posts into the period even when it is SOFT_CLOSED (``allow_restricted``), which is
@@ -240,6 +261,8 @@ def run_period_depreciation(entity, period, *, actor_user=None):
 
     count = 0  # Count depreciation schedule rows posted by this close run.
     assets = FixedAsset.objects.filter(entity=entity, asset_status=AssetStatus.ACTIVE)
+    if branch is not None:
+        assets = assets.filter(branch_id=getattr(branch, "pk", branch))
     for asset in assets:  # Check each active asset for due depreciation.
         if asset.schedule.filter(is_posted=False, depreciation_date__lte=period.end_date).exists():
             posted = post_depreciation(  # Post all due depreciation up to period end.
@@ -303,6 +326,23 @@ def _transition(period, new_status, *, actor_user, action, message, **metadata):
         **metadata,
     )
     return period  # Return transitioned period.
+
+
+def _sync_branch_periods(period, status, actor_user=None):
+    """Keep legacy tenant-wide transitions compatible with branch close state."""
+    from .models import BranchFiscalPeriod
+    from vs_tenants.models import Branch
+
+    closing = status != PeriodStatus.OPEN
+    for branch in Branch.all_objects.filter(tenant_id=period.entity.tenant_id):
+        BranchFiscalPeriod.objects.update_or_create(
+            period=period, branch=branch,
+            defaults={
+                "status": status,
+                "closed_at": timezone.now() if closing else None,
+                "closed_by": actor_user if closing else None,
+            },
+        )
 
 
 @transaction.atomic
@@ -372,6 +412,7 @@ def close_period(entity, period, *, actor_user=None, soft=False, force=False,
                 + ("" if checklist.passed else " (forced over checklist failures)"),  # Flag forced closes.
         **({"forced": True, "reason": reason} if force else {}),
     )
+    _sync_branch_periods(period, new_status, actor_user)
     return period, checklist  # Return updated period and checklist details.
 
 
@@ -417,6 +458,7 @@ def reopen_period(entity, period, *, actor_user=None, reason=None):
     period.closed_at = None  # Clear close timestamp.
     period.closed_by = None  # Clear close actor.
     period.save(update_fields=["status", "closed_at", "closed_by", "updated_at"])
+    _sync_branch_periods(period, PeriodStatus.OPEN)
     record(  # Audit the reopen.
         entity=entity, action=FinanceAuditAction.PERIOD_REOPENED,  # Audit action for reopening.
         actor_user=actor_user, target=period, target_type="FiscalPeriod",  # Actor and target context.
@@ -446,6 +488,7 @@ def lock_period(entity, period, *, actor_user=None):
         action=FinanceAuditAction.PERIOD_LOCKED,  # Audit action for lock.
         message=f"Locked period '{period}' - permanently sealed.",  # Human-readable audit message.
     )
+    _sync_branch_periods(period, PeriodStatus.LOCKED, actor_user)
     return period  # Return locked period.
 
 
@@ -528,15 +571,18 @@ def _lock_fiscal_year(fiscal_year):
 @transaction.atomic
 # Post the year-end closing journals and seal the fiscal year.
 def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None,
-                      require_periods_closed=True, reason=None):
+                      require_periods_closed=True, reason=None, branch=None):
     """Post the year-end closing journals and mark ``fiscal_year`` CLOSED.
 
-    The year's result is worked out per branch and closed together as one act. Each
+    The year's result is worked out per branch. With ``branch`` supplied, only that
+    branch closes and the tenant year closes after every branch year is closed.
+    Without it, all branches close together for compatibility. Each
     branch with income or expense in the year gets its own closing journal, carrying
     that branch, which zeroes the branch's own income and expense accounts and rolls
-    its net profit or loss into Retained Earnings (3200). All of them post in one
-    transaction, so the year is either closed for every branch or for none. See
-    :func:`_closing_buckets` for how an entry with no branch is treated.
+    its net profit or loss into Retained Earnings (3200). A branch-scoped call posts
+    that branch's journal in one transaction. A compatibility call without a branch
+    posts every branch journal together. See :func:`_closing_buckets` for how an
+    entry with no branch is treated.
 
     Each closing journal names the year in ``closes_fiscal_year``, which makes the
     year its owner: the journal screen offers no raw reverse, and only
@@ -580,15 +626,32 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     (positive = profit).
     """
     from .constants import JournalSource
-    from .models import Account, FiscalPeriod, JournalEntry, JournalLine
+    from .models import (
+        Account, BranchFiscalPeriod, BranchFiscalYear, FiscalPeriod,
+        JournalEntry, JournalLine,
+    )
     from .posting import _period_accepts_posting, post_journal
     from .seed import ensure_closing_period
     from vs_tenants.models import Branch
 
     _lock_fiscal_year(fiscal_year)
-    if fiscal_year.status in (PeriodStatus.CLOSED, PeriodStatus.LOCKED):  # Never close a year twice.
+    branch_id = getattr(branch, "pk", branch)
+    branch_row = None
+    if branch_id is not None:
+        owned_branch = Branch.all_objects.filter(
+            pk=branch_id, tenant_id=entity.tenant_id,
+        ).first()
+        if owned_branch is None:
+            raise PeriodCloseError("Branch year does not belong to these books.")
+        branch_row, _ = BranchFiscalYear.objects.get_or_create(
+            fiscal_year=fiscal_year, branch=owned_branch,
+            defaults={"status": fiscal_year.status},
+        )
+        branch_row = BranchFiscalYear.objects.select_for_update().get(pk=branch_row.pk)
+    current_status = branch_row.status if branch_row is not None else fiscal_year.status
+    if current_status in (PeriodStatus.CLOSED, PeriodStatus.LOCKED):
         raise PeriodCloseError(
-            f"Fiscal year {fiscal_year.year} is already '{fiscal_year.status}'.")
+            f"Fiscal year {fiscal_year.year} is already '{current_status}'.")
 
     closing_date = closing_date or fiscal_year.end_date  # Default to the last day of the year.
     if closing_date != fiscal_year.end_date:
@@ -612,15 +675,27 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     if forced:
         reason = require_reason(reason, act=f"force-close FY{fiscal_year.year}")
     else:  # Months must be settled before the year is sealed.
-        open_count = FiscalPeriod.objects.filter(  # Count months still fully open.
-            fiscal_year=fiscal_year, status=PeriodStatus.OPEN, is_closing=False,
-        ).count()
+        if branch_row is None:
+            open_count = FiscalPeriod.objects.filter(
+                fiscal_year=fiscal_year, status=PeriodStatus.OPEN, is_closing=False,
+            ).count()
+        else:
+            branch_states = dict(BranchFiscalPeriod.objects.filter(
+                period__fiscal_year=fiscal_year, branch_id=branch_id,
+                period__is_closing=False,
+            ).values_list("period_id", "status"))
+            open_count = sum(
+                branch_states.get(period_id, status) == PeriodStatus.OPEN
+                for period_id, status in FiscalPeriod.objects.filter(
+                    fiscal_year=fiscal_year, is_closing=False,
+                ).values_list("pk", "status")
+            )
         if open_count:  # Refuse while any month is still OPEN.
             raise PeriodCloseError(
                 f"{open_count} period(s) in FY{fiscal_year.year} are still OPEN; "
                 f"close or soft-close them before closing the year (or pass force).")
 
-    checklist = year_close_checklist(entity, fiscal_year)
+    checklist = year_close_checklist(entity, fiscal_year, branch=branch_id)
     if not checklist.passed and not forced:  # Blocking failures stop the close unless forced.
         raise PeriodCloseError(
             f"FY{fiscal_year.year} is not ready to close: "
@@ -629,6 +704,8 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
         )
 
     buckets = _closing_buckets(entity, fiscal_year)
+    if branch_id is not None:
+        buckets = {branch_id: buckets[branch_id]} if branch_id in buckets else {}
 
     period = None
     if buckets:
@@ -640,18 +717,24 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
                 f"The closing period of FY{fiscal_year.year} is LOCKED, so no closing "
                 f"entry can post into it.")
 
-    soft_closed = (
-        FiscalPeriod.objects.select_for_update()
-        .filter(fiscal_year=fiscal_year, status=PeriodStatus.SOFT_CLOSED, is_closing=False)
-        .order_by("period_no")
-    )
-    for month in soft_closed:  # Nothing may post into the year after it closes.
-        _transition(
-            month, PeriodStatus.CLOSED, actor_user=actor_user,
-            action=FinanceAuditAction.PERIOD_CLOSED,
-            message=f"Closed period to {PeriodStatus.CLOSED} with the FY{fiscal_year.year} close.",
-            fiscal_year=fiscal_year.year,
+    if branch_row is None:
+        soft_closed = (
+            FiscalPeriod.objects.select_for_update()
+            .filter(fiscal_year=fiscal_year, status=PeriodStatus.SOFT_CLOSED, is_closing=False)
+            .order_by("period_no")
         )
+        for month in soft_closed:
+            _transition(
+                month, PeriodStatus.CLOSED, actor_user=actor_user,
+                action=FinanceAuditAction.PERIOD_CLOSED,
+                message=f"Closed period to {PeriodStatus.CLOSED} with the FY{fiscal_year.year} close.",
+                fiscal_year=fiscal_year.year,
+            )
+    else:
+        BranchFiscalPeriod.objects.filter(
+            period__fiscal_year=fiscal_year, branch_id=branch_id,
+            status=PeriodStatus.SOFT_CLOSED,
+        ).update(status=PeriodStatus.CLOSED, closed_at=timezone.now(), closed_by=actor_user)
 
     journals = []
     net_income = 0  # Σ(credit − debit) over P&L = revenue minus expense = profit.
@@ -697,11 +780,34 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
             net_income += branch_net
             net_by_branch[str(branch_id)] = branch_net
 
-    fiscal_year.status = PeriodStatus.CLOSED  # Seal the year.
-    fiscal_year.save(update_fields=["status", "updated_at"])
-    from .seals import seal_fiscal_year
-
-    seal = seal_fiscal_year(fiscal_year, actor_user=actor_user)  # Prove the closed figures later.
+    if branch_row is not None:
+        branch_row.status = PeriodStatus.CLOSED
+        branch_row.closed_at = timezone.now()
+        branch_row.closed_by = actor_user
+        branch_row.save(update_fields=["status", "closed_at", "closed_by", "updated_at"])
+        branch_ids = set(Branch.all_objects.filter(
+            tenant_id=entity.tenant_id,
+        ).values_list("pk", flat=True))
+        closed_ids = set(BranchFiscalYear.objects.filter(
+            fiscal_year=fiscal_year, status__in=(PeriodStatus.CLOSED, PeriodStatus.LOCKED),
+        ).values_list("branch_id", flat=True))
+        seal = None
+        if branch_ids == closed_ids:
+            fiscal_year.status = PeriodStatus.CLOSED
+            fiscal_year.save(update_fields=["status", "updated_at"])
+            from .seals import seal_fiscal_year
+            seal = seal_fiscal_year(fiscal_year, actor_user=actor_user)
+    else:
+        for tenant_branch in Branch.all_objects.filter(tenant_id=entity.tenant_id):
+            BranchFiscalYear.objects.update_or_create(
+                fiscal_year=fiscal_year, branch=tenant_branch,
+                defaults={"status": PeriodStatus.CLOSED, "closed_at": timezone.now(),
+                          "closed_by": actor_user},
+            )
+        fiscal_year.status = PeriodStatus.CLOSED
+        fiscal_year.save(update_fields=["status", "updated_at"])
+        from .seals import seal_fiscal_year
+        seal = seal_fiscal_year(fiscal_year, actor_user=actor_user)
     record(  # Audit the close with the net result and every closing journal.
         entity=entity, action=FinanceAuditAction.FISCAL_YEAR_CLOSED,
         actor_user=actor_user, target=fiscal_year, target_type="FiscalYear",
@@ -711,7 +817,8 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
         ),
         journal_ids=[j.pk for j in journals], net_by_branch=net_by_branch,
         fiscal_year=fiscal_year.year, net_income=net_income,
-        seal_checksum=seal.seal_checksum,
+        **({"seal_checksum": seal.seal_checksum} if seal is not None else {}),
+        **({"branch_id": branch_id} if branch_id is not None else {}),
         **({"forced": True, "reason": reason,
             "overridden_checks": [i.name for i in checklist.failures]} if forced else {}),
     )
@@ -720,10 +827,12 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
 
 @transaction.atomic
 # Reverse a year's closing journals and set it back to OPEN.
-def reopen_fiscal_year(entity, fiscal_year, *, actor_user=None, reason=None):
+def reopen_fiscal_year(entity, fiscal_year, *, actor_user=None, reason=None, branch=None):
     """Reopen a CLOSED fiscal year so it can be corrected and closed again.
 
-    Every closing journal the year still has in force (one per branch) is reversed
+    Every closing journal in scope is reversed. With ``branch`` supplied, that
+    branch's year reopens while the other branches stay closed. Without it, every
+    closing journal the year still has in force (one per branch) is reversed
     through :func:`vs_finance.posting.reverse_journal`, as the year's own act, on the
     closing journal's own date and in the year's closing period. The reversal
     therefore lands inside the year it undoes and outside its months: the income and
@@ -744,23 +853,41 @@ def reopen_fiscal_year(entity, fiscal_year, *, actor_user=None, reason=None):
     ``(fiscal_year, reversals)``.
     """
     from .constants import DocumentStatus
+    from .models import BranchFiscalYear
     from .posting import reverse_journal
+    from vs_tenants.models import Branch
 
     reason = require_reason(reason, act=f"reopen FY{fiscal_year.year}")
     _lock_fiscal_year(fiscal_year)
+    branch_id = getattr(branch, "pk", branch)
+    branch_row = None
+    if branch_id is not None:
+        owned_branch = Branch.all_objects.filter(
+            pk=branch_id, tenant_id=entity.tenant_id,
+        ).first()
+        if owned_branch is None:
+            raise PeriodCloseError("Branch year does not belong to these books.")
+        branch_row = BranchFiscalYear.objects.select_for_update().filter(
+            fiscal_year=fiscal_year, branch=owned_branch,
+        ).first()
+        if branch_row is None or branch_row.status != PeriodStatus.CLOSED:
+            status = branch_row.status if branch_row is not None else PeriodStatus.OPEN
+            raise PeriodCloseError(
+                f"Branch fiscal year {fiscal_year.year} is '{status}'; only a CLOSED year can be re-opened.")
     if fiscal_year.archived_at is not None:
         raise PeriodCloseError(
             f"Fiscal year {fiscal_year.year} is archived. Unarchive it before re-opening it.")
     if fiscal_year.status == PeriodStatus.LOCKED:
         raise PeriodCloseError(
             f"Fiscal year {fiscal_year.year} is LOCKED and cannot be re-opened.")
-    if fiscal_year.status != PeriodStatus.CLOSED:
+    if branch_row is None and fiscal_year.status != PeriodStatus.CLOSED:
         raise PeriodCloseError(
             f"Fiscal year {fiscal_year.year} is '{fiscal_year.status}'; only a CLOSED "
             f"year can be re-opened.")
 
     journals = list(
         fiscal_year.closing_journals.filter(status=DocumentStatus.POSTED)
+        .filter(**({"branch_id": branch_id} if branch_id is not None else {}))
         .select_related("period").order_by("pk")
     )
     for journal in journals:
@@ -770,8 +897,18 @@ def reopen_fiscal_year(entity, fiscal_year, *, actor_user=None, reason=None):
                 f"{journal.document_number or journal.pk} sits in "
                 f"'{journal.period or journal.date}', which is LOCKED, so it cannot be reversed.")
 
-    fiscal_year.status = PeriodStatus.OPEN  # Open first, so the reversals may post.
-    fiscal_year.save(update_fields=["status", "updated_at"])
+    if fiscal_year.status == PeriodStatus.CLOSED:
+        fiscal_year.status = PeriodStatus.OPEN
+        fiscal_year.save(update_fields=["status", "updated_at"])
+    if branch_row is not None:
+        branch_row.status = PeriodStatus.OPEN
+        branch_row.closed_at = None
+        branch_row.closed_by = None
+        branch_row.save(update_fields=["status", "closed_at", "closed_by", "updated_at"])
+    else:
+        BranchFiscalYear.objects.filter(fiscal_year=fiscal_year).update(
+            status=PeriodStatus.OPEN, closed_at=None, closed_by=None,
+        )
 
     reversals = [
         reverse_journal(
@@ -789,5 +926,6 @@ def reopen_fiscal_year(entity, fiscal_year, *, actor_user=None, reason=None):
         ),
         fiscal_year=fiscal_year.year, reason=reason,
         journal_ids=[j.pk for j in journals], reversal_ids=[r.pk for r in reversals],
+        **({"branch_id": branch_id} if branch_id is not None else {}),
     )
     return fiscal_year, reversals

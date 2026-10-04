@@ -259,6 +259,7 @@ class AccountSerializer(serializers.ModelSerializer):
 
 class FiscalPeriodSerializer(serializers.ModelSerializer):
     fiscal_year = serializers.IntegerField(source="fiscal_year.year", read_only=True)
+    status = serializers.SerializerMethodField()
 
     class Meta:
         model = FiscalPeriod
@@ -267,11 +268,15 @@ class FiscalPeriodSerializer(serializers.ModelSerializer):
             "start_date", "end_date", "status", "closed_at", "is_closing",
         ]
 
+    def get_status(self, obj):
+        return getattr(obj, "_branch_status", obj.status)
+
 
 class FiscalYearSerializer(serializers.ModelSerializer):
     """A fiscal year; ``is_archived`` says whether it is put away (:mod:`vs_finance.archive`)."""
 
     is_archived = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
 
     class Meta:
         model = FiscalYear
@@ -279,6 +284,9 @@ class FiscalYearSerializer(serializers.ModelSerializer):
 
     def get_is_archived(self, obj) -> bool:
         return obj.archived_at is not None
+
+    def get_status(self, obj):
+        return getattr(obj, "_branch_status", obj.status)
 
 
 class JournalLineSerializer(serializers.ModelSerializer):

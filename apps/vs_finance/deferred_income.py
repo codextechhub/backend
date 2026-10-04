@@ -398,7 +398,8 @@ def _release_date(entity, day, up_to, *, allow_restricted):
 
 
 @transaction.atomic
-def release_deferred_income(entity, *, up_to, actor_user=None, allow_restricted=False):
+def release_deferred_income(entity, *, up_to, actor_user=None, allow_restricted=False,
+                            branch=None):
     """Move every share recognised on or before ``up_to`` to revenue. Returns the releases.
 
     One journal per branch per month: ``Dr deferred income``, ``Cr revenue`` per
@@ -410,12 +411,13 @@ def release_deferred_income(entity, *, up_to, actor_user=None, allow_restricted=
     from .models import DeferredIncomeEntry, DeferredIncomeRelease, JournalEntry, JournalLine
     from .posting import post_journal, resolve_period
 
-    entries = list(
-        DeferredIncomeEntry.objects.select_for_update()
-        .filter(entity=entity, status=DeferredIncomeStatus.PENDING, recognition_date__lte=up_to)
-        .filter(amount__gt=F("unwound_amount"))
-        .order_by("recognition_date", "pk")
+    pending = DeferredIncomeEntry.objects.select_for_update().filter(
+        entity=entity, status=DeferredIncomeStatus.PENDING,
+        recognition_date__lte=up_to, amount__gt=F("unwound_amount"),
     )
+    if branch is not None:
+        pending = pending.filter(branch_id=getattr(branch, "pk", branch))
+    entries = list(pending.order_by("recognition_date", "pk"))
     if not entries:
         return []
     groups: dict[tuple, list] = defaultdict(list)
@@ -524,7 +526,7 @@ def reverse_deferred_release(entity, period, *, actor_user=None):
     return len(releases)
 
 
-def deferred_income_close_check(entity, period):
+def deferred_income_close_check(entity, period, branch=None):
     """Close check: no deferred income due in or before ``period`` is left unreleased."""
     from .close import ChecklistItem
     from .models import DeferredIncomeEntry
@@ -533,6 +535,8 @@ def deferred_income_close_check(entity, period):
         entity=entity, status=DeferredIncomeStatus.PENDING,
         recognition_date__lte=period.end_date,
     ).filter(amount__gt=F("unwound_amount"))
+    if branch is not None:
+        due = due.filter(branch_id=getattr(branch, "pk", branch))
     row = due.aggregate(n=Count("pk"), total=Sum(F("amount") - F("unwound_amount")))
     count, total = int(row["n"] or 0), int(row["total"] or 0)
     return ChecklistItem(
@@ -542,6 +546,7 @@ def deferred_income_close_check(entity, period):
 
 
 deferred_income_close_check.check_name = "deferred_income_released"
+deferred_income_close_check.supports_branch = True
 
 
 def invoice_deferred_totals(invoice) -> dict:
@@ -584,4 +589,3 @@ def deferred_income_summary(entity, *, scope=None) -> dict:
             for row in upcoming
         ],
     }
-

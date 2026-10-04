@@ -107,7 +107,7 @@ def tenant_branch(entity, ref, *, field="branch"):
     return branch
 
 
-def ensure_branches_open(entity, on_date) -> None:
+def ensure_branches_open(entity, on_date, *branches) -> None:
     """Refuse unless both branches of a transfer can post on ``on_date``.
 
     The books close by month for the tenant, so both branches are open exactly
@@ -115,7 +115,9 @@ def ensure_branches_open(entity, on_date) -> None:
     one place a transfer asks, so a per-branch close answers here for both
     branches at once.
     """
-    ensure_period_open(resolve_period(entity, on_date))
+    period = resolve_period(entity, on_date)
+    for branch in branches:
+        ensure_period_open(period, branch=branch)
 
 
 def inter_branch_account(entity):
@@ -376,7 +378,9 @@ def _post_money_transfer_atomic(transfer, *, actor_user=None):
             f"only a draft or approved one can be sent.",
         )
     validate_money_transfer(transfer)
-    ensure_branches_open(transfer.entity, transfer.transfer_date)
+    ensure_branches_open(
+        transfer.entity, transfer.transfer_date, transfer.branch_id, transfer.to_branch_id,
+    )
     sender, receiver = _branch_names(transfer)
     amount = int(transfer.amount)
     source_bank, target_bank = transfer.from_bank_account, transfer.to_bank_account
@@ -920,7 +924,7 @@ def _move_open_receivables(customer, source, target, actor, *, on, key, purpose,
         if not moving and not notes and not draws:
             return ReceivableMove(None, 0, 0, ())
 
-        ensure_branches_open(entity, on)
+        ensure_branches_open(entity, on, source, target)
         owed = sum(i.balance_due for i in moving) + sum(n.balance_due for n in notes)
         credit_total = sum(taken for _, taken in draws)
         deferred_total = sum(unearned.get(i.pk, 0) for i in moving)
@@ -1298,7 +1302,7 @@ def run_recharge(entity, *, paying_branch, expense_account, amount, recharge_dat
         raise InterBranchError("No other branch takes a share of this cost.", field="weights")
 
     with transaction.atomic():
-        ensure_branches_open(entity, recharge_date)
+        ensure_branches_open(entity, recharge_date, payer, *owing)
         recharge = InterBranchRecharge.objects.create(
             entity=entity, branch=payer, rule=rule, expense_account=expense_account,
             amount=amount, recharge_date=recharge_date, basis=basis,
@@ -1379,7 +1383,7 @@ def book_goods_transfer(entity, *, from_branch, to_branch, amount, transfer_date
     source = tenant_branch(entity, from_branch, field="from_location")
     target = tenant_branch(entity, to_branch, field="to_location")
     with transaction.atomic():
-        ensure_branches_open(entity, transfer_date)
+        ensure_branches_open(entity, transfer_date, source, target)
         transfer = _new_transfer(
             entity, kind=InterBranchTransferKind.GOODS, from_branch_id=source.pk,
             to_branch_id=target.pk, amount=amount, transfer_date=transfer_date,
@@ -1545,3 +1549,4 @@ def inter_branch_close_check(entity, period, *, branch=None):
 
 
 inter_branch_close_check.check_name = "inter_branch_balanced"
+inter_branch_close_check.supports_branch = True

@@ -286,6 +286,50 @@ class FiscalPeriod(TimeStampedModel):
         return f"{self.name} [{self.status}]"
 
 
+class BranchFiscalPeriod(TimeStampedModel):
+    """The close state of one branch's books during one fiscal period.
+
+    The fiscal period remains the tenant-level control. Branch rows let a branch
+    stop accepting postings while other branches continue to finish their books.
+    """
+
+    period = models.ForeignKey(FiscalPeriod, on_delete=models.PROTECT, related_name="branch_statuses")
+    branch = models.ForeignKey("vs_tenants.Branch", on_delete=models.PROTECT)
+    status = models.CharField(max_length=12, choices=PeriodStatus.choices, default=PeriodStatus.OPEN)
+    closed_at = models.DateTimeField(null=True, blank=True)
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_branch_periods_closed", null=True, blank=True,
+    )
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=["period", "branch"], name="uniq_finance_branch_period",
+        )]
+        indexes = [models.Index(fields=["branch", "status"])]
+
+
+class BranchFiscalYear(TimeStampedModel):
+    """The year-close state of one branch's books."""
+
+    fiscal_year = models.ForeignKey(
+        FiscalYear, on_delete=models.PROTECT, related_name="branch_statuses",
+    )
+    branch = models.ForeignKey("vs_tenants.Branch", on_delete=models.PROTECT)
+    status = models.CharField(max_length=12, choices=PeriodStatus.choices, default=PeriodStatus.OPEN)
+    closed_at = models.DateTimeField(null=True, blank=True)
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_branch_years_closed", null=True, blank=True,
+    )
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=["fiscal_year", "branch"], name="uniq_finance_branch_fiscal_year",
+        )]
+        indexes = [models.Index(fields=["branch", "status"])]
+
+
 class TaxCode(TimeStampedModel):
     """A tax rate and the accounts it books to, for one entity.
 
@@ -711,5 +755,3 @@ class FinanceAuditLog(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ValueError("FinanceAuditLog rows are immutable and cannot be deleted.")
-
-

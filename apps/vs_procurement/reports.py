@@ -231,11 +231,9 @@ def ap_aging(entity, *, as_of=None, branch_scope=None) -> APAgingReport:
     remain gross open invoices; advances reduce only the vendor/report net. When supplied,
     ``as_of`` is both the aging clock and accounting-effectiveness cutoff.
 
-    ``branch_scope`` narrows the report to the bills the caller can actually open, so a
-    branch-bound viewer's aging reconciles with their own vendor-invoice list.  Note that
-    ``total_outstanding`` then no longer equals the entity's AP control balance - that
-    identity is an entity-level control, which is why :func:`reconcile_ap` deliberately
-    never passes a scope through.
+    ``branch_scope`` narrows the report to the bills the caller can actually open.
+    A branch close passes the same scope to :func:`reconcile_ap`, which narrows the
+    control side to that branch's journal lines as well.
     """
     from .models import VendorInvoice
 
@@ -305,18 +303,19 @@ class APReconciliation:
         return self.difference == 0
 
 
-def reconcile_ap(entity, *, as_of=None) -> APReconciliation:
+def reconcile_ap(entity, *, as_of=None, branch_scope=None) -> APReconciliation:
     """Assert the AP **sub-ledger** (vendor balances) equals the AP **control** GL.
 
     The cardinal AP control: the sum of what the entity owes every vendor must equal
     the balance of the payable control account(s) in the ledger. Any drift means a
     posting bypassed the sub-ledger (or vice-versa) and must be investigated.
     ``_account_gl_net`` expresses each credit-normal AP account as a positive liability,
-    matching the sub-ledger's ``outstanding`` sign convention.
+    matching the sub-ledger's ``outstanding`` sign convention. ``branch_scope`` narrows
+    the bills and the control journal lines together for a branch close.
     """
     from .models import Vendor
 
-    aging = ap_aging(entity, as_of=as_of)
+    aging = ap_aging(entity, as_of=as_of, branch_scope=branch_scope)
     # Money paid ahead of a bill is booked to the 1240 vendor-advance asset, not to the
     # AP control, so it belongs on the aging screen's vendor *net* position but not in
     # this control-account reconciliation. Netting it here puts a debit balance
@@ -330,10 +329,17 @@ def reconcile_ap(entity, *, as_of=None) -> APReconciliation:
         for v in Vendor.objects.filter(entity=entity).select_related("payable_account")
         if v.payable_account_id is not None
     }
-    control_total = sum(
-        _account_gl_net_as_of(acc, as_of) if as_of is not None else _account_gl_net(acc)
-        for acc in control_accounts
-    )
+    if branch_scope is not None:
+        from vs_finance.reports import _account_gl_net_scoped
+
+        control_total = sum(
+            _account_gl_net_scoped(acc, as_of, branch_scope) for acc in control_accounts
+        )
+    else:
+        control_total = sum(
+            _account_gl_net_as_of(acc, as_of) if as_of is not None else _account_gl_net(acc)
+            for acc in control_accounts
+        )
 
     return APReconciliation(
         entity_id=entity.id,
@@ -1253,13 +1259,14 @@ def grir_po_line_detail(entity, po_line_id, *, as_of=None, branch_scope=None) ->
     )
 
 
-def grir_balance(entity, *, as_of=None) -> int:
+def grir_balance(entity, *, as_of=None, branch_scope=None) -> int:
     """Net balance of the GR/IR clearing account for ``entity`` (kobo, normal-balance signed).
 
     The GR/IR control nets to **zero** when every received good has been invoiced (and
     vice-versa). Because GR/IR is normally credit, a positive result is received-not-
     invoiced and a negative result is a net debit/invoice-first position - the headline
-    number a GR/IR aging drills into.
+    number a GR/IR aging drills into. ``branch_scope`` narrows the control journal
+    lines for a branch close.
     """
     from vs_finance.account_mappings import resolve_mapped_account
     from vs_finance.constants import AccountMappingKey
@@ -1269,10 +1276,11 @@ def grir_balance(entity, *, as_of=None) -> int:
         account = resolve_mapped_account(entity, AccountMappingKey.GRIR_CLEARING)
     except MissingAccountError:
         return 0
-    return (
-        _account_gl_net_as_of(account, as_of)
-        if as_of is not None else _account_gl_net(account)
-    )
+    if branch_scope is not None:
+        from vs_finance.reports import _account_gl_net_scoped
+
+        return _account_gl_net_scoped(account, as_of, branch_scope)
+    return _account_gl_net_as_of(account, as_of) if as_of is not None else _account_gl_net(account)
 
 
 # --------------------------------------------------------------------------- #

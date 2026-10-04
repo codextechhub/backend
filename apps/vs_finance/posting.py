@@ -133,6 +133,7 @@ def ensure_period_open(
     *,
     allow_restricted: bool = False,
     allow_closed: bool = False,
+    branch=None,
 ) -> None:
     """Raise :class:`PeriodClosedError` if ``period`` cannot accept a posting.
 
@@ -165,7 +166,7 @@ def ensure_period_open(
     A missing period (``None``) is treated as a hard error: nothing posts without a
     period.
     """
-    from .models import FiscalPeriod, FiscalYear
+    from .models import BranchFiscalPeriod, BranchFiscalYear, FiscalPeriod, FiscalYear
 
     if period is None:  # Nothing should post without a resolved accounting period.
         raise PeriodClosedError(period_label="<none>", status="missing")
@@ -195,6 +196,28 @@ def ensure_period_open(
                 f"{period.name} [{stored[0]}]", stored[0],
                 allow_restricted=allow_restricted, allow_closed=allow_closed,
             )
+        if branch is not None and not period.is_closing:
+            branch_id = getattr(branch, "pk", branch)
+            branch_year = BranchFiscalYear.objects.filter(
+                fiscal_year_id=period.fiscal_year_id, branch_id=branch_id,
+            ).values_list("pk", flat=True).first()
+            if branch_year is not None:
+                year_status = read_key_shared(BranchFiscalYear, branch_year, ("status",))
+                if year_status is not None:
+                    _refuse_period_status(
+                        f"FY{period.fiscal_year.year} branch {branch_id}", year_status[0],
+                        allow_restricted=allow_restricted, allow_closed=allow_closed,
+                    )
+            branch_period = BranchFiscalPeriod.objects.filter(
+                period=period, branch_id=branch_id,
+            ).values_list("pk", flat=True).first()
+            if branch_period is not None:
+                branch_status = read_key_shared(BranchFiscalPeriod, branch_period, ("status",))
+                if branch_status is not None:
+                    _refuse_period_status(
+                        f"{period.name} branch {branch_id}", branch_status[0],
+                        allow_restricted=allow_restricted, allow_closed=allow_closed,
+                    )
 
 
 # Non-raising period posting test.
@@ -224,7 +247,7 @@ def _period_accepts_posting(
 
 
 # Describe which dates an ordinary posting may use.
-def posting_window(entity, *, today=None) -> dict:
+def posting_window(entity, *, today=None, branch=None) -> dict:
     """Return the dates ``entity`` will currently accept an ordinary posting on.
 
     The read-side mirror of :func:`ensure_period_open`: that guard answers "may this
@@ -255,8 +278,28 @@ def posting_window(entity, *, today=None) -> dict:
         .select_related("fiscal_year")
         .order_by("start_date", "period_no")
     )
+    if branch is not None:
+        from .models import BranchFiscalPeriod, BranchFiscalYear
 
-    open_periods = [p for p in periods if _period_accepts_posting(p)]
+        branch_id = getattr(branch, "pk", branch)
+        states = dict(BranchFiscalPeriod.objects.filter(
+            period__in=periods, branch_id=branch_id,
+        ).values_list("period_id", "status"))
+        year_states = dict(BranchFiscalYear.objects.filter(
+            fiscal_year_id__in={period.fiscal_year_id for period in periods},
+            branch_id=branch_id,
+        ).values_list("fiscal_year_id", "status"))
+        for period in periods:
+            period.status = states.get(period.pk, period.status)
+            period._branch_year_status = year_states.get(
+                period.fiscal_year_id, period.fiscal_year.status,
+            )
+
+    open_periods = [
+        p for p in periods
+        if getattr(p, "_branch_year_status", PeriodStatus.OPEN) == PeriodStatus.OPEN
+        and _period_accepts_posting(p)
+    ]
     covering = next(  # The open period containing today, if any.
         (p for p in open_periods if p.start_date <= today <= p.end_date), None,
     )
@@ -607,6 +650,7 @@ def _post_journal_atomic(
         entry.period,
         allow_restricted=allow_restricted,
         allow_closed=allow_closed,
+        branch=entry.branch_id,
     )
 
     lines = list(entry.lines.select_related("account").all())

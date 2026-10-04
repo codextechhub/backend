@@ -126,15 +126,76 @@ CHART_OF_ACCOUNTS = "the chart of accounts"
 
 
 class _FiscalCalendarWriteMixin(WholeTenantWriteMixin):
-    """Every write to the fiscal calendar needs whole-tenant reach.
-
-    A period or a year carries no branch: closing January, reopening it,
-    locking it, closing the year or opening the next one does it for every
-    branch posting to the books. Lekki's bursar may read the calendar and run
-    the close checklist, and may not move it.
-    """
+    """Calendar setup needs tenant reach; close actions authorize their named branch."""
 
     shared_subject = "the fiscal periods and years"
+
+    def check_permissions(self, request):
+        from rest_framework.permissions import SAFE_METHODS
+
+        if request.method in SAFE_METHODS:
+            return super().check_permissions(request)
+        if getattr(self, "branch_calendar_action", False) or (request.data or {}).get("branch"):
+            return APIView.check_permissions(self, request)
+        return super().check_permissions(request)
+
+
+def _calendar_branch(request, entity):
+    """Resolve and authorize an optional branch on a calendar action."""
+    raw = request.query_params.get("branch") if request.method == "GET" else (request.data or {}).get("branch")
+    from vs_rbac.scoping import caller_branch_ids, only_branch_id
+    if raw in (None, ""):
+        sole = only_branch_id(entity.tenant)
+        if sole is not None:
+            raw = sole
+        elif request.method != "GET":
+            raise ValidationError({"branch": "Choose the branch whose fiscal calendar should change."})
+        else:
+            reach = caller_branch_ids(request)
+            if reach is not None and len(reach) == 1:
+                raw = next(iter(reach))
+            else:
+                return None
+    from vs_tenants.models import Branch
+
+    branch = Branch.all_objects.filter(pk=raw, tenant_id=entity.tenant_id).first()
+    if branch is None:
+        raise NotFound("Branch not found for this entity.")
+    assert_caller_may_change(
+        request.user, entity.tenant, (branch,),
+        message="You cannot change this branch's fiscal calendar.",
+    )
+    return branch
+
+
+def _annotate_calendar_status(qs, branch, model):
+    """Read a branch's effective state, falling back to the tenant state."""
+    if branch is None:
+        return qs
+    from django.db.models import F, OuterRef, Subquery
+    from django.db.models.functions import Coalesce
+    from .models import BranchFiscalPeriod, BranchFiscalYear
+
+    state_model, parent = (
+        (BranchFiscalPeriod, "period_id") if model is FiscalPeriod
+        else (BranchFiscalYear, "fiscal_year_id")
+    )
+    state = state_model.objects.filter(
+        **{parent: OuterRef("pk"), "branch_id": branch.pk},
+    ).values("status")[:1]
+    return qs.annotate(_branch_status=Coalesce(Subquery(state), F("status")))
+
+
+def _branch_period_data(state):
+    return {
+        "id": state.pk, "branch": state.branch_id, "status": state.status,
+        "closed_at": state.closed_at,
+    }
+
+
+def _single_branch(entity):
+    from vs_rbac.scoping import only_branch_id
+    return only_branch_id(entity.tenant) is not None
 
 
 # Group behavior for Entity Scoped List Mixin.
@@ -753,13 +814,17 @@ class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
     def entity_qs(self, entity):
         from .archive import include_archived
 
-        qs = FiscalPeriod.objects.filter(entity=entity).select_related("fiscal_year")
+        branch = _calendar_branch(self.request, entity)
+        qs = _annotate_calendar_status(
+            FiscalPeriod.objects.filter(entity=entity).select_related("fiscal_year"),
+            branch, FiscalPeriod,
+        )
         if not include_archived(self.request):
             qs = qs.filter(fiscal_year__archived_at__isnull=True)  # Archived years stay out of pickers.
         if self.request.query_params.get("include_closing", "").lower() != "true":
             qs = qs.filter(is_closing=False)  # Closing periods open and close with their year.
         if (status_val := self.request.query_params.get("status")):
-            qs = qs.filter(status=status_val)
+            qs = qs.filter(**({"_branch_status": status_val} if branch is not None else {"status": status_val}))
         if (year := self.request.query_params.get("year")):
             qs = qs.filter(fiscal_year__year=year)
         if self.request.query_params.get("recent", "").lower() == "true":
@@ -795,7 +860,8 @@ class PostingWindowView(APIView):
     def get(self, request):
         """Return open ranges, blocked periods and the default date for new documents."""
         entity = resolve_entity(request)  # Tenant-scoped; unknown/forbidden both 404.
-        window = posting_window(entity)
+        branch = _calendar_branch(request, entity)
+        window = posting_window(entity, branch=branch)
         message = (
             "Posting window retrieved."
             if window["default_date"]
@@ -837,11 +903,12 @@ class FiscalYearListView(_FiscalCalendarWriteMixin, EntityScopedListMixin, gener
 
         from .archive import include_archived
 
-        qs = FiscalYear.objects.filter(entity=entity)
+        branch = _calendar_branch(self.request, entity)
+        qs = _annotate_calendar_status(FiscalYear.objects.filter(entity=entity), branch, FiscalYear)
         if not include_archived(self.request):
             qs = qs.filter(archived_at__isnull=True)
         if (status_val := self.request.query_params.get("status")):
-            qs = qs.filter(status=status_val)
+            qs = qs.filter(**({"_branch_status": status_val} if branch is not None else {"status": status_val}))
         return qs.order_by("-year")
 
     def post(self, request):
@@ -1806,8 +1873,10 @@ def _is_forced(request) -> bool:
 class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
     """POST /finance/periods/<id>/close/?entity= - run the checklist and close a period.
 
-    Body (all optional): ``{"soft": bool, "force": bool, "run_depreciation": bool,
-    "reason": str}``.
+    Body (all optional): ``{"branch": id, "soft": bool, "force": bool,
+    "run_depreciation": bool, "release_deferred": bool, "reason": str}``.
+    Naming a branch moves only that branch's books. A multi-branch tenant must name
+    one; a one-branch tenant infers its only branch.
 
     A forced close overrides the checklist, so it is its own act: it needs
     ``finance.period.force_close`` rather than the ordinary close key, and a
@@ -1817,6 +1886,7 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    branch_calendar_action = True
 
     @property
     # Handle the rbac permission workflow.
@@ -1841,7 +1911,8 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
         from .close import close_checklist
 
         entity, period = self._period(request, id)
-        checklist = close_checklist(entity, period)
+        branch = _calendar_branch(request, entity)
+        checklist = close_checklist(entity, period, branch=branch)
         items = _serialize_checklist(checklist)["items"]
         return success_response(
             message=f"Close checklist for '{period}'.",
@@ -1851,15 +1922,38 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
                 "done": sum(1 for i in items if i["passed"]),
                 "total": len(items),
                 "items": items,
+                "branch": branch.pk if branch is not None else None,
             },
         )
 
     # Handle POST requests for this endpoint.
     def post(self, request, id):
+        from .branch_close import close_branch_period
         from .close import close_period
 
         entity, period = self._period(request, id)
         body = request.data or {}
+        branch = _calendar_branch(request, entity)
+        if branch is not None:
+            state, checklist = close_branch_period(
+                entity, period, branch, actor_user=request.user,
+                soft=bool(body.get("soft", False)), force=_is_forced(request),
+                run_depreciation=bool(body.get("run_depreciation", True)),
+                release_deferred=bool(body.get("release_deferred", True)),
+                reason=body.get("reason"),
+            )
+            if _single_branch(entity):
+                return success_response(
+                    message=f"Period '{period}' closed to {state.status}.",
+                    data={"period": FiscalPeriodSerializer(period).data,
+                          "checklist": _serialize_checklist(checklist)},
+                )
+            return success_response(
+                message=f"Branch period '{period}' closed to {state.status}.",
+                data={"period": FiscalPeriodSerializer(period).data,
+                      "branch_period": _branch_period_data(state),
+                      "checklist": _serialize_checklist(checklist)},
+            )
         period, checklist = close_period(
             entity, period, actor_user=request.user,
             soft=bool(body.get("soft", False)),
@@ -1880,7 +1974,9 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
 class PeriodReopenView(_FiscalCalendarWriteMixin, APIView):
     """POST /finance/periods/<id>/reopen/?entity= - re-open a CLOSED/SOFT_CLOSED period.
 
-    Body: ``{"reason": str}``, required and stored on the audit row. A LOCKED
+    Body: ``{"branch": id, "reason": str}``, with ``reason`` required and
+    stored on the audit row. A multi-branch tenant must name ``branch``; a
+    one-branch tenant infers its only branch. A LOCKED
     period cannot be re-opened; an already-OPEN period is refused, and so is a
     period of a CLOSED or LOCKED fiscal year (reopen the year first).
 
@@ -1888,6 +1984,7 @@ class PeriodReopenView(_FiscalCalendarWriteMixin, APIView):
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    branch_calendar_action = True
     rbac_permission = "finance.period.reopen"
 
     # Support the period workflow.
@@ -1900,9 +1997,26 @@ class PeriodReopenView(_FiscalCalendarWriteMixin, APIView):
 
     # Handle POST requests for this endpoint.
     def post(self, request, id):
+        from .branch_close import reopen_branch_period
         from .close import reopen_period
 
         entity, period = self._period(request, id)
+        branch = _calendar_branch(request, entity)
+        if branch is not None:
+            state = reopen_branch_period(
+                entity, period, branch, actor_user=request.user,
+                reason=(request.data or {}).get("reason"),
+            )
+            if _single_branch(entity):
+                return success_response(
+                    message=f"Period '{period}' re-opened to {state.status}.",
+                    data=FiscalPeriodSerializer(period).data,
+                )
+            return success_response(
+                message=f"Branch period '{period}' re-opened to {state.status}.",
+                data={"period": FiscalPeriodSerializer(period).data,
+                      "branch_period": _branch_period_data(state)},
+            )
         period = reopen_period(
             entity, period, actor_user=request.user,
             reason=(request.data or {}).get("reason"),
@@ -1917,12 +2031,14 @@ class PeriodReopenView(_FiscalCalendarWriteMixin, APIView):
 class PeriodLockView(_FiscalCalendarWriteMixin, APIView):
     """POST /finance/periods/<id>/lock/?entity= - permanently seal a CLOSED period.
 
-    Only a CLOSED period can be locked; the lock is irreversible.
+    Body names ``branch`` to lock one branch's closed books. A one-branch tenant
+    infers its only branch. Only a CLOSED state can be locked; the lock is irreversible.
 
     docstring-name: Lock a fiscal period
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    branch_calendar_action = True
     rbac_permission = "finance.period.lock"
 
     # Support the period workflow.
@@ -1935,9 +2051,23 @@ class PeriodLockView(_FiscalCalendarWriteMixin, APIView):
 
     # Handle POST requests for this endpoint.
     def post(self, request, id):
+        from .branch_close import lock_branch_period
         from .close import lock_period
 
         entity, period = self._period(request, id)
+        branch = _calendar_branch(request, entity)
+        if branch is not None:
+            state = lock_branch_period(entity, period, branch, actor_user=request.user)
+            if _single_branch(entity):
+                return success_response(
+                    message=f"Period '{period}' locked to {state.status}.",
+                    data=FiscalPeriodSerializer(period).data,
+                )
+            return success_response(
+                message=f"Branch period '{period}' locked to {state.status}.",
+                data={"period": FiscalPeriodSerializer(period).data,
+                      "branch_period": _branch_period_data(state)},
+            )
         period = lock_period(entity, period, actor_user=request.user)
         return success_response(
             message=f"Period '{period}' locked to {period.status}.",
@@ -1949,10 +2079,13 @@ class PeriodLockView(_FiscalCalendarWriteMixin, APIView):
 class FiscalYearCloseView(_FiscalCalendarWriteMixin, APIView):
     """POST /finance/fiscal-years/<id>/close/?entity= - post the year-end closing entries.
 
-    Zeroes every income/expense account for the year, branch by branch, and rolls
-    each branch's net profit or loss into Retained Earnings (3200) on its own closing
-    journal, then marks the fiscal year CLOSED. Body (optional):
-    ``{"closing_date": ISO, "force": bool, "reason": str}`` - ``force`` closes the
+    Zeroes income and expense accounts branch by branch and rolls each result into
+    Retained Earnings (3200) on its own closing journal. Body (optional):
+    ``{"branch": id, "closing_date": ISO, "force": bool, "reason": str}``.
+    A named branch closes independently, and the tenant year closes after every
+    branch year has closed. A multi-branch tenant must name ``branch``; a
+    one-branch tenant infers its only branch.
+    ``force`` closes the
     year even while some periods are still OPEN, needs ``finance.period.force_close``
     in place of the close key, and needs a ``reason``. The formal entries may use an
     OPEN, SOFT_CLOSED or CLOSED final period, but never a permanently LOCKED one.
@@ -1965,6 +2098,7 @@ class FiscalYearCloseView(_FiscalCalendarWriteMixin, APIView):
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Tenant-authenticated access.
+    branch_calendar_action = True
 
     @property
     def rbac_permission(self):
@@ -1990,10 +2124,15 @@ class FiscalYearCloseView(_FiscalCalendarWriteMixin, APIView):
                 closing_date = datetime.date.fromisoformat(str(raw_date))
             except ValueError:
                 raise ValidationError({"closing_date": "Expected an ISO date (YYYY-MM-DD)."})
+            if closing_date != fy.end_date:
+                raise ValidationError({
+                    "closing_date": "The closing date must be the fiscal year's last day.",
+                })
+        branch = _calendar_branch(request, entity)
         journals, net_income = close_fiscal_year(  # Post the closing entries + seal the year.
             entity, fy, actor_user=request.user, closing_date=closing_date,
             require_periods_closed=not _is_forced(request),
-            reason=body.get("reason"),
+            reason=body.get("reason"), branch=branch,
         )
         fy.refresh_from_db()  # Pick up the CLOSED status.
         serialized = [JournalEntryDetailSerializer(j).data for j in journals]
@@ -2004,6 +2143,7 @@ class FiscalYearCloseView(_FiscalCalendarWriteMixin, APIView):
                 "closing_journals": serialized,  # One per branch with P&L activity.
                 "closing_journal": serialized[0] if serialized else None,
                 "net_income": _money(net_income),  # Net result rolled to equity.
+                "branch": branch.pk if branch is not None else None,
             },
         )
 
@@ -2012,9 +2152,10 @@ class FiscalYearCloseView(_FiscalCalendarWriteMixin, APIView):
 class FiscalYearReopenView(_FiscalCalendarWriteMixin, APIView):
     """POST /finance/fiscal-years/<id>/reopen/?entity= - reopen a CLOSED fiscal year.
 
-    Reverses every closing journal of the year inside the year, on its own date,
-    and sets the year back to OPEN so a month can be corrected and the year closed
-    again. Body: ``{"reason": str}``, required and stored on the audit row.
+    Reverses the named branch's closing journal inside the year, on its own date,
+    and sets that branch year back to OPEN so a month can be corrected and the year
+    closed again. Body: ``{"branch": id, "reason": str}``, with the branch inferred
+    only for a one-branch tenant and the reason required on the audit row.
 
     Reopening a year moves a whole year's result out of Retained Earnings, so it
     has its own key, ``finance.fiscalyear.reopen``, and like every write to the
@@ -2024,6 +2165,7 @@ class FiscalYearReopenView(_FiscalCalendarWriteMixin, APIView):
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    branch_calendar_action = True
     rbac_permission = "finance.fiscalyear.reopen"
 
     def post(self, request, id):
@@ -2037,6 +2179,7 @@ class FiscalYearReopenView(_FiscalCalendarWriteMixin, APIView):
         fy, reversals = reopen_fiscal_year(
             entity, fy, actor_user=request.user,
             reason=(request.data or {}).get("reason"),
+            branch=_calendar_branch(request, entity),
         )
         return success_response(
             message=f"Fiscal year {fy.year} re-opened.",

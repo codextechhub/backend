@@ -278,6 +278,23 @@ class GatewayClearingTests(_CustodyFixture):
         self.assertTrue(settlement.gateway_clearing_current(self.books, period).passed)
         self.assertIsNone(settlement.gateway_clearing_current(self.solo_books, period))
 
+    def test_a_branch_close_warns_only_about_that_branch_clearing(self):
+        lekki = self.paid(self.books, self.adeyemi, 180_000)
+        ikeja = self.paid(self.books, self.okafor, 75_000)
+        CollectionIntent.objects.filter(pk__in=(lekki.pk, ikeja.pk)).update(
+            confirmed_at=timezone.now() - datetime.timedelta(days=30),
+        )
+        period = FiscalPeriod.objects.get(
+            entity=self.books, start_date__lte=tenant_today(self.tenant),
+            end_date__gte=tenant_today(self.tenant),
+        )
+
+        warning = settlement.gateway_clearing_current(
+            self.books, period, branch=self.lekki,
+        )
+
+        self.assertIn("1 online payment(s), 180000 kobo", warning.detail)
+
 
 class CustodyModeTests(_CustodyFixture):
     """The mode changes only from a month start, and direct needs every branch set up."""

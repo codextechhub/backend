@@ -26,7 +26,7 @@ The two checks:
 from __future__ import annotations
 
 
-def ap_reconciled(entity, period):
+def ap_reconciled(entity, period, branch=None):
     """Blocking: the AP sub-ledger must equal its control account.
 
     Returns ``None`` for an entity with no payables at all, so a school that has never
@@ -40,7 +40,11 @@ def ap_reconciled(entity, period):
     if not Vendor.objects.filter(entity=entity).exists():
         return None
 
-    ap = reconcile_ap(entity)
+    scope = None
+    if branch is not None:
+        from vs_rbac.scoping import BranchScope
+        scope = BranchScope(frozenset((getattr(branch, "pk", branch),)), include_shared=False)
+    ap = reconcile_ap(entity, branch_scope=scope)
     return ChecklistItem(
         name="ap_reconciled",
         passed=ap.is_reconciled,
@@ -48,7 +52,7 @@ def ap_reconciled(entity, period):
     )
 
 
-def grir_explained(entity, period):
+def grir_explained(entity, period, branch=None):
     """Warning: the GR/IR clearing balance, surfaced so it cannot be closed unseen.
 
     Deliberately non-blocking. Goods received near the period end and not yet billed
@@ -64,7 +68,11 @@ def grir_explained(entity, period):
     if not Vendor.objects.filter(entity=entity).exists():
         return None
 
-    balance = grir_balance(entity)
+    scope = None
+    if branch is not None:
+        from vs_rbac.scoping import BranchScope
+        scope = BranchScope(frozenset((getattr(branch, "pk", branch),)), include_shared=False)
+    balance = grir_balance(entity, branch_scope=scope)
     return ChecklistItem(
         name="grir_explained",
         passed=balance == 0,
@@ -85,3 +93,6 @@ def register():
     register_close_check(ap_reconciled)
     register_close_check(grir_explained)
 
+
+ap_reconciled.supports_branch = True
+grir_explained.supports_branch = True
