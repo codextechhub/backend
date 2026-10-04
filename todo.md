@@ -388,7 +388,7 @@ tests_custody_held 75 OK; vs_payments 425 OK; vs_health 51 OK; vs_config 164 OK;
 vs_rbac band and catalogue tests 51 OK; vs_finance 1825 OK; makemigrations check
 clean.
 
-### D115. Opening or reopening a fiscal year needs the whole school, whatever branch a request names (hash pending, 2026-10-04)
+### D115. Opening or reopening a fiscal year needs the whole school, whatever branch a request names (e7e9b0f4, 2026-10-04)
 MODULES: M19 finance and accounting (fiscal calendar), M04 roles and permissions, MRD.
 Owner decision 2026-10-04: reopening a closed year is whole-school only.
 MUST SAY:
