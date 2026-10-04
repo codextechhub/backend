@@ -327,18 +327,30 @@ Open questions:
   the held money swept to Codex's bank is not booked as Codex's bank money; and
   Codex's own online payouts to its own suppliers, if it makes any, are not yet in
   the books' figure.
-- **Paystack settlement fields to confirm on the live dashboard:** `GET
-  /settlement` with `from`, `to`, `perPage`, `page` and `subaccount=none`;
-  `meta.pageCount`; each row's `id`, `status` (`success`, `pending`,
-  `processing`, `failed`), `currency`, `effective_amount` (what reached the bank,
-  with `total_amount` read when it is absent), `settlement_date` (UTC) and
-  `subaccount`; and whether a settlement still `processing` has already left the
-  balance.
-- **Paystack field names to confirm:** the dispute resolution (`resolution`:
-  `declined`, `merchant-accepted`, `auto-accepted`) and the balance response
-  (`GET /balance`, a list of `{currency, balance}` in kobo).
-- **Paystack's transfer fee schedule** is the adapter's own table *(confirm)*;
-  the fee actually charged is not read back from Paystack.
+- **Paystack facts checked against Paystack's API reference and pricing page
+  (2026-10-04):**
+  - the settlement listing: `GET /settlement` with `from`, `to`, `perPage`,
+    `page` and `subaccount=none`; `meta.pageCount`; each row's `id`, `status`
+    (`success`, `processing`, `pending`, `failed`), `currency`,
+    `effective_amount`, `total_amount` and `settlement_date` (UTC);
+  - the balance: `GET /balance` as a list of `{currency, balance}` in the subunit;
+  - disputes: `declined` and `merchant-accepted`;
+  - payments: `subaccount` and `bearer` (`account` or `subaccount`); the fee
+    kept as `data.fees` on verify;
+  - the transfer fee schedule: N10 for N5,000 and below, N25 from N5,001 to
+    N50,000, N50 above.
+
+  The subaccount bank field is named `bank_code` in the reference's parameter list
+  but `settlement_bank` in its own example, so the adapter sends both.
+- **Still not stated by Paystack's reference:**
+  - whether a `processing` settlement has already left the balance (the daily
+    check treats a gap it fully explains as not measured);
+  - the `auto-accepted` dispute resolution (read as lost);
+  - whether `bearer` is honoured on a dedicated virtual account (it is sent);
+  - the exact shape of `data.transaction` and `data.transaction_reference` on
+    dispute and refund events.
+
+  A test-mode call with CodeX's Paystack test key settles all four.
 - **The held balance when the dispatch-time debit and the confirmed amount
   differ** is corrected once at confirmation; a held settlement is lowered when its
   transfer is dispatched rather than when it is confirmed, so two transfers can

@@ -587,7 +587,7 @@ class PaystackSubaccountWireTests(SimpleTestCase):
                 account_number="0011223344")
         self.assertEqual((result.subaccount_code, result.account_name), ("ACCT_x1", "LEKKI"))
         self.assertEqual(self.sent(call.call_args), ("POST", "/subaccount", {
-            "business_name": "Corona - Lekki", "settlement_bank": "057",
+            "business_name": "Corona - Lekki", "bank_code": "057", "settlement_bank": "057",
             "account_number": "0011223344", "percentage_charge": 0,
         }))
 
@@ -596,5 +596,8 @@ class PaystackSubaccountWireTests(SimpleTestCase):
                 subaccount_code="ACCT_x1", business_name="Corona - Lekki",
                 settlement_bank_code="058", account_number="0011223344")
         method, path, body = self.sent(call.call_args)
-        self.assertEqual((method, path, body["settlement_bank"]), ("PUT", "/subaccount/ACCT_x1", "058"))
+        self.assertEqual(
+            (method, path, body["bank_code"], body["settlement_bank"]),
+            ("PUT", "/subaccount/ACCT_x1", "058", "058"),
+        )
         self.assertEqual(result.subaccount_code, "ACCT_x1")

@@ -8,22 +8,25 @@ already (Paystack's NGN minor unit), so no conversion. Webhooks are signed with
 All network I/O goes through :func:`vs_payments.providers.http.request_json`, which tests
 patch - so this client is fully exercised without ever calling Paystack.  # Keep HTTP interactions centralized and testable.
 
-Paystack facts this adapter relies on for settlement subaccounts and fees, each to
-confirm against Paystack's documentation (or its account manager) before a tenant
-takes payments directly:
+Paystack facts this adapter relies on for settlement subaccounts and fees, checked
+against Paystack's API reference (paystack.com/docs/api) on 2026-10-04:
 
 * ``POST /transaction/initialize`` accepts ``subaccount`` (a subaccount code) and
-  ``bearer``, and ``bearer: "subaccount"`` makes the subaccount bear Paystack's fee,
-  so the branch receives the payment less the fee and the main account keeps none.
+  ``bearer`` (``account``, the default, or ``subaccount``), and ``bearer:
+  "subaccount"`` makes the subaccount bear Paystack's fee, so the branch receives the
+  payment less the fee and the main account keeps none.
 * ``POST /dedicated_account`` accepts ``subaccount``, so a dedicated virtual account's
   deposits settle to that subaccount's bank account; whether ``bearer`` is honoured
-  there too is to be confirmed (it is sent).
+  there is not stated in the reference (it is sent).
 * ``GET /transaction/verify/<reference>`` reports the fee Paystack kept, in kobo, as
   ``data.fees``.
-* ``POST /subaccount`` takes ``business_name``, ``settlement_bank`` (the bank's
-  code), ``account_number`` and ``percentage_charge`` (the main account's share of
-  each payment, 0 for none), and answers ``data.subaccount_code``; the resolved
-  holder name is read from ``data.account_name`` when present.
+* ``POST /subaccount`` takes ``business_name``, the bank's code, ``account_number``
+  and ``percentage_charge`` (the main account's share of each payment, 0 for none),
+  and answers ``data.subaccount_code``; the resolved holder name is read from
+  ``data.account_name`` when present. The reference names the bank field
+  ``bank_code`` in its parameter list but sends ``settlement_bank`` in its own
+  example, so both carry the code: a subaccount pointed at a new bank must never
+  keep settling to the old one because one name was ignored.
 * ``PUT /subaccount/<code>`` takes the same fields to point an existing subaccount
   at a new bank account.
 * A subaccount settles to its bank on Paystack's own schedule, usually the next
@@ -176,6 +179,7 @@ class PaystackProvider(Provider):
                           percentage_charge=0):
         data = self._require_ok(self._post("/subaccount", {
             "business_name": business_name,
+            "bank_code": settlement_bank_code,
             "settlement_bank": settlement_bank_code,
             "account_number": account_number,
             "percentage_charge": percentage_charge,
@@ -186,6 +190,7 @@ class PaystackProvider(Provider):
                           account_number):
         data = self._require_ok(self._put(f"/subaccount/{subaccount_code}", {
             "business_name": business_name,
+            "bank_code": settlement_bank_code,
             "settlement_bank": settlement_bank_code,
             "account_number": account_number,
         }))
@@ -215,8 +220,8 @@ class PaystackProvider(Provider):
             raw=data,  # Preserve the raw response.
         )
 
-    #: Paystack's transfer fee by amount sent, in kobo *(confirm the schedule)*:
-    #: N10 up to N5,000, N25 up to N50,000, N50 above.
+    #: Paystack's transfer fee by amount sent, in kobo, as on paystack.com/pricing:
+    #: N10 for N5,000 and below, N25 from N5,001 to N50,000, N50 above.
     TRANSFER_FEE_TIERS = ((500_000, 1_000), (5_000_000, 2_500), (None, 5_000))
 
     def transfer_fee(self, amount: int) -> int:
@@ -229,8 +234,9 @@ class PaystackProvider(Provider):
     def available_balance(self, currency="NGN"):
         """The merchant's Paystack balance in ``currency``, in kobo (``GET /balance``).
 
-        Paystack answers a list of ``{currency, balance}`` rows *(confirm the
-        shape and that it is kobo)*; a currency it does not list holds nothing.
+        Paystack answers a list of ``{currency, balance}`` rows in the currency's
+        subunit (Transfer Control API reference); a currency it does not list
+        holds nothing.
         """
         data = self._require_ok(self._get("/balance"))
         for row in data if isinstance(data, list) else []:
@@ -253,10 +259,15 @@ class PaystackProvider(Provider):
         answering part of the list, since a settlement left unread would show
         as a mismatch.
 
-        Paystack facts this relies on, each *(confirm against the live
-        dashboard)*: the ``from``, ``to``, ``perPage``, ``page`` and
-        ``subaccount=none`` parameters; ``meta.pageCount`` on each page; and
-        the row fields read by :func:`_settlement_record`.
+        Paystack facts this relies on, each confirmed against Paystack's
+        Settlement API reference (paystack.com/docs/api/settlement): the
+        ``from``, ``to``, ``perPage``, ``page`` and ``subaccount=none``
+        parameters (``none`` lists the main account only); ``meta.pageCount``
+        on each page; the statuses ``success``, ``processing``, ``pending`` and
+        ``failed``; and the row fields read by :func:`_settlement_record`, with
+        ``settlement_date`` in UTC. The reference does not say whether a
+        ``processing`` settlement has already left the balance, which is why the
+        daily check records a gap fully explained by one as not measured.
         """
         rows, page = [], 1
         while True:
@@ -368,7 +379,9 @@ class PaystackProvider(Provider):
         )
 
 
-#: Paystack's ``data.resolution`` on ``charge.dispute.resolve`` *(confirm the values)*:
+#: Paystack's ``data.resolution`` on ``charge.dispute.resolve``. ``declined`` and
+#: ``merchant-accepted`` are in the Dispute API reference; ``auto-accepted`` (a
+#: dispute nobody answered in time) is not, and is read as lost to be safe:
 #: a dispute ``declined`` went the merchant's way; one the merchant accepted, or
 #: that was accepted for it, went the payer's.
 _DISPUTE_RESOLUTIONS = {
@@ -393,7 +406,8 @@ def _kobo_or_none(value):
         return None
 
 
-#: Paystack's settlement ``status`` → the neutral one *(confirm the values)*. Only
+#: Paystack's settlement ``status`` (Settlement API reference: success, processing,
+#: pending, failed) mapped to the neutral one. Only
 #: ``SETTLED`` is money that has left the balance for the bank.
 _SETTLEMENT_STATUS = {
     "success": "SETTLED",
@@ -410,8 +424,9 @@ def _settlement_record(row: dict) -> SettlementRecord:
     The amount is ``effective_amount`` (what reached the bank, after any
     deductions), or ``total_amount`` when Paystack sends no effective figure;
     the instant is ``settlement_date``; a subaccount settlement names it in
-    ``subaccount`` as an object or a code. Each *(confirm against the live
-    dashboard)*.
+    ``subaccount`` as an object or a code. The fields are as in Paystack's
+    Settlement API reference; the listing asks for the main account only
+    (``subaccount=none``), so the subaccount shape is a safeguard.
     """
     amount = _kobo_or_none(row.get("effective_amount"))
     if amount is None:
