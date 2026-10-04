@@ -576,8 +576,8 @@ def _post_journal_atomic(
     Steps:
       1. Guard the period is open (SOFT_CLOSED only when ``allow_restricted``).
       2. Guard the lines balance (Σdebits == Σcredits, exact kobo).
-      3. Guard every line's account is active and postable, and that a hand-typed
-         journal names no account a sub-ledger keeps.
+      3. Hold shared locks on every line account in primary-key order, then guard
+         its current active/postable state and any hand-typed control account.
       4. Apply the line amounts to the per-period :class:`AccountBalance` aggregates.
       5. Stamp the entry POSTED with ``posted_at``/``posted_by``.
       6. Write the authoritative ``JOURNAL_POSTED`` audit row - same commit as 4–5.
@@ -616,10 +616,11 @@ def _post_journal_atomic(
     total_debit, total_credit = sum_sides(lines)  # Calculate exact debit and credit totals.
     ensure_balanced(total_debit, total_credit)  # Enforce double-entry equality.
 
+    locked_accounts = _lock_accounts_for_posting(line.account_id for line in lines)
     for line in lines:  # Validate every account touched by the journal.
-        account = line.account  # Account on this line.
-        if not (account.is_active and account.is_postable):  # Inactive/header accounts cannot post.
-            raise InactiveAccountError(account_code=account.code)
+        account = locked_accounts[line.account_id]
+        if not (account[1] and account[2]):  # Inactive/header accounts cannot post.
+            raise InactiveAccountError(account_code=account[0])
     _ensure_counterparties(entry, lines)
 
     if not allow_control_accounts:
@@ -644,6 +645,37 @@ def _post_journal_atomic(
         debit=total_debit, credit=total_credit,  # Structured totals.
     )
     return entry  # Return posted journal.
+
+
+def _lock_accounts_for_posting(account_ids):
+    """Read current account state under compatible locks in deterministic order.
+
+    PostgreSQL ``FOR SHARE`` lets unrelated journals and journals using the same
+    account post concurrently, while it conflicts with the ``FOR UPDATE`` lock
+    used by account lifecycle operations. A cutover can therefore validate and
+    retire a ledger without a posting slipping between those two steps.
+    """
+    from django.db import connections, router
+
+    from .models import Account
+
+    ids = sorted(set(account_ids))
+    connection = connections[router.db_for_write(Account)]
+    quote = connection.ops.quote_name
+    placeholders = ", ".join(["%s"] * len(ids))
+    lock = " FOR SHARE" if connection.vendor == "postgresql" else ""
+    table = quote(Account._meta.db_table)
+    pk = quote(Account._meta.pk.column)
+    sql = (
+        f"SELECT {pk}, {quote('code')}, {quote('is_active')}, {quote('is_postable')} "
+        f"FROM {table} WHERE {pk} IN ({placeholders}) ORDER BY {pk}{lock}"
+    )
+    with connection.cursor() as cursor:
+        cursor.execute(sql, ids)
+        rows = cursor.fetchall()
+    if len(rows) != len(ids):
+        raise PostingError("A journal line names an account that no longer exists.")
+    return {row[0]: row[1:] for row in rows}
 
 
 def _ensure_counterparties(entry, lines) -> None:

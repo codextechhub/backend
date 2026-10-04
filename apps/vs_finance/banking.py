@@ -33,7 +33,7 @@ from .constants import (
     JournalSource,
     NormalBalance,
 )
-from .exceptions import BankReconciliationError, PeriodClosedError
+from .exceptions import BankReconciliationError, PeriodClosedError, PostingError
 from .posting import (
     _period_accepts_posting,
     post_journal,
@@ -83,7 +83,15 @@ def import_statement_lines(bank_account, rows, *, statement_date=None, period_la
     Two genuinely identical same-day transactions in one *fresh* batch are both kept
     (the check is against already-stored lines, not within the batch).
     """
-    from .models import BankStatement, BankStatementLine
+    from .models import BankAccount, BankStatement, BankStatementLine
+
+    bank_account = (
+        BankAccount.objects.select_for_update()
+        .select_related("gl_account")
+        .get(pk=bank_account.pk)
+    )
+    if not bank_account.is_active:
+        raise PostingError(f"Bank account {bank_account.name} is closed.")
 
     rows = list(rows)  # Materialize the iterable so we can scan it once.
     external_ids = {

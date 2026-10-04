@@ -7,8 +7,10 @@ import io
 from decimal import Decimal
 from unittest import mock
 
+from django.db import connection
 from django.db.models import Sum
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 
 from vs_config.clock import tenant_today
 from vs_finance.constants import (
@@ -1019,10 +1021,24 @@ class PostingTests(_GLFixtureMixin, TestCase):
     # Verify inactive account blocks posting behavior.
     def test_inactive_account_blocks_posting(self):
         entity, period = self.build_ledger()
-        Account.objects.filter(entity=entity, code="4100").update(is_active=False)
         entry = self.make_entry(entity, period, [("1100", 10000, 0), ("4100", 0, 10000)])
+        Account.objects.filter(entity=entity, code="4100").update(is_active=False)
         with self.assertRaises(InactiveAccountError):
             post_journal(entry)
+
+    def test_posting_locks_line_accounts_in_primary_key_order(self):
+        entity, period = self.build_ledger()
+        entry = self.make_entry(entity, period, [("1100", 10000, 0), ("4100", 0, 10000)])
+
+        with CaptureQueriesContext(connection) as queries:
+            post_journal(entry)
+
+        account_locks = [
+            query["sql"] for query in queries
+            if 'FROM "vs_finance_account"' in query["sql"] and "FOR SHARE" in query["sql"]
+        ]
+        self.assertEqual(len(account_locks), 1)
+        self.assertIn('ORDER BY "id" FOR SHARE', account_locks[0])
 
     # Verify cannot double post behavior.
     def test_cannot_double_post(self):
@@ -2216,6 +2232,20 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         _, again, _ = import_statement_lines(bank, rows)
         self.assertEqual(again, [])
         self.assertEqual(BankStatementLine.objects.filter(bank_account=bank).count(), 2)
+
+    def test_import_rechecks_and_refuses_an_inactive_bank_account(self):
+        entity, _, _ = self.books
+        bank = self.make_bank(entity)
+        BankAccount.objects.filter(pk=bank.pk).update(is_active=False)
+
+        with self.assertRaisesMessage(PostingError, "is closed"):
+            import_statement_lines(bank, [{
+                "txn_date": datetime.date(2026, 1, 5),
+                "amount": 50_000,
+                "external_id": "CLOSED-1",
+            }])
+
+        self.assertFalse(BankStatementLine.objects.filter(bank_account=bank).exists())
 
     # Verify reimport without external id is held back as suspected behavior.
     def test_reimport_without_external_id_is_held_back_as_suspected(self):
