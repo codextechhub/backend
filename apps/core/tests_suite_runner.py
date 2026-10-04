@@ -4,20 +4,40 @@ The template database is only as trustworthy as its fingerprint: a migration
 that imports a project module must have that module's source in the digest,
 or a change to it would leave every run cloning a schema built by the old code.
 """
+import io
 import os
 import socket
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from django.test import SimpleTestCase
 
 from core.suite_runner import (
+    GuardedParallelTestSuite,
     NetworkAccessBlocked,
     _imported_project_files,
     _is_local,
     migration_fingerprint,
 )
+
+
+class ParallelBufferingTests(SimpleTestCase):
+    def test_class_setup_error_without_active_output_buffer_is_reported(self):
+        result = unittest.TextTestRunner(stream=io.StringIO(), buffer=True, verbosity=2)._makeResult()
+        result.buffer = True
+        suite = GuardedParallelTestSuite([], processes=2)
+        error = RuntimeError("class setup failed")
+        event = ("addError", -1, "setUpClass (broken.Case)", (RuntimeError, error, None))
+
+        with io.TextIOWrapper(io.BytesIO()) as terminal:
+            with mock.patch("sys.stdout", terminal), mock.patch("sys.stderr", terminal):
+                suite.handle_event(result, [], event)
+
+        self.assertEqual(len(result.errors), 1)
+        self.assertIn("class setup failed", result.errors[0][1])
+        self.assertTrue(result.buffer)
 
 
 class LocalAddressTests(SimpleTestCase):

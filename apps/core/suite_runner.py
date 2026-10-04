@@ -76,6 +76,7 @@ import contextlib
 import hashlib
 import json
 import os
+import sys
 import time
 import unittest
 from collections import defaultdict
@@ -253,9 +254,26 @@ def _guarded_init_worker(*args, **kwargs):
 
 
 class GuardedParallelTestSuite(ParallelTestSuite):
-    """``--parallel`` workers that refuse outbound connections like the parent."""
+    """Guard workers and report fixture errors outside a test's output buffer.
+
+    A class fixture may fail before ``startTest`` or after ``stopTest``. Django
+    replays that worker error in the parent, where unittest's buffered result
+    otherwise assumes stdout and stderr are StringIO objects.
+    """
 
     init_worker = _guarded_init_worker
+
+    def handle_event(self, result, tests, event):
+        error_events = {"addError", "addFailure", "addSubTest", "addExpectedFailure"}
+        has_buffer = hasattr(sys.stdout, "getvalue") and hasattr(sys.stderr, "getvalue")
+        if event[0] not in error_events or not getattr(result, "buffer", False) or has_buffer:
+            return super().handle_event(result, tests, event)
+
+        result.buffer = False
+        try:
+            return super().handle_event(result, tests, event)
+        finally:
+            result.buffer = True
 
 
 class TimingTextTestResult(unittest.TextTestResult):
