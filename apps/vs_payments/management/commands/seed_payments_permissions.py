@@ -62,6 +62,12 @@ PAYMENTS_RESOURCES = [
     # approval, so it is CRITICAL.
     ("platform_settlement", "platform held settlements",
      [("view", "SENSITIVE"), ("submit", "CRITICAL")]),
+    # How the platform's own merchant account at the provider behaves, such as
+    # whether the provider sweeps its balance to its bank. It changes what the
+    # daily held-ledger check counts, so the write is CRITICAL. Platform staff
+    # only, like the platform settlements.
+    ("platform_provider", "platform payment provider settings",
+     [("view", "SENSITIVE"), ("update", "CRITICAL")]),
 ]
 
 

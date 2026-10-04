@@ -715,7 +715,12 @@ class HeldReconciliation(TimeStampedModel):
     platform's books say it should hold: its provider balance account
     (``provider_account``) plus its own online takings still in transit
     (``own_in_transit``, its own payments less their fees, not yet settled to
-    its bank). ``held_total`` is the held-funds sub-ledger's sum, which the
+    its bank), less what the provider swept to the platform's bank
+    (``swept_total``, every :class:`ProviderSweep` counted), plus the platform's
+    own takings that left transit through a matched bank line after sweeping
+    began (``own_swept_settled``), which ``swept_total`` already took off once.
+    ``balance_swept`` is the platform setting in force when the check ran.
+    ``held_total`` is the held-funds sub-ledger's sum, which the
     provider balance account mirrors. ``difference`` is the provider's figure
     less the books'. The check agrees when the difference is within
     ``tolerance`` and the account equals the sub-ledger; otherwise it opens a
@@ -733,6 +738,9 @@ class HeldReconciliation(TimeStampedModel):
     provider_account = models.BigIntegerField(default=0)
     held_total = models.BigIntegerField(default=0)
     own_in_transit = models.BigIntegerField(default=0)
+    balance_swept = models.BooleanField(default=False)
+    swept_total = models.BigIntegerField(default=0)
+    own_swept_settled = models.BigIntegerField(default=0)
     books_balance = models.BigIntegerField(default=0)
     difference = models.BigIntegerField(null=True, blank=True)
     tolerance = models.BigIntegerField(default=0)
@@ -751,6 +759,45 @@ class HeldReconciliation(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.provider} {self.checked_on}: {'agrees' if self.agrees else self.difference}"
+
+
+class ProviderSweep(TimeStampedModel):
+    """One automatic settlement of the platform's provider balance to its own bank, counted once.
+
+    When the platform setting ``payments.provider_balance_swept`` is on, the
+    daily held-ledger check reads the provider's settlement records and keeps
+    each successful one here (:mod:`vs_payments.held_reconciliation`). The
+    unique key on provider and ``settlement_id`` is what counts a settlement
+    exactly once, however often the check runs or retries. ``amount`` is the
+    kobo that reached the bank; ``settled_at`` is the provider's instant for it;
+    ``recorded_on`` is the platform day of the check that first counted it.
+    ``raw`` is the provider's row, kept for support and never served.
+
+    A sweep moves money between two of the platform's own assets (the provider
+    balance and its bank) and changes nothing it owes a client branch, so it is
+    taken into the check's comparison rather than booked as a journal.
+    """
+
+    provider = models.CharField(max_length=16, choices=PaymentProvider.choices)
+    settlement_id = models.CharField(max_length=64)
+    currency = models.CharField(max_length=3, default="NGN")
+    amount = models.BigIntegerField()
+    settled_at = models.DateTimeField(null=True, blank=True)
+    provider_status = models.CharField(max_length=32, blank=True, default="")
+    recorded_on = models.DateField()
+    raw = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider", "settlement_id"],
+                name="uniq_payments_provider_sweep",
+            ),
+        ]
+        ordering = ["-settled_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.provider} sweep {self.settlement_id}: {self.amount}"
 
 
 class WebhookEvent(TimeStampedModel):

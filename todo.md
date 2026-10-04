@@ -356,6 +356,38 @@ MUST SAY:
 Verified in isolated worktree: vs_user 430 OK; vs_workflow 539 OK; vs_audit 109 OK;
 schools.vs_staff 546 OK, plus focused contract suites.
 
+### D114. The daily held-ledger check allows for Paystack sweeping CodeX's balance, behind a CodeX platform setting (uncommitted, 2026-10-04)
+MODULES: M18 payments and collections, M06 configuration and capability (the new
+platform setting), M04 roles and permissions (two keys:
+payments.platform_provider.view SENSITIVE, .update CRITICAL), M30 system health
+(the new refused-settlement incident), MRD.
+MUST SAY:
+- CodeX platform setting "Paystack balance swept automatically"
+  (`payments.provider_balance_swept`, default off). A setting of CodeX's own
+  merchant account, never a school's. Changed only by CodeX staff holding
+  `payments.platform_provider.update` at `platform/provider-settings/`, with a
+  required reason, audited as a configuration change; the generic configuration
+  endpoints refuse it.
+- Off: the daily held-ledger check is unchanged and never asks for settlements.
+  On: it reads Paystack's settlements of the main balance, counts each successful
+  one exactly once (unique settlement id), and takes them off the books' figure,
+  so a sweep is not a mismatch; a real mismatch still raises the incident.
+- A sweep is allowed for in the comparison, not booked as a journal (it mixes held
+  money with CodeX's own takings, whose bank arrival finance already books). CodeX's
+  own takings matched to a bank line after sweeping began are added back.
+- Guards: NGN only (another currency refuses the read and opens
+  `payments.provider-sweep-refused`), successful main-balance settlements only,
+  every page read, a run-boundary overlap window, and the balance re-read when a
+  settlement lands during the check.
+- Needs Attention: with the balance swept, held settlements need CodeX to top up
+  the Paystack balance first and a top-up is not in the check; the swept held money
+  is not booked as CodeX's bank money; Paystack's settlement field names are
+  unconfirmed.
+Verified in isolated worktree: tests_provider_sweeps 20 OK; tests_custody and
+tests_custody_held 75 OK; vs_payments 425 OK; vs_health 51 OK; vs_config 164 OK;
+vs_rbac band and catalogue tests 51 OK; vs_finance 1825 OK; makemigrations check
+clean.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
@@ -378,6 +410,10 @@ disagree).
 A third went on 2026-10-01 because it was built: a guardian is now told when
 their child is suspended, the school chooses who hears it, and the reason behind
 the suspension is a field a school opens per role. Carried as D99 (130608cf).
+OWNER DECISION 2026-10-04: if Paystack ever sweeps CodeX's balance, how held
+settlements are paid (CodeX tops the balance up before each run, with the check
+counting top-ups, or the sweep is booked and branches are paid from CodeX's bank)
+is decided later, before the setting is switched on. Nothing changes while it is off.
 
 ### 1. FAL write ports for payments and concessions (deferred on purpose)
 Payments and concessions bypass the FAL and reach /v1/finance/ directly, so a

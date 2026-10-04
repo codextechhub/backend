@@ -40,6 +40,7 @@ from .base import (
     CheckoutResult,
     CollectionStatusResult,
     Provider,
+    SettlementRecord,
     SubaccountResult,
     TransferResult,
     VirtualAccountResult,
@@ -237,6 +238,47 @@ class PaystackProvider(Provider):
                 return int(row.get("balance") or 0)
         return 0
 
+    #: Rows asked for per page of ``GET /settlement``.
+    SETTLEMENT_PAGE_SIZE = 100
+    #: Pages read before the listing is refused as unbounded.
+    SETTLEMENT_MAX_PAGES = 50
+
+    def list_settlements(self, *, start, end):
+        """Paystack's settlements of the main account's balance to its bank (``GET /settlement``).
+
+        Reads every page from ``start`` to ``end`` (dates, sent as ``from`` and
+        ``to``) for the main account only (``subaccount=none``). Each settlement
+        is translated by :func:`_settlement_record`. A listing that runs past
+        :attr:`SETTLEMENT_MAX_PAGES` raises :class:`ProviderError` rather than
+        answering part of the list, since a settlement left unread would show
+        as a mismatch.
+
+        Paystack facts this relies on, each *(confirm against the live
+        dashboard)*: the ``from``, ``to``, ``perPage``, ``page`` and
+        ``subaccount=none`` parameters; ``meta.pageCount`` on each page; and
+        the row fields read by :func:`_settlement_record`.
+        """
+        rows, page = [], 1
+        while True:
+            if page > self.SETTLEMENT_MAX_PAGES:
+                raise ProviderError(
+                    f"Paystack listed more than {self.SETTLEMENT_MAX_PAGES} pages of settlements "
+                    f"from {start.isoformat()} to {end.isoformat()}.", provider=self.name)
+            response = self._get(
+                f"/settlement?perPage={self.SETTLEMENT_PAGE_SIZE}&page={page}"
+                f"&from={start.isoformat()}&to={end.isoformat()}&subaccount=none")
+            data = self._require_ok(response)
+            data = data if isinstance(data, list) else []
+            rows.extend(_settlement_record(row) for row in data if isinstance(row, dict))
+            meta = response.get("meta") if isinstance(response.get("meta"), dict) else {}
+            page_count = _kobo_or_none(meta.get("pageCount"))
+            if page_count is not None:
+                if page >= page_count:
+                    return rows
+            elif len(data) < self.SETTLEMENT_PAGE_SIZE:
+                return rows
+            page += 1
+
     def verify_transfer(self, *, reference, provider_reference=""):
         data = self._require_ok(self._get(f"/transfer/verify/{reference}"))  # Re-query the final transfer state.
         status = (data.get("status") or "").lower()
@@ -349,6 +391,43 @@ def _kobo_or_none(value):
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+#: Paystack's settlement ``status`` → the neutral one *(confirm the values)*. Only
+#: ``SETTLED`` is money that has left the balance for the bank.
+_SETTLEMENT_STATUS = {
+    "success": "SETTLED",
+    "settled": "SETTLED",
+    "pending": "PENDING",
+    "processing": "PENDING",
+    "failed": "FAILED",
+}
+
+
+def _settlement_record(row: dict) -> SettlementRecord:
+    """The neutral view of one Paystack settlement row.
+
+    The amount is ``effective_amount`` (what reached the bank, after any
+    deductions), or ``total_amount`` when Paystack sends no effective figure;
+    the instant is ``settlement_date``; a subaccount settlement names it in
+    ``subaccount`` as an object or a code. Each *(confirm against the live
+    dashboard)*.
+    """
+    amount = _kobo_or_none(row.get("effective_amount"))
+    if amount is None:
+        amount = _kobo_or_none(row.get("total_amount"))
+    subaccount = row.get("subaccount")
+    if isinstance(subaccount, dict):
+        subaccount = subaccount.get("subaccount_code") or subaccount.get("id") or ""
+    return SettlementRecord(
+        settlement_id=str(row.get("id", "") or ""),
+        status=_SETTLEMENT_STATUS.get(str(row.get("status", "") or "").strip().lower(), "UNKNOWN"),
+        currency=str(row.get("currency", "") or "").strip().upper(),
+        amount=amount,
+        settled_at=_instant(row.get("settlement_date") or row.get("settled_at")),
+        subaccount=str(subaccount or ""),
+        raw=row,
+    )
 
 
 def _subaccount_result(data: dict) -> SubaccountResult:

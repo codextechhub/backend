@@ -56,6 +56,8 @@ class FakeProvider(Provider):
         self.transfer_fee_kobo: int = 0
         # What ``available_balance`` reports, by currency; a test sets it.
         self.balances: dict[str, int] = {}
+        # The automatic settlements ``list_settlements`` reports; a test sets them.
+        self.settlements: list = []
 
     def healthcheck(self) -> bool:
         return True
@@ -140,6 +142,11 @@ class FakeProvider(Provider):
 
     def available_balance(self, currency="NGN"):
         return int(self.balances.get(currency.upper(), 0))
+
+    def list_settlements(self, *, start, end):
+        """Every settlement a test set whose date falls between ``start`` and ``end`` (UTC days)."""
+        return [row for row in self.settlements
+                if row.settled_at is None or start <= row.settled_at.date() <= end]
 
     def verify_transfer(self, *, reference, provider_reference=""):
         status = self.forced_status.get(reference, "PROCESSING")

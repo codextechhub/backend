@@ -284,8 +284,8 @@ class ValueListSetView(ConfigAPIView):
         if special_keys:
             raise ValidationError({
                 "values": (
-                    "Security and integration settings require their dedicated update "
-                    "permission and must be changed from their Platform Settings section."
+                    "Security, integration and payment provider settings require their "
+                    "dedicated update permission and must be changed from their own section."
                 )
             })
         tenant, branch = resolve_request_scope(request)
@@ -323,7 +323,8 @@ class ValueResetView(ConfigAPIView):
         if key in PROTECTED_SETTING_KEYS:
             raise ValidationError({
                 "value": (
-                    "This setting must be reset from its Security or Integrations section."
+                    "This setting must be reset from its own Security, Integrations or "
+                    "payment provider section."
                 )
             })
         definition = get_object_or_404(ConfigurationDefinition, key=key, is_active=True)

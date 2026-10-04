@@ -126,6 +126,14 @@ DEFINITIONS = [
         "before the daily check opens a health incident.",
         "INTEGER", 0, {"min": 0, "max": 100_000_000},
     ),
+    (
+        "payments.provider_balance_swept", "Paystack Balance Swept Automatically",
+        "Whether Paystack settles the platform's own balance to the platform's bank by "
+        "automatic settlement. On, the daily held-ledger check counts each settlement once "
+        "and allows for it; off, it compares the balance as reported. Changed only from the "
+        "payment provider settings, by platform staff holding its update permission.",
+        "BOOLEAN", False, {},
+    ),
 ]
 
 # (key, label, description, value_type, default_value, validation_rules)

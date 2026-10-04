@@ -197,8 +197,41 @@ settlement report *(confirm the field)*; the settlement match books it.
   health and settlement operators once; the next agreeing check resolves it. A day
   Paystack could not be asked is recorded with its error and changes no incident.
   Codex staff read the checks at `GET /v1/payments/platform/held-reconciliations/`.
-  The check assumes Paystack keeps Codex's balance rather than sweeping it to
-  Codex's bank each day *(confirm the account setting)*.
+- **When Paystack sweeps Codex's balance.** The Codex platform setting "Paystack
+  balance swept automatically" (`payments.provider_balance_swept`, default off)
+  says whether Paystack settles Codex's own balance to Codex's bank on its own.
+  It is a setting of Codex's merchant account, never a school's: it is changed
+  only at `PATCH /v1/payments/platform/provider-settings/` (`balance_swept` and a
+  required `reason`) by Codex staff holding `payments.platform_provider.update`,
+  is audited as `config.value.updated` with actor, before, after and reason, and
+  the generic configuration value endpoints refuse it. Off, the daily check is
+  exactly the comparison above and never asks for settlements. On, the check
+  reads Paystack's settlements of the main balance (`GET /settlement`, every page,
+  `subaccount=none`) and keeps each successful one once (`ProviderSweep`, unique
+  on provider and settlement id), then takes every sweep counted so far off the
+  books' figure. Sweeps counted while the setting was on still count after it is
+  turned off: their money left the balance all the same.
+  **Decided: a sweep is allowed for in the comparison, not booked as a journal.**
+  A sweep mixes held money with Codex's own takings, whose arrival in Codex's bank
+  is already booked when finance matches the bank line to them, so a journal for
+  the whole sweep would book that part twice; and the provider balance account is
+  the mirror of the held-funds sub-ledger, which a sweep does not change. When
+  finance matches Codex's own takings to a bank line after sweeping began, they
+  leave transit and the check adds them back (`own_swept_settled`), since the
+  sweep that carried them was already taken off once.
+  Guards: only successful settlements of the main balance count (failed, still
+  paying, unknown and subaccount settlements do not); a settlement in another
+  currency than NGN, or one with no id or amount, refuses the whole read, records
+  the check as not measured and opens its own incident
+  (`payments.provider-sweep-refused`) until a later read is clean; the window runs
+  from a week before the latest settlement counted (31 days on the first read) to
+  Codex's tomorrow, so a settlement on Paystack's UTC day or recorded late is
+  still read and the unique key makes the overlap harmless; settlements are read
+  before and after the balance, and a settlement that appears in between makes
+  the check read the balance again (three reads at most, then not measured); a
+  difference explained exactly by a settlement Paystack is still paying is
+  recorded as not measured rather than raised. Codex staff see what was counted at
+  `GET /v1/payments/platform/provider-sweeps/`.
 - **Money already held** before the sub-ledger started is entered once per branch
   by a Codex operator from Paystack's records: `manage.py
   record_held_opening_balance --by <operator email>`; it is audited under that
@@ -287,11 +320,20 @@ Steps 1 to 3 are phase A and steps 4 and 5 are phase B; all five are built.
 
 Open questions:
 
-- **Paystack's balance sweep.** The daily reconciliation compares Codex's books
-  with Paystack's available balance, which only holds if Paystack keeps the money
-  rather than settling it to Codex's bank each day *(confirm the account setting)*;
+- **Paystack's balance sweep.** Allowed for when the platform setting is on
+  (section 4). Still open: with the balance swept, held settlements to schools are
+  transfers from a balance Paystack keeps emptying, so Codex would have to fund the
+  balance from its bank first, and such a top-up is not yet in the books' figure;
+  the held money swept to Codex's bank is not booked as Codex's bank money; and
   Codex's own online payouts to its own suppliers, if it makes any, are not yet in
   the books' figure.
+- **Paystack settlement fields to confirm on the live dashboard:** `GET
+  /settlement` with `from`, `to`, `perPage`, `page` and `subaccount=none`;
+  `meta.pageCount`; each row's `id`, `status` (`success`, `pending`,
+  `processing`, `failed`), `currency`, `effective_amount` (what reached the bank,
+  with `total_amount` read when it is absent), `settlement_date` (UTC) and
+  `subaccount`; and whether a settlement still `processing` has already left the
+  balance.
 - **Paystack field names to confirm:** the dispute resolution (`resolution`:
   `declined`, `merchant-accepted`, `auto-accepted`) and the balance response
   (`GET /balance`, a list of `{currency, balance}` in kobo).

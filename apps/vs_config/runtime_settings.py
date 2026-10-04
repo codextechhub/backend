@@ -43,7 +43,15 @@ INTEGRATION_DEFAULTS = {
     "email_retry_backoff_seconds": 60,
 }
 
-PROTECTED_SETTING_KEYS = frozenset((*SECURITY_FIELDS.values(), *INTEGRATION_FIELDS.values()))
+#: Platform settings another app gives a screen and permission of its own, so the
+#: generic value endpoints refuse them like the security and integration fields.
+DEDICATED_SCREEN_KEYS = frozenset((
+    "payments.provider_balance_swept",  # vs_payments platform/provider-settings/
+))
+
+PROTECTED_SETTING_KEYS = frozenset((
+    *SECURITY_FIELDS.values(), *INTEGRATION_FIELDS.values(), *DEDICATED_SCREEN_KEYS,
+))
 PRODUCT_OWNED_KEYS = PROTECTED_SETTING_KEYS
 
 # The clamp each security field obeys: a scoped value may only be as strict as

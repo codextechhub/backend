@@ -100,6 +100,27 @@ class TransferResult:
 
 
 @dataclass
+class SettlementRecord:
+    """One automatic settlement: the provider moving the merchant's money to its own bank.
+
+    ``status`` is ``"SETTLED"`` once the money has left for the bank,
+    ``"PENDING"`` while the provider is still paying it, ``"FAILED"`` when the
+    bank refused it, and ``"UNKNOWN"`` for a state the adapter does not
+    recognise. ``amount`` is the kobo that reached the bank, ``None`` when the
+    provider's record carries no readable figure. ``subaccount`` names the
+    subaccount the settlement paid, empty for the merchant's own balance.
+    """
+
+    settlement_id: str
+    status: str
+    currency: str = ""
+    amount: int | None = None
+    settled_at: datetime | None = None
+    subaccount: str = ""
+    raw: dict = field(default_factory=dict)
+
+
+@dataclass
 # Group behavior for Webhook Parse Result.
 class WebhookParseResult:
     """Normalised view of an inbound webhook event.
@@ -233,6 +254,15 @@ class PayoutProvider(WebhookCapable):
         as a check it could not make.
         """
         raise NotImplementedError(f"{self.name or 'This provider'} reports no balance.")
+
+    def list_settlements(self, *, start, end) -> list:
+        """The provider's automatic settlements of the merchant's own balance, ``start`` to ``end``.
+
+        Both are dates, inclusive, and every page is read. Answers
+        :class:`SettlementRecord` rows. A provider that never settles the
+        merchant's balance on its own raises :class:`NotImplementedError`.
+        """
+        raise NotImplementedError(f"{self.name or 'This provider'} reports no settlements.")
 
     def transfer_fee(self, amount: int) -> int:
         """Kobo the provider charges, on top of ``amount``, to transfer it to a bank account.

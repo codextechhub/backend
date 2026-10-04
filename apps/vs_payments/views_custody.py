@@ -24,6 +24,11 @@
   (``IsVisionStaff``), with ``payments.platform_settlement.view`` / ``.submit``.
 * ``platform/held-reconciliations/``: the daily checks of the platform's books
   against its provider balance, for the same platform staff.
+* ``platform/provider-settings/``: whether the provider sweeps the platform's
+  balance to its bank, read with ``payments.platform_provider.view`` and changed
+  with ``.update``, platform staff only.
+* ``platform/provider-sweeps/``: the provider's settlements of the platform
+  balance that the daily check counted, for the platform settlement readers.
 """
 from __future__ import annotations
 
@@ -365,6 +370,115 @@ class PlatformHeldReconciliationListView(APIView):
             "currency": row.currency, "provider_balance": row.provider_balance,
             "books_balance": row.books_balance, "provider_account": row.provider_account,
             "held_total": row.held_total, "own_in_transit": row.own_in_transit,
+            "balance_swept": row.balance_swept, "swept_total": row.swept_total,
+            "own_swept_settled": row.own_swept_settled,
             "difference": row.difference, "tolerance": row.tolerance, "agrees": row.agrees,
             "error": row.error or None, "incident_code": row.incident_code or None,
+        } for row in rows[:_limit(request)]])
+
+
+def _provider_settings_payload():
+    """The platform's provider settings as the console shows them, with what was counted."""
+    from django.db.models import Count, Max, Sum
+
+    from vs_config.models import ConfigurationValue
+
+    from . import held_reconciliation
+    from .models import ProviderSweep
+
+    stored = (ConfigurationValue.all_objects.filter(
+        definition__key=held_reconciliation.SWEPT_KEY, scope_key="platform").first())
+    sweeps = ProviderSweep.objects.aggregate(
+        count=Count("id"), total=Sum("amount"), latest=Max("settled_at"))
+    return {
+        "balance_swept": held_reconciliation.balance_swept(),
+        "source": "platform" if stored is not None else "default",
+        "updated_at": stored.updated_at.isoformat() if stored is not None else None,
+        "tolerance_kobo": held_reconciliation.tolerance(),
+        "sweeps": {
+            "count": sweeps["count"] or 0, "total": int(sweeps["total"] or 0),
+            "latest_settled_at": sweeps["latest"].isoformat() if sweeps["latest"] else None,
+        },
+    }
+
+
+class PlatformProviderSettingsView(APIView):
+    """GET, PATCH: how the platform's own merchant account at the payment provider behaves.
+
+    ``balance_swept`` is the platform setting ``payments.provider_balance_swept``
+    (default off): whether the provider settles the platform's balance to its
+    bank automatically, which the daily held-ledger check then allows for
+    (:mod:`vs_payments.held_reconciliation`). It is a setting of the platform's
+    own account, never a tenant's. GET also answers the check's tolerance and
+    the settlements counted so far.
+
+    PATCH takes ``balance_swept`` (true or false) and a ``reason``, both
+    required, and stores the value at platform scope through the configuration
+    catalogue, which audits the change with its actor, before and after values
+    and reason (``config.value.updated``). The generic configuration value
+    endpoints refuse this key, so this view and its permission are the only
+    way to change it. Platform staff only (``IsVisionStaff``), with
+    ``payments.platform_provider.view`` to read and ``.update`` to change.
+
+    docstring-name: Platform payment provider settings
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff & HasRBACPermission]
+
+    @property
+    def rbac_permission(self):
+        if self.request.method in SAFE_METHODS:
+            return "payments.platform_provider.view"
+        return "payments.platform_provider.update"
+
+    def get(self, request):
+        return success_response("Payment provider settings retrieved.",
+                                data=_provider_settings_payload())
+
+    def patch(self, request):
+        from vs_config.models import ConfigurationDefinition
+        from vs_config.services.resolution import set_value
+
+        from . import held_reconciliation
+
+        swept = request.data.get("balance_swept")
+        if not isinstance(swept, bool):
+            raise ValidationError({"balance_swept": "Expected true or false."})
+        reason = str(request.data.get("reason") or "").strip()
+        if not reason:
+            raise ValidationError({"reason": "Say why the setting is changing."})
+        definition = ConfigurationDefinition.objects.filter(
+            key=held_reconciliation.SWEPT_KEY, is_active=True).first()
+        if definition is None:
+            raise NotFound("The setting is not in the configuration catalogue; "
+                           "run seed_config_catalogue.")
+        set_value(definition=definition, value=swept, actor=request.user, reason=reason)
+        return success_response("Payment provider settings saved.",
+                                data=_provider_settings_payload())
+
+
+class PlatformProviderSweepListView(APIView):
+    """GET: the provider's settlements of the platform balance that the daily check counted, newest first.
+
+    One row per settlement (:class:`~vs_payments.models.ProviderSweep`): the
+    provider's id, the kobo that reached the platform's bank, when the provider
+    settled it, and the day the check counted it. The provider's raw record is
+    not served. ``?limit=`` caps the page (at most 200). Platform staff with
+    ``payments.platform_settlement.view`` only, like the checks themselves.
+
+    docstring-name: Provider balance sweeps
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff & HasRBACPermission]
+    rbac_permission = "payments.platform_settlement.view"
+
+    def get(self, request):
+        from .models import ProviderSweep
+
+        rows = ProviderSweep.objects.order_by("-settled_at", "-id")
+        return success_response("Provider balance sweeps retrieved.", data=[{
+            "id": row.pk, "provider": row.provider, "settlement_id": row.settlement_id,
+            "currency": row.currency, "amount": row.amount,
+            "settled_at": row.settled_at.isoformat() if row.settled_at else None,
+            "recorded_on": row.recorded_on.isoformat(),
         } for row in rows[:_limit(request)]])
