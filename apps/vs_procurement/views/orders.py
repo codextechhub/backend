@@ -32,10 +32,13 @@ from ..models import (
     RequestForQuotation,
     RfqInvitation,
     RfqLine,
+    SharedSourcingAllocation,
+    SharedSourcingGroup,
     VendorContract,
     VendorQuotation,
     VendorQuotationLine,
 )
+from vs_rbac.scoping import caller_branch_ids, caller_may_change
 from ..serializers import (
     PurchaseOrderListSerializer,
     PurchaseOrderSerializer,
@@ -60,6 +63,7 @@ from .base import (
     _raised_branch,
     _require_lines,
     _resolve_account,
+    _resolve_branch_reference,
     _resolve_currency,
     _resolve_expense_account,
     _resolve_tax,
@@ -502,7 +506,11 @@ def _rfq_list_queryset(entity):
     long RFQ list stays a single query. A *response* is any non-draft quotation - a
     vendor's actual reply, not a half-captured draft.
     """
-    return RequestForQuotation.objects.filter(entity=entity).select_related("requisition", "branch").annotate(
+    return RequestForQuotation.objects.filter(entity=entity).select_related(
+        "requisition", "branch", "shared_sourcing_group",
+    ).prefetch_related(
+        "shared_sourcing_group__allocations__requisition_line__requisition__branch",
+    ).annotate(
         line_count=Count("lines", distinct=True),
         response_count=Count(
             "quotations",
@@ -513,9 +521,64 @@ def _rfq_list_queryset(entity):
     )
 
 
+def _inaccessible_shared_rfq_ids(request):
+    """Return shared RFQs containing a branch outside the buyer's current reach."""
+    visible = caller_branch_ids(request)
+    if visible is None:
+        return None
+    groups = SharedSourcingAllocation.objects.exclude(
+        requisition_line__requisition__branch_id__in=visible,
+    ).values("group_id")
+    return SharedSourcingGroup.objects.filter(pk__in=groups).values("rfq_id")
+
+
+def _buyer_rfq_queryset(request, queryset):
+    """Hide a shared RFQ unless the buyer reaches every participant branch."""
+    inaccessible = _inaccessible_shared_rfq_ids(request)
+    return queryset if inaccessible is None else queryset.exclude(
+        pk__in=inaccessible,
+    )
+
+
+def _buyer_quotation_queryset(request, queryset):
+    """Apply the shared RFQ's complete participant boundary to its quotations."""
+    inaccessible = _inaccessible_shared_rfq_ids(request)
+    return queryset if inaccessible is None else queryset.exclude(
+        rfq_id__in=inaccessible,
+    )
+
+
+def _rfq_branch_q(request, entity, params):
+    """Match a selected branch against an RFQ anchor or shared participant."""
+    standard = _branch_q(request, entity, params)
+    raw = str((params.get("branch") if params else "") or "").strip()
+    if not raw or raw.lower() in ("none", "null"):
+        return standard
+    branch = _resolve_branch_reference(entity, raw)
+    return standard | Q(
+        shared_sourcing_group__allocations__requisition_line__requisition__branch=branch,
+    )
+
+
+def _quotation_branch_q(request, entity, params):
+    """Match a selected branch against a quotation's shared RFQ participants."""
+    standard = _branch_q(request, entity, params)
+    raw = str((params.get("branch") if params else "") or "").strip()
+    if not raw or raw.lower() in ("none", "null"):
+        return standard
+    branch = _resolve_branch_reference(entity, raw)
+    return standard | Q(
+        rfq__shared_sourcing_group__allocations__requisition_line__requisition__branch=branch,
+    )
+
+
 def _rfq_detail_queryset(entity):
     """Entity-scoped RFQ prefetched for the detail drawer (lines + invitations + quotes)."""
-    return RequestForQuotation.objects.filter(entity=entity).select_related("requisition", "branch").prefetch_related(
+    return RequestForQuotation.objects.filter(entity=entity).select_related(
+        "requisition", "branch", "shared_sourcing_group",
+    ).prefetch_related(
+        "shared_sourcing_group__allocations__rfq_line",
+        "shared_sourcing_group__allocations__requisition_line__requisition__branch",
         Prefetch("lines", queryset=RfqLine.objects.filter(is_active=True).select_related("expense_account")),
         # Invited vendors + quotations are joined in Python in the serializer to derive
         # each invitation's "responded" flag without a per-row query.
@@ -563,6 +626,7 @@ def _write_rfq_lines(request, entity, rfq, lines, *, preserve_history=False):
                     else f"No such requisition line {ln['requisition_line']}."
                 )
                 raise ValidationError({"requisition_line": message})
+            _inherited_branch_id(request, rfq, req_line.requisition)
         RfqLine.objects.create(
             rfq=rfq, line_no=ln.get("line_no", i),
             version=rfq.version, is_active=True,
@@ -572,6 +636,89 @@ def _write_rfq_lines(request, entity, rfq, lines, *, preserve_history=False):
             expense_account=_resolve_expense_account(request, entity, ln.get("expense_account"), "expense_account"),
             tax_code=_resolve_tax(entity, ln.get("tax_code")),
         )
+
+
+def _shared_line_specs(request, entity, lines):
+    """Resolve and authorize the requisition allocations of one shared RFQ."""
+    specs = []
+    participant_ids = set()
+    source_ids = set()
+    for line_number, line in enumerate(lines, start=1):
+        allocations = line.get("allocations")
+        if not isinstance(allocations, list) or not allocations:
+            raise ValidationError({"lines": (
+                f"Line {line_number} must allocate its quantity to requisition lines."
+            )})
+        resolved = []
+        allocated_quantity = 0
+        for allocation in allocations:
+            if not isinstance(allocation, dict) or not allocation.get("requisition_line"):
+                raise ValidationError({"allocations": "Each allocation needs a requisition_line."})
+            source = PurchaseRequisitionLine.objects.select_related(
+                "requisition",
+            ).filter(
+                requisition__entity=entity, pk=allocation["requisition_line"],
+            ).first()
+            if source is None:
+                raise ValidationError({
+                    "requisition_line": f"No such requisition line {allocation['requisition_line']}.",
+                })
+            if source.pk in source_ids:
+                raise ValidationError({
+                    "requisition_line": "A requisition line may be allocated only once in an RFQ.",
+                })
+            if SharedSourcingAllocation.objects.filter(requisition_line=source).exists():
+                raise ValidationError({
+                    "requisition_line": "This requisition line already belongs to a shared RFQ.",
+                })
+            if source.requisition.branch_id is None:
+                raise ValidationError({
+                    "requisition_line": "Place every source requisition in a branch first.",
+                })
+            quantity = _quantity(allocation.get("quantity"), "quantity")
+            if quantity != source.quantity:
+                raise ValidationError({
+                    "quantity": "An allocation must equal its requisition line quantity.",
+                })
+            source_ids.add(source.pk)
+            participant_ids.add(source.requisition.branch_id)
+            allocated_quantity += quantity
+            resolved.append((source, quantity))
+        requested_quantity = _quantity(line.get("quantity", allocated_quantity), "quantity")
+        if requested_quantity != allocated_quantity:
+            raise ValidationError({
+                "quantity": "The RFQ line quantity must equal its branch allocations.",
+            })
+        specs.append((line, requested_quantity, resolved))
+    if len(participant_ids) < 2:
+        raise ValidationError({
+            "lines": "Shared sourcing needs requisitions from at least two branches.",
+        })
+    if not caller_may_change(request.user, entity.tenant, participant_ids):
+        raise PermissionDenied(
+            "You must have access to every participating branch to create this RFQ."
+        )
+    return specs, participant_ids
+
+
+def _write_shared_rfq_lines(request, entity, rfq, group, specs):
+    """Create vendor-facing lines and retain their branch allocation evidence."""
+    for i, (line, quantity, allocations) in enumerate(specs, start=1):
+        rfq_line = RfqLine.objects.create(
+            rfq=rfq, line_no=line.get("line_no", i), version=rfq.version, is_active=True,
+            description=_text(line.get("description"), "description", 255, required=True),
+            quantity=quantity,
+            expense_account=_resolve_expense_account(
+                request, entity, line.get("expense_account"), "expense_account",
+            ),
+            tax_code=_resolve_tax(entity, line.get("tax_code")),
+        )
+        SharedSourcingAllocation.objects.bulk_create([
+            SharedSourcingAllocation(
+                group=group, rfq_line=rfq_line, requisition_line=source, quantity=amount,
+            )
+            for source, amount in allocations
+        ])
 
 
 def _validate_rfq_dates(issue_date, response_due_date):
@@ -616,7 +763,8 @@ class RfqListCreateView(_ProcBase):
     def get(self, request):
         """List sourcing events with SQL-derived invitation and response counts."""
         entity = resolve_entity(request)
-        qs = _branch_scoped(request, entity, _rfq_list_queryset(entity), request.query_params)
+        qs = _buyer_rfq_queryset(request, _rfq_list_queryset(entity))
+        qs = qs.filter(_rfq_branch_q(request, entity, request.query_params)).distinct()
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(rfq_status=status_)
         if (q := (request.query_params.get("q") or request.query_params.get("search") or "").strip()):
@@ -629,12 +777,20 @@ class RfqListCreateView(_ProcBase):
         entity = resolve_entity(request)
         body = request.data
         lines = _require_lines(body)
+        shared = any("allocations" in line for line in lines)
+        if shared and any("allocations" not in line for line in lines):
+            raise ValidationError({"lines": "Allocate every line in a shared RFQ."})
         requisition = None
         if body.get("requisition"):
             requisition = PurchaseRequisition.objects.filter(
                 entity=entity, pk=body["requisition"]).first()
             if requisition is None:
                 raise ValidationError({"requisition": "No such requisition in this entity."})
+        if shared and requisition is not None:
+            raise ValidationError({"requisition": "A shared RFQ takes its sources from line allocations."})
+        shared_specs = participant_ids = None
+        if shared:
+            shared_specs, participant_ids = _shared_line_specs(request, entity, lines)
         issue_date = _date(body.get("issue_date"), "issue_date", required=True)
         if "response_due_date" in body:
             response_due_date = _date(body.get("response_due_date"), "response_due_date")
@@ -650,7 +806,8 @@ class RfqListCreateView(_ProcBase):
             # Sourcing against a requisition inherits its branch; a standalone RFQ
             # starts its own chain and captures the branch from the raiser.
             branch_id=(
-                _inherited_branch_id(request, requisition) if requisition is not None
+                min(participant_ids) if shared
+                else _inherited_branch_id(request, requisition) if requisition is not None
                 else getattr(_raised_branch(request, entity, body), "pk", None)
             ),
             title=_text(body.get("title"), "title", 200),
@@ -660,7 +817,14 @@ class RfqListCreateView(_ProcBase):
             created_by=request.user if request.user.is_authenticated else None,
         )
         vendor_portal.ensure_exact_deadline(rfq)
-        _write_rfq_lines(request, entity, rfq, lines)
+        if shared:
+            group = SharedSourcingGroup.objects.create(
+                entity=entity, rfq=rfq,
+                created_by=request.user if request.user.is_authenticated else None,
+            )
+            _write_shared_rfq_lines(request, entity, rfq, group, shared_specs)
+        else:
+            _write_rfq_lines(request, entity, rfq, lines)
         # Invited vendors may be empty at draft-create (issue is what requires ≥1); still
         # validate + persist any provided so the draft carries its addressee list.
         if "invited_vendors" in body:
@@ -690,7 +854,8 @@ class RfqDetailView(_ProcBase):
         """Return one entity RFQ with prefetched specifications, invitees, and bids."""
         entity = resolve_entity(request)
         rfq = _document_or_404(
-            request, _rfq_detail_queryset(entity), pk, "No such RFQ in this entity.",
+            request, _buyer_rfq_queryset(request, _rfq_detail_queryset(entity)), pk,
+            "No such RFQ in this entity.",
         )
         return success_response("RFQ retrieved.", data=RfqDetailSerializer(rfq, context={"request": request}).data)
 
@@ -699,7 +864,9 @@ class RfqDetailView(_ProcBase):
         """Replace draft sourcing terms under lock; issued invitations are immutable."""
         entity = resolve_entity(request)
         rfq = _document_or_404(
-            request, RequestForQuotation.objects.select_for_update().filter(entity=entity),
+            request, _buyer_rfq_queryset(
+                request, RequestForQuotation.objects.select_for_update().filter(entity=entity),
+            ),
             pk, "No such RFQ in this entity.",
         )
         # Only a draft is editable; once issued its lines are a firm invitation vendors quote against.
@@ -724,6 +891,10 @@ class RfqDetailView(_ProcBase):
         ])
         vendor_portal.ensure_exact_deadline(rfq)
         if "lines" in body:
+            if hasattr(rfq, "shared_sourcing_group"):
+                raise ValidationError({
+                    "lines": "Create a new shared RFQ to change its branch allocations.",
+                })
             _write_rfq_lines(request, entity, rfq, _require_lines(body))
         # Replacing the invite set is subject to the responded-vendor protection in the service.
         if "invited_vendors" in body:
@@ -743,7 +914,9 @@ class RfqIssueView(_ProcBase):
         """Freeze and publish a draft invitation after service eligibility checks."""
         entity = resolve_entity(request)
         rfq = _document_or_404(
-            request, RequestForQuotation.objects.filter(entity=entity), pk,
+            request, _buyer_rfq_queryset(
+                request, RequestForQuotation.objects.filter(entity=entity),
+            ), pk,
             "No such RFQ in this entity.",
         )
         sourcing.issue_rfq(
@@ -767,7 +940,9 @@ class RfqCloseView(_ProcBase):
         """Close an issued event without award and preserve rejected bid history."""
         entity = resolve_entity(request)
         rfq = _document_or_404(
-            request, RequestForQuotation.objects.filter(entity=entity), pk,
+            request, _buyer_rfq_queryset(
+                request, RequestForQuotation.objects.filter(entity=entity),
+            ), pk,
             "No such RFQ in this entity.",
         )
         sourcing.close_rfq(rfq, reason=request.data.get("reason", ""), actor_user=request.user)
@@ -783,7 +958,9 @@ class RfqCancelView(_ProcBase):
         """Cancel without deleting the invitation and quotation audit trail."""
         entity = resolve_entity(request)
         rfq = _document_or_404(
-            request, RequestForQuotation.objects.filter(entity=entity), pk,
+            request, _buyer_rfq_queryset(
+                request, RequestForQuotation.objects.filter(entity=entity),
+            ), pk,
             "No such RFQ in this entity.",
         )
         sourcing.cancel_rfq(rfq, reason=request.data.get("reason", ""), actor_user=request.user)
@@ -805,9 +982,12 @@ class RfqSummaryView(_ProcBase):
         today = tenant_today(entity.tenant)
         from ..settings import resolve_procurement_settings
         policy = resolve_procurement_settings(entity)
-        branch_filter = _branch_q(request, entity, request.query_params)
+        branch_filter = _rfq_branch_q(request, entity, request.query_params)
         # One aggregate over the RFQ table for the three RFQ-status counts.
-        counts = RequestForQuotation.objects.filter(entity=entity).filter(branch_filter).aggregate(
+        rfqs = _buyer_rfq_queryset(
+            request, RequestForQuotation.objects.filter(entity=entity),
+        ).filter(branch_filter).distinct()
+        counts = rfqs.aggregate(
             draft=Count("id", filter=Q(rfq_status=RfqStatus.DRAFT)),
             open=Count("id", filter=Q(rfq_status=RfqStatus.ISSUED)),
             closing_soon=Count("id", filter=Q(
@@ -819,9 +999,13 @@ class RfqSummaryView(_ProcBase):
             )),
         )
         # A second cheap query: submitted responses currently sitting on issued RFQs.
-        responses_in = VendorQuotation.objects.filter(
-            entity=entity, rfq__rfq_status=RfqStatus.ISSUED,
-        ).filter(branch_filter).exclude(quotation_status=QuotationStatus.DRAFT).count()
+        responses_in = _buyer_quotation_queryset(
+            request, VendorQuotation.objects.filter(
+                entity=entity, rfq__rfq_status=RfqStatus.ISSUED,
+            ),
+        ).filter(
+            _quotation_branch_q(request, entity, request.query_params),
+        ).exclude(quotation_status=QuotationStatus.DRAFT).distinct().count()
         return success_response("RFQ summary retrieved.", data={
             "draft": counts["draft"] or 0,
             "open": counts["open"] or 0,
@@ -893,10 +1077,10 @@ class QuotationListCreateView(_ProcBase):
     def get(self, request):
         """List entity quotations with bounded relational filters and search."""
         entity = resolve_entity(request)
-        qs = VendorQuotation.objects.filter(entity=entity).exclude(
+        qs = _buyer_quotation_queryset(request, VendorQuotation.objects.filter(entity=entity)).exclude(
             vendor_managed=True, quotation_status=QuotationStatus.DRAFT,
         ).select_related("vendor", "rfq", "branch")
-        qs = _branch_scoped(request, entity, qs, request.query_params)
+        qs = qs.filter(_quotation_branch_q(request, entity, request.query_params)).distinct()
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(quotation_status=status_)
         if (rfq := request.query_params.get("rfq")):
@@ -917,7 +1101,11 @@ class QuotationListCreateView(_ProcBase):
         entity = resolve_entity(request)
         body = request.data
         lines = _require_lines(body)
-        rfq = RequestForQuotation.objects.select_for_update().filter(entity=entity, pk=body.get("rfq")).first()
+        rfq = _buyer_rfq_queryset(
+            request, RequestForQuotation.objects.select_for_update().filter(
+                entity=entity, pk=body.get("rfq"),
+            ),
+        ).first()
         if rfq is None:
             raise ValidationError({"rfq": "An RFQ is required."})
         # A quotation is an offer against a *live* invitation - the RFQ must be issued.
@@ -976,7 +1164,9 @@ class QuotationDetailView(_ProcBase):
         """Return one entity-scoped offer with its priced line evidence."""
         entity = resolve_entity(request)
         quotation = _document_or_404(
-            request, _quotation_detail_queryset(entity), pk,
+            request, _buyer_quotation_queryset(
+                request, _quotation_detail_queryset(entity),
+            ), pk,
             "No such quotation in this entity.",
         )
         return success_response("Quotation retrieved.", data=QuotationDetailSerializer(quotation).data)
@@ -987,8 +1177,11 @@ class QuotationDetailView(_ProcBase):
         entity = resolve_entity(request)
         quotation = _document_or_404(
             request,
-            VendorQuotation.objects.select_for_update().select_related("rfq").filter(
-                entity=entity,
+            _buyer_quotation_queryset(
+                request,
+                VendorQuotation.objects.select_for_update().select_related("rfq").filter(
+                    entity=entity,
+                ),
             ),
             pk, "No such quotation in this entity.",
         )
@@ -1027,7 +1220,9 @@ class QuotationSubmitView(_ProcBase):
         """Submit the offer while preserving the captured pricing snapshot."""
         entity = resolve_entity(request)
         quotation = _document_or_404(
-            request, VendorQuotation.objects.filter(entity=entity), pk,
+            request, _buyer_quotation_queryset(
+                request, VendorQuotation.objects.filter(entity=entity),
+            ), pk,
             "No such quotation in this entity.",
         )
         sourcing.submit_quotation(quotation, actor_user=request.user)
@@ -1049,15 +1244,23 @@ class QuotationAwardView(_ProcBase):
         """Award a live offer, create a draft PO, and retain losing-bid evidence."""
         entity = resolve_entity(request)
         quotation = _document_or_404(
-            request, VendorQuotation.objects.filter(entity=entity), pk,
+            request, _buyer_quotation_queryset(
+                request, VendorQuotation.objects.filter(entity=entity),
+            ), pk,
             "No such quotation in this entity.",
         )
-        po = sourcing.award_quotation(
+        award = sourcing.award_quotation(
             quotation,
             order_date=_date(request.data.get("order_date"), "order_date"),
             competition_exception_reason=_competition_exception_reason(request),
             actor_user=request.user,
         )
+        if isinstance(award, list):
+            return success_response(
+                f"Quotation awarded to {len(award)} branch purchase orders.",
+                data=PurchaseOrderSerializer(award, many=True).data, status=201,
+            )
+        po = award
         return success_response(
             f"Quotation awarded → purchase order {po.document_number}.",
             data=PurchaseOrderSerializer(po).data, status=201,

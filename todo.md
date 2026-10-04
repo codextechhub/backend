@@ -313,6 +313,21 @@ MUST SAY:
 Verified in isolated worktree: vs_finance 1803 OK; vs_procurement 730 OK;
 vs_payments 404 OK; makemigrations check clean.
 
+### D112. Several branches can buy together while each awarded order keeps a real branch (f1a7ebc0, 2026-10-04)
+MODULES: M22 procurement and requisitions, M23 purchase orders delivery and AP,
+MRD.
+MUST SAY:
+- Complete requisition lines from several branches can be grouped into one
+  vendor-facing RFQ. An award creates one purchase order for each participating
+  branch so receiving, liability and reporting stay in the correct branch books.
+- Partial or mixed-line grouping is refused where it would make branch ownership
+  unclear. Vendor portal and internal order flows preserve the grouping links.
+- Every new purchase order must have a real branch. A single-branch legacy source
+  can be inferred; an ambiguous multi-branch source is refused rather than producing
+  a school-wide order.
+Verified in isolated worktree: focused groups 2, 39 and 52 OK; vs_procurement 732
+OK; migration and diff checks clean.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

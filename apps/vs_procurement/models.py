@@ -1569,6 +1569,85 @@ class PurchaseOrderLine(TimeStampedModel):
 
 
 # --------------------------------------------------------------------------- #
+# Shared sourcing across branches                                              #
+# --------------------------------------------------------------------------- #
+
+class SharedSourcingGroup(TimeStampedModel):
+    """Coordinate one vendor-facing RFQ for requisitions from several branches.
+
+    The RFQ and its quotation retain an anchor branch for their ordinary sourcing
+    lifecycle. The allocations name every participating branch, and award creates
+    separate commitments for those branches. No group row moves money or stock.
+    """
+
+    entity = models.ForeignKey(
+        "vs_finance.LedgerEntity", on_delete=models.PROTECT,
+        related_name="shared_sourcing_groups",
+    )
+    rfq = models.OneToOneField(
+        RequestForQuotation, on_delete=models.PROTECT,
+        related_name="shared_sourcing_group",
+    )
+    awarded_quotation = models.ForeignKey(
+        VendorQuotation, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="shared_sourcing_awards",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name="shared_sourcing_groups_created",
+    )
+
+
+class SharedSourcingAllocation(TimeStampedModel):
+    """Assign a requisition line's requested quantity to one shared RFQ line."""
+
+    group = models.ForeignKey(
+        SharedSourcingGroup, on_delete=models.PROTECT, related_name="allocations",
+    )
+    rfq_line = models.ForeignKey(
+        RfqLine, on_delete=models.PROTECT, related_name="shared_allocations",
+    )
+    requisition_line = models.ForeignKey(
+        PurchaseRequisitionLine, on_delete=models.PROTECT,
+        related_name="shared_sourcing_allocations",
+    )
+    quantity = models.DecimalField(max_digits=14, decimal_places=4)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["requisition_line"],
+                name="uniq_shared_sourcing_source_line",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(quantity__gt=0),
+                name="shared_sourcing_allocation_quantity_positive",
+            ),
+        ]
+
+
+class SharedSourcingOrder(TimeStampedModel):
+    """Keep the branch commitments of one group award together for retry safety."""
+
+    group = models.ForeignKey(
+        SharedSourcingGroup, on_delete=models.PROTECT, related_name="orders",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        related_name="shared_sourcing_orders",
+    )
+    purchase_order = models.OneToOneField(
+        PurchaseOrder, on_delete=models.PROTECT,
+        related_name="shared_sourcing_order",
+    )
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=["group", "branch"], name="uniq_shared_sourcing_group_branch",
+        )]
+
+
+# --------------------------------------------------------------------------- #
 # Goods received note (posts Dr expense, Cr GR/IR)                            #
 # --------------------------------------------------------------------------- #
 

@@ -170,9 +170,13 @@ class RfqInvitationResendView(_ProcBase):
 
     def post(self, request, pk, invitation_id):
         entity = resolve_entity(request)
+        from .orders import _buyer_rfq_queryset
+        rfq_ids = _buyer_rfq_queryset(
+            request, RequestForQuotation.objects.filter(entity=entity),
+        ).values("pk")
         invitation = RfqInvitation.objects.select_related(
             "rfq__entity__tenant", "vendor",
-        ).filter(pk=invitation_id, rfq_id=pk, rfq__entity=entity).first()
+        ).filter(pk=invitation_id, rfq_id=pk, rfq_id__in=rfq_ids).first()
         if invitation is None:
             raise NotFound("No such RFQ invitation in this entity.")
         vendor_portal.prepare_invitation(invitation)
@@ -185,9 +189,13 @@ class RfqInvitationExtendView(_ProcBase):
     @transaction.atomic
     def post(self, request, pk, invitation_id):
         entity = resolve_entity(request)
+        from .orders import _buyer_rfq_queryset
+        rfq_ids = _buyer_rfq_queryset(
+            request, RequestForQuotation.objects.filter(entity=entity),
+        ).values("pk")
         invitation = RfqInvitation.objects.select_for_update().select_related(
             "rfq__entity__tenant", "vendor",
-        ).filter(pk=invitation_id, rfq_id=pk, rfq__entity=entity).first()
+        ).filter(pk=invitation_id, rfq_id=pk, rfq_id__in=rfq_ids).first()
         if invitation is None:
             raise NotFound("No such RFQ invitation in this entity.")
         deadline = serializers.DateTimeField().run_validation(request.data.get("deadline"))
@@ -215,9 +223,12 @@ class RfqAmendmentCreateView(_ProcBase):
     @transaction.atomic
     def post(self, request, pk):
         entity = resolve_entity(request)
-        rfq = RequestForQuotation.objects.select_for_update().select_related(
+        from .orders import _buyer_rfq_queryset
+        rfq = _buyer_rfq_queryset(
+            request, RequestForQuotation.objects.select_for_update().select_related(
             "entity__tenant",
-        ).filter(pk=pk, entity=entity).first()
+            ).filter(pk=pk, entity=entity),
+        ).first()
         if rfq is None:
             raise NotFound("No such RFQ in this entity.")
         if rfq.rfq_status != RfqStatus.ISSUED:
@@ -236,6 +247,10 @@ class RfqAmendmentCreateView(_ProcBase):
             ).date()
         rfq.save(update_fields=["version", "response_due_at", "response_due_date", "updated_at"])
         if "lines" in request.data:
+            if hasattr(rfq, "shared_sourcing_group"):
+                raise ValidationError({
+                    "lines": "Create a new shared RFQ to change its branch allocations.",
+                })
             from .orders import _write_rfq_lines
             _write_rfq_lines(request, entity, rfq, _require_lines(request.data), preserve_history=True)
         amendment = RfqAmendment.objects.create(
