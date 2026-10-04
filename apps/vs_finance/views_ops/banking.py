@@ -19,7 +19,12 @@ from vs_rbac.scoping import (
 from core.response import success_response
 
 from ..audit import record
-from ..constants import BankLineStatus, DocumentStatus, FinanceAuditAction
+from ..constants import (
+    BankLineStatus,
+    BankSplitDifferenceTreatment,
+    DocumentStatus,
+    FinanceAuditAction,
+)
 from ..statement_imports import annotate_statement_rollback
 from ..views import resolve_entity
 from ..models import (
@@ -193,10 +198,14 @@ class _BankBranchAllocationSerializer(serializers.Serializer):
 
 
 class _BankAccountBranchSplitSerializer(serializers.Serializer):
-    """The cutover date, evidence reference and complete branch allocation."""
+    """The cutover date, evidence reference, difference treatment and complete branch allocation."""
 
     split_date = serializers.DateField()
     agreement_reference = serializers.CharField(max_length=64, trim_whitespace=True)
+    difference_treatment = serializers.ChoiceField(
+        choices=BankSplitDifferenceTreatment.choices,
+        default=BankSplitDifferenceTreatment.DEBT,
+    )
     allocations = _BankBranchAllocationSerializer(
         many=True,
         min_length=2,
@@ -208,8 +217,12 @@ class BankAccountBranchSplitView(_FinanceBase):
     """Split one legacy unbranched bank ledger into branch-owned successors.
 
     Every allocation states its signed opening balance, new bank name, ledger
-    code and both primary choices. The operation changes several branches at
-    once, so the bank-account update key must come through whole-tenant reach.
+    code and both primary choices. ``difference_treatment`` chooses what happens
+    where a branch's book balance on the shared ledger differs from its agreed
+    share: ``DEBT`` (the default) books it as inter-branch balances, returned as
+    ``inter_branch_transfers``; ``PERMANENT_MOVE`` passes it through retained
+    earnings. The operation changes several branches at once, so the
+    bank-account update key must come through whole-tenant reach.
 
     docstring-name: Split a shared bank account by branch
     """
@@ -239,6 +252,7 @@ class BankAccountBranchSplitView(_FinanceBase):
             values["allocations"],
             split_date=values["split_date"],
             agreement_reference=values["agreement_reference"],
+            difference_treatment=values["difference_treatment"],
             actor_user=request.user,
         )
         return success_response(
@@ -260,6 +274,17 @@ class BankAccountBranchSplitView(_FinanceBase):
                     for row in result.allocations
                 ],
                 "journal_ids": [entry.pk for entry in result.journals],
+                "difference_treatment": result.difference_treatment,
+                "inter_branch_transfers": [
+                    {
+                        "id": transfer.pk,
+                        "document_number": transfer.document_number,
+                        "from_branch_id": transfer.branch_id,
+                        "to_branch_id": transfer.to_branch_id,
+                        "amount": int(transfer.amount),
+                    }
+                    for transfer in result.transfers
+                ],
             },
             status=201,
         )

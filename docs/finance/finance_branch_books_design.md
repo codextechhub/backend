@@ -408,7 +408,14 @@ Existing books were kept with blank branches. Moving them:
 
 - every transaction with a blank branch is given the tenant's main branch;
 - a bank account used by several branches is split into one bank record and
-  ledger account per branch, with opening balances agreed by the bursar;
+  ledger account per branch, with opening balances agreed by the bursar. Where a
+  branch's own entries on the shared account differ from its agreed share, the
+  person splitting chooses per split: by default the difference is a debt between
+  branches, booked as a `BANK_SPLIT` inter-branch transfer (largest deficit
+  against largest surplus first, so every pair is explicit); or it moves
+  permanently through retained earnings. Ikeja's entries total 500k and Lekki's
+  minus 100k on a shared 400k; they agree 250k and 150k; by default Lekki owes
+  Ikeja 250k (`vs_finance.bank_splits`);
 - blank-branch budgets and petty cash funds are assigned to a branch.
 
 ---

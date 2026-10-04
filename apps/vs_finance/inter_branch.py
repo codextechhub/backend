@@ -35,6 +35,10 @@ The kinds, and the two journals each posts (sending branch first):
   adjusting document's own journal, and ``Dr deferred income, revenue or
   allowance and output tax, Cr inter-branch [A]`` at ``B``
   (:func:`book_income_given_back`).
+* **Shared bank split** (``A``'s book balance on a shared bank account was more
+  than the share it agreed to take, ``B``'s less): ``Dr inter-branch [B], Cr
+  shared bank`` and ``Dr shared bank, Cr inter-branch [A]``
+  (:func:`book_bank_split_difference`). ``B`` owes ``A`` the difference.
 
 Both branches must be open on the transfer's date (:func:`ensure_branches_open`).
 A tenant with one branch has no other branch to transfer to, so every service
@@ -671,6 +675,8 @@ def _void_transfer_atomic(transfer, *, actor_user=None, date=None, recharge=None
       restored to its receipts and credit notes.
     * A recharge share is voided only with its recharge, and goods only by sending
       them back: the stock has moved, and a reversal would not move it back.
+    * A shared bank split's difference is never voided: the split retired the
+      shared ledger it moved, so the owing branch repays it with a cash transfer.
     * Income given back is voided only with the credit note or concession that
       gave it back (``adjustment_entry``, from
       :func:`vs_finance.deferred_income.restore_unwinds`): voiding it alone would
@@ -689,6 +695,12 @@ def _void_transfer_atomic(transfer, *, actor_user=None, date=None, recharge=None
     if transfer.kind == InterBranchTransferKind.GOODS:
         raise InterBranchError(
             f"Transfer {transfer.document_number} moved goods. Send them back with a goods "
+            f"transfer the other way instead.",
+        )
+    if transfer.kind == InterBranchTransferKind.BANK_SPLIT:
+        raise InterBranchError(
+            f"Transfer {transfer.document_number} carries a difference agreed when a shared "
+            f"bank account was split, and that account is retired. Settle it with a cash "
             f"transfer the other way instead.",
         )
     if transfer.kind == InterBranchTransferKind.RECHARGE and (
@@ -1397,6 +1409,45 @@ def book_goods_transfer(entity, *, from_branch, to_branch, amount, transfer_date
         _audit_both(
             transfer, FinanceAuditAction.INTER_BRANCH_SENT,
             f"{source.name} issued goods worth {format_naira(amount)} to {target.name}: {purpose}",
+            actor_user=actor_user,
+        )
+    return transfer
+
+
+def book_bank_split_difference(entity, *, from_branch, to_branch, amount, split_date,
+                               shared_ledger, purpose, reference="", actor_user=None):
+    """Book cash one branch gives up to another when a shared bank account is split.
+
+    ``from_branch``'s entries on the shared ledger came to more than the share it
+    agreed to take, and ``to_branch``'s to less, so ``to_branch`` now holds
+    ``amount`` of ``from_branch``'s cash and owes it: ``Dr inter-branch
+    [to_branch], Cr shared ledger`` at ``from_branch`` and ``Dr shared ledger, Cr
+    inter-branch [from_branch]`` at ``to_branch``. The shared ledger's total is
+    unchanged; each branch's side of it moves to its agreed share, ready to be
+    carried to that branch's own bank ledger. Called inside the split's
+    transaction (:func:`vs_finance.bank_splits.split_shared_bank_account`), which
+    has already checked every branch is open on ``split_date``. Returns the posted
+    transfer.
+    """
+    require_several_branches(entity)
+    source = tenant_branch(entity, from_branch, field="branch")
+    target = tenant_branch(entity, to_branch, field="branch")
+    with transaction.atomic():
+        ensure_branches_open(entity, split_date, source, target)
+        transfer = _new_transfer(
+            entity, kind=InterBranchTransferKind.BANK_SPLIT, from_branch_id=source.pk,
+            to_branch_id=target.pk, amount=amount, transfer_date=split_date,
+            purpose=purpose, actor_user=actor_user, reference=(reference or "")[:64],
+        )
+        _post_balance_pair(
+            transfer, sending_account=shared_ledger, receiving_account=shared_ledger,
+            source=JournalSource.SYSTEM, actor_user=actor_user,
+        )
+        _finish(transfer)
+        _audit_both(
+            transfer, FinanceAuditAction.INTER_BRANCH_SENT,
+            f"{target.name} owes {source.name} {format_naira(amount)} agreed when a shared "
+            f"bank account was split: {purpose}",
             actor_user=actor_user,
         )
     return transfer

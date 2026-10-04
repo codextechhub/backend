@@ -1,10 +1,28 @@
 """Cut a legacy shared bank account over to branch-owned bank ledgers.
 
 The legacy bank record, statements, reconciliations and journal lines stay in
-place as historical evidence. A cutover clears each historical branch's legacy
-cash against retained earnings, then opens one new bank ledger per explicitly
-named branch against the same account. Only after every SYSTEM journal posts
-does the service inactivate the legacy records.
+place as historical evidence. A cutover opens one new bank ledger per
+explicitly named branch against the same physical account, carries each
+branch's agreed share of the legacy balance into it, and only after every
+SYSTEM journal posts inactivates the legacy records.
+
+A branch's book balance on the legacy ledger (the sum of its own entries on it)
+rarely equals the share the bursars agree it takes. The person splitting
+chooses, per split, how that difference is treated
+(:class:`~vs_finance.constants.BankSplitDifferenceTreatment`):
+
+* **Debt between branches** (the default). Each difference becomes an
+  inter-branch balance, booked as a ``BANK_SPLIT`` transfer
+  (:func:`vs_finance.inter_branch.book_bank_split_difference`) so it shows on the
+  pair balances and in the register, and the owing branch repays it later with a
+  cash transfer. Retained earnings do not move at any branch.
+* **Permanent move.** Each branch's legacy balance is cleared against retained
+  earnings and each successor opened against retained earnings, so the
+  difference becomes a permanent shift of equity between branches.
+
+When every share equals its book balance there is no difference to treat, and
+either choice posts one plain reclassification per branch from the legacy
+ledger to its new one.
 """
 from __future__ import annotations
 
@@ -23,6 +41,7 @@ from .constants import (
     AccountMappingKey,
     AccountType,
     BankLineStatus,
+    BankSplitDifferenceTreatment,
     FinanceAuditAction,
     JournalSource,
     NormalBalance,
@@ -51,12 +70,58 @@ class BankAccountSplitAllocationResult:
 
 @dataclass(frozen=True)
 class BankAccountSplitResult:
-    """The durable records produced by one completed cutover."""
+    """The durable records produced by one completed cutover.
+
+    ``transfers`` are the ``BANK_SPLIT`` inter-branch transfers a debt treatment
+    booked, empty under a permanent move or when no share differed.
+    """
 
     legacy_balance: int
     bank_accounts: tuple
     allocations: tuple[BankAccountSplitAllocationResult, ...]
     journals: tuple
+    difference_treatment: str = BankSplitDifferenceTreatment.DEBT
+    transfers: tuple = ()
+
+
+def match_differences(differences):
+    """Pair branches that give up cash with branches that receive it, as debts.
+
+    ``differences`` maps each branch id to its book balance on the shared ledger
+    less its agreed share. A positive difference is a surplus branch, whose
+    cash another branch keeps; a negative one is a deficit branch, which keeps
+    cash that is not its own. Returns ``(owed_branch_id, owing_branch_id,
+    amount)`` rows, each a debt the owing branch owes the owed one.
+
+    The largest remaining deficit is settled against the largest remaining
+    surplus, repeatedly, ties to the lower branch id, so the result is the same
+    on every run and never needs more than one debt fewer than the branches
+    involved. Bright Star's Ikeja, Lekki, Yaba and Ajah differ by +N5,000,
+    +N3,000, -N4,000 and -N4,000: Yaba (the lower id of the two largest
+    deficits) owes Ikeja N4,000, leaving Ikeja N1,000 surplus; Ajah's N4,000
+    then meets the largest surplus left, Lekki's N3,000, and the last N1,000 of
+    it Ikeja's. Three debts: Yaba owes Ikeja N4,000, Ajah owes Lekki N3,000 and
+    Ajah owes Ikeja N1,000.
+    """
+    surplus = {branch: amount for branch, amount in differences.items() if amount > 0}
+    deficit = {branch: -amount for branch, amount in differences.items() if amount < 0}
+    if sum(surplus.values()) != sum(deficit.values()):
+        raise BankAccountSplitError(
+            "The branch differences do not cancel, so they cannot be paired as debts."
+        )
+    debts = []
+    while deficit:
+        owing = min(deficit, key=lambda branch: (-deficit[branch], branch))
+        owed = min(surplus, key=lambda branch: (-surplus[branch], branch))
+        amount = min(deficit[owing], surplus[owed])
+        debts.append((owed, owing, amount))
+        deficit[owing] -= amount
+        surplus[owed] -= amount
+        if not deficit[owing]:
+            del deficit[owing]
+        if not surplus[owed]:
+            del surplus[owed]
+    return debts
 
 
 def _branch_id(value):
@@ -149,20 +214,42 @@ def split_shared_bank_account(
     *,
     split_date,
     agreement_reference,
+    difference_treatment=BankSplitDifferenceTreatment.DEBT,
     actor_user=None,
 ):
     """Move one legacy unbranched bank ledger into explicitly agreed branch balances.
 
     ``split_date`` is the cutover accounting date. No posted movement may exist
     after it, so the exact balance validated here is also the full live legacy
-    balance. Each historical branch's legacy cash is first cleared against
-    retained earnings, then each successor's agreed balance is opened against
-    retained earnings. That bridge cancels across the tenant while each branch's
-    own balance sheet receives the agreed cash or overdraft. The transaction locks
-    both legacy rows, and any failure rolls back every successor and journal.
+    balance, and every branch the split names (by allocation or by history)
+    must be open on it, its own branch close included.
+
+    ``difference_treatment`` says what happens where a branch's book balance on
+    the legacy ledger differs from its agreed share (see the module docstring):
+
+    * ``DEBT``: the differences are paired as debts (:func:`match_differences`)
+      and each booked as a ``BANK_SPLIT`` inter-branch transfer that moves the
+      cash between the branches' sides of the legacy ledger. Each branch's side
+      then equals its agreed share and is reclassified into its new ledger.
+    * ``PERMANENT_MOVE``: each historical branch's legacy cash is cleared against
+      retained earnings, then each successor's agreed balance is opened against
+      retained earnings. That bridge cancels across the tenant.
+
+    Either way each branch's own balance sheet receives the agreed cash or
+    overdraft, the treatment is named in every journal's narration and in the
+    split's audit entry, and when no share differs both treatments post the
+    same plain reclassification. The transaction locks both legacy rows, and any
+    failure rolls back every successor, transfer and journal.
     """
+    from .inter_branch import book_bank_split_difference, ensure_branches_open
     from .models import Account, BankAccount, JournalEntry, JournalLine
 
+    if difference_treatment not in BankSplitDifferenceTreatment.values:
+        raise BankAccountSplitError(
+            "Choose how a branch's difference is treated: "
+            + " or ".join(BankSplitDifferenceTreatment.values) + "."
+        )
+    treatment = BankSplitDifferenceTreatment(difference_treatment)
     agreement_reference = str(agreement_reference or "").strip()
     if not agreement_reference:
         raise BankAccountSplitError(
@@ -321,29 +408,38 @@ def split_shared_bank_account(
             f"legacy ledger balance on {split_date} is {legacy_balance} kobo."
         )
 
+    book = dict(historical_balances)
+    agreed = {row["branch"].pk: row["opening_balance"] for row in rows}
+    differences = {
+        branch_id: book.get(branch_id, 0) - agreed.get(branch_id, 0)
+        for branch_id in sorted(set(book) | set(agreed))
+    }
+    has_difference = any(differences.values())
+    ensure_branches_open(source.entity, split_date, *differences)
     period = resolve_period(source.entity, split_date)
-    retained_earnings = resolve_mapped_account(
-        source.entity,
-        AccountMappingKey.RETAINED_EARNINGS,
-        label="retained earnings",
-    )
-    created_banks = []
-    journals = []
-    for branch_id, amount in historical_balances:
+    if not has_difference:
+        treatment_note = "no difference between book balances and agreed shares"
+    elif treatment == BankSplitDifferenceTreatment.DEBT:
+        treatment_note = "differences kept as debts between branches"
+    else:
+        treatment_note = "differences moved permanently through retained earnings"
+
+    def post_pair(branch_id, narration, description, debit_account, credit_account, amount):
+        """Post one two-line SYSTEM journal at ``branch_id``; a negative amount swaps sides."""
         entry = JournalEntry.objects.create(
             entity=source.entity,
             branch_id=branch_id,
             date=split_date,
             period=period,
             source=JournalSource.SYSTEM,
-            narration=f"Clear legacy branch bank balance from {source.name}",
+            narration=f"{narration} ({treatment_note})"[:255],
             reference=agreement_reference,
             created_by=actor_user,
         )
         line_rows = (
-            ((retained_earnings, amount, 0), (legacy, 0, amount))
+            ((debit_account, amount, 0), (credit_account, 0, amount))
             if amount > 0
-            else ((legacy, -amount, 0), (retained_earnings, 0, -amount))
+            else ((credit_account, -amount, 0), (debit_account, 0, -amount))
         )
         for line_no, (account, debit, credit) in enumerate(line_rows, start=1):
             JournalLine.objects.create(
@@ -351,11 +447,52 @@ def split_shared_bank_account(
                 account=account,
                 debit=debit,
                 credit=credit,
-                description="Clear the legacy bank balance at branch cutover",
+                description=description[:255],
                 line_no=line_no,
             )
         post_journal(entry, actor_user=actor_user)
-        journals.append(entry)
+        return entry
+
+    permanent = has_difference and treatment == BankSplitDifferenceTreatment.PERMANENT_MOVE
+    retained_earnings = None
+    created_banks = []
+    journals = []
+    transfers = []
+    if permanent:
+        retained_earnings = resolve_mapped_account(
+            source.entity,
+            AccountMappingKey.RETAINED_EARNINGS,
+            label="retained earnings",
+        )
+        for branch_id, amount in historical_balances:
+            journals.append(post_pair(
+                branch_id,
+                f"Clear legacy branch bank balance from {source.name}",
+                "Clear the legacy bank balance at branch cutover",
+                retained_earnings,
+                legacy,
+                amount,
+            ))
+    elif has_difference:
+        for owed, owing, amount in match_differences(differences):
+            transfer = book_bank_split_difference(
+                source.entity,
+                from_branch=owed,
+                to_branch=owing,
+                amount=amount,
+                split_date=split_date,
+                shared_ledger=legacy,
+                purpose=(
+                    f"Difference on splitting shared bank account {source.name}, "
+                    f"kept as a debt between branches ({agreement_reference})"
+                ),
+                reference=agreement_reference,
+                actor_user=actor_user,
+            )
+            transfers.append(transfer)
+            journals.extend(
+                leg.journal for leg in transfer.legs.select_related("journal").order_by("role")
+            )
 
     for row in rows:
         new_ledger = Account.objects.create(
@@ -392,32 +529,14 @@ def split_shared_bank_account(
         amount = row["opening_balance"]
         if amount == 0:
             continue
-        entry = JournalEntry.objects.create(
-            entity=source.entity,
-            branch=row["branch"],
-            date=split_date,
-            period=period,
-            source=JournalSource.SYSTEM,
-            narration=f"Branch bank cutover from {source.name}",
-            reference=agreement_reference,
-            created_by=actor_user,
-        )
-        line_rows = (
-            ((new_ledger, amount, 0), (retained_earnings, 0, amount))
-            if amount > 0
-            else ((retained_earnings, -amount, 0), (new_ledger, 0, -amount))
-        )
-        for line_no, (account, debit, credit) in enumerate(line_rows, start=1):
-            JournalLine.objects.create(
-                entry=entry,
-                account=account,
-                debit=debit,
-                credit=credit,
-                description=f"Agreed opening balance for {row['branch'].name}",
-                line_no=line_no,
-            )
-        post_journal(entry, actor_user=actor_user)
-        journals.append(entry)
+        journals.append(post_pair(
+            row["branch"].pk,
+            f"Branch bank cutover from {source.name}",
+            f"Agreed opening balance for {row['branch'].name}",
+            new_ledger,
+            retained_earnings if permanent else legacy,
+            amount,
+        ))
 
     remaining = legacy_lines.aggregate(debit=Sum("debit"), credit=Sum("credit"))
     remaining_balance = int(remaining["debit"] or 0) - int(remaining["credit"] or 0)
@@ -453,7 +572,7 @@ def split_shared_bank_account(
         target=source,
         message=(
             f"Split legacy bank account {source.name} into {len(created_banks)} "
-            f"branch accounts on {split_date}."
+            f"branch accounts on {split_date}, {treatment_note}."
         ),
         before=source_before,
         after={"is_active": False, "is_primary": False, "is_primary_collection": False},
@@ -461,7 +580,18 @@ def split_shared_bank_account(
         split_date=str(split_date),
         legacy_balance=legacy_balance,
         legacy_ledger_account_id=legacy.pk,
-        retained_earnings_account_id=retained_earnings.pk,
+        difference_treatment=treatment.value,
+        retained_earnings_account_id=getattr(retained_earnings, "pk", None),
+        branch_differences=[
+            {
+                "branch_id": branch_id,
+                "book_balance": book.get(branch_id, 0),
+                "agreed_balance": agreed.get(branch_id, 0),
+                "difference": difference,
+            }
+            for branch_id, difference in differences.items()
+        ],
+        inter_branch_transfer_ids=[transfer.pk for transfer in transfers],
         historical_branch_balances=[
             {"branch_id": branch_id, "balance": balance}
             for branch_id, balance in historical_balances
@@ -488,4 +618,6 @@ def split_shared_bank_account(
             for row, bank in zip(rows, created_banks)
         ),
         journals=tuple(journals),
+        difference_treatment=treatment.value,
+        transfers=tuple(transfers),
     )

@@ -818,6 +818,12 @@ class InterBranchTransferKind(models.TextChoices):
     moved bill's income another branch booked
     (:func:`vs_finance.inter_branch.book_income_given_back`), and is voided only
     with that document.
+
+    BANK_SPLIT carries the difference between a branch's book balance on a
+    shared bank account and the share it agreed to take when the account was
+    split into branch accounts (:mod:`vs_finance.bank_splits`). It is never
+    voided: the shared ledger it moved is retired, so the owing branch settles
+    it with a cash transfer the other way.
     """
     CASH = "CASH", "Cash"
     FORWARDED_RECEIPT = "FORWARDED_RECEIPT", "Forwarded receipt"
@@ -825,6 +831,7 @@ class InterBranchTransferKind(models.TextChoices):
     RECHARGE = "RECHARGE", "Recharge"
     GOODS = "GOODS", "Goods"
     INCOME_GIVEN_BACK = "INCOME_GIVEN_BACK", "Income given back"
+    BANK_SPLIT = "BANK_SPLIT", "Shared bank split"
 
 
 class InterBranchLegRole(models.TextChoices):
@@ -1124,3 +1131,25 @@ class PayBroughtForwardSource(models.TextChoices):
 
     PREVIOUS_EMPLOYER = "PREVIOUS_EMPLOYER", "Previous employer"
     THIS_EMPLOYER = "THIS_EMPLOYER", "This employer, before payroll ran here"
+
+
+class BankSplitDifferenceTreatment(models.TextChoices):
+    """What a shared bank split does with a branch's book balance that differs from its share.
+
+    Ikeja and Lekki share a GTBank account holding N400,000. Ikeja's entries on
+    it total N500,000 and Lekki's minus N100,000, and the bursars agree Ikeja
+    takes N250,000 and Lekki N150,000.
+
+    * ``DEBT``: Lekki now holds N250,000 of Ikeja's cash, so Lekki owes Ikeja
+      N250,000 on the inter-branch balances and settles it later with a cash
+      transfer. Neither branch's retained earnings move.
+    * ``PERMANENT_MOVE``: the N250,000 passes through retained earnings, so
+      Ikeja's equity falls and Lekki's rises by that much, and nobody owes
+      anybody.
+
+    Chosen per split. A split where every share equals its book balance has no
+    difference, and posts the same journals under either choice.
+    """
+
+    DEBT = "DEBT", "Debt between branches"
+    PERMANENT_MOVE = "PERMANENT_MOVE", "Permanent move through retained earnings"

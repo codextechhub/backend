@@ -295,6 +295,18 @@ Verified in isolated worktree (da1b836c): split module 19 OK; posting,
 reconciliation and split boundary 52 OK; vs_finance 1806 OK; vs_payments 403 OK;
 vs_procurement 728 OK; makemigrations check clean. The primary session independently
 reran the 52-test boundary against the final files and it passed.
+AMENDMENT (owner decision 2026-10-04): the person splitting chooses per split how a
+branch's difference between its book balance on the shared account and its agreed
+share is treated (`difference_treatment`). DEFAULT is DEBT: each difference becomes
+an inter-branch balance, booked as a `BANK_SPLIT` inter-branch transfer on the
+inter-branch account (1260) with counterparty branches, shown on the pair balances
+and in the register, paired largest deficit against largest surplus first; it is
+never voided (settled by a cash transfer the other way). PERMANENT_MOVE keeps the
+retained-earnings behaviour above. A split with no differences posts a plain
+reclassification under either choice. The choice is on the audit entry and in every
+journal narration; every branch the split names must be open on the split date,
+including its own branch close. The MUST SAY bullets on retained earnings above now
+describe PERMANENT_MOVE only. Migration 0062_bank_split_transfer_kind adds the kind.
 
 ### D111. Each branch closes and reopens its own accounting month and year (5e58444e, 2026-10-04)
 MODULES: M19 finance and accounting, M18 payments and collections, M22/M23
