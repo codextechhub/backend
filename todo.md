@@ -356,7 +356,7 @@ MUST SAY:
 Verified in isolated worktree: vs_user 430 OK; vs_workflow 539 OK; vs_audit 109 OK;
 schools.vs_staff 546 OK, plus focused contract suites.
 
-### D114. The daily held-ledger check allows for Paystack sweeping CodeX's balance, behind a CodeX platform setting (uncommitted, 2026-10-04)
+### D114. The daily held-ledger check allows for Paystack sweeping CodeX's balance, behind a CodeX platform setting (2063469a, 2026-10-04)
 MODULES: M18 payments and collections, M06 configuration and capability (the new
 platform setting), M04 roles and permissions (two keys:
 payments.platform_provider.view SENSITIVE, .update CRITICAL), M30 system health
