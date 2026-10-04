@@ -5,7 +5,9 @@ from unittest.mock import patch
 
 from .constants import PeriodStatus
 from .exceptions import PeriodClosedError
-from .models import Account, BranchFiscalPeriod, BranchFiscalYear, FixedAsset, LedgerSeal
+from .models import (
+    Account, BranchFiscalPeriod, BranchFiscalYear, FiscalYear, FixedAsset, LedgerSeal,
+)
 from .posting import ensure_period_open
 from .tests_shared_write_reach import _SharedWriteFixture
 from core.test_utils import TenantAPIClient
@@ -191,6 +193,63 @@ class BranchCloseAPITests(_SharedWriteFixture):
         )
         self.assertEqual(response.status_code, 200, response.data)
         self.assertNotIn("branch_period", response.data["data"])
+
+
+class CalendarWholeSchoolRuleTests(_SharedWriteFixture):
+    """Which calendar writes a branch bursar may make, and which need the whole school.
+
+    Ngozi keeps only Lekki's books. She closes and reopens Lekki's months herself,
+    which is the point of a per-branch close. Opening a new fiscal year changes
+    every branch's calendar, and reopening a closed year moves a whole year's result
+    back out of Retained Earnings, so both need somebody who reaches every branch.
+    Naming a branch in the body never turns a whole-school write into a branch one.
+    """
+
+    def test_naming_a_branch_does_not_let_a_branch_bursar_open_a_year(self):
+        response = self.send(
+            self.ngozi, "post", "fiscal-years/",
+            body={"year": 2027, "branch": self.lekki.pk},
+        )
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertFalse(FiscalYear.objects.filter(entity=self.books, year=2027).exists())
+
+    def test_a_branch_bursar_cannot_reopen_her_own_branch_year(self):
+        from .close import close_fiscal_year
+
+        fiscal_year = self.year()
+        close_fiscal_year(
+            self.books, fiscal_year, actor_user=self.adaeze, branch=self.lekki,
+            require_periods_closed=False, reason="Close Lekki for the audit.",
+        )
+
+        response = self.send(
+            self.ngozi, "post", f"fiscal-years/{fiscal_year.pk}/reopen/",
+            body={"branch": self.lekki.pk, "reason": "Fix a December entry."},
+        )
+
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(BranchFiscalYear.objects.get(
+            fiscal_year=fiscal_year, branch=self.lekki,
+        ).status, PeriodStatus.CLOSED)
+
+    def test_a_whole_school_bursar_reopens_one_branch_year(self):
+        from .close import close_fiscal_year
+
+        fiscal_year = self.year()
+        close_fiscal_year(
+            self.books, fiscal_year, actor_user=self.adaeze, branch=self.lekki,
+            require_periods_closed=False, reason="Close Lekki for the audit.",
+        )
+
+        response = self.send(
+            self.adaeze, "post", f"fiscal-years/{fiscal_year.pk}/reopen/",
+            body={"branch": self.lekki.pk, "reason": "Fix a December entry."},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(BranchFiscalYear.objects.get(
+            fiscal_year=fiscal_year, branch=self.lekki,
+        ).status, PeriodStatus.OPEN)
 
 
 class BranchFiscalYearCloseTests(_SharedWriteFixture):

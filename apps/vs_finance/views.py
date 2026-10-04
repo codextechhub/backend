@@ -126,16 +126,24 @@ CHART_OF_ACCOUNTS = "the chart of accounts"
 
 
 class _FiscalCalendarWriteMixin(WholeTenantWriteMixin):
-    """Calendar setup needs tenant reach; close actions authorize their named branch."""
+    """Calendar writes need the whole tenant, except the branch actions that say otherwise.
+
+    A view that sets ``branch_calendar_action`` (closing, reopening and locking a
+    month, closing a year) is authorized for the branch it names by
+    :func:`_calendar_branch`, so Lekki's bursar closes Lekki's month. Every other
+    calendar write keeps the whole-tenant rule: opening a fiscal year changes every
+    branch's calendar, and reopening a closed year moves a year's result back out of
+    Retained Earnings. The view decides which kind it is; a ``branch`` in the
+    request body never does, or naming a branch would open any whole-tenant write
+    to a branch-bound caller.
+    """
 
     shared_subject = "the fiscal periods and years"
 
     def check_permissions(self, request):
         from rest_framework.permissions import SAFE_METHODS
 
-        if request.method in SAFE_METHODS:
-            return super().check_permissions(request)
-        if getattr(self, "branch_calendar_action", False) or (request.data or {}).get("branch"):
+        if request.method not in SAFE_METHODS and getattr(self, "branch_calendar_action", False):
             return APIView.check_permissions(self, request)
         return super().check_permissions(request)
 
@@ -2158,14 +2166,14 @@ class FiscalYearReopenView(_FiscalCalendarWriteMixin, APIView):
     only for a one-branch tenant and the reason required on the audit row.
 
     Reopening a year moves a whole year's result out of Retained Earnings, so it
-    has its own key, ``finance.fiscalyear.reopen``, and like every write to the
-    fiscal calendar it needs whole-tenant reach. A LOCKED year cannot be reopened.
+    has its own key, ``finance.fiscalyear.reopen``, and needs whole-tenant reach
+    even though it names one branch: a branch's bursar closes their own year but
+    does not reopen it. A LOCKED year cannot be reopened.
 
     docstring-name: Reopen a fiscal year
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
-    branch_calendar_action = True
     rbac_permission = "finance.fiscalyear.reopen"
 
     def post(self, request, id):

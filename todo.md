@@ -388,6 +388,26 @@ tests_custody_held 75 OK; vs_payments 425 OK; vs_health 51 OK; vs_config 164 OK;
 vs_rbac band and catalogue tests 51 OK; vs_finance 1825 OK; makemigrations check
 clean.
 
+### D115. Opening or reopening a fiscal year needs the whole school, whatever branch a request names (hash pending, 2026-10-04)
+MODULES: M19 finance and accounting (fiscal calendar), M04 roles and permissions, MRD.
+Owner decision 2026-10-04: reopening a closed year is whole-school only.
+MUST SAY:
+- Calendar writes (M19, M04). Closing, reopening and locking a month and closing a
+  year are per-branch actions: the branch's own bursar may make them for a branch
+  they reach. Opening a fiscal year and reopening a closed year need whole-tenant
+  reach, even though a reopen names one branch (a branch's bursar closes their own
+  year but does not reopen it). A refusal reads "Only a school-wide administrator
+  can change the fiscal periods and years."
+- Security fix: the calendar write rule exempted any request whose body named a
+  branch, so a branch-only bursar could open a whole-school fiscal year (or reopen
+  a year) by adding `branch` to the body. Only the per-branch views are exempt now.
+- FinPro v0.7.44 (b3c4b95) makes the calendar screen branch-aware (lists by branch,
+  actions send the branch, All branches asks which) and adds "Re-open year" for
+  whole-school holders of finance.fiscalyear.reopen; school-fe b51a39c and
+  console-fe a1e254c pin it (not pushed).
+Verified: tests_branch_close, tests_shared_write_reach and tests_year_close_guard
+126 OK; vs_finance 1844 OK. The full suite was not run.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

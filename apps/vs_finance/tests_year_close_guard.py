@@ -563,7 +563,7 @@ class ReopenFiscalYearTests(_YearFixture):
         )
         self.assertEqual(response.status_code, 403, response.data)
         self.assertEqual(response.data["error"]["code"], REFUSED)
-        self.assertEqual(response.data["message"], "You cannot change this branch's fiscal calendar.")
+        self.assertEqual(response.data["message"], CALENDAR_MESSAGE)
         self.assertEqual(self.year().status, PeriodStatus.CLOSED)
         self.assertEqual(self.retained(), 130000)
 
