@@ -9,8 +9,12 @@ from django.db.models import Exists, OuterRef
 from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import serializers
-from rest_framework.exceptions import NotFound, ValidationError
-from vs_rbac.scoping import transaction_branch_q
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from vs_rbac.scoping import (
+    caller_reaches_whole_tenant,
+    shared_write_refusal,
+    transaction_branch_q,
+)
 
 from core.response import success_response
 
@@ -172,6 +176,91 @@ class BankAccountListCreateView(_FinanceBase):
         return success_response(
             f"Bank account '{name}' created.",
             data=BankAccountSerializer(bank, context={"request": request}).data,
+            status=201,
+        )
+
+
+class _BankBranchAllocationSerializer(serializers.Serializer):
+    """One explicitly agreed branch share of a legacy bank balance."""
+
+    branch = serializers.IntegerField(min_value=1)
+    opening_balance = serializers.IntegerField()
+    bank_account_name = serializers.CharField(max_length=160, trim_whitespace=True)
+    ledger_account_code = serializers.RegexField(r"^[0-9]{4}$")
+    ledger_account_name = serializers.CharField(max_length=160, trim_whitespace=True)
+    is_primary = serializers.BooleanField(required=True)
+    is_primary_collection = serializers.BooleanField(required=True)
+
+
+class _BankAccountBranchSplitSerializer(serializers.Serializer):
+    """The cutover date, evidence reference and complete branch allocation."""
+
+    split_date = serializers.DateField()
+    agreement_reference = serializers.CharField(max_length=64, trim_whitespace=True)
+    allocations = _BankBranchAllocationSerializer(
+        many=True,
+        min_length=2,
+        max_length=100,
+    )
+
+
+class BankAccountBranchSplitView(_FinanceBase):
+    """Split one legacy unbranched bank ledger into branch-owned successors.
+
+    Every allocation states its signed opening balance, new bank name, ledger
+    code and both primary choices. The operation changes several branches at
+    once, so the bank-account update key must come through whole-tenant reach.
+
+    docstring-name: Split a shared bank account by branch
+    """
+
+    rbac_permission = "finance.bankaccount.update"
+
+    def post(self, request, pk):
+        from ..bank_splits import split_shared_bank_account
+
+        entity = resolve_entity(request)
+        if not caller_reaches_whole_tenant(request.user, entity.tenant):
+            raise PermissionDenied(
+                shared_write_refusal("a bank account used by several branches")
+            )
+        source = (
+            BankAccount.objects.filter(entity=entity, pk=pk)
+            .select_related("gl_account", "branch")
+            .first()
+        )
+        if source is None:
+            raise NotFound("Bank account not found for this entity.")
+        payload = _BankAccountBranchSplitSerializer(data=request.data or {})
+        payload.is_valid(raise_exception=True)
+        values = payload.validated_data
+        result = split_shared_bank_account(
+            source,
+            values["allocations"],
+            split_date=values["split_date"],
+            agreement_reference=values["agreement_reference"],
+            actor_user=request.user,
+        )
+        return success_response(
+            f"Bank account '{source.name}' split into branch accounts.",
+            data={
+                "legacy_bank_account_id": source.pk,
+                "legacy_balance": result.legacy_balance,
+                "bank_accounts": [
+                    {
+                        "id": row.id,
+                        "name": row.name,
+                        "branch_id": row.branch_id,
+                        "gl_account_id": row.gl_account_id,
+                        "gl_account_code": row.gl_account_code,
+                        "opening_balance": row.opening_balance,
+                        "is_primary": row.is_primary,
+                        "is_primary_collection": row.is_primary_collection,
+                    }
+                    for row in result.allocations
+                ],
+                "journal_ids": [entry.pk for entry in result.journals],
+            },
             status=201,
         )
 

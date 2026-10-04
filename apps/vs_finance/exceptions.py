@@ -28,6 +28,13 @@ class PostingError(FinanceError):
     default_message = "The journal could not be posted."  # Default posting failure message.
 
 
+class BankAccountSplitError(FinanceError):
+    """A legacy shared bank account cannot be cut over as requested."""
+
+    error_code = "BANK_ACCOUNT_SPLIT_INVALID"
+    default_message = "The shared bank account could not be split by branch."
+
+
 class UnbalancedJournalError(PostingError):
     error_code = "JOURNAL_UNBALANCED"  # Journal debits and credits do not balance.
     default_message = "Journal debits and credits do not balance."  # Default balancing error message.

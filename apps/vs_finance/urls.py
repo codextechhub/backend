@@ -169,6 +169,7 @@ from .views_ops.payroll_statutory import (
     AnnualPayeReturnView,
 )
 from .views_ops import (
+    BankAccountBranchSplitView,
     BankAccountDetailView,
     BankAccountListCreateView,
     BankTransactionDetailView,
@@ -475,6 +476,11 @@ urlpatterns = [
     # Banking + reconciliation
     path("bank-accounts/", BankAccountListCreateView.as_view(), name="finance-bank-list"),
     path("bank-accounts/<int:pk>/", BankAccountDetailView.as_view(), name="finance-bank-detail"),
+    path(
+        "bank-accounts/<int:pk>/split-by-branch/",
+        BankAccountBranchSplitView.as_view(),
+        name="finance-bank-split-by-branch",
+    ),
     path("bank-transactions/", BankTransactionListCreateView.as_view(),
          name="finance-bank-transaction-list"),
     path("bank-transactions/<int:pk>/", BankTransactionDetailView.as_view(),

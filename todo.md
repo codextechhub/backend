@@ -264,6 +264,38 @@ vs_finance 1673, vs_procurement 728, vs_payments 403, vs_audit 108, vs_workflow
 538, core 197, vs_import_data 121, vs_config 164, schools.vs_onboarding 179,
 vs_user 427, vs_admin_console 177, all OK.
 
+### D110. A shared physical bank account can be split into branch bank accounts without losing history (da1b836c, 2026-10-04)
+MODULES: M19 finance and accounting, MRD.
+MUST SAY:
+- A whole-tenant finance operator with `finance.bankaccount.update` can retire one
+  active, school-wide bank account and create at least two branch bank accounts in
+  one atomic cutover.
+- Signed branch allocations must add exactly to the legacy ledger balance. Positive
+  balances and overdrafts are supported. Each branch receives its agreed cash or
+  overdraft through balanced SYSTEM journals, while the tenant's retained earnings
+  bridge cancels in total.
+- The cutover keeps the legacy bank account, ledger account, statements, lines and
+  journals as inactive historical evidence. Provider subaccount identifiers are not
+  copied to successor accounts.
+- The action refuses cross-tenant or out-of-reach branches, future cutover dates,
+  unmatched statement lines, future statement or ledger activity, unplaced historic
+  ledger movement, duplicate names or codes, and conflicting primary or collection
+  accounts.
+- Journal posting and statement import lock and recheck the affected accounts so no
+  new movement can slip through while the legacy account is being retired.
+- The response returns only the successor identifiers, branch, ledger code, opening
+  balance and primary flags. The durable audit record carries the agreement
+  reference, legacy balance and ledger, historical branch balances, allocations,
+  successor identifiers and cutover journal identifiers.
+DOCUMENT WORK DEFERRED BY OWNER: start from MRD v2.99 and M19 Finance and Accounting
+FRD v1.14, recheck the latest versions on the day, create the required new versions,
+reconcile their current gaps and traceability, render every page, and present them
+for review after this implementation is committed.
+Verified in isolated worktree (da1b836c): split module 19 OK; posting,
+reconciliation and split boundary 52 OK; vs_finance 1806 OK; vs_payments 403 OK;
+vs_procurement 728 OK; makemigrations check clean. The primary session independently
+reran the 52-test boundary against the final files and it passed.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
