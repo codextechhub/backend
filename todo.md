@@ -264,6 +264,23 @@ vs_finance 1673, vs_procurement 728, vs_payments 403, vs_audit 108, vs_workflow
 538, core 197, vs_import_data 121, vs_config 164, schools.vs_onboarding 179,
 vs_user 427, vs_admin_console 177, all OK.
 
+### D111. Each branch closes and reopens its own accounting month and year (5e58444e, 2026-10-04)
+MODULES: M19 finance and accounting, M18 payments and collections, M22/M23
+procurement and payables, MRD.
+MUST SAY:
+- Fiscal periods and years carry branch state. A branch close, lock, reopen and year
+  close affect only that branch, while the school-wide close completes only after
+  every branch has closed.
+- Posting guards, close checklists, assets, deferred income, inter-branch work,
+  payments settlement, procurement close checks and reports use the relevant branch
+  state.
+- The API exposes branch close state where several branches change the meaning and
+  keeps the branch dimension out of the way for a single-branch school.
+- Reopening and closing remain permission checked, audited and protected by row
+  locks. A simultaneous final-branch close has no dedicated race regression yet.
+Verified in isolated worktree: vs_finance 1803 OK; vs_procurement 730 OK;
+vs_payments 404 OK; makemigrations check clean.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
