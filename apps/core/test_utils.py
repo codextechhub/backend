@@ -84,3 +84,58 @@ def empty_audit_trail() -> None:
 
     with append_only_unlocked():
         AuditEvent.objects.all().delete()
+
+
+class exited_people:
+    """Report exactly the given users as having left their employment, for one test.
+
+    The engines learn who has exited from the lookup each product registers in
+    :mod:`core.person_exit`, and a response resolves everyone it names in one
+    bulk lookup per kind of tenant. A finance or procurement test has no school
+    staff record to mark, so it says who has exited with this, which stands in
+    for every registered lookup, single and bulk alike, for every kind of
+    tenant. Faking any one function below the registry misses whichever path
+    the response takes. Used as a context manager or a decorator.
+    """
+
+    def __init__(self, *users):
+        self.exited = {getattr(user, "pk", user) for user in users}
+
+    def _lookup(self, _tenant, user_ids):
+        return {user_id for user_id in user_ids if user_id in self.exited}
+
+    def _bulk(self, tenant_groups):
+        return {user_id for _, group in tenant_groups for user_id in group if user_id in self.exited}
+
+    def _patches(self):
+        from unittest import mock
+
+        from core import person_exit
+        from vs_tenants.models import Tenant
+
+        kinds = set(Tenant.Kind.values) | set(person_exit._lookups) | set(person_exit._bulk_lookups)
+        return (
+            mock.patch.dict(person_exit._lookups, {kind: self._lookup for kind in kinds}),
+            mock.patch.dict(person_exit._bulk_lookups, {kind: self._bulk for kind in kinds}),
+        )
+
+    def __enter__(self):
+        self._active = self._patches()
+        for patcher in self._active:
+            patcher.start()
+        return self
+
+    def __exit__(self, *exc):
+        for patcher in reversed(self._active):
+            patcher.stop()
+        return False
+
+    def __call__(self, func):
+        import functools
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            with self:
+                return func(*args, **kwargs)
+
+        return wrapper

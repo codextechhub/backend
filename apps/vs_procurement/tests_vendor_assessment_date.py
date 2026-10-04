@@ -15,7 +15,7 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
-from core.test_utils import TenantAPIClient
+from core.test_utils import TenantAPIClient, exited_people
 from vs_procurement.models import VendorAssessment
 
 from .tests import _P2PFixtureMixin
@@ -50,20 +50,17 @@ class VendorAssessmentDateTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(row.assessment_date, datetime.date(2026, 3, 15))
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    @patch("core.person_exit.exited_states")
-    def test_assessor_payload_marks_a_departed_staff_member(self, exited_states, _perm):
+    def test_assessor_payload_marks_a_departed_staff_member(self, _perm):
         user = get_user_model().objects.create_user(
             email="departed-assessor@test.com", password="pw", tenant=self.entity.tenant,
             status="ACTIVE", first_name="Departed", last_name="Assessor",
         )
-        exited_states.side_effect = lambda _tenant, ids: {
-            user_id: user_id == user.pk for user_id in ids
-        }
 
-        response = TenantAPIClient(user=user).post(
-            f"/v1/procurement/vendor-assessments/?entity={self.entity.code}",
-            {"vendor": self.vendor.code, **SCORES}, format="json",
-        )
+        with exited_people(user):
+            response = TenantAPIClient(user=user).post(
+                f"/v1/procurement/vendor-assessments/?entity={self.entity.code}",
+                {"vendor": self.vendor.code, **SCORES}, format="json",
+            )
 
         self.assertEqual(response.status_code, 201, response.data)
         self.assertTrue(response.data["data"]["assessor_is_exited"])
