@@ -1449,6 +1449,83 @@ def _transactions_in_reach(request, entity):
     return BankTransaction.objects.filter(transaction_branch_q(request), entity=entity)
 
 
+def _send_or_post(document, request, *, label, noun, serializer, post, status=200):
+    """Route a draft bank document for approval, or post it when nothing routes it.
+
+    The one way a bank transaction or transfer leaves the draft state, whether it
+    was just written or was corrected after a rejection: a route with steps holds
+    it for approval (the response carries the ``approval`` block), an empty route
+    needs ``confirm_without_approval``, and no route posts it at once
+    (:func:`vs_finance.approvals.approval_required`). Run inside the caller's
+    transaction.
+    """
+    from vs_workflow.services import release as release_svc
+    from vs_workflow.services.submission import submit_for_approval
+
+    from ..approvals import approval_required, confirm_unconfigured_post
+
+    if approval_required(document):
+        instance = submit_for_approval(document, requested_by=request.user)
+        document.refresh_from_db()
+        return success_response(
+            message=(
+                f"{label} {document.document_number} is waiting for approval. "
+                f"It reaches the books once it is approved."
+            ),
+            data=serializer(document).data | {"approval": release_svc.approval_block(instance)},
+            status=status,
+        )
+    confirm_unconfigured_post(document, request, noun=noun)
+    post(document, actor_user=request.user)
+    document.refresh_from_db()
+    return success_response(
+        message=f"{label} posted as {document.document_number}.",
+        data=serializer(document).data, status=status,
+    )
+
+
+def _transaction_fields(request, entity, body, *, editing=False) -> dict:
+    """The bank transaction fields ``body`` sets, checked as creating one checks them.
+
+    When ``editing``, a key the body leaves out keeps the draft's value, and one it
+    names is checked exactly as on create: the bank account within the caller's
+    branches (404 otherwise), the document taking that account's branch.
+    """
+    from ..banking import money_branch_id
+    from ..constants import BankTransactionDirection
+
+    fields = {}
+    if not editing or "bank_account" in body:
+        bank = _bank_account_in_reach(request, entity, body.get("bank_account"), "bank_account")
+        fields["bank_account"] = bank
+        fields["branch_id"] = money_branch_id(entity, bank)
+    if not editing or "direction" in body:
+        direction = str(body.get("direction") or "").upper()
+        if direction not in BankTransactionDirection.values:
+            raise ValidationError({"direction": "Choose IN (money in) or OUT (money out)."})
+        fields["direction"] = direction
+    if not editing or "amount" in body:
+        amount = body.get("amount")
+        if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
+            raise ValidationError({"amount": "Expected a positive whole amount in kobo."})
+        fields["amount"] = amount
+    if not editing or "narration" in body:
+        narration = str(body.get("narration") or "").strip()
+        if not narration:
+            raise ValidationError({"narration": "Say what the money is."})
+        fields["narration"] = narration[:255]
+    if not editing or "counter_account" in body:
+        fields["counter_account"] = _resolve_account(
+            request, entity, body.get("counter_account"), "counter_account", required=True,
+        )
+    if not editing or "transaction_date" in body:
+        fields["transaction_date"] = _date(
+            body.get("transaction_date"), "transaction_date", required=True)
+    if not editing or "reference" in body:
+        fields["reference"] = str(body.get("reference") or "")[:64]
+    return fields
+
+
 class BankTransactionListCreateView(_FinanceBase):
     """GET/POST /finance/bank-transactions/?entity= - money in or out of a bank account.
 
@@ -1485,71 +1562,111 @@ class BankTransactionListCreateView(_FinanceBase):
         return self.paginate(request, qs.order_by("-transaction_date", "-id"), BankTransactionSerializer)
 
     def post(self, request):
-        from ..approvals import approval_required, confirm_unconfigured_post
-        from ..banking import money_branch_id, post_bank_transaction, validate_bank_transaction
-        from ..constants import BankTransactionDirection
+        from ..banking import post_bank_transaction, validate_bank_transaction
         from ..exceptions import PostingError
 
         entity = resolve_entity(request)
-        body = request.data or {}
-        bank = _bank_account_in_reach(request, entity, body.get("bank_account"), "bank_account")
-        branch_id = money_branch_id(entity, bank)
-        direction = str(body.get("direction") or "").upper()
-        if direction not in BankTransactionDirection.values:
-            raise ValidationError({"direction": "Choose IN (money in) or OUT (money out)."})
-        amount = body.get("amount")
-        if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
-            raise ValidationError({"amount": "Expected a positive whole amount in kobo."})
-        narration = str(body.get("narration") or "").strip()
-        if not narration:
-            raise ValidationError({"narration": "Say what the money is."})
-        counter = _resolve_account(
-            request, entity, body.get("counter_account"), "counter_account", required=True,
-        )
+        fields = _transaction_fields(request, entity, request.data or {})
         with transaction.atomic():
             txn = BankTransaction.objects.create(
-                entity=entity, branch_id=branch_id, bank_account=bank,
-                direction=direction, amount=amount, counter_account=counter,
-                transaction_date=_date(body.get("transaction_date"), "transaction_date", required=True),
-                narration=narration[:255], reference=str(body.get("reference") or "")[:64],
-                created_by=request.user,
-            )
+                entity=entity, created_by=request.user, **fields)
             try:
                 validate_bank_transaction(txn)
             except PostingError as exc:
                 raise ValidationError({"counter_account": exc.message})
-            if approval_required(txn):
-                from vs_workflow.services import release as release_svc
-                from vs_workflow.services.submission import submit_for_approval
-
-                instance = submit_for_approval(txn, requested_by=request.user)
-                txn.refresh_from_db()
-                return success_response(
-                    message=(
-                        f"Bank transaction {txn.document_number} is waiting for approval. "
-                        f"It reaches the books once it is approved."
-                    ),
-                    data=BankTransactionSerializer(txn).data
-                    | {"approval": release_svc.approval_block(instance)},
-                    status=201,
-                )
-            confirm_unconfigured_post(txn, request, noun="bank transaction")
-            post_bank_transaction(txn, actor_user=request.user)
-            txn.refresh_from_db()
-        return success_response(
-            message=f"Bank transaction posted as {txn.document_number}.",
-            data=BankTransactionSerializer(txn).data, status=201,
-        )
+            return _send_or_post(
+                txn, request, label="Bank transaction", noun="bank transaction",
+                serializer=BankTransactionSerializer, post=post_bank_transaction, status=201,
+            )
 
 
 class BankTransactionDetailView(_FinanceBase):
-    """GET /finance/bank-transactions/<id>/?entity= - one bank transaction."""
+    """GET/PATCH /finance/bank-transactions/<id>/?entity= - one bank transaction.
 
-    rbac_permission = "finance.banktransaction.view"
+    PATCH corrects a draft that has come back from approval (rejected, or its
+    request withdrawn or cancelled): any of the create fields, each checked as on
+    create and within the same branch reach, the others kept. A transaction
+    waiting on its approvers, posted, voided or cancelled is refused (422). The
+    correction is audited and posts nothing; ``submit/`` sends it again. Held by
+    whoever may create bank transactions, since creating one sends it for approval.
+
+    docstring-name: Bank transactions
+    """
+
+    @property
+    def rbac_permission(self):
+        return "finance.banktransaction.create" if self.request.method == "PATCH" \
+            else "finance.banktransaction.view"
 
     def get(self, request, pk):
         txn = _transaction_or_404(request, resolve_entity(request), pk)
         return success_response("Bank transaction retrieved.", data=BankTransactionSerializer(txn).data)
+
+    def patch(self, request, pk):
+        from ..banking import revise_bank_document
+
+        entity = resolve_entity(request)
+        txn = _transaction_or_404(request, entity, pk)
+        fields = _transaction_fields(request, entity, request.data or {}, editing=True)
+        txn = revise_bank_document(txn, fields, actor_user=request.user)
+        return success_response(
+            f"Bank transaction {txn.document_number} corrected.",
+            data=BankTransactionSerializer(_transaction_or_404(request, entity, pk)).data,
+        )
+
+
+class BankTransactionSubmitView(_FinanceBase):
+    """POST /finance/bank-transactions/<id>/submit/?entity= - send a corrected draft again.
+
+    For a draft back from approval (rejected, or its request withdrawn or
+    cancelled): it goes through the ``finance.bank_transaction`` route exactly as
+    a new one does, so steps hold it for approval, an empty route needs
+    ``confirm_without_approval``, and no route posts it. Refused (422) while its
+    approvers hold it or once it is posted, voided or cancelled. Same key and
+    branch reach as creating one (404 outside the caller's branches).
+
+    docstring-name: Send a bank transaction for approval again
+    """
+
+    rbac_permission = "finance.banktransaction.create"
+
+    def post(self, request, pk):
+        from ..banking import post_bank_transaction, require_reworkable
+
+        entity = resolve_entity(request)
+        _transaction_or_404(request, entity, pk)
+        with transaction.atomic():
+            txn = BankTransaction.objects.select_for_update().get(pk=pk)
+            require_reworkable(txn)
+            return _send_or_post(
+                txn, request, label="Bank transaction", noun="bank transaction",
+                serializer=BankTransactionSerializer, post=post_bank_transaction,
+            )
+
+
+class BankTransactionCancelView(_FinanceBase):
+    """POST /finance/bank-transactions/<id>/cancel/?entity= - cancel a draft that will not be sent.
+
+    For a draft back from approval (rejected, or its request withdrawn or
+    cancelled). It becomes ``CANCELLED``, the cancellation is audited, and
+    nothing is posted. Refused (422) while its approvers hold it; a posted one is
+    voided instead. Same key and branch reach as creating one.
+
+    docstring-name: Cancel a bank transaction
+    """
+
+    rbac_permission = "finance.banktransaction.create"
+
+    def post(self, request, pk):
+        from ..banking import cancel_bank_document
+
+        entity = resolve_entity(request)
+        txn = cancel_bank_document(_transaction_or_404(request, entity, pk),
+                                   actor_user=request.user)
+        return success_response(
+            f"Bank transaction {txn.document_number} cancelled.",
+            data=BankTransactionSerializer(_transaction_or_404(request, entity, pk)).data,
+        )
 
 
 class BankTransactionVoidView(_FinanceBase):
@@ -1612,6 +1729,52 @@ def _transfers_in_reach(request, entity):
     ).select_related("from_account", "to_account", "branch")
 
 
+def _transfer_fields(request, entity, body, *, current=None) -> dict:
+    """The transfer fields ``body`` sets, checked as creating one checks them.
+
+    With ``current`` (an edit), a key the body leaves out keeps the draft's value.
+    Naming either account re-derives the branch from both, so a correction that
+    leaves the two accounts in different branches is refused as on create.
+    """
+    from ..banking import money_branch_id
+
+    fields = {}
+    if current is None or "from_account" in body or "to_account" in body:
+        source = (
+            _bank_account_in_reach(request, entity, body.get("from_account"), "from_account")
+            if current is None or "from_account" in body else current.from_account
+        )
+        target = (
+            _bank_account_in_reach(request, entity, body.get("to_account"), "to_account")
+            if current is None or "to_account" in body else current.to_account
+        )
+        fields.update(from_account=source, to_account=target,
+                      branch_id=money_branch_id(entity, source, target, field="from_account"))
+    if current is None or "amount" in body:
+        amount = body.get("amount")
+        if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
+            raise ValidationError({"amount": "Expected a positive whole amount in kobo."})
+        fields["amount"] = amount
+    if current is None or "narration" in body:
+        narration = str(body.get("narration") or "").strip()
+        if not narration:
+            raise ValidationError({"narration": "Say why the money is moving."})
+        fields["narration"] = narration[:255]
+    if current is None or "transfer_date" in body:
+        fields["transfer_date"] = _date(body.get("transfer_date"), "transfer_date", required=True)
+    if current is None or "reference" in body:
+        fields["reference"] = str(body.get("reference") or "")[:64]
+    return fields
+
+
+def _transfer_or_404(request, entity, pk):
+    """A transfer of the caller's own branches, or 404 (see :func:`_transfers_in_reach`)."""
+    transfer = _transfers_in_reach(request, entity).filter(pk=pk).first()
+    if transfer is None:
+        raise NotFound("Transfer not found for this entity.")
+    return transfer
+
+
 class BankTransferListCreateView(_FinanceBase):
     """GET/POST /finance/bank-transfers/?entity= - move money between own accounts.
 
@@ -1646,68 +1809,104 @@ class BankTransferListCreateView(_FinanceBase):
         return self.paginate(request, qs.order_by("-transfer_date", "-id"), BankTransferSerializer)
 
     def post(self, request):
-        from ..approvals import approval_required, confirm_unconfigured_post
-        from ..banking import money_branch_id, post_bank_transfer, validate_bank_transfer
+        from ..banking import post_bank_transfer, validate_bank_transfer
         from ..exceptions import PostingError
 
         entity = resolve_entity(request)
-        body = request.data or {}
-        source = _bank_account_in_reach(request, entity, body.get("from_account"), "from_account")
-        target = _bank_account_in_reach(request, entity, body.get("to_account"), "to_account")
-        amount = body.get("amount")
-        if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
-            raise ValidationError({"amount": "Expected a positive whole amount in kobo."})
-        narration = str(body.get("narration") or "").strip()
-        if not narration:
-            raise ValidationError({"narration": "Say why the money is moving."})
         transfer = BankTransfer(
-            entity=entity, from_account=source, to_account=target,
-            amount=amount,
-            transfer_date=_date(body.get("transfer_date"), "transfer_date", required=True),
-            narration=narration[:255], reference=str(body.get("reference") or "")[:64],
-            created_by=request.user,
+            entity=entity, created_by=request.user,
+            **_transfer_fields(request, entity, request.data or {}),
         )
-        transfer.branch_id = money_branch_id(entity, source, target, field="from_account")
         try:
             validate_bank_transfer(transfer)
         except PostingError as exc:
             raise ValidationError({"to_account": exc.message})
         with transaction.atomic():
             transfer.save()
-            if approval_required(transfer):
-                from vs_workflow.services import release as release_svc
-                from vs_workflow.services.submission import submit_for_approval
-
-                instance = submit_for_approval(transfer, requested_by=request.user)
-                transfer.refresh_from_db()
-                return success_response(
-                    message=(
-                        f"Transfer {transfer.document_number} is waiting for approval. "
-                        f"It reaches the books once it is approved."
-                    ),
-                    data=BankTransferSerializer(transfer).data
-                    | {"approval": release_svc.approval_block(instance)},
-                    status=201,
-                )
-            confirm_unconfigured_post(transfer, request, noun="transfer")
-            post_bank_transfer(transfer, actor_user=request.user)
-            transfer.refresh_from_db()
-        return success_response(
-            message=f"Transfer posted as {transfer.document_number}.",
-            data=BankTransferSerializer(transfer).data, status=201,
-        )
+            return _send_or_post(
+                transfer, request, label="Transfer", noun="transfer",
+                serializer=BankTransferSerializer, post=post_bank_transfer, status=201,
+            )
 
 
 class BankTransferDetailView(_FinanceBase):
-    """GET /finance/bank-transfers/<id>/?entity= - one transfer."""
+    """GET/PATCH /finance/bank-transfers/<id>/?entity= - one transfer.
 
-    rbac_permission = "finance.banktransfer.view"
+    PATCH corrects a draft that has come back from approval, as a bank
+    transaction's does (:class:`BankTransactionDetailView`): the create fields,
+    each checked as on create, both accounts still of one branch.
+
+    docstring-name: Transfers between own accounts
+    """
+
+    @property
+    def rbac_permission(self):
+        return "finance.banktransfer.create" if self.request.method == "PATCH" \
+            else "finance.banktransfer.view"
 
     def get(self, request, pk):
-        transfer = _transfers_in_reach(request, resolve_entity(request)).filter(pk=pk).first()
-        if transfer is None:
-            raise NotFound("Transfer not found for this entity.")
+        transfer = _transfer_or_404(request, resolve_entity(request), pk)
         return success_response("Transfer retrieved.", data=BankTransferSerializer(transfer).data)
+
+    def patch(self, request, pk):
+        from ..banking import revise_bank_document
+
+        entity = resolve_entity(request)
+        transfer = _transfer_or_404(request, entity, pk)
+        fields = _transfer_fields(request, entity, request.data or {}, current=transfer)
+        transfer = revise_bank_document(transfer, fields, actor_user=request.user)
+        return success_response(
+            f"Transfer {transfer.document_number} corrected.",
+            data=BankTransferSerializer(_transfer_or_404(request, entity, pk)).data,
+        )
+
+
+class BankTransferSubmitView(_FinanceBase):
+    """POST /finance/bank-transfers/<id>/submit/?entity= - send a corrected draft again.
+
+    Through the ``finance.bank_transfer`` route, as
+    :class:`BankTransactionSubmitView` sends a bank transaction.
+
+    docstring-name: Send a transfer between own accounts for approval again
+    """
+
+    rbac_permission = "finance.banktransfer.create"
+
+    def post(self, request, pk):
+        from ..banking import post_bank_transfer, require_reworkable
+
+        entity = resolve_entity(request)
+        _transfer_or_404(request, entity, pk)
+        with transaction.atomic():
+            transfer = BankTransfer.objects.select_for_update().get(pk=pk)
+            require_reworkable(transfer)
+            return _send_or_post(
+                transfer, request, label="Transfer", noun="transfer",
+                serializer=BankTransferSerializer, post=post_bank_transfer,
+            )
+
+
+class BankTransferCancelView(_FinanceBase):
+    """POST /finance/bank-transfers/<id>/cancel/?entity= - cancel a draft that will not be sent.
+
+    As :class:`BankTransactionCancelView` cancels a bank transaction: audited,
+    nothing posted.
+
+    docstring-name: Cancel a transfer between own accounts
+    """
+
+    rbac_permission = "finance.banktransfer.create"
+
+    def post(self, request, pk):
+        from ..banking import cancel_bank_document
+
+        entity = resolve_entity(request)
+        transfer = cancel_bank_document(_transfer_or_404(request, entity, pk),
+                                        actor_user=request.user)
+        return success_response(
+            f"Transfer {transfer.document_number} cancelled.",
+            data=BankTransferSerializer(_transfer_or_404(request, entity, pk)).data,
+        )
 
 
 class BankTransferVoidView(_FinanceBase):
@@ -1725,9 +1924,7 @@ class BankTransferVoidView(_FinanceBase):
         from ..banking import void_bank_transfer
 
         entity = resolve_entity(request)
-        transfer = _transfers_in_reach(request, entity).filter(pk=pk).first()
-        if transfer is None:
-            raise NotFound("Transfer not found for this entity.")
+        transfer = _transfer_or_404(request, entity, pk)
         void_bank_transfer(
             transfer, actor_user=request.user,
             date=_date((request.data or {}).get("date"), "date"),

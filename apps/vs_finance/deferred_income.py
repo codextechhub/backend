@@ -526,6 +526,51 @@ def reverse_deferred_release(entity, period, *, actor_user=None):
     return len(releases)
 
 
+def sealed_release_branches(entity, periods) -> dict:
+    """``{period pk: [branch name, ...]}``: whose closed month seals each period's undo.
+
+    :func:`reverse_deferred_release` undoes every branch's release of a month at
+    once, and a branch that has closed that month on its own keeps its release
+    sealed with it: the reversing journal would post into that branch's closed
+    month, which the posting guard refuses. So one such branch is enough to refuse
+    the whole month's undo, including the releases of branches still open. This
+    names those branches, for each of ``periods`` that has any, so a list can say
+    which rows the undo would refuse and why before anybody tries it.
+
+    The answer is the entity's, not a reader's: the undo is a whole-tenant run, so
+    a branch the reader cannot see still decides it. Two queries for any number of
+    periods.
+    """
+    from .models import BranchFiscalPeriod, DeferredIncomeRelease
+
+    periods = {period.pk: period for period in periods if period is not None}
+    if not periods:
+        return {}
+    closed = defaultdict(dict)
+    for period_id, branch_id, name in (
+        BranchFiscalPeriod.objects.filter(period_id__in=periods)
+        .exclude(status=PeriodStatus.OPEN)
+        .values_list("period_id", "branch_id", "branch__name")
+    ):
+        closed[period_id][branch_id] = name
+    if not closed:
+        return {}
+    spans = [periods[pk] for pk in closed]
+    sealed = defaultdict(set)
+    for branch_id, day in (
+        DeferredIncomeRelease.objects.filter(
+            entity=entity, reversed_at__isnull=True,
+            branch_id__in={b for names in closed.values() for b in names},
+            journal__date__gte=min(p.start_date for p in spans),
+            journal__date__lte=max(p.end_date for p in spans),
+        ).values_list("branch_id", "journal__date")
+    ):
+        for period in spans:
+            if period.start_date <= day <= period.end_date and branch_id in closed[period.pk]:
+                sealed[period.pk].add(closed[period.pk][branch_id])
+    return {pk: sorted(names) for pk, names in sealed.items()}
+
+
 def deferred_income_close_check(entity, period, branch=None):
     """Close check: no deferred income due in or before ``period`` is left unreleased."""
     from .close import ChecklistItem

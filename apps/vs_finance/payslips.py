@@ -321,6 +321,12 @@ def annual_paye_return(entity, *, year, branch_ids=None) -> dict:
     different: they list only what a run here deducted, so a month this
     payroll did not run is in none of them.
 
+    A person is told apart by the most reliable key their lines carry: user
+    account, then salary record, then the name as typed
+    (:func:`_return_person_key`). Each row names the ``employee_id`` and
+    ``salary_id`` behind it where there is one, so two namesakes can be told
+    apart on screen.
+
     ``branch_ids`` narrows to a branch-bound reader's branches: the months a
     run paid from those branches, and the earlier months of a person whose
     record a branch there owned at the end of the year.
@@ -337,17 +343,24 @@ def annual_paye_return(entity, *, year, branch_ids=None) -> dict:
         lines = lines.filter(branch_id__in=tuple(sorted(branch_ids)))
     people: dict = {}
 
-    def person(key, name, tax_id):
-        return people.setdefault(key, {
-            "salary_id": key[1] if key[0] == "salary" else None,
+    def person(key, name, tax_id, *, salary_id=None, employee_id=None):
+        row = people.setdefault(key, {
+            "salary_id": None, "employee_id": None,
             "employee_name": name, "tax_id": tax_id, "tax_states": set(),
             "gross": 0, "taxable_pay": 0, "paye": 0, "pension": 0, "months": 0,
             "opening_gross": 0, "opening_paye": 0,
         })
+        row["salary_id"] = salary_id or row["salary_id"]
+        row["employee_id"] = employee_id or row["employee_id"]
+        return row
 
     for line in lines.order_by("run__pay_date", "id"):
-        key = ("salary", line.salary_id) if line.salary_id else ("user", line.employee_id or line.pk)
-        row = person(key, line.employee_name, line.tax_id)
+        employee_id = line.employee_id or (line.salary.employee_id if line.salary_id else None)
+        row = person(
+            _return_person_key(employee_id, line.salary_id, line.employee_name, line.tax_id,
+                               line_id=line.pk),
+            line.employee_name, line.tax_id, salary_id=line.salary_id, employee_id=employee_id,
+        )
         row["tax_id"] = line.tax_id or row["tax_id"]
         if line.tax_state_id:
             row["tax_states"].add(line.tax_state.name)
@@ -365,14 +378,19 @@ def annual_paye_return(entity, *, year, branch_ids=None) -> dict:
         salary = record.salary
         if branch_ids is not None and salary.branch_on(year_end) not in branch_ids:
             continue
-        row = person(("salary", salary.pk), salary.name, salary.tax_id)
+        row = person(
+            _return_person_key(salary.employee_id, salary.pk, salary.name, salary.tax_id),
+            salary.name, salary.tax_id, salary_id=salary.pk, employee_id=salary.employee_id,
+        )
         row["gross"] += record.gross_amount
         row["taxable_pay"] += record.taxable_pay
         row["paye"] += record.paye_amount
         row["pension"] += record.pension_amount
         row["opening_gross"] += record.gross_amount
         row["opening_paye"] += record.paye_amount
-    rows = sorted(people.values(), key=lambda r: (r["employee_name"], r["salary_id"] or 0))
+    _fold_untaxed_namesakes(people)
+    rows = sorted(people.values(), key=lambda r: (
+        r["employee_name"], r["salary_id"] or 0, r["employee_id"] or 0, r["tax_id"]))
     for row in rows:
         row["tax_states"] = sorted(row["tax_states"])
     return {
@@ -382,6 +400,67 @@ def annual_paye_return(entity, *, year, branch_ids=None) -> dict:
             "gross", "taxable_pay", "paye", "pension", "opening_gross", "opening_paye",
         )},
     }
+
+
+def _normalised(text, *, keep=str.isalnum) -> str:
+    """``text`` compared loosely: case folded, and only the characters ``keep`` accepts."""
+    return "".join(ch for ch in str(text or "").casefold() if keep(ch))
+
+
+def _return_person_key(employee_id, salary_id, name, tax_id, *, line_id=None) -> tuple:
+    """Who a payroll line (or opening record) belongs to on the annual return.
+
+    The most reliable key a line carries decides, in this order:
+
+    1. **The employee's user account.** One person has one account, and it
+       outlives their salary records: lines written before lines named a salary
+       row, and a person whose old salary row was replaced by a new one, all
+       carry it. So it joins them, and keeps apart two people who share a name.
+    2. **The salary record**, for a person on the roster with no user account.
+    3. **The name as typed, with the tax number when one was typed**, for a
+       hand-typed line naming neither. Nothing better identifies the person, so
+       their months join by name, compared without case, spacing or punctuation
+       ("  tunde   BAKARE " is Tunde Bakare). Two namesakes typed with different
+       tax numbers stay apart; a month typed without the number is joined to the
+       only namesake who has one by :func:`_fold_untaxed_namesakes`.
+
+    A hand-typed line is never joined to a person identified by account or
+    salary record, whatever the name: the same name is weaker evidence than a
+    different key, and listing one person twice is a visible, correctable fault
+    on a return, where merging two people misstates both. A line with no name
+    and no tax number either is its own row (``line_id``): there is nothing to
+    join it by.
+    """
+    if employee_id:
+        return ("user", employee_id)
+    if salary_id:
+        return ("salary", salary_id)
+    name, tax_id = _normalised(name, keep=str.isalpha), _normalised(tax_id)
+    if not name and not tax_id:
+        return ("line", line_id)
+    return ("name", name, tax_id)
+
+
+def _fold_untaxed_namesakes(people) -> None:
+    """Join a hand-typed person's months typed without a tax number to their numbered ones.
+
+    Only where exactly one hand-typed person of that name carries a tax number:
+    with two (Kemi Ade, TIN-002 and TIN-003), nothing says which of them a
+    number-less month was, so it stays a row of its own.
+    """
+    numbered = {}
+    for key in people:
+        if key[0] == "name" and key[2]:
+            numbered.setdefault(key[1], []).append(key)
+    for key in [k for k in people if k[0] == "name" and not k[2]]:
+        owners = numbered.get(key[1], [])
+        if len(owners) != 1:
+            continue
+        loose, row = people.pop(key), people[owners[0]]
+        for field in ("gross", "taxable_pay", "paye", "pension", "months",
+                      "opening_gross", "opening_paye"):
+            row[field] += loose[field]
+        row["tax_states"] |= loose["tax_states"]
 
 
 def tax_summary_pdf_bytes(summary) -> bytes:

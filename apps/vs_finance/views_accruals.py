@@ -141,10 +141,17 @@ class DeferredIncomeReleaseListView(_FinanceBase):
 
     One row per release journal: its branch, date and month, the period it
     falls in and whether that period is open, the amount moved to revenue, the
-    journal, and whether it has been reversed. ``can_reverse`` is true for a
-    release not yet reversed whose period is still open, the ones the undo form
-    (``POST deferred-income/reverse/`` with that ``period_id``) would reverse;
-    that action is a whole-tenant run and reverses every release of the period.
+    journal, and whether it has been reversed. ``branch_period_status`` is where
+    the release's own branch stands with that period, since a branch closes its
+    month on its own; it reads as the period's status until the branch has a
+    close state of its own. ``can_reverse`` is true only when the undo form
+    (``POST deferred-income/reverse/`` with that ``period_id``) would reverse the
+    release: it is not yet reversed, its period is open, and no branch has closed
+    that month while holding a release of it, because the undo is a whole-tenant
+    run that reverses every branch's release of the period together and refuses
+    them all when one is sealed (:func:`vs_finance.deferred_income.sealed_release_branches`).
+    ``reverse_blocked_reason`` says why a release not yet reversed cannot be
+    undone, and is null otherwise.
     Filters: ``?branch=`` (one branch in reach; another answers like an unknown
     one), ``?period=`` (id), ``?month=YYYY-MM`` and ``?reversed=true|false``.
     Paginated.
@@ -155,15 +162,19 @@ class DeferredIncomeReleaseListView(_FinanceBase):
     rbac_permission = "finance.deferredincome.view"
 
     def get(self, request):
-        from django.db.models import OuterRef, Subquery
+        from django.db.models import F, OuterRef, Subquery
+        from django.db.models.functions import Coalesce
 
-        from .models import DeferredIncomeRelease
+        from .models import BranchFiscalPeriod, DeferredIncomeRelease
 
         entity = resolve_entity(request)
         periods = FiscalPeriod.objects.filter(
             entity=entity, start_date__lte=OuterRef("journal__date"),
             end_date__gte=OuterRef("journal__date"),
         ).order_by("start_date")
+        branch_states = BranchFiscalPeriod.objects.filter(
+            period_id=OuterRef("period_id"), branch_id=OuterRef("branch_id"),
+        )
         qs = (
             DeferredIncomeRelease.objects
             .filter(transaction_branch_q(request), entity=entity)
@@ -173,6 +184,9 @@ class DeferredIncomeReleaseListView(_FinanceBase):
                 period_name=Subquery(periods.values("name")[:1]),
                 period_status=Subquery(periods.values("status")[:1]),
             )
+            .annotate(branch_period_status=Coalesce(
+                Subquery(branch_states.values("status")[:1]), F("period_status"),
+            ))
         )
         qs = _filter_by_branch(qs, request, entity)
         params = request.query_params
@@ -198,14 +212,44 @@ class DeferredIncomeReleaseListView(_FinanceBase):
         paginator.page_size = 25
         page = paginator.paginate_queryset(
             qs.order_by("-journal__date", "-id"), request, view=self)
-        return paginator.get_paginated_response([_release_row(row) for row in page])
+        from .deferred_income import sealed_release_branches
+
+        sealed = sealed_release_branches(entity, FiscalPeriod.objects.filter(
+            pk__in={row.period_id for row in page if row.reversed_at is None},
+        ))
+        return paginator.get_paginated_response(
+            [_release_row(row, sealed.get(row.period_id, ())) for row in page])
 
 
-def _release_row(release) -> dict:
-    """One release as the release list shows it."""
+def _reverse_blocked_reason(release, sealed_by) -> str | None:
+    """Why the month's undo would refuse ``release``, or None when it would reverse it."""
     from .constants import PeriodStatus
 
+    if release.reversed_at is not None:
+        return None
+    if release.period_id is None:
+        return "No accounting period covers this release's date."
+    if release.period_status != PeriodStatus.OPEN:
+        state = release.period_status.lower().replace("_", " ")
+        return f"{release.period_name} is {state}; its releases are sealed with it."
+    if release.branch_period_status != PeriodStatus.OPEN:
+        return (f"{release.branch.name} has closed {release.period_name}; "
+                f"its release is sealed with that month.")
+    if sealed_by:
+        verb = "has" if len(sealed_by) == 1 else "have"
+        return (f"{' and '.join(sealed_by)} {verb} closed {release.period_name}, and the undo "
+                f"reverses every branch's release of the month together.")
+    return None
+
+
+def _release_row(release, sealed_by=()) -> dict:
+    """One release as the release list shows it.
+
+    ``sealed_by`` names the branches whose closed month refuses this release's
+    period undo (:func:`vs_finance.deferred_income.sealed_release_branches`).
+    """
     date = release.journal.date
+    reason = _reverse_blocked_reason(release, sealed_by)
     return {
         "id": release.pk,
         "branch_id": release.branch_id,
@@ -215,12 +259,14 @@ def _release_row(release) -> dict:
         "period_id": release.period_id,
         "period_name": release.period_name,
         "period_status": release.period_status,
+        "branch_period_status": release.branch_period_status,
         "amount": release.amount,
         "journal_id": release.journal_id,
         "journal_number": release.journal.document_number or None,
         "reversed": release.reversed_at is not None,
         "reversed_at": release.reversed_at.isoformat() if release.reversed_at else None,
-        "can_reverse": release.reversed_at is None and release.period_status == PeriodStatus.OPEN,
+        "can_reverse": release.reversed_at is None and reason is None,
+        "reverse_blocked_reason": reason,
     }
 
 

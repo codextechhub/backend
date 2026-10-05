@@ -1232,3 +1232,126 @@ def _void_bank_transfer_atomic(transfer, *, actor_user=None, date=None):
         journal_id=transfer.journal_id, reversal_id=reversal.pk,
     )
     return transfer
+
+
+# --------------------------------------------------------------------------- #
+# A draft sent back: corrected and sent again, or cancelled                   #
+# --------------------------------------------------------------------------- #
+
+def _rework_terms(document) -> tuple:
+    """``(noun, edited action, cancelled action, validator, audited fields)`` for ``document``."""
+    from .models import BankTransaction
+
+    if isinstance(document, BankTransaction):
+        return (
+            "bank transaction", FinanceAuditAction.BANK_TRANSACTION_EDITED,
+            FinanceAuditAction.BANK_TRANSACTION_CANCELLED, validate_bank_transaction,
+            ("branch_id", "bank_account_id", "direction", "amount", "counter_account_id",
+             "transaction_date", "narration", "reference"),
+        )
+    return (
+        "transfer", FinanceAuditAction.BANK_TRANSFER_EDITED,
+        FinanceAuditAction.BANK_TRANSFER_CANCELLED, validate_bank_transfer,
+        ("branch_id", "from_account_id", "to_account_id", "amount", "transfer_date",
+         "narration", "reference"),
+    )
+
+
+def require_reworkable(document) -> None:
+    """Refuse unless ``document`` is a draft that no approver is holding.
+
+    A bank transaction or transfer comes back to its requester as a draft when
+    its approver rejects it or its request is withdrawn or cancelled
+    (:class:`vs_finance.workflow_handlers._FinancePostOnApprove`). Only then may
+    it be corrected, sent again or cancelled: while a request is in flight,
+    including one returned to the requester and resumed through the approvals
+    screen, the approvers are deciding on what they were shown, and a posted,
+    voided or cancelled document is finished.
+    """
+    from .approvals import APPROVAL_PENDING, approval_states
+    from .constants import DocumentStatus
+    from .exceptions import PostingError
+
+    noun = _rework_terms(document)[0]
+    number = document.document_number or document.pk
+    if (document.status == DocumentStatus.PENDING_APPROVAL
+            or approval_states([document])[document.pk] == APPROVAL_PENDING):
+        raise PostingError(
+            f"The {noun} {number} is with its approvers. It can be changed or cancelled "
+            f"once they reject it or the request is withdrawn.",
+        )
+    if document.status != DocumentStatus.DRAFT:
+        raise PostingError(
+            f"Only a draft {noun} can be changed, sent for approval or cancelled; "
+            f"{number} is '{document.status}'.",
+        )
+
+
+def _audited(value):
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+@transaction.atomic
+def revise_bank_document(document, changes, *, actor_user=None):
+    """Correct a draft bank transaction or transfer that its approver sent back.
+
+    ``changes`` maps model attributes (``amount``, ``bank_account``, ``branch_id``
+    and so on) to their new values, already resolved within the caller's reach.
+    The document is re-checked as a new one is (:func:`validate_bank_transaction`
+    or :func:`validate_bank_transfer`), and a check it now fails is a 400 on the
+    field the create path names, so a correction cannot reach what creating could
+    not. Each correction is audited with the fields it changed, before and after,
+    because what an approver rejected and what is sent to them again can differ
+    in amount or account. Nothing is posted and nothing is sent: the requester
+    submits the corrected draft separately, through the same route.
+    """
+    from rest_framework.exceptions import ValidationError
+
+    from .exceptions import PostingError
+
+    document = type(document).objects.select_for_update().get(pk=document.pk)
+    require_reworkable(document)
+    noun, edited, _, validate, fields = _rework_terms(document)
+    before = {name: _audited(getattr(document, name)) for name in fields}
+    for name, value in changes.items():
+        setattr(document, name, value)
+    try:
+        validate(document)
+    except PostingError as exc:
+        field = "counter_account" if noun == "bank transaction" else "to_account"
+        raise ValidationError({field: exc.message})
+    after = {name: _audited(getattr(document, name)) for name in fields}
+    changed = [name for name in fields if before[name] != after[name]]
+    if not changed:
+        return document
+    document.save()
+    record(
+        entity=document.entity, action=edited, actor_user=actor_user, target=document,
+        message=f"Corrected draft {noun} {document.document_number}: {', '.join(changed)}.",
+        before={name: before[name] for name in changed},
+        after={name: after[name] for name in changed},
+    )
+    return document
+
+
+@transaction.atomic
+def cancel_bank_document(document, *, actor_user=None):
+    """Cancel a draft bank transaction or transfer that will never be sent again.
+
+    A draft has touched no ledger, so cancelling it posts nothing: it only takes
+    the document out of the way, marked ``CANCELLED`` and audited under its
+    branch. A posted one is voided instead, which reverses its journal.
+    """
+    from .constants import DocumentStatus
+
+    document = type(document).objects.select_for_update().get(pk=document.pk)
+    require_reworkable(document)
+    noun, _, cancelled, _, _ = _rework_terms(document)
+    document.status = DocumentStatus.CANCELLED
+    document.save(update_fields=["status", "updated_at"])
+    record(
+        entity=document.entity, action=cancelled, actor_user=actor_user, target=document,
+        message=f"Cancelled draft {noun} {document.document_number}; nothing was posted.",
+        amount=document.amount,
+    )
+    return document

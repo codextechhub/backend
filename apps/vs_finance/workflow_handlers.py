@@ -65,7 +65,8 @@ def _quantity(value) -> str:
 
 # Shared handler for finance docs that post after approval.
 class _FinancePostOnApprove(BaseWorkflowHandler):
-    """Shared base: submit → PENDING_APPROVAL; approve → APPROVED then post; reject/return → DRAFT.
+    """Shared base: submit → PENDING_APPROVAL; approve → APPROVED then post;
+    reject, return, withdraw or cancel → DRAFT.
 
     Subclasses supply the concrete model (``document_model``) and the three
     document-type hooks - :meth:`preflight` (the write-free posting guards),
@@ -175,6 +176,32 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
             doc = self._load(instance)  # Lock the concrete finance document.
             doc.status = DocumentStatus.DRAFT  # Returned documents become editable drafts.
             doc.save(update_fields=["status", "updated_at"])
+
+    def on_withdrawn(self, instance, context) -> None:
+        """Hand a withdrawn document back to its requester as a draft.
+
+        Withdrawal ends the approval without a decision, so the document is
+        where it was before it was sent: a draft that can be corrected and sent
+        again, or cancelled. Left waiting for approval, it would wait for an
+        approval that can no longer come.
+        """
+        self._back_to_draft(instance)
+
+    def on_cancelled(self, instance, context) -> None:
+        """Hand a document whose approval an administrator cancelled back as a draft.
+
+        For the same reason as :meth:`on_withdrawn`: the cancelled approval can
+        never decide it, and the requester starts over from the draft.
+        """
+        self._back_to_draft(instance)
+
+    def _back_to_draft(self, instance) -> None:
+        """Return a document still waiting for approval to DRAFT; any other status stays."""
+        with transaction.atomic():
+            doc = self._load(instance)
+            if doc.status == DocumentStatus.PENDING_APPROVAL:
+                doc.status = DocumentStatus.DRAFT
+                doc.save(update_fields=["status", "updated_at"])
 
     #: The only statuses from which an approval decision can still be withdrawn.
     #: Approval posts, and posting is what each document type's own service

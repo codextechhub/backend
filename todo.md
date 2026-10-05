@@ -648,6 +648,57 @@ MUST SAY:
   released, stamped with the sourcing group's last change. Reverse is a no-op.
 Verified: tests_single_live_sourcing 21 OK (12 of the 20 written first failed on the code before the change for want of the rule); tests_shared_sourcing_guards 19 OK with the awarded case rewritten to a real award; vs_procurement 787 OK; vs_finance 1964 OK. The full suite was not run.
 
+### D126. Deferred income undo tells the truth after a branch closes, a rejected bank document can be fixed or cancelled, and the annual PAYE return lists each person once (uncommitted, 2026-10-05)
+Number may be renumbered at merge: D125 (period close and frontend exposure) is queued in parallel and is not on main yet.
+MODULES: M19 finance (deferred income, bank transactions and transfers, payroll annual return), M04 roles only to say no key was added, MRD.
+MUST SAY:
+- Deferred income releases (M19). GET deferred-income/releases/ rows carry
+  branch_period_status (the release's own branch's close state for that month;
+  the period's status until the branch has one) and reverse_blocked_reason (null,
+  or why the undo would refuse it). can_reverse is now false for a release whose
+  branch has closed that month on its own, and also for every other branch's
+  release of that month, because the month's undo (POST deferred-income/reverse/)
+  reverses every branch's release together and is refused while one is sealed.
+  Ikeja closes January while Lekki is still open: both January rows say
+  can_reverse false, Ikeja's with branch_period_status CLOSED, Lekki's naming
+  Ikeja as the reason. The reverse endpoint still refuses and reverses nothing.
+- Bank documents (M19). A bank transaction or transfer that comes back from
+  approval (rejected, or its request withdrawn or cancelled) is a draft the
+  requester can fix and send again, or cancel:
+  PATCH bank-transactions/<id>/ and bank-transfers/<id>/ (any create field,
+  checked as on create, others kept; audited BANK_TRANSACTION_EDITED /
+  BANK_TRANSFER_EDITED with before and after);
+  POST bank-transactions/<id>/submit/ and bank-transfers/<id>/submit/ (through
+  the same route as create: steps hold it, an empty route needs
+  confirm_without_approval, no route posts it);
+  POST bank-transactions/<id>/cancel/ and bank-transfers/<id>/cancel/ (becomes
+  CANCELLED, audited BANK_TRANSACTION_CANCELLED / BANK_TRANSFER_CANCELLED,
+  posts nothing). All three are refused (422) while the document is with its
+  approvers or once posted, voided or cancelled. Keys: the existing
+  finance.banktransaction.create and finance.banktransfer.create, because
+  creating one already sends it for approval; no new key. Branch reach as
+  create: another branch's document is 404, naming another branch's account is
+  404, and a transfer's two accounts must still share a branch (400).
+- Every approval-gated finance document (journal, refund, credit note,
+  concession, write-off, provision run, credit transfer, expense claim, petty
+  cash return, inter-branch transfer, bank documents) whose approval request is
+  withdrawn by the requester or cancelled by an administrator now goes back to
+  DRAFT. Before, it stayed PENDING_APPROVAL with nothing left to decide it.
+- Annual PAYE return (M19 payroll). GET payroll/annual-return/ lists one row
+  per person for the year: lines are joined by user account first, then salary
+  record, then (for hand-typed lines naming neither) the name compared without
+  case, spaces or punctuation plus the tax number when typed; a month typed
+  without a tax number joins the only namesake who has one. Two people who
+  share a name but have different accounts (or different tax numbers) stay two
+  rows, and a hand-typed line is never joined to a person known by account or
+  salary record. Rows carry a new employee_id (null for hand-typed people).
+  Fixed on the way: a hand-typed person could be merged into an unrelated user
+  whose id happened to equal the line's id.
+- Migration vs_finance 0063_bank_document_cancel_and_correct (audit action
+  choices only); renumber after D125's vs_finance 0063, and its AlterField of
+  FinanceAuditLog.action must carry both sessions' new choices.
+Verified: tests_deferred_release_branch_close 7, tests_bank_document_rework 14 and tests_paye_annual_people 6 written first and watched failing; those plus the touched modules (bank document states, accruals, list filters, inter-branch, ledger lock, petty cash returns, previous pay, shared write reach, bank account reach, expense claim workflow, vs_workflow actions and reversal contract) 388 OK; vs_finance 1991 OK; vs_rbac 989 OK; vs_workflow 539 OK. The full suite was not run.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
