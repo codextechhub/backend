@@ -9,11 +9,13 @@ the services that own every posting.
 The runs (release, reverse, provision, forfeit) act for every branch at once and
 write one journal per branch, so they are refused to a caller whose reach is not
 the whole tenant (:class:`~vs_rbac.scoping.WholeTenantWriteMixin`). Reads narrow to
-the caller's branches like every other transaction read.
+the caller's branches like every other transaction read; a provision run, which
+names no branch, is read through its branch lines (:func:`_provisions_in_reach`).
 """
 from __future__ import annotations
 
 from django.db import transaction
+from django.db.models import Q
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import SAFE_METHODS
 
@@ -279,11 +281,38 @@ class DeferredIncomeReverseView(_WholeTenantRun):
 # Doubtful-debt provision                                                     #
 # --------------------------------------------------------------------------- #
 
+def _provisions_in_reach(request, entity):
+    """The provision runs of ``entity`` the caller may read, with their lines loaded.
+
+    A run names no branch, so the exclusive transaction read alone would hide
+    every run from a branch-bound reader. Mrs Bello keeps Lekki's books: she
+    reads each run with a line for Lekki, and :class:`DoubtfulDebtProvisionSerializer`
+    (given :func:`_reader_context`) shows her Lekki's part of it alone. A run
+    with no line for a branch she works in, and a line not yet given a branch,
+    stay out of her reach. A whole-tenant caller reads every run, unchanged.
+    """
+    from .models import DoubtfulDebtProvisionLine
+
+    scope = transaction_branch_scope(request)
+    qs = DoubtfulDebtProvision.objects.filter(entity=entity)
+    if scope.is_narrowed:
+        with_line = DoubtfulDebtProvisionLine.objects.filter(scope.q()).values("provision_id")
+        qs = qs.filter(scope.q() | Q(pk__in=with_line))
+    return qs.prefetch_related("lines__branch")
+
+
+def _reader_context(request) -> dict:
+    """The serializer context that cuts a run down to the reader's branches."""
+    return {"request": request, "branch_ids": transaction_branch_scope(request).branch_ids}
+
+
 class DoubtfulDebtProvisionListCreateView(_WholeTenantRun):
     """GET (list) / POST ``{as_of, narration?}`` (raise a draft run with its figures).
 
-    ``?branch=`` keeps the runs with a line for that branch, one the caller
-    works in; a branch outside their reach is answered like an unknown one.
+    A branch-bound reader is listed the runs with a line for a branch they work
+    in, each cut down to those branches' lines and totals (``partial_view``
+    true). ``?branch=`` keeps the runs with a line for that branch, one the
+    caller works in; a branch outside their reach is answered like an unknown one.
 
     docstring-name: Doubtful-debt provisions
     """
@@ -295,13 +324,12 @@ class DoubtfulDebtProvisionListCreateView(_WholeTenantRun):
 
     def get(self, request):
         entity = resolve_entity(request)
-        qs = (DoubtfulDebtProvision.objects
-              .filter(transaction_branch_q(request), entity=entity)
-              .select_related("entity__tenant", "branch")
-              .prefetch_related("lines__branch").order_by("-id"))
+        qs = (_provisions_in_reach(request, entity)
+              .select_related("entity__tenant", "branch").order_by("-id"))
         # A run names no branch; ``?branch=`` keeps the runs with a line for it.
         qs = _filter_by_branch(qs, request, entity, column="lines__branch")
-        return _paginate(request, qs, DoubtfulDebtProvisionSerializer, self)
+        return _paginate(request, qs, DoubtfulDebtProvisionSerializer, self,
+                         context=_reader_context(request))
 
     def post(self, request):
         from .provisions import prepare_provision
@@ -321,16 +349,14 @@ class DoubtfulDebtProvisionListCreateView(_WholeTenantRun):
 class _ProvisionActionBase(_WholeTenantRun):
     def _provision(self, request, pk):
         entity = resolve_entity(request)
-        provision = (DoubtfulDebtProvision.objects
-                     .filter(transaction_branch_q(request), entity=entity, pk=pk)
-                     .prefetch_related("lines__branch").first())
+        provision = _provisions_in_reach(request, entity).filter(pk=pk).first()
         if provision is None:
             raise NotFound("No such provision in this entity.")
         return provision
 
 
 class DoubtfulDebtProvisionDetailView(_ProvisionActionBase):
-    """GET - one provision run.
+    """GET - one provision run, or a branch-bound reader's part of it.
 
     docstring-name: Doubtful-debt provisions
     """
@@ -340,7 +366,8 @@ class DoubtfulDebtProvisionDetailView(_ProvisionActionBase):
     def get(self, request, pk):
         return success_response(
             "Provision retrieved.",
-            data=DoubtfulDebtProvisionSerializer(self._provision(request, pk)).data)
+            data=DoubtfulDebtProvisionSerializer(
+                self._provision(request, pk), context=_reader_context(request)).data)
 
 
 class DoubtfulDebtProvisionSubmitView(_ProvisionActionBase):

@@ -587,6 +587,17 @@ vs_rbac 988 OK; core 205 OK; vs_user 430 OK; full suite with --parallel 4
 9453 OK, twice without the connection loss (the first run's 5 failures were
 tests of the old re-grant, updated to model the moment a key ships).
 
+### D122. A branch bursar sees their branch's part of a doubtful-debt provision run (uncommitted, 2026-10-05)
+Number may be renumbered at merge: another agent queues its own entry in parallel.
+MODULES: M19 finance (doubtful-debt provision, receivables accruals), MRD.
+Owner decision (2026-10-05): a branch bursar sees a provision run that includes their branch, with only their branch's line and figures.
+MUST SAY:
+- Provision reads (M19). GET /v1/finance/provisions/ and provisions/<id>/ (finance.provision.view) show a branch-bound reader every run with a line for a branch in their reach, whatever its status; a run with no such line is not listed and its detail is 404. For that reader the run is cut to their branches: lines holds only their branches' lines (each with its own bands and journal_id), required_total and movement_total are summed from those lines, and nothing of another branch (its line, figures, age bands, journal or name) is in the response. A line not yet given a branch is never shown to a branch-bound reader. A whole-school reader, and every reader at a one-branch school, sees the run whole as before.
+- New field partial_view (boolean) on every provision response: true when the response is the reader's branches' part of the run, false when whole. FinPro's Doubtful Debts screen can show a "your branch's part of this run" note when it is true.
+- approval_required is null when partial_view is true (coordinator decision 2026-10-05): whether a run needs approval can turn on its whole total, so a yes or no would hint at other branches' figures. Whole-school readers keep the real true/false.
+- Unchanged: raising, submitting and posting a run stay whole-school only (403 SHARED_RECORD_READ_ONLY for a branch-bound caller); approval stays with whole-school approvers; ?branch= still keeps runs with a line for that branch (a branch outside reach 400); policy_snapshot, narration and status are the run's own and are shown as they are.
+Verified: tests_provision_branch_reach 9 OK (6 of them fail on the code before the change); tests_accruals, tests_list_branch_filters and the new module 72 OK; vs_finance 1964 OK; after approval_required became null in a part, tests_provision_branch_reach 9 OK and tests_accruals 42 OK. The full suite was not run: the change is confined to the provision list and detail reads.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

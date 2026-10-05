@@ -2480,17 +2480,59 @@ class DoubtfulDebtProvisionLineSerializer(serializers.ModelSerializer):
 
 
 class DoubtfulDebtProvisionSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
-    """A doubtful-debt provision run and its per-branch lines."""
+    """A doubtful-debt provision run, whole or as the reader's branches' part of it.
+
+    A run is raised for every branch at once and names no branch, so a
+    branch-bound reader reaches one only through a line for a branch they work
+    in, and is shown that part alone: their branches' lines (with each line's
+    age bands and journal) and ``required_total`` and ``movement_total`` summed
+    from those lines. Lekki's bursar reads the N1,800 the run provides at Lekki
+    and nothing of Ikeja's line, figures or journal. ``partial_view`` says the
+    response is such a part. ``approval_required`` is null in a part: whether a
+    run needs approval can turn on its whole total, so a yes or no would tell
+    Lekki's bursar something about the other branches' figures.
+
+    The reader's reach is ``context["branch_ids"]`` (``None`` for the whole
+    tenant). Without that key the run is shown whole, which is right only for
+    the writes, every one of which a whole-tenant caller makes; every read
+    passes the key.
+    """
 
     lines = DoubtfulDebtProvisionLineSerializer(many=True, read_only=True)
+    partial_view = serializers.SerializerMethodField()
 
     class Meta:
         model = DoubtfulDebtProvision
         fields = [
             "id", "document_number", "status", "as_of", "narration", "required_total",
             "movement_total", "policy_snapshot", "lines", "approval_required",
-            "created_at",
+            "created_at", "partial_view",
         ]
+
+    def _part_reach(self):
+        reach = self.context.get("branch_ids")
+        return None if reach is None else frozenset(reach)
+
+    def get_partial_view(self, obj) -> bool:
+        return self._part_reach() is not None
+
+    def get_approval_required(self, obj):
+        if self._part_reach() is not None:
+            return None
+        return super().get_approval_required(obj)
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        reach = self._part_reach()
+        if reach is None:
+            return data
+        lines = [line for line in obj.lines.all() if line.branch_id in reach]
+        data.update({
+            "lines": [row for row in data["lines"] if row["branch_id"] in reach],
+            "required_total": sum(int(line.required) for line in lines),
+            "movement_total": sum(abs(int(line.movement)) for line in lines),
+        })
+        return data
 
 
 class CustomerDepositSerializer(serializers.ModelSerializer):
