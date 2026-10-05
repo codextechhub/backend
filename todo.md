@@ -408,7 +408,7 @@ MUST SAY:
 Verified: tests_branch_close, tests_shared_write_reach and tests_year_close_guard
 126 OK; vs_finance 1844 OK. The full suite was not run.
 
-### D116. Screens get the fields they need, every school's Finance Admin catches up on new keys, and shared sourcing refuses double sourcing (hash pending, 2026-10-05)
+### D116. Screens get the fields they need, every school's Finance Admin catches up on new keys, and shared sourcing refuses double sourcing (0a67c9e6, 2026-10-05)
 MODULES: M19 finance (petty cash, bank documents), M22/M23 procurement (vendor payments, goods returns, shared sourcing), M04 roles and permissions (library growth, CodeX-only payment keys), M18 payments, MRD.
 MUST SAY:
 - Roles (M04). A school's copy of a module role (e.g. Finance Admin) now gains a key the library role gains, at the moment it is added; a key a school removed is never re-added. vs_rbac 0032 catches up the keys every school had missed (39 on the dev database). vs_rbac 0031 makes payments.unattributed_webhook.*, platform_settlement.* and platform_provider.* CodeX-only and removes them from schools (the views already refused school callers). Deploy: migrate, then seed_all_permissions.
