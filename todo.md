@@ -598,6 +598,30 @@ MUST SAY:
 - Unchanged: raising, submitting and posting a run stay whole-school only (403 SHARED_RECORD_READ_ONLY for a branch-bound caller); approval stays with whole-school approvers; ?branch= still keeps runs with a line for that branch (a branch outside reach 400); policy_snapshot, narration and status are the run's own and are shown as they are.
 Verified: tests_provision_branch_reach 9 OK (6 of them fail on the code before the change); tests_accruals, tests_list_branch_filters and the new module 72 OK; vs_finance 1964 OK; after approval_required became null in a part, tests_provision_branch_reach 9 OK and tests_accruals 42 OK. The full suite was not run: the change is confined to the provision list and detail reads.
 
+### D123. A shared RFQ cancelled or closed without award gives its requisition lines back (uncommitted, 2026-10-05)
+Number may be renumbered at merge: another agent queues its own entry in parallel.
+MODULES: M22 procurement and requisitions (shared sourcing), MRD.
+MUST SAY:
+- Shared sourcing (M22). Cancelling a shared RFQ, or closing it without award,
+  releases its requisition lines in the same step, as an ordinary RFQ does: they
+  are listed again by GET rfqs/free-requisition-lines/ and are accepted on a new
+  shared RFQ, an ordinary RFQ or a purchase order. An open (draft or issued)
+  shared RFQ and an awarded one keep their lines. D116's "a line on another
+  shared RFQ is refused" now reads "a line on another live shared RFQ".
+- The ended RFQ keeps its branch split: its detail still lists the allocations,
+  and it stays hidden from a buyer who does not reach every participating branch.
+  The cancel or close audit entry of a shared RFQ carries
+  released_requisition_lines.
+- Data (vs_procurement 0046). Allocations carry released_at; at most one
+  unreleased allocation per requisition line. Shared RFQs already cancelled or
+  closed are released by the migration. Reversing it fails once a released line
+  sits on a second shared RFQ.
+- Purchase orders raised straight from a requisition now lock its lines before
+  checking shared allocations, so they cannot race a shared RFQ for one line.
+Verified: SharedRfqEndedWithoutAwardTests and ReleaseBackfillTests failed first
+(6 of 8); tests_shared_sourcing_guards 19 OK; vs_procurement 766 OK;
+vs_finance 1955 OK. The full suite was not run.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

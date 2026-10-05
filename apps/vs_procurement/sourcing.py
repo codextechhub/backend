@@ -202,6 +202,29 @@ def supersede_vendor_portal_draft(rfq, vendor, *, actor_user=None):
     return superseded
 
 
+def release_shared_lines(rfq):
+    """Give back the requisition lines a shared RFQ holds, now that it ended without award.
+
+    Called by :func:`cancel_rfq` and :func:`close_rfq` under the RFQ lock, in the
+    transaction that ends the RFQ, so the lines are free the moment the RFQ is
+    cancelled or closed and never while it is still open. The allocations stay
+    as the record of which branches the RFQ covered; only ``released_at`` is set.
+    An ordinary RFQ has no allocations and releases nothing. Returns how many
+    requisition lines were released.
+
+        Mrs Bello cancels the shared RFQ for Ikeja's 60 chairs and Lekki's 40 to
+        fix a line. Both lines are offered again and can go on a new shared RFQ,
+        on either branch's own RFQ, or straight onto a purchase order.
+    """
+    from django.utils import timezone
+
+    from .models import SharedSourcingAllocation
+
+    return SharedSourcingAllocation.objects.filter(
+        group__rfq=rfq, released_at__isnull=True,
+    ).update(released_at=timezone.now())
+
+
 @transaction.atomic
 def cancel_rfq(rfq, *, reason="", actor_user=None):
     """Abandon an RFQ. Idempotent on terminal states (AWARDED/CLOSED/CANCELLED)."""
@@ -218,11 +241,13 @@ def cancel_rfq(rfq, *, reason="", actor_user=None):
     _reject_live_quotations(rfq, actor_user=actor_user)
     rfq.rfq_status = RfqStatus.CANCELLED
     rfq.save(update_fields=["rfq_status", "updated_at"])
+    released = release_shared_lines(rfq)
     record(
         entity=rfq.entity, action=FinanceAuditAction.RFQ_CANCELLED,
         actor_user=actor_user, target=rfq,
         message=f"Cancelled RFQ {rfq.document_number}."
                 + (f" Reason: {reason}" if reason else ""),
+        **({"released_requisition_lines": released} if released else {}),
     )
     return rfq
 
@@ -246,11 +271,13 @@ def close_rfq(rfq, *, reason="", actor_user=None):
     _reject_live_quotations(rfq, actor_user=actor_user)
     rfq.rfq_status = RfqStatus.CLOSED
     rfq.save(update_fields=["rfq_status", "updated_at"])
+    released = release_shared_lines(rfq)
     record(
         entity=rfq.entity, action=FinanceAuditAction.RFQ_CLOSED,
         actor_user=actor_user, target=rfq,
         message=f"Closed RFQ {rfq.document_number} without award."
                 + (f" Reason: {reason}" if reason else ""),
+        **({"released_requisition_lines": released} if released else {}),
     )
     return rfq
 

@@ -6,7 +6,9 @@ grouping must not take a requisition nobody has approved yet, and it must not ta
 a line already being sourced on its own: were Lekki's 2 chairs already on Lekki's
 own RFQ or purchase order, a shared award would order them a second time. The
 reverse holds too: a line on a shared RFQ is not ordered again on its own. The
-picker lists only the lines still free, for the branches the buyer works in.
+picker lists only the lines still free, for the branches the buyer works in. A
+shared RFQ cancelled or closed without award gives its lines back, as an ordinary
+RFQ does.
 """
 from __future__ import annotations
 
@@ -263,3 +265,168 @@ class FreeRequisitionLinesTests(_SharedSourcingFixture):
         nobody = self.client_for(self.school.tenant, "no-key@test.com")
 
         self.assertEqual(self.get(nobody).status_code, 403)
+
+
+@patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+class SharedRfqEndedWithoutAwardTests(_SharedSourcingFixture):
+    """A shared RFQ cancelled or closed without award gives its lines back.
+
+    Mrs Bello put Lekki's 60 chairs and Ikeja's 40 on one shared RFQ, then cancels
+    it to fix a line, as the screen tells her to. The chairs must be offered again
+    and be accepted on a new shared RFQ, an ordinary RFQ or a purchase order, as
+    they would be after an ordinary RFQ is cancelled. While the shared RFQ is open,
+    or once it is awarded, they stay taken.
+    """
+
+    stored = FreeRequisitionLinesTests.__dict__["stored"]
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.lekki_chairs = cls.stored(cls.multi, cls.lekki, 60)
+        cls.ikeja_chairs = cls.stored(cls.multi, cls.ikeja, 40)
+
+    def setUp(self):
+        self.hq = self.client_for(self.school.tenant, f"bello-{self._testMethodName}@test.com")
+
+    def url(self, path):
+        return f"/v1/procurement/rfqs/{path}?entity={self.multi.entity.code}"
+
+    def free_ids(self):
+        response = self.hq.get(self.url("free-requisition-lines/"))
+        self.assertEqual(response.status_code, 200, response.data)
+        return {row["requisition_id"] for row in self.rows(response)}
+
+    def shared_rfq(self, title="Shared chairs"):
+        made = self.shared(self.hq, self.lekki_chairs, self.ikeja_chairs, title=title)
+        self.assertEqual(made.status_code, 201, made.data)
+        return RequestForQuotation.objects.get(pk=made.data["data"]["id"])
+
+    def issued(self, rfq):
+        from vs_procurement.sourcing import issue_rfq, set_rfq_invitations
+
+        set_rfq_invitations(rfq, [self.multi.vendor])
+        return issue_rfq(rfq, competition_exception_reason="One supplier stocks them.")
+
+    def own_rfq(self, requisition):
+        return self.hq.post(self.url(""), {
+            "requisition": requisition.pk, "title": "Lekki chairs", "issue_date": "2026-01-12",
+            "lines": [{"description": "Chair", "quantity": 60, "expense_account": "5300",
+                       "requisition_line": requisition.lines.get().pk}],
+        }, format="json")
+
+    def test_cancelling_offers_the_lines_again(self, _permission):
+        rfq = self.shared_rfq()
+        self.assertEqual(self.free_ids(), set())
+
+        cancelled = self.hq.post(self.url(f"{rfq.pk}/cancel/"), {"reason": "Fix a line"},
+                                 format="json")
+
+        self.assertEqual(cancelled.status_code, 200, cancelled.data)
+        self.assertEqual(self.free_ids(), {self.lekki_chairs.pk, self.ikeja_chairs.pk})
+
+    def test_cancelled_lines_go_on_a_new_shared_rfq(self, _permission):
+        first = self.shared_rfq()
+        self.hq.post(self.url(f"{first.pk}/cancel/"), {}, format="json")
+
+        second = self.shared_rfq(title="Shared chairs, fixed")
+
+        self.assertEqual(
+            SharedSourcingAllocation.objects.filter(group__rfq=second).count(), 2)
+        again = self.shared(self.hq, self.lekki_chairs, self.ikeja_chairs, title="Third")
+        self.assertEqual(again.status_code, 400, again.data)
+        self.assertIn(f"already on shared RFQ {second.document_number}", str(again.data))
+
+    def test_cancelled_lines_go_on_an_ordinary_rfq_or_order(self, _permission):
+        rfq = self.shared_rfq()
+        self.hq.post(self.url(f"{rfq.pk}/cancel/"), {}, format="json")
+
+        own = self.own_rfq(self.lekki_chairs)
+        po = create_po_from_requisition(
+            self.ikeja_chairs, vendor=self.multi.vendor, order_date=datetime.date(2026, 1, 12))
+
+        self.assertEqual(own.status_code, 201, own.data)
+        self.assertEqual(po.branch_id, self.ikeja.pk)
+
+    def test_closing_without_award_offers_the_lines_again(self, _permission):
+        rfq = self.issued(self.shared_rfq())
+        self.assertEqual(self.free_ids(), set())
+
+        closed = self.hq.post(self.url(f"{rfq.pk}/close/"), {"reason": "No fair price"},
+                              format="json")
+
+        self.assertEqual(closed.status_code, 200, closed.data)
+        self.assertEqual(self.free_ids(), {self.lekki_chairs.pk, self.ikeja_chairs.pk})
+
+    def test_an_open_shared_rfq_keeps_its_lines(self, _permission):
+        self.issued(self.shared_rfq())
+
+        self.assertEqual(self.free_ids(), set())
+        self.assertEqual(self.own_rfq(self.lekki_chairs).status_code, 400)
+        with self.assertRaises(RequisitionError):
+            create_po_from_requisition(
+                self.ikeja_chairs, vendor=self.multi.vendor,
+                order_date=datetime.date(2026, 1, 12))
+
+    def test_an_awarded_shared_rfq_keeps_its_lines(self, _permission):
+        from vs_procurement.constants import RfqStatus
+        from vs_procurement.exceptions import SourcingError
+        from vs_procurement.sourcing import cancel_rfq
+
+        rfq = self.shared_rfq()
+        RequestForQuotation.objects.filter(pk=rfq.pk).update(rfq_status=RfqStatus.AWARDED)
+
+        with self.assertRaises(SourcingError):
+            cancel_rfq(rfq)
+        self.assertEqual(self.free_ids(), set())
+        self.assertEqual(self.own_rfq(self.lekki_chairs).status_code, 400)
+        again = self.shared(self.hq, self.lekki_chairs, self.ikeja_chairs, title="Again")
+        self.assertEqual(again.status_code, 400, again.data)
+
+    def test_the_cancelled_rfq_keeps_its_branch_split_and_boundary(self, _permission):
+        rfq = self.shared_rfq()
+        self.hq.post(self.url(f"{rfq.pk}/cancel/"), {}, format="json")
+        self.shared_rfq(title="Shared chairs, fixed")
+        lekki_buyer = self.client_for(
+            self.school.tenant, "lekki-only@test.com", branch=self.lekki)
+
+        detail = self.hq.get(self.url(f"{rfq.pk}/"))
+        hidden = lekki_buyer.get(self.url(f"{rfq.pk}/"))
+
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertEqual(detail.data["data"]["rfq_status"], "CANCELLED")
+        self.assertEqual(len(detail.data["data"]["shared_sourcing"]["allocations"]), 2)
+        self.assertEqual(hidden.status_code, 404, hidden.data)
+
+
+class ReleaseBackfillTests(_SharedSourcingFixture):
+    """Shared RFQs already cancelled or closed when release arrived give their lines back."""
+
+    stored = FreeRequisitionLinesTests.__dict__["stored"]
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_only_ended_rfqs_are_released(self, _permission):
+        import importlib
+
+        from django.apps import apps
+
+        from vs_procurement.constants import RfqStatus
+
+        hq = self.client_for(self.school.tenant, "backfill@test.com")
+        made = {}
+        for status in (RfqStatus.CANCELLED, RfqStatus.CLOSED, RfqStatus.AWARDED, RfqStatus.ISSUED):
+            lekki = self.stored(self.multi, self.lekki, 2)
+            ikeja = self.stored(self.multi, self.ikeja, 3)
+            response = self.shared(hq, lekki, ikeja, title=status)
+            self.assertEqual(response.status_code, 201, response.data)
+            made[status] = response.data["data"]["id"]
+            RequestForQuotation.objects.filter(pk=made[status]).update(rfq_status=status)
+        migration = importlib.import_module(
+            "vs_procurement.migrations.0046_shared_sourcing_release")
+
+        migration.release_ended_allocations(apps, None)
+
+        released = set(
+            SharedSourcingAllocation.objects.filter(released_at__isnull=False)
+            .values_list("group__rfq_id", flat=True))
+        self.assertEqual(released, {made[RfqStatus.CANCELLED], made[RfqStatus.CLOSED]})

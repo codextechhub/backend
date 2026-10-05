@@ -1599,7 +1599,18 @@ class SharedSourcingGroup(TimeStampedModel):
 
 
 class SharedSourcingAllocation(TimeStampedModel):
-    """Assign a requisition line's requested quantity to one shared RFQ line."""
+    """Assign a requisition line's requested quantity to one shared RFQ line.
+
+    An allocation holds its requisition line while ``released_at`` is empty: the
+    line is on this shared RFQ and nothing else may source it. When the RFQ is
+    cancelled or closed without award the allocation is released in the same
+    transaction, and the line is free again, exactly as an ordinary RFQ line on a
+    cancelled RFQ is. The row stays, so the ended RFQ still shows which branches
+    it covered and still hides from a buyer who does not reach all of them.
+
+    The database holds at most one unreleased allocation per requisition line, so
+    two buyers racing to share the same chairs cannot both succeed.
+    """
 
     group = models.ForeignKey(
         SharedSourcingGroup, on_delete=models.PROTECT, related_name="allocations",
@@ -1612,12 +1623,14 @@ class SharedSourcingAllocation(TimeStampedModel):
         related_name="shared_sourcing_allocations",
     )
     quantity = models.DecimalField(max_digits=14, decimal_places=4)
+    released_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
                 fields=["requisition_line"],
-                name="uniq_shared_sourcing_source_line",
+                condition=models.Q(released_at__isnull=True),
+                name="uniq_shared_sourcing_live_source_line",
             ),
             models.CheckConstraint(
                 condition=models.Q(quantity__gt=0),
