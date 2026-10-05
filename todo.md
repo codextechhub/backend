@@ -648,7 +648,7 @@ MUST SAY:
   released, stamped with the sourcing group's last change. Reverse is a no-op.
 Verified: tests_single_live_sourcing 21 OK (12 of the 20 written first failed on the code before the change for want of the rule); tests_shared_sourcing_guards 19 OK with the awarded case rewritten to a real award; vs_procurement 787 OK; vs_finance 1964 OK. The full suite was not run.
 
-### D126. Deferred income undo tells the truth after a branch closes, a rejected bank document can be fixed or cancelled, and the annual PAYE return lists each person once (uncommitted, 2026-10-05)
+### D126. Deferred income undo tells the truth after a branch closes, a rejected bank document can be fixed or cancelled, and the annual PAYE return lists each person once (4213c17a, 2026-10-05)
 Number may be renumbered at merge: D125 (period close and frontend exposure) is queued in parallel and is not on main yet.
 MODULES: M19 finance (deferred income, bank transactions and transfers, payroll annual return), M04 roles only to say no key was added, MRD.
 MUST SAY:
