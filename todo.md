@@ -587,7 +587,7 @@ vs_rbac 988 OK; core 205 OK; vs_user 430 OK; full suite with --parallel 4
 9453 OK, twice without the connection loss (the first run's 5 failures were
 tests of the old re-grant, updated to model the moment a key ships).
 
-### D122. A branch bursar sees their branch's part of a doubtful-debt provision run (uncommitted, 2026-10-05)
+### D122. A branch bursar sees their branch's part of a doubtful-debt provision run (95f8e675, 2026-10-05)
 Number may be renumbered at merge: another agent queues its own entry in parallel.
 MODULES: M19 finance (doubtful-debt provision, receivables accruals), MRD.
 Owner decision (2026-10-05): a branch bursar sees a provision run that includes their branch, with only their branch's line and figures.
@@ -598,7 +598,7 @@ MUST SAY:
 - Unchanged: raising, submitting and posting a run stay whole-school only (403 SHARED_RECORD_READ_ONLY for a branch-bound caller); approval stays with whole-school approvers; ?branch= still keeps runs with a line for that branch (a branch outside reach 400); policy_snapshot, narration and status are the run's own and are shown as they are.
 Verified: tests_provision_branch_reach 9 OK (6 of them fail on the code before the change); tests_accruals, tests_list_branch_filters and the new module 72 OK; vs_finance 1964 OK; after approval_required became null in a part, tests_provision_branch_reach 9 OK and tests_accruals 42 OK. The full suite was not run: the change is confined to the provision list and detail reads.
 
-### D123. A shared RFQ cancelled or closed without award gives its requisition lines back (uncommitted, 2026-10-05)
+### D123. A shared RFQ cancelled or closed without award gives its requisition lines back (419b88b5, 2026-10-05)
 Number may be renumbered at merge: another agent queues its own entry in parallel.
 MODULES: M22 procurement and requisitions (shared sourcing), MRD.
 MUST SAY:
