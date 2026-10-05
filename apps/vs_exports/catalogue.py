@@ -128,6 +128,12 @@ class Field:
     ``source`` is the ORM lookup path used with ``values_list`` - reading through
     ``values_list`` rather than model instances is what keeps a 500k-row export from
     turning into 500k queries, so every field must be expressible as a path.
+
+    A path may name an annotation the dataset's ``base`` adds rather than a stored
+    column. That is how a value is shaped per reader without reading rows into
+    Python: ``base`` receives the person the export runs as (``ScopeContext.user``),
+    so the audit dataset's ``visible_summary`` is each summary as that person sees
+    it on screen, and a search over it matches nothing they may not read.
     """
 
     id: str

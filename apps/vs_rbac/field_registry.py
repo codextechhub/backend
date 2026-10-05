@@ -39,6 +39,13 @@ class FieldSpec:
     it: without the flag, a role that may create a record but not change that
     field could not create one at all. A field nothing can write has nothing
     to open, so the flag needs ``writable``.
+
+    ``read_by`` names the library (prebuilt) roles that read a sensitive field
+    by default: the roles whose daily work cannot be done without it. The sync
+    gives them Read, and gives it once to every tenant's existing copy
+    (:func:`vs_rbac.library_growth.attach_field_read_default`), after which
+    each tenant decides for itself. A field that is not sensitive is open to
+    every role already, so it names none.
     """
 
     name: str
@@ -51,6 +58,7 @@ class FieldSpec:
     sort_order: int = 0
     api_names: tuple[str, ...] = ()
     open_on_create: bool = False
+    read_by: tuple[str, ...] = ()
 
     @property
     def resolved_api_names(self) -> tuple[str, ...]:
@@ -121,6 +129,17 @@ def validate_declaration(declaration: FieldDeclaration) -> None:
                 f"Field registry: '{key}' is open on create but nothing can "
                 f"write it, so there is no later change for the switch to govern."
             )
+        if spec.read_by and not spec.sensitive:
+            raise ValueError(
+                f"Field registry: '{key}' names default readers but is not "
+                f"sensitive, so every role reads it already."
+            )
+        for role_key in spec.read_by:
+            if not _NAME_RE.match(role_key or ""):
+                raise ValueError(
+                    f"Field registry: '{key}' names '{role_key}' as a default "
+                    f"reader, which is not a library role key."
+                )
         if spec.scope not in PermissionScope.values:
             raise ValueError(
                 f"Field registry: '{key}' has scope '{spec.scope}'. Declare the "

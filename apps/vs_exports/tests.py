@@ -1847,17 +1847,19 @@ class CatalogueRegistrationTests(TestCase):
 
         broken = []
         for dataset in all_datasets():
-            model = dataset.base(_Scope()).model
+            # The queryset the engine reads, so a path may name an annotation
+            # the dataset's base adds as well as a column.
+            base = dataset.base(_Scope()).none()
             for field in dataset.fields:
                 try:
-                    model.objects.none().values_list(field.path)
+                    base.values_list(field.path)
                 except Exception as exc:
                     broken.append(f"{dataset.key}.{field.id} -> {field.path}: {exc}")
             for spec in dataset.filters:
                 try:
                     # A search filter touches several columns, so check them all.
                     for path in spec.paths:
-                        model.objects.none().filter(**{f"{path}__isnull": True})
+                        base.filter(**{f"{path}__isnull": True})
                 except Exception as exc:
                     broken.append(f"{dataset.key}!{spec.id} -> {spec.paths}: {exc}")
         self.assertEqual(broken, [], "\n".join(broken))
@@ -2573,14 +2575,14 @@ class SearchFilterTests(_ExportFixture, TestCase):
 
         broken = []
         for dataset in all_datasets():
-            model = dataset.base(_Scope()).model
+            base = dataset.base(_Scope()).none()
             for spec in dataset.filters:
                 if spec.kind != FILTER_SEARCH:
                     continue
                 self.assertTrue(spec.searches, f"{dataset.key}: search names no columns")
                 for path, _label in spec.searches:
                     try:
-                        model.objects.none().filter(**{f"{path}__icontains": "x"})
+                        base.filter(**{f"{path}__icontains": "x"})
                     except Exception as exc:
                         broken.append(f"{dataset.key}!search -> {path}: {exc}")
         self.assertEqual(broken, [], "\n".join(broken))

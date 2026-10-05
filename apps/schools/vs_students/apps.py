@@ -15,6 +15,8 @@ class VsStudentsConfig(AppConfig):
 
         # The student fields an administrator may restrict per role.
         field_access.register()
+        # The audit rows whose reason that registry's switch governs.
+        field_access.register_audit_words()
 
         # The rows a student or guardian profile can be read as at an earlier
         # date. The history engine never imports a domain app either.

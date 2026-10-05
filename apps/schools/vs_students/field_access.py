@@ -52,9 +52,30 @@ record history tab that record a status move, and inside the ``suspension``
 block of a profile, and it is registered under a name of its own
 because ``reason`` alone says nothing on a screen listing a pupil's fields.
 
+The same switch covers the reason an applicant moved between a school's
+admission stages. A stage is a step in the decision whose last step is a
+status move, confirmation or rejection, and its reason is the same kind of
+words about the same child, often by the same person ("parents could not pay
+the fees"). One switch means a role that may not read why an applicant was
+rejected may not read why they were waitlisted either. The stage move keeps
+no row of its own beyond its audit event, so the reason reaches a client only
+on the record history tab, as ``reason`` on the entry for the move.
+
 It is never printed inside a sentence. A sentence reaches its reader whole, so
-the status move's audit summary leaves the reason to its metadata, and the
-record history serves it beside the text rather than within it.
+a status move's or a stage move's audit summary leaves the reason to its
+metadata, and the record history serves it beside the text rather than within
+it. The platform audit log holds the words to the same switch: the rows that
+carry them are registered with :mod:`vs_audit.protected_words`
+(:func:`register_audit_words`), which leaves the reason out of the metadata
+and cuts an older summary at ``" Reason: "`` for a reader who may not read it.
+
+School Admin and Branch Admin read it by default (``read_by``). They are the
+library roles that hold the keys moving a pupil or an applicant
+(``.update``, ``.transition``, ``.transfer``, ``.suspend``, ``.reactivate``),
+so the people who type the reasons keep reading them. Teacher does not: a
+class teacher opens the record with ``.view`` alone. Every school's existing
+copies of the two roles gain Read once, when the default ships, and a school
+that turns it off keeps it off (:mod:`vs_rbac.library_growth`).
 
 Nothing writes it through a serializer of this resource, so it is declared
 unwritable and offers no Write switch. The reason arrives on the status routes,
@@ -86,6 +107,33 @@ _TENANT = "TENANT"
 #: profile's suspension block, which includes or omits the whole key rather
 #: than carrying it as a field of a serializer.
 STATUS_REASON_FIELD = "school.students.status_reason"
+
+
+def register_audit_words():
+    """Hold the reason a status or stage move carries to the reason's switch.
+
+    Both moves are audited on the pupil (``entity_type="Student"``) with the
+    reason in ``metadata["reason"]``, and older rows of both end their summary
+    in ``" Reason: ..."``. A status move is told apart by its action; a stage
+    move is audited as a plain ``UPDATE`` and told apart from a record edit by
+    the metadata only it writes. Every audit surface and the record history
+    tab read the words through :mod:`vs_audit.protected_words`.
+    """
+    from vs_audit.protected_words import ProtectedWords, register_protected_words
+
+    from .services.admission import STAGE_MOVE_ACTION, STAGE_MOVE_METADATA_KEYS
+    from .services.status import STATUS_AUDIT_ACTIONS, SUMMARY_REASON_MARKER
+
+    for name, actions, keys in (
+        ("school.students.status_move", STATUS_AUDIT_ACTIONS, frozenset()),
+        ("school.students.stage_move", frozenset({STAGE_MOVE_ACTION}),
+         STAGE_MOVE_METADATA_KEYS),
+    ):
+        register_protected_words(name, ProtectedWords(
+            field_key=STATUS_REASON_FIELD, entity_type="Student",
+            action_types=frozenset(actions), metadata_keys=keys,
+            metadata_key="reason", summary_marker=SUMMARY_REASON_MARKER,
+        ))
 
 
 def register():
@@ -144,9 +192,12 @@ def register():
             FieldSpec("status_reason", "Status change reason", group="Status",
                       sensitive=True, writable=False, scope=_TENANT,
                       sort_order=10, api_names=("reason",),
+                      read_by=("school_admin", "branch_admin"),
                       description="Why a pupil was suspended, withdrawn, "
-                                  "transferred out or brought back, in the "
-                                  "words of the member of staff who moved them."),
+                                  "transferred out or brought back, or an "
+                                  "applicant moved between admission stages, "
+                                  "in the words of the member of staff who "
+                                  "moved them."),
         ),
     )
     register_fields(

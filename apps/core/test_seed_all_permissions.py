@@ -142,3 +142,123 @@ class SchoolRoleDecisionsSurviveEverySeedTests(TestCase):
             ).exists()
         ]
         self.assertEqual(put_back, [])
+
+
+class StatusReasonReadDefaultTests(TestCase):
+    """The roles that run admissions and records read a status reason by default.
+
+    ``school.students.status_reason`` is sensitive, so a role reads it only
+    where a switch says so. School Admin and Branch Admin are the library roles
+    holding the keys that move a pupil or an applicant (``.update``,
+    ``.transition``, ``.transfer``, ``.suspend``, ``.reactivate``), so the field
+    declares Read for them (``FieldSpec.read_by``) and the sync gives it to the
+    library roles and, once, to every school's existing copy of them.
+
+    Bright Star (two branches) and Sunrise (one) had their roles before the
+    default existed, so they are provisioned before the full seed runs.
+    """
+
+    FIELD = "school.students.status_reason"
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_rbac.services import provision_role_from_prebuilt
+        from vs_rbac.tests.helpers import (
+            make_assignment,
+            make_branch,
+            make_school,
+            make_school_admin,
+        )
+
+        for command in ("seed_actions", "seed_prebuilt_role_templates",
+                        "seed_school_permissions"):
+            call_command(command, verbosity=0, stdout=StringIO(), stderr=StringIO())
+
+        bright_school = make_school(slug="reason-bright", name="Bright Star")
+        cls.bright = bright_school.tenant
+        lekki = make_branch(cls.bright, name="Lekki", is_main=True)
+        ikeja = make_branch(cls.bright, name="Ikeja", is_main=False)
+        sunrise = make_school(slug="reason-sunrise", name="Sunrise").tenant
+        sunrise_main = make_branch(sunrise, name="Sunrise Main", is_main=True)
+
+        def provision(tenant, key, branch=None):
+            return provision_role_from_prebuilt(
+                tenant=tenant, branch=branch, prebuilt_key=key,
+            )
+
+        cls.bright_admin = provision(cls.bright, "school_admin")
+        cls.lekki_admin = provision(cls.bright, "branch_admin", lekki)
+        cls.ikeja_admin = provision(cls.bright, "branch_admin", ikeja)
+        cls.lekki_teacher = provision(cls.bright, "teacher", lekki)
+        cls.sunrise_admin = provision(sunrise, "school_admin")
+        cls.sunrise_branch_admin = provision(sunrise, "branch_admin", sunrise_main)
+        cls.sunrise_teacher = provision(sunrise, "teacher", sunrise_main)
+
+        cls.principal = make_school_admin(
+            None, email="principal@reason-bright.test", tenant=cls.bright,
+        )
+        make_assignment(bright_school, cls.principal, cls.bright_admin, branch=None)
+        cls.teacher_user = make_school_admin(
+            None, email="teacher@reason-bright.test", tenant=cls.bright,
+        )
+        make_assignment(bright_school, cls.teacher_user, cls.lekki_teacher)
+
+        call_command("seed_all_permissions", verbosity=0, stdout=StringIO())
+
+    def reads(self, role):
+        from vs_rbac.models import RoleFieldAccess
+
+        return RoleFieldAccess.objects.filter(
+            role=role, field_id=self.FIELD, can_read=True,
+        ).exists()
+
+    def test_every_existing_admin_copy_gains_read_and_no_teacher_does(self):
+        for role in (self.bright_admin, self.lekki_admin, self.ikeja_admin,
+                     self.sunrise_admin, self.sunrise_branch_admin):
+            with self.subTest(role=role.key, tenant=role.tenant_id):
+                self.assertTrue(self.reads(role))
+        for role in (self.lekki_teacher, self.sunrise_teacher):
+            with self.subTest(role=role.key, tenant=role.tenant_id):
+                self.assertFalse(self.reads(role))
+
+    def test_the_school_admin_reads_the_reason_and_the_teacher_does_not(self):
+        from vs_rbac.field_evaluator import get_field_access
+
+        self.assertTrue(
+            get_field_access(self.principal, tenant=self.bright).can_read(self.FIELD),
+        )
+        self.assertFalse(
+            get_field_access(self.teacher_user, tenant=self.bright).can_read(self.FIELD),
+        )
+
+    def test_a_school_that_turned_it_off_keeps_it_off(self):
+        """Bright Star turns Read off for its School Admin, and Sunrise resets
+        its Branch Admin to the field's default (closed). The next deploy's
+        seeds leave both closed."""
+        from vs_rbac.models import RoleFieldAccess
+
+        RoleFieldAccess.objects.filter(
+            role=self.bright_admin, field_id=self.FIELD,
+        ).update(can_read=False, can_write=False)
+        RoleFieldAccess.objects.filter(
+            role=self.sunrise_branch_admin, field_id=self.FIELD,
+        ).delete()
+
+        call_command("seed_all_permissions", verbosity=0, stdout=StringIO())
+
+        self.assertFalse(self.reads(self.bright_admin))
+        self.assertFalse(self.reads(self.sunrise_branch_admin))
+        self.assertTrue(self.reads(self.lekki_admin))
+
+    def test_a_school_opened_afterwards_gets_it_when_its_roles_are_made(self):
+        from vs_rbac.services import provision_role_from_prebuilt
+        from vs_rbac.tests.helpers import make_branch, make_school
+
+        later = make_school(slug="reason-later", name="Greenfield").tenant
+        main = make_branch(later, name="Greenfield Main", is_main=True)
+        admin = provision_role_from_prebuilt(tenant=later, prebuilt_key="school_admin")
+        teacher = provision_role_from_prebuilt(
+            tenant=later, branch=main, prebuilt_key="teacher",
+        )
+        self.assertTrue(self.reads(admin))
+        self.assertFalse(self.reads(teacher))

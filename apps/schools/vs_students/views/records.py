@@ -198,14 +198,16 @@ class StudentHistoryView(StudentsViewMixin, APIView):
     or ``edit``), so this merges the module's own log with the platform's
     audit trail rather than duplicating either.
 
-    The reason behind a status move is a Field Access field
+    The reason behind a status move, or behind an applicant's move between
+    admission stages, is a Field Access field
     (``school.students.status_reason``), held to the same Read switch here as
     on the status history and the profile's suspension block. It never travels
     inside ``text``, because a sentence cannot be partly withheld: an entry for
-    a status move carries it as ``reason``, and the key is absent for a caller
+    either move carries it as ``reason``, and the key is absent for a caller
     whose roles do not grant Read. An audit summary that ends in the reason is
     cut where the reason begins (``SUMMARY_REASON_MARKER``), since the trail
-    is immutable and can still hold such rows.
+    is immutable and can still hold such rows. Which rows carry a reason is
+    :mod:`vs_audit.protected_words`'s answer, shared with the audit log.
 
     ``AuditEvent`` is ordered by ``event_at``, when the action happened, which
     is not always when its row was written.
@@ -276,17 +278,17 @@ class StudentHistoryView(StudentsViewMixin, APIView):
 
     @staticmethod
     def _audit_text(event):
-        """An audit row's sentence, and the status reason it carries if any.
+        """An audit row's sentence, and the reason it carries if any.
 
-        The reason is ``None`` for a row that is not a status move, so its
-        entry has no ``reason`` key whoever reads it.
+        A status move and an applicant's admission stage move carry one, as
+        registered by ``field_access.register_audit_words``, which is the
+        same answer the platform audit log reads. The reason is ``None`` for
+        any other row, so its entry has no ``reason`` key whoever reads it.
         """
-        from ..services.status import STATUS_AUDIT_ACTIONS, SUMMARY_REASON_MARKER
+        from vs_audit.protected_words import split_summary
 
-        if event.action_type not in STATUS_AUDIT_ACTIONS:
-            return event.summary, None
-        text, _, tail = event.summary.partition(SUMMARY_REASON_MARKER)
-        return text, (event.metadata or {}).get("reason") or tail
+        text, reason, _ = split_summary(event)
+        return text, reason
 
     @staticmethod
     def _status_text(row):

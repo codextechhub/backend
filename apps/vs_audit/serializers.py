@@ -61,6 +61,31 @@ class UserSlimSerializer(serializers.ModelSerializer):
 # Audit Event Serializers
 # -----------------------------------------------------------------------------
 
+class _ProtectedWordsMixin:
+    """Hide the words a reader may not read, on every audit event render.
+
+    Some rows carry words another module guards with a Field Access switch
+    (:mod:`vs_audit.protected_words`). The reader is the request in the
+    context; a render with no request reads everything, as Field Access does
+    for a render acting for nobody, so a view serializing events must pass
+    its request.
+    """
+
+    def _can_read(self):
+        from .protected_words import reader_for
+
+        return reader_for(self.context.get("request"))
+
+    def _hide_protected_words(self, obj, data):
+        from .protected_words import visible_metadata, visible_summary
+
+        can_read = self._can_read()
+        if "summary" in data:
+            data["summary"] = visible_summary(obj, can_read)
+        if "metadata" in data:
+            data["metadata"] = visible_metadata(obj, can_read)
+        return data
+
 class AuditEventPeopleListSerializer(serializers.ListSerializer):
     """Resolve actor employment for one audit page with a bulk lookup."""
 
@@ -75,7 +100,7 @@ class AuditEventPeopleListSerializer(serializers.ListSerializer):
         return super().to_representation(rows)
 
 
-class AuditEventListSerializer(serializers.ModelSerializer):
+class AuditEventListSerializer(_ProtectedWordsMixin, serializers.ModelSerializer):
     """
     Use this for audit log listing pages.
 
@@ -105,6 +130,9 @@ class AuditEventListSerializer(serializers.ModelSerializer):
         return {"id": str(user.id), "full_name": user.full_name, "email": user.email,
                 "is_exited": person_is_exited(self.context, user.pk)}
 
+    def to_representation(self, obj):
+        return self._hide_protected_words(obj, super().to_representation(obj))
+
     class Meta:
         model = AuditEvent
         list_serializer_class = AuditEventPeopleListSerializer
@@ -130,7 +158,7 @@ class AuditEventListSerializer(serializers.ModelSerializer):
         )
 
 
-class AuditEventDetailSerializer(serializers.ModelSerializer):
+class AuditEventDetailSerializer(_ProtectedWordsMixin, serializers.ModelSerializer):
     """
     Use this for opening a single audit event in detail view.
 
@@ -169,7 +197,7 @@ class AuditEventDetailSerializer(serializers.ModelSerializer):
         from core.person_exit import prime_exit_states
 
         prime_exit_states(self.context, (obj.actor_user_id, obj.effective_user_id))
-        return super().to_representation(obj)
+        return self._hide_protected_words(obj, super().to_representation(obj))
 
 
 # -----------------------------------------------------------------------------

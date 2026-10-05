@@ -552,7 +552,9 @@ class StageMoveTests(_AdmissionFixture):
         self.assertEqual(event.metadata["from"], {"id": stages["Interview"], "name": "Interview"})
         self.assertEqual(event.metadata["to"], {"id": stages["Offer"], "name": "Offer"})
         self.assertEqual(event.metadata["offer_expires_on"], "2026-03-24")
-        self.assertIn("Strong interview.", event.summary)
+        # The reason is a Field Access field, so it stays out of the sentence.
+        self.assertEqual(event.metadata["reason"], "Strong interview.")
+        self.assertNotIn("Strong interview.", event.summary)
 
     def test_a_student_who_is_not_an_applicant_is_refused(self):
         stages = self.standard_stages()

@@ -523,9 +523,46 @@ MUST SAY:
   whose stored summary ends in "Reason: ..." (cut there, served as "reason").
   Other entries never carry "reason".
 - Status audit (M11). The audit event a status move writes keeps the reason out
-  of its summary and carries it in metadata.reason. The admission stage move's
-  audit summary still ends in its reason: that reason is not a Field Access
-  field (open question to the owner).
+  of its summary and carries it in metadata.reason.
+- Admission stage reason (M11, owner decision, uncommitted follow-up). An
+  applicant's stage move (POST /v1/students/<id>/stage/) keeps its reason out
+  of the audit summary (metadata.reason only), and the History tab serves it
+  as "reason" on the stage-move entry under the same switch,
+  school.students.status_reason (its description now names admission stages;
+  no new switch). Old stage-move rows whose summary ends in "Reason: ..." are
+  cut there. Before this, anyone who could open an applicant read the reason.
+  Read by default (M04): School Admin and Branch Admin (the library roles
+  holding .update/.transition/.transfer/.suspend/.reactivate) read
+  school.students.status_reason by default, declared on the field
+  (FieldSpec.read_by) and offered by sync_field_registry: the library role
+  gains a PrebuiltRoleFieldAccess Read row, and every school's existing copy
+  (per-branch Branch Admin copies included) gains Read once, at that moment
+  (vs_rbac.library_growth.attach_field_read_default). A copy already holding
+  a row keeps it; a school that turns it off or resets it stays off on every
+  later seed. New schools get it at provisioning. Teacher does not.
+  Audit log (M11, M04 platform audit): GET /v1/audit/events/, the event
+  detail, the entity trail detail, "my activity" and the audit CSV export hide
+  a status or stage move's reason from a reader whose roles lack Read on the
+  switch: old summaries cut at " Reason: ", metadata.reason left out of the
+  detail. Hidden on read; no row is rewritten. Readers allowed it see the row
+  as written. Evaluated in the reader's own tenant: CodeX staff by their
+  platform roles (closed unless CodeX opens it on that role), the Vision super
+  admin always. Rows registered through vs_audit.protected_words (domain
+  neutral; the student app registers its two moves), which the History tab
+  now reads too. Searching never matches a hidden reason: the summary search
+  on /v1/audit/events/, the audit CSV export and "my activity" match each
+  summary as the reader sees it (the cut is one SQL expression,
+  vs_audit.protected_words.visible_summary_expression; no per-row Python).
+  Export Centre (Export Centre docs): the "Audit events" dataset's Summary
+  column and its search read visible_summary, an annotation its base adds for
+  the person the export runs as (the owner for scheduled and background runs),
+  so the file never carries a hidden reason. The dataset exports no metadata.
+  No engine change: a Field's source may now name an annotation of the
+  dataset's base (vs_exports.catalogue.Field). Verified:
+  AdmissionStageReasonTests 4 of 6, AuditLogReasonTests 5 of 8 (then the 3
+  search and Export Centre tests, all failing) and StatusReasonReadDefaultTests
+  4 of 4 failed first; schools.vs_students 688 OK; vs_audit 109 OK; vs_exports
+  196 OK; vs_rbac 989 OK; core 209 OK; full suite with --parallel 4 9475 OK.
 - Default keys (M04 and every seed below). A default a library role (School
   Admin, Branch Admin, Teacher, and Finance/Procurement Admin for workflow keys)
   gains reaches every school's existing copy once, at that moment, per-branch

@@ -173,7 +173,8 @@ NESTING_ONLY_SURFACES = {
 SENSITIVE_BEYOND_THE_CONVERSION = {
     "school.students.status_reason": (
         "Free text a member of staff writes about a child: why this pupil was "
-        "suspended, withdrawn, transferred out or brought back. It is the same "
+        "suspended, withdrawn, transferred out or brought back, or an applicant "
+        "moved between admission stages. It is the same "
         "kind of fact as the medical fields beside it, so a school opens it per "
         "role as it opens those. Every holder of school.students.view read it "
         "before it was registered, so turning the switch on for the roles that "
@@ -612,6 +613,16 @@ class RegistrationValidationTests(SimpleTestCase):
                 fields=(FieldSpec("serial", "Serial"),),
             )
         self.assertIsNone(get_declaration("testfields", "unscoped"))
+
+    def test_default_readers_on_a_field_every_role_reads_are_refused(self):
+        """A field that is not sensitive is open already, so naming readers is a mistake."""
+        with self.assertRaises(ValueError):
+            register_fields(
+                "testfields", "openreaders", surfaces=(),
+                fields=(FieldSpec("serial", "Serial", scope=PermissionScope.TENANT,
+                                  read_by=("school_admin",)),),
+            )
+        self.assertIsNone(get_declaration("testfields", "openreaders"))
 
 
 class DefaultAccessTests(SimpleTestCase):

@@ -46,6 +46,12 @@ the key (``branch_admin-37``), so a seed whose keys belong on those copies asks
 for them with ``branch_copies``. ``tenant_kind`` narrows the copies to one kind
 of tenant for a seed whose keys only make sense there.
 
+Field Access defaults travel the same way. A sensitive field names the library
+roles that read it (``FieldSpec.read_by``), and ``sync_field_registry`` hands
+the Read switch to the library role and, once, to its copies
+(:func:`attach_field_read_default`). The ``PrebuiltRoleFieldAccess`` row is the
+record of the offer, as the library link is for a key.
+
 Resetting the library (``seed_prebuilt_role_templates --reset``, a development
 tool) deletes every link, so the next run of each module seed offers its whole
 list again.
@@ -168,3 +174,49 @@ def attach_defaults(prebuilt, permission_keys, *, branch_copies: bool = False,
         prebuilt.key, attached, branch_copies=branch_copies, tenant_kind=tenant_kind,
     ) if attached else 0
     return attached, grown
+
+
+def attach_field_read_default(prebuilt, field_key: str) -> tuple[bool, int]:
+    """Give library role ``prebuilt`` Read on a sensitive field, and its copies once.
+
+    The Field Access counterpart of :func:`attach_defaults`. A sensitive field
+    is closed to a role with no switch row, so a field that becomes sensitive,
+    or is declared after a tenant's roles were made, closes for the people
+    whose daily work reads it. The field declares which library roles read it
+    (``FieldSpec.read_by``); this attaches the Read switch to the library role
+    (``PrebuiltRoleFieldAccess``) and, at that one moment, writes it to every
+    tenant copy that holds no row for the field, its per-branch copies
+    included. A new tenant's copies take it from the library when they are
+    provisioned.
+
+    The library row is the record that the default was offered. A later run
+    finds it and writes nothing, so a tenant that turned Read off, or reset
+    the field to its closed default (which deletes the row), keeps that
+    decision. A copy already holding a row keeps it, whatever it says. Write
+    is never granted here: who may change a value is not a default to hand out.
+
+    Returns whether the library role newly gained the default, and the rows
+    written to copies. A field with no active ``FieldDefinition`` attaches
+    nothing.
+    """
+    from vs_rbac.models import FieldDefinition, PrebuiltRoleFieldAccess, RoleFieldAccess
+
+    field = FieldDefinition.objects.filter(key=field_key, is_active=True).first()
+    if field is None or field.scope != TENANT_SCOPE:
+        return False, 0
+    _, created = PrebuiltRoleFieldAccess.objects.get_or_create(
+        prebuilt_role=prebuilt, field=field, defaults={"can_read": True},
+    )
+    if not created:
+        return False, 0
+    copies = tenant_copies(prebuilt.key, branch_copies=True)
+    held = set(
+        RoleFieldAccess.objects.filter(field=field, role__in=copies)
+        .values_list("role_id", flat=True)
+    )
+    rows = [
+        RoleFieldAccess(role_id=role_id, field=field, can_read=True)
+        for role_id in copies.exclude(pk__in=held).values_list("pk", flat=True)
+    ]
+    RoleFieldAccess.objects.bulk_create(rows)
+    return True, len(rows)

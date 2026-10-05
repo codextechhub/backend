@@ -105,6 +105,9 @@ class StageMoveView(_StudentAction):
     longer an applicant is refused as 422 ``NOT_AN_APPLICANT``. The answer is
     the student's directory row, which is what the Applicants board redraws.
 
+    The reason is read back only on the record history tab, and only by a
+    role with Read on ``school.students.status_reason`` (``field_access.py``).
+
     docstring-name: Move an applicant between stages
     """
 

@@ -352,6 +352,17 @@ def _write_documents(tenant, actor, documents, why):
 
 # ── moving an applicant ─────────────────────────────────────────────────────
 
+#: The action a stage move is audited under.
+STAGE_MOVE_ACTION = AuditActionType.UPDATE
+
+#: The metadata every stage move's audit event carries, and no other audit
+#: event on a student does. A stage move is audited as a plain ``UPDATE``, so
+#: these keys are what tell its rows apart from a record edit, including the
+#: older rows whose summary ends in the reason: their metadata has always had
+#: the same keys (``field_access.register_audit_words``).
+STAGE_MOVE_METADATA_KEYS = frozenset({"from", "to", "offer_expires_on"})
+
+
 def _stage_label(stage) -> dict | None:
     return None if stage is None else {"id": stage.pk, "name": stage.name}
 
@@ -371,6 +382,12 @@ def move_to_stage(student, stage, *, actor, offer_expires_on=None, reason=""):
     cannot leave an enrolled child holding a stage it moved into afterwards.
     The stage is locked too, so a settings save removing it either sees this
     applicant and refuses, or has already removed it and the move answers 404.
+
+    The reason is kept only in the audit event's ``metadata["reason"]``, never
+    in its summary. It is held to the same Field Access switch as a status
+    move's reason (``school.students.status_reason``): a summary is one
+    sentence every surface printing the trail shows whole, so no Read switch
+    could take the words back out of it.
     """
     if stage is not None:
         stage = AdmissionStage.all_objects.select_for_update().filter(
@@ -432,8 +449,6 @@ def move_to_stage(student, stage, *, actor, offer_expires_on=None, reason=""):
         summary = f"{locked.full_name}'s offer at {to_name} is open until {until}."
     else:
         summary = f"{locked.full_name}'s offer at {to_name} has no last day."
-    if reason:
-        summary += f" Reason: {reason}"
     emit_audit_event(
         module_key=AuditModuleKey.STUDENT, action_type=AuditActionType.UPDATE,
         entity_type="Student", entity_id=str(locked.pk),

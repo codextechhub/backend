@@ -34,6 +34,7 @@ from .models import (
     ExportJobStatus,
     ExportFormat,
 )
+from .protected_words import reader_for, search_summary, visible_summary
 from .scoping import (
     audit_scope_predicate,
     latest_visible_event_at,
@@ -103,8 +104,14 @@ def scope_export_jobs_to_caller(queryset, request):
 # Audit Event Views
 # -----------------------------------------------------------------------------
 
-def apply_audit_event_filters(queryset, filters):
-    """Apply the validated Event Explorer/export filter contract."""
+def apply_audit_event_filters(queryset, filters, can_read=None):
+    """Apply the validated Event Explorer/export filter contract.
+
+    ``can_read`` answers whether the caller may read a Field Access key. The
+    search then matches each summary as that caller sees it, so words hidden
+    from them (:mod:`vs_audit.protected_words`) are never matched. ``None``
+    searches every summary whole, for a caller acting for nobody.
+    """
 
     if module_keys := filters.get("module_key"):
         queryset = queryset.filter(module_key__in=module_keys)
@@ -138,6 +145,9 @@ def apply_audit_event_filters(queryset, filters):
     if date_to := filters.get("date_to"):
         queryset = queryset.filter(event_at__lte=date_to)
     if search := filters.get("search"):
+        summary_path = "summary"
+        if can_read is not None:
+            queryset, summary_path = search_summary(queryset, can_read)
         queryset = queryset.annotate(
             _actor_full_name=Concat(
                 "actor_user__first_name",
@@ -145,7 +155,7 @@ def apply_audit_event_filters(queryset, filters):
                 "actor_user__last_name",
             ),
         ).filter(
-            Q(summary__icontains=search)
+            Q(**{f"{summary_path}__icontains": search})
             | Q(entity_label__icontains=search)
             | Q(entity_id__icontains=search)
             | Q(actor_label__icontains=search)
@@ -274,7 +284,9 @@ class AuditEventListView(generics.ListAPIView):
         filter_serializer.is_valid(raise_exception=True)
         filters = filter_serializer.validated_data
 
-        return apply_audit_event_filters(queryset, filters).order_by("-event_at")
+        return apply_audit_event_filters(
+            queryset, filters, can_read=reader_for(self.request),
+        ).order_by("-event_at")
 
 
 class AuditEventDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
@@ -418,8 +430,10 @@ class MyActivityView(generics.ListAPIView):
         if severity := params.get("severity"):
             qs = qs.filter(severity=severity)
         if search := params.get("search"):
+            qs, summary_path = search_summary(qs, reader_for(self.request))
             qs = qs.filter(
-                Q(summary__icontains=search) | Q(action_type__icontains=search)
+                Q(**{f"{summary_path}__icontains": search})
+                | Q(action_type__icontains=search)
             )
         return qs.order_by("-event_at")
 
@@ -451,8 +465,10 @@ class MyActivitySubjectView(generics.ListAPIView):
         if severity := params.get("severity"):
             qs = qs.filter(severity=severity)
         if search := params.get("search"):
+            qs, summary_path = search_summary(qs, reader_for(self.request))
             qs = qs.filter(
-                Q(summary__icontains=search) | Q(action_type__icontains=search)
+                Q(**{f"{summary_path}__icontains": search})
+                | Q(action_type__icontains=search)
             )
         return qs.order_by("-event_at")
 
@@ -522,7 +538,9 @@ class EntityAuditTrailDetailView(APIView):
             "trail": EntityAuditTrailSerializer(
                 trail, context={"visible_counters": counters},
             ).data,
-            "events": AuditEventListSerializer(events, many=True).data,
+            "events": AuditEventListSerializer(
+                events, many=True, context={"request": request},
+            ).data,
         }
 
         return success_response(
@@ -569,8 +587,13 @@ def readable_byte_ceiling(limit: int) -> str:
     return f"{limit:,} bytes"
 
 
-def write_audit_export_file(job, queryset, masked_fields):
+def write_audit_export_file(job, queryset, masked_fields, can_read=None):
     """Write the export through the default storage; return (file_name, name, rows).
+
+    ``can_read`` answers whether the requester may read a Field Access key, so
+    a summary carrying words they may not read is cut as the screen cuts it
+    (:mod:`vs_audit.protected_words`). ``None`` reads everything, for a file
+    written on nobody's behalf.
 
     The CSV is streamed to a temporary file rather than held in memory, and the
     value handed back is the **storage name**, the key ``default_storage``
@@ -595,7 +618,10 @@ def write_audit_export_file(job, queryset, masked_fields):
             since_check = 0
             for event in queryset.iterator(chunk_size=_EXPORT_CHUNK):
                 actor_email = getattr(event.actor_user, "email", "") if event.actor_user else ""
-                summary = event.summary or ""
+                summary = (
+                    visible_summary(event, can_read) if can_read is not None
+                    else event.summary
+                ) or ""
                 if "summary" in masked_fields:
                     summary = "[REDACTED]"
                 writer.writerow([
@@ -683,6 +709,7 @@ class AuditExportJobListView(generics.ListCreateAPIView):
                 AuditEvent.objects.select_related("actor_user").all(), request,
             ),
             normalized_filter_payload,
+            can_read=reader_for(request),
         ).order_by("-event_at")
 
         # Apply masking from active rules (mirror what the UI hides).
@@ -703,7 +730,9 @@ class AuditExportJobListView(generics.ListCreateAPIView):
         # A job that dies mid-write must not sit at RUNNING for ever, so every
         # failure below ends in FAILED with a reason the requester can act on.
         try:
-            file_name, storage_name, rows = write_audit_export_file(job, qs, masked_fields)
+            file_name, storage_name, rows = write_audit_export_file(
+                job, qs, masked_fields, can_read=reader_for(request),
+            )
         except ExportTooLarge:
             ceiling = readable_byte_ceiling(audit_export_size_limit())
             reason = (

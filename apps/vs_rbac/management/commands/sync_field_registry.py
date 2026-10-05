@@ -18,7 +18,12 @@ listing the keys created, updated and deactivated. A run that finds nothing to
 change writes nothing, so it is safe on every deploy.
 
 ``--check`` makes no writes and exits non-zero, listing each difference, when
-the database does not match the code.
+the database does not match the code. It compares the field rows only, not the
+read defaults below.
+
+A field declaring default readers (``FieldSpec.read_by``) has them offered
+after the rows are written: the library role gains Read, and every tenant's
+existing copy of it gains Read once (:mod:`vs_rbac.library_growth`).
 """
 from __future__ import annotations
 
@@ -88,10 +93,17 @@ class Command(BaseCommand):
                 f"difference(s)):\n" + "\n".join(lines)
             )
 
+        declarations = all_declarations()
         with transaction.atomic():
-            plan = self._plan(all_declarations(), lock=True)
+            plan = self._plan(declarations, lock=True)
             self._apply(plan)
+            offered, grown = self._attach_read_defaults(declarations)
 
+        if offered:
+            self.stdout.write(
+                f"  Field read defaults: {offered} offered to library roles, "
+                f"{grown} switch(es) written to tenants' copies."
+            )
         if not plan.has_changes:
             self.stdout.write("  Field registry unchanged.")
             return
@@ -99,6 +111,32 @@ class Command(BaseCommand):
             f"  Field registry synced: {len(plan.create)} created, "
             f"{len(plan.update)} updated, {len(plan.deactivate)} deactivated."
         )
+
+    @staticmethod
+    def _attach_read_defaults(declarations) -> tuple[int, int]:
+        """Offer each field's ``read_by`` roles their Read switch, once.
+
+        Runs after the rows are written, so a field declared on this run is
+        offered on this run. A library role that does not exist is skipped, as
+        the module seeds skip one. Returns the defaults newly offered and the
+        switch rows written to tenant copies.
+        """
+        from vs_rbac.library_growth import attach_field_read_default
+        from vs_rbac.models import PrebuiltRoleTemplate
+
+        offered = grown = 0
+        for declaration in declarations:
+            for spec in declaration.fields:
+                for role_key in spec.read_by:
+                    prebuilt = PrebuiltRoleTemplate.objects.filter(key=role_key).first()
+                    if prebuilt is None:
+                        continue
+                    attached, rows = attach_field_read_default(
+                        prebuilt, declaration.key_for(spec),
+                    )
+                    offered += attached
+                    grown += rows
+        return offered, grown
 
     def _plan(self, declarations, *, lock=False) -> _Plan:
         """Compare *declarations* with the stored rows.

@@ -56,9 +56,10 @@ _AUDIT = {
 STATUS_AUDIT_ACTIONS = frozenset(_AUDIT.values())
 
 #: Where the reason began in an audit summary that carries it. The summary a
-#: status move writes ends at its dates and keeps the reason in ``metadata``,
-#: but the trail is immutable and can hold summaries that end
-#: ``" Reason: <words>"``, so a reader cuts them here (``views/records.py``).
+#: status move or an admission stage move writes keeps the reason in
+#: ``metadata``, but the trail is immutable and can hold summaries of either
+#: that end ``" Reason: <words>"``, so a reader cuts them here
+#: (``field_access.register_audit_words``).
 SUMMARY_REASON_MARKER = " Reason: "
 
 #: What each destination means for the child, said the way the screen says it.

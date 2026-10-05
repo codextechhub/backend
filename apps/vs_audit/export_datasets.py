@@ -49,16 +49,29 @@ def _audit_events(scope):
     finance and procurement events of their own branches only, as the Event
     Explorer shows them (:func:`vs_audit.scoping.branch_event_predicate`). A
     scope with no user narrows nothing, as for every other dataset.
+
+    The summary column and the search read ``visible_summary``: each row's
+    summary as the person the export runs as sees it on screen, cut where
+    words begin that their Field Access may not read
+    (:mod:`vs_audit.protected_words`). It is computed in the query, so the
+    file never carries the words and a search never matches them, scheduled
+    and background runs included, since a run's scope carries its owner
+    (``ExportRun.scope_context``).
     """
+    from vs_exports.engine import readable_fields
     from vs_rbac.scoping import transaction_branch_scope_for_user
 
     from .models import AuditEvent
+    from .protected_words import visible_summary_expression
     from .scoping import branch_event_predicate, tenant_event_predicate
 
     events = AuditEvent.objects.filter(tenant_event_predicate(scope.tenant))
     user = getattr(scope, "user", None)
     if user is None:
-        return events
+        return events.annotate(visible_summary=visible_summary_expression(lambda key: True))
+    events = events.annotate(
+        visible_summary=visible_summary_expression(readable_fields(user, scope.tenant)),
+    )
     reach = transaction_branch_scope_for_user(user, tenant=scope.tenant).branch_ids
     narrowing = branch_event_predicate(reach)
     return events if narrowing is None else events.filter(narrowing)
@@ -93,7 +106,7 @@ def register_datasets():
             Field("action_type", "Action", "Event", KIND_CHOICE, choices=_ACTION),
             Field("severity", "Severity", "Event", KIND_CHOICE, choices=_SEVERITY),
             Field("status", "Outcome", "Event", KIND_CHOICE, choices=_STATUS),
-            Field("summary", "Summary", "Event", KIND_TEXT),
+            Field("summary", "Summary", "Event", KIND_TEXT, source="visible_summary"),
             Field("actor_type", "Actor type", "Actor", KIND_TEXT),
             Field("actor_label", "Actor", "Actor", KIND_TEXT),
             Field("entity_type", "Object type", "Target", KIND_TEXT),
@@ -112,7 +125,7 @@ def register_datasets():
             FilterDef("severity", "Severity", FILTER_CHOICE, choices=_SEVERITY),
             FilterDef("status", "Outcome", FILTER_CHOICE, choices=_STATUS),
             FilterDef("search", "Search", FILTER_SEARCH, searches=(
-                ("summary", "Summary"), ("actor_label", "Actor"),
+                ("visible_summary", "Summary"), ("actor_label", "Actor"),
                 ("entity_label", "Object"),
             ), description="Matches any one of these, the way console search does."),
             FilterDef("entity_type", "Object type", FILTER_TEXT),
