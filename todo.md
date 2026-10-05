@@ -453,7 +453,7 @@ MUST SAY:
 - Payments (M18). Custody settings collection_account rows carry subaccount_code. GET platform/provider-sweeps/ opens to payments.platform_settlement.view or payments.platform_provider.view/.update. Settlement reconciliation rows and unmatched bank lines carry branch_id and branch_name.
 Verified: tests_roster_terms_today 16 and tests_list_branch_filters 21 OK (14 and 16 of them fail on the code before the change); payroll, accruals, payer and bank modules 297 OK; field access deep payload and registry 47 OK; vs_finance 1902 OK; vs_payments 434 OK; vs_rbac 988 OK; the two school tests reading the /me map 9 OK. The full suite was not run.
 
-### D120. A pupil moves to another branch from the school app, and their fee account and open balance move with them (uncommitted, 2026-10-05; school-fe 58be84e on branch pupil-move)
+### D120. A pupil moves to another branch from the school app, and their fee account and open balance move with them (eb51423f, 2026-10-05; school-fe 58be84e)
 MODULES: M11 student management (branch move, history), M17 billing only where it
 describes a moved bill, M19 finance and accounting (receivable move through the
 FAL), M04 roles and permissions (the new key), MRD; FAL contract 1.1.5 (docs spec 16).
