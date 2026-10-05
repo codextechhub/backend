@@ -123,7 +123,7 @@ and use the platform envelope + RBAC, except where noted. Request body lists
 | `POST /virtual-accounts/` | `payments.virtual_account.create` | provision a dedicated NUBAN | `customer`(**required**), `deposit_account`, `provider`, `bank_code` | `success_response(data=VirtualAccountSerializer, 201)` |
 | `GET /virtual-accounts/<pk>/` | `payments.virtual_account.view` | fetch one VA | - | `success_response(data=VirtualAccountSerializer)` |
 | `PATCH /virtual-accounts/<pk>/` | `payments.virtual_account.manage` | activate / deactivate (local only) | `status` (ACTIVE/INACTIVE) | `success_response(data=VirtualAccountSerializer)` |
-| `GET /settings/custody/` | `payments.settings.view` | the custody setting in force, any pending change, and each branch's collection account with whether its subaccount exists | - | `success_response(data={settings, branches})` |
+| `GET /settings/custody/` | `payments.settings.view` or `payments.payout.view` | the custody setting in force, any pending change, and each branch's collection account with whether its subaccount exists; a caller with only `payments.payout.view` gets the mode in force and nothing else, at any branch reach | - | `success_response(data={settings, branches})`; payout key only: `success_response(data={settings: {mode}})` |
 | `PATCH /settings/custody/` | `payments.settings.update` + whole-tenant reach | change the mode (from the next month start), the settlement interval or the clearing warning days | `mode`, `settlement_interval_days`, `clearing_stale_days` | same as GET |
 | `POST /subaccounts/` | `payments.settings.update` + whole-tenant reach | create or refresh the provider subaccount of a branch's collection account | `bank_account`(**required**), `settlement_bank_code`(**required**), `business_name`, `provider` | `success_response(data={id, name, bank_name, subaccount_ready, subaccount_provider, branch})` |
 
@@ -361,6 +361,9 @@ RBAC keys, seeded by `seed_payments_permissions.py` and granted to
   the custody setting and branch subaccounts. Writes also need whole-tenant reach
   (`WholeTenantWriteMixin`, 403 `SHARED_RECORD_READ_ONLY` otherwise), because the
   mode binds every branch and a subaccount decides where a branch's money is paid.
+  A holder of `payments.payout.view` without `payments.settings.view` reads the
+  custody mode alone, so a menu can offer the payout screens only where the
+  platform holds the tenant's money.
 - `payments.collection.view` (NORMAL) - list/detail/summary.
 - `payments.collection.create` (**CRITICAL**) - POST initiate.
 - `payments.virtual_account.view` (NORMAL) - list/detail.

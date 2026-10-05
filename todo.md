@@ -419,6 +419,14 @@ MUST SAY:
 - Bank documents (M19). Bank transactions and transfers carry branch_name and approval_state.
 Verified: targeted 54 and 129 OK; vs_rbac 988 OK; vs_procurement 752 OK; vs_finance 1865 OK; vs_payments and related 478 OK; vs_user 430 OK; migration-rewind classes 61 OK and UserTypeMigrationTests with a real rewind 11 OK. The full suite (--parallel 4) ran 9300 tests with 1 error, a lost database connection while a worker dropped unused test databases (infrastructure, not code; the class passes alone).
 
+### D117. A payout reader can read the custody mode, so Payouts and Batches show at a held school (uncommitted, 2026-10-05)
+MODULES: M18 payments (custody settings, payouts), M04 roles and permissions, MRD.
+Owner decision (FinPro v0.7.45): Payouts and Batches show only at a held school and only to payout key holders.
+MUST SAY:
+- Custody read (M18, M04). GET /v1/payments/settings/custody/ opens to payments.settings.view OR payments.payout.view. A settings reader gets the full answer unchanged ({settings, branches}). A caller holding only payments.payout.view gets {"settings": {"mode": "HELD"|"DIRECT"}}: the mode in force today and nothing else (no pending change, interval, note, collection accounts or held balances). The mode is tenant-wide, so a branch-bound payout reader gets the same answer. PATCH stays payments.settings.update with whole-tenant reach.
+- FinPro gap: the sidebar hook (held-custody.ts useCustodyReading) skips the request unless the reader holds payments.settings.view, so the menu stays hidden for a payout-only reader until FinPro also asks when the reader holds payments.payout.view.
+Verified: CustodyModeForPayoutReadersTests 6 OK; tests_custody, tests_custody_held, tests_branch_reach 124 OK; vs_payments 431 OK; vs_rbac 988 OK. The full suite was not run.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

@@ -3,7 +3,8 @@
 * ``settings/custody/``: the tenant's custody mode, its pending change and the
   settlement interval, with each branch's collection account, whether it is set
   up with the provider and what the platform holds for it, for the branches the
-  caller reaches. Read with ``payments.settings.view``; changed with
+  caller reaches. Read with ``payments.settings.view``; a caller holding only
+  ``payments.payout.view`` reads the mode in force and nothing else. Changed with
   ``payments.settings.update`` by a whole-tenant caller only, since the mode binds
   every branch (:class:`vs_rbac.scoping.WholeTenantWriteMixin`).
 * ``subaccounts/``: create or refresh the provider subaccount behind one branch's
@@ -40,7 +41,13 @@ from rest_framework.views import APIView
 
 from core.response import success_response
 from vs_finance.views import resolve_entity
-from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive, IsVisionStaff
+from vs_rbac.permissions import (
+    HasRBACPermission,
+    IsAuthenticatedAndActive,
+    IsVisionStaff,
+    is_vision_super_admin,
+    user_has_rbac_permission,
+)
 from vs_rbac.scoping import WholeTenantWriteMixin
 
 from . import custody, held, settlement
@@ -77,11 +84,30 @@ def _branch_rows(reach):
     ]
 
 
+#: The key that reads the whole custody setting, rather than its mode alone.
+SETTINGS_VIEW = "payments.settings.view"
+
+#: The key whose holders read the custody mode alone.
+PAYOUT_VIEW = "payments.payout.view"
+
+
 class CustodySettingsView(WholeTenantWriteMixin, APIView):
     """GET / PATCH the tenant's payment custody setting.
 
-    PATCH body (any of): ``mode`` (``DIRECT`` or ``HELD``), taking effect on the
-    first day of next month; ``settlement_interval_days`` (1 to 7);
+    GET opens to ``payments.settings.view`` or ``payments.payout.view``. A
+    settings reader gets the whole setting with the branches in their reach. A
+    caller holding only the payout key gets ``{"settings": {"mode": ...}}``,
+    the mode in force today and nothing more, because the menu that offers
+    Payouts and Batches only where the platform holds the tenant's online money
+    has to ask on behalf of the person who uses them. At Lagoon View, which is
+    held, Mrs Bello reads payouts and holds no settings key: she learns
+    ``HELD`` and sees no collection account, held balance, pending change or
+    interval. The mode is tenant-wide, so a branch-bound payout reader gets the
+    same answer as a whole-tenant one.
+
+    PATCH needs ``payments.settings.update`` and a whole-tenant caller. Body
+    (any of): ``mode`` (``DIRECT`` or ``HELD``), taking effect on the first day
+    of next month; ``settlement_interval_days`` (1 to 7);
     ``clearing_stale_days`` (1 to 60).
 
     docstring-name: Payment custody settings
@@ -92,8 +118,16 @@ class CustodySettingsView(WholeTenantWriteMixin, APIView):
 
     @property
     def rbac_permission(self):
-        return ("payments.settings.view" if self.request.method in SAFE_METHODS
-                else "payments.settings.update")
+        if self.request.method in SAFE_METHODS:
+            return [SETTINGS_VIEW, PAYOUT_VIEW]
+        return "payments.settings.update"
+
+    def _reads_settings(self, request):
+        """Whether the caller holds the settings key, asked of the tenant the gate asked."""
+        tenant = (getattr(request, "rbac_tenant", None) or getattr(request, "tenant", None)
+                  or getattr(request.user, "tenant", None))
+        return is_vision_super_admin(request.user) or user_has_rbac_permission(
+            request.user, SETTINGS_VIEW, tenant=tenant)
 
     def _payload(self, entity, row):
         tenant = entity.tenant if entity.tenant_id else None
@@ -107,7 +141,11 @@ class CustodySettingsView(WholeTenantWriteMixin, APIView):
 
     def get(self, request):
         entity = resolve_entity(request)
-        row = custody.custody_row(entity.tenant if entity.tenant_id else None)
+        tenant = entity.tenant if entity.tenant_id else None
+        row = custody.custody_row(tenant)
+        if not self._reads_settings(request):
+            return success_response("Payment custody settings retrieved.", data={
+                "settings": {"mode": custody.custody_mode(tenant, row=row)}})
         return success_response("Payment custody settings retrieved.",
                                 data=self._payload(entity, row))
 

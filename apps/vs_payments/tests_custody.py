@@ -540,6 +540,94 @@ class CustodyEndpointTests(_CustodyFixture):
                           response.data["data"]["net"]), (180_000, 2_000, 178_000))
 
 
+class CustodyModeForPayoutReadersTests(_CustodyFixture):
+    """A payout reader learns the custody mode, and nothing else about the setting.
+
+    The payout screens are offered only where the platform holds the tenant's
+    online money, so the person who reads payouts has to be able to ask which
+    mode is in force. Corona (three branches) is HELD with a move to direct
+    pending; Single Site (one branch) is DIRECT.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        PaymentCustodySettings.objects.create(
+            tenant=cls.tenant, mode=CustodyMode.HELD, pending_mode=CustodyMode.DIRECT,
+            pending_from=custody.next_month_start(tenant_today(cls.tenant)),
+            pending_note="Waiting: Corona Ikeja Branch has N12,400.00 held.",
+        )
+        PaymentCustodySettings.objects.create(tenant=cls.solo_tenant, mode=CustodyMode.DIRECT)
+
+    def client_for(self, *keys, branch=None, tenant=None):
+        tenant = tenant or self.tenant
+        n = next(_people)
+        return TenantAPIClient(user=self.grant(
+            self.user_for(tenant, f"payout-reader-{n}@corona.test"), *keys,
+            tenant=tenant, role_key=f"payout-reader-{n}", branch=branch,
+        ))
+
+    def read(self, client, books=None):
+        return client.get(f"/v1/payments/settings/custody/?entity={(books or self.books).code}")
+
+    def test_a_payout_reader_at_a_held_school_gets_the_mode_only(self):
+        for branch in (None, self.lekki):
+            response = self.read(self.client_for("payments.payout.view", branch=branch))
+            self.assertEqual(response.status_code, 200, response.data)
+            self.assertEqual(response.data["data"], {"settings": {"mode": "HELD"}})
+            for hidden in ("Ikeja", "Lekki", "Zenith", "12,400", "DIRECT"):
+                self.assertNotIn(hidden, str(response.data))
+
+    def test_a_payout_reader_at_a_direct_school_gets_the_mode_only(self):
+        for branch in (None, self.solo_main):
+            response = self.read(
+                self.client_for("payments.payout.view", branch=branch, tenant=self.solo_tenant),
+                self.solo_books)
+            self.assertEqual(response.status_code, 200, response.data)
+            self.assertEqual(response.data["data"], {"settings": {"mode": "DIRECT"}})
+
+    def test_a_caller_with_neither_key_is_refused(self):
+        for keys in ((), ("payments.report.view", "payments.payout_batch.submit")):
+            response = self.read(self.client_for(*keys))
+            self.assertEqual(response.status_code, 403, response.data)
+
+    def test_a_settings_reader_keeps_the_full_answer(self):
+        full = self.read(self.client_for("payments.settings.view"))
+        self.assertEqual(full.status_code, 200, full.data)
+        settings = full.data["data"]["settings"]
+        self.assertEqual(set(full.data["data"]), {"settings", "branches"})
+        self.assertEqual((settings["mode"], settings["pending_mode"]), ("HELD", "DIRECT"))
+        self.assertIn("settlement_interval_days", settings)
+        self.assertEqual(len(full.data["data"]["branches"]), 3)
+
+        both = self.read(self.client_for("payments.settings.view", "payments.payout.view"))
+        self.assertEqual(both.data["data"], full.data["data"])
+
+        bound = self.read(self.client_for("payments.settings.view", branch=self.lekki))
+        self.assertEqual([row["branch_name"] for row in bound.data["data"]["branches"]],
+                         ["Lekki Branch"])
+
+    def test_a_payout_reader_cannot_change_the_setting(self):
+        body = {"mode": "HELD", "settlement_interval_days": 2}
+        for branch in (None, self.lekki):
+            client = self.client_for("payments.payout.view", "payments.payout.create", branch=branch)
+            response = client.patch(
+                f"/v1/payments/settings/custody/?entity={self.books.code}", body, format="json")
+            self.assertEqual(response.status_code, 403, response.data)
+        row = PaymentCustodySettings.objects.get(tenant=self.tenant)
+        self.assertEqual((row.pending_mode, row.settlement_interval_days),
+                         (CustodyMode.DIRECT, PaymentCustodySettings().settlement_interval_days))
+
+    def test_another_tenants_mode_is_never_answered(self):
+        corona = self.client_for("payments.payout.view")
+        self.assertEqual(self.read(corona, self.solo_books).status_code, 404)
+        self.assertEqual(self.read(corona, self.rival_books).status_code, 404)
+        rival = self.client_for("payments.payout.view", tenant=self.rival_tenant)
+        self.assertEqual(self.read(rival).status_code, 404)
+        own = self.read(rival, self.rival_books)
+        self.assertEqual(own.data["data"], {"settings": {"mode": "HELD"}})
+
+
 class PaystackSubaccountWireTests(SimpleTestCase):
     """The Paystack fields direct custody relies on, as the adapter sends and reads them.
 
