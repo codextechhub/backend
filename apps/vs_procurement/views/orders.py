@@ -605,6 +605,9 @@ def _write_rfq_lines(request, entity, rfq, lines, *, preserve_history=False):
     positive/bounded quantity, active-postable EXPENSE account, entity-scoped tax code,
     and a requisition line that genuinely lives in this entity. When the RFQ header
     names a requisition, a supplied source line must belong to that exact document.
+    A source line another live RFQ or order already holds is refused
+    (:func:`vs_procurement.purchasing.refuse_sourced_lines`); this RFQ's own earlier
+    lines are the same sourcing and are not.
     """
     if preserve_history:
         rfq.lines.filter(is_active=True).update(is_active=False)
@@ -628,7 +631,7 @@ def _write_rfq_lines(request, entity, rfq, lines, *, preserve_history=False):
                 raise ValidationError({"requisition_line": message})
             _inherited_branch_id(request, rfq, req_line.requisition)
             try:
-                purchasing.refuse_shared_lines([req_line])
+                purchasing.refuse_sourced_lines([req_line], rfq=rfq)
             except purchasing.RequisitionError as exc:
                 raise ValidationError({"requisition_line": exc.message})
         RfqLine.objects.create(
@@ -754,8 +757,9 @@ def _budget_estimate(value, field="budget_estimate"):
 class RequisitionLinesFreeToSourceView(_ProcBase):
     """GET - requisition lines still free to put out to tender, for a shared RFQ.
 
-    A line is listed when its requisition is approved and no RFQ, purchase order
-    or shared RFQ sources it yet (:func:`vs_procurement.purchasing.free_to_source`).
+    A line is listed when its requisition is approved and no live RFQ, ordinary or
+    shared, and no live purchase order holds it
+    (:func:`vs_procurement.purchasing.free_to_source`).
     Narrowed to the branches the caller works in, then by ``?branch=`` (a branch
     outside reach lists nothing, as on every procurement list), ``?requisition=`` (id) and
     ``?q=`` (description or requisition number). Oldest requisition first, paginated.

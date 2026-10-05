@@ -21,7 +21,7 @@ from vs_config.display import format_date
 
 from .constants import QuotationStatus, RfqStatus
 from .exceptions import SourcingError
-from .purchasing import price_po, vendor_purchase_block_reason
+from .purchasing import price_po, refuse_sourced_lines, vendor_purchase_block_reason
 
 
 # --------------------------------------------------------------------------- #
@@ -203,14 +203,16 @@ def supersede_vendor_portal_draft(rfq, vendor, *, actor_user=None):
 
 
 def release_shared_lines(rfq):
-    """Give back the requisition lines a shared RFQ holds, now that it ended without award.
+    """End a shared RFQ's hold on its requisition lines, now that the RFQ has ended.
 
     Called by :func:`cancel_rfq` and :func:`close_rfq` under the RFQ lock, in the
     transaction that ends the RFQ, so the lines are free the moment the RFQ is
-    cancelled or closed and never while it is still open. The allocations stay
-    as the record of which branches the RFQ covered; only ``released_at`` is set.
-    An ordinary RFQ has no allocations and releases nothing. Returns how many
-    requisition lines were released.
+    cancelled or closed and never while it is still open. Called by
+    :func:`award_quotation` too, once the branch orders exist: those orders hold
+    the lines from then on, so cancelling one frees its branch's lines. The
+    allocations stay as the record of which branches the RFQ covered; only
+    ``released_at`` is set. An ordinary RFQ has no allocations and releases
+    nothing. Returns how many requisition lines were released.
 
         Mrs Bello cancels the shared RFQ for Ikeja's 60 chairs and Lekki's 40 to
         fix a line. Both lines are offered again and can go on a new shared RFQ,
@@ -383,6 +385,13 @@ def award_quotation(
     to the vendor's / category's default). Quotation, RFQ, vendor eligibility, PO creation,
     loser rejection, and audit all commit or roll back together. A shared RFQ returns
     one PO per participating branch; an ordinary RFQ returns its single PO.
+
+    The order is this RFQ's sourcing carrying on, so the RFQ's own lines never
+    refuse it; a requisition line some other live RFQ or order holds does
+    (:func:`vs_procurement.purchasing.refuse_sourced_lines`). That catches two RFQs
+    raised for the same line before one live sourcing per line was enforced: the
+    first award orders the chairs, the second is refused. From the award on, the
+    orders hold the requisition lines, and a shared RFQ's allocations are released.
     """
     from .models import (
         PurchaseOrder, PurchaseOrderLine, RequestForQuotation, SharedSourcingGroup,
@@ -474,6 +483,14 @@ def award_quotation(
     ).select_related(
         "expense_account", "tax_code", "rfq_line__requisition_line__requisition",
     ).order_by("line_no", "id"))
+    if group is None:
+        sources = [
+            qline.rfq_line.requisition_line_id for qline in quotation_lines
+            if qline.rfq_line_id and qline.rfq_line.requisition_line_id
+        ]
+    else:
+        sources = list(group.allocations.values_list("requisition_line_id", flat=True))
+    refuse_sourced_lines(sources, rfq=rfq, error=SourcingError)
     if group is None:
         for qline in quotation_lines:
             source = qline.rfq_line.requisition_line if qline.rfq_line_id else None
@@ -582,6 +599,7 @@ def award_quotation(
             purchase_orders.append(po)
         group.awarded_quotation = quotation
         group.save(update_fields=["awarded_quotation", "updated_at"])
+        release_shared_lines(rfq)
         po = purchase_orders[0]
 
     quotation.quotation_status = QuotationStatus.AWARDED

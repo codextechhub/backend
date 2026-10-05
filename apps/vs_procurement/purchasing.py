@@ -331,12 +331,18 @@ def cancel_purchase_order(po, *, reason: str, actor_user=None):
 # --------------------------------------------------------------------------- #
 
 def _live_rfq_lines():
-    """RFQ lines still sourcing their requisition line: active, on an RFQ not closed or cancelled."""
+    """RFQ lines still sourcing their requisition line: active, on a draft or issued RFQ.
+
+    A cancelled RFQ, or one closed without award, has let its lines go. An awarded
+    RFQ has handed them on: the order its award raised names each requisition line
+    it ordered, and that order holds the line from then on (:func:`_live_po_lines`),
+    so cancelling the order frees it.
+    """
     from .constants import RfqStatus
     from .models import RfqLine
 
-    return RfqLine.objects.filter(is_active=True).exclude(
-        rfq__rfq_status__in=(RfqStatus.CANCELLED, RfqStatus.CLOSED),
+    return RfqLine.objects.filter(
+        is_active=True, rfq__rfq_status__in=(RfqStatus.DRAFT, RfqStatus.ISSUED),
     )
 
 
@@ -351,59 +357,77 @@ def _live_shared_allocations():
     """Shared RFQ allocations still holding their requisition line: not yet released.
 
     A shared RFQ releases its allocations when it is cancelled or closed without
-    award (:func:`vs_procurement.sourcing.release_shared_lines`), the same two
-    outcomes that free an ordinary RFQ's lines in :func:`_live_rfq_lines`. An
-    awarded shared RFQ keeps them, as an awarded ordinary RFQ keeps its lines.
+    award, and when it is awarded, since the branch orders the award raises hold
+    the lines from then on (:func:`vs_procurement.sourcing.release_shared_lines`).
+    These are the same three outcomes that end an ordinary RFQ's hold in
+    :func:`_live_rfq_lines`.
     """
     from .models import SharedSourcingAllocation
 
     return SharedSourcingAllocation.objects.filter(released_at__isnull=True)
 
 
+def _sourced_q(line, *, rfq=None):
+    """Q for requisition lines some live sourcing other than ``rfq`` holds.
+
+    ``line`` is an ``OuterRef`` (or a column) naming the requisition line. ``rfq``
+    is the RFQ the line is going on or being awarded from: its own lines and
+    allocations are the same sourcing, so they never count against it.
+    """
+    from django.db.models import Exists
+
+    rfq_lines = _live_rfq_lines().filter(requisition_line=line)
+    shared = _live_shared_allocations().filter(requisition_line=line)
+    if rfq is not None:
+        rfq_lines = rfq_lines.exclude(rfq=rfq)
+        shared = shared.exclude(group__rfq=rfq)
+    return (
+        Exists(rfq_lines)
+        | Exists(_live_po_lines().filter(requisition_line=line))
+        | Exists(shared)
+    )
+
+
 def free_to_source(lines):
     """Narrow requisition lines to those a buyer may still source.
 
-    A line is free when its requisition is approved and nothing sources it yet:
-    no live RFQ line names it, no purchase order line that is not cancelled
-    orders it, and no live shared RFQ allocation holds it. An RFQ, ordinary or
-    shared, that is cancelled or closed without award frees its lines.
+    A requisition line sits on one live sourcing at a time: a draft or issued RFQ,
+    ordinary or shared, or a purchase order that is not cancelled. A line is free
+    when its requisition is approved and none of those holds it. Cancelling an
+    RFQ or closing it without award frees its lines; awarding hands them to the
+    order the award raises, and cancelling that order frees them.
 
         Ikeja's requisition for 40 chairs is approved and on no RFQ: free. Lekki's
         for 30 is already on Lekki's own RFQ: not free, or a shared RFQ would put
         the same chairs out to tender twice and order them twice. Once Lekki's RFQ
         is cancelled, the 30 chairs are free again.
     """
-    from django.db.models import Exists, OuterRef
+    from django.db.models import OuterRef
 
-    line = OuterRef("pk")
     return lines.filter(requisition__status=DocumentStatus.APPROVED).exclude(
-        Exists(_live_rfq_lines().filter(requisition_line=line)),
-    ).exclude(
-        Exists(_live_po_lines().filter(requisition_line=line)),
-    ).exclude(
-        Exists(_live_shared_allocations().filter(requisition_line=line)),
+        _sourced_q(OuterRef("pk")),
     )
 
 
-def sourcing_refusal(line) -> str | None:
-    """Why requisition ``line`` cannot go on a shared RFQ, or ``None`` when it can.
+def sourced_elsewhere(line, *, rfq=None) -> str | None:
+    """Where requisition ``line`` is already sourced, or ``None`` when nothing holds it.
 
-    The same rule as :func:`free_to_source`, worded for the person who picked it.
+    The rule of :func:`free_to_source` for one line, worded for the person who
+    picked it: the requisition, the line, and the RFQ or order that holds it.
+    ``rfq`` is the RFQ the line is going on or being awarded from, which never
+    counts against itself.
     """
     requisition = line.requisition
     label = requisition.document_number or f"requisition {requisition.pk}"
     name = f"Line {line.line_no or line.pk} ('{line.description}') of {label}"
-    if requisition.status != DocumentStatus.APPROVED:
-        return (
-            f"Requisition {label} is not approved (it is "
-            f"{requisition.get_status_display().lower()}); only an approved requisition "
-            f"can be put out to tender."
-        )
-    if (shared := _live_shared_allocations().filter(requisition_line=line)
-            .select_related("group__rfq").first()) is not None:
-        return f"{name} is already on shared RFQ {shared.group.rfq.document_number}."
-    if (rfq_line := _live_rfq_lines().filter(requisition_line=line)
-            .select_related("rfq").first()) is not None:
+    shared = _live_shared_allocations().filter(requisition_line=line)
+    rfq_lines = _live_rfq_lines().filter(requisition_line=line)
+    if rfq is not None:
+        shared = shared.exclude(group__rfq=rfq)
+        rfq_lines = rfq_lines.exclude(rfq=rfq)
+    if (taken := shared.select_related("group__rfq").first()) is not None:
+        return f"{name} is already on shared RFQ {taken.group.rfq.document_number}."
+    if (rfq_line := rfq_lines.select_related("rfq").first()) is not None:
         return f"{name} is already on RFQ {rfq_line.rfq.document_number}."
     if (po_line := _live_po_lines().filter(requisition_line=line)
             .select_related("purchase_order").first()) is not None:
@@ -414,34 +438,56 @@ def sourcing_refusal(line) -> str | None:
     return None
 
 
-def refuse_shared_lines(lines) -> None:
-    """Refuse to source again any of ``lines`` a live shared RFQ allocates.
+def sourcing_refusal(line) -> str | None:
+    """Why requisition ``line`` cannot go on a shared RFQ, or ``None`` when it can.
 
-    An ordinary RFQ line or purchase order for a requisition line that a shared
-    RFQ is tendering would order the same goods twice: once on the branch order
-    the shared award raises, once on this. A line a cancelled or closed shared
-    RFQ released is not refused.
-
-    The requisition lines are locked first, in id order, as a shared RFQ locks
-    them before allocating, so a purchase order and a shared RFQ racing for the
-    same line serialize and the second sees the first. Call it inside the
-    transaction that writes the new sourcing rows.
+    A shared RFQ takes only lines of approved requisitions, and only lines no live
+    sourcing holds (:func:`sourced_elsewhere`).
     """
+    requisition = line.requisition
+    label = requisition.document_number or f"requisition {requisition.pk}"
+    if requisition.status != DocumentStatus.APPROVED:
+        return (
+            f"Requisition {label} is not approved (it is "
+            f"{requisition.get_status_display().lower()}); only an approved requisition "
+            f"can be put out to tender."
+        )
+    return sourced_elsewhere(line)
+
+
+def refuse_sourced_lines(lines, *, rfq=None, error=None) -> None:
+    """Refuse to source any of ``lines`` that another live sourcing already holds.
+
+    Every path that puts a requisition line on an RFQ or a purchase order calls
+    this: an ordinary RFQ's create, draft edit and amendment, an order raised
+    straight from a requisition, and an award. ``rfq`` is the RFQ the lines are
+    going on, or the one being awarded; its own lines and allocations are the
+    same sourcing and are not refused, so an award's order is never refused by
+    the RFQ it comes from. A shared RFQ checks each line with
+    :func:`sourcing_refusal` after locking it the same way.
+
+    The requisition lines are locked first, in id order, so two buyers racing to
+    put one line on two RFQs, or on an RFQ and an order, serialize, and the second
+    sees the first. Call it inside the transaction that writes the new sourcing
+    rows. Raises ``error`` (default :class:`RequisitionError`) naming the first
+    line taken and where it is held.
+    """
+    from django.db.models import OuterRef
+
     from .models import PurchaseRequisitionLine
 
     ids = sorted({getattr(line, "pk", line) for line in lines})
+    if not ids:
+        return
     list(PurchaseRequisitionLine.objects.select_for_update(of=("self",))
          .filter(pk__in=ids).order_by("pk").values_list("pk", flat=True))
     taken = (
-        _live_shared_allocations().filter(requisition_line_id__in=ids)
-        .select_related("group__rfq", "requisition_line").order_by("pk").first()
+        PurchaseRequisitionLine.objects.filter(pk__in=ids)
+        .filter(_sourced_q(OuterRef("pk"), rfq=rfq))
+        .select_related("requisition").order_by("pk").first()
     )
     if taken is not None:
-        line = taken.requisition_line
-        raise RequisitionError(
-            f"Requisition line {line.line_no or line.pk} ('{line.description}') is on "
-            f"shared RFQ {taken.group.rfq.document_number}; its order comes from that RFQ's award."
-        )
+        raise (error or RequisitionError)(sourced_elsewhere(taken, rfq=rfq))
 
 
 # --------------------------------------------------------------------------- #
@@ -468,7 +514,7 @@ def create_po_from_requisition(requisition, *, vendor, order_date, actor_user=No
             f"Requisition {requisition.document_number or requisition.pk} must be "
             f"APPROVED before raising a PO (is '{requisition.status}').",
         )
-    refuse_shared_lines(list(requisition.lines.all()))
+    refuse_sourced_lines(list(requisition.lines.all()))
     from vs_rbac.scoping import only_branch_id
     branch_id = requisition.branch_id or only_branch_id(requisition.entity.tenant_id)
     if branch_id is None:

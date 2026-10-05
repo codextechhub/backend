@@ -177,7 +177,7 @@ class SharedRfqRefusalTests(_SharedSourcingFixture):
             format="json",
         )
         self.assertEqual(own_rfq.status_code, 400, own_rfq.data)
-        self.assertIn("is on shared RFQ", str(own_rfq.data))
+        self.assertIn("already on shared RFQ", str(own_rfq.data))
 
 
 class FreeRequisitionLinesTests(_SharedSourcingFixture):
@@ -274,8 +274,8 @@ class SharedRfqEndedWithoutAwardTests(_SharedSourcingFixture):
     Mrs Bello put Lekki's 60 chairs and Ikeja's 40 on one shared RFQ, then cancels
     it to fix a line, as the screen tells her to. The chairs must be offered again
     and be accepted on a new shared RFQ, an ordinary RFQ or a purchase order, as
-    they would be after an ordinary RFQ is cancelled. While the shared RFQ is open,
-    or once it is awarded, they stay taken.
+    they would be after an ordinary RFQ is cancelled. While the shared RFQ is open
+    they stay taken, and once it is awarded each branch's order holds its own.
     """
 
     stored = FreeRequisitionLinesTests.__dict__["stored"]
@@ -369,12 +369,21 @@ class SharedRfqEndedWithoutAwardTests(_SharedSourcingFixture):
                 order_date=datetime.date(2026, 1, 12))
 
     def test_an_awarded_shared_rfq_keeps_its_lines(self, _permission):
-        from vs_procurement.constants import RfqStatus
         from vs_procurement.exceptions import SourcingError
-        from vs_procurement.sourcing import cancel_rfq
+        from vs_procurement.models import VendorQuotation
+        from vs_procurement.sourcing import award_quotation, cancel_rfq, submit_quotation
 
-        rfq = self.shared_rfq()
-        RequestForQuotation.objects.filter(pk=rfq.pk).update(rfq_status=RfqStatus.AWARDED)
+        rfq = self.issued(self.shared_rfq())
+        quote = self.hq.post(f"/v1/procurement/quotations/?entity={self.multi.entity.code}", {
+            "rfq": rfq.pk, "vendor": self.multi.vendor.code, "quote_date": "2026-01-13",
+            "lines": [{"rfq_line": rfq.lines.get().pk, "description": "Chair", "quantity": 100,
+                       "unit_price": 100_000, "expense_account": "5300"}],
+        }, format="json")
+        self.assertEqual(quote.status_code, 201, quote.data)
+        quotation = VendorQuotation.objects.get(pk=quote.data["data"]["id"])
+        submit_quotation(quotation)
+        award_quotation(quotation, actor_user=self.hq.test_user,
+                        competition_exception_reason="One supplier stocks them.")
 
         with self.assertRaises(SourcingError):
             cancel_rfq(rfq)

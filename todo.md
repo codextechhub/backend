@@ -622,6 +622,32 @@ Verified: SharedRfqEndedWithoutAwardTests and ReleaseBackfillTests failed first
 (6 of 8); tests_shared_sourcing_guards 19 OK; vs_procurement 766 OK;
 vs_finance 1955 OK. The full suite was not run.
 
+### D124. A requisition line sits on one live sourcing at a time, ordinary or shared (uncommitted, 2026-10-05)
+Number may be renumbered at merge: another agent queues its own entry in parallel.
+MODULES: M22 procurement and requisitions (RFQs, shared sourcing, purchase orders), MRD.
+Owner decision (2026-10-05): a requisition line can be on only one live sourcing: a draft or issued RFQ (ordinary or shared) or a purchase order that is not cancelled. It frees when that RFQ is cancelled or closed without award, or the order is cancelled.
+MUST SAY:
+- Refused everywhere a line is put on an RFQ or order: ordinary RFQ create, draft
+  edit (PATCH) and amendment, shared RFQ create, order raised from a requisition
+  (including a second order from the same requisition), and an award. The 400 (or
+  the service error) names the requisition, the line and where it is held:
+  "Line 1 ('Chair') of PR-... is already on RFQ RQ-... / shared RFQ RQ-... /
+  purchase order PO-...". The RFQ's own lines never count against it, so editing
+  or amending an RFQ, and the order its award raises, are not refused.
+- An awarded RFQ hands its lines to the order(s) its award raised: from then on the
+  order holds them, and cancelling that order frees them (listed again by GET
+  rfqs/free-requisition-lines/, accepted on a new RFQ or order). This replaces
+  D123's "an awarded shared RFQ keeps its lines": an award now releases the shared
+  RFQ's allocations, and each branch order holds its branch's lines. A line on
+  an awarded RFQ that the award did not order (a no-bid line) is free.
+- Two live RFQs for one line raised before this rule: neither can be awarded
+  until the other is cancelled; the award refusal names the other RFQ.
+- The requisition lines are locked in id order on every path, so two buyers
+  racing to put one line on two RFQs (or an RFQ and an order) cannot both win.
+- Data (vs_procurement 0047). Allocations of shared RFQs already awarded are
+  released, stamped with the sourcing group's last change. Reverse is a no-op.
+Verified: tests_single_live_sourcing 21 OK (12 of the 20 written first failed on the code before the change for want of the rule); tests_shared_sourcing_guards 19 OK with the awarded case rewritten to a real award; vs_procurement 787 OK; vs_finance 1964 OK. The full suite was not run.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

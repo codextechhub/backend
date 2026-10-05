@@ -1605,8 +1605,10 @@ class SharedSourcingAllocation(TimeStampedModel):
     line is on this shared RFQ and nothing else may source it. When the RFQ is
     cancelled or closed without award the allocation is released in the same
     transaction, and the line is free again, exactly as an ordinary RFQ line on a
-    cancelled RFQ is. The row stays, so the ended RFQ still shows which branches
-    it covered and still hides from a buyer who does not reach all of them.
+    cancelled RFQ is. When the RFQ is awarded the allocation is released too, and
+    the branch order the award raised holds the line instead. The row stays, so
+    the ended RFQ still shows which branches it covered and still hides from a
+    buyer who does not reach all of them.
 
     The database holds at most one unreleased allocation per requisition line, so
     two buyers racing to share the same chairs cannot both succeed.
