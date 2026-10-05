@@ -622,7 +622,7 @@ Verified: SharedRfqEndedWithoutAwardTests and ReleaseBackfillTests failed first
 (6 of 8); tests_shared_sourcing_guards 19 OK; vs_procurement 766 OK;
 vs_finance 1955 OK. The full suite was not run.
 
-### D124. A requisition line sits on one live sourcing at a time, ordinary or shared (uncommitted, 2026-10-05)
+### D124. A requisition line sits on one live sourcing at a time, ordinary or shared (39e5994e, 2026-10-05)
 Number may be renumbered at merge: another agent queues its own entry in parallel.
 MODULES: M22 procurement and requisitions (RFQs, shared sourcing, purchase orders), MRD.
 Owner decision (2026-10-05): a requisition line can be on only one live sourcing: a draft or issued RFQ (ordinary or shared) or a purchase order that is not cancelled. It frees when that RFQ is cancelled or closed without award, or the order is cancelled.
