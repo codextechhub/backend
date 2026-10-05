@@ -9,8 +9,10 @@ approving one grants nothing the approver does not already hold. A School Admin
 provisioned without the key raises a request nobody in the school can decide.
 
 These tests pin both halves - the library carries the defaults, and the schools
-already standing get them too - and the shapes that made the first attempt miss:
-the tenant-side spellings, and the branch-scoped copies.
+already standing get them too, once, when the library gains them - and the
+shapes that made the first attempt miss: the tenant-side spellings, and the
+branch-scoped copies. A school's copy of a library role is a system role, which
+is how a copy is told apart from a role the school made for itself.
 """
 from io import StringIO
 
@@ -94,7 +96,9 @@ class SchoolWorkflowRoleDefaultsTests(TestCase):
 
     def test_a_school_that_already_exists_is_brought_up_to_the_same_set(self):
         """The library alone would leave every school standing today behind."""
-        existing = make_role(self.school, name="School Admin", key="school_admin")
+        existing = make_role(
+            self.school, name="School Admin", key="school_admin", is_system_role=True,
+        )
         self.assertEqual(_granted(existing), set())
 
         _seed()
@@ -109,7 +113,9 @@ class SchoolWorkflowRoleDefaultsTests(TestCase):
         ``adopt_console_admin_roles`` created the finance and procurement copies
         with hyphens. Matching on the library key alone would sync neither.
         """
-        hyphenated = make_role(self.school, name="Finance Admin", key="finance-admin")
+        hyphenated = make_role(
+            self.school, name="Finance Admin", key="finance-admin", is_system_role=True,
+        )
 
         _seed()
 
@@ -125,6 +131,7 @@ class SchoolWorkflowRoleDefaultsTests(TestCase):
         """
         per_branch = make_role(
             self.school, name="Branch Admin - Ikeja", key="branch_admin-11",
+            is_system_role=True,
         )
 
         _seed()
@@ -150,7 +157,9 @@ class SchoolWorkflowRoleDefaultsTests(TestCase):
 
     def test_a_school_that_denied_a_key_keeps_its_denial(self):
         """Additive only: a school's own decision is not this command's to undo."""
-        existing = make_role(self.school, name="School Admin", key="school_admin")
+        existing = make_role(
+            self.school, name="School Admin", key="school_admin", is_system_role=True,
+        )
         TenantRolePermission.objects.create(
             role=existing, permission_id="workflow.instance.cancel", granted=False,
         )
@@ -161,7 +170,9 @@ class SchoolWorkflowRoleDefaultsTests(TestCase):
         self.assertIn("workflow.template.update", _granted(existing))
 
     def test_running_it_twice_grants_nothing_the_second_time(self):
-        existing = make_role(self.school, name="School Admin", key="school_admin")
+        existing = make_role(
+            self.school, name="School Admin", key="school_admin", is_system_role=True,
+        )
         _seed()
         first = _granted(existing)
 

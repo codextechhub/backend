@@ -507,6 +507,49 @@ test_seed_school_permissions and test_fee_run_branch 102 OK; schools.vs_students
 1865 OK; vs_rbac 988 OK; core 199 OK; vs_audit 109 OK. school-fe: tsc clean,
 vitest 2518 OK. The full suite was not run.
 
+### D121. A status reason stays behind its Field Access switch on the History tab, a school's removed default keys stay removed, and parallel test runs keep their connections (uncommitted, 2026-10-05)
+Number may be renumbered at merge: another agent queues its own entry in parallel.
+MODULES: M11 student management (History tab, status audit), M04 roles and
+permissions (how defaults reach existing schools), M10 notifications, M20
+tickets, the Export Centre, M09 onboarding, imports, M06 workflow (each seed's
+school defaults), MRD.
+MUST SAY:
+- History tab (M11). GET /v1/students/<id>/history/ no longer prints the reason
+  for a status move inside "text". An entry for a status move carries it as
+  "reason", present only when the caller's roles grant Read on
+  school.students.status_reason (the same switch as the status history and the
+  profile's suspension block); the key is absent otherwise. Applies to the
+  status log rows and to the audit rows of a status move, including audit rows
+  whose stored summary ends in "Reason: ..." (cut there, served as "reason").
+  Other entries never carry "reason".
+- Status audit (M11). The audit event a status move writes keeps the reason out
+  of its summary and carries it in metadata.reason. The admission stage move's
+  audit summary still ends in its reason: that reason is not a Field Access
+  field (open question to the owner).
+- Default keys (M04 and every seed below). A default a library role (School
+  Admin, Branch Admin, Teacher, and Finance/Procurement Admin for workflow keys)
+  gains reaches every school's existing copy once, at that moment, per-branch
+  copies included where the seed always reached them; a key a school took off
+  its role is never put back by a later seed_all_permissions. Before this, seven
+  seeds (school and academics, communication, tickets, exports, onboarding,
+  imports, workflow) re-granted every default to every copy on each run. A new
+  school still gets every default through provisioning. A copy is a system role
+  (workflow's seed also reached non-system roles with a library key; it no
+  longer does). school.students.change_branch (D120) reaches each School Admin
+  and Branch Admin copy on the first run after deploy if it has not already.
+  D120's "phase 3 backfill" wording is superseded.
+- Known limit (M04). seed_prebuilt_role_templates --reset (development only)
+  deletes every library link, so the next run offers every default again.
+- Test runner (internal, no product change). Template pruning takes each old
+  template's own advisory lock, skips databases PostgreSQL marks invalid, and
+  runs on its own connection, so a parallel worker never loses its session to
+  another worker's prune ("the connection is lost" in UserTypeMigrationTests).
+Verified: RecordHistoryReasonTests 3, the school-seed and seed_all removal tests
+4 and TemplatePruningTests 2 all failed first; schools.vs_students 671 OK;
+vs_rbac 988 OK; core 205 OK; vs_user 430 OK; full suite with --parallel 4
+9453 OK, twice without the connection loss (the first run's 5 failures were
+tests of the old re-grant, updated to model the moment a key ships).
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

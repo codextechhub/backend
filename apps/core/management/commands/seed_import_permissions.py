@@ -249,12 +249,6 @@ class Command(BaseCommand):
                     f"\n  Ensured {granted} import permissions for {role_key} role."
                 )
 
-        # -- School-side defaults ----------------------------------------------
-        # Attached to the prebuilt template AND backfilled into schools that
-        # already exist, for the same reason every seeder in this repo does
-        # both: without the backfill the keys only ever reach schools created
-        # after today, and every existing school admin keeps getting a 403
-        # nobody can explain.
         self._seed_school_admin_defaults()
 
         self.stdout.write(self.style.SUCCESS(
@@ -262,13 +256,19 @@ class Command(BaseCommand):
         ))
 
     def _seed_school_admin_defaults(self) -> None:
-        from vs_rbac.models import (
-            Permission,
-            PrebuiltRolePermission,
-            PrebuiltRoleTemplate,
-            TenantRolePermission,
-            TenantRoleTemplate,
-        )
+        """Attach the import keys to the School Admin library role and grow its copies.
+
+        Attached to the prebuilt template, so every school created from it has
+        them. A key the library role gains here also reaches every school's
+        whole-school School Admin, once, at that moment
+        (:func:`vs_rbac.library_growth.attach_defaults`): without that the key
+        would only reach schools created afterwards, and every existing school
+        admin would meet a 403 nobody could explain. A key a school later took
+        off its School Admin stays off. A branch-pinned copy never gains these:
+        they load the whole school's roll.
+        """
+        from vs_rbac.library_growth import attach_defaults
+        from vs_rbac.models import Permission, PrebuiltRoleTemplate
 
         keys = sorted(
             Permission.objects
@@ -289,34 +289,11 @@ class Command(BaseCommand):
             ))
             return
 
-        attached = 0
-        for key in keys:
-            _, created = PrebuiltRolePermission.objects.get_or_create(
-                prebuilt_role=prebuilt, permission_id=key,
-            )
-            attached += int(created)
-
-        backfilled = 0
-        roles = [
-            role for role in TenantRoleTemplate.objects.filter(
-                tenant__kind="SCHOOL", is_system_role=True,
-            ).only("id", "key")
-            # The whole-tenant template only. A branch-pinned copy must not gain
-            # the keys that load the whole school's roll.
-            if role.key == "school_admin"
-        ]
-        for role in roles:
-            for key in keys:
-                # get_or_create leaves an existing row alone, so an explicit
-                # deny an administrator set is never flipped back on.
-                _, created = TenantRolePermission.objects.get_or_create(
-                    role=role, permission_id=key,
-                    defaults={"granted": True, "granted_by": None},
-                )
-                backfilled += int(created)
-
+        attached, grown = attach_defaults(
+            prebuilt, keys, branch_copies=False, tenant_kind="SCHOOL",
+        )
         self.stdout.write(
             f"\n  school_admin: {len(keys)} import key(s) - "
-            f"{attached} newly attached, {backfilled} backfilled across "
-            f"{len(roles)} existing role template(s)."
+            f"{len(attached)} newly attached, {grown} grant(s) added to "
+            f"schools' copies."
         )

@@ -51,6 +51,16 @@ _AUDIT = {
     StudentStatus.REJECTED: AuditActionType.STUDENT_REJECTED,
 }
 
+#: The audit actions a status move writes, for a reader of the trail that has
+#: to know which rows can carry the reason behind one.
+STATUS_AUDIT_ACTIONS = frozenset(_AUDIT.values())
+
+#: Where the reason began in an audit summary that carries it. The summary a
+#: status move writes ends at its dates and keeps the reason in ``metadata``,
+#: but the trail is immutable and can hold summaries that end
+#: ``" Reason: <words>"``, so a reader cuts them here (``views/records.py``).
+SUMMARY_REASON_MARKER = " Reason: "
+
 #: What each destination means for the child, said the way the screen says it.
 #: The design prints these verbatim in the confirmation panel, so they are API
 #: output and not documentation.
@@ -126,6 +136,11 @@ def transition(
     what the history holds: the reason is written to the record either way,
     and it reaches a guardian's notice only where the person suspending the
     pupil chose to send it.
+
+    The audit event carries the reason in ``metadata["reason"]`` and never in
+    its summary. The reason is a Field Access field (``status_reason``), and
+    a summary is one sentence that every surface printing the trail shows
+    whole, so no Read switch could take the words back out of it.
     """
     from_status = student.status
     if to_status == from_status:
@@ -189,8 +204,6 @@ def transition(
             f" Expected back on "
             f"{format_date(return_date, student.tenant)}."
         )
-    if reason:
-        summary += f" Reason: {reason}"
 
     emit_audit_event(
         module_key=AuditModuleKey.STUDENT,
@@ -204,6 +217,7 @@ def transition(
             "effective_date": str(effective_date),
             "return_date": str(return_date) if return_date else "",
             "destination_school": destination_school,
+            "reason": reason,
         },
     )
 

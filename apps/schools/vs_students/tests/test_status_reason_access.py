@@ -2,10 +2,10 @@
 
 The reason is free text a member of staff writes about a child, so it is a
 registered field of ``school.students`` and sensitive: a role reads it only
-where the school has turned the Read switch on. It reaches a client in two
-places, and both are held to the same switch - the ``suspension`` block of a
-profile, where the key is left out rather than sent empty, and the rows of the
-status history.
+where the school has turned the Read switch on. It reaches a client in three
+places, and all are held to the same switch - the ``suspension`` block of a
+profile, where the key is left out rather than sent empty, the rows of the
+status history, and the status entries of the record history tab.
 
 Everything else about the suspension answers either way. When a pupil is
 expected back is the fact a register needs, and withholding it would stop a
@@ -288,3 +288,93 @@ class ReasonOnScreenAndInTheNoticeTests(_ReasonFixture):
         self.assertEqual(
             self.profile(self.counsellor, self.pupil)["suspension"]["reason"], words,
         )
+
+
+class RecordHistoryReasonTests(_ReasonFixture):
+    """The profile's History tab holds the reason to the same switch.
+
+    The tab merges the status log with the audit trail, and a line of text is
+    out of any switch's reach, so the reason never travels inside ``text``. A
+    closed reader sees that a pupil was suspended, when and by whom, and never
+    the words; an open reader gets the words as ``reason`` beside the text.
+
+    Each pupil also carries an audit row whose summary ends in the reason,
+    which is how the trail can hold a status move: the trail is immutable, so
+    such a row is read for as long as the school keeps it.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        from vs_audit.models import AuditActionType, AuditModuleKey
+        from vs_audit.services import emit_audit_event
+
+        for _, _, _, pupil, words in cls.cases:
+            emit_audit_event(
+                module_key=AuditModuleKey.STUDENT,
+                action_type=AuditActionType.STUDENT_SUSPENDED,
+                entity_type="Student", entity_id=str(pupil.pk),
+                entity_label=pupil.full_name, tenant=pupil.tenant,
+                actor_user=None,
+                summary=(
+                    f"{pupil.full_name} moved from Active to Suspended on "
+                    f"09/03/2026. Reason: {words}"
+                ),
+                metadata={"from": "ACTIVE", "to": "SUSPENDED"},
+            )
+
+    def record_history(self, reader, pupil):
+        response = self.get(reader, "student-history", pk=pupil.pk)
+        self.assertEqual(response.status_code, 200, response.data)
+        rows = response.data["data"]
+        return rows["results"] if isinstance(rows, dict) else rows
+
+    def test_a_closed_reader_sees_the_moves_without_the_reason(self):
+        for school, closed, _, pupil, words in self.cases:
+            with self.subTest(school=school):
+                entries = self.record_history(closed, pupil)
+                self.assertEqual(len(entries), 2)
+                for entry in entries:
+                    self.assertNotIn("reason", entry)
+                    self.assertNotIn(words, str(entry))
+                    self.assertIn("Suspended", entry["text"])
+
+    def test_an_open_reader_gets_the_reason_beside_the_text(self):
+        for school, _, open_to, pupil, words in self.cases:
+            with self.subTest(school=school):
+                entries = self.record_history(open_to, pupil)
+                self.assertEqual(len(entries), 2)
+                for entry in entries:
+                    self.assertEqual(entry["reason"], words)
+                    self.assertNotIn(words, entry["text"])
+
+    def test_a_move_made_on_the_status_route_keeps_the_reason_out_of_the_summary(self):
+        """The reason travels in the audit event's metadata, not its summary.
+
+        The summary is what every surface that prints the trail shows, and
+        none of them can apply a switch to part of a sentence.
+        """
+        from vs_audit.models import AuditEvent
+
+        from ..services.status import transition
+
+        words = "Left the school gate during lessons."
+        pupil = self.solo_pupil
+        pupil.status = StudentStatus.ACTIVE
+        pupil.save(update_fields=["status"])
+        transition(
+            pupil, StudentStatus.SUSPENDED, actor=self.solo_admin, reason=words,
+        )
+
+        event = AuditEvent.objects.filter(
+            entity_type="Student", entity_id=str(pupil.pk),
+        ).order_by("-event_at", "-id").first()
+        self.assertNotIn(words, event.summary)
+        self.assertEqual(event.metadata["reason"], words)
+
+        self.assertNotIn(words, str(self.record_history(self.solo_teacher, pupil)))
+        opened = [
+            entry for entry in self.record_history(self.solo_counsellor, pupil)
+            if entry.get("reason") == words
+        ]
+        self.assertEqual(len(opened), 2)

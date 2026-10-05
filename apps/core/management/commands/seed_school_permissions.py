@@ -1,14 +1,12 @@
-"""Seed the school-scoped permission modules, attach prebuilt-role defaults,
-and backfill already-onboarded schools.
+"""Seed the school-scoped permission modules and attach prebuilt-role defaults.
 
 This is the single source of truth for the school-facing permission keys used by
 school-fe (the XVS school-facing app). It registers two modules - ``school``
 (administration / people) and ``academics`` (sessions / calendar / classes /
 structure / subject) -
 then attaches sensible defaults to the ``school_admin`` / ``branch_admin`` /
-``teacher`` PrebuiltRoleTemplates and, critically, backfills those defaults into
-any existing tenant role template that was provisioned from one of those prebuilt
-roles BEFORE these permissions existed.
+``teacher`` PrebuiltRoleTemplates, and grows each school's copies of those roles
+with the defaults the library role gains.
 
 Run order::
 
@@ -16,22 +14,21 @@ Run order::
     python manage.py seed_prebuilt_role_templates    # school_admin/branch_admin/teacher
     python manage.py seed_school_permissions
 
-Three idempotent phases:
+Two idempotent phases:
   1. Register modules + resources + permissions (with sensitivity per table).
      A resource usually arrives as a side effect of the first key naming it;
      one that carries Field Access fields and no keys is listed in
      ``FIELD_ONLY_RESOURCES`` and registered alongside them.
   2. Attach PrebuiltRolePermission defaults per the school_admin/branch_admin/
-     teacher columns.
-  3. Backfill: for every native tenant role template whose key matches one of the
-     three prebuilt roles, get_or_create a GRANTED TenantRolePermission row for each
-     of that prebuilt role's default keys. get_or_create never flips an existing
-     explicit deny (granted=False) - admin customisations survive.
+     teacher columns. A default the library role gains on this run is granted
+     to every school's copy of that role, its per-branch copies included
+     (``branch_admin-<branch pk>``), at that moment and never again
+     (:func:`vs_rbac.library_growth.attach_defaults`). A default the library
+     already held is not offered again, so a key a school took off one of its
+     roles stays off, and an explicit deny is never touched.
 
-Safe to re-run - everything uses get_or_create. Supports ``--dry-run``.
+Safe to re-run. Supports ``--dry-run``.
 """
-import re
-
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
@@ -39,7 +36,10 @@ from django.db import transaction
 # Sensitivity levels (mirrors seed_platform_permissions).
 _NORMAL, _SENSITIVE, _CRITICAL = "NORMAL", "SENSITIVE", "CRITICAL"
 
-# Prebuilt role keys the defaults attach to (and that the backfill scans for).
+#: The tenants whose copies of the library roles grow with these defaults.
+SCHOOL_TENANT_KIND = "SCHOOL"
+
+# Prebuilt role keys the defaults attach to.
 ROLE_SCHOOL_ADMIN = "school_admin"
 ROLE_BRANCH_ADMIN = "branch_admin"
 ROLE_TEACHER = "teacher"
@@ -368,7 +368,7 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
 class Command(BaseCommand):
     help = (
         "Seed the school + academics permission modules, attach prebuilt-role "
-        "defaults, and backfill existing school role templates (idempotent)."
+        "defaults, and grant newly attached defaults to schools' copies (idempotent)."
     )
 
     def add_arguments(self, parser):
@@ -427,15 +427,13 @@ class Command(BaseCommand):
         return resource
 
     def _run(self, dry_run: bool):
+        from vs_rbac.library_growth import attach_defaults
         from vs_rbac.models import (
             Permission,
             PermissionAction,
             PermissionModule,
             PermissionResource,
-            PrebuiltRolePermission,
             PrebuiltRoleTemplate,
-            TenantRolePermission,
-            TenantRoleTemplate,
             PermissionScope,
         )
 
@@ -516,7 +514,7 @@ class Command(BaseCommand):
             for role_key in roles:
                 role_default_keys[role_key].append(key)
 
-        prebuilt_roles: dict[str, PrebuiltRoleTemplate] = {}
+        total_grown = 0
         for role_key in PREBUILT_ROLE_KEYS:
             role = PrebuiltRoleTemplate.objects.filter(key=role_key).first()
             if role is None:
@@ -525,77 +523,27 @@ class Command(BaseCommand):
                     f"seed_prebuilt_role_templates first. Skipping its defaults."
                 ))
                 continue
-            prebuilt_roles[role_key] = role
 
-            attached = 0
-            for key in role_default_keys[role_key]:
-                _, link_created = PrebuiltRolePermission.objects.get_or_create(
-                    prebuilt_role=role,
-                    permission_id=key,
-                )
-                if link_created:
-                    attached += 1
+            attached, grown = attach_defaults(
+                role, role_default_keys[role_key],
+                branch_copies=True, tenant_kind=SCHOOL_TENANT_KIND,
+            )
+            total_grown += grown
             self.stdout.write(
                 self.style.SUCCESS(
-                    f"{prefix} {role_key}: attached {attached} new default(s) "
-                    f"({len(role_default_keys[role_key])} total)."
+                    f"{prefix} {role_key}: attached {len(attached)} new default(s) "
+                    f"({len(role_default_keys[role_key])} total), "
+                    f"{grown} grant(s) added to schools' copies."
                 )
                 if attached else
                 f"{prefix} {role_key}: all {len(role_default_keys[role_key])} defaults already attached."
             )
 
-        # ── Phase 3: backfill existing tenant role templates ──────────────────
-        # Runtime grants live in the tenant RBAC tables now. A tenant role maps
-        # back to its prebuilt by its native key: key=<prebuilt.key> or
-        # key=<prebuilt.key>-<branch pk>.
-        self.stdout.write(self.style.MIGRATE_HEADING(
-            "\n  Phase 3 - backfilling existing tenant role templates...\n"
-        ))
-
-        prebuilt_for_role: dict[int, str] = {}
-
-        native_key_re = re.compile(
-            r"^(%s)(?:-\d+)?$" % "|".join(re.escape(k) for k in PREBUILT_ROLE_KEYS)
-        )
-        for role in TenantRoleTemplate.objects.filter(
-            tenant__kind="SCHOOL", is_system_role=True,
-        ).only("id", "key"):
-            match = native_key_re.match(role.key)
-            if match and role.pk not in prebuilt_for_role:
-                prebuilt_for_role[role.pk] = match.group(1)
-
-        total_backfilled = 0
-        template_count = 0
-        for role_pk, role_key in prebuilt_for_role.items():
-            template_count += 1
-            granted_here = 0
-            for key in role_default_keys.get(role_key, []):
-                # get_or_create with granted=True in defaults: if a row already
-                # exists (grant OR explicit deny) it is left untouched, so an
-                # admin's explicit deny (granted=False) is never flipped.
-                _, row_created = TenantRolePermission.objects.get_or_create(
-                    role_id=role_pk,
-                    permission_id=key,
-                    defaults={"granted": True, "granted_by": None},
-                )
-                if row_created:
-                    granted_here += 1
-            total_backfilled += granted_here
-            if granted_here:
-                self.stdout.write(
-                    f"{prefix} tenant role #{role_pk} ({role_key}): "
-                    f"+{granted_here} grant(s)."
-                )
-
-        if template_count == 0:
-            self.stdout.write("  No existing tenant role templates to backfill.")
-
         # ── Summary ───────────────────────────────────────────────────────────
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_perm_count} new permission(s) created, "
             f"{len(all_keys)} school/academics keys registered; "
-            f"backfilled {total_backfilled} grant(s) across {template_count} "
-            f"existing role template(s).\n"
+            f"{total_grown} grant(s) added to schools' copies of the library roles.\n"
         ))
 
 

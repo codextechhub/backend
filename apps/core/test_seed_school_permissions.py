@@ -478,6 +478,109 @@ class SeedSchoolBackfillTests(TestCase):
         )
 
 
+class SchoolDefaultsReachCopiesOnceTests(TestCase):
+    """A default reaches each school's roles once, and a school's removal stands.
+
+    Bright Star runs two branches (Lekki and Ikeja) and Sunrise runs one. Each
+    has a School Admin, a Branch Admin per branch and a Teacher per branch,
+    provisioned from the library the way a new school's roles are. The seed
+    offers a default to those copies at the moment the library role gains it
+    (``vs_rbac.library_growth``) and never again, so a key a school took off
+    one of its roles is not put back by the next deploy.
+    """
+
+    NEW_KEY = "school.students.change_branch"
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_rbac.services import provision_role_from_prebuilt
+        from vs_rbac.tests.helpers import make_branch, make_school
+
+        _seed_actions_and_roles()
+        _run_school_seed()
+
+        bright = make_school(slug="grow-bright", name="Bright Star").tenant
+        lekki = make_branch(bright, name="Lekki", is_main=True)
+        ikeja = make_branch(bright, name="Ikeja", is_main=False)
+        sunrise = make_school(slug="grow-sunrise", name="Sunrise").tenant
+        sunrise_main = make_branch(sunrise, name="Sunrise Main", is_main=True)
+
+        def provision(tenant, key, branch=None):
+            return provision_role_from_prebuilt(
+                tenant=tenant, branch=branch, prebuilt_key=key,
+            )
+
+        cls.bright_admin = provision(bright, "school_admin")
+        cls.lekki_admin = provision(bright, "branch_admin", lekki)
+        cls.ikeja_admin = provision(bright, "branch_admin", ikeja)
+        cls.lekki_teacher = provision(bright, "teacher", lekki)
+        cls.sunrise_admin = provision(sunrise, "school_admin")
+        cls.sunrise_branch_admin = provision(sunrise, "branch_admin", sunrise_main)
+        cls.sunrise_teacher = provision(sunrise, "teacher", sunrise_main)
+        cls.admin_copies = {
+            cls.bright_admin.pk, cls.lekki_admin.pk, cls.ikeja_admin.pk,
+            cls.sunrise_admin.pk, cls.sunrise_branch_admin.pk,
+        }
+
+    @staticmethod
+    def holds(role, key):
+        return TenantRolePermission.objects.filter(
+            role=role, permission_id=key, granted=True,
+        ).exists()
+
+    def holders(self, key):
+        return set(
+            TenantRolePermission.objects.filter(permission_id=key, granted=True)
+            .values_list("role_id", flat=True)
+        )
+
+    def take_off(self, role, key):
+        TenantRolePermission.objects.filter(role=role, permission_id=key).delete()
+
+    def test_a_key_a_school_took_off_stays_off(self):
+        """Bright Star stops its School Admin exporting the roll, and Ikeja's
+        Branch Admin cancelling leave. Lekki's Branch Admin keeps cancelling."""
+        self.take_off(self.bright_admin, "school.students.export")
+        self.take_off(self.ikeja_admin, "school.leave.cancel")
+        self.take_off(self.sunrise_teacher, "school.leave.apply")
+
+        _run_school_seed()
+
+        self.assertFalse(self.holds(self.bright_admin, "school.students.export"))
+        self.assertFalse(self.holds(self.ikeja_admin, "school.leave.cancel"))
+        self.assertFalse(self.holds(self.sunrise_teacher, "school.leave.apply"))
+        self.assertTrue(self.holds(self.lekki_admin, "school.leave.cancel"))
+        self.assertTrue(self.holds(self.sunrise_admin, "school.students.export"))
+
+    def test_a_new_default_reaches_every_admin_copy_once(self):
+        """Both schools opened before moving a pupil between branches shipped.
+
+        The key reaches every School Admin and Branch Admin copy at both
+        schools on the next run, and no Teacher. Sunrise then takes it off its
+        School Admin, and the run after that leaves it off.
+        """
+        PrebuiltRolePermission.objects.filter(permission_id=self.NEW_KEY).delete()
+        TenantRolePermission.objects.filter(permission_id=self.NEW_KEY).delete()
+
+        _run_school_seed()
+
+        self.assertEqual(self.holders(self.NEW_KEY), self.admin_copies)
+        self.assertFalse(self.holds(self.lekki_teacher, self.NEW_KEY))
+
+        self.take_off(self.sunrise_admin, self.NEW_KEY)
+        _run_school_seed()
+
+        self.assertEqual(
+            self.holders(self.NEW_KEY), self.admin_copies - {self.sunrise_admin.pk},
+        )
+
+    def test_a_second_run_adds_nothing(self):
+        _run_school_seed()
+        before = TenantRolePermission.objects.count()
+        _run_school_seed()
+        self.assertEqual(TenantRolePermission.objects.count(), before)
+
+
 class SchoolAdminEffectivePermissionsTests(TestCase):
     """End-to-end: a user with an active school_admin assignment resolves grants."""
 

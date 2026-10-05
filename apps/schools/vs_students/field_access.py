@@ -47,9 +47,14 @@ The reason a pupil's status changed is sensitive, so a role reads it only where
 a school has turned the Read switch on. It is free text a member of staff
 writes about a child, of the same kind as the medical fields beside it: why
 this pupil was suspended, withdrawn, transferred out or brought back. It
-reaches a client as ``reason``, on the status history and inside the
-``suspension`` block of a profile, and it is registered under a name of its own
+reaches a client as ``reason``, on the status history, on the entries of the
+record history tab that record a status move, and inside the ``suspension``
+block of a profile, and it is registered under a name of its own
 because ``reason`` alone says nothing on a screen listing a pupil's fields.
+
+It is never printed inside a sentence. A sentence reaches its reader whole, so
+the status move's audit summary leaves the reason to its metadata, and the
+record history serves it beside the text rather than within it.
 
 Nothing writes it through a serializer of this resource, so it is declared
 unwritable and offers no Write switch. The reason arrives on the status routes,

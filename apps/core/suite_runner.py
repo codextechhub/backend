@@ -30,7 +30,8 @@ second session wait for a template being built rather than build its own. The
 lock is per template, so building one never holds up cloning another. A
 run never replaces a test database another run has open: two runs given the
 same ``DB_NAME`` stop the second with ``TestDatabaseInUse``.
-Only the few most recent templates are kept.
+Only the few most recent templates are kept, and pruning the rest never touches
+a template another session holds (:func:`_prune_templates`).
 
 Network guard
 -------------
@@ -423,7 +424,7 @@ class XvsTestRunner(DiscoverRunner):
                         f"ALTER DATABASE {qn(template)} "
                         "WITH IS_TEMPLATE true ALLOW_CONNECTIONS false"
                     )
-                    _prune_templates(lock, qn)
+                    _prune_templates(qn)
                 except Exception as exc:  # the run itself is unaffected
                     print(f"Could not save template {template}: {exc}")
                 else:
@@ -516,14 +517,38 @@ def _database_exists(cursor, name):
     return cursor.fetchone() is not None
 
 
-def _prune_templates(cursor, qn, prefix=TEMPLATE_PREFIX, kept=TEMPLATES_KEPT):
-    """Drop all but the most recent templates, skipping any still in use."""
-    cursor.execute(
-        "SELECT datname FROM pg_database WHERE datname LIKE %s "
-        "ORDER BY oid DESC OFFSET %s",
-        [prefix + "%", kept],
-    )
-    for (name,) in cursor.fetchall():
-        with contextlib.suppress(Exception):
-            cursor.execute(f"ALTER DATABASE {qn(name)} WITH IS_TEMPLATE false")
-            cursor.execute(f"DROP DATABASE {qn(name)}")
+def _prune_templates(qn, prefix=TEMPLATE_PREFIX, kept=TEMPLATES_KEPT):
+    """Drop all but the most recent templates, leaving any another session holds.
+
+    Housekeeping that runs beside other runs, including the other workers of a
+    ``--parallel`` run, each of which prunes after building a template of its
+    own. Three rules keep it from harming any of them:
+
+    * A template is dropped only under its own advisory lock, taken with
+      ``pg_try_advisory_lock``. Building, cloning and pruning a template all
+      hold that lock, so a template another session is using, or already
+      dropping, is skipped rather than waited for or raced.
+    * A database PostgreSQL has marked invalid (``datconnlimit = -2``) is
+      skipped. A ``DROP DATABASE`` under way, or one that was interrupted,
+      leaves it that way, and ``ALTER DATABASE`` on it is a FATAL error that
+      ends the session issuing it.
+    * It works on a connection of its own. Pruning is best-effort, and a
+      failure in it, of whatever severity, must never close the session the
+      caller goes on to clone with.
+    """
+    with connections[DEFAULT_DB_ALIAS]._nodb_cursor() as cursor:
+        cursor.execute(
+            "SELECT datname FROM pg_database WHERE datname LIKE %s "
+            "AND datconnlimit <> -2 ORDER BY oid DESC OFFSET %s",
+            [prefix + "%", kept],
+        )
+        for (name,) in cursor.fetchall():
+            with contextlib.suppress(Exception):
+                cursor.execute("SELECT pg_try_advisory_lock(hashtext(%s))", [name])
+                if not cursor.fetchone()[0]:
+                    continue
+                try:
+                    cursor.execute(f"ALTER DATABASE {qn(name)} WITH IS_TEMPLATE false")
+                    cursor.execute(f"DROP DATABASE {qn(name)}")
+                finally:
+                    cursor.execute("SELECT pg_advisory_unlock(hashtext(%s))", [name])

@@ -198,6 +198,18 @@ class StudentHistoryView(StudentsViewMixin, APIView):
     or ``edit``), so this merges the module's own log with the platform's
     audit trail rather than duplicating either.
 
+    The reason behind a status move is a Field Access field
+    (``school.students.status_reason``), held to the same Read switch here as
+    on the status history and the profile's suspension block. It never travels
+    inside ``text``, because a sentence cannot be partly withheld: an entry for
+    a status move carries it as ``reason``, and the key is absent for a caller
+    whose roles do not grant Read. An audit summary that ends in the reason is
+    cut where the reason begins (``SUMMARY_REASON_MARKER``), since the trail
+    is immutable and can still hold such rows.
+
+    ``AuditEvent`` is ordered by ``event_at``, when the action happened, which
+    is not always when its row was written.
+
     docstring-name: A student's record history
     """
 
@@ -209,35 +221,29 @@ class StudentHistoryView(StudentsViewMixin, APIView):
         from vs_audit.models import AuditEvent
 
         from .. import as_at as past
+        from ..field_access import STATUS_REASON_FIELD
 
         student = self.student(pk)
         as_at = parse_as_at(request)
         if as_at is not None:
             past.student_at(student, as_at)
+        reason_open = can_read(request, STATUS_REASON_FIELD)
         entries = [
-            {
-                "kind": "status",
-                "text": self._status_text(row),
-                "when": row.changed_at,
-                "actor": self._actor(row.changed_by),
-            }
+            self._entry(
+                "status", self._status_text(row), row.changed_at,
+                row.changed_by, row.reason if reason_open else None,
+            )
             for row in student.status_logs.select_related("changed_by")
         ]
         events = AuditEvent.objects.filter(
             tenant=self.tenant, entity_type="Student", entity_id=str(student.pk),
-        # AuditEvent stamps ``event_at``, not ``created_at`` - it records when
-        # the action happened, which is not always when the row was written.
-        # Both names below were guessed from the convention the other models in
-        # this repo follow, and the tab answered 500 for every student because
-        # of it.
         ).select_related("actor_user").order_by("-event_at")[:200]
         for event in events:
-            entries.append({
-                "kind": self._kind(event.action_type),
-                "text": event.summary,
-                "when": event.event_at,
-                "actor": self._actor(event.actor_user),
-            })
+            text, reason = self._audit_text(event)
+            entries.append(self._entry(
+                self._kind(event.action_type), text, event.event_at,
+                event.actor_user, reason if reason_open else None,
+            ))
         if as_at is not None:
             entries = [entry for entry in entries if as_at.includes(entry["when"])]
         entries.sort(key=lambda e: e["when"], reverse=True)
@@ -261,6 +267,27 @@ class StudentHistoryView(StudentsViewMixin, APIView):
             return "edit"
         return "status"
 
+    def _entry(self, kind, text, when, user, reason):
+        """One line of the tab; ``reason=None`` leaves the key out."""
+        entry = {"kind": kind, "text": text, "when": when, "actor": self._actor(user)}
+        if reason is not None:
+            entry["reason"] = reason
+        return entry
+
+    @staticmethod
+    def _audit_text(event):
+        """An audit row's sentence, and the status reason it carries if any.
+
+        The reason is ``None`` for a row that is not a status move, so its
+        entry has no ``reason`` key whoever reads it.
+        """
+        from ..services.status import STATUS_AUDIT_ACTIONS, SUMMARY_REASON_MARKER
+
+        if event.action_type not in STATUS_AUDIT_ACTIONS:
+            return event.summary, None
+        text, _, tail = event.summary.partition(SUMMARY_REASON_MARKER)
+        return text, (event.metadata or {}).get("reason") or tail
+
     @staticmethod
     def _status_text(row):
         from ..constants import StudentStatus
@@ -270,7 +297,7 @@ class StudentHistoryView(StudentsViewMixin, APIView):
             return f"Record created as {to_label}."
         return (
             f"Status moved from {StudentStatus(row.from_status).label} to "
-            f"{to_label}." + (f" Reason: {row.reason}" if row.reason else "")
+            f"{to_label}."
         )
 
     @staticmethod

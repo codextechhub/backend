@@ -9,9 +9,10 @@ One key is CodeX's alone. Every assignee is support staff, so assigning is the
 desk choosing which of its own people works a ticket; a school's say is
 escalation, and it stops there. ``tickets.ticket.assign`` is therefore seeded
 ``PLATFORM`` so a school's roles screen never offers it.
-"""
-import re
 
+A school's copies of those roles gain a default once, when the library role
+gains it, so a key a school took off its own role stays off.
+"""
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
@@ -59,12 +60,12 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
+        from vs_rbac.library_growth import attach_defaults
         from vs_rbac.models import (
             Permission,
             PermissionAction,
             PermissionModule,
             PermissionResource,
-            PrebuiltRolePermission,
             PrebuiltRoleTemplate,
             TenantRolePermission,
             TenantRoleTemplate,
@@ -150,49 +151,24 @@ class Command(BaseCommand):
         role_default_keys["school_admin"] |= SCHOOL_ADMIN_EXTRA_KEYS
         role_default_keys["branch_admin"] |= SCHOOL_ADMIN_EXTRA_KEYS
 
+        # A default the library role gains here reaches each school's copies
+        # once (vs_rbac.library_growth.attach_defaults).
+        grown = 0
         for role_key, keys in role_default_keys.items():
             role = PrebuiltRoleTemplate.objects.filter(key=role_key).first()
             if role is None:
                 self.stdout.write(self.style.WARNING(f"  prebuilt role '{role_key}' missing; defaults skipped."))
                 continue
-            attached = 0
-            for key in sorted(keys):
-                _, link_created = PrebuiltRolePermission.objects.get_or_create(
-                    prebuilt_role=role,
-                    permission_id=key,
-                )
-                attached += int(link_created)
-            self.stdout.write(f"  {role_key}: attached {attached} new default(s).")
-
-        # Backfill existing tenant role templates (runtime grants live in the
-        # tenant tables now). A tenant role maps to its prebuilt by its native
-        # key: key=<prebuilt.key> or key=<prebuilt.key>-<branch>.
-        prebuilt_for_role: dict[int, str] = {}
-
-        native_key_re = re.compile(
-            r"^(%s)(?:-\d+)?$" % "|".join(re.escape(k) for k in SCHOOL_ROLE_KEYS)
-        )
-        for role in TenantRoleTemplate.objects.filter(
-            tenant__kind="SCHOOL", is_system_role=True,
-        ).only("id", "key"):
-            match = native_key_re.match(role.key)
-            if match and role.pk not in prebuilt_for_role:
-                prebuilt_for_role[role.pk] = match.group(1)
-
-        backfilled = 0
-        template_count = 0
-        for role_pk, prebuilt_key in prebuilt_for_role.items():
-            template_count += 1
-            keys = role_default_keys.get(prebuilt_key, set())
-            for key in sorted(keys):
-                _, row_created = TenantRolePermission.objects.get_or_create(
-                    role_id=role_pk,
-                    permission_id=key,
-                    defaults={"granted": True, "granted_by": None},
-                )
-                backfilled += int(row_created)
+            attached, added = attach_defaults(
+                role, keys, branch_copies=True, tenant_kind="SCHOOL",
+            )
+            grown += added
+            self.stdout.write(
+                f"  {role_key}: attached {len(attached)} new default(s), "
+                f"{added} grant(s) added to schools' copies."
+            )
 
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_perms} new permission(s), {len(all_perms)} total ticket keys; "
-            f"backfilled {backfilled} grant(s) across {template_count} tenant role template(s).\n"
+            f"{grown} grant(s) added to schools' copies of the library roles.\n"
         ))

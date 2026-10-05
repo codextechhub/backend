@@ -228,7 +228,7 @@ def _enter_rewound_clone(cls):
                     "WITH IS_TEMPLATE true ALLOW_CONNECTIONS false"
                 )
                 cursor.execute(f"DROP DATABASE {qn(build)}")
-                _prune_templates(cursor, qn, REWOUND_PREFIX, REWOUND_TEMPLATES_KEPT)
+                _prune_templates(qn, REWOUND_PREFIX, REWOUND_TEMPLATES_KEPT)
             _drop_unused(cursor, qn, clone)
             cursor.execute(f"CREATE DATABASE {qn(clone)} TEMPLATE {qn(template)}")
         finally:

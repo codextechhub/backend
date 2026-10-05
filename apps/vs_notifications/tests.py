@@ -2321,9 +2321,25 @@ class SeedNotificationPermissionsTests(TestCase):
                 )
 
     def test_native_school_role_backfilled_in_tenant_table(self):
-        from vs_rbac.models import TenantRolePermission, TenantRoleTemplate
+        """A School Admin standing when the keys become defaults receives them.
+
+        The library is put back to how it stood before the two keys were
+        defaults, because the seed offers a default to existing copies at the
+        moment the library role gains it (``vs_rbac.library_growth``).
+        """
+        from vs_rbac.models import (
+            PrebuiltRolePermission,
+            TenantRolePermission,
+            TenantRoleTemplate,
+        )
         from schools.vs_schools.models import School
 
+        PrebuiltRolePermission.objects.filter(
+            permission_id__in=[
+                "communication.communication_permissions.enforce",
+                "communication.message_activity.audit",
+            ],
+        ).delete()
         school = School.objects.create(name="Notif Backfill", slug="notif-bf", code="NBF")
         role = TenantRoleTemplate.objects.create(
             tenant=school.tenant, key="school_admin", name="School Admin",

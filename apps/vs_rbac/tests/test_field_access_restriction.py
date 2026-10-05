@@ -29,6 +29,7 @@ from rest_framework.test import APIClient
 
 from vs_rbac.models import (
     Permission,
+    PrebuiltRolePermission,
     PrebuiltRoleTemplate,
     RoleFieldAccess,
     TenantRolePermission,
@@ -226,6 +227,15 @@ class _SeededSchoolAdmin(_SchoolShape):
         )
 
     def test_the_seed_backfill_gives_an_existing_school_admin_role_manage(self):
+        """A School Admin made before the keys shipped gains them when they do.
+
+        The library is put back to how it stood before the two keys were
+        School Admin defaults, because the seed offers a default to existing
+        copies at the moment the library role gains it (``library_growth``).
+        """
+        PrebuiltRolePermission.objects.filter(
+            prebuilt_role__key="school_admin", permission_id__in=[VIEW, UPDATE],
+        ).delete()
         school = self._school(self._slug("backfill"))
         role = TenantRoleTemplate.objects.create(
             tenant=school.tenant, key="school_admin", name="School Admin",

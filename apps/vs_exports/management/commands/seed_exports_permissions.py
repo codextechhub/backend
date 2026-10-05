@@ -28,8 +28,8 @@ Run order::
     python manage.py create_superuser
     python manage.py seed_exports_permissions
 
-Safe to re-run - all operations are idempotent, and ``get_or_create`` never flips
-an existing explicit deny.
+Safe to re-run - all operations are idempotent, an existing explicit deny is
+never flipped, and a school's copy of a library role gains a default only once.
 """
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -112,7 +112,6 @@ class Command(BaseCommand):
             PermissionAction,
             PermissionModule,
             PermissionResource,
-            PrebuiltRolePermission,
             PrebuiltRoleTemplate,
             TenantRolePermission,
             TenantRoleTemplate,
@@ -210,29 +209,30 @@ class Command(BaseCommand):
                     else f"  {role_id}: all keys already assigned."
                 )
 
-        # Attached to the PREBUILT templates, so every school provisioned from them
-        # has these, and backfilled into tenant templates already provisioned, so a
-        # school that onboarded earlier is not left with an Export button its role
-        # can never satisfy.
         self.stdout.write(self.style.MIGRATE_HEADING(
             "\n  Granting the Export Centre to school roles...\n"
         ))
-        self._grant_school_roles(
-            PrebuiltRolePermission, PrebuiltRoleTemplate,
-            TenantRolePermission, TenantRoleTemplate,
-        )
+        self._grant_school_roles(PrebuiltRoleTemplate)
 
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_perms} new permission(s), {len(all_perms)} total "
             f"'{MODULE_NAME}' keys registered.\n"
         ))
 
-    def _grant_school_roles(
-        self, PrebuiltRolePermission, PrebuiltRoleTemplate,
-        TenantRolePermission, TenantRoleTemplate,
-    ):
-        import re
+    def _grant_school_roles(self, PrebuiltRoleTemplate):
+        """Attach the school defaults to the library roles and grow their copies.
 
+        Attached to the prebuilt templates, so every school provisioned from
+        them has these. A default the library role gains here also reaches the
+        copies every school already holds, per-branch copies included, so a
+        school that onboarded earlier is not left with an Export button its
+        role can never satisfy. That happens once, when the library gains the
+        key (:func:`vs_rbac.library_growth.attach_defaults`), so a key a school
+        took off its own role stays off.
+        """
+        from vs_rbac.library_growth import attach_defaults
+
+        grown = 0
         for role_key, keys in SCHOOL_ROLE_DEFAULTS.items():
             prebuilt = PrebuiltRoleTemplate.objects.filter(key=role_key).first()
             if prebuilt is None:
@@ -241,39 +241,11 @@ class Command(BaseCommand):
                     f"seed_prebuilt_role_templates first. Skipping its defaults."
                 ))
                 continue
-            attached = 0
-            for key in keys:
-                _, created = PrebuiltRolePermission.objects.get_or_create(
-                    prebuilt_role=prebuilt, permission_id=key,
-                )
-                attached += 1 if created else 0
-            self.stdout.write(
-                f"  {role_key}: +{attached} default(s) ({len(keys)} total)."
+            attached, added = attach_defaults(
+                prebuilt, keys, branch_copies=True, tenant_kind="SCHOOL",
             )
-
-        # A tenant role maps back to its prebuilt by its native key:
-        # key=<prebuilt.key> or key=<prebuilt.key>-<branch pk>.
-        native = re.compile(
-            r"^(%s)(?:-\d+)?$"
-            % "|".join(re.escape(k) for k in SCHOOL_ROLE_DEFAULTS)
-        )
-        backfilled = roles_seen = 0
-        for role in TenantRoleTemplate.objects.filter(
-            tenant__kind="SCHOOL", is_system_role=True,
-        ).only("id", "key"):
-            match = native.match(role.key)
-            if not match:
-                continue
-            roles_seen += 1
-            for key in SCHOOL_ROLE_DEFAULTS[match.group(1)]:
-                # granted=True only in `defaults`: an existing row - grant OR an
-                # administrator's explicit deny - is left exactly as it is.
-                _, created = TenantRolePermission.objects.get_or_create(
-                    role_id=role.pk, permission_id=key,
-                    defaults={"granted": True, "granted_by": None},
-                )
-                backfilled += 1 if created else 0
-        self.stdout.write(
-            f"  Backfilled {backfilled} grant(s) across {roles_seen} "
-            f"existing school role template(s)."
-        )
+            grown += added
+            self.stdout.write(
+                f"  {role_key}: +{len(attached)} default(s) ({len(keys)} total)."
+            )
+        self.stdout.write(f"  {grown} grant(s) added to schools' copies.")

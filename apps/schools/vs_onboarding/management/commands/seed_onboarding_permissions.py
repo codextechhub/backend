@@ -3,9 +3,12 @@
 This is the single source of truth for the eight ``onboarding.*`` keys. It
 registers the module, its resources and its permissions, then attaches the
 school-facing ones to the ``school_admin`` prebuilt role and the single
-read-only one to ``branch_admin``, backfills both into school role templates
-that were provisioned before these keys existed, and grants the platform-only
-ones to the two platform roles.
+read-only one to ``branch_admin``, and grants the platform-only ones to the two
+platform roles. A key the library role gains here also reaches each school's
+whole-school copy of that role, once, at that moment
+(:func:`vs_rbac.library_growth.attach_defaults`): a school provisioned before
+the key existed would otherwise find its control room answering 403 to the only
+person who needs it, and a key a school later took off stays off.
 
 Run order::
 
@@ -19,10 +22,8 @@ not in the canonical list cannot be created at all, which is exactly why an
 earlier draft of this module specified three keys that could never have been
 built.
 
-Safe to re-run - everything uses get_or_create. Supports ``--dry-run``.
+Safe to re-run. Supports ``--dry-run``.
 """
-import re
-
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
@@ -77,7 +78,7 @@ ONBOARDING_PERMISSIONS: list[tuple[str, str, str, str, bool, bool, bool]] = [
 class Command(BaseCommand):
     help = (
         "Seed the onboarding permission module, attach the school_admin "
-        "defaults, backfill existing school role templates and grant the "
+        "defaults, grow schools' copies with newly attached ones and grant the "
         "platform-only keys to the platform roles (idempotent)."
     )
 
@@ -106,12 +107,12 @@ class Command(BaseCommand):
                 self._run(dry_run=False)
 
     def _run(self, dry_run: bool):
+        from vs_rbac.library_growth import attach_defaults
         from vs_rbac.models import (
             Permission,
             PermissionAction,
             PermissionModule,
             PermissionResource,
-            PrebuiltRolePermission,
             PrebuiltRoleTemplate,
             TenantRolePermission,
             TenantRoleTemplate,
@@ -211,68 +212,25 @@ class Command(BaseCommand):
                     f"seed_prebuilt_role_templates first. Skipping its defaults."
                 ))
                 continue
-            attached = 0
-            for key in role_keys:
-                _, link_created = PrebuiltRolePermission.objects.get_or_create(
-                    prebuilt_role=prebuilt, permission_id=key,
-                )
-                if link_created:
-                    attached += 1
+            # Whole-tenant copies only (branch_copies off). A branch-pinned copy
+            # (``branch_admin-12``) must not gain onboarding keys: onboarding
+            # belongs to the school as a whole, not to one branch.
+            attached, grown = attach_defaults(
+                prebuilt, role_keys, branch_copies=False, tenant_kind="SCHOOL",
+            )
             self.stdout.write(
                 self.style.SUCCESS(
-                    f"{prefix} {role_key}: attached {attached} new "
-                    f"default(s) ({len(role_keys)} total)."
+                    f"{prefix} {role_key}: attached {len(attached)} new "
+                    f"default(s) ({len(role_keys)} total), {grown} grant(s) "
+                    f"added to schools' copies."
                 )
                 if attached else
                 f"{prefix} {role_key}: all {len(role_keys)} defaults already attached."
             )
 
-        # ── Phase 3: backfill existing school role templates ──────────────────
-        # A school provisioned before these keys existed has a school_admin
-        # role template with none of them, and nobody would ever notice: the
-        # control room would simply answer 403 to the only person who needs it.
+        # ── Phase 3: platform roles ───────────────────────────────────────────
         self.stdout.write(self.style.MIGRATE_HEADING(
-            "\n  Phase 3 - backfilling existing school role templates...\n"
-        ))
-
-        # Only the whole-tenant templates. A branch-pinned copy
-        # (``branch_admin-12``) must not gain onboarding keys: onboarding
-        # belongs to the school as a whole, and a key scoped to one site would
-        # be answering a question that was never about that site.
-        existing_roles = [
-            role
-            for role in TenantRoleTemplate.objects.filter(
-                tenant__kind="SCHOOL", is_system_role=True,
-            ).only("id", "key")
-            if role.key in SCHOOL_ROLE_KEYS
-        ]
-
-        total_backfilled = 0
-        for role in existing_roles:
-            role_pk = role.pk
-            granted_here = 0
-            for key in keys_by_role[role.key]:
-                # get_or_create with granted=True in defaults leaves an existing
-                # row alone, so an admin's explicit deny is never flipped back.
-                _, row_created = TenantRolePermission.objects.get_or_create(
-                    role_id=role_pk,
-                    permission_id=key,
-                    defaults={"granted": True, "granted_by": None},
-                )
-                if row_created:
-                    granted_here += 1
-            total_backfilled += granted_here
-            if granted_here:
-                self.stdout.write(
-                    f"{prefix} tenant role #{role_pk} ({role.key}): "
-                    f"+{granted_here} grant(s)."
-                )
-        if not existing_roles:
-            self.stdout.write("  No existing school role templates to backfill.")
-
-        # ── Phase 4: platform roles ───────────────────────────────────────────
-        self.stdout.write(self.style.MIGRATE_HEADING(
-            "\n  Phase 4 - granting the platform keys...\n"
+            "\n  Phase 3 - granting the platform keys...\n"
         ))
 
         codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
@@ -311,9 +269,7 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_perm_count} new permission(s) created, "
-            f"{len(all_keys)} onboarding keys registered; backfilled "
-            f"{total_backfilled} grant(s) across {len(existing_roles)} existing "
-            f"role template(s).\n"
+            f"{len(all_keys)} onboarding keys registered.\n"
         ))
 
 
