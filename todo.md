@@ -507,7 +507,7 @@ test_seed_school_permissions and test_fee_run_branch 102 OK; schools.vs_students
 1865 OK; vs_rbac 988 OK; core 199 OK; vs_audit 109 OK. school-fe: tsc clean,
 vitest 2518 OK. The full suite was not run.
 
-### D121. A status reason stays behind its Field Access switch on the History tab, a school's removed default keys stay removed, and parallel test runs keep their connections (uncommitted, 2026-10-05)
+### D121. A status reason stays behind its Field Access switch on the History tab, a school's removed default keys stay removed, and parallel test runs keep their connections (a73885bd, 2026-10-05)
 Number may be renumbered at merge: another agent queues its own entry in parallel.
 MODULES: M11 student management (History tab, status audit), M04 roles and
 permissions (how defaults reach existing schools), M10 notifications, M20
