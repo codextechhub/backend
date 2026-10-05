@@ -396,9 +396,9 @@ class PlatformSettlementApprovalTests(_HeldFixture):
             WorkflowApproverGroupMember.objects.create(
                 group=group, kind=GroupMemberKind.USER, user=user)
             cls.approvers.append(user)
+        # The platform settlement keys are CodeX's alone; a school role cannot hold them.
         cls.bursar = cls.grant(
             cls.user_for(cls.tenant, "bursar@corona.test"),
-            "payments.platform_settlement.view", "payments.platform_settlement.submit",
             "payments.payout_batch.submit", tenant=cls.tenant, role_key="corona-bursar")
 
     def prepared(self):
@@ -953,7 +953,7 @@ class HeldReconciliationTests(_HeldFixture):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual([row["agrees"] for row in response.data["data"]], [True])
         bursar = self.grant(self.user_for(self.tenant, "recon@corona.test"),
-                            "payments.platform_settlement.view", tenant=self.tenant,
+                            "payments.report.view", tenant=self.tenant,
                             role_key="recon-corona")
         self.assertEqual(TenantAPIClient(user=bursar).get(
             "/v1/payments/platform/held-reconciliations/").status_code, 403)

@@ -373,10 +373,11 @@ class ProviderSettingsApiTests(_SweepFixture):
             cls.user_for(codex, "provider-reader@codex.test"),
             "payments.platform_provider.view", "config.value.update",
             tenant=codex, role_key="provider-reader")
+        # The provider keys are CodeX's alone; a school holds its own payment settings keys.
         cls.bursar = cls.grant(
             cls.user_for(cls.tenant, "provider@corona.test"),
-            "payments.platform_provider.view", "payments.platform_provider.update",
-            "payments.platform_settlement.view", tenant=cls.tenant, role_key="provider-corona")
+            "payments.settings.view", "payments.settings.update",
+            tenant=cls.tenant, role_key="provider-corona")
 
     URL = "/v1/payments/platform/provider-settings/"
 
@@ -429,7 +430,7 @@ class ProviderSettingsApiTests(_SweepFixture):
         self.assertIn("dedicated update permission", str(generic.data))
         self.assertFalse(held_reconciliation.balance_swept())
 
-    def test_a_school_caller_is_refused_even_holding_the_keys(self):
+    def test_a_school_caller_is_refused_even_holding_its_payment_keys(self):
         client = TenantAPIClient(user=self.bursar)
         self.assertEqual(client.get(self.URL).status_code, 403)
         self.assertEqual(client.patch(self.URL, {"balance_swept": True, "reason": "x"},

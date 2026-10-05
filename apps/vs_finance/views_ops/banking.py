@@ -1346,8 +1346,38 @@ class BankStatementLineIgnoreView(_StatementLineActionBase):
 # Bank transactions                                                           #
 # --------------------------------------------------------------------------- #
 
-class BankTransactionSerializer(serializers.ModelSerializer):
-    """A bank transaction with its bank account and counter-account named."""
+class _ApprovalStateListSerializer(serializers.ListSerializer):
+    """Read a page's approval states in one query (:func:`vs_finance.approvals.approval_states`)."""
+
+    def to_representation(self, data):
+        from ..approvals import approval_states
+
+        rows = list(data)
+        self.context.setdefault("approval_states", {}).update(approval_states(rows))
+        return super().to_representation(rows)
+
+
+class _ApprovalStateMixin(serializers.Serializer):
+    """``branch_name`` and ``approval_state`` for a money document.
+
+    ``approval_state`` is ``NOT_SUBMITTED``, ``PENDING``, ``APPROVED`` or ``REJECTED``,
+    the procurement documents' vocabulary for where a document stands with its route.
+    """
+
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    approval_state = serializers.SerializerMethodField()
+
+    def get_approval_state(self, obj) -> str:
+        from ..approvals import approval_states
+
+        states = self.context.setdefault("approval_states", {})
+        if obj.pk not in states:
+            states.update(approval_states([obj]))
+        return states[obj.pk]
+
+
+class BankTransactionSerializer(_ApprovalStateMixin, serializers.ModelSerializer):
+    """A bank transaction with its bank account, counter-account and branch named."""
 
     bank_account_name = serializers.CharField(source="bank_account.name", read_only=True)
     counter_account_code = serializers.CharField(source="counter_account.code", read_only=True)
@@ -1355,11 +1385,13 @@ class BankTransactionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = BankTransaction
+        list_serializer_class = _ApprovalStateListSerializer
         fields = [
             "id", "document_number", "status", "branch_id",
             "bank_account_id", "bank_account_name", "direction", "amount",
             "counter_account_id", "counter_account_code", "counter_account_name",
             "transaction_date", "narration", "reference", "journal_id",
+            "branch_name", "approval_state",
         ]
 
 
@@ -1367,7 +1399,7 @@ def _transaction_or_404(request, entity, pk):
     """A bank transaction of the caller's own branches, or 404 (see :func:`_transactions_in_reach`)."""
     txn = (
         _transactions_in_reach(request, entity).filter(pk=pk)
-        .select_related("bank_account", "counter_account")
+        .select_related("bank_account", "counter_account", "branch")
         .first()
     )
     if txn is None:
@@ -1412,7 +1444,7 @@ class BankTransactionListCreateView(_FinanceBase):
     def get(self, request):
         entity = resolve_entity(request)
         qs = _transactions_in_reach(request, entity).select_related(
-            "bank_account", "counter_account")
+            "bank_account", "counter_account", "branch")
         if (bank := request.query_params.get("bank_account")) and str(bank).isdigit():
             qs = qs.filter(bank_account_id=int(bank))
         if (status_ := request.query_params.get("status")):
@@ -1519,18 +1551,20 @@ class BankTransactionVoidView(_FinanceBase):
 # Transfers between a branch's own bank accounts                              #
 # --------------------------------------------------------------------------- #
 
-class BankTransferSerializer(serializers.ModelSerializer):
-    """A transfer with both accounts named."""
+class BankTransferSerializer(_ApprovalStateMixin, serializers.ModelSerializer):
+    """A transfer with both accounts and its branch named."""
 
     from_account_name = serializers.CharField(source="from_account.name", read_only=True)
     to_account_name = serializers.CharField(source="to_account.name", read_only=True)
 
     class Meta:
         model = BankTransfer
+        list_serializer_class = _ApprovalStateListSerializer
         fields = [
             "id", "document_number", "status", "branch_id",
             "from_account_id", "from_account_name", "to_account_id", "to_account_name",
             "amount", "transfer_date", "narration", "reference", "journal_id",
+            "branch_name", "approval_state",
         ]
 
 
@@ -1542,7 +1576,7 @@ def _transfers_in_reach(request, entity):
     """
     return BankTransfer.objects.filter(
         transaction_branch_q(request), entity=entity,
-    ).select_related("from_account", "to_account")
+    ).select_related("from_account", "to_account", "branch")
 
 
 class BankTransferListCreateView(_FinanceBase):

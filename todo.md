@@ -408,6 +408,17 @@ MUST SAY:
 Verified: tests_branch_close, tests_shared_write_reach and tests_year_close_guard
 126 OK; vs_finance 1844 OK. The full suite was not run.
 
+### D116. Screens get the fields they need, every school's Finance Admin catches up on new keys, and shared sourcing refuses double sourcing (hash pending, 2026-10-05)
+MODULES: M19 finance (petty cash, bank documents), M22/M23 procurement (vendor payments, goods returns, shared sourcing), M04 roles and permissions (library growth, CodeX-only payment keys), M18 payments, MRD.
+MUST SAY:
+- Roles (M04). A school's copy of a module role (e.g. Finance Admin) now gains a key the library role gains, at the moment it is added; a key a school removed is never re-added. vs_rbac 0032 catches up the keys every school had missed (39 on the dev database). vs_rbac 0031 makes payments.unattributed_webhook.*, platform_settlement.* and platform_provider.* CodeX-only and removes them from schools (the views already refused school callers). Deploy: migrate, then seed_all_permissions.
+- Petty cash (M19). Funds carry closed_by_name and exited flags; returns carry branch_name, counted_by_name, created_by_name and exited flags; GET petty-cash-returns/?branch=<id> (or unassigned) within reach. The approval-template response reports the adopted route's real threshold and approver_group_member_count.
+- Vendor payments (M23). wht_source (COMPUTED, ENTERED, or blank for older payments); eligible-invoices rows carry tax_total and subtotal.
+- Goods returns (M22). Not voidable by design: goods returned in error are received again on a new receipt; the return's journal says so (reversal_action correction RECEIVE_AGAIN), and a goods receipt lists its returns.
+- Shared sourcing (M22). A shared RFQ refuses an unapproved requisition, a line already on an open RFQ or order, or a line on another shared RFQ, and the reverse; new GET rfqs/free-requisition-lines/ (procurement.rfq.view, branch reach, paginated).
+- Bank documents (M19). Bank transactions and transfers carry branch_name and approval_state.
+Verified: targeted 54 and 129 OK; vs_rbac 988 OK; vs_procurement 752 OK; vs_finance 1865 OK; vs_payments and related 478 OK; vs_user 430 OK; migration-rewind classes 61 OK and UserTypeMigrationTests with a real rewind 11 OK. The full suite (--parallel 4) ran 9300 tests with 1 error, a lost database connection while a worker dropped unused test databases (infrastructure, not code; the class passes alone).
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

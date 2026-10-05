@@ -4453,16 +4453,24 @@ class UnattributedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
     def test_a_tenant_user_is_refused_even_holding_the_entity_scoped_keys(self):
         """The whole point of the screen: it spans tenants, so no tenant may open it.
 
-        This user holds every payments webhook key there is, including the two new
-        platform ones. Their home tenant is a school, so the platform gate refuses them
-        before RBAC is consulted - a tenant cannot be granted its way into a list of
-        other tenants' references.
+        The two keys of this screen are CodeX's alone, so a school role cannot be
+        given them at all: the grant guard refuses them. A school user holding every
+        webhook key a school may hold is still refused by the platform gate before
+        RBAC is consulted - a tenant cannot be granted its way into a list of other
+        tenants' references.
         """
+        from django.core.exceptions import ValidationError
+
         self.build()
         event = self._unmatched_charge()
+        with self.assertRaises(ValidationError):
+            self._client_holding(
+                "payments.unattributed_webhook.view",
+                email="school-hooks-refused@test.com",
+                tenant=self._school_tenant(slug="hook-school-refused"),
+            )
         client = self._client_holding(
             "payments.webhook.view", "payments.webhook.replay",
-            "payments.unattributed_webhook.view", "payments.unattributed_webhook.replay",
             email="school-hooks@test.com", tenant=self._school_tenant(),
         )
 

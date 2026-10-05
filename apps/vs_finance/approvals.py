@@ -692,6 +692,38 @@ def petty_cash_return_route(tenant):
     ).first()
 
 
+def petty_cash_return_route_threshold(route) -> int | None:
+    """The shortage, in kobo, above which ``route`` stops a petty cash return, or ``None``.
+
+    Read from the live steps as they stand, because the route is the tenant's to
+    edit once adopted: Corona adopts it at the ready-made ₦5,000 and later raises
+    it to ₦20,000 on the approval screens, and from then on ₦20,000 is the figure
+    that decides. A step condition ``shortage gt N`` (or ``gte N``) names it,
+    wherever it sits in an ``any`` or ``all``; a negated one says nothing about it.
+    With several such steps the lowest wins, since it is the first to stop a
+    return. ``None`` means no live step tests the shortage at all (the tenant
+    has edited that out), so no figure would be true to show.
+    """
+    if route is None:
+        return None
+    found = []
+
+    def walk(condition):
+        if not isinstance(condition, dict):
+            return
+        for key in ("any", "all"):
+            for child in condition.get(key) or []:
+                walk(child)
+        if (condition.get("field") == "shortage" and condition.get("op") in ("gt", "gte")
+                and isinstance(condition.get("value"), (int, float))):
+            found.append(int(condition["value"]))
+
+    for condition in route.stages.filter(retired_at__isnull=True).values_list(
+            "inclusion_condition", flat=True):
+        walk(condition)
+    return min(found) if found else None
+
+
 def adopt_petty_cash_return_template(tenant, *, threshold: int | None = None,
                                      approver_group_code: str | None = None,
                                      created_by=None):
@@ -748,6 +780,56 @@ def adopt_petty_cash_return_template(tenant, *, threshold: int | None = None,
             threshold=threshold, approver_group_code=approver_group_code),
     )
     return template, True
+
+
+# --------------------------------------------------------------------------- #
+# Approval state of a page of documents                                        #
+# --------------------------------------------------------------------------- #
+
+#: Where a finance document stands with its approval route, in the vocabulary the
+#: procurement documents use for the same question.
+APPROVAL_NOT_SUBMITTED = "NOT_SUBMITTED"
+APPROVAL_PENDING = "PENDING"
+APPROVAL_APPROVED = "APPROVED"
+APPROVAL_REJECTED = "REJECTED"
+
+
+def approval_states(documents) -> dict:
+    """``{document pk: approval state}`` for documents of one model, in one query.
+
+    Read from each document's latest approval instance, because a finance document
+    keeps no approval field of its own: ``NOT_SUBMITTED`` when it never went for
+    approval (posted at once, or with no route) or its request was withdrawn or
+    cancelled, ``PENDING`` while a request is in flight (including one returned to
+    the requester), and ``APPROVED`` or ``REJECTED`` once decided.
+    """
+    from django.contrib.contenttypes.models import ContentType
+
+    from vs_workflow.constants import WorkflowInstanceStatus as S
+    from vs_workflow.models import WorkflowInstance
+
+    documents = list(documents)
+    if not documents:
+        return {}
+    ct = ContentType.objects.get_for_model(type(documents[0]))
+    latest = {}
+    for object_id, status in (
+        WorkflowInstance.all_objects.filter(
+            document_content_type=ct,
+            document_object_id__in=[str(doc.pk) for doc in documents],
+        ).order_by("document_object_id", "created_at", "pk")
+        .values_list("document_object_id", "status")
+    ):
+        latest[object_id] = status
+    meaning = {
+        S.APPROVED: APPROVAL_APPROVED, S.REJECTED: APPROVAL_REJECTED,
+        S.WITHDRAWN: APPROVAL_NOT_SUBMITTED, S.CANCELLED: APPROVAL_NOT_SUBMITTED,
+    }
+    return {
+        doc.pk: (meaning.get(latest[str(doc.pk)], APPROVAL_PENDING)
+                 if str(doc.pk) in latest else APPROVAL_NOT_SUBMITTED)
+        for doc in documents
+    }
 
 
 # --------------------------------------------------------------------------- #

@@ -327,6 +327,8 @@ class VendorPaymentEligibleInvoiceView(_ProcBase):
             # The payment inherits the bills' branch, which decides the bank it may use.
             "branch_id": invoice.branch_id,
             "invoice_date": invoice.invoice_date, "due_date": invoice.due_date,
+            # The bill net of tax is what a payment's WHT is worked out on.
+            "subtotal": invoice.subtotal, "tax_total": invoice.tax_total,
             "total": invoice.total, "amount_paid": invoice.amount_paid,
             "balance_due": invoice.balance_due, "payment_status": invoice.payment_status,
         } for invoice in qs.select_related("vendor").order_by("due_date", "invoice_date", "id")[:100]]

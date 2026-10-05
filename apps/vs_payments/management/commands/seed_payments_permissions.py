@@ -71,6 +71,13 @@ PAYMENTS_RESOURCES = [
 ]
 
 
+#: Resources whose keys only CodeX staff may hold. Each spans every tenant (an
+#: unmatched webhook, money held for every client, CodeX's own merchant account),
+#: so a tenant role holding one would be offered a reach no tenant has. Registered
+#: ``PLATFORM``: no tenant role, permission group or prebuilt role may carry them.
+PLATFORM_RESOURCES = frozenset({"unattributed_webhook", "platform_settlement", "platform_provider"})
+
+
 class Command(BaseCommand):
     help = "Seed vs_payments permission keys and grant them to platform admin roles."
 
@@ -150,7 +157,10 @@ class Command(BaseCommand):
                         sensitivity_level=sensitivity,
                         is_restricted=sensitivity in _RESTRICTED,
                         is_active=True,
-                        scope=PermissionScope.TENANT,
+                        scope=(
+                            PermissionScope.PLATFORM if resource_name in PLATFORM_RESOURCES
+                            else PermissionScope.TENANT
+                        ),
                     )
                     perm.save()
                     created_perms += 1

@@ -890,6 +890,8 @@ def journal_reversal_action(entry):
         return {"kind": "REVERSE_JOURNAL"}
 
     model_name = type(owner).__name__
+    if model_name == "GoodsReturn" and entry.reverses_id is None:
+        return _goods_return_action(owner)
     config = _DOCUMENT_VOID_ROUTES.get(model_name)
     # A void's own reversal is undone on no screen: the document is already void.
     if config is None or entry.reverses_id is not None:
@@ -905,6 +907,45 @@ def journal_reversal_action(entry):
         "document_type": document_type,
         "document_id": owner.pk,
         "document_number": _owner_label(owner),
+    }
+
+
+def _goods_return_action(goods_return):
+    """The action a goods return's journal offers: its receipt, to receive again.
+
+    A goods return is not voided, by design. It is itself the undoing of a posted
+    receipt (the receipt's own reverse route raises one), and as a receipt records
+    what arrived, a return records what went back; neither a void nor a physical
+    movement is undone by deleting its record. When goods went back in error, or
+    came back from the vendor, they are received again on a new receipt against
+    the same order, which books them in at the order's price and leaves both the
+    return and the second delivery on the record.
+
+        Ikeja returns 2 of 10 chairs on GRN-0012 as RV-0003, then finds the
+        chairs were never loaded. The storekeeper receives 2 chairs again
+        against the same order; GRN-0012, RV-0003 and the new receipt all stand.
+
+    So the action names the return (``document_id``) and the receipt it came off
+    (``receipt``), whose screen lists its returns, and says the correction is
+    ``RECEIVE_AGAIN``.
+    """
+    grn = goods_return.grn
+    return {
+        "kind": "SOURCE_DOCUMENT_ACTION",
+        "document_type": "GoodsReturn",
+        "document_id": goods_return.pk,
+        "document_number": _owner_label(goods_return),
+        "receipt": {
+            "document_type": "GOODS_RECEIVED_NOTE",
+            "document_id": grn.pk,
+            "document_number": _owner_label(grn),
+        },
+        "correction": "RECEIVE_AGAIN",
+        "correction_message": (
+            f"A goods return is not voided. If the goods on {_owner_label(goods_return)} "
+            f"did not go back, or have come back, receive them again against the order "
+            f"of goods receipt {_owner_label(grn)}."
+        ),
     }
 
 
@@ -927,6 +968,8 @@ def _document_void_instruction(owner):
             f"Cancel payroll run {label} instead (POST /finance/payroll-runs/{owner.pk}/cancel/), "
             f"which reverses each branch's journal of the run."
         )
+    elif model_name == "GoodsReturn":
+        remedy = _goods_return_action(owner)["correction_message"]
     elif model_name == "FiscalYear":
         remedy = (
             f"Reopen fiscal year {label} instead (POST /finance/fiscal-years/{owner.pk}/reopen/ "

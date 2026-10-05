@@ -32,6 +32,7 @@ from .base import (
     _bool,
     _date,
     _dec,
+    _filter_by_branch,
     _inherited_branch_id,
     _int,
     _money,
@@ -90,7 +91,7 @@ class PettyCashFundListCreateView(_FinanceBase):
         entity = resolve_entity(request)
         qs = PettyCashFund.objects.filter(
             transaction_branch_q(request), entity=entity,
-        ).select_related("gl_account")
+        ).select_related("gl_account", "custodian", "closed_by")
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         return success_response(
@@ -128,7 +129,7 @@ class _PettyCashFundActionBase(_FinanceBase):
         entity = resolve_entity(request)
         fund = PettyCashFund.objects.filter(
             transaction_branch_q(request), entity=entity, pk=pk,
-        ).first()
+        ).select_related("custodian", "closed_by").first()
         if fund is None:
             raise NotFound("Petty cash fund not found for this entity.")
         return entity, fund
@@ -513,13 +514,15 @@ def _returns_in_reach(request, entity):
     """Petty cash returns read as every transaction is: by their own branch, exclusively."""
     return PettyCashReturn.objects.filter(
         transaction_branch_q(request), entity=entity,
-    ).select_related("fund", "bank_account")
+    ).select_related("fund", "bank_account", "branch", "counted_by", "created_by")
 
 
 class PettyCashReturnListView(_FinanceBase):
     """GET /finance/petty-cash-returns/?entity= - returns of petty cash to the bank.
 
-    Filters: ``fund``, ``kind`` (``REDUCE`` or ``CLOSE``) and ``status``.
+    Filters: ``fund``, ``kind`` (``REDUCE`` or ``CLOSE``), ``status`` and ``branch``
+    (a branch id the caller works in; one they do not is refused exactly as an
+    unknown one is, :func:`~vs_finance.views_ops.base._filter_by_branch`). Paginated.
 
     docstring-name: Petty cash returns
     """
@@ -535,6 +538,7 @@ class PettyCashReturnListView(_FinanceBase):
             qs = qs.filter(kind=str(kind).upper())
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
+        qs = _filter_by_branch(qs, request, entity)
         return self.paginate(request, qs.order_by("-return_date", "-id"), PettyCashReturnSerializer)
 
 
@@ -590,7 +594,9 @@ class PettyCashReturnApprovalTemplateView(WholeTenantWriteMixin, _FinanceBase):
 
     GET shows the route a tenant may adopt (its step, the default shortage
     threshold and the approver group it names) and whether this tenant has a route
-    for petty cash returns already. POST adopts it: optional body ``threshold``
+    for petty cash returns already; once it has, ``threshold`` is the shortage
+    figure of the route as the tenant now has it, and the response counts the
+    approver group's members. POST adopts it: optional body ``threshold``
     (kobo; above it a short count needs a second person, default ₦5,000). Until a
     tenant adopts it, no return of theirs is stopped
     (:func:`vs_finance.approvals.adopt_petty_cash_return_template`).
@@ -612,27 +618,53 @@ class PettyCashReturnApprovalTemplateView(WholeTenantWriteMixin, _FinanceBase):
         return PERM_TEMPLATE_PUBLISH if self.request.method == "POST" else PERM_TEMPLATE_VIEW
 
     @staticmethod
-    def _payload(tenant, threshold):
+    def _payload(tenant, offered_threshold):
+        """The route on offer, or the tenant's own once adopted.
+
+        ``threshold`` is the figure that decides: the adopted route's own
+        (:func:`~vs_finance.approvals.petty_cash_return_route_threshold`), which
+        is ``None`` when the tenant has edited the shortage test out of it, and
+        the offered figure before adoption. ``default_threshold`` is always the
+        ready-made figure. ``approver_group_member_count`` counts the membership
+        rows of the approver group, as the groups screen does, so a screen can
+        say the group is empty only while it is.
+        """
+        from vs_workflow.models import WorkflowApproverGroup
+
         from ..approvals import (
             PETTY_CASH_RETURN_DOCUMENT_TYPE,
             PETTY_CASH_RETURN_TEMPLATE_NAME,
             petty_cash_return_route,
+            petty_cash_return_route_threshold,
             petty_cash_return_stages,
         )
-        from ..constants import WF_DEFAULT_TEMPLATE_CODE, WF_PETTY_CASH_RETURN_APPROVER_GROUP
+        from ..constants import (
+            WF_DEFAULT_TEMPLATE_CODE,
+            WF_PETTY_CASH_RETURN_APPROVER_GROUP,
+            WF_PETTY_CASH_SHORTAGE_THRESHOLD,
+        )
 
         route = petty_cash_return_route(tenant)
+        adopted = bool(route and route.is_active
+                       and route.stages.filter(retired_at__isnull=True).exists())
+        threshold = petty_cash_return_route_threshold(route) if adopted else offered_threshold
+        group = WorkflowApproverGroup.all_objects.filter(
+            tenant=tenant, code=WF_PETTY_CASH_RETURN_APPROVER_GROUP,
+        ).first()
         return {
             "document_type": PETTY_CASH_RETURN_DOCUMENT_TYPE,
             "code": WF_DEFAULT_TEMPLATE_CODE,
             "name": PETTY_CASH_RETURN_TEMPLATE_NAME,
             "threshold": threshold,
-            "threshold_naira": format_naira(threshold),
+            "threshold_naira": format_naira(threshold) if threshold is not None else None,
+            "default_threshold": WF_PETTY_CASH_SHORTAGE_THRESHOLD,
             "approver_group_code": WF_PETTY_CASH_RETURN_APPROVER_GROUP,
+            "approver_group_id": group.pk if group else None,
+            "approver_group_member_count": group.members.count() if group else 0,
             "stages": petty_cash_return_stages(
-                threshold=threshold, approver_group_code=WF_PETTY_CASH_RETURN_APPROVER_GROUP),
-            "adopted": bool(route and route.is_active
-                            and route.stages.filter(retired_at__isnull=True).exists()),
+                threshold=offered_threshold,
+                approver_group_code=WF_PETTY_CASH_RETURN_APPROVER_GROUP),
+            "adopted": adopted,
             "route_id": route.pk if route else None,
         }
 

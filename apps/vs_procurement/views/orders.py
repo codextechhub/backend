@@ -627,6 +627,10 @@ def _write_rfq_lines(request, entity, rfq, lines, *, preserve_history=False):
                 )
                 raise ValidationError({"requisition_line": message})
             _inherited_branch_id(request, rfq, req_line.requisition)
+            try:
+                purchasing.refuse_shared_lines([req_line])
+            except purchasing.RequisitionError as exc:
+                raise ValidationError({"requisition_line": exc.message})
         RfqLine.objects.create(
             rfq=rfq, line_no=ln.get("line_no", i),
             version=rfq.version, is_active=True,
@@ -654,7 +658,8 @@ def _shared_line_specs(request, entity, lines):
         for allocation in allocations:
             if not isinstance(allocation, dict) or not allocation.get("requisition_line"):
                 raise ValidationError({"allocations": "Each allocation needs a requisition_line."})
-            source = PurchaseRequisitionLine.objects.select_related(
+            # Locked so two buyers cannot put one line on two RFQs at once.
+            source = PurchaseRequisitionLine.objects.select_for_update(of=("self",)).select_related(
                 "requisition",
             ).filter(
                 requisition__entity=entity, pk=allocation["requisition_line"],
@@ -667,10 +672,8 @@ def _shared_line_specs(request, entity, lines):
                 raise ValidationError({
                     "requisition_line": "A requisition line may be allocated only once in an RFQ.",
                 })
-            if SharedSourcingAllocation.objects.filter(requisition_line=source).exists():
-                raise ValidationError({
-                    "requisition_line": "This requisition line already belongs to a shared RFQ.",
-                })
+            if (refusal := purchasing.sourcing_refusal(source)) is not None:
+                raise ValidationError({"requisition_line": refusal})
             if source.requisition.branch_id is None:
                 raise ValidationError({
                     "requisition_line": "Place every source requisition in a branch first.",
@@ -746,6 +749,40 @@ def _budget_estimate(value, field="budget_estimate"):
     if value in (None, ""):
         return None
     return _strict_kobo(value, field)
+
+
+class RequisitionLinesFreeToSourceView(_ProcBase):
+    """GET - requisition lines still free to put out to tender, for a shared RFQ.
+
+    A line is listed when its requisition is approved and no RFQ, purchase order
+    or shared RFQ sources it yet (:func:`vs_procurement.purchasing.free_to_source`).
+    Narrowed to the branches the caller works in, then by ``?branch=`` (a branch
+    outside reach lists nothing, as on every procurement list), ``?requisition=`` (id) and
+    ``?q=`` (description or requisition number). Oldest requisition first, paginated.
+
+    docstring-name: Requisition lines free to source
+    """
+
+    rbac_permission = "procurement.rfq.view"
+
+    def get(self, request):
+        from ..serializers import FreeRequisitionLineSerializer
+
+        entity = resolve_entity(request)
+        params = request.query_params
+        qs = purchasing.free_to_source(
+            PurchaseRequisitionLine.objects.filter(requisition__entity=entity),
+        ).filter(_branch_q(request, entity, params, prefix="requisition__"))
+        if (requisition := params.get("requisition")) and str(requisition).isdigit():
+            qs = qs.filter(requisition_id=int(requisition))
+        if (q := (params.get("q") or "").strip()):
+            qs = qs.filter(
+                Q(description__icontains=q) | Q(requisition__document_number__icontains=q),
+            )
+        qs = qs.select_related("requisition__branch", "expense_account").order_by(
+            "requisition__request_date", "requisition_id", "line_no", "id",
+        )
+        return self.paginate(request, qs, FreeRequisitionLineSerializer)
 
 
 class RfqListCreateView(_ProcBase):

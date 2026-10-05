@@ -232,7 +232,7 @@ class GoodsReceiptDetailView(_ProcBase):
             else "procurement.goods_receipt.view"
 
     def get(self, request, pk):
-        """Return one entity receipt with its PO and line snapshots."""
+        """Return one entity receipt with its PO, line snapshots and the returns taken off it."""
         entity = resolve_entity(request)
         grn = _document_or_404(
             request,
@@ -244,7 +244,15 @@ class GoodsReceiptDetailView(_ProcBase):
             ),
             pk, "No such goods receipt in this entity.",
         )
-        return success_response("Goods receipt retrieved.", data=GoodsReceivedNoteSerializer(grn).data)
+        from ..serializers import GoodsReturnSerializer
+
+        data = GoodsReceivedNoteSerializer(grn).data
+        # The returns taken off this receipt, which a goods return's journal points to.
+        data["returns"] = GoodsReturnSerializer(
+            grn.returns.prefetch_related("lines__grn_line").order_by("return_date", "id"),
+            many=True,
+        ).data
+        return success_response("Goods receipt retrieved.", data=data)
 
     @transaction.atomic
     def patch(self, request, pk):

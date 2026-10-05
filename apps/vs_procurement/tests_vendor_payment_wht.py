@@ -128,3 +128,24 @@ class VendorPaymentWhtAPITests(_P2PFixtureMixin, TestCase):
         payment = self._edit(self._create(1_075_000, wht_amount=10_000), 537_500)
         self.assertEqual(payment.wht_amount, 10_000)
         self.assertEqual(payment.wht_source, WhtSource.ENTERED)
+
+    def test_the_payment_says_how_its_wht_was_arrived_at(self, _permission):
+        url = f"/v1/procurement/vendor-payments/?entity={self.entity.code}"
+        computed = self.client.post(url, self._body(1_075_000), format="json")
+        typed = self.client.post(url, self._body(1_075_000, wht_amount=53_750), format="json")
+        detail = self.client.get(
+            f"/v1/procurement/vendor-payments/{typed.data['data']['id']}/?entity={self.entity.code}")
+
+        self.assertEqual(computed.data["data"]["wht_source"], WhtSource.COMPUTED)
+        self.assertEqual(typed.data["data"]["wht_source"], WhtSource.ENTERED)
+        self.assertEqual(detail.data["data"]["wht_source"], WhtSource.ENTERED)
+
+    def test_an_eligible_bill_carries_its_tax_so_wht_defaults_on_the_net(self, _permission):
+        response = self.client.get(
+            f"/v1/procurement/vendor-payments/eligible-invoices/?entity={self.entity.code}")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        row = next(r for r in response.data["data"] if r["id"] == self.bill.pk)
+        self.assertEqual(row["tax_total"], 75_000)
+        self.assertEqual(row["subtotal"], 1_000_000)
+        self.assertEqual(row["total"], 1_075_000)

@@ -12,7 +12,9 @@ from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 from vs_rbac.scoping import inherited_branch_id as _rbac_inherited_branch_id
 from vs_rbac.scoping import raised_branch as _rbac_raised_branch
 from vs_rbac.scoping import raised_transaction_branch as _rbac_raised_transaction_branch
-from vs_rbac.scoping import transaction_branch_q
+from vs_rbac.scoping import caller_may_use_branch, transaction_branch_q
+from vs_rbac.scoping import resolve_branch as _resolve_branch
+from vs_tenants.references import BRANCH_NOT_FOUND
 
 from ..models import (
     Account,
@@ -446,6 +448,40 @@ def _int(value, field, *, required=False, minimum=None, maximum=None):
     if maximum is not None and out > maximum:  # Enforce optional upper bound.
         raise ValidationError({field: f"Must be ≤ {maximum}."})
     return out  # Return parsed integer.
+
+
+#: Spellings of ``?branch=`` asking for the rows no branch owns yet.
+UNASSIGNED_REFS = ("unassigned", "none", "null")
+
+
+def _filter_by_branch(qs, request, entity, *, field: str = "branch", column: str | None = None):
+    """Narrow *qs* by a ``?branch=`` parameter, or leave it alone.
+
+    ``field`` names the parameter; ``column`` the relation it filters, without
+    its ``_id`` (the parameter's own name when left out). The roster filters on
+    ``branch_on``, the branch owning each row today
+    (:meth:`~vs_finance.models.EmployeeSalaryQuerySet.with_branch_on`).
+
+    One helper for the roster and the runs list because the parameter has to
+    mean the same thing on both. ``?branch=unassigned`` finds the people no
+    branch owns - the ones blocking a school's switch to per-branch payroll -
+    and on the runs list the central runs raised before it switched. Spelled out
+    rather than left blank, because a blank parameter is how a frontend says "no
+    filter at all", and the two answers are not the same list.
+
+    A branch the caller may not work in is reported exactly like one that does
+    not exist, so the parameter cannot be used to enumerate a school's sites.
+    """
+    column = column or field
+    branch_ref = request.query_params.get(field)
+    if not branch_ref:
+        return qs
+    if str(branch_ref).lower() in UNASSIGNED_REFS:
+        return qs.filter(**{f"{column}_id__isnull": True})
+    branch = _resolve_branch(entity.tenant, branch_ref, field)
+    if branch is None or not caller_may_use_branch(request, branch):
+        raise ValidationError({field: BRANCH_NOT_FOUND})
+    return qs.filter(**{f"{column}_id": branch.pk})
 
 
 # Parse common truthy/falsey request values.

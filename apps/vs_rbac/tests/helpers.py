@@ -34,14 +34,22 @@ def scope_for_key(key):
     scope is refused by the grant guards - correctly, but it would make every
     such fixture fail for the wrong reason. This mirrors what the seeders do,
     including the two families inside the ``platform`` module that a tenant
-    role legitimately holds, so a fixture grants exactly what production would.
+    role legitimately holds, and the payments resources only CodeX may hold
+    (``PLATFORM_RESOURCES`` in ``seed_payments_permissions``), so a fixture
+    grants exactly what production would.
     """
     from core.management.commands.seed_platform_permissions import (
         TENANT_HOLDABLE_KEYS,
     )
+    from vs_payments.management.commands.seed_payments_permissions import (
+        PLATFORM_RESOURCES as PAYMENTS_PLATFORM_RESOURCES,
+    )
     from vs_rbac.models import PermissionScope
 
-    module = (key or "").split(".")[0]
+    parts = (key or "").split(".")
+    if parts[0] == "payments" and len(parts) == 3 and parts[1] in PAYMENTS_PLATFORM_RESOURCES:
+        return PermissionScope.PLATFORM
+    module = parts[0]
     if module != "platform" or key in TENANT_HOLDABLE_KEYS:
         return PermissionScope.TENANT
     return PermissionScope.PLATFORM

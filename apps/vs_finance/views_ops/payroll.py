@@ -21,6 +21,7 @@ from vs_rbac.scoping import (
     shared_write_refusal,
 )
 from vs_rbac.scoping import resolve_branch as _resolve_branch
+from vs_tenants.references import BRANCH_NOT_FOUND
 
 from ..constants import SalaryCalcMethod, SalaryComponentKind, StatutoryType
 from ..views import resolve_entity
@@ -41,6 +42,7 @@ from ..serializers import (
 from .base import (
     _FinanceBase,
     _bool,
+    _filter_by_branch,
     _date,
     _money,
     _raised_branch,
@@ -58,7 +60,6 @@ from vs_rbac.scoping import only_branch_id, transaction_branch_scope
 # --------------------------------------------------------------------------- #
 
 
-UNASSIGNED_REFS = ("unassigned", "none", "null")
 
 #: What a refused write to a whole-school run names.
 SHARED_RUN = "a payroll run for the whole school"
@@ -212,39 +213,8 @@ def _line_branch(request, entity, run_branch, ref, where):
         return run_branch
     branch = _resolve_branch(entity.tenant, ref, where)
     if branch is None or not caller_may_use_branch(request, branch):
-        raise ValidationError({where: "No such branch for this entity."})
+        raise ValidationError({where: BRANCH_NOT_FOUND})
     return branch
-
-
-# Support the branch filter workflow.
-def _filter_by_branch(qs, request, entity, *, field: str = "branch", column: str | None = None):
-    """Narrow *qs* by a ``?branch=`` parameter, or leave it alone.
-
-    ``field`` names the parameter; ``column`` the relation it filters, without
-    its ``_id`` (the parameter's own name when left out). The roster filters on
-    ``branch_on``, the branch owning each row today
-    (:meth:`~vs_finance.models.EmployeeSalaryQuerySet.with_branch_on`).
-
-    One helper for the roster and the runs list because the parameter has to
-    mean the same thing on both. ``?branch=unassigned`` finds the people no
-    branch owns - the ones blocking a school's switch to per-branch payroll -
-    and on the runs list the central runs raised before it switched. Spelled out
-    rather than left blank, because a blank parameter is how a frontend says "no
-    filter at all", and the two answers are not the same list.
-
-    A branch the caller may not work in is reported exactly like one that does
-    not exist, so the parameter cannot be used to enumerate a school's sites.
-    """
-    column = column or field
-    branch_ref = request.query_params.get(field)
-    if not branch_ref:
-        return qs
-    if str(branch_ref).lower() in UNASSIGNED_REFS:
-        return qs.filter(**{f"{column}_id__isnull": True})
-    branch = _resolve_branch(entity.tenant, branch_ref)
-    if branch is None or not caller_may_use_branch(request, branch):
-        raise ValidationError({field: "No such branch for this entity."})
-    return qs.filter(**{f"{column}_id": branch.pk})
 
 
 def _line_name(raw):

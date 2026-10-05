@@ -128,7 +128,7 @@ class Command(BaseCommand):
 
         self._retire(dry_run)
         created, updated = self._upsert(dry_run)
-        attached, refused = self._attach_defaults(dry_run)
+        attached, refused = self._attach_defaults(dry_run, grow_copies=not reset)
 
         self.stdout.write(self.style.SUCCESS(
             f"\nDone. created={created} updated={updated} defaults_attached={attached}"
@@ -200,13 +200,20 @@ class Command(BaseCommand):
             self.stdout.write(f"  {'Created' if was_created else 'Updated'}: {key}")
         return created, updated
 
-    def _attach_defaults(self, dry_run):
+    def _attach_defaults(self, dry_run, *, grow_copies=True):
         """Give each prefix-owning template every key under its prefixes.
 
         Additive: a key already attached is left alone, and a key that is no
         longer under any prefix is NOT removed, because a default that a school
         has already adopted lives in that school's own role and taking it out of
         the library would not take it back anyway.
+
+        A key the template gains here is also granted to every tenant's copy of
+        it, at this one moment (:func:`vs_rbac.library_growth.grant_to_copies`),
+        so a school's Finance Admin holds a finance key shipped after the school
+        opened. ``grow_copies`` is off after ``--reset``, where every default is
+        re-attached at once and pushing them all would undo what each school
+        has since taken off its copy.
 
         A key the model refuses is reported rather than swallowed. Two finance
         keys are platform-scoped (`finance.currency.create`, `finance.fxrate.create`)
@@ -243,7 +250,7 @@ class Command(BaseCommand):
 
             # Counted per template. Sharing the running totals across templates
             # made procurement's line report finance's two refusals as its own.
-            added = 0
+            added = []
             turned_away = 0
             for permission in missing:
                 try:
@@ -251,15 +258,22 @@ class Command(BaseCommand):
                         PrebuiltRolePermission.objects.create(
                             prebuilt_role=template, permission=permission,
                         )
-                    added += 1
+                    added.append(permission.key)
                 except ValidationError as error:
                     turned_away += 1
                     refused.append(f"{key}: {permission.key} ({error.messages[0]})")
 
-            attached += added
+            grown = 0
+            if added and grow_copies:
+                from vs_rbac.library_growth import grant_to_copies
+
+                grown = grant_to_copies(key, added)
+
+            attached += len(added)
             self.stdout.write(
-                f"  Defaults on {key}: {added} attached, "
-                f"{len(held)} already held, {turned_away} refused"
+                f"  Defaults on {key}: {len(added)} attached, "
+                f"{len(held)} already held, {turned_away} refused; "
+                f"{grown} grant(s) added to tenants' copies"
             )
 
         return attached, refused

@@ -61,6 +61,8 @@ urlpatterns = [
 
     # Requests for quotation (sourcing)
     path("rfqs/", views.RfqListCreateView.as_view(), name="proc-rfqs"),
+    path("rfqs/free-requisition-lines/", views.RequisitionLinesFreeToSourceView.as_view(),
+         name="proc-rfq-free-requisition-lines"),
     path("rfqs/summary/", views.RfqSummaryView.as_view(), name="proc-rfq-summary"),
     path("rfqs/<int:pk>/", views.RfqDetailView.as_view(), name="proc-rfq-detail"),
     path("rfqs/<int:pk>/issue/", views.RfqIssueView.as_view(), name="proc-rfq-issue"),

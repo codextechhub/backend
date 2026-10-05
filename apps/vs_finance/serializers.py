@@ -1139,9 +1139,54 @@ class ExpenseClaimSerializer(serializers.ModelSerializer):
 # Petty cash                                                                  #
 # --------------------------------------------------------------------------- #
 
+def _person_name(user):
+    """A user's full name, else their email; ``None`` when nobody is named."""
+    if user is None:
+        return None
+    return (getattr(user, "full_name", "") or getattr(user, "email", "") or str(user.pk)).strip()
+
+
+class PettyCashPeopleListSerializer(serializers.ListSerializer):
+    """Resolve whether the people named on a page of petty cash rows have exited, once.
+
+    Each row names its people by the attributes in the child's ``person_fields``,
+    so funds and returns share one bulk lookup per response
+    (:func:`core.person_exit.prime_exit_states`).
+    """
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        rows = list(data)
+        fields = self.child.person_fields
+        prime_exit_states(self.context, (
+            getattr(row, f"{field}_id") for row in rows for field in fields
+        ))
+        return super().to_representation(rows)
+
+
+def _exited(serializer, user_id):
+    from core.person_exit import person_is_exited
+
+    return person_is_exited(serializer.context, user_id)
+
+
 class PettyCashFundSerializer(serializers.ModelSerializer):
+    """A petty cash fund. Each person on it carries a name and an exit flag.
+
+    ``custodian_label`` names the custodian (a user's name, or the free-text
+    custodian); ``closed_by_name`` names who closed the fund. Each sits beside
+    ``<person>_is_exited``, true when that person has left the tenant's
+    employment, and ``None`` when nobody is named.
+    """
+
+    person_fields = ("custodian", "closed_by")
+
     gl_account = serializers.CharField(source="gl_account.code", read_only=True)
     custodian_label = serializers.SerializerMethodField()
+    custodian_is_exited = serializers.SerializerMethodField()
+    closed_by_name = serializers.SerializerMethodField()
+    closed_by_is_exited = serializers.SerializerMethodField()
     float_amount_naira = serializers.SerializerMethodField()
     current_balance_naira = serializers.SerializerMethodField()
     shortfall = serializers.IntegerField(read_only=True)
@@ -1155,7 +1200,9 @@ class PettyCashFundSerializer(serializers.ModelSerializer):
             "current_balance", "current_balance_naira", "shortfall",
             "currency", "last_replenished_at", "is_active",
             "state", "closed_on", "closed_by_id",
+            "custodian_is_exited", "closed_by_name", "closed_by_is_exited",
         ]
+        list_serializer_class = PettyCashPeopleListSerializer
 
     state = serializers.SerializerMethodField()
 
@@ -1170,6 +1217,15 @@ class PettyCashFundSerializer(serializers.ModelSerializer):
             full = obj.custodian.get_full_name() if hasattr(obj.custodian, "get_full_name") else ""
             return full or getattr(obj.custodian, "email", "") or str(obj.custodian_id)
         return obj.custodian_name
+
+    def get_custodian_is_exited(self, obj):
+        return _exited(self, obj.custodian_id)
+
+    def get_closed_by_name(self, obj):
+        return _person_name(obj.closed_by) if obj.closed_by_id else None
+
+    def get_closed_by_is_exited(self, obj):
+        return _exited(self, obj.closed_by_id)
 
     def get_float_amount_naira(self, obj) -> str:
         return format_naira(obj.float_amount)
@@ -1224,8 +1280,11 @@ class PettyCashReturnSerializer(serializers.ModelSerializer):
     """A petty cash return: the count, the books, what was banked and the float after.
 
     ``difference`` is the count less the books (positive over, negative short);
-    ``cash_left`` is what the tin keeps after the return.
+    ``cash_left`` is what the tin keeps after the return. ``counted_by_name`` and
+    ``created_by_name`` name the people on it, each beside ``<person>_is_exited``.
     """
+
+    person_fields = ("counted_by", "created_by")
 
     kind_label = serializers.CharField(source="get_kind_display", read_only=True)
     fund_name = serializers.CharField(source="fund.name", read_only=True)
@@ -1236,9 +1295,15 @@ class PettyCashReturnSerializer(serializers.ModelSerializer):
     overage = serializers.IntegerField(read_only=True)
     cash_left = serializers.IntegerField(read_only=True)
     amount_naira = serializers.SerializerMethodField()
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    counted_by_name = serializers.SerializerMethodField()
+    counted_by_is_exited = serializers.SerializerMethodField()
+    created_by_name = serializers.SerializerMethodField()
+    created_by_is_exited = serializers.SerializerMethodField()
 
     class Meta:
         model = PettyCashReturn
+        list_serializer_class = PettyCashPeopleListSerializer
         fields = [
             "id", "document_number", "status", "kind", "kind_label", "branch_id",
             "fund_id", "fund_name", "bank_account_id", "bank_account_name",
@@ -1246,10 +1311,24 @@ class PettyCashReturnSerializer(serializers.ModelSerializer):
             "shortage", "overage", "difference_reason", "amount", "amount_naira",
             "cash_left", "previous_float_amount", "new_float_amount",
             "counted_by_id", "narration", "reference", "journal_id", "created_by_id",
+            "branch_name", "counted_by_name", "counted_by_is_exited",
+            "created_by_name", "created_by_is_exited",
         ]
 
     def get_amount_naira(self, obj) -> str:
         return format_naira(obj.amount)
+
+    def get_counted_by_name(self, obj):
+        return _person_name(obj.counted_by) if obj.counted_by_id else None
+
+    def get_counted_by_is_exited(self, obj):
+        return _exited(self, obj.counted_by_id)
+
+    def get_created_by_name(self, obj):
+        return _person_name(obj.created_by) if obj.created_by_id else None
+
+    def get_created_by_is_exited(self, obj):
+        return _exited(self, obj.created_by_id)
 
 
 # --------------------------------------------------------------------------- #

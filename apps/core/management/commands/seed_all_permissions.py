@@ -43,6 +43,10 @@ Seed order
                                Access to vs_rbac.FieldDefinition. After every
                                module seed, because a field sits under a
                                resource those seeds register.
+13c. seed_prebuilt_role_templates - again, so the roles that own a module by
+                               prefix (Finance Admin, Procurement Admin) take the
+                               keys this run registered, in the library and in
+                               every tenant's copy (vs_rbac.library_growth).
 14. seed_permission_dependencies - reconciles the backend-owned prerequisite
                                graph and backfills roles with required keys.
 15. retire_system_permission_groups - preserves existing grants as direct role
@@ -77,6 +81,11 @@ SEED_STEPS: list[tuple[str, list]] = [
     ("seed_health", []),
     # After every module seed: a field sits under a resource they register.
     ("sync_field_registry",          []),
+    # Again, once every module seed has registered its keys: Finance Admin and
+    # Procurement Admin own their modules by prefix, and the first pass ran
+    # before this run's new keys existed, so the library and the tenants'
+    # copies of those roles would otherwise lag a deploy behind.
+    ("seed_prebuilt_role_templates", []),
     # Last on purpose: both steps need the complete registry and role library.
     ("seed_permission_dependencies", []),
     ("retire_system_permission_groups", []),

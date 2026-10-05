@@ -596,6 +596,22 @@ class RequisitionLineSerializer(serializers.ModelSerializer):
         ]
 
 
+class FreeRequisitionLineSerializer(RequisitionLineSerializer):
+    """A requisition line still free to source, with the requisition and branch it is for."""
+
+    requisition_id = serializers.IntegerField(read_only=True)
+    requisition_number = serializers.CharField(source="requisition.document_number", read_only=True)
+    request_date = serializers.DateField(source="requisition.request_date", read_only=True)
+    branch_id = serializers.IntegerField(source="requisition.branch_id", read_only=True, default=None)
+    branch_name = serializers.CharField(
+        source="requisition.branch.name", read_only=True, default=None)
+
+    class Meta(RequisitionLineSerializer.Meta):
+        fields = RequisitionLineSerializer.Meta.fields + [
+            "requisition_id", "requisition_number", "request_date", "branch_id", "branch_name",
+        ]
+
+
 class RequisitionSerializer(serializers.ModelSerializer):
     """Requisition header and lines with document and workflow states kept separate.
 
@@ -1534,6 +1550,10 @@ class VendorPaymentSerializer(serializers.ModelSerializer):
     Draft allocation rows express the intended split. Once POSTED, the header's
     ``allocated_amount`` is authoritative because the service updates it only after the
     journal succeeds; :meth:`get_allocation_status` preserves that distinction.
+
+    ``wht_source`` says how ``wht_amount`` was arrived at: ``COMPUTED`` from the WHT
+    tax code, ``ENTERED`` by hand, or blank on a payment recorded before the
+    source was kept (:class:`~vs_procurement.constants.WhtSource`).
     """
 
     allocations = VendorPaymentAllocationSerializer(many=True, read_only=True)
@@ -1571,7 +1591,7 @@ class VendorPaymentSerializer(serializers.ModelSerializer):
             "payment_account_name", "bank_account_id", "bank_account_name",
             "wht_tax_code_id", "wht_tax_code_value", "reference", "narration",
             "journal_id", "created_at", "created_by_name", "created_by_is_exited",
-            "allocations", "attachments",
+            "allocations", "attachments", "wht_source",
         ]
 
     def get_net_naira(self, obj) -> str:
