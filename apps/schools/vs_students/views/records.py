@@ -193,9 +193,10 @@ class StudentHistoryView(StudentsViewMixin, APIView):
     ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``).
 
     Wider than the status log. The profile's history tab shows status changes,
-    class moves, guardian links and field edits in one stream, so this merges
-    the module's own log with the platform's audit trail rather than
-    duplicating either.
+    class moves, branch moves, guardian links and field edits in one stream
+    (``kind`` is ``status``, ``class``, ``branch``, ``guardian``, ``document``
+    or ``edit``), so this merges the module's own log with the platform's
+    audit trail rather than duplicating either.
 
     docstring-name: A student's record history
     """
@@ -248,6 +249,8 @@ class StudentHistoryView(StudentsViewMixin, APIView):
 
     @staticmethod
     def _kind(action_type):
+        if action_type == "STUDENT_BRANCH_CHANGED":
+            return "branch"
         if "GUARDIAN" in action_type:
             return "guardian"
         if "CLASS" in action_type or "PROMOTION" in action_type:

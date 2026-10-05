@@ -442,6 +442,63 @@ class ClassEnrolment(_Owned):
         ordering = ["-assigned_at"]
 
 
+class StudentBranchMove(_Owned):
+    """A pupil moving from one branch of the school to another.
+
+    Written once per move by
+    :func:`schools.vs_students.services.branch_move.move_to_branch`, in the
+    transaction that changes ``Student.branch``, places the pupil in a class at
+    the new branch and moves their fee account through the FAL. The row is the
+    move's identity: its id is the reference the FAL keys the finance move by,
+    so a retry of the same move cannot book it twice.
+
+    Never edited and never deleted. A pupil moved back is a second move, which
+    leaves the history saying both.
+    """
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="student_branch_moves",
+    )
+    student = models.ForeignKey(
+        Student, on_delete=models.CASCADE, related_name="branch_moves",
+    )
+    from_branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT, related_name="+",
+    )
+    to_branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT, related_name="+",
+    )
+    #: The day the pupil attends the new branch from, at that branch's clock.
+    #: The finance move is booked on the same day.
+    effective_date = models.DateField()
+    reason = models.CharField(max_length=300)
+    #: The placements closed and opened by the move. Null where the pupil had
+    #: no class, or kept a school-wide class that belongs to every branch.
+    from_enrolment = models.ForeignKey(
+        ClassEnrolment, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="+",
+    )
+    to_enrolment = models.ForeignKey(
+        ClassEnrolment, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="+",
+    )
+    moved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="+",
+    )
+
+    class Meta(_Owned.Meta):
+        constraints = [
+            models.CheckConstraint(
+                check=~Q(from_branch=F("to_branch")),
+                name="ck_branch_move_changes_branch",
+            ),
+        ]
+        indexes = [models.Index(fields=["tenant", "student"])]
+        ordering = ["-created_at", "-id"]
+
+
 class StudentStatusLog(_Owned):
     """Append-only history of status transitions.
 

@@ -80,7 +80,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             )
 
     def test_total_key_count(self):
-        """The school and academics modules register exactly 94 keys.
+        """The school and academics modules register exactly 95 keys.
 
         Deliberately a hand-maintained number: the school permission surface
         growing is something a person should have to notice and agree to, so
@@ -105,6 +105,9 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         * ``school.organogram`` is the school's own org chart, a resource of
           its own because every member of staff reads it while the register's
           dated history stays with the administrators.
+        * ``school.students.change_branch`` moves a pupil to another branch
+          with their fee account. It is not ``school.students.transfer``,
+          which means leaving for another school.
         * There is no key for a child's medical details. Blood group, allergies
           and conditions are registered fields of ``school.students``, so who
           reads and corrects them is a switch on the role, set on the Field
@@ -112,7 +115,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         """
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            94,
+            95,
         )
 
     def test_field_access_view_is_open_and_update_is_restricted(self):
@@ -223,8 +226,8 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         )
 
     def test_school_admin_gets_all_keys(self):
-        """A school admin holds every key in both modules, all 94 of them."""
-        self.assertEqual(len(self._defaults("school_admin")), 94)
+        """A school admin holds every key in both modules, all 95 of them."""
+        self.assertEqual(len(self._defaults("school_admin")), 95)
         self.assertIn("school.field_access.update", self._defaults("school_admin"))
 
     def test_only_school_admin_gets_field_access_by_default(self):
@@ -256,7 +259,7 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         self.assertFalse(overrides & self._defaults("teacher"))
 
     def test_branch_admin_default_count(self):
-        """52 permissions cover branch-level school operations.
+        """53 permissions cover branch-level school operations.
 
         A branch admin draws the org chart and appoints people to it, and the
         views keep those writes to their own branch's units and posts.
@@ -290,9 +293,13 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         A branch admin may import staff because they may already add staff one
         at a time. They set exam schedules and maintain staff records, but do
         not delete an exam, promote the roll, or change employment status.
+
+        A branch admin holds school.students.change_branch, and moves a pupil
+        only between branches they both work at: one pinned to Ikeja holds the
+        key and moves nobody.
         """
         branch_admin = self._defaults("branch_admin")
-        self.assertEqual(len(branch_admin), 52)
+        self.assertEqual(len(branch_admin), 53)
         self.assertIn("school.organogram.assign", branch_admin)
         self.assertIn("school.staff.import", branch_admin)
         self.assertNotIn("school.students.import", branch_admin)
@@ -399,7 +406,7 @@ class SeedSchoolBackfillTests(TestCase):
             .values_list("permission_id", flat=True)
         )
         # school_admin defaults are every school and academics key.
-        self.assertEqual(len(keys), 94)
+        self.assertEqual(len(keys), 95)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
         self.assertIn("school.roles.approve", keys)

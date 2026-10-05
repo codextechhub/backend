@@ -32,6 +32,11 @@ PERM_PROMOTE = "school.students.promote"
 #: student record. Seeded by ``vs_schools``, which owns the settings screens.
 PERM_SETTINGS_UPDATE = "school.settings.update"
 
+#: Moving a pupil to another branch of the school, with their fee account and
+#: open balance. Its own key rather than ``transfer``, which means leaving for
+#: another school: the two acts have nothing in common but a destination.
+PERM_CHANGE_BRANCH = "school.students.change_branch"
+
 PERM_CLASS_ASSIGN = "academics.classes.assign"
 PERM_CLASS_VIEW = "academics.classes.view"
 
@@ -337,6 +342,9 @@ class TransferReason(models.TextChoices):
     CLASS_BALANCING = "CLASS_BALANCING", "Class balancing"
     BEHAVIOUR = "BEHAVIOUR", "Behaviour"
     ACADEMIC_PLACEMENT = "ACADEMIC_PLACEMENT", "Academic placement"
+    #: Written by a branch move, never chosen in the class transfer form: the
+    #: move's own reason is on the move (``StudentBranchMove.reason``).
+    BRANCH_MOVE = "BRANCH_MOVE", "Moved branch"
     OTHER = "OTHER", "Other"
 
 

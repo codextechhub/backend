@@ -14,6 +14,8 @@ from .views import (
     AdmissionPolicyView,
     AdmissionRulesView,
     AssignClassView,
+    BranchMovePreviewView,
+    BranchMoveView,
     BulkAssignClassView,
     BulkStatusView,
     ChangeStatusView,
@@ -119,6 +121,14 @@ student_patterns = [
     path(
         "<int:pk>/assign-class/", AssignClassView.as_view(),
         name="student-assign-class",
+    ),
+    path(
+        "<int:pk>/move-branch/", BranchMoveView.as_view(),
+        name="student-move-branch",
+    ),
+    path(
+        "<int:pk>/move-branch/preview/", BranchMovePreviewView.as_view(),
+        name="student-move-branch-preview",
     ),
     path(
         "<int:pk>/status-history/", StatusHistoryView.as_view(),

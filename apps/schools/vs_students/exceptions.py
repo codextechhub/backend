@@ -314,3 +314,70 @@ class DocumentsMissing(StudentsError):
         "can be confirmed."
     )
     http_status = 422
+
+
+# ── moving a pupil to another branch ───────────────────────────────────────
+
+class OneBranchSchool(StudentsError):
+    """A school with one branch has nowhere to move a pupil to."""
+
+    error_code = "ONE_BRANCH"
+    default_message = (
+        "This school has one branch, so there is no other branch to move a "
+        "pupil to."
+    )
+    http_status = 409
+
+
+class AlreadyAtBranch(StudentsError):
+    error_code = "ALREADY_AT_BRANCH"
+    default_message = "The pupil already attends that branch."
+    http_status = 409
+
+
+class NotOnRoll(StudentsError):
+    """Only a pupil on the roll attends a branch, so only they can change one."""
+
+    error_code = "NOT_ON_ROLL"
+    default_message = "Only a pupil on the roll can move to another branch."
+    http_status = 422
+
+
+class BranchNotOpen(StudentsError):
+    error_code = "BRANCH_NOT_OPEN"
+    default_message = "That branch is not open, so no pupil can move into it."
+    http_status = 422
+
+
+class MoveClassRequired(StudentsError):
+    """A placed pupil needs a class at the branch they move to.
+
+    ACTIVE means placed and attending, so a placed pupil moved without a class
+    would be active with no class at their new branch, which the roll has no
+    shape for.
+    """
+
+    error_code = "CLASS_REQUIRED"
+    default_message = "Choose the class the pupil joins at their new branch."
+    http_status = 422
+
+
+class MoveDateRefused(StudentsError):
+    error_code = "INVALID_EFFECTIVE_DATE"
+    default_message = "That date cannot be the day of the move."
+    http_status = 422
+
+
+class FinanceDidNotAnswer(StudentsError):
+    """The books could not be reached, so the pupil's account cannot move with them.
+
+    The move is refused rather than made without the account: a pupil at Lekki
+    whose bills stay at Ikeja is the split the move exists to prevent.
+    """
+
+    error_code = "FINANCE_UNAVAILABLE"
+    default_message = (
+        "The school's books could not be reached, so nothing was moved. Try again "
+        "in a few minutes."
+    )
+    http_status = 503

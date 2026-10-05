@@ -867,10 +867,19 @@ class ReactivateSerializer(serializers.Serializer):
     allow_over_capacity = serializers.BooleanField(default=False)
 
 
+#: The reasons a class transfer may give. A branch move writes its own, and a
+#: class move that claimed it would put a branch move in the history that never
+#: happened.
+CLASS_TRANSFER_REASONS = [
+    choice for choice in TransferReason.choices
+    if choice[0] != TransferReason.BRANCH_MOVE
+]
+
+
 class AssignClassSerializer(serializers.Serializer):
     school_class = serializers.IntegerField()
     reason = serializers.ChoiceField(
-        choices=TransferReason.choices, required=False, allow_blank=True,
+        choices=CLASS_TRANSFER_REASONS, required=False, allow_blank=True,
     )
     effective_date = serializers.DateField(required=False)
     allow_over_capacity = serializers.BooleanField(default=False)
@@ -878,6 +887,27 @@ class AssignClassSerializer(serializers.Serializer):
 
 class BulkAssignSerializer(AssignClassSerializer):
     student_ids = serializers.ListField(child=serializers.IntegerField())
+
+
+class BranchMovePreviewSerializer(serializers.Serializer):
+    """Where a pupil would move and on which day. The branch is an id, as everywhere."""
+
+    to_branch = serializers.CharField()
+    effective_date = serializers.DateField(required=False)
+
+
+class BranchMoveSerializer(BranchMovePreviewSerializer):
+    """A pupil's move to another branch.
+
+    ``school_class`` is the class they join there; it may be left out only for
+    a pupil with no class or in a school-wide class. ``reason`` is required:
+    a move changes which branch chases a family's money, and the history may
+    not hold one unexplained.
+    """
+
+    school_class = serializers.IntegerField(required=False, allow_null=True)
+    reason = serializers.CharField(max_length=300, trim_whitespace=True)
+    allow_over_capacity = serializers.BooleanField(default=False)
 
 
 class BulkStatusSerializer(StatusChangeSerializer):

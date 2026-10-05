@@ -305,6 +305,16 @@ account.
   anything it moved is paid, credited or released at the new branch. The FAL's
   account re-filing calls it right after re-filing the customer; it is also a
   whole-tenant endpoint (`/finance/inter-branch-transfers/receivable-moves/`).
+- **Built (school side).** `/v1/students/<id>/move-branch/` (key
+  `school.students.change_branch`, a reach covering both branches) changes the
+  pupil's branch, places them in a class there and calls the FAL's
+  `StudentCustomerPort.move_account` in one transaction, so a refused finance
+  move leaves the pupil where they were. The FAL re-files each of the pupil's
+  accounts through the same step as a fee run's re-filing, keyed by the move's
+  own record (`StudentBranchMove`), so a retry moves nothing twice. A preview
+  (`.../move-branch/preview/`) runs the move and rolls it back to show the open
+  bills, credit, unearned income and the resulting inter-branch balance. Moving
+  a pupil back is a second move; the school app does not undo one.
 
 ---
 

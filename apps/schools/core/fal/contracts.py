@@ -548,13 +548,29 @@ class FeeTermLink:
 
 
 @dataclass(frozen=True)
-class AccountMove:
-    """A pupil's fee account a fee run re-filed at the branch they attend.
+class MovedBill:
+    """One bill a pupil's account carried to their new branch.
 
-    Tunde attends Lekki and their account was filed at Ikeja: the run bills
-    them at Lekki and moves the account there with its open balance, and this
-    records it. On a preview it is a move the run would make, with the figures
-    it would carry.
+    ``kind`` is ``"INVOICE"`` or ``"DEBIT_NOTE"``. ``amount`` is what was still
+    owed on it and ``deferred_amount`` the income on it not yet earned on the
+    move date, which the new branch now earns; both are integer kobo.
+    """
+
+    kind: str
+    number: str
+    amount: int = 0
+    deferred_amount: int = 0
+
+
+@dataclass(frozen=True)
+class AccountMove:
+    """A pupil's fee account re-filed at the branch they attend, balance and all.
+
+    Tunde attends Lekki and their account was filed at Ikeja: a fee run bills
+    them at Lekki and moves the account there with its open balance, and a
+    branch move of the pupil does the same on the day they move. This records
+    it. On a preview it is a move that would be made, with the figures it would
+    carry.
 
     The figures are integer kobo. ``amount`` is the net balance that moved:
     open invoices and debit notes less the unapplied credit that went with
@@ -563,6 +579,14 @@ class AccountMove:
     ``credit_amount`` the unapplied credit that followed, and
     ``deferred_amount`` the income on the moved invoices not yet earned, which
     the new branch now earns. All are zero when the account held nothing open.
+
+    ``owed_amount`` is the open bills alone, and ``inter_branch_amount`` what
+    the new branch owes the old one through the inter-branch account: the bills
+    it now collects less the credit and unearned income it took over, which is
+    the income the old branch already earned. It is negative when the old
+    branch owes the new one. ``bills`` lists each moved bill, and
+    ``transfer_ref`` and ``transfer_number`` name the finance record of the
+    move (``None`` and blank on a preview, or when nothing was open).
     """
 
     customer_ref: CustomerRef
@@ -577,6 +601,11 @@ class AccountMove:
     debit_note_count: int = 0
     credit_amount: int = 0
     deferred_amount: int = 0
+    owed_amount: int = 0
+    inter_branch_amount: int = 0
+    bills: tuple[MovedBill, ...] = ()
+    transfer_ref: Optional[Ref] = None
+    transfer_number: str = ""
 
 
 @dataclass(frozen=True)

@@ -51,6 +51,8 @@ ACTIONS: list[tuple[str, str]] = [
     ("export",     "Download data to CSV, XLSX, or PDF."),
     ("import",     "Bulk-upload records from a file."),
     ("transfer",   "Move a record between owners, branches, or contexts."),
+    ("change_branch", "Move a record to another branch of the same tenant, with what "
+                      "it carries in that branch's books."),
     ("assign",     "Link a resource to another entity (student → class, user → route, etc.)."),
     ("promote",    "Move a cohort up a level or year in one deliberate, reversible run."),
 

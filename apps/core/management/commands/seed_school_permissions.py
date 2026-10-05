@@ -104,6 +104,11 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "students", "promote",          _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "students", "import",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "students", "export",           _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    # Moving a pupil to another branch carries their fee account and open
+    # balance into the other branch's books. Both administrator roles hold it,
+    # and the move itself needs a reach covering both branches, so a branch
+    # administrator working at one branch holds the key and moves nobody.
+    ("school", "students", "change_branch",    _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
 
     # The staff directory and every staff record, read as the role allows. A
     # teacher does not hold it: a teacher reads a colleague's profile as far as

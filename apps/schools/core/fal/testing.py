@@ -225,6 +225,7 @@ class FakeStudentCustomer(StudentCustomerPort):
     def __init__(self, *, fail_race_once: bool = False) -> None:
         self.customers: dict = {}
         self.inactive: set = set()
+        self.moves: list = []
         self._fail_race_once = fail_race_once
 
     def ensure_customer(self, student_ref, *, entity_ref, name=None, code=None,
@@ -262,6 +263,18 @@ class FakeStudentCustomer(StudentCustomerPort):
                 else:
                     self.inactive.add((entity_ref, ref))
         return _ok(changed)
+
+    def move_account(self, student_ref, *, from_branch_ref, to_branch_ref, move_ref,
+                     move_date=None, actor_ref=None, reason="", dry_run=False):
+        """Record the move and carry nothing: the fake keeps no balances.
+
+        ``moves`` lists every real move asked for, once per ``move_ref``, so a
+        consumer test can assert the call was made and that a retry did not
+        make it twice.
+        """
+        if not dry_run and move_ref not in {m[0] for m in self.moves}:
+            self.moves.append((move_ref, student_ref, from_branch_ref, to_branch_ref))
+        return _ok(())
 
 
 # --------------------------------------------------------------------------- #

@@ -453,6 +453,60 @@ MUST SAY:
 - Payments (M18). Custody settings collection_account rows carry subaccount_code. GET platform/provider-sweeps/ opens to payments.platform_settlement.view or payments.platform_provider.view/.update. Settlement reconciliation rows and unmatched bank lines carry branch_id and branch_name.
 Verified: tests_roster_terms_today 16 and tests_list_branch_filters 21 OK (14 and 16 of them fail on the code before the change); payroll, accruals, payer and bank modules 297 OK; field access deep payload and registry 47 OK; vs_finance 1902 OK; vs_payments 434 OK; vs_rbac 988 OK; the two school tests reading the /me map 9 OK. The full suite was not run.
 
+### D120. A pupil moves to another branch from the school app, and their fee account and open balance move with them (uncommitted, 2026-10-05; school-fe 58be84e on branch pupil-move)
+MODULES: M11 student management (branch move, history), M17 billing only where it
+describes a moved bill, M19 finance and accounting (receivable move through the
+FAL), M04 roles and permissions (the new key), MRD; FAL contract 1.1.5 (docs spec 16).
+MUST SAY:
+- Branch move (M11). GET/POST /v1/students/<id>/move-branch/ and POST
+  /v1/students/<id>/move-branch/preview/, all on school.students.change_branch.
+  GET lists the open branches the caller may move this pupil to (each with its
+  own today), the pupil's class and whether a class must be chosen. POST takes
+  to_branch, school_class (required when the pupil sits in a class of their old
+  branch; a school-wide class may be kept and an unplaced pupil may stay
+  unplaced; naming one also needs academics.classes.assign), effective_date
+  (default today at the new branch, never later, never before the current
+  placement began) and reason (required, 300 characters). Refusals: ONE_BRANCH,
+  ALREADY_AT_BRANCH, NOT_ON_ROLL (only ENROLLED, ACTIVE, SUSPENDED move),
+  BRANCH_NOT_OPEN, CLASS_REQUIRED, INVALID_EFFECTIVE_DATE, BRANCH_SCOPE_CONFLICT,
+  the capacity refusals, 403 unless the caller works at both branches (or the
+  whole school), 404 for a pupil outside reach or of another school, 400 for a
+  branch of another school.
+- One transaction (M11, M19). The pupil's branch, the class move (reason
+  BRANCH_MOVE) and the finance move commit together; a finance refusal (409
+  PERIOD_CLOSED at either branch) or a finance outage (503 FINANCE_UNAVAILABLE)
+  leaves the pupil where they were. Each move is a StudentBranchMove row; the
+  finance move is keyed pupil-move:M<id>:C<customer>:B<from>-B<to>, so a retry
+  moves nothing twice. A move is not undone from the school app: moving back is
+  a second move. Finance may still void the money part (test 4.17's rule).
+- Finance through the FAL (M19). StudentCustomerPort.move_account re-files each
+  of the pupil's accounts at the new branch through the same step a fee run's
+  re-filing takes (transfer_open_receivables): open bills and debit notes move,
+  unspent credit follows, unearned income after the move date moves; revenue
+  journals and earned income stay with the old branch, which the new one owes
+  through INTER_BRANCH. Audited under both branches ("moved to Lekki with
+  N390,000.00 owed, with the pupil, who now attends there").
+- Preview and figures (M11, M19). The preview runs the real move and rolls it
+  back. Response: accounts (bills with number, amount and unearned part; credit;
+  unearned; inter_branch_amount, positive when the new branch owes the old) and
+  totals, shown only to a caller who also holds finance.invoice.view; anybody
+  else gets counts and figures_shown false.
+- History (M11). The History tab carries kind "branch" with the move's summary
+  (no reason text; the reason is on the move row).
+- Permissions (M04). school.students.change_branch (SENSITIVE, new action verb
+  change_branch) defaults to School Admin and Branch Admin; every school's copy
+  of both catches up on the next seed_all_permissions (seed_school_permissions
+  phase 3). Deploy: migrate, then seed_all_permissions.
+- Migrations: vs_students 0014 (StudentBranchMove, BRANCH_MOVE reason), vs_audit
+  0020 (STUDENT_BRANCH_CHANGED).
+- Checklist 4.14 is built (school-fe pupil-move branch); 4.17's "redo next term's
+  fee run" note is unblocked.
+Verified: test_pupil_move and test_branch_move 28 OK; with test_contract,
+test_seed_school_permissions and test_fee_run_branch 102 OK; schools.vs_students
+668 OK; schools.core.fal 299 OK; vs_finance.tests_inter_branch 64 OK; vs_finance
+1865 OK; vs_rbac 988 OK; core 199 OK; vs_audit 109 OK. school-fe: tsc clean,
+vitest 2518 OK. The full suite was not run.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

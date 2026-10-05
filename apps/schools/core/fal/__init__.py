@@ -54,6 +54,7 @@ from __future__ import annotations
 from . import contracts, exceptions, registry
 from .contracts import (
     SOURCE_TYPE_STUDENT,
+    AccountMove,
     AgeingBucket,
     AgeingRow,
     ApprovalDecision,
@@ -86,6 +87,7 @@ from .contracts import (
     Kobo,
     KpiValue,
     LooseRef,
+    MovedBill,
     Page,
     PaymentMethod,
     PaymentRef,
@@ -140,7 +142,7 @@ from .registry import (
 #: Bumped on any change to a port signature, a source-type constant or a
 #: default resolver. A consuming module pins the version it was written
 #: against; the FAL's own change log lives with the spec, not here.
-FAL_CONTRACT_VERSION = "1.1.4"
+FAL_CONTRACT_VERSION = "1.1.5"
 
 default_app_config = "schools.core.fal.apps.FalConfig"
 
@@ -233,6 +235,7 @@ __all__ = [
     "FeeTermLink",
     "InvoiceGenerationResult",
     "AccountMove",
+    "MovedBill",
     "CustomerHandle",
     # NOTE: the payment-application types (Allocation, ApplyPaymentCommand,
     # AppliedInvoice, PaymentApplication) and PaymentPort are v1.2 (deferred)

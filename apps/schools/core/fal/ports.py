@@ -92,6 +92,7 @@ from datetime import date
 from typing import Optional
 
 from .contracts import (
+    AccountMove,
     ApplyPaymentCommand,
     ApprovalDecision,
     ApprovalSubmission,
@@ -117,6 +118,7 @@ from .contracts import (
     InvoiceView,
     Kobo,
     KpiValue,
+    LooseRef,
     Page,
     PaymentApplication,
     PaymentRef,
@@ -372,6 +374,36 @@ class StudentCustomerPort(ABC):
         and place in debtor lists, so a family that leaves owing money is still
         shown owing it. Only accounts in the child's own school are touched.
         Idempotent; returns how many accounts changed state.
+        """
+
+    @abstractmethod
+    def move_account(
+        self, student_ref: StudentRef, *, from_branch_ref: BranchRef,
+        to_branch_ref: BranchRef, move_ref: LooseRef, move_date=None,
+        actor_ref=None, reason: str = "", dry_run: bool = False,
+    ) -> FinanceResult[tuple[AccountMove, ...]]:
+        """Re-file the child's fee accounts at ``to_branch_ref``, open balance and all.
+
+        Called when the child changes branch. Each of the child's accounts in
+        their own school is filed at the new branch, and what it holds open at
+        the old one moves with it: open bills become the new branch's to
+        collect, unapplied credit follows, and income not yet earned on
+        ``move_date`` moves; income already earned stays with the old branch,
+        which the new one owes for it between branches. Returns one
+        :class:`AccountMove` per account, in id order.
+
+        ``from_branch_ref`` is the branch the child attended. An account filed
+        there, or filed at no branch, moves from it; an account filed at a third
+        branch moves from where it is filed. ``move_ref`` names this move and
+        makes it idempotent: a second call with the same reference moves
+        nothing twice and answers with the move already made. ``dry_run`` runs
+        the real move and discards it, returning what it would carry.
+
+        Runs inside the caller's transaction, so a refusal (a closed month at
+        either branch, a school with one branch) leaves nothing changed.
+
+        :raises CrossTenantError: a branch belongs to another school.
+        :raises CustomerNotProvisioned: ``student_ref`` names no child.
         """
 
 

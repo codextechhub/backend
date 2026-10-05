@@ -217,6 +217,8 @@ class AuditActionType(models.TextChoices):
     # a school looking up why a family did not join needs the two apart.
     STUDENT_REJECTED = "STUDENT_REJECTED", "Student Rejected"
     STUDENT_TRANSFERRED_OUT = "STUDENT_TRANSFERRED_OUT", "Student Transferred Out"
+    # A move between two branches of one school, with the pupil's fee account.
+    STUDENT_BRANCH_CHANGED = "STUDENT_BRANCH_CHANGED", "Student Branch Changed"
     STUDENT_DOCUMENT_ATTACHED = "STUDENT_DOCUMENT_ATTACHED", "Student Document Attached"
     # Audited separately from the attach: removal is the direction that loses
     # evidence.

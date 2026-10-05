@@ -81,6 +81,7 @@ from ..contracts import (
     InvoiceStatus,
     InvoiceView,
     KpiValue,
+    MovedBill,
     Page,
     PaymentMethod,
     PaymentRow,
@@ -738,6 +739,85 @@ class DjangoStudentCustomerAdapter(StudentCustomerPort):
                 changed += 1
         return _available(changed)
 
+    @envelope
+    def move_account(self, student_ref, *, from_branch_ref, to_branch_ref, move_ref,
+                     move_date=None, actor_ref=None, reason="", dry_run=False):
+        """Re-file the child's accounts at the branch they now attend, balance and all.
+
+        Every account of the child in their own school is locked in id order and
+        moved by :func:`_carry_account`, the step a fee run's re-filing takes
+        too, under :func:`_pupil_move_key`, so a retry of the same move finds
+        the move already booked. An account filed at the old branch, at no
+        branch, or already at the new one moves from ``from_branch_ref``, where
+        the child's bills were raised; one filed at a third branch moves from
+        where it is filed, because that is where its open bills sit.
+
+        A preview runs the real move and throws the writes away, for the reason
+        :meth:`DjangoFeeTermBridgeAdapter.generate_cohort_invoices` gives: the
+        figures are the engine's own, and every refusal the move would meet
+        (a closed month at either branch) is met here too. A preview names no
+        transfer, because it stops existing when the block exits.
+        """
+        from vs_finance.models import Customer
+        from vs_tenants.models import Branch, Tenant
+
+        row = _student_row(student_ref)
+        if row is None:
+            raise CustomerNotProvisioned(
+                f"Student {student_ref!r} names no child on the roll, so there is no "
+                f"account to move."
+            )
+        tenant = Tenant.objects.get(pk=row["tenant_id"])
+        source = _branch(from_branch_ref, tenant)
+        target = _branch(to_branch_ref, tenant)
+        actor = _user(actor_ref) if actor_ref is not None else None
+        on = move_date or branch_today(tenant, target.pk)
+        purpose = f"Pupil moved to {target.name}" + (f": {reason}" if reason else "")
+
+        def _run():
+            accounts = list(
+                Customer.objects.select_for_update(of=("self",))
+                .filter(source_type=SOURCE_TYPE_STUDENT, source_id=str(student_ref),
+                        entity__tenant_id=row["tenant_id"])
+                .select_related("entity", "entity__tenant").order_by("pk")
+            )
+            names = dict(
+                Branch.all_objects.filter(tenant_id=row["tenant_id"]).values_list("pk", "name")
+            )
+            moved = []
+            for account in accounts:
+                from_id = account.branch_id
+                if from_id is None or from_id == target.pk:
+                    from_id = source.pk
+                if from_id == target.pk:
+                    continue
+                moved.append(_carry_account(
+                    account, from_id, target.pk, names, actor_user=actor, on=on,
+                    key=_pupil_move_key(move_ref, account.pk, from_id, target.pk),
+                    purpose=purpose[:255],
+                    arriving=(
+                        "Customer {code} ({name}) moved from {from_branch} with "
+                        "{balance}, with the pupil, who now attends here."
+                    ),
+                    leaving=(
+                        "Customer {code} ({name}) moved to {to_branch} with "
+                        "{balance}, with the pupil, who now attends there."
+                    ),
+                ))
+            return tuple(moved)
+
+        if not dry_run:
+            with transaction.atomic():
+                return _available(_run())
+        try:
+            with transaction.atomic():
+                raise _PreviewComplete(_run())
+        except _PreviewComplete as preview:
+            return _available(tuple(
+                replace(move, transfer_ref=None, transfer_number="")
+                for move in preview.result
+            ))
+
 
 # --------------------------------------------------------------------------- #
 # Component 2 - Fee structure <-> term bridge
@@ -962,6 +1042,127 @@ def _move_key(structure, period_key, customer_id, from_id, to_id):
     return f"fee-run:F{structure.pk}:{period_key}:C{customer_id}:B{from_id}-B{to_id}"[:96]
 
 
+def _pupil_move_key(move_ref, customer_id, from_id, to_id):
+    """The receivable move's idempotency key for one branch move of a pupil.
+
+    ``pupil-move:<move ref>:C<customer>:B<from>-B<to>``. The move reference is
+    the students app's record of the move, so a retry of the same move names
+    the same key and the engine answers with the move already booked. At most
+    96 characters, like :func:`_move_key`.
+    """
+    return f"pupil-move:{move_ref}:C{customer_id}:B{from_id}-B{to_id}"[:96]
+
+
+def _moved_bills(transfer_id):
+    """The bills a receivable move carried, as :class:`MovedBill` values, in id order."""
+    from vs_finance.constants import ReceivableMoveItemKind as Kind
+    from vs_finance.models import ReceivableTransferItem
+
+    if transfer_id is None:
+        return ()
+    items = (
+        ReceivableTransferItem.objects
+        .filter(transfer_id=transfer_id, kind__in=(Kind.INVOICE, Kind.DEBIT_NOTE))
+        .select_related("invoice", "note").order_by("pk")
+    )
+    return tuple(
+        MovedBill(
+            kind="INVOICE" if item.kind == Kind.INVOICE else "DEBIT_NOTE",
+            number=(item.invoice if item.kind == Kind.INVOICE else item.note).document_number,
+            amount=int(item.amount), deferred_amount=int(item.deferred_amount or 0),
+        )
+        for item in items
+    )
+
+
+def _carry_account(customer, from_id, to_id, names, *, actor_user, on, key, purpose,
+                   arriving, leaving):
+    """Move one account's open balance from ``from_id`` to ``to_id`` and file it there.
+
+    The shared step behind every re-filing of a pupil's account, by a fee run
+    (:func:`_refile_accounts`) or by the pupil changing branch
+    (:meth:`DjangoStudentCustomerAdapter.move_account`). The balance moves
+    through :func:`vs_finance.inter_branch.transfer_open_receivables` under
+    ``key``, so a retry under the same key moves nothing twice; a retry that
+    finds the account already filed at ``to_id`` under a standing move of that
+    key answers with the move and writes nothing, not even to the trail.
+
+    The account is changed through :func:`vs_finance.customers.update_customer`,
+    the one way an account is changed, and the move is written to the finance
+    audit trail once for each side, because a branch-bound reader sees only
+    their own branches' entries. ``arriving`` and ``leaving`` are the two
+    sentences, with ``{code}``, ``{name}``, ``{from_branch}``, ``{to_branch}``
+    and ``{balance}`` filled in: the arriving one is filed under the new branch
+    (the account's branch as it now stands), the leaving one under the old.
+    Both carry the branch ids before and after and the net balance that moved,
+    and no other figure: what each branch earned or holds is in its own books,
+    not in the other's trail.
+    """
+    from vs_finance.audit import record
+    from vs_finance.constants import DocumentStatus, FinanceAuditAction
+    from vs_finance.customers import update_customer
+    from vs_finance.inter_branch import transfer_open_receivables
+    from vs_finance.models import InterBranchTransfer
+
+    booked = customer.branch_id == to_id and InterBranchTransfer.objects.filter(
+        entity_id=customer.entity_id, move_key=key,
+    ).exclude(status=DocumentStatus.REVERSED).exists()
+    moved = transfer_open_receivables(
+        customer, from_id, to_id, actor_user, move_date=on, move_key=key, purpose=purpose,
+    )
+    if booked:
+        return _account_move(customer, from_id, to_id, names, moved)
+    words = {
+        "code": customer.code, "name": customer.name, "from_branch": names[from_id],
+        "to_branch": names[to_id], "balance": _balance_words(moved.amount),
+    }
+    details = {
+        "from_branch": names[from_id], "to_branch": names[to_id],
+        "amount": moved.amount, "receivable_move_id": moved.transfer_id,
+    }
+    if customer.branch_id != to_id:
+        update_customer(
+            customer, {"branch_id": to_id}, actor_user=actor_user,
+            message=arriving.format(**words), **details,
+        )
+    else:
+        record(
+            entity=customer.entity, action=FinanceAuditAction.CUSTOMER_UPDATED,
+            actor_user=actor_user, target=customer, branch=to_id,
+            message=arriving.format(**words),
+            before={"branch_id": from_id}, after={"branch_id": to_id}, **details,
+        )
+    record(
+        entity=customer.entity, action=FinanceAuditAction.CUSTOMER_UPDATED,
+        actor_user=actor_user, target=customer, branch=from_id,
+        message=leaving.format(**words),
+        before={"branch_id": from_id}, after={"branch_id": to_id}, **details,
+    )
+    return _account_move(customer, from_id, to_id, names, moved)
+
+
+def _account_move(customer, from_id, to_id, names, moved):
+    """The :class:`AccountMove` for the engine's ``moved``, with its bills and record."""
+    from vs_finance.models import InterBranchTransfer
+
+    number = ""
+    if moved.transfer_id is not None:
+        number = InterBranchTransfer.objects.filter(pk=moved.transfer_id).values_list(
+            "document_number", flat=True).first() or ""
+    return AccountMove(
+        customer_ref=customer.pk, student_ref=customer.source_id,
+        name=customer.name, from_branch_ref=from_id, from_branch=names[from_id],
+        to_branch_ref=to_id, to_branch=names[to_id],
+        amount=moved.amount, invoice_count=moved.invoice_count,
+        debit_note_count=moved.debit_note_count, credit_amount=moved.credit_amount,
+        deferred_amount=moved.deferred_amount,
+        owed_amount=moved.amount + moved.credit_amount,
+        inter_branch_amount=moved.amount - moved.deferred_amount,
+        bills=_moved_bills(moved.transfer_id),
+        transfer_ref=moved.transfer_id, transfer_number=number,
+    )
+
+
 def _refile_accounts(to_bill, moves, *, actor_user, structure, period_key, on):
     """Re-file each pupil's account in ``moves`` at the branch they attend, balance and all.
 
@@ -984,29 +1185,14 @@ def _refile_accounts(to_bill, moves, *, actor_user, structure, period_key, on):
     pair, structure and period (:func:`_move_key`), which the database holds
     unique, so no two runs of one structure and period can each book the move.
 
-    The account is changed through :func:`vs_finance.customers.update_customer`,
-    the one way an account is changed, and the move is written to the finance
-    audit trail once for each side, because a branch-bound reader sees only
-    their own branches' entries:
-
-    * the entry ``update_customer`` writes is the arriving side, filed under
-      Lekki ("moved from Ikeja with N145,000.00 owed"), the account's branch as
-      it now stands;
-    * a second entry is the leaving side, filed under Ikeja ("moved to Lekki,
-      where the pupil attends, with N145,000.00 owed"), so Ikeja's bursar,
-      wondering why Tunde and their First Term bill left the list, finds the
-      reason.
-
-    Both carry the branch ids before and after and the net balance that moved
-    (negative for a pupil in credit), and no other figure: what each branch
-    earned or holds is in its own books, not in the other's trail. Returns the
-    moves as :class:`~schools.core.fal.contracts.AccountMove` values, in the
-    order the run bills, each with the balance that moved.
+    Each move is written to the finance audit trail once for each side
+    (:func:`_carry_account`): under Lekki, "moved from Ikeja with N145,000.00
+    owed, billed here where the pupil attends"; under Ikeja, "moved to Lekki,
+    where the pupil attends, with N145,000.00 owed", so Ikeja's bursar,
+    wondering why Tunde and their First Term bill left the list, finds the
+    reason. Returns the moves as :class:`~schools.core.fal.contracts.AccountMove`
+    values, in the order the run bills, each with the balance that moved.
     """
-    from vs_finance.audit import record
-    from vs_finance.constants import FinanceAuditAction
-    from vs_finance.customers import update_customer
-    from vs_finance.inter_branch import transfer_open_receivables
     from vs_finance.models import Customer
     from vs_tenants.models import Branch
 
@@ -1029,40 +1215,18 @@ def _refile_accounts(to_bill, moves, *, actor_user, structure, period_key, on):
         customer.branch_id = from_id
         if from_id is None or from_id == to_id:
             continue
-        moved = transfer_open_receivables(
-            customer, from_id, to_id, actor_user, move_date=on,
-            move_key=_move_key(structure, period_key, customer.pk, from_id, to_id),
+        done.append(_carry_account(
+            customer, from_id, to_id, names, actor_user=actor_user, on=on,
+            key=_move_key(structure, period_key, customer.pk, from_id, to_id),
             purpose=f"Fee run: pupil attends {names[to_id]}",
-        )
-        balance = _balance_words(moved.amount)
-        details = {
-            "from_branch": names[from_id], "to_branch": names[to_id],
-            "amount": moved.amount, "receivable_move_id": moved.transfer_id,
-        }
-        update_customer(
-            customer, {"branch_id": to_id}, actor_user=actor_user,
-            message=(
-                f"Customer {customer.code} ({customer.name}) moved from "
-                f"{names[from_id]} with {balance}, billed here where the pupil attends."
+            arriving=(
+                "Customer {code} ({name}) moved from {from_branch} with {balance}, "
+                "billed here where the pupil attends."
             ),
-            **details,
-        )
-        record(
-            entity=customer.entity, action=FinanceAuditAction.CUSTOMER_UPDATED,
-            actor_user=actor_user, target=customer, branch=from_id,
-            message=(
-                f"Customer {customer.code} ({customer.name}) moved to "
-                f"{names[to_id]}, where the pupil attends, with {balance}."
+            leaving=(
+                "Customer {code} ({name}) moved to {to_branch}, where the pupil "
+                "attends, with {balance}."
             ),
-            before={"branch_id": from_id}, after={"branch_id": to_id}, **details,
-        )
-        done.append(AccountMove(
-            customer_ref=customer.pk, student_ref=customer.source_id,
-            name=customer.name, from_branch_ref=from_id, from_branch=names[from_id],
-            to_branch_ref=to_id, to_branch=names[to_id],
-            amount=moved.amount, invoice_count=moved.invoice_count,
-            debit_note_count=moved.debit_note_count, credit_amount=moved.credit_amount,
-            deferred_amount=moved.deferred_amount,
         ))
     return tuple(done)
 
