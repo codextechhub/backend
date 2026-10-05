@@ -224,14 +224,25 @@ class BankAccountBranchSplitView(_FinanceBase):
     earnings. The operation changes several branches at once, so the
     bank-account update key must come through whole-tenant reach.
 
+    GET previews the split before anyone agrees a share: ``?split_date=`` (the
+    tenant's today when omitted, never later) returns ``legacy_balance``,
+    ``unbranched_balance`` and ``branches`` (``branch_id``, ``branch_name``,
+    ``book_balance``), each branch's own entries on the shared ledger read the
+    way the split itself reads them (:func:`vs_finance.bank_splits.split_preview`).
+    It needs the bank-account view key through whole-tenant reach: a shared
+    account is visible only to a whole-tenant reader, and the preview shows
+    every branch's figure on it.
+
     docstring-name: Split a shared bank account by branch
     """
 
-    rbac_permission = "finance.bankaccount.update"
+    @property
+    def rbac_permission(self):
+        return "finance.bankaccount.view" if self.request.method == "GET" \
+            else "finance.bankaccount.update"
 
-    def post(self, request, pk):
-        from ..bank_splits import split_shared_bank_account
-
+    def _shared_source(self, request, pk):
+        """The entity and the account behind ``pk``, for a caller who reaches every branch."""
         entity = resolve_entity(request)
         if not caller_reaches_whole_tenant(request.user, entity.tenant):
             raise PermissionDenied(
@@ -239,11 +250,33 @@ class BankAccountBranchSplitView(_FinanceBase):
             )
         source = (
             BankAccount.objects.filter(entity=entity, pk=pk)
-            .select_related("gl_account", "branch")
+            .select_related("entity__tenant", "gl_account", "branch")
             .first()
         )
         if source is None:
             raise NotFound("Bank account not found for this entity.")
+        return entity, source
+
+    def get(self, request, pk):
+        from vs_config.clock import tenant_today
+
+        from ..bank_splits import split_preview
+
+        entity, source = self._shared_source(request, pk)
+        today = tenant_today(entity.tenant)
+        split_date = _date(request.query_params.get("split_date"), "split_date") or today
+        if split_date > today:
+            raise ValidationError({"split_date": "The split date cannot be after today."})
+        preview = split_preview(source, split_date=split_date)
+        return success_response(
+            f"Split preview for bank account '{source.name}' retrieved.",
+            data={"bank_account_id": source.pk, **preview},
+        )
+
+    def post(self, request, pk):
+        from ..bank_splits import split_shared_bank_account
+
+        entity, source = self._shared_source(request, pk)
         payload = _BankAccountBranchSplitSerializer(data=request.data or {})
         payload.is_valid(raise_exception=True)
         values = payload.validated_data

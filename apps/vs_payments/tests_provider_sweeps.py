@@ -430,6 +430,11 @@ class ProviderSettingsApiTests(_SweepFixture):
         self.assertIn("dedicated update permission", str(generic.data))
         self.assertFalse(held_reconciliation.balance_swept())
 
+    def test_a_reader_of_the_provider_setting_reads_the_sweeps_beside_it(self):
+        response = TenantAPIClient(user=self.reader).get("/v1/payments/platform/provider-sweeps/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+
     def test_a_school_caller_is_refused_even_holding_its_payment_keys(self):
         client = TenantAPIClient(user=self.bursar)
         self.assertEqual(client.get(self.URL).status_code, 403)

@@ -739,3 +739,22 @@ urlpatterns += [
     path("fiscal-years/<int:id>/unarchive/", FiscalYearUnarchiveView.as_view(),
          name="finance-fiscal-year-unarchive"),
 ]
+
+# Read-outs and lookups the finance screens need beside their documents.
+from .views_ops.interbranch import HeldReceiptCustomerLookupView  # noqa: E402
+from .views_ops.tax import TaxFilingLinesView  # noqa: E402
+
+urlpatterns += [
+    path("held-receipts/customer-lookup/", HeldReceiptCustomerLookupView.as_view(),
+         name="finance-held-receipt-customer-lookup"),
+    path("tax-filings/<int:pk>/lines/", TaxFilingLinesView.as_view(),
+         name="finance-tax-filing-lines"),
+]
+
+# Deferred income releases, listed for the undo form.
+from .views_accruals import DeferredIncomeReleaseListView  # noqa: E402
+
+urlpatterns += [
+    path("deferred-income/releases/", DeferredIncomeReleaseListView.as_view(),
+         name="finance-deferred-income-releases"),
+]

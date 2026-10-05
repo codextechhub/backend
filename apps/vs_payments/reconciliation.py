@@ -65,6 +65,7 @@ class SettlementRow:
     via_clearing: bool = False      # booked to gateway clearing; settles by its settlement journal
     reported_fee: int | None = None  # the provider's fee on this payment, when it reported one
     settlement_entry_id: int | None = None
+    branch_id: int | None = None  # The branch the money belongs to, or leaves from.
 
     @property
     # Handle the amount naira workflow.
@@ -102,6 +103,7 @@ class UnmatchedBankLine:
     description: str  # Bank memo/description.
     reference: str  # Bank reference string.
     amount: int                     # signed kobo  # Signed bank amount.
+    branch_id: int | None = None  # The branch of the bank account the line is on.
 
     @property
     # Handle the amount naira workflow.
@@ -192,7 +194,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
 
     for ci in collections.only(  # Iterate only over the fields needed for the report.
         "id", "reference", "provider", "provider_reference", "amount", "confirmed_at",
-        "clearing_account", "settlement_entry", "fee",
+        "clearing_account", "settlement_entry", "fee", "branch",
     ):
         confirmed = ci.confirmed_at  # Confirmation timestamp for the collection.
         if not _date_in_window(confirmed, start_date, end_date, zone):  # Skip rows outside the window.
@@ -203,10 +205,11 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
             amount=int(ci.amount), confirmed_at=confirmed,
             via_clearing=ci.clearing_account_id is not None,
             reported_fee=ci.fee, settlement_entry_id=ci.settlement_entry_id,
+            branch_id=ci.branch_id,
         ))
     for po in payouts.only(  # Iterate over paid payouts using only the required columns.
         "id", "reference", "provider", "provider_reference", "amount", "status",
-        "metadata", "confirmed_at",
+        "metadata", "confirmed_at", "branch",
     ):
         confirmed = po.confirmed_at  # Confirmation timestamp for the payout.
         if not _date_in_window(confirmed, start_date, end_date, zone):  # Skip rows outside the window.
@@ -215,7 +218,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
             kind="PAYOUT", gateway_id=po.id, reference=po.reference,
             provider=po.provider, provider_reference=po.provider_reference,
             # What left the account, net of WHT: the bank line shows that, not the gross.
-            amount=-payout_sent_amount(po), confirmed_at=confirmed,
+            amount=-payout_sent_amount(po), confirmed_at=confirmed, branch_id=po.branch_id,
         ))
 
     bank_qs = reach.bank_lines(BankStatementLine.objects.filter(bank_account__entity=entity))
@@ -343,6 +346,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
             bank_line_id=line.id, bank_account_id=line.bank_account_id,
             txn_date=line.txn_date, description=line.description,
             reference=line.reference, amount=int(line.amount),
+            branch_id=line.bank_account.branch_id,
         )
         for line in bank_lines if line.id not in consumed  # Preserve only unmatched bank lines.
     ]

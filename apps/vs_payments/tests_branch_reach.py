@@ -581,6 +581,19 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
         self.assertIn("PAY-LEK", rows)
         self.assertEqual(lines, {"LINE-IKJ", "LINE-LEK", "LINE-NONE"})
 
+    def test_settlement_reconciliation_names_the_branch_of_each_row_and_bank_line(self):
+        data = self.get(self.reader(branch=None), "reports/settlement-reconciliation/")["data"]
+
+        rows = {row["reference"]: (row["branch_id"], row["branch_name"]) for row in data["rows"]}
+        lines = {line["reference"]: (line["branch_id"], line["branch_name"])
+                 for line in data["unmatched_bank_lines"]}
+        self.assertEqual(rows["COL-IKJ"], (self.ikeja.pk, "Ikeja Branch"))
+        self.assertEqual(rows["PAY-LEK"], (self.lekki.pk, "Lekki Branch"))
+        self.assertEqual(rows["COL-NONE"], (None, None))
+        self.assertEqual(lines, {"LINE-IKJ": (self.ikeja.pk, "Ikeja Branch"),
+                                 "LINE-LEK": (self.lekki.pk, "Lekki Branch"),
+                                 "LINE-NONE": (None, None)})
+
     # -- summaries ------------------------------------------------------------ #
 
     def test_each_summary_counts_only_rows_in_reach(self):

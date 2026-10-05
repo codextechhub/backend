@@ -394,6 +394,65 @@ class TaxFilingDetailView(_TaxFilingActionBase):
         )
 
 
+class TaxFilingLinesView(_TaxFilingActionBase):
+    """GET /finance/tax-filings/<id>/lines/?entity= - the lines a return declares, paginated.
+
+    Each row is one ledger line: ``date``, ``document`` (``type``, ``id``,
+    ``number`` of the invoice, bill, payroll run or journal behind it),
+    ``journal_id`` and ``journal_number``, ``account`` (``id``, ``code``,
+    ``name``), ``branch_id`` and ``branch_name`` (the branch it counts under),
+    ``role`` (PAYABLE or RECOVERABLE), ``amount`` (kobo, signed the way the tax
+    reads it) and ``is_late`` (dated before the return's period, declared here
+    because its own month was already filed). A filed return lists what it
+    declared; a draft what it would declare now
+    (:func:`vs_finance.tax_filing.return_lines`).
+
+    Read under ``finance.tax.view`` and narrowed like the return itself: a
+    branch-bound reader opens the tenant's return through a share of their
+    branch, and is shown only the lines their branches count.
+
+    docstring-name: Tax return lines
+    """
+
+    rbac_permission = "finance.tax.view"
+
+    def get(self, request, pk):
+        from core.pagination import XVSPagination
+        from vs_tenants.models import Branch
+
+        from ..journal_documents import journal_documents
+        from ..tax_filing import return_lines
+
+        entity, filing = self._filing(request, pk)
+        lines = return_lines(filing, branch_ids=caller_branch_ids(request))
+        paginator = XVSPagination()
+        paginator.page_size = 25
+        page = list(paginator.paginate_queryset(lines, request, view=self))
+        documents = journal_documents(line.entry_id for line in page)
+        names = dict(Branch.all_objects.filter(
+            tenant_id=entity.tenant_id, pk__in={line.counted_branch_id for line in page},
+        ).values_list("pk", "name"))
+        rows = [
+            {
+                "id": line.pk,
+                "date": line.entry.date,
+                "document": documents.get(line.entry_id),
+                "journal_id": line.entry_id,
+                "journal_number": line.entry.document_number,
+                "account": {
+                    "id": line.account_id, "code": line.account.code, "name": line.account.name,
+                },
+                "branch_id": line.counted_branch_id,
+                "branch_name": names.get(line.counted_branch_id),
+                "role": line.tax_role,
+                "amount": int(line.tax_amount),
+                "is_late": bool(line.is_late),
+            }
+            for line in page
+        ]
+        return paginator.get_paginated_response(rows)
+
+
 # Group endpoint behavior for Tax Filing File View.
 class TaxFilingFileView(_TaxFilingActionBase):
     """POST - submit a draft return: declare its lines, post each branch's netting/penalty.

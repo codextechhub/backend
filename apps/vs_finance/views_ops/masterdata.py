@@ -52,6 +52,40 @@ from .base import (
 # (:class:`vs_rbac.scoping.WholeTenantWriteMixin`). Reads stay open as each
 # view's docstring describes.
 
+
+def _upsert_by_code(model, lookup, body, fields, *, check=None):
+    """Create the ``model`` row at ``lookup``, or update the one already there, from ``body``.
+
+    ``fields`` maps each model field to ``(body key, parse, default)``. A create
+    fills every field, from the body where it names one and from the default
+    where it does not. An update changes only the fields the body names and
+    keeps every other one as it is: a bursar renaming the VAT code sends the new
+    name, and its treatment, rate and accounts stay what they were rather than
+    falling back to the create defaults. A field is cleared by naming it with an
+    empty value.
+
+    ``check(values, row)`` sees the parsed values and the row being updated
+    (``None`` on a create) before anything is written, to refuse a combination
+    of the new values with the kept ones. Returns ``(row, created)``.
+    """
+    from django.db import transaction
+
+    with transaction.atomic():
+        row = model.objects.select_for_update().filter(**lookup).first()
+        values = {
+            name: parse(body[key] if key in body else default)
+            for name, (key, parse, default) in fields.items()
+            if row is None or key in body
+        }
+        if check is not None:
+            check(values, row)
+        if row is None:
+            return model.objects.create(**lookup, **values), True
+        for name, value in values.items():
+            setattr(row, name, value)
+        row.save()
+        return row, False
+
 # Group endpoint behavior for Currency List Create View.
 class CurrencyListCreateView(WholeTenantWriteMixin, _FinanceBase):
     """GET (list) / POST (create) currencies - **global** reference data (no entity).
@@ -84,19 +118,17 @@ class CurrencyListCreateView(WholeTenantWriteMixin, _FinanceBase):
 
     # Handle POST requests for this endpoint.
     def post(self, request):
+        """Create a currency, or update the named fields of one (:func:`_upsert_by_code`)."""
         body = request.data or {}
         code = str(body.get("code", "")).upper().strip()
         if not code:
             raise ValidationError({"code": "A 3-letter ISO currency code is required."})
-        currency, created = Currency.objects.update_or_create(
-            code=code,
-            defaults={
-                "name": body.get("name", code),
-                "symbol": body.get("symbol", ""),
-                "minor_unit": _int(body.get("minor_unit", 2), "minor_unit", minimum=0),
-                "is_active": _bool(body.get("is_active", True), default=True),
-            },
-        )
+        currency, created = _upsert_by_code(Currency, {"code": code}, body, {
+            "name": ("name", lambda value: value, code),
+            "symbol": ("symbol", lambda value: value, ""),
+            "minor_unit": ("minor_unit", lambda value: _int(value, "minor_unit", minimum=0), 2),
+            "is_active": ("is_active", lambda value: _bool(value, default=True), True),
+        })
         return success_response(
             f"Currency {code} {'created' if created else 'updated'}.",
             data=CurrencySerializer(currency).data, status=201 if created else 200,
@@ -185,33 +217,48 @@ class TaxCodeListCreateView(WholeTenantWriteMixin, _FinanceBase):
 
     # Handle POST requests for this endpoint.
     def post(self, request):
+        """Create a tax code, or update the named fields of one (:func:`_upsert_by_code`).
+
+        A create with no ``treatment`` is STANDARD. An update with no
+        ``treatment`` (or a blank one) keeps the code's own: re-saving a zero-rated
+        code's name must not turn it into a standard one. A rate above 0 needs a
+        STANDARD treatment, whether the treatment is sent or kept, so moving a
+        7.5% code to EXEMPT sends ``rate_bps`` 0 with it.
+        """
         entity = resolve_entity(request)
-        body = request.data or {}
+        data = request.data or {}
+        body = data.dict() if hasattr(data, "dict") else dict(data)
         code = str(body.get("code", "")).strip()
         if not code:
             raise ValidationError({"code": "A tax code is required."})
-        treatment = str(body.get("treatment") or TaxTreatment.STANDARD).upper()
-        if treatment not in TaxTreatment.values:
-            raise ValidationError({"treatment": (
-                f"Treatment must be one of {', '.join(TaxTreatment.values)}.")})
-        rate_bps = _int(body.get("rate_bps", 0), "rate_bps", minimum=0)
-        if rate_bps and treatment != TaxTreatment.STANDARD:
-            raise ValidationError({"rate_bps": (
-                f"A {TaxTreatment(treatment).label.lower()} code charges no tax, so its rate is 0.")})
-        tax, created = TaxCode.objects.update_or_create(
-            entity=entity, code=code,
-            defaults={
-                "name": body.get("name", code),
-                "rate_bps": rate_bps,
-                "treatment": treatment,
-                "is_recoverable": _bool(body.get("is_recoverable", True), default=True),
-                "collected_account": _resolve_account(
-                    request, entity, body.get("collected_account"), "collected_account"),
-                "paid_account": _resolve_account(
-                    request, entity, body.get("paid_account"), "paid_account"),
-                "is_active": _bool(body.get("is_active", True), default=True),
-            },
-        )
+        if body.get("treatment") in (None, ""):
+            body.pop("treatment", None)
+
+        def treatment_of(value):
+            treatment = str(value).upper()
+            if treatment not in TaxTreatment.values:
+                raise ValidationError({"treatment": (
+                    f"Treatment must be one of {', '.join(TaxTreatment.values)}.")})
+            return treatment
+
+        def check(values, row):
+            treatment = values.get("treatment", getattr(row, "treatment", TaxTreatment.STANDARD))
+            if values.get("rate_bps", getattr(row, "rate_bps", 0)) and treatment != TaxTreatment.STANDARD:
+                raise ValidationError({"rate_bps": (
+                    f"A {TaxTreatment(treatment).label.lower()} code charges no tax, so its rate is 0.")})
+
+        def account(field):
+            return lambda value: _resolve_account(request, entity, value, field)
+
+        tax, created = _upsert_by_code(TaxCode, {"entity": entity, "code": code}, body, {
+            "name": ("name", lambda value: value, code),
+            "rate_bps": ("rate_bps", lambda value: _int(value, "rate_bps", minimum=0), 0),
+            "treatment": ("treatment", treatment_of, TaxTreatment.STANDARD),
+            "is_recoverable": ("is_recoverable", lambda value: _bool(value, default=True), True),
+            "collected_account": ("collected_account", account("collected_account"), None),
+            "paid_account": ("paid_account", account("paid_account"), None),
+            "is_active": ("is_active", lambda value: _bool(value, default=True), True),
+        }, check=check)
         return success_response(
             f"Tax code {code} {'created' if created else 'updated'}.",
             data=TaxCodeSerializer(tax).data, status=201 if created else 200,
@@ -280,17 +327,12 @@ class CostCenterListCreateView(WholeTenantWriteMixin, _FinanceBase):
         # TODO: code should be automated when a user didn't provide it
         if not code:
             raise ValidationError({"code": "A cost centre code is required."})
-        parent = None
-        if body.get("parent"):
-            parent = _resolve_cost_center(entity, body.get("parent"), "parent")
-        cc, created = CostCenter.objects.update_or_create(
-            entity=entity, code=code,
-            defaults={
-                "name": body.get("name", code),
-                "parent": parent,
-                "is_active": _bool(body.get("is_active", True), default=True),
-            },
-        )
+        cc, created = _upsert_by_code(CostCenter, {"entity": entity, "code": code}, body, {
+            "name": ("name", lambda value: value, code),
+            "parent": ("parent", lambda value: (
+                _resolve_cost_center(entity, value, "parent") if value else None), None),
+            "is_active": ("is_active", lambda value: _bool(value, default=True), True),
+        })
         return success_response(
             f"Cost centre {code} {'created' if created else 'updated'}.",
             data=CostCenterSerializer(cc).data, status=201 if created else 200,
@@ -342,14 +384,11 @@ class DimensionListCreateView(WholeTenantWriteMixin, _FinanceBase):
         # TODO: code should be automated when a user didn't provide it
         if not code:
             raise ValidationError({"code": "A dimension code is required."})
-        dim, created = Dimension.objects.update_or_create(
-            entity=entity, code=code,
-            defaults={
-                "name": body.get("name", code),
-                "allowed_values": _str_list(body.get("allowed_values"), "allowed_values"),
-                "is_active": _bool(body.get("is_active", True), default=True),
-            },
-        )
+        dim, created = _upsert_by_code(Dimension, {"entity": entity, "code": code}, body, {
+            "name": ("name", lambda value: value, code),
+            "allowed_values": ("allowed_values", lambda value: _str_list(value, "allowed_values"), None),
+            "is_active": ("is_active", lambda value: _bool(value, default=True), True),
+        })
         return success_response(
             f"Dimension {code} {'created' if created else 'updated'}.",
             data=DimensionSerializer(dim).data, status=201 if created else 200,

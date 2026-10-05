@@ -42,6 +42,7 @@ from .serializers import (
 from .views import resolve_entity
 from .views_ar import _paginate, _resolve_customer
 from .views_ops import _FinanceBase, _date
+from .views_ops.base import _filter_by_branch
 from .views_settings import _FinanceSettingsView, _settings_history
 
 
@@ -112,6 +113,9 @@ class FinanceReceivablesSettingsView(_FinanceSettingsView):
 class DeferredIncomeView(_FinanceBase):
     """GET - deferred income waiting, released, and due by month, in the caller's branches.
 
+    ``?branch=`` narrows it to one branch the caller works in; a branch outside
+    their reach is answered like one that does not exist.
+
     docstring-name: Deferred income
     """
 
@@ -119,12 +123,103 @@ class DeferredIncomeView(_FinanceBase):
 
     def get(self, request):
         from .deferred_income import deferred_income_summary
+        from .models import DeferredIncomeEntry
 
         entity = resolve_entity(request)
+        rows = _filter_by_branch(DeferredIncomeEntry.objects.all(), request, entity)
         return success_response(
             "Deferred income retrieved.",
-            data=deferred_income_summary(entity, scope=transaction_branch_scope(request)),
+            data=deferred_income_summary(
+                entity, scope=transaction_branch_scope(request), rows=rows),
         )
+
+
+class DeferredIncomeReleaseListView(_FinanceBase):
+    """GET - the deferred income releases posted, newest first, in the caller's branches.
+
+    One row per release journal: its branch, date and month, the period it
+    falls in and whether that period is open, the amount moved to revenue, the
+    journal, and whether it has been reversed. ``can_reverse`` is true for a
+    release not yet reversed whose period is still open, the ones the undo form
+    (``POST deferred-income/reverse/`` with that ``period_id``) would reverse;
+    that action is a whole-tenant run and reverses every release of the period.
+    Filters: ``?branch=`` (one branch in reach; another answers like an unknown
+    one), ``?period=`` (id), ``?month=YYYY-MM`` and ``?reversed=true|false``.
+    Paginated.
+
+    docstring-name: Deferred income releases
+    """
+
+    rbac_permission = "finance.deferredincome.view"
+
+    def get(self, request):
+        from django.db.models import OuterRef, Subquery
+
+        from .models import DeferredIncomeRelease
+
+        entity = resolve_entity(request)
+        periods = FiscalPeriod.objects.filter(
+            entity=entity, start_date__lte=OuterRef("journal__date"),
+            end_date__gte=OuterRef("journal__date"),
+        ).order_by("start_date")
+        qs = (
+            DeferredIncomeRelease.objects
+            .filter(transaction_branch_q(request), entity=entity)
+            .select_related("branch", "journal")
+            .annotate(
+                period_id=Subquery(periods.values("pk")[:1]),
+                period_name=Subquery(periods.values("name")[:1]),
+                period_status=Subquery(periods.values("status")[:1]),
+            )
+        )
+        qs = _filter_by_branch(qs, request, entity)
+        params = request.query_params
+        if (ref := params.get("period")):
+            if not str(ref).isdigit():
+                raise ValidationError({"period": "Name the period by id."})
+            period = FiscalPeriod.objects.filter(entity=entity, pk=int(ref)).first()
+            if period is None:
+                raise ValidationError({"period": "No such period in this entity."})
+            qs = qs.filter(journal__date__gte=period.start_date,
+                           journal__date__lte=period.end_date)
+        if (month := params.get("month")):
+            try:
+                year, number = (int(part) for part in str(month).split("-"))
+                qs = qs.filter(journal__date__year=year, journal__date__month=number)
+            except ValueError:
+                raise ValidationError({"month": "Use YYYY-MM."})
+        if (flag := params.get("reversed")) in ("true", "false"):
+            qs = qs.filter(reversed_at__isnull=flag == "false")
+        from core.pagination import XVSPagination
+
+        paginator = XVSPagination()
+        paginator.page_size = 25
+        page = paginator.paginate_queryset(
+            qs.order_by("-journal__date", "-id"), request, view=self)
+        return paginator.get_paginated_response([_release_row(row) for row in page])
+
+
+def _release_row(release) -> dict:
+    """One release as the release list shows it."""
+    from .constants import PeriodStatus
+
+    date = release.journal.date
+    return {
+        "id": release.pk,
+        "branch_id": release.branch_id,
+        "branch_name": release.branch.name if release.branch_id else None,
+        "date": date.isoformat(),
+        "month": f"{date.year:04d}-{date.month:02d}",
+        "period_id": release.period_id,
+        "period_name": release.period_name,
+        "period_status": release.period_status,
+        "amount": release.amount,
+        "journal_id": release.journal_id,
+        "journal_number": release.journal.document_number or None,
+        "reversed": release.reversed_at is not None,
+        "reversed_at": release.reversed_at.isoformat() if release.reversed_at else None,
+        "can_reverse": release.reversed_at is None and release.period_status == PeriodStatus.OPEN,
+    }
 
 
 class DeferredIncomeReleaseView(_WholeTenantRun):
@@ -187,6 +282,9 @@ class DeferredIncomeReverseView(_WholeTenantRun):
 class DoubtfulDebtProvisionListCreateView(_WholeTenantRun):
     """GET (list) / POST ``{as_of, narration?}`` (raise a draft run with its figures).
 
+    ``?branch=`` keeps the runs with a line for that branch, one the caller
+    works in; a branch outside their reach is answered like an unknown one.
+
     docstring-name: Doubtful-debt provisions
     """
 
@@ -201,6 +299,8 @@ class DoubtfulDebtProvisionListCreateView(_WholeTenantRun):
               .filter(transaction_branch_q(request), entity=entity)
               .select_related("entity__tenant", "branch")
               .prefetch_related("lines__branch").order_by("-id"))
+        # A run names no branch; ``?branch=`` keeps the runs with a line for it.
+        qs = _filter_by_branch(qs, request, entity, column="lines__branch")
         return _paginate(request, qs, DoubtfulDebtProvisionSerializer, self)
 
     def post(self, request):
@@ -337,7 +437,10 @@ class WriteOffRecoverView(_FinanceBase):
 # --------------------------------------------------------------------------- #
 
 class CustomerDepositListView(_FinanceBase):
-    """GET - refundable deposits in the caller's branches (``?customer=``, ``?status=``).
+    """GET - refundable deposits in the caller's branches (``?customer=``, ``?status=``, ``?branch=``).
+
+    ``?branch=`` names one branch the caller works in; a branch outside their
+    reach is answered like one that does not exist.
 
     docstring-name: Customer deposits
     """
@@ -356,6 +459,7 @@ class CustomerDepositListView(_FinanceBase):
             if status not in DepositStatus.values:
                 raise ValidationError({"status": f"Use one of {', '.join(DepositStatus.values)}."})
             qs = qs.filter(status=status)
+        qs = _filter_by_branch(qs, request, entity)
         return _paginate(request, qs.order_by("-id"), CustomerDepositSerializer, self)
 
 

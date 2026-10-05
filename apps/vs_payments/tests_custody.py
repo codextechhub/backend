@@ -511,6 +511,17 @@ class CustodyEndpointTests(_CustodyFixture):
         self.assertEqual(rows["Lekki Branch"]["name"], "Lekki Zenith")
         self.assertIsNone(rows["Yaba Branch"])
 
+    def test_a_settings_reader_sees_each_collection_accounts_subaccount_code(self):
+        reader = self.client_for("payments.settings.view")
+        payouts_only = self.client_for("payments.payout.view")
+
+        response = reader.get(self.url("settings/custody/"))
+
+        self.assertEqual(response.status_code, 200, response.data)
+        rows = {row["branch_name"]: row["collection_account"] for row in response.data["data"]["branches"]}
+        self.assertEqual(rows["Lekki Branch"]["subaccount_code"], "ACCT_LEK")
+        self.assertNotIn("branches", payouts_only.get(self.url("settings/custody/")).data["data"])
+
     def test_a_branch_administrator_cannot_set_up_a_subaccount(self):
         body = {"bank_account": self.lekki_bank.pk, "settlement_bank_code": "057"}
         bound = self.client_for("payments.settings.update", branch=self.lekki)

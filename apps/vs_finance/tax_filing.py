@@ -214,28 +214,47 @@ class SourceLine:
         return (self.branch_id, self.pending)
 
 
-def collect_source_lines(obligation, *, period_end, branch_id=None, rule=None) -> list:
-    """Every undeclared source line of ``obligation`` dated on or before ``period_end``.
-
-    Reads the ledger every money reader uses (reversed entries and their reversals
-    both count). Lines the tax module wrote, and reversals of them, are left out,
-    as are lines a filed return has already declared. ``branch_id`` narrows to one
-    branch, for a return raised for a single branch.
-    """
-    from .branch_ledger import ledger_lines
-
-    rule = rule or branch_rule(obligation.entity)
+def source_roles(obligation) -> dict:
+    """``{account_id: TaxSourceRole}``: the accounts whose lines are ``obligation``'s source."""
     roles = {obligation.liability_account_id: TaxSourceRole.PAYABLE}
     if obligation.recoverable_account_id:
         roles[obligation.recoverable_account_id] = TaxSourceRole.RECOVERABLE
-    rows = (
+    return roles
+
+
+def undeclared_source_lines(obligation, *, period_end):
+    """The ledger lines a return of ``obligation`` up to ``period_end`` would declare now.
+
+    A queryset of :class:`~vs_finance.models.JournalLine`, oldest first, read from
+    the ledger every money reader uses (reversed entries and their reversals both
+    count). Lines the tax module wrote, and reversals of them, are left out, as
+    are lines a filed return has already declared. The one definition of a
+    return's source lines: :func:`collect_source_lines` works the figures out from
+    it, and a draft's line listing reads it.
+    """
+    from .branch_ledger import ledger_lines
+
+    return (
         ledger_lines(obligation.entity)
-        .filter(account_id__in=list(roles), entry__date__lte=period_end,
+        .filter(account_id__in=list(source_roles(obligation)), entry__date__lte=period_end,
                 tax_declaration__isnull=True)
         .exclude(entry__source__in=TAX_MODULE_SOURCES)
         .exclude(entry__reverses__source__in=TAX_MODULE_SOURCES)
         .order_by("entry__date", "id")
-        .values_list("id", "account_id", "entry__date", "entry__branch_id", "debit", "credit")
+    )
+
+
+def collect_source_lines(obligation, *, period_end, branch_id=None, rule=None) -> list:
+    """Every undeclared source line of ``obligation`` dated on or before ``period_end``.
+
+    The lines :func:`undeclared_source_lines` reads, each with the branch it
+    counts under. ``branch_id`` narrows to one branch, for a return raised for a
+    single branch.
+    """
+    rule = rule or branch_rule(obligation.entity)
+    roles = source_roles(obligation)
+    rows = undeclared_source_lines(obligation, period_end=period_end).values_list(
+        "id", "account_id", "entry__date", "entry__branch_id", "debit", "credit",
     )
     lines = []
     for line_id, account_id, date, entry_branch, debit, credit in rows:
@@ -247,6 +266,67 @@ def collect_source_lines(obligation, *, period_end, branch_id=None, rule=None) -
             pending=pending, debit=int(debit), credit=int(credit),
         ))
     return lines
+
+
+def return_lines(filing, *, branch_ids=None):
+    """The ledger lines ``filing`` declares, for listing them line by line.
+
+    A queryset of :class:`~vs_finance.models.JournalLine`, oldest first, each
+    annotated with ``tax_role`` (PAYABLE or RECOVERABLE), ``counted_branch_id``
+    (the branch it counts under), ``is_late`` (dated before the return's period)
+    and ``tax_amount`` (signed the way the tax reads it, as
+    :attr:`SourceLine.amount`).
+
+    A filed or paid return lists the lines it stamped, exactly as filed. A draft
+    lists what it would declare if filed now, read the way
+    :func:`work_out_return` reads it (:func:`undeclared_source_lines`), so the
+    list adds up to the draft's figures until the ledger moves under it. A
+    cancelled return declares nothing. ``branch_ids`` narrows to the lines those
+    branches count, which is what a branch-bound reader is shown: Ngozi at Lekki
+    sees Lekki's lines of the tenant's March VAT return, never Ikeja's.
+    """
+    from django.db.models import BigIntegerField, BooleanField, Case, CharField, F, Value, When
+    from django.db.models.functions import Coalesce
+
+    from .models import JournalLine
+
+    if filing.filing_status in FILED_STATUSES:
+        lines = JournalLine.objects.filter(tax_declaration__filing=filing).annotate(
+            tax_role=F("tax_declaration__role"),
+            counted_branch_id=F("tax_declaration__branch_id"),
+            is_late=F("tax_declaration__is_late"),
+        )
+    elif filing.filing_status == TaxFilingStatus.DRAFT:
+        rule = branch_rule(filing.entity)
+        counted = (
+            Coalesce(F("entry__branch_id"), Value(rule.only_branch_id))
+            if rule.only_branch_id is not None else F("entry__branch_id")
+        )
+        lines = undeclared_source_lines(filing.obligation, period_end=filing.period_end).annotate(
+            tax_role=Case(
+                *[When(account_id=account_id, then=Value(role))
+                  for account_id, role in source_roles(filing.obligation).items()],
+                output_field=CharField(),
+            ),
+            counted_branch_id=counted,
+            is_late=Case(
+                When(entry__date__lt=filing.period_start, then=Value(True)),
+                default=Value(False), output_field=BooleanField(),
+            ),
+        )
+        if filing.branch_id is not None:
+            lines = lines.filter(counted_branch_id=filing.branch_id)
+    else:
+        return JournalLine.objects.none()
+    if branch_ids is not None:
+        lines = lines.filter(counted_branch_id__in=tuple(sorted(branch_ids)))
+    return lines.annotate(
+        tax_amount=Case(
+            When(tax_role=TaxSourceRole.PAYABLE, then=F("credit") - F("debit")),
+            default=F("debit") - F("credit"),
+            output_field=BigIntegerField(),
+        ),
+    ).select_related("entry", "account").order_by("entry__date", "id")
 
 
 @dataclass

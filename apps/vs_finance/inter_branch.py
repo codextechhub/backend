@@ -1553,7 +1553,14 @@ def inter_branch_close_check(entity, period, *, branch=None):
     later statement. A single branch's close passes ``branch`` and reads only the
     pairs that branch is part of, as a warning: the fault may sit in the other
     branch's books, which that branch cannot correct.
+
+    The detail is read by a bursar on the close screen, so it names branches and
+    gives naira (:func:`vs_finance.money.format_naira`), never ids or kobo:
+    "Ikeja Branch and Lekki Branch disagree: Ikeja Branch's books say Lekki
+    Branch owes Ikeja Branch N50.00; Lekki Branch's books say nothing is owed".
     """
+    from vs_tenants.models import Branch
+
     from .branch_ledger import ledger_lines
     from .close import ChecklistItem
 
@@ -1585,14 +1592,37 @@ def inter_branch_close_check(entity, period, *, branch=None):
     )
     if unpaired:
         problems.append(f"{unpaired} inter-branch balance(s) name no branch or no counterparty")
-    for a, b in sorted({tuple(sorted(key)) for key in net if None not in key}):
-        if concerns(a, b) and net.get((a, b), 0) != -net.get((b, a), 0):
+    disputed = [
+        (a, b) for a, b in sorted({tuple(sorted(key)) for key in net if None not in key})
+        if concerns(a, b) and net.get((a, b), 0) != -net.get((b, a), 0)
+    ]
+    if disputed:
+        ids = {pk for pair in disputed for pk in pair}
+        names = dict(
+            Branch.all_objects.filter(tenant_id=entity.tenant_id, pk__in=ids).values_list("pk", "name")
+        )
+
+        def named(pk):
+            return names.get(pk) or f"branch {pk}"
+
+        def owing(owed_to, owed_by, amount):
+            """What one side's books say: ``amount`` is what ``owed_by`` owes ``owed_to``."""
+            if amount > 0:
+                return f"{named(owed_by)} owes {named(owed_to)} {format_naira(amount)}"
+            if amount < 0:
+                return f"{named(owed_to)} owes {named(owed_by)} {format_naira(-amount)}"
+            return "nothing is owed"
+
+        for a, b in disputed:
             problems.append(
-                f"branches {a} and {b} disagree: {net.get((a, b), 0)} kobo on one side and "
-                f"{-net.get((b, a), 0)} kobo on the other",
+                f"{named(a)} and {named(b)} disagree: {named(a)}'s books say "
+                f"{owing(a, b, net.get((a, b), 0))}; {named(b)}'s books say "
+                f"{owing(a, b, -net.get((b, a), 0))}",
             )
-    if blocking and sum(net.values()):
-        problems.append(f"the inter-branch account nets to {sum(net.values())} kobo, not zero")
+    if blocking and (total := sum(net.values())):
+        side = "debit" if total > 0 else "credit"
+        problems.append(
+            f"the inter-branch account nets to {format_naira(abs(total))} {side}, not zero")
     return ChecklistItem(
         name=name, passed=not problems, blocking=blocking,
         detail="; ".join(problems) or "inter-branch balances net to zero and every pair agrees",

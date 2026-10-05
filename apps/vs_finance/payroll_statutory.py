@@ -1018,31 +1018,77 @@ def _jsonable(values: dict) -> dict:
     return {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in values.items()}
 
 
+def terms_reference_date(salary, effective_from=None):
+    """The day whose terms a change to ``salary`` is judged against.
+
+    The tenant's today, or the change's effective date when that is later.
+    The roster shows the terms in force today
+    (:meth:`~vs_finance.models.EmployeeSalary.terms_shown_on`), and an edit form
+    sends them back, so a value equal to today's is not a change, whatever a
+    future version holds. A change dated after today is judged against the
+    terms in force on its own date: Aisha is on N300,000 with a raise to
+    N320,000 from January, and N300,000 sent with a January date cancels the
+    raise, so it is a change. Undated, the date is
+    :func:`default_effective_from`. :func:`change_terms` and the write check on
+    the roster's update (``_salary_pay_held``) both read this one date, so what
+    the check judges is what the write changes.
+    """
+    from vs_config.clock import tenant_today
+
+    effective_from = effective_from or default_effective_from(salary)
+    return max(tenant_today(salary.entity.tenant), effective_from)
+
+
 @transaction.atomic
 def change_terms(salary, values: dict, *, effective_from=None, reason="", actor_user=None):
     """Write a new version of ``salary``'s pay terms from ``values``, audited.
 
     ``values`` maps fields of :data:`TERM_FIELDS` (ids for the foreign keys) to
-    their new value; the rest carry over from the terms in force. Undated, the
-    change takes effect from the first payroll month not yet paid
-    (:func:`default_effective_from`). A row with no history yet first records its
-    current terms as the version "from the start", so the months before the
-    change keep reading what they were paid on. Returns the new version, or None
-    when nothing changed.
+    their new value. Undated, the change takes effect from the first payroll
+    month not yet paid (:func:`default_effective_from`). Returns the new
+    version, or None when nothing changed.
+
+    A value is a change only where it differs from the terms in force on
+    :func:`terms_reference_date`, the terms the caller was shown; the rest of
+    ``values`` is an edit form sending back what it showed, and writes nothing.
+    The new version is the terms in force on the effective date with the
+    changes applied, so a later dated change is neither brought forward nor
+    lost. Aisha is on N300,000 at Ikeja with a raise to N320,000 from January;
+    her cost centre is changed from October. October's version keeps N300,000
+    and names the new cost centre, and January's raise stays in January.
+
+    A change then reaches every later version that did not change the same
+    term itself: January's version names the new cost centre too, because it
+    raised her pay and left her cost centre as it was. Every later version up
+    to the reference date takes the change outright, since the caller saw the
+    terms in force on that date and changed them; a version after it that sets
+    its own value of the term keeps it, as a raise to N320,000 from January
+    stays when her pay is corrected to N310,000 from October. Only versions
+    after the effective date are rewritten, and that date is never inside a
+    month already paid, so no paid month changes.
+
+    A row with no history yet first records its current terms as the version
+    "from the start", so the months before the change keep reading what they
+    were paid on.
     """
     from .models import PAYROLL_HISTORY_START, EmployeeSalaryVersion
 
     salary = type(salary).objects.select_for_update().get(pk=salary.pk)
-    current = salary.terms_on(datetime.date.max) or salary
-    after = {**_terms_snapshot(current), **values}
-    before = _terms_snapshot(current)
-    changed = {k: v for k, v in after.items() if before.get(k) != v}
+    effective_from = effective_from or default_effective_from(salary)
+    reference_date = terms_reference_date(salary, effective_from)
+    shown = _terms_snapshot(salary.terms_shown_on(reference_date))
+    changed = {k: v for k, v in values.items() if shown.get(k) != v}
     if not changed:
         return None
 
-    effective_from = effective_from or default_effective_from(salary)
+    base = salary.terms_on(effective_from)
+    if base is None:
+        base = salary.terms_shown_on(effective_from)
+    before = _terms_snapshot(base)
+    after = {**before, **changed}
+
     assert_effective_date_open(salary, effective_from)
-    if "branch_id" in changed:
+    if after["branch_id"] != before["branch_id"]:
         assert_move_reaches_a_run(salary, after["branch_id"], effective_from)
     assert_branch_required(salary.entity, after["branch_id"], salary.is_active)
 
@@ -1051,10 +1097,15 @@ def change_terms(salary, values: dict, *, effective_from=None, reason="", actor_
             salary=salary, effective_from=PAYROLL_HISTORY_START,
             reason="Terms in force before salary history was kept.", **before,
         )
+    later = list(
+        salary.versions.select_for_update()
+        .filter(effective_from__gt=effective_from).order_by("effective_from", "id")
+    )
     version = EmployeeSalaryVersion.objects.create(
         salary=salary, effective_from=effective_from, reason=reason[:255],
         created_by=actor_user, **after,
     )
+    carried = _carry_forward(later, changed, before, reference_date)
     _mirror_latest(salary)
     record(
         entity=salary.entity, action=FinanceAuditAction.SALARY_CHANGED, actor_user=actor_user,
@@ -1063,8 +1114,36 @@ def change_terms(salary, values: dict, *, effective_from=None, reason="", actor_
         before=_jsonable({k: before.get(k) for k in changed}),
         after=_jsonable(changed), effective_from=effective_from.isoformat(),
         version_id=version.pk, reason=reason[:255],
+        carried_to_version_ids=[v.pk for v in carried],
     )
     return version
+
+
+def _carry_forward(later, changed: dict, before: dict, reference_date) -> list:
+    """Apply ``changed`` to the versions after a change, as :func:`change_terms` describes.
+
+    ``later`` is in date order. A version up to ``reference_date`` takes every
+    changed term; one after it takes a term only where it held the same value
+    as the version before it did, before the change. Returns the versions
+    rewritten.
+    """
+    carried = []
+    previous = dict(before)
+    for version in later:
+        original = _terms_snapshot(version)
+        fields = [
+            name for name in changed
+            if version.effective_from <= reference_date or original[name] == previous[name]
+        ]
+        for name in fields:
+            setattr(version, name, changed[name])
+        fields = [name for name in fields if original[name] != changed[name]]
+        if fields:
+            version.save(update_fields=[name.removesuffix("_id") for name in fields]
+                         + ["updated_at"])
+            carried.append(version)
+        previous = original
+    return carried
 
 
 def _mirror_latest(salary) -> None:

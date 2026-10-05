@@ -1771,8 +1771,11 @@ class EmployeeSalary(TimeStampedModel):
     The pay terms (branch, structure, gross, typed PAYE and pension, cost centre,
     state of residence) keep their history as
     :class:`~vs_finance.models.EmployeeSalaryVersion` rows, each effective from a
-    date; the columns here mirror the latest. A payroll month reads the terms in
-    force on its payroll date (:meth:`terms_on`). A row with no versions yet is
+    date; the columns here mirror the latest, which may not be in force yet. A
+    payroll month reads the terms in force on its payroll date (:meth:`terms_on`),
+    and the roster shows the terms in force on the reader's today
+    (:meth:`terms_shown_on`) with the next dated change beside them
+    (:meth:`next_terms_after`), never the columns. A row with no versions yet is
     read from its own columns for every date.
 
     The statutory profile sits beside the terms: the person's tax number, pension
@@ -1887,6 +1890,39 @@ class EmployeeSalary(TimeStampedModel):
             return terms.branch_id
         first = min(self.versions.all(), key=lambda v: (v.effective_from, v.pk))
         return first.branch_id
+
+    def terms_shown_on(self, date):
+        """The terms a reader on ``date`` is shown: a version, or this row.
+
+        The terms in force on ``date`` (:meth:`terms_on`). A row whose first
+        version starts later (a hire dated from next month) is shown that
+        first version, the terms they will start on, as :meth:`branch_on`
+        answers with its branch. Never None.
+        """
+        terms = self.terms_on(date)
+        if terms is not None:
+            return terms
+        return min(self.versions.all(), key=lambda v: (v.effective_from, v.pk))
+
+    def next_terms_after(self, date):
+        """The next dated change after the terms shown on ``date``, or None.
+
+        The version that takes over from :meth:`terms_shown_on` at the earliest
+        later date (the later written, where two share that date). Aisha is on
+        N300,000 today with a raise to N320,000 from January: on any day before
+        January this is the January version. Reads a prefetched ``versions``
+        set when there is one.
+        """
+        versions = list(self.versions.all())
+        if not versions:
+            return None
+        shown = self.terms_shown_on(date)
+        after = max(date, shown.effective_from)
+        later = [v for v in versions if v.effective_from > after]
+        if not later:
+            return None
+        start = min(v.effective_from for v in later)
+        return max((v for v in later if v.effective_from == start), key=lambda v: v.pk)
 
     def __str__(self) -> str:
         return f"{self.name}: gross {self.gross_amount}"

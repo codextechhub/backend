@@ -17,7 +17,7 @@ branch-bound reader only the pairs their branches are part of.
 from __future__ import annotations
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from rest_framework import serializers
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from vs_config.clock import branch_today
@@ -46,6 +46,7 @@ from ..models import (
     HeldForBranchReceipt,
     InterBranchRecharge,
     InterBranchTransfer,
+    ReceivableTransferItem,
     SharedCostRule,
     SharedCostRuleShare,
 )
@@ -53,6 +54,7 @@ from ..views import resolve_entity
 from .base import _FinanceBase, _bank_account_in_reach, _date, _resolve_account, _transaction_branch
 
 __all__ = [
+    "HeldReceiptCustomerLookupView",
     "HeldReceiptDetailView",
     "HeldReceiptForwardView",
     "HeldReceiptListCreateView",
@@ -157,7 +159,25 @@ def _reach(request):
 # --------------------------------------------------------------------------- #
 
 class InterBranchTransferSerializer(serializers.ModelSerializer):
-    """One transfer, both branches named."""
+    """One transfer, both branches named.
+
+    A receivable move also says what it carried and who owes whom for it:
+
+    * ``moved_items``: each document the move carried (:class:`ReceivableTransferItem`),
+      as ``kind`` (``INVOICE``, ``DEBIT_NOTE``, ``RECEIPT_CREDIT``, ``NOTE_CREDIT``),
+      ``document_number``, ``invoice_id`` / ``note_id`` / ``payment_id``,
+      ``amount`` (the balance moved, or the credit drawn) and ``deferred_amount``
+      (income not yet earned that moved with an invoice);
+    * ``net_owed``: open bills less the credit and unearned income handed over,
+      which is the inter-branch balance the move booked, as ``amount`` with
+      ``owed_by`` and ``owed_to`` (``{id, name}``, both ``null`` when it nets to
+      nothing). Tunde moves from Ikeja to Lekki owing 170k with 20k of credit:
+      Lekki owes Ikeja 150k.
+
+    Every other kind has no moved items and ``net_owed`` is ``null``: what it
+    moved is ``amount``. A move is party to both its branches, so a reader of
+    either sees what it carried.
+    """
 
     kind_label = serializers.CharField(source="get_kind_display", read_only=True)
     branch_name = serializers.CharField(source="branch.name", read_only=True)
@@ -167,6 +187,8 @@ class InterBranchTransferSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source="customer.name", read_only=True, default=None)
     stage = serializers.CharField(read_only=True)
     journals = serializers.SerializerMethodField()
+    moved_items = serializers.SerializerMethodField()
+    net_owed = serializers.SerializerMethodField()
 
     class Meta:
         model = InterBranchTransfer
@@ -177,8 +199,9 @@ class InterBranchTransferSerializer(serializers.ModelSerializer):
             "from_bank_account_id", "from_bank_account_name",
             "to_bank_account_id", "to_bank_account_name",
             "customer_id", "customer_name", "held_receipt_id", "receipt_id", "recharge_id",
+            "adjustment_entry_id",
             "requested_at", "sent_at", "received_at", "arrival_date",
-            "declined_at", "decline_reason", "journals",
+            "declined_at", "decline_reason", "journals", "moved_items", "net_owed",
         ]
 
     def get_journals(self, obj):
@@ -186,6 +209,44 @@ class InterBranchTransferSerializer(serializers.ModelSerializer):
             {"role": leg.role, "branch_id": leg.branch_id, "journal_id": leg.journal_id}
             for leg in obj.legs.all()
         ]
+
+    def _items(self, obj):
+        if obj.kind != InterBranchTransferKind.RECEIVABLE:
+            return []
+        return list(obj.moved_items.all())
+
+    def get_moved_items(self, obj):
+        rows = []
+        for item in self._items(obj):
+            document = item.invoice or item.note or item.payment
+            rows.append({
+                "kind": item.kind,
+                "document_number": getattr(document, "document_number", "") or "",
+                "invoice_id": item.invoice_id,
+                "note_id": item.note_id,
+                "payment_id": item.payment_id,
+                "amount": int(item.amount),
+                "deferred_amount": int(item.deferred_amount),
+            })
+        return rows
+
+    def get_net_owed(self, obj):
+        from ..constants import ReceivableMoveItemKind as Kind
+
+        if obj.kind != InterBranchTransferKind.RECEIVABLE:
+            return None
+        net = 0
+        for item in self._items(obj):
+            if item.kind in (Kind.INVOICE, Kind.DEBIT_NOTE):
+                net += int(item.amount) - int(item.deferred_amount)
+            else:
+                net -= int(item.amount)
+        if net == 0:
+            return {"amount": 0, "owed_by": None, "owed_to": None}
+        sender = {"id": obj.branch_id, "name": obj.branch.name}
+        receiver = {"id": obj.to_branch_id, "name": obj.to_branch.name}
+        owed_by, owed_to = (receiver, sender) if net > 0 else (sender, receiver)
+        return {"amount": abs(net), "owed_by": owed_by, "owed_to": owed_to}
 
 
 class HeldReceiptSerializer(serializers.ModelSerializer):
@@ -264,11 +325,16 @@ class SharedCostRuleSerializer(serializers.ModelSerializer):
 def _transfers_in_reach(request, entity):
     from ..inter_branch import transfers_visible_q
 
+    moved = ReceivableTransferItem.objects.select_related("invoice", "note", "payment").only(
+        "id", "transfer_id", "kind", "invoice_id", "note_id", "payment_id", "amount",
+        "deferred_amount", "invoice__document_number", "note__document_number",
+        "payment__document_number",
+    ).order_by("kind", "id")
     return (
         InterBranchTransfer.objects
         .filter(transfers_visible_q(transaction_branch_scope(request)), entity=entity)
         .select_related("branch", "to_branch", "from_bank_account", "to_bank_account", "customer")
-        .prefetch_related("legs")
+        .prefetch_related("legs", Prefetch("moved_items", queryset=moved))
     )
 
 
@@ -317,7 +383,9 @@ class InterBranchTransferListCreateView(_FinanceBase):
 
     GET lists every transfer whose sending or receiving branch the caller works
     in, newest first. Filters: ``kind``, ``status``, ``branch`` (either side),
-    ``counterparty`` (with ``branch``, the other side), ``date_from``/``date_to``.
+    ``counterparty`` (with ``branch``, the other side), ``date_from``/``date_to``,
+    and ``adjustment`` (a journal id: the income the credit note or concession
+    with that journal gave back).
 
     POST sends money unprompted from one of the caller's own branches' accounts:
     ``from_bank_account`` (id or name), ``to_branch``, optional ``to_bank_account``
@@ -351,6 +419,10 @@ class InterBranchTransferListCreateView(_FinanceBase):
             qs = qs.filter(transfer_date__gte=start)
         if (end := _date(params.get("date_to"), "date_to")):
             qs = qs.filter(transfer_date__lte=end)
+        if (adjustment := params.get("adjustment")) not in (None, ""):
+            if not str(adjustment).isdigit():
+                raise ValidationError({"adjustment": "Expected a journal id."})
+            qs = qs.filter(adjustment_entry_id=int(adjustment))
         return self.paginate(request, qs.order_by("-transfer_date", "-id"), InterBranchTransferSerializer)
 
     def post(self, request):
@@ -700,6 +772,48 @@ class HeldReceiptListCreateView(_FinanceBase):
             f"Held for {for_branch.name} as {held.document_number}.",
             data=HeldReceiptSerializer(held).data, status=201,
         )
+
+
+class HeldReceiptCustomerLookupView(_FinanceBase):
+    """GET /finance/held-receipts/customer-lookup/?entity=&for_branch=&code= - whose money it is.
+
+    Mrs Adeyemi pays her son's Lekki fees into Ikeja's account, and Ikeja's
+    bursar, who cannot list Lekki's customers, records it as held for Lekki. This
+    answers the one question that form asks before posting: which customer does
+    the code on her teller name at Lekki? It returns ``id``, ``code``, ``name``
+    and ``branch_id`` for an exact code of ``for_branch``'s customer, or of one
+    every branch shares, and nothing else: no balance, contact or invoice.
+
+    The exposure is the one the POST already makes: it accepts the same code at
+    the same branch and echoes the customer's name back. An exact code only,
+    never a search, so another branch's customer list cannot be walked from here.
+    A code that names no such customer is a 404, the same as one at another
+    tenant. Gated on ``finance.payment.create``, the key that records the money.
+
+    docstring-name: Find a customer for a held receipt
+    """
+
+    rbac_permission = "finance.payment.create"
+
+    def get(self, request):
+        from ..inter_branch import require_several_branches
+
+        entity = resolve_entity(request)
+        require_several_branches(entity)
+        params = request.query_params
+        for_branch = _branch(entity, params.get("for_branch"), "for_branch")
+        code = str(params.get("code") or "").strip().upper()
+        if not code:
+            raise ValidationError({"code": "Give the customer's code."})
+        customer = (
+            Customer.objects.filter(entity=entity, code=code)
+            .filter(Q(branch=for_branch) | Q(branch__isnull=True))
+            .values("id", "code", "name", "branch_id")
+            .first()
+        )
+        if customer is None:
+            raise NotFound(f"No customer '{code}' of {for_branch.name}.")
+        return success_response("Customer found.", data=customer)
 
 
 class HeldReceiptDetailView(_FinanceBase):

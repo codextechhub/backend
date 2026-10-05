@@ -206,6 +206,85 @@ def _single_branch(entity):
     return only_branch_id(entity.tenant) is not None
 
 
+def calendar_branch_states(request, entity, rows, model) -> dict:
+    """Where each branch stands in each of ``rows`` (periods or years), for one page.
+
+    ``{row_pk: [{"branch", "branch_name", "status", "closed_at"}, ...]}``, one
+    entry per in-service branch in the caller's reach, ordered by branch name. A
+    branch that has never closed, soft-closed or locked the row on its own has
+    no row of its own and stands where the tenant does, so it takes the row's
+    status (and, for a period, its ``closed_at``). Bright Star's close screen
+    shows September as Ikeja CLOSED on 5 October, Lekki and Abuja OPEN; Ikeja's
+    bursar sees only Ikeja's entry.
+
+    Two queries whatever the page holds: the branches in reach, and every
+    branch row for the page.
+    """
+    from vs_rbac.scoping import caller_branch_ids
+    from vs_tenants.models import Branch
+
+    from .models import BranchFiscalPeriod, BranchFiscalYear
+
+    rows = list(rows)
+    branches = Branch.all_objects.filter(
+        tenant_id=entity.tenant_id, status__in=Branch.IN_SERVICE_STATES,
+    )
+    reach = caller_branch_ids(request)
+    if reach is not None:
+        branches = branches.filter(pk__in=tuple(sorted(reach)))
+    branches = list(branches.order_by("name", "pk").values_list("pk", "name"))
+    state_model, parent = (
+        (BranchFiscalPeriod, "period_id") if model is FiscalPeriod
+        else (BranchFiscalYear, "fiscal_year_id")
+    )
+    states = {
+        (getattr(state, parent), state.branch_id): state
+        for state in state_model.objects.filter(**{
+            f"{parent}__in": [row.pk for row in rows],
+            "branch_id__in": [pk for pk, _name in branches],
+        })
+    }
+    result = {}
+    for row in rows:
+        result[row.pk] = []
+        for pk, name in branches:
+            state = states.get((row.pk, pk))
+            result[row.pk].append({
+                "branch": pk,
+                "branch_name": name,
+                "status": state.status if state else row.status,
+                "closed_at": state.closed_at if state else getattr(row, "closed_at", None),
+            })
+    return result
+
+
+class _BranchStatesListMixin:
+    """``?include_branches=true`` adds ``branch_states`` to every row of a calendar list.
+
+    See :func:`calendar_branch_states`. Without the flag the rows are exactly as
+    before, and the branch rows are never read.
+    """
+
+    def include_branches(self) -> bool:
+        return self.request.query_params.get("include_branches", "").lower() == "true"
+
+    def branch_states_context(self, rows) -> dict:
+        context = self.get_serializer_context()
+        if self.include_branches():
+            context["branch_states"] = calendar_branch_states(
+                self.request, getattr(self, "entity", None) or resolve_entity(self.request), rows,
+                self.serializer_class.Meta.model,
+            )
+        return context
+
+    def get_serializer(self, *args, **kwargs):
+        if kwargs.get("many") and args and self.include_branches():
+            rows = list(args[0])
+            args = (rows, *args[1:])
+            kwargs["context"] = self.branch_states_context(rows)
+        return super().get_serializer(*args, **kwargs)
+
+
 # Group behavior for Entity Scoped List Mixin.
 class EntityScopedListMixin:
     """A ListAPIView whose queryset is filtered to the resolved entity via ``entity_qs``.
@@ -777,7 +856,7 @@ class AccountActivityView(APIView):
         return response
 
 
-class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
+class FiscalPeriodListView(_BranchStatesListMixin, EntityScopedListMixin, generics.ListAPIView):
     """GET /finance/periods/?entity= - the entity's fiscal periods.
 
     Open to anyone holding a finance key, the same rule as the entity list and
@@ -792,6 +871,9 @@ class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
     and closes with its year, so it has no place among the months a person closes
     or picks. The months of an archived year are left out unless
     ``?include_archived=true`` (:mod:`vs_finance.archive`).
+
+    ``?include_branches=true`` adds ``branch_states`` to every period: where each
+    branch in the caller's reach stands in it (:func:`calendar_branch_states`).
 
     docstring-name: Fiscal periods
     """
@@ -808,14 +890,16 @@ class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
             raise ValidationError({
                 "year": "The year filter is required when requesting a complete calendar.",
             })
-        entity = resolve_entity(request)
-        rows = self.entity_qs(entity)
+        self.entity = entity = resolve_entity(request)
+        rows = list(self.entity_qs(entity))
         # Do not use success_response here: its historical ``data or {}`` fallback
         # turns an empty list into {}, which breaks every period picker.
         return Response({
             "success": True,
             "message": "Fiscal periods retrieved.",
-            "data": FiscalPeriodSerializer(rows, many=True).data,
+            "data": FiscalPeriodSerializer(
+                rows, many=True, context=self.branch_states_context(rows),
+            ).data,
         })
 
     # Handle the entity qs workflow.
@@ -879,7 +963,9 @@ class PostingWindowView(APIView):
 
 
 # Group endpoint behavior for Fiscal Year List View.
-class FiscalYearListView(_FiscalCalendarWriteMixin, EntityScopedListMixin, generics.ListAPIView):
+class FiscalYearListView(
+    _BranchStatesListMixin, _FiscalCalendarWriteMixin, EntityScopedListMixin, generics.ListAPIView,
+):
     """List fiscal years or open the next fiscal calendar for an entity.
 
     ``?status=OPEN`` narrows to open years (the ones a new budget can target).
@@ -892,6 +978,9 @@ class FiscalYearListView(_FiscalCalendarWriteMixin, EntityScopedListMixin, gener
     already entitled to, and the New budget form picks its year from this list.
     Gating it on ``finance.period.view`` left a bursar who may create budgets
     unable to choose a year. Opening a year keeps ``finance.period.create``.
+
+    ``?include_branches=true`` adds ``branch_states`` to every year: where each
+    branch in the caller's reach stands in it (:func:`calendar_branch_states`).
 
     docstring-name: Fiscal years
     """
@@ -1019,7 +1108,10 @@ class JournalSummaryView(APIView):
     """Status counts + posted total.
 
     Powers the Journal Entries status tabs and footer (one cheap aggregate, honours
-    the same source/date/search filters as the list).
+    the same source/date/search filters as the list). Journals dated in an
+    archived fiscal year are left out unless ``?include_archived=true``, as the
+    list leaves them out (:func:`vs_finance.archive.hide_archived`), so each
+    tab's count is the number of rows the tab shows.
 
     docstring-name: Journal summary
     """
@@ -1031,12 +1123,13 @@ class JournalSummaryView(APIView):
     def get(self, request):
         from django.db.models import Count, Q, Sum
         from django.db.models.functions import Coalesce
+        from .archive import hide_archived
         from .constants import DocumentStatus
 
         entity = resolve_entity(request)
-        qs = JournalEntry.objects.filter(
+        qs = hide_archived(JournalEntry.objects.filter(
             transaction_branch_q(request), entity=entity,
-        )
+        ), request)
         params = request.query_params
         if (source := params.get("source")):
             qs = qs.filter(source=source)
@@ -1289,7 +1382,10 @@ class InvoiceSummaryView(APIView):
 
     Powers the Student-Invoices KPI cards (total invoiced/collected, collection
     rate, overdue balance + a 12-month series for the sparklines), the status tabs
-    and the footer totals. Honours the same ``?search=`` as the list.
+    and the footer totals. Honours the same ``?search=`` as the list, and leaves
+    out what the invoice and receipt lists leave out: documents dated in an
+    archived fiscal year, unless ``?include_archived=true``
+    (:func:`vs_finance.archive.hide_archived`; a bill still owed stays in).
 
     docstring-name: Invoice summary
     """
@@ -1305,11 +1401,16 @@ class InvoiceSummaryView(APIView):
         from .constants import DocumentStatus, InvoicePaymentStatus
         from .models import Invoice, Payment
 
+        from .archive import hide_archived
+
         entity = resolve_entity(request)
         today = tenant_today(entity.tenant)
-        base = Invoice.objects.filter(
+        base = hide_archived(Invoice.objects.filter(
             transaction_branch_q(request), entity=entity,
-        )
+        ), request)
+        receipts = hide_archived(Payment.objects.filter(
+            transaction_branch_q(request), entity=entity, status=DocumentStatus.POSTED,
+        ), request)
         if (search := request.query_params.get("search")):
             base = base.filter(
                 Q(document_number__icontains=search)
@@ -1321,10 +1422,7 @@ class InvoiceSummaryView(APIView):
         bal = F("total") - F("amount_paid") - F("amount_credited")
 
         invoiced = posted.aggregate(t=Coalesce(Sum("total"), 0))["t"]
-        collected = Payment.objects.filter(
-            transaction_branch_q(request),
-            entity=entity, status=DocumentStatus.POSTED,
-        ).aggregate(t=Coalesce(Sum("amount"), 0))["t"]
+        collected = receipts.aggregate(t=Coalesce(Sum("amount"), 0))["t"]
         overdue_balance = unpaid_posted.filter(
             branch_day_q(entity.tenant, "branch", lambda day: Q(due_date__lt=day)),
         ).aggregate(t=Coalesce(Sum(bal), 0))["t"]
@@ -1346,9 +1444,8 @@ class InvoiceSummaryView(APIView):
         start = datetime.date(y, mo, 1)
         inv_m = {r["m"]: int(r["s"] or 0) for r in posted.filter(invoice_date__gte=start)
                  .annotate(m=TruncMonth("invoice_date")).values("m").annotate(s=Sum("total"))}
-        col_m = {r["m"]: int(r["s"] or 0) for r in Payment.objects
-                 .filter(transaction_branch_q(request), entity=entity,
-                         status=DocumentStatus.POSTED, payment_date__gte=start)
+        col_m = {r["m"]: int(r["s"] or 0) for r in receipts
+                 .filter(payment_date__gte=start)
                  .annotate(m=TruncMonth("payment_date")).values("m").annotate(s=Sum("amount"))}
         monthly, cur = [], start
         for _ in range(12):

@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 
 from vs_config.clock import tenant_today
 
@@ -122,6 +122,71 @@ def match_differences(differences):
         if not surplus[owed]:
             del surplus[owed]
     return debts
+
+
+def branch_book_balances(entity, ledger, split_date) -> dict:
+    """Each branch's own balance on a shared bank ledger at the end of ``split_date``.
+
+    ``{branch_id: kobo}``, debits less credits of the posted ledger lines each
+    branch's entries hold on ``ledger`` dated on or before ``split_date``, in
+    branch id order. A branch whose entries net to nothing keeps its key with 0.
+    Lines of entries not yet given a branch sit under ``None``, last; a split
+    refuses while any remain, and its preview reports them.
+
+    This is the one reading of a branch's book balance: the split measures each
+    branch's difference from its agreed share against it, and the preview shows
+    it before anyone agrees a share, so the two cannot drift apart.
+    """
+    from .branch_ledger import ledger_lines
+
+    rows = (
+        ledger_lines(entity)
+        .filter(account=ledger, entry__date__lte=split_date)
+        .values("entry__branch_id")
+        .annotate(debit=Sum("debit"), credit=Sum("credit"))
+    )
+    balances = {
+        row["entry__branch_id"]: int(row["debit"] or 0) - int(row["credit"] or 0)
+        for row in rows
+    }
+    return dict(sorted(balances.items(), key=lambda item: (item[0] is None, item[0] or 0)))
+
+
+def split_preview(bank_account, *, split_date) -> dict:
+    """What splitting a shared bank account on ``split_date`` would start from.
+
+    ``legacy_balance`` is the whole ledger's balance, ``unbranched_balance`` the
+    part sitting in entries not yet given a branch (the split refuses until it is
+    0), and ``branches`` lists every in-service branch of the tenant with its own
+    book balance (:func:`branch_book_balances`), plus any other branch whose
+    entries touch the ledger, so the bursars agreeing the shares see every
+    figure the split will measure them against. Bright Star's shared GTBank
+    holds N4,000: Ikeja's entries come to N5,000 and Lekki's to minus N1,000, so
+    the form opens on those two figures before anyone types an agreed share.
+
+    Reads only; refuses an account that already belongs to a branch.
+    """
+    from vs_tenants.models import Branch
+
+    if bank_account.branch_id is not None:
+        raise BankAccountSplitError(
+            f"Bank account {bank_account.name} already belongs to a branch and is not shared."
+        )
+    entity = bank_account.entity
+    balances = branch_book_balances(entity, bank_account.gl_account, split_date)
+    unbranched = balances.pop(None, 0)
+    branches = Branch.all_objects.filter(tenant_id=entity.tenant_id).filter(
+        Q(status__in=Branch.IN_SERVICE_STATES) | Q(pk__in=list(balances)),
+    ).order_by("name", "pk").values_list("pk", "name")
+    return {
+        "legacy_balance": sum(balances.values()) + unbranched,
+        "unbranched_balance": unbranched,
+        "split_date": split_date.isoformat(),
+        "branches": [
+            {"branch_id": pk, "branch_name": name, "book_balance": balances.get(pk, 0)}
+            for pk, name in branches
+        ],
+    }
 
 
 def _branch_id(value):
@@ -374,20 +439,14 @@ def split_shared_bank_account(
             "The legacy ledger still has posted movement without a branch. Run the "
             "branch backfill and place every flagged journal before this cutover."
         )
-    historical_rows = list(
-        legacy_lines.values("entry__branch_id")
-        .annotate(debit=Sum("debit"), credit=Sum("credit"))
-        .order_by("entry__branch_id")
-    )
+    book_balances = branch_book_balances(source.entity, legacy, split_date)
     historical_balances = [
-        (row["entry__branch_id"], int(row["debit"] or 0) - int(row["credit"] or 0))
-        for row in historical_rows
-        if int(row["debit"] or 0) != int(row["credit"] or 0)
+        (branch_id, balance) for branch_id, balance in book_balances.items() if balance
     ]
-    if historical_rows:
+    if book_balances:
         from vs_tenants.models import Branch
 
-        historical_branch_ids = {row["entry__branch_id"] for row in historical_rows}
+        historical_branch_ids = set(book_balances)
         owned_branch_ids = set(
             Branch.all_objects.filter(
                 tenant_id=source.entity.tenant_id,

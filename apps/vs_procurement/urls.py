@@ -162,6 +162,8 @@ urlpatterns = [
     # Inventory / stock ledger
     path("stock-locations/", views.StockLocationListCreateView.as_view(),
          name="proc-stock-locations"),
+    path("stock-locations/transfer-destinations/", views.StockTransferDestinationListView.as_view(),
+         name="proc-stock-transfer-destinations"),
     path("stock-locations/<int:pk>/", views.StockLocationDetailView.as_view(),
          name="proc-stock-location-detail"),
     path("stock-balances/", views.StockBalanceListView.as_view(),

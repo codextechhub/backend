@@ -454,13 +454,20 @@ def _int(value, field, *, required=False, minimum=None, maximum=None):
 UNASSIGNED_REFS = ("unassigned", "none", "null")
 
 
-def _filter_by_branch(qs, request, entity, *, field: str = "branch", column: str | None = None):
+def _filter_by_branch(qs, request, entity, *, field: str = "branch", column: str | None = None,
+                      also: str | None = None):
     """Narrow *qs* by a ``?branch=`` parameter, or leave it alone.
 
     ``field`` names the parameter; ``column`` the relation it filters, without
     its ``_id`` (the parameter's own name when left out). The roster filters on
     ``branch_on``, the branch owning each row today
     (:meth:`~vs_finance.models.EmployeeSalaryQuerySet.with_branch_on`).
+    ``also`` names a second relation a row may match the branch through, such
+    as the shares of a payment from a payer (``shares__branch``): the payment
+    received at Ikeja holding Chidi's share for Lekki is in Lekki's list too.
+    A ``column`` across a relation (``lines__branch``, the branch lines of a
+    provision run) and ``also`` are matched as a subquery, so a row with two
+    lines or shares there is listed once.
 
     One helper for the roster and the runs list because the parameter has to
     mean the same thing on both. ``?branch=unassigned`` finds the people no
@@ -481,6 +488,13 @@ def _filter_by_branch(qs, request, entity, *, field: str = "branch", column: str
     branch = _resolve_branch(entity.tenant, branch_ref, field)
     if branch is None or not caller_may_use_branch(request, branch):
         raise ValidationError({field: BRANCH_NOT_FOUND})
+    if also or "__" in column:
+        from django.db.models import Q
+
+        match = Q(**{f"{column}_id": branch.pk})
+        if also:
+            match |= Q(**{f"{also}_id": branch.pk})
+        return qs.filter(pk__in=qs.model.objects.filter(match).values("pk"))
     return qs.filter(**{f"{column}_id": branch.pk})
 
 

@@ -923,7 +923,9 @@ class SettlementReconciliationView(APIView):
     """GET a settlement reconciliation of gateway records vs. imported bank lines.
 
     Query: ``?entity=``, optional ``?start_date=&end_date=`` (YYYY-MM-DD, inclusive) and
-    ``?provider=``.
+    ``?provider=``. Each gateway row and each unmatched bank line carries
+    ``branch_id`` and ``branch_name``: the branch the money belongs to (or a
+    payout leaves from), and the branch of the bank account a line is on.
 
     docstring-name: Settlement reconciliation
     """
@@ -951,6 +953,13 @@ class SettlementReconciliationView(APIView):
             entity, start_date=_date("start_date"), end_date=_date("end_date"),
             provider=request.query_params.get("provider"), reach=reach,
         )
+        from vs_tenants.models import Branch
+
+        # Branch names for every row and bank line, in one query.
+        branch_names = dict(Branch.objects.filter(
+            pk__in={r.branch_id for r in recon.rows} | {
+                b.branch_id for b in recon.unmatched_bank_lines},
+        ).values_list("pk", "name"))
         data = {  # Convert the dataclass into a JSON-safe response payload.
             "entity_code": recon.entity_code,
             "start_date": recon.start_date.isoformat() if recon.start_date else None,
@@ -982,6 +991,8 @@ class SettlementReconciliationView(APIView):
                     "settlement_description": r.settlement_description,
                     "via_clearing": r.via_clearing,  # Settles by a settlement match, not a line of its own.
                     "reported_fee": r.reported_fee,
+                    "branch_id": r.branch_id,
+                    "branch_name": branch_names.get(r.branch_id),
                 }
                 for r in recon.rows  # Iterate through the relevant records.
             ],
@@ -992,6 +1003,8 @@ class SettlementReconciliationView(APIView):
                     "txn_date": b.txn_date.isoformat(), "description": b.description,
                     "reference": b.reference, "amount": b.amount,
                     "amount_naira": b.amount_naira,
+                    "branch_id": b.branch_id,
+                    "branch_name": branch_names.get(b.branch_id),
                 }
                 for b in recon.unmatched_bank_lines  # Iterate through the relevant records.
             ],

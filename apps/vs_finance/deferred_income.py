@@ -563,11 +563,16 @@ def invoice_deferred_totals(invoice) -> dict:
     return {"pending": int(row["pending"] or 0), "released": int(row["released"] or 0)}
 
 
-def deferred_income_summary(entity, *, scope=None) -> dict:
-    """Deferred income per state for a reader, in kobo: waiting, released, next due."""
+def deferred_income_summary(entity, *, scope=None, rows=None) -> dict:
+    """Deferred income per state for a reader, in kobo: waiting, released, next due.
+
+    ``rows`` narrows the entity's shares further, as a ``?branch=`` filter does.
+    """
     from .models import DeferredIncomeEntry
 
-    rows = DeferredIncomeEntry.objects.filter(entity=entity)
+    if rows is None:
+        rows = DeferredIncomeEntry.objects.all()
+    rows = rows.filter(entity=entity)
     if scope is not None:
         rows = scope.filter(rows)
     pending = rows.filter(status=DeferredIncomeStatus.PENDING)

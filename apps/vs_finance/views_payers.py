@@ -36,7 +36,13 @@ from .constants import DocumentStatus, PaymentMethod
 from .models import CreditNote, PayerLink, PayerPayment
 from .views import resolve_entity
 from .views_ar import _resolve_customer
-from .views_ops.base import _FinanceBase, _bank_account_in_reach, _date, _money
+from .views_ops.base import (
+    _FinanceBase,
+    _bank_account_in_reach,
+    _date,
+    _filter_by_branch,
+    _money,
+)
 
 __all__ = [
     "PayerLinkDetailView",
@@ -353,7 +359,9 @@ class PayerPaymentListCreateView(_FinanceBase):
     bursar's own split, which overrides any setting). Booked at once: one receipt
     per customer for bills at the bank's branch, one held receipt per customer for
     bills at another branch. GET lists payments received by, or holding money
-    for, the caller's branches; ``?payer=`` narrows it.
+    for, the caller's branches; ``?payer=`` narrows it, and ``?branch=`` keeps
+    the payments received by that branch or holding a share for it (one branch
+    the caller works in; another is answered like one that does not exist).
 
     docstring-name: Payments from a payer
     """
@@ -369,6 +377,7 @@ class PayerPaymentListCreateView(_FinanceBase):
             qs = qs.filter(payer=_resolve_customer(request, entity, request.query_params["payer"], "payer"))
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
+        qs = _filter_by_branch(qs, request, entity, also="shares__branch")
         from core.pagination import XVSPagination
 
         paginator = XVSPagination()

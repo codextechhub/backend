@@ -29,7 +29,8 @@
   balance to its bank, read with ``payments.platform_provider.view`` and changed
   with ``.update``, platform staff only.
 * ``platform/provider-sweeps/``: the provider's settlements of the platform
-  balance that the daily check counted, for the platform settlement readers.
+  balance that the daily check counted, for the platform settlement readers
+  and the provider setting's readers alike.
 """
 from __future__ import annotations
 
@@ -55,13 +56,21 @@ from .reach import PaymentsReach
 
 
 def _bank_row(bank):
-    """One collection account as the settings screen lists it; no account number."""
+    """One collection account as the settings screen lists it; no account number.
+
+    ``subaccount_code`` is the provider's handle for the subaccount, null until
+    one is set up. Served only where the custody settings are: to a holder of
+    ``payments.settings.view`` reading them, and to a ``payments.settings.update``
+    caller saving a subaccount, never to a payout reader who learns the mode
+    alone.
+    """
     if bank is None:
         return None
     return {
         "id": bank.id, "name": bank.name, "bank_name": bank.bank_name,
         "subaccount_ready": bool(bank.gateway_subaccount_code),
         "subaccount_provider": bank.gateway_subaccount_provider or None,
+        "subaccount_code": bank.gateway_subaccount_code or None,
     }
 
 
@@ -502,13 +511,19 @@ class PlatformProviderSweepListView(APIView):
     provider's id, the kobo that reached the platform's bank, when the provider
     settled it, and the day the check counted it. The provider's raw record is
     not served. ``?limit=`` caps the page (at most 200). Platform staff with
-    ``payments.platform_settlement.view`` only, like the checks themselves.
+    ``payments.platform_settlement.view``, like the checks themselves, or with
+    ``payments.platform_provider.view`` or ``.update``, the keys of the sweep
+    setting beside which the screen shows these: any one key opens it.
 
     docstring-name: Provider balance sweeps
     """
 
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff & HasRBACPermission]
-    rbac_permission = "payments.platform_settlement.view"
+    rbac_permission = [
+        "payments.platform_settlement.view",
+        "payments.platform_provider.view",
+        "payments.platform_provider.update",
+    ]
 
     def get(self, request):
         from .models import ProviderSweep

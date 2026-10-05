@@ -71,9 +71,14 @@ class FieldDeclaration:
     resource: str
     fields: tuple[FieldSpec, ...]
     surfaces: tuple[str, ...]
+    write_aliases: tuple[tuple[str, str], ...] = ()
 
     def key_for(self, spec: FieldSpec) -> str:
         return f"{self.module}.{self.resource}.{spec.name}"
+
+    def alias_keys(self) -> dict[str, str]:
+        """Each write alias, mapped to the full key of the field whose write switch governs it."""
+        return {alias: f"{self.module}.{self.resource}.{target}" for alias, target in self.write_aliases}
 
 
 _REGISTRY: dict[tuple[str, str], FieldDeclaration] = {}
@@ -122,6 +127,18 @@ def validate_declaration(declaration: FieldDeclaration) -> None:
                 f"scope of the permission key that guards it: "
                 f"{', '.join(PermissionScope.values)}."
             )
+    writable = {spec.name for spec in declaration.fields if spec.writable}
+    for alias, target in declaration.write_aliases:
+        if not _NAME_RE.match(alias or "") or alias in api_names:
+            raise ValueError(
+                f"Field registry: write alias '{alias}' under '{where}' is not a "
+                f"valid name, or is already a field's client name."
+            )
+        if target not in writable:
+            raise ValueError(
+                f"Field registry: write alias '{alias}' under '{where}' follows "
+                f"'{target}', which is not a writable field of that resource."
+            )
 
 
 def register_fields(
@@ -130,6 +147,7 @@ def register_fields(
     *,
     fields: tuple[FieldSpec, ...],
     surfaces: tuple[str, ...],
+    write_aliases: dict[str, str] | None = None,
 ) -> FieldDeclaration:
     """Declare the restrictable fields of ``module.resource``.
 
@@ -137,12 +155,23 @@ def register_fields(
     earlier declaration, so a reloaded app never doubles its fields. The
     declaration is validated before it is stored, so a refused one leaves the
     registry exactly as it was.
+
+    ``write_aliases`` maps a body key that is not a registered field to the
+    registered field whose write switch governs it: a value anyone who sees the
+    record may read, but that changes a restricted figure when written (the
+    state a person's PAYE is charged in changes their PAYE). The alias has no
+    switch of its own and is never hidden; it is read-only exactly when the
+    field it follows may not be written, and the ``/me`` map and a record's
+    ``_read_only_fields`` list it then, so a form greys it rather than offer a
+    save the write check refuses
+    (:func:`vs_rbac.field_enforcement.field_access_payload`).
     """
     declaration = FieldDeclaration(
         module=module,
         resource=resource,
         fields=tuple(fields),
         surfaces=tuple(surfaces),
+        write_aliases=tuple(sorted((write_aliases or {}).items())),
     )
     validate_declaration(declaration)
     _REGISTRY[(module, resource)] = declaration

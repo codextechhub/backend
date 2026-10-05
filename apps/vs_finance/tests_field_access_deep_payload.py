@@ -42,6 +42,7 @@ class FinanceDeepPayloadTests(DeepPayloadChecks, TestCase):
         _SURFACE + "BankAccountSerializer",
         _SURFACE + "PayrollLineSerializer",
         _SURFACE + "EmployeeSalarySerializer",
+        _SURFACE + "EmployeeSalaryNextTermsSerializer",
         _SURFACE + "EmployeeSalaryVersionSerializer",
         _SURFACE + "EmployeeDeductionSerializer",
         _SURFACE + "PayBroughtForwardSerializer",
@@ -104,6 +105,11 @@ class FinanceDeepPayloadTests(DeepPayloadChecks, TestCase):
             salary=salary, effective_from=datetime.date(2026, 1, 1), branch=branch,
             gross_amount=250_000_00, paye_amount=20_000_00, pension_amount=20_000_00,
         )
+        # A raise not in force yet, so the row carries its next terms too.
+        EmployeeSalaryVersion.objects.create(
+            salary=salary, effective_from=datetime.date(2099, 1, 1), branch=branch,
+            gross_amount=275_000_00, paye_amount=22_000_00, pension_amount=22_000_00,
+        )
         deduction = EmployeeDeduction.objects.create(
             salary=salary, amount=5_000_00, total_limit=60_000_00,
             deduction_type=PayrollDeductionType.objects.create(
@@ -125,6 +131,11 @@ class FinanceDeepPayloadTests(DeepPayloadChecks, TestCase):
                 Sample(_SURFACE + "BankAccountSerializer", bank, tenant=tenant),
                 Sample(_SURFACE + "PayrollLineSerializer", line, tenant=tenant),
                 Sample(_SURFACE + "EmployeeSalarySerializer", salary, tenant=tenant),
+                Sample(_SURFACE + "EmployeeSalaryNextTermsSerializer", {
+                    "effective_from": datetime.date(2099, 1, 1), "branch_id": None,
+                    "branch_name": None, "gross_amount": 275_000_00,
+                    "paye_amount": 22_000_00, "pension_amount": 22_000_00,
+                }, tenant=tenant),
                 Sample(_SURFACE + "EmployeeSalaryVersionSerializer", version, tenant=tenant),
                 Sample(_SURFACE + "EmployeeDeductionSerializer", deduction, tenant=tenant),
                 Sample(_SURFACE + "PayBroughtForwardSerializer", previous, tenant=tenant),

@@ -537,6 +537,12 @@ def _fiscal_runway(entity) -> dict:
     entity still post?" is a question about now, not about the period being reported
     on, and a dashboard pinned to last March must not report a runway that has since
     lapsed as healthy.
+
+    ``today`` is the tenant's date the runway was read on, and ``gaps`` every
+    uncovered stretch between two covered ones (``start``/``end``, ISO dates,
+    oldest first), so the card can name the months nothing can post in: a
+    January year followed by a September year leaves ``2027-01-01`` to
+    ``2027-08-31`` uncovered.
     """
     runway = fiscal_calendar_runway(entity)  # Same read the posting guard mirrors.
     end = runway["calendar_end"]  # Last day any period covers (None when none exist).
@@ -547,6 +553,11 @@ def _fiscal_runway(entity) -> dict:
         "first_uncovered_date": breaks.isoformat(),  # A gap can come before the end.
         "days_remaining": runway["days_remaining"],  # Negative once lapsed, None when no calendar.
         "threshold_days": runway["threshold_days"],  # Notice window the status used.
+        "today": runway["today"].isoformat(),
+        "gaps": [
+            {"start": gap["start"].isoformat(), "end": gap["end"].isoformat()}
+            for gap in runway["gaps"]
+        ],
     }
 
 

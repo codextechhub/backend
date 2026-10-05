@@ -355,6 +355,53 @@ class StockLocationListCreateView(_ProcBase):
         )
 
 
+def _destination_row(location):
+    """A store as a transfer form names it: who runs it, never what it holds."""
+    return {
+        "id": location.pk,
+        "code": location.code,
+        "name": location.name,
+        "branch_id": location.branch_id,
+        "branch_name": location.branch.name if location.branch_id else None,
+    }
+
+
+class StockTransferDestinationListView(_ProcBase):
+    """GET - every live store of the books a stock transfer may send goods to.
+
+    Ikeja's storekeeper sends textbooks to Lekki's store, which Ikeja does not
+    run and cannot list on the stock-locations screen, where a branch-bound
+    reader sees only their own stores. This list names every live store, its
+    own branch's and every other branch's, as ``id``, ``code``, ``name``,
+    ``branch_id`` and ``branch_name``, ordered by branch then code.
+
+    It shows nothing the transfer itself does not already accept: the transfer
+    takes any live store of the books as its destination by id or code
+    (:class:`StockTransferView`), so the form needs the names to offer them. No
+    quantity, value, balance or movement is exposed, and the list grants no way
+    to read or move another branch's stock: the source store is still one the
+    caller runs. Gated on ``procurement.stock.issue``, the transfer's own key;
+    ``?search=`` matches code or name.
+
+    docstring-name: Stock transfer destinations
+    """
+
+    rbac_permission = "procurement.stock.issue"
+
+    def get(self, request):
+        from core.pagination import XVSPagination
+
+        entity = resolve_entity(request)
+        qs = StockLocation.objects.filter(entity=entity, is_active=True).select_related("branch")
+        if (search := str(request.query_params.get("search") or "").strip()):
+            qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
+        qs = qs.order_by("branch__name", "code", "pk")
+        paginator = XVSPagination()
+        paginator.page_size = 25
+        page = paginator.paginate_queryset(qs, request, view=self)
+        return paginator.get_paginated_response([_destination_row(row) for row in page])
+
+
 class StockLocationDetailView(_ProcBase):
     """GET / PATCH one stock location.
 

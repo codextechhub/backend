@@ -2,7 +2,6 @@
 """
 from __future__ import annotations
 
-import datetime
 from collections.abc import Mapping
 
 from django.db import transaction
@@ -605,18 +604,39 @@ def _salary_rows(request, entity):
     )
 
 
+def _roster_read(qs):
+    """*qs* with everything the roster serializer reads, so a page costs no query per row.
+
+    The row's own relations, and its salary history with each version's
+    branch, structure and its lines, cost centre and state: the terms shown
+    are the version in force today and the next one after it
+    (:class:`~vs_finance.serializers.EmployeeSalarySerializer`).
+    """
+    from django.db.models import Prefetch
+
+    from ..models import EmployeeSalaryVersion
+
+    return qs.select_related(
+        "cost_center", "structure", "branch", "residence_state", "pfa",
+    ).prefetch_related(
+        "structure__components",
+        Prefetch("versions", queryset=EmployeeSalaryVersion.objects.select_related(
+            "branch", "structure", "cost_center", "residence_state",
+        ).prefetch_related("structure__components")),
+    )
+
+
 def _salary_data(request, entity, sal):
-    """One roster row as the roster serializer shows it, with its branch as of today.
+    """One roster row as the roster serializer shows it, with its terms as of today.
 
     Read again rather than serialized from the instance in hand, which carries
-    the branch as it stood before a write.
+    the branch and terms as they stood before a write.
     """
-    fresh = (
-        EmployeeSalary.objects.with_branch_on(_reader_today(request, entity))
-        .select_related("cost_center", "structure", "branch", "residence_state", "pfa")
-        .get(pk=sal.pk)
-    )
-    return EmployeeSalarySerializer(fresh, context={"request": request}).data
+    today = _reader_today(request, entity)
+    fresh = _roster_read(EmployeeSalary.objects.with_branch_on(today)).get(pk=sal.pk)
+    return EmployeeSalarySerializer(
+        fresh, context={"request": request, "today": today},
+    ).data
 
 
 # Support the resolve salary workflow.
@@ -778,13 +798,19 @@ def _salary_pay_values(entity, body, *, held_reason=""):
     return submitted
 
 
-def _salary_pay_held(sal):
+def _salary_pay_held(sal, effective_from=None):
     """What ``sal`` holds for each pay key, in the form :func:`_salary_pay_values` gives.
 
-    The terms are those of its latest version, the ones a change is written
-    over (:func:`vs_finance.payroll_statutory.change_terms`).
+    The terms are those in force on the day a change dated ``effective_from``
+    is judged against (:func:`vs_finance.payroll_statutory.terms_reference_date`):
+    today for an undated change, the terms the roster shows, so an edit form
+    sending back what it showed is not refused for a raise dated next year.
+    :func:`~vs_finance.payroll_statutory.change_terms` counts a change against
+    the same terms, so a value passed here as unchanged writes nothing.
     """
-    terms = sal.terms_on(datetime.date.max) or sal
+    from ..payroll_statutory import terms_reference_date
+
+    terms = sal.terms_shown_on(terms_reference_date(sal, effective_from))
     return {
         "gross_amount": terms.gross_amount, "paye_amount": terms.paye_amount,
         "pension_amount": terms.pension_amount, "structure": terms.structure_id,
@@ -818,20 +844,16 @@ class EmployeeSalaryListCreateView(PayFieldWriteMixin, _FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = (
-            _salary_rows(request, entity)
-            .select_related("cost_center", "structure", "branch")
-            .prefetch_related("structure__components")
-        )
+        qs = _roster_read(_salary_rows(request, entity))
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         if (search := request.query_params.get("search")):
             qs = qs.filter(name__icontains=search)
         qs = _filter_by_branch(qs, request, entity, column="branch_on")
+        context = {"request": request, "today": _reader_today(request, entity)}
         return success_response(
             "Employee salaries retrieved.",
-            data=EmployeeSalarySerializer(qs.order_by("name"), many=True,
-                                          context={"request": request}).data,
+            data=EmployeeSalarySerializer(qs.order_by("name"), many=True, context=context).data,
         )
 
     # Handle POST requests for this endpoint.
@@ -932,7 +954,11 @@ class EmployeeSalaryDetailView(PayFieldWriteMixin, _FinanceBase):
         row locked so the values compared are the ones replaced. The edit form
         sends back the structure, state and PFA it was opened with; a bursar
         who may read pay but not change it corrects Tunde's name and saves, and
-        is refused only for a figure whose value actually differs.
+        is refused only for a figure whose value actually differs. The terms
+        compared are the ones the roster shows, in force today (or on the
+        change's own date when that is later), and the write counts a change
+        against the same terms, so a raise dated next year is neither refused
+        nor brought forward by a form that sends today's pay back.
         """
         from ..payroll_statutory import (
             PROFILE_FIELDS,
@@ -950,9 +976,10 @@ class EmployeeSalaryDetailView(PayFieldWriteMixin, _FinanceBase):
         list(EmployeeSalary.objects.select_for_update().filter(pk=sal.pk).values_list("pk"))
         sal.refresh_from_db()
         body = request.data or {}
+        effective_from = _date(body.get("effective_from"), "effective_from")
         self.judge_pay_write(
             _salary_pay_values(entity, body, held_reason=sal.paye_override_reason),
-            current=_salary_pay_held(sal),
+            current=_salary_pay_held(sal, effective_from),
         )
         profile_before = {k: getattr(sal, k) for k in PROFILE_FIELDS + ("is_active",)}
         override_before = (sal.paye_override, sal.paye_override_reason)
@@ -1005,7 +1032,7 @@ class EmployeeSalaryDetailView(PayFieldWriteMixin, _FinanceBase):
                 _resolve_jurisdiction(body.get("residence_state")), "pk", None)
         if terms:
             change_terms(
-                sal, terms, effective_from=_date(body.get("effective_from"), "effective_from"),
+                sal, terms, effective_from=effective_from,
                 reason=str(body.get("reason") or ""), actor_user=request.user,
             )
         record_profile_change(sal, profile_before, actor_user=request.user)

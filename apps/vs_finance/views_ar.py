@@ -316,6 +316,30 @@ def _customer_ledger(entity, customer_ids=None, *, scope=None):
     return out
 
 
+def _pays_for_counts(request, entity, customer_ids) -> dict[int, int]:
+    """How many customers each of ``customer_ids`` pays for, in one query.
+
+    Counts the payer's active links (:class:`~vs_finance.models.PayerLink`)
+    to customers the caller can see, filed under one of their branches or
+    shared, the same links the payer-links list shows them. Mr Okafor pays
+    for Ada at Ikeja and Chidi at Lekki: an Ikeja-only clerk reads 1, a
+    whole-school bursar 2, so the count never tells a clerk about a pupil of
+    a branch they cannot open.
+    """
+    from django.db.models import Count
+
+    from .models import PayerLink
+
+    if not customer_ids:
+        return {}
+    rows = (
+        PayerLink.objects.filter(entity=entity, payer_id__in=customer_ids, is_active=True)
+        .filter(branch_q(request, "customer__", include_shared=True))
+        .values("payer_id").annotate(n=Count("customer_id", distinct=True))
+    )
+    return {row["payer_id"]: row["n"] for row in rows}
+
+
 # Support the account status workflow.
 def _account_status(net: int, overdue: bool) -> str:
     """Derive the customer's account status pill from net balance + aging."""
@@ -341,6 +365,9 @@ class CustomerListCreateView(_FinanceBase):
     customer, for a whole-school reader). That is the set a branch clerk may raise
     a gateway record against on its own, so the payments pickers read it rather
     than offering a shared family that the create then refuses.
+    Each row carries ``pays_for_count``: how many customers it pays for as a
+    payer, counting the ones the reader can see (:func:`_pays_for_counts`),
+    0 for a customer who pays for nobody.
     Customer codes are allocated by the model when a create request omits one;
     explicit codes remain accepted for trusted imports and existing API clients.
 
@@ -392,6 +419,7 @@ class CustomerListCreateView(_FinanceBase):
         paginator.page_size = 25
         page = paginator.paginate_queryset(qs.order_by("code"), request, view=self)
         ledger = _customer_ledger(entity, [c.id for c in page], scope=scope)
+        pays_for = _pays_for_counts(request, entity, [c.id for c in page])
         rows = []
         for c in page:
             row = CustomerSerializer(c).data
@@ -400,6 +428,7 @@ class CustomerListCreateView(_FinanceBase):
             row["balance"] = net                      # signed kobo: + owes, − in credit
             row["balance_naira"] = format_naira(net)
             row["account_status"] = _account_status(net, led.get("overdue", False))
+            row["pays_for_count"] = pays_for.get(c.id, 0)
             rows.append(row)
         return paginator.get_paginated_response(rows)
 
@@ -1566,7 +1595,7 @@ class CreditNoteListCreateView(_FinanceBase):
         # both of which would otherwise load per row on a multi-branch school.
         qs = (CreditNote.objects.filter(transaction_branch_q(request), entity=entity)
               .select_related("customer", "invoice", "entity__tenant", "branch")
-              .prefetch_related("lines"))
+              .prefetch_related("lines__revenue_account", "lines__tax_code", "lines__cost_center"))
         if (kind := request.query_params.get("kind")):
             qs = qs.filter(kind=kind)
         if (customer := request.query_params.get("customer")):
@@ -3870,6 +3899,10 @@ class CustomerCreditTransferListCreateView(_FinanceBase):
     every branch shares, the branch the caller names or works in; both customers
     must be filed under that branch or shared.
 
+    GET filters: ``?status=``, ``?customer=`` (either side) and ``?branch=``, one
+    branch the caller works in (a branch outside their reach is answered like
+    one that does not exist).
+
     docstring-name: Customer credit transfers
     """
 
@@ -3892,6 +3925,9 @@ class CustomerCreditTransferListCreateView(_FinanceBase):
         if (customer := request.query_params.get("customer")):
             who = _resolve_customer(request, entity, customer)
             qs = qs.filter(Q(from_customer=who) | Q(to_customer=who))
+        from .views_ops.base import _filter_by_branch
+
+        qs = _filter_by_branch(qs, request, entity)
         return _paginate(request, qs.order_by("-transfer_date", "-id"),
                          CustomerCreditTransferSerializer, self)
 

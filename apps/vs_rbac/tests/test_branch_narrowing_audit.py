@@ -105,11 +105,12 @@ NARROWERS = (
 #: Flagged lookups whose branch question is answered somewhere else. Keyed by
 #: ``<path>::<function>::<Model>``, which survives ordinary edits to the file.
 SETTLED_ELSEWHERE = {
-    "vs_finance/views_ops/banking.py::post::BankAccount":
-        "Splitting a shared bank account by branch. The handler refuses any "
-        "caller whose reach is not the whole tenant (caller_reaches_whole_tenant) "
-        "before the lookup, because the split changes every named branch's books "
-        "at once, so every branch's account is already in reach.",
+    "vs_finance/views_ops/banking.py::_shared_source::BankAccount":
+        "Splitting a shared bank account by branch, and previewing the split. "
+        "The resolver refuses any caller whose reach is not the whole tenant "
+        "(caller_reaches_whole_tenant) before the lookup, because the split "
+        "changes every named branch's books at once and the preview shows every "
+        "branch's figure, so every branch's account is already in reach.",
     "vs_procurement/views/orders.py::post::PurchaseRequisition":
         "The requisition fixes the order's branch and inherited_branch_id "
         "refuses a caller who may not work in it. The source document decides, "

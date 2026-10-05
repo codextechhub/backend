@@ -29,7 +29,10 @@ not registered names but change a registered figure when written, so they
 travel under its write switch (:data:`PAY_WRITE_ALIASES`): the state of
 residence decides which state's PAYE is charged, the pension fund
 administrator where pension is remitted, and the structure the pay breakdown.
-Reading them is not reading a figure, so their read side is unchanged.
+Reading them is not reading a figure, so their read side is unchanged; they
+are registered as the resource's write aliases, so the ``/me`` map and the
+roster row's ``_read_only_fields`` list each one as read-only exactly when the
+switch it follows may not be written.
 
 The statutory figures travel under the switch of the figure they belong to,
 so a role that may see a person's PAYE sees how it was worked out and a role
@@ -131,6 +134,7 @@ def register():
         "salary",
         surfaces=(
             "vs_finance.serializers.EmployeeSalarySerializer",
+            "vs_finance.serializers.EmployeeSalaryNextTermsSerializer",
             "vs_finance.serializers.EmployeeSalaryVersionSerializer",
             "vs_finance.serializers.EmployeeDeductionSerializer",
             "vs_finance.serializers.PayBroughtForwardSerializer",
@@ -153,4 +157,5 @@ def register():
                       scope=_TENANT, sort_order=50,
                       api_names=("components", "amount", "total_limit", "brought_forward_nhf_amount")),
         ),
+        write_aliases=PAY_WRITE_ALIASES["finance.salary"],
     )

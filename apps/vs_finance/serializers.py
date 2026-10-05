@@ -257,7 +257,22 @@ class AccountSerializer(serializers.ModelSerializer):
         return None
 
 
-class FiscalPeriodSerializer(serializers.ModelSerializer):
+class BranchStatesMixin:
+    """Add ``branch_states`` when the view primed them (``context["branch_states"]``).
+
+    The key is absent otherwise, so every other reader of a period or year gets
+    exactly the shape it always had (:func:`vs_finance.views.calendar_branch_states`).
+    """
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        states = self.context.get("branch_states")
+        if states is not None:
+            data["branch_states"] = states.get(instance.pk, [])
+        return data
+
+
+class FiscalPeriodSerializer(BranchStatesMixin, serializers.ModelSerializer):
     fiscal_year = serializers.IntegerField(source="fiscal_year.year", read_only=True)
     status = serializers.SerializerMethodField()
 
@@ -272,7 +287,7 @@ class FiscalPeriodSerializer(serializers.ModelSerializer):
         return getattr(obj, "_branch_status", obj.status)
 
 
-class FiscalYearSerializer(serializers.ModelSerializer):
+class FiscalYearSerializer(BranchStatesMixin, serializers.ModelSerializer):
     """A fiscal year; ``is_archived`` says whether it is put away (:mod:`vs_finance.archive`)."""
 
     is_archived = serializers.SerializerMethodField()
@@ -311,19 +326,42 @@ class JournalLineSerializer(serializers.ModelSerializer):
         return format_naira(obj.credit)
 
 
+class JournalPeopleListSerializer(serializers.ListSerializer):
+    """Resolve the people who raised a page of journals in one lookup."""
+
+    def to_representation(self, data):
+        from core.person_exit import prime_exit_states
+
+        rows = list(data)
+        prime_exit_states(self.context, (row.created_by_id for row in rows))
+        return super().to_representation(rows)
+
+
 class JournalEntryListSerializer(serializers.ModelSerializer):
+    """A journal in a list. ``created_by_is_exited`` is true once its maker has left.
+
+    ``null`` for a journal the system raised with nobody named.
+    """
+
     period = serializers.CharField(source="period.name", read_only=True, default=None)
     total_debit = serializers.SerializerMethodField()
     created_by = serializers.SerializerMethodField()
     created_by_id = serializers.IntegerField(read_only=True, default=None)
+    created_by_is_exited = serializers.SerializerMethodField()
 
     class Meta:
         model = JournalEntry
         fields = [
             "id", "document_number", "date", "period", "source",
             "status", "narration", "reference", "posted_at",
-            "total_debit", "created_by", "created_by_id",
+            "total_debit", "created_by", "created_by_id", "created_by_is_exited",
         ]
+        list_serializer_class = JournalPeopleListSerializer
+
+    def get_created_by_is_exited(self, obj):
+        from core.person_exit import person_is_exited
+
+        return person_is_exited(self.context, obj.created_by_id)
 
     def get_total_debit(self, obj) -> int:
         # The list view annotates `_total_debit` (one query); detail falls back to totals().
@@ -621,7 +659,71 @@ class ApprovalGatedMixin(serializers.Serializer):
         return gate.required(obj)
 
 
-class CreditNoteSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
+def prime_income_given_back(context: dict, journal_ids) -> dict:
+    """Cache, once per response, the income each adjusting journal gave back to other branches.
+
+    ``{journal_id: [row, ...]}`` for the ids not cached yet, read in one query.
+    Each row is an ``INCOME_GIVEN_BACK`` transfer whose ``adjustment_entry`` is
+    that journal (:func:`vs_finance.inter_branch.book_income_given_back`):
+    ``id``, ``document_number``, ``to_branch_id``, ``to_branch_name`` (the branch
+    that booked the income and now gives it back), ``amount`` and ``status``. A
+    voided credit note's transfers stay listed as ``REVERSED``.
+    """
+    from .constants import InterBranchTransferKind
+    from .models import InterBranchTransfer
+
+    cached = context.setdefault("income_given_back", {})
+    missing = {int(pk) for pk in journal_ids if pk is not None} - cached.keys()
+    if not missing:
+        return cached
+    cached.update({pk: [] for pk in missing})
+    transfers = (
+        InterBranchTransfer.objects
+        .filter(adjustment_entry_id__in=missing, kind=InterBranchTransferKind.INCOME_GIVEN_BACK)
+        .select_related("to_branch")
+        .order_by("pk")
+    )
+    for transfer in transfers:
+        cached[transfer.adjustment_entry_id].append({
+            "id": transfer.pk,
+            "document_number": transfer.document_number,
+            "to_branch_id": transfer.to_branch_id,
+            "to_branch_name": transfer.to_branch.name,
+            "amount": int(transfer.amount),
+            "status": transfer.status,
+        })
+    return cached
+
+
+class IncomeGivenBackListSerializer(serializers.ListSerializer):
+    """Read every listed document's income given back in one query for the page."""
+
+    def to_representation(self, data):
+        rows = list(data)
+        prime_income_given_back(self.context, (row.journal_id for row in rows))
+        return super().to_representation(rows)
+
+
+class IncomeGivenBackMixin(serializers.Serializer):
+    """``income_given_back`` on a credit note or concession raised on a moved bill.
+
+    When Lekki credits Tunde's textbook bill that Ikeja booked before he moved,
+    Ikeja's revenue and VAT come down through an inter-branch transfer linked to
+    the credit note's journal. These rows name each such transfer, so the
+    document screen can link to it. Empty for a document that took nothing from
+    another branch, and for a draft. The transfers are party to the document's
+    own branch, so whoever reads the document may read them.
+    """
+
+    income_given_back = serializers.SerializerMethodField()
+
+    def get_income_given_back(self, obj) -> list:
+        if obj.journal_id is None:
+            return []
+        return prime_income_given_back(self.context, (obj.journal_id,))[obj.journal_id]
+
+
+class CreditNoteSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, serializers.ModelSerializer):
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     invoice_number = serializers.CharField(source="invoice.document_number", read_only=True, default=None)
@@ -638,8 +740,9 @@ class CreditNoteSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
             "subtotal", "tax_total", "total", "total_naira",
             "allocated_amount", "unallocated_amount", "refunded_amount",
             "transferred_amount", "credit_remaining", "reason", "reference", "lines",
-            "approval_required",
+            "approval_required", "income_given_back",
         ]
+        list_serializer_class = IncomeGivenBackListSerializer
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
@@ -748,7 +851,7 @@ class PaymentSerializer(serializers.ModelSerializer):
         return "PARTIAL"
 
 
-class ConcessionSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
+class ConcessionSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, serializers.ModelSerializer):
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     invoice_number = serializers.CharField(source="invoice.document_number", read_only=True)
@@ -763,8 +866,9 @@ class ConcessionSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
             "id", "document_number", "kind", "customer_id", "customer_code",
             "customer_name", "invoice_id", "invoice_number", "concession_date",
             "status", "amount", "amount_naira", "allowance_account",
-            "reason", "reference", "approval_required",
+            "reason", "reference", "approval_required", "income_given_back",
         ]
+        list_serializer_class = IncomeGivenBackListSerializer
 
     def get_amount_naira(self, obj) -> str:
         return format_naira(obj.amount)
@@ -903,16 +1007,57 @@ class DimensionSerializer(serializers.ModelSerializer):
 # Banking                                                                     #
 # --------------------------------------------------------------------------- #
 
+#: The key whose holders read how online payments are settled, branch-bound or not.
+PAYMENT_SETTINGS_VIEW = "payments.settings.view"
+
+
+def _reads_gateway_route(request) -> bool:
+    """Whether the caller may read a bank account's provider settlement route.
+
+    A caller who reaches every branch, or who holds ``payments.settings.view``
+    (the key that reads the custody setting and each branch's subaccount). A
+    branch bursar who keeps Lekki's books without the payments settings key
+    sees Lekki's account and balance, not the provider handle money is routed
+    by. Answered once per request. A render with no request (a management
+    command) passes, as Field Access does.
+    """
+    if request is None:
+        return True
+    cached = getattr(request, "_finance_reads_gateway_route", None)
+    if cached is None:
+        from vs_rbac.permissions import user_has_rbac_permission
+        from vs_rbac.scoping import caller_branch_ids
+
+        tenant = getattr(request, "tenant", None) or getattr(request.user, "tenant", None)
+        cached = caller_branch_ids(request) is None or user_has_rbac_permission(
+            request.user, PAYMENT_SETTINGS_VIEW, tenant=tenant)
+        request._finance_reads_gateway_route = cached
+    return cached
+
+
 class BankAccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """One funding account, with the number behind its own switch.
 
     The account number is the registered field of ``finance.bankaccount``: a
     caller whose roles cannot read it gets the account without it, and the
     endpoints that write it refuse a role that cannot change it.
+
+    ``gateway_subaccount_code``, ``gateway_subaccount_provider`` and
+    ``settlement_bank_code`` say how the payment provider settles the branch's
+    online payments into this account. Read-only here (the payments
+    subaccount endpoint writes them), and present only for a caller who
+    reaches the whole tenant or holds ``payments.settings.view``, the readers
+    of the custody setting they belong to (:func:`_reads_gateway_route`); for
+    anybody else the three keys are absent, not blanked.
     """
 
     field_resource = "finance.bankaccount"
     field_access_detail = True
+
+    #: The provider settlement route, shown to :func:`_reads_gateway_route` callers only.
+    GATEWAY_ROUTE_FIELDS = (
+        "gateway_subaccount_code", "gateway_subaccount_provider", "settlement_bank_code",
+    )
 
     gl_account = serializers.CharField(source="gl_account.code", read_only=True)
     gl_account_name = serializers.CharField(source="gl_account.name", read_only=True)
@@ -930,7 +1075,18 @@ class BankAccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
             "is_active", "is_primary", "is_primary_collection",
             "book_balance", "book_balance_naira", "unreconciled_count",
             "last_reconciled_at",
+            "gateway_subaccount_code", "gateway_subaccount_provider", "settlement_bank_code",
         ]
+        read_only_fields = [
+            "gateway_subaccount_code", "gateway_subaccount_provider", "settlement_bank_code",
+        ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not _reads_gateway_route(self.context.get("request")):
+            for name in self.GATEWAY_ROUTE_FIELDS:
+                data.pop(name, None)
+        return data
 
     def get_book_balance(self, obj):
         from .banking import gl_account_balance
@@ -1712,6 +1868,37 @@ class SalaryStructureSerializer(serializers.ModelSerializer):
         return cached if cached is not None else obj.employee_salaries.count()
 
 
+def _derived_pay(gross, structure, paye, pension, as_at) -> dict:
+    """PAYE, pension, net and the breakdown of one set of terms, as the roster shows them.
+
+    Derived from the structure's lines in force on ``as_at`` when the terms
+    name one, else the typed figures.
+    """
+    from .payroll import apply_structure
+
+    if structure is not None:
+        return apply_structure(gross, structure, as_at)
+    return {"paye": paye, "pension": pension, "net": gross - paye - pension, "components": []}
+
+
+class EmployeeSalaryNextTermsSerializer(FieldAccessMixin, serializers.Serializer):
+    """The next dated change to a roster row's pay terms, its pay figures behind their switches.
+
+    Rendered from a mapping by :class:`EmployeeSalarySerializer`. A nested
+    serializer carrying the mixin, so a caller who may not read a person's pay
+    learns that a change is coming and from when, never what it is.
+    """
+
+    field_resource = "finance.salary"
+
+    effective_from = serializers.DateField(read_only=True)
+    branch_id = serializers.IntegerField(read_only=True, allow_null=True)
+    branch_name = serializers.CharField(read_only=True, allow_null=True)
+    gross_amount = serializers.IntegerField(read_only=True)
+    paye_amount = serializers.IntegerField(read_only=True)
+    pension_amount = serializers.IntegerField(read_only=True)
+
+
 class EmployeeSalarySerializer(FieldAccessMixin, serializers.ModelSerializer):
     """One roster row, with the pay figures behind their own switches.
 
@@ -1719,13 +1906,31 @@ class EmployeeSalarySerializer(FieldAccessMixin, serializers.ModelSerializer):
     which roster rows they may reach at all is the roster endpoints'. The two
     are separate on purpose: an officer assigning branches needs the roster
     without needing anybody's salary.
+
+    The pay terms (branch, structure, gross, PAYE, pension and the breakdown,
+    cost centre, state of residence) are the ones in force on the reader's
+    today (:meth:`~vs_finance.models.EmployeeSalary.terms_shown_on`), never the
+    row's own columns, which mirror the latest version even when it starts next
+    year. Aisha is on N300,000 with a raise to N320,000 from January 2027: the
+    roster shows N300,000 until January, and ``next_terms`` carries the raise
+    and its date. ``terms_effective_from`` is when the terms shown took effect
+    (null for a row with no history), and is later than today for a hire who
+    has not started. The day comes from the context's ``today``, which the
+    roster views set to the reader's own; without it, the tenant's today.
+    Rows are expected with their ``versions`` prefetched, with each version's
+    structure lines, so a page costs no query per row.
     """
 
     field_resource = "finance.salary"
     field_access_detail = True
+    field_write_aliases = True
 
-    cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
-    structure_name = serializers.CharField(source="structure.name", read_only=True, default=None)
+    cost_center = serializers.SerializerMethodField()
+    structure_id = serializers.SerializerMethodField()
+    structure_name = serializers.SerializerMethodField()
+    gross_amount = serializers.SerializerMethodField()
+    terms_effective_from = serializers.SerializerMethodField()
+    next_terms = serializers.SerializerMethodField()
     # Not a registered field: which site somebody works at is not a pay figure, and it has
     # to be readable by whoever is assigning branches before a school can switch to
     # per-branch payroll. ``branch_name`` is null for an unassigned row, which is
@@ -1742,14 +1947,14 @@ class EmployeeSalarySerializer(FieldAccessMixin, serializers.ModelSerializer):
     employee_id = serializers.IntegerField(read_only=True, allow_null=True)
     # Where PAYE goes and where pension goes. Not pay figures; the tax number,
     # PIN, rent and any PAYE override are, and sit behind their own switches.
-    residence_state = serializers.CharField(source="residence_state.code", read_only=True, default=None)
-    residence_state_name = serializers.CharField(source="residence_state.name", read_only=True, default=None)
+    residence_state = serializers.SerializerMethodField()
+    residence_state_name = serializers.SerializerMethodField()
     pfa_id = serializers.IntegerField(read_only=True, allow_null=True)
     pfa_name = serializers.CharField(source="pfa.name", read_only=True, default=None)
     # The figures a tenant that supplies its own PAYE is paid on: derived from the
-    # structure's current lines when one is assigned, else the typed figures. A
-    # tenant whose PAYE is computed has PAYE and pension worked out on each run.
-    # Computed once per row (memoised) to avoid re-walking the components.
+    # structure's lines in force today when one is assigned, else the typed
+    # figures. A tenant whose PAYE is computed has PAYE and pension worked out on
+    # each run. Computed once per row (memoised) to avoid re-walking the components.
     paye_amount = serializers.SerializerMethodField()
     pension_amount = serializers.SerializerMethodField()
     net_amount = serializers.SerializerMethodField()
@@ -1764,29 +1969,87 @@ class EmployeeSalarySerializer(FieldAccessMixin, serializers.ModelSerializer):
             "cost_center", "is_active",
             "residence_state", "residence_state_name", "tax_id", "pfa_id", "pfa_name",
             "pension_pin", "annual_rent", "paye_override", "paye_override_reason",
+            "terms_effective_from", "next_terms",
         ]
+
+    def _today(self, obj):
+        today = self.context.get("today")
+        if today is None:
+            from vs_config.clock import tenant_today
+
+            today = tenant_today(obj.entity.tenant)
+        return today
+
+    def _terms(self, obj):
+        """The terms shown on the reader's today, memoised on the row."""
+        cache = getattr(obj, "_shown_terms_cache", None)
+        if cache is None:
+            cache = obj.terms_shown_on(self._today(obj))
+            obj._shown_terms_cache = cache
+        return cache
 
     def _derived(self, obj) -> dict:
         cache = getattr(obj, "_derived_cache", None)
         if cache is None:
-            from .payroll import apply_structure
-            if obj.structure_id:
-                cache = apply_structure(obj.gross_amount, obj.structure)
-            else:
-                cache = {
-                    "paye": obj.paye_amount, "pension": obj.pension_amount,
-                    "net": obj.net_amount, "components": [],
-                }
+            terms = self._terms(obj)
+            cache = _derived_pay(
+                terms.gross_amount, terms.structure, terms.paye_amount,
+                terms.pension_amount, self._today(obj),
+            )
             obj._derived_cache = cache
         return cache
 
     def get_branch_id(self, obj):
-        return getattr(obj, "branch_on_id", obj.branch_id)
+        return getattr(obj, "branch_on_id", self._terms(obj).branch_id)
 
     def get_branch_name(self, obj):
         if hasattr(obj, "branch_on_name"):
             return obj.branch_on_name
-        return obj.branch.name if obj.branch_id else None
+        terms = self._terms(obj)
+        return terms.branch.name if terms.branch_id else None
+
+    def get_structure_id(self, obj):
+        return self._terms(obj).structure_id
+
+    def get_structure_name(self, obj):
+        terms = self._terms(obj)
+        return terms.structure.name if terms.structure_id else None
+
+    def get_cost_center(self, obj):
+        terms = self._terms(obj)
+        return terms.cost_center.code if terms.cost_center_id else None
+
+    def get_residence_state(self, obj):
+        terms = self._terms(obj)
+        return terms.residence_state.code if terms.residence_state_id else None
+
+    def get_residence_state_name(self, obj):
+        terms = self._terms(obj)
+        return terms.residence_state.name if terms.residence_state_id else None
+
+    def get_gross_amount(self, obj) -> int:
+        return self._terms(obj).gross_amount
+
+    def get_terms_effective_from(self, obj):
+        terms = self._terms(obj)
+        return terms.effective_from.isoformat() if terms is not obj else None
+
+    def get_next_terms(self, obj):
+        change = obj.next_terms_after(self._today(obj))
+        if change is None:
+            return None
+        derived = _derived_pay(
+            change.gross_amount, change.structure, change.paye_amount,
+            change.pension_amount, change.effective_from,
+        )
+        return EmployeeSalaryNextTermsSerializer({
+            "effective_from": change.effective_from,
+            "branch_id": change.branch_id,
+            "branch_name": change.branch.name if change.branch_id else None,
+            "gross_amount": change.gross_amount,
+            "paye_amount": derived["paye"],
+            "pension_amount": derived["pension"],
+        }, context=self.context).data
 
     def get_paye_amount(self, obj) -> int:
         return self._derived(obj)["paye"]

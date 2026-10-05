@@ -354,6 +354,14 @@ def field_access_payload(user, tenant) -> dict:
     carries the owner rules this map cannot know: a member of staff reads and
     writes their own payroll bank details whatever their roles say, and the map
     is built from roles alone.
+
+    A write alias (:func:`vs_rbac.field_registry.register_fields`) appears in
+    ``read_only`` when the field it follows may not be written, and nowhere
+    else: it is never hidden, because reading it is not reading the figure.
+    Mrs Okafor may read salaries but not change PAYE, so ``finance.salary``
+    lists ``residence_state`` as read-only for her, and the edit form greys
+    the state a person's PAYE is charged in rather than offer a save the
+    write check refuses.
     """
     from .models import FieldDefinition, PermissionScope, tenant_is_platform
 
@@ -366,7 +374,9 @@ def field_access_payload(user, tenant) -> dict:
         "open_on_create",
     )
     payload: dict[str, dict] = {}
+    evaluated: set[str] = set()
     for module, resource_name, key, field_name, api_names, open_on_create in rows:
+        evaluated.add(key)
         readable, writable = access.can_read(key), access.can_write(key)
         if readable and writable:
             continue
@@ -378,10 +388,35 @@ def field_access_payload(user, tenant) -> dict:
         entry["read_only" if readable else "hidden"].extend(names)
         if open_on_create:
             entry["open_on_create"].extend(names)
+    for resource, aliases in _write_aliases().items():
+        for alias, key in aliases.items():
+            if key in evaluated and not access.can_write(key):
+                payload.setdefault(
+                    resource, {"hidden": [], "read_only": [], "open_on_create": []},
+                )["read_only"].append(alias)
     for entry in payload.values():
         for names in entry.values():
             names.sort()
     return payload
+
+
+def _write_aliases() -> dict[str, dict[str, str]]:
+    """Every registered write alias, as ``{"module.resource": {alias: governing key}}``."""
+    from .field_registry import all_declarations
+
+    return {
+        f"{declaration.module}.{declaration.resource}": declaration.alias_keys()
+        for declaration in all_declarations() if declaration.write_aliases
+    }
+
+
+def _resource_aliases(resource: str) -> dict[str, str]:
+    """The write aliases of one ``module.resource``, mapped to the keys they follow."""
+    from .field_registry import get_declaration
+
+    module, name = _split_resource(resource)
+    declaration = get_declaration(module, name)
+    return declaration.alias_keys() if declaration is not None else {}
 
 
 class _Unparsed:
@@ -500,7 +535,11 @@ class FieldAccessMixin:
     detail serializer reused with ``many=True`` stays a list. It names the
     fields present in that payload the caller cannot write, and is an empty
     list when there are none, so a client never has to tell "nothing is
-    restricted" from "this serializer does not say".
+    restricted" from "this serializer does not say". A serializer that also
+    declares ``field_write_aliases = True`` (the one whose record's form sends
+    the resource's write aliases) lists each write alias whose governing
+    field the caller cannot write as well: the body key a form sends, such as
+    ``pfa``, whether or not the payload carries a key of that name.
 
     Nested serializers need nothing: DRF gives a child the root's context, so
     a nested one carrying this mixin is filtered as its own resource.
@@ -530,6 +569,7 @@ class FieldAccessMixin:
     field_resource: str = ""
     field_aliases: dict[str, str] = {}
     field_access_detail: bool = False
+    field_write_aliases: bool = False
     field_composites: dict[str, dict[str, str]] = {}
     owner_rule = None
 
@@ -631,6 +671,12 @@ class FieldAccessMixin:
                 elif not access.can_write(entry.key):
                     read_only.append(name)
             self._rebuild_composites(data, instance, access, entries)
+            if self.field_write_aliases and self._emits_read_only_fields():
+                active = {entry.key for entry in entries.values()}
+                read_only += [
+                    alias for alias, key in _resource_aliases(self.field_resource).items()
+                    if key in active and not access.can_write(key)
+                ]
 
         if self._emits_read_only_fields():
             data["_read_only_fields"] = read_only
