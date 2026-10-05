@@ -427,7 +427,7 @@ MUST SAY:
 - FinPro gap: the sidebar hook (held-custody.ts useCustodyReading) skips the request unless the reader holds payments.settings.view, so the menu stays hidden for a payout-only reader until FinPro also asks when the reader holds payments.payout.view.
 Verified: CustodyModeForPayoutReadersTests 6 OK; tests_custody, tests_custody_held, tests_branch_reach 124 OK; vs_payments 431 OK; vs_rbac 988 OK. The full suite was not run.
 
-### D118. Finance screens get the reads they were waiting on: split preview, income given back, what a move carried, cross-branch pickers, return lines, branch close states (hash pending, 2026-10-05)
+### D118. Finance screens get the reads they were waiting on: split preview, income given back, what a move carried, cross-branch pickers, return lines, branch close states (966c8969, 2026-10-05)
 MODULES: M19 finance (banking, receivables, inter-branch transfers, tax, close, dashboard, journals, fiscal calendar), M22 procurement (stock transfers), MRD.
 MUST SAY:
 - Bank split preview (M19). GET bank-accounts/<id>/split-by-branch/?split_date= (finance.bankaccount.view, whole tenant only, a branch-bound reader 403) returns legacy_balance, unbranched_balance and branches [{branch_id, branch_name, book_balance}] for a shared account: every in-service branch, each branch's own entries on the shared ledger read exactly as the split reads them. A future date is 400; an account with a branch 422.
@@ -442,7 +442,7 @@ MUST SAY:
 - Fiscal calendar (M19). ?include_branches=true on periods (paginated and ?all=true&year=) and fiscal-years adds branch_states [{branch, branch_name, status, closed_at}]: each in-service branch in the reader's reach, a branch with no close of its own taking the tenant's state; two queries per page.
 Verified: tests_screen_reads 53 OK; vs_procurement.tests_stock_transfer_destinations 6 OK; touched modules (tests_inter_branch, tests_bank_account_split, tests_tax_returns, tests_shared_write_reach, test_reference_list_access, tests_dashboard_overview, tests_branch_close, tests_record_retention, test_voids, tests_fiscal_calendar) 298 OK; vs_finance 1918 OK; vs_procurement 758 OK; vs_rbac 988 OK. The full suite was not run.
 
-### D119. The roster shows today's pay with the next dated change beside it, and the receivables and payments screens get their missing filters and fields (hash pending, 2026-10-05)
+### D119. The roster shows today's pay with the next dated change beside it, and the receivables and payments screens get their missing filters and fields (966c8969, 2026-10-05)
 Number may be renumbered at merge: another agent queues its own entry in parallel.
 MODULES: M19 finance (payroll roster, deferred income, provisions, deposits, credit transfers, payer payments, customers, bank accounts), M04 roles and permissions (Field Access write aliases), M18 payments (custody settings, provider sweeps, settlement reconciliation), MRD.
 MUST SAY:
