@@ -30,6 +30,7 @@ from ..serializers import (
 )
 from .base import (
     _ProcBase,
+    _correcting_returned,
     _raised_branch,
     _resolve_vendor,
     _branch_q,
@@ -156,7 +157,10 @@ class VendorCreditNoteListCreateView(_ProcBase):
             qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
         if (bill := params.get("vendor_invoice")) and str(bill).isdigit():
             qs = qs.filter(vendor_invoice_id=int(bill))
-        return self.paginate(request, qs.order_by("-id"), VendorCreditNoteListSerializer)
+        return self.paginate(
+            request, qs.order_by("-id"), VendorCreditNoteListSerializer,
+            page_context=lambda page: {"returned_document_ids": approvals.returned_document_ids(page)},
+        )
 
     @transaction.atomic
     def post(self, request):
@@ -213,17 +217,22 @@ class VendorCreditNoteDetailView(_ProcBase):
 
     @transaction.atomic
     def patch(self, request, pk):
-        """Edit the header or rewrite the lines; the edit returns it to unsubmitted."""
+        """Edit the header or rewrite the lines of a draft, or correct a returned note.
+
+        A draft's edit returns it to unsubmitted. A note its approver returned to
+        its requester is corrected by that requester and stays PENDING, to be
+        resumed from the approvals screen
+        (:func:`vs_procurement.views.base._correcting_returned`).
+        """
         entity = resolve_entity(request)
         note = _document_or_404(
             request, VendorCreditNote.objects.select_for_update().filter(entity=entity),
             pk, "No such vendor credit note in this entity.",
         )
-        if note.status != DocumentStatus.DRAFT or note.approval_state not in (
-                ProcApprovalState.NOT_SUBMITTED, ProcApprovalState.REJECTED):
-            raise ValidationError({
-                "status": "Only an unsubmitted or rejected draft credit note can be edited.",
-            })
+        returned = _correcting_returned(
+            request, note, noun="credit note",
+            refusal="Only an unsubmitted or rejected draft credit note can be edited.",
+        )
         body = request.data or {}
         if "note_date" in body:
             note.note_date = _date(body.get("note_date"), "note_date", required=True)
@@ -231,7 +240,8 @@ class VendorCreditNoteDetailView(_ProcBase):
             note.reason = _text(body.get("reason"), "reason", 255, required=True)
         if "vendor_reference" in body:
             note.vendor_reference = _text(body.get("vendor_reference"), "vendor_reference", 64)
-        note.approval_state = ProcApprovalState.NOT_SUBMITTED
+        if not returned:
+            note.approval_state = ProcApprovalState.NOT_SUBMITTED
         note.save(update_fields=[
             "note_date", "reason", "vendor_reference", "approval_state", "updated_at",
         ])

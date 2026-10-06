@@ -144,6 +144,29 @@ class ResumedFromApprovalsTests(_ResubmitFixture):
         self.assertEqual(instance.status, WorkflowInstanceStatus.RETURNED)
         self.assertEqual(JournalEntry.objects.get(pk=pk).status, DocumentStatus.DRAFT)
 
+    def test_reversing_the_return_of_a_journal_that_can_no_longer_post_is_refused(self):
+        from vs_workflow.models import WorkflowStageAction as Vote
+        from vs_workflow.services.actions import reverse_action
+
+        from .exceptions import FinanceError
+        from .models import FiscalPeriod
+
+        pk = self.journal()
+        instance = self.instance_of(JournalEntry, pk)
+        record_action(instance.id, self.signers[self.tenant.pk], WorkflowStageAction.RETURNED,
+                      comment="Check the narration")
+        FiscalPeriod.objects.filter(pk=JournalEntry.objects.get(pk=pk).period_id).update(
+            status="CLOSED")
+        vote = Vote.objects.get(stage_instance__instance=instance,
+                                action=WorkflowStageAction.RETURNED)
+
+        with self.assertRaises(FinanceError):
+            reverse_action(vote.id, self.signers[self.tenant.pk], reason="Returned in error")
+
+        instance.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.RETURNED)
+        self.assertEqual(JournalEntry.objects.get(pk=pk).status, DocumentStatus.DRAFT)
+
     def test_only_the_requester_resumes_it(self):
         pk = self.journal()
         instance = self.instance_of(JournalEntry, pk)

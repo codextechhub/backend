@@ -21,6 +21,7 @@ from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 from vs_config.clock import branch_day_q, tenant_today
 
 from .. import payables, purchasing
+from ..approvals import returned_document_ids
 from ..models import (
     GoodsReceivedNote,
     GoodsReceivedNoteLine,
@@ -41,6 +42,7 @@ from ..serializers import (
 from .base import (
     _ProcBase,
     _branch_scoped,
+    _correcting_returned,
     _date,
     _document_or_404,
     _inherited_branch_id,
@@ -663,7 +665,10 @@ class VendorInvoiceListCreateView(_ProcBase):
             qs = qs.filter(Q(document_number__icontains=search) | Q(vendor_reference__icontains=search)
                            | Q(vendor__code__icontains=search) | Q(vendor__name__icontains=search)
                            | Q(purchase_order__document_number__icontains=search))
-        return self.paginate(request, qs.order_by("-id"), VendorInvoiceListSerializer)
+        return self.paginate(
+            request, qs.order_by("-id"), VendorInvoiceListSerializer,
+            page_context=lambda page: {"returned_document_ids": returned_document_ids(page)},
+        )
 
     @transaction.atomic
     def post(self, request):
@@ -782,7 +787,16 @@ class VendorInvoiceDetailView(_ProcBase):
 
     @transaction.atomic
     def patch(self, request, pk):
-        """Replace an unsubmitted/rejected draft and invalidate its prior match."""
+        """Correct a draft bill, or one its approver returned, and invalidate its prior match.
+
+        A draft never sent, or rejected, is edited as a draft and left unsubmitted.
+        A bill its approver returned to its requester is corrected by that
+        requester and stays PENDING, to be resumed from the approvals screen
+        (:func:`vs_procurement.views.base._correcting_returned`); it keeps its
+        branch, since its request was filed under it. A purchase order is taken
+        as on create: one the caller can reach, and the bill belongs to its
+        branch.
+        """
         entity = resolve_entity(request)
         # Lock only the invoice row: purchase_order is nullable, and PostgreSQL
         # rejects FOR UPDATE against the nullable side of that outer join.
@@ -790,8 +804,10 @@ class VendorInvoiceDetailView(_ProcBase):
             request, VendorInvoice.objects.select_for_update().filter(entity=entity),
             pk, "No such vendor invoice in this entity.",
         )
-        if invoice.status != "DRAFT" or invoice.approval_state not in ("NOT_SUBMITTED", "REJECTED"):
-            raise ValidationError({"status": "Only an unsubmitted or rejected draft vendor invoice can be edited."})
+        returned = _correcting_returned(
+            request, invoice, noun="vendor invoice",
+            refusal="Only an unsubmitted or rejected draft vendor invoice can be edited.",
+        )
         body = request.data
         vendor = _resolve_vendor(request, entity, body.get("vendor", invoice.vendor_id))
         po = invoice.purchase_order
@@ -799,6 +815,12 @@ class VendorInvoiceDetailView(_ProcBase):
             po = PurchaseOrder.objects.filter(entity=entity, pk=body.get("purchase_order")).first() if body.get("purchase_order") else None
             if body.get("purchase_order") and po is None:
                 raise ValidationError({"purchase_order": "No such purchase order in this entity."})
+            if po is not None:
+                branch_id = (
+                    _inherited_branch_id(request, invoice, po) if returned
+                    else _inherited_branch_id(request, po)
+                )
+                invoice.branch_id = branch_id if branch_id is not None else invoice.branch_id
         if po and po.vendor_id != vendor.id:
             raise ValidationError({"vendor": "The selected vendor must match the purchase order."})
         invoice.vendor = vendor
@@ -822,11 +844,12 @@ class VendorInvoiceDetailView(_ProcBase):
             )
         if "narration" in body:
             invoice.narration = str(body.get("narration") or "")
-        invoice.approval_state = "NOT_SUBMITTED"
+        if not returned:
+            invoice.approval_state = "NOT_SUBMITTED"
         try:
             with transaction.atomic():
                 invoice.save(update_fields=[
-                    "vendor", "purchase_order", "invoice_date", "due_date",
+                    "vendor", "purchase_order", "branch", "invoice_date", "due_date",
                     "vendor_reference", "narration", "approval_state", "updated_at",
                 ])
         except IntegrityError as exc:

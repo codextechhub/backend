@@ -560,6 +560,57 @@ def _require_lines(body):
     return lines
 
 
+def _correcting_returned(request, document, *, noun: str, refusal: str) -> bool:
+    """Say whether an edit of ``document`` may go ahead, and whether it corrects a returned request.
+
+    The edit routes of requisitions, orders, bills, payments and credit notes
+    share one rule, which is why it lives here:
+
+    * A draft never sent for approval, or whose approval ended unapproved, is
+      edited as a draft (False): the edit leaves it unsubmitted, ready to be sent.
+    * A document whose approver returned it to its requester (PENDING, its
+      request RETURNED) is corrected by that requester (True): the request stays
+      open and the edit keeps ``approval_state`` PENDING, so the requester
+      resumes it from the approvals screen. Anybody else is refused 403, even
+      holding the edit key: Mr Eze returned Mrs Bello's requisition to Mrs Bello,
+      and a colleague's change would go back to Mr Eze under her name.
+    * Anything else is refused 400 with ``refusal``: a document with its
+      approvers (Mr Eze has it, and his decision must be on what he was shown),
+      an approved one, and one already posted.
+
+    The caller has locked ``document``'s row. The request is read after the lock,
+    so an edit and a resumption of the same document take turns: a resumption
+    that got there first has left the request in progress, and the edit is
+    refused (see :func:`vs_procurement.approvals.resume_returned`).
+    """
+    from vs_finance.constants import DocumentStatus
+
+    from ..approvals import returned_request
+    from ..constants import ProcApprovalState
+
+    state = document.approval_state
+    if document.status == DocumentStatus.DRAFT and state in (
+            ProcApprovalState.NOT_SUBMITTED, ProcApprovalState.REJECTED):
+        return False
+    if state == ProcApprovalState.PENDING and document.status in (
+            DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL):
+        returned = returned_request(document)
+        if returned is None:
+            raise ValidationError({"status": (
+                f"This {noun} is with its approvers. It can be corrected only once an "
+                f"approver returns it to whoever sent it."
+            )})
+        if returned.requested_by_id != getattr(request.user, "pk", None):
+            from rest_framework.exceptions import PermissionDenied
+
+            raise PermissionDenied(
+                f"This {noun} was returned to the person who sent it for approval, and "
+                f"only they can correct it."
+            )
+        return True
+    raise ValidationError({"status": refusal})
+
+
 class _ProcBase(APIView):
     """Common procurement API base enforcing active-user authentication and RBAC."""
 

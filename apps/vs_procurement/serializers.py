@@ -55,6 +55,32 @@ from .models import (
 )
 
 
+class ApprovalReturnedMixin(serializers.Serializer):
+    """Adds ``approval_returned``: the document's request is back with its requester.
+
+    ``approval_state`` stays PENDING while an approver has returned a document,
+    because its request is still open, so PENDING alone cannot tell "with the
+    approver" from "back with you to correct". ``approval_returned`` is True for
+    the second: its requester may edit it and resume the request from the
+    approvals screen. False for every other state.
+
+    A list view resolves its whole page once and passes the answer in as
+    ``returned_document_ids``; a single-document response falls back to one
+    lookup, made only for a PENDING document
+    (:func:`vs_procurement.approvals.returned_document_ids`).
+    """
+
+    approval_returned = serializers.SerializerMethodField()
+
+    def get_approval_returned(self, obj) -> bool:
+        returned_ids = self.context.get("returned_document_ids")
+        if returned_ids is None:
+            from .approvals import returned_document_ids
+
+            returned_ids = returned_document_ids([obj])
+        return obj.pk in returned_ids
+
+
 class ProcurementPeopleListSerializer(serializers.ListSerializer):
     """Resolve actor employment once for a page or nested activity list."""
 
@@ -612,7 +638,7 @@ class FreeRequisitionLineSerializer(RequisitionLineSerializer):
         ]
 
 
-class RequisitionSerializer(serializers.ModelSerializer):
+class RequisitionSerializer(ApprovalReturnedMixin, serializers.ModelSerializer):
     """Requisition header and lines with document and workflow states kept separate.
 
     ``status`` is the shared finance-document lifecycle while ``approval_state`` is the
@@ -639,7 +665,7 @@ class RequisitionSerializer(serializers.ModelSerializer):
         model = PurchaseRequisition
         list_serializer_class = ProcurementPeopleListSerializer
         fields = [
-            "id", "document_number", "status", "approval_state", "is_parked",
+            "id", "document_number", "status", "approval_state", "approval_returned", "is_parked",
             "approved_by_override", "branch_id", "branch_name", "title",
             "request_date", "needed_by", "requested_by_id", "requested_by_name",
             "requested_by_is_exited",
@@ -1153,7 +1179,7 @@ class PurchaseOrderVendorDeliverySerializer(serializers.ModelSerializer):
         return len(obj.bcc or [])
 
 
-class PurchaseOrderSerializer(serializers.ModelSerializer):
+class PurchaseOrderSerializer(ApprovalReturnedMixin, serializers.ModelSerializer):
     """Full PO read model: commercial totals, progress, source, and child documents.
 
     The API deliberately exposes inherited ``status``, workflow ``approval_state``, and
@@ -1188,8 +1214,8 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseOrder
         fields = [
-            "id", "document_number", "status", "approval_state", "display_status",
-            "branch_id", "branch_name",
+            "id", "document_number", "status", "approval_state", "approval_returned",
+            "display_status", "branch_id", "branch_name",
             "vendor_id", "vendor_code", "vendor_name", "requisition_id", "requisition_number",
             "contract_id", "contract_reference",
             "quotation_number", "order_date", "expected_date", "delivery_address",
@@ -1433,7 +1459,7 @@ class VendorInvoiceLineSerializer(serializers.ModelSerializer):
         ]
 
 
-class VendorInvoiceSerializer(serializers.ModelSerializer):
+class VendorInvoiceSerializer(ApprovalReturnedMixin, serializers.ModelSerializer):
     """AP invoice read model spanning posting, approval, match, and settlement states.
 
     Each lifecycle remains available as an authoritative field. ``display_status`` is
@@ -1459,7 +1485,8 @@ class VendorInvoiceSerializer(serializers.ModelSerializer):
     class Meta:
         model = VendorInvoice
         fields = [
-            "id", "document_number", "status", "approval_state", "match_status", "payment_status",
+            "id", "document_number", "status", "approval_state", "approval_returned",
+            "match_status", "payment_status",
             "branch_id", "branch_name", "is_opening",
             "display_status", "is_overdue",
             "vendor_id", "vendor_code", "vendor_name", "purchase_order_id", "purchase_order_number",
@@ -1544,7 +1571,7 @@ class VendorPaymentAllocationSerializer(serializers.ModelSerializer):
         ]
 
 
-class VendorPaymentSerializer(serializers.ModelSerializer):
+class VendorPaymentSerializer(ApprovalReturnedMixin, serializers.ModelSerializer):
     """Vendor disbursement with approval, posting, allocation, and bank context.
 
     Draft allocation rows express the intended split. Once POSTED, the header's
@@ -1581,7 +1608,8 @@ class VendorPaymentSerializer(serializers.ModelSerializer):
         model = VendorPayment
         list_serializer_class = ProcurementPeopleListSerializer
         fields = [
-            "id", "document_number", "status", "approval_state", "allocation_status",
+            "id", "document_number", "status", "approval_state", "approval_returned",
+            "allocation_status",
             "branch_id", "branch_name",
             "vendor_id", "vendor_code", "vendor_name",
             "payment_date", "method",
@@ -1667,7 +1695,7 @@ class VendorCreditNoteAllocationSerializer(serializers.ModelSerializer):
         fields = ["id", "vendor_invoice_id", "document_number", "amount", "effective_date"]
 
 
-class VendorCreditNoteSerializer(serializers.ModelSerializer):
+class VendorCreditNoteSerializer(ApprovalReturnedMixin, serializers.ModelSerializer):
     """A vendor credit note with what it settled and what it left as vendor credit."""
 
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
@@ -1683,7 +1711,7 @@ class VendorCreditNoteSerializer(serializers.ModelSerializer):
     class Meta:
         model = VendorCreditNote
         fields = [
-            "id", "document_number", "status", "approval_state",
+            "id", "document_number", "status", "approval_state", "approval_returned",
             "branch_id", "branch_name", "vendor_id", "vendor_code", "vendor_name",
             "vendor_invoice_id", "vendor_invoice_number", "note_date",
             "vendor_reference", "reason", "subtotal", "tax_total", "total",

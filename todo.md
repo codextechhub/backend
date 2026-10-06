@@ -765,6 +765,57 @@ MUST SAY:
   once per page. A draft reading PENDING is resumed from the approvals screen.
 Verified: tests_rfq_line_links 12 (9 failed first), tests_requisition_picker 10 (6 failed first), tests_inter_branch_approval_end 7 (3 failed first), tests_adjustment_rework 12 (11 failed first), the petty cash return approval-end test (failed first); tests_approval_resubmit (vs_finance) 5 (4 failed first), the petty cash resume test (failed first), tests_approval_resubmit (vs_procurement) 2 (passed before the change: procurement already kept its pending state), vs_workflow resubmit contract 2, tests_approval_state_reads 5; vs_workflow 541 OK; vs_payments 434 OK; vs_rbac 989 OK; vs_procurement 811 OK; vs_finance 2022 OK; full suite with --parallel 4: Ran 9597 tests, OK.
 
+### D128. A procurement document an approver returns is corrected by whoever sent it and resumed from the approvals screen (uncommitted, 2026-10-06)
+Number may be renumbered at merge. No migration.
+MODULES: M22 procurement (requisitions, purchase orders, vendor bills, vendor payments, vendor credit notes), M18 workflow engine (every module), M19 finance (reversal of a returned request), MRD.
+Owner decision (2026-10-06): a returned requisition or vendor bill can be corrected and resumed, as finance documents can, rather than cancelled and raised again.
+MUST SAY:
+- Returned is not pending (M22). A returned document keeps approval_state
+  PENDING (its request is open) and its status (a requisition stays
+  PENDING_APPROVAL; the others stay DRAFT). The five read shapes (requisitions,
+  purchase orders, vendor invoices, vendor payments, vendor credit notes; list
+  and detail) carry approval_returned: true while an approver has handed it back
+  to its requester, false otherwise; read once per page. Detail reads already
+  carry workflow_instance_id, which the resume uses
+  (POST workflow/instances/<id>/resubmit/).
+- Correcting (M22). The existing PATCH of each of the five takes the same fields
+  and validation as its draft edit, under the existing update key and branch
+  reach (404 outside it). Only the person who sent it for approval may correct a
+  returned document (403 for anybody else, even with the key). With its
+  approvers (not returned), approved or posted: 400. The edit leaves
+  approval_state PENDING; a draft's edit still makes it NOT_SUBMITTED. A
+  returned payment keeps its branch (400 if a correction would settle another
+  branch's bills); a returned bill may not move to another branch's order.
+- Resuming (M22). Resuming re-checks the document as its submit route did: a
+  requisition still has lines and its estimate is recomputed; a bill is priced
+  and three-way matched again; a payment still settles a bill; an order's
+  scheduled vendor email is readdressed to the vendor the order now names
+  (cancelled if that vendor has no address). A failed check leaves the request
+  returned.
+- Requisition lines (M22). PATCH requisitions/<id>/ matches each sent line to
+  the requisition's line by "id" and updates it in place; a line without id is
+  new; a line left out is removed; a body with no ids replaces every line (as
+  before). A line a live RFQ, shared RFQ or order holds can be neither changed
+  nor removed (400 naming where it is held); a line any RFQ, order or shared
+  allocation ever named is never removed (400: send it with its id). An id that
+  is not a current line, or is sent twice, is 400. Create ignores ids.
+- Reversal (M22). An administrator cannot undo a requisition's approval while a
+  live RFQ or shared RFQ holds one of its lines ("Cancel that first"), as for a
+  live order.
+- Bill PATCH (M22, defect fixed). Attaching a purchase order to a draft bill now
+  checks branch reach as create does (403 for a branch-bound clerk naming
+  another branch's order) and moves the draft to the order's branch.
+- Engine (M18, every module). When a returned request goes back in front of its
+  approvers, by resubmit or by an administrator reversing the return, the
+  approver's snapshot of the document (summary and details) is taken again, so
+  the approver sees the corrected document, not the one first sent. A reversal
+  tells the module the request was returned (was_returned); finance re-runs its
+  submission checks then, as on resubmit, so reversing the return of a journal
+  whose month has closed is refused.
+- RFQ awards, goods receipts and goods returns have no approval route, so the
+  rule does not apply to them.
+Verified: tests_returned_correction (vs_procurement) 20 (15 failed first; the four refusal tests that passed before already held; the PO email test was watched failing with its fix switched off), vs_workflow ResumedRequestShowsTheCorrectedDocumentTests 2 and ReversingAReturnTellsTheModuleTests 2 (failed first), the vs_finance returned-journal reversal test (watched failing with its fix switched off); new and touched modules together 80 OK; vs_procurement 834 OK; vs_workflow 557 OK; vs_finance 2068 OK; vs_payments 434 OK; leave, user-creation reversal and FAL procurement modules 84 OK. The full suite was not run.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

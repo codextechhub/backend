@@ -164,6 +164,33 @@ def schedule_after_approval(po: PurchaseOrder, *, actor_user, buyer_message=""):
 
 
 @transaction.atomic
+def readdress_awaiting(po: PurchaseOrder):
+    """Address a scheduled approval email to the order's vendor as it now stands.
+
+    The recipients are captured when the email is scheduled, at submission. A
+    returned order can be corrected before it is resumed, vendor included, and
+    an email still addressed to the previous vendor would send the new vendor's
+    order to a supplier it no longer names. Called when the request goes back in
+    front of its approvers. A vendor with nobody to send to cancels the email,
+    and the buyer sends it by hand once the order is approved.
+    """
+    po = PurchaseOrder.objects.select_related("vendor").get(pk=po.pk)
+    recipients = resolve_recipients(po)
+    if not recipients:
+        return cancel_awaiting(
+            po, reason="The order's vendor has no email address or purchase-order contact.",
+        )
+    deliveries = list(PurchaseOrderVendorDelivery.objects.select_for_update().filter(
+        purchase_order=po, status=PurchaseOrderVendorDeliveryStatus.AWAITING_APPROVAL,
+    ))
+    for delivery in deliveries:
+        delivery.recipients = recipients
+        delivery.bcc = procurement_bcc(recipients)
+        delivery.save(update_fields=["recipients", "bcc", "updated_at"])
+    return deliveries
+
+
+@transaction.atomic
 def cancel_awaiting(po: PurchaseOrder, *, reason: str, actor_user=None):
     deliveries = list(PurchaseOrderVendorDelivery.objects.select_for_update().filter(
         purchase_order=po, status=PurchaseOrderVendorDeliveryStatus.AWAITING_APPROVAL,

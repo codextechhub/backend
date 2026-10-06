@@ -743,3 +743,108 @@ class ResubmitTellsTheDocumentTests(_Base):
 
         self.instance.refresh_from_db()
         self.assertEqual(self.instance.status, WorkflowInstanceStatus.RETURNED)
+
+
+class _CorrectedHandler(BaseWorkflowHandler):
+    """A handler describing a requisition corrected from 60 chairs to 40."""
+
+    def get_document_summary(self, document):
+        return {"title": "40 chairs"}
+
+    def get_document_details(self, document):
+        from vs_workflow.presentation import document_details, fields_section
+
+        return document_details(fields_section("Request", [("Quantity", "40")]))
+
+
+class ResumedRequestShowsTheCorrectedDocumentTests(_Base):
+    """A returned request resumes in front of its approvers with the document as it is now.
+
+    Mrs Bello's requisition for 60 chairs is returned with "make it 40". She
+    corrects it and resumes the request. The approver opens it from the
+    approvals screen and must read 40 chairs, not the 60 snapshotted when she
+    first sent it, or he approves something other than what he is shown.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.instance.status = WorkflowInstanceStatus.RETURNED
+        self.instance.document_object_id = self.template.pk
+        self.instance.document_summary = {"title": "60 chairs"}
+        self.instance.document_details = {}
+        self.instance.save(update_fields=[
+            "status", "document_object_id", "document_summary", "document_details",
+        ])
+
+    def resubmit_with(self, handler):
+        with patch("vs_workflow.services.actions.get_handler", return_value=handler), \
+             patch("vs_workflow.services.actions.routing_service._activate_stage"), \
+             patch("vs_workflow.services.actions.approvers_service.resolve_approvers",
+                   return_value=[]):
+            svc.resubmit(self.instance.id, self.requester)
+        self.instance.refresh_from_db()
+
+    def test_resubmit_takes_a_fresh_snapshot_of_the_document(self):
+        self.resubmit_with(_CorrectedHandler())
+
+        self.assertEqual(self.instance.document_summary["title"], "40 chairs")
+        self.assertIn("40", str(self.instance.document_details))
+
+    def test_a_summary_that_cannot_be_built_keeps_the_old_one(self):
+        class Broken(BaseWorkflowHandler):
+            def get_document_summary(self, document):
+                raise RuntimeError("summary unavailable")
+
+        with self.assertLogs("vs_workflow.submission", level=logging.ERROR):
+            self.resubmit_with(Broken())
+
+        self.assertEqual(self.instance.document_summary["title"], "60 chairs")
+
+
+class ReversingAReturnTellsTheModuleTests(_HandlerStubbed, _Base):
+    """Reversing a vote on a returned request reopens it, and the module hears it was returned.
+
+    While a request is returned its requester may have corrected the document,
+    so a reversal that puts it back in front of approvers is a resumption the
+    requester did not ask for: the module checks the document again
+    (``was_returned``) and the approvers see it as it now stands.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.handler = self._install_handler()
+        self.instance.status = WorkflowInstanceStatus.RETURNED
+        self.instance.document_object_id = self.template.pk
+        self.instance.document_summary = {"title": "60 chairs"}
+        self.instance.save(update_fields=["status", "document_object_id", "document_summary"])
+        self.si.status = WorkflowStageStatus.RETURNED
+        self.si.resolved_at = timezone.now()
+        self.si.save(update_fields=["status", "resolved_at"])
+        self.vote = WorkflowStageAction.objects.create(
+            stage_instance=self.si, actor=self.approver,
+            action=ActionEnum.RETURNED, comment="make it 40", attempt=self.si.attempt,
+        )
+
+    def test_the_module_hears_the_request_was_returned_and_the_snapshot_is_fresh(self):
+        self.handler.get_document_summary = _CorrectedHandler().get_document_summary
+
+        svc.reverse_action(self.vote.id, self.requester, reason="returned in error")
+
+        self.assertTrue(self.handler.reversed_contexts[0]["was_returned"])
+        self.instance.refresh_from_db()
+        self.assertEqual(self.instance.document_summary["title"], "40 chairs")
+
+    def test_a_request_that_was_not_returned_is_not_flagged_or_refreshed(self):
+        self.instance.status = WorkflowInstanceStatus.IN_PROGRESS
+        self.instance.save(update_fields=["status"])
+        self.si.status = WorkflowStageStatus.APPROVED
+        self.si.save(update_fields=["status"])
+        self.vote.action = ActionEnum.APPROVED
+        self.vote.save(update_fields=["action"])
+        self.handler.get_document_summary = _CorrectedHandler().get_document_summary
+
+        svc.reverse_action(self.vote.id, self.requester, reason="approved in error")
+
+        self.assertFalse(self.handler.reversed_contexts[0]["was_returned"])
+        self.instance.refresh_from_db()
+        self.assertEqual(self.instance.document_summary["title"], "60 chairs")

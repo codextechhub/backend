@@ -40,6 +40,7 @@ from ..serializers import (
 from .base import (
     _ProcBase,
     _branch_scoped,
+    _correcting_returned,
     _date,
     _document_or_404,
     _money,
@@ -56,26 +57,121 @@ from .catalog import _resolve_catalog_item
 # Purchase requisitions                                                       #
 # --------------------------------------------------------------------------- #
 
-def _write_requisition_lines(request, req, entity, lines):
-    """Replace a draft's estimate lines from validated entity-scoped references."""
-    req.lines.all().delete()
+def _comparable(line):
+    """What a requisition line says, from a saved line or a sent line's resolved values.
+
+    Compared to tell a changed line from one sent back as it was, so a form that
+    echoes every line back changes nothing it did not touch.
+    """
+    related = ("catalog_item", "expense_account", "tax_code")
+    if isinstance(line, dict):
+        get = line.get
+        ids = {name: getattr(line[name], "pk", None) for name in related}
+    else:
+        get = lambda field: getattr(line, field)  # noqa: E731
+        ids = {name: getattr(line, f"{name}_id") for name in related}
+    return (
+        str(get("line_no")), ids["catalog_item"], get("description"), get("quantity"),
+        get("unit"), get("estimated_unit_price"), ids["expense_account"], ids["tax_code"],
+    )
+
+
+def _line_values(request, entity, ln, i):
+    """The field values one sent line resolves to, from entity-scoped references."""
+    item = _resolve_catalog_item(entity, ln.get("catalog_item"))
+    defaults = item.line_defaults() if item else {}
+    expense = _resolve_account(request, entity, ln.get("expense_account"), "expense_account") \
+        or defaults.get("expense_account")
+    tax = _resolve_tax(entity, ln.get("tax_code")) or defaults.get("tax_code")
+    unit_price = ln.get("estimated_unit_price")
+    if unit_price in (None, "") and item is not None:
+        unit_price = defaults.get("unit_price", 0)
+    return {
+        "line_no": ln.get("line_no", i), "catalog_item": item,
+        "description": ln.get("description") or defaults.get("description", ""),
+        "quantity": _quantity(ln.get("quantity", 1), "quantity"),
+        "unit": str(ln.get("unit") or (item.unit_of_measure if item else "Unit"))[:24],
+        "estimated_unit_price": _money(unit_price or 0, "estimated_unit_price"),
+        "expense_account": expense, "tax_code": tax,
+    }
+
+
+def _line_label(req, line):
+    label = req.document_number or f"requisition {req.pk}"
+    return f"Line {line.line_no or line.pk} ('{line.description}') of {label}"
+
+
+def _write_requisition_lines(request, req, entity, lines, *, new=False):
+    """Write a requisition's estimate lines: the body becomes its lines.
+
+    A sent line whose ``id`` names one of the requisition's lines updates that line
+    in place; a line without ``id`` is new; a line left out of the body is removed.
+    A body with no ids at all replaces every line, which is what a draft's form
+    has always sent. A new requisition (``new``) has no lines to match, so ids sent
+    with it, as a form copying another requisition's lines would, are ignored.
+
+    A requisition line is what quote requests and orders point at, and one of
+    those can outlive the requisition's approval (an approval reversed while an
+    old, cancelled quote request still names the line). Two rules keep a line on
+    one live sourcing at a time, and the references to it intact:
+
+    * a line any live quote request or order holds is neither changed nor
+      removed (:func:`vs_procurement.purchasing.sourced_elsewhere`): changing 60
+      chairs to 40 under an RFQ already out for 60 would leave the two
+      disagreeing, and removing it would free nothing the RFQ still holds;
+    * a line any quote request, order or shared allocation ever named, live or
+      not, is never removed. It is corrected in place by its ``id``, so the
+      record of where it was sourced stays attached to it.
+
+    Every refusal is a 400 on ``lines`` naming the requisition and the line, raised
+    inside the caller's transaction before anything is written.
+    """
+    from .. import purchasing
+
+    current = {line.pk: line for line in req.lines.all()}
+    plan, seen = [], set()
     for i, ln in enumerate(lines, start=1):
-        item = _resolve_catalog_item(entity, ln.get("catalog_item"))
-        defaults = item.line_defaults() if item else {}
-        expense = _resolve_account(request, entity, ln.get("expense_account"), "expense_account") \
-            or defaults.get("expense_account")
-        tax = _resolve_tax(entity, ln.get("tax_code")) or defaults.get("tax_code")
-        unit_price = ln.get("estimated_unit_price")
-        if unit_price in (None, "") and item is not None:
-            unit_price = defaults.get("unit_price", 0)
-        PurchaseRequisitionLine.objects.create(
-            requisition=req, line_no=ln.get("line_no", i), catalog_item=item,
-            description=ln.get("description") or defaults.get("description", ""),
-            quantity=_quantity(ln.get("quantity", 1), "quantity"),
-            unit=str(ln.get("unit") or (item.unit_of_measure if item else "Unit"))[:24],
-            estimated_unit_price=_money(unit_price or 0, "estimated_unit_price"),
-            expense_account=expense, tax_code=tax,
-        )
+        if not isinstance(ln, dict):
+            raise ValidationError({"lines": f"Line {i} must be an object."})
+        line_id = None if new else ln.get("id")
+        line = None
+        if line_id not in (None, ""):
+            line = current.get(int(line_id)) if str(line_id).isdigit() else None
+            if line is None or line.pk in seen:
+                raise ValidationError({"lines": (
+                    f"Line {i} names line {line_id}, which is not a current line of "
+                    f"this requisition or is named twice."
+                )})
+            seen.add(line.pk)
+        plan.append((line, _line_values(request, entity, ln, i)))
+
+    for line, values in plan:
+        if line is None:
+            continue
+        if (_comparable(line) != _comparable(values)
+                and (where := purchasing.sourced_elsewhere(line)) is not None):
+            raise ValidationError({"lines": (
+                f"{where} Cancel that before changing the line."
+            )})
+    for line in (line for pk, line in current.items() if pk not in seen):
+        if (where := purchasing.sourced_elsewhere(line)) is not None:
+            raise ValidationError({"lines": f"{where} Cancel that before removing the line."})
+        if (line.rfq_lines.exists() or line.po_lines.exists()
+                or line.shared_sourcing_allocations.exists()):
+            raise ValidationError({"lines": (
+                f"{_line_label(req, line)} was put out to tender or ordered before, so it "
+                f"is kept. Send it back with its id to correct it."
+            )})
+
+    PurchaseRequisitionLine.objects.filter(
+        pk__in=[pk for pk in current if pk not in seen]).delete()
+    for line, values in plan:
+        if line is None:
+            PurchaseRequisitionLine.objects.create(requisition=req, **values)
+            continue
+        for field, value in values.items():
+            setattr(line, field, value)
+        line.save()
     # The header estimate is always the exact sum of quantity × unit price on its lines.
     req.recompute_total(save=True)
 
@@ -193,6 +289,7 @@ class RequisitionListCreateView(_ProcBase):
             page_context=lambda page: {
                 "parked_requisition_ids": approval_parking.parked_document_ids(page),
                 "overridden_requisition_ids": approval_override.overridden_document_ids(page),
+                "returned_document_ids": approvals.returned_document_ids(page),
             },
         )
 
@@ -225,7 +322,7 @@ class RequisitionListCreateView(_ProcBase):
             requested_by=request.user if request.user.is_authenticated else None,
             created_by=request.user if request.user.is_authenticated else None,
         )
-        _write_requisition_lines(request, req, entity, lines)
+        _write_requisition_lines(request, req, entity, lines, new=True)
         return success_response(
             "Requisition created.", data=RequisitionSerializer(req).data, status=201,
         )
@@ -258,14 +355,21 @@ class RequisitionDetailView(_ProcBase):
 
     @transaction.atomic
     def patch(self, request, pk):
-        """Serialize draft edits; submitted and approved intent is immutable."""
+        """Edit a draft, or correct a requisition its approver returned to its requester.
+
+        A returned requisition is still PENDING_APPROVAL with its request open, and
+        stays so: its requester corrects it here and resumes the request from the
+        approvals screen (:func:`vs_procurement.views.base._correcting_returned`).
+        One with its approvers, or approved, is immutable.
+        """
         entity = resolve_entity(request)
         req = _document_or_404(
             request, PurchaseRequisition.objects.select_for_update().filter(entity=entity),
             pk, "No such requisition in this entity.",
         )
-        if req.status != DocumentStatus.DRAFT:
-            raise ValidationError({"status": "Only a draft requisition can be edited."})
+        _correcting_returned(
+            request, req, noun="requisition", refusal="Only a draft requisition can be edited.",
+        )
         body = request.data
         req.title = str(body.get("title", req.title)).strip()
         req.request_date = _date(body.get("request_date", req.request_date), "request_date", required=True)

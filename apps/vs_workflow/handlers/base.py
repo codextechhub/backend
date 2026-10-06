@@ -113,9 +113,11 @@ class BaseWorkflowHandler:
         """Curated, display-only snapshot of the business document for approval UIs.
 
         The engine does not know the shape of any document, so each module
-        describes its own. Snapshotted onto the WorkflowInstance at submission.
-        A module that permits pending corrections refreshes that snapshot when
-        it changes the source, so an approver sees the request they decide.
+        describes its own. Snapshotted onto the WorkflowInstance at submission,
+        and taken again by the engine whenever a returned request re-enters
+        review, since its requester may have corrected it. A module that permits
+        corrections while a request is with its approvers refreshes that snapshot
+        when it changes the source, so an approver sees the request they decide.
 
         Convention (all keys optional):
             {
@@ -196,7 +198,8 @@ class BaseWorkflowHandler:
         Runs inside the resubmission's transaction before the returning stage is
         activated, as :meth:`on_submitted` runs before the first one, so raising
         refuses the resumption and leaves the request returned. ``context``
-        carries ``actor_id``, ``resuming_stage`` and ``attempt``.
+        carries ``actor_id``, ``resuming_stage`` and ``attempt``. The engine
+        retakes the approver's snapshot of the document after this returns.
         """
         self.on_submitted(instance, context)
 
@@ -252,9 +255,9 @@ class BaseWorkflowHandler:
         status a posting would have moved.
 
         ``context`` carries ``action_id``, ``original_action``, ``stage_code``,
-        ``attempt``, ``reason``, ``actor_id``, and ``was_final_approval`` - True
+        ``attempt``, ``reason``, ``actor_id``, ``was_final_approval`` - True
         when the instance stood fully APPROVED at the moment the reversal was
-        asked for. Raise
+        asked for - and ``was_returned``, True when it stood RETURNED. Raise
         :class:`~vs_workflow.exceptions.ReversalNotAllowedError` to refuse.
         """
         document = getattr(instance, "document", None)
@@ -285,6 +288,12 @@ class BaseWorkflowHandler:
         ``reopened_stage_code`` - the stage the instance returned to - and
         ``unwound_stages``, the codes of the stages downstream of it that the
         engine rolled back.
+
+        When ``was_returned`` is True the request was with its requester, who may
+        have corrected the document, and the reversal puts it back in front of the
+        approvers without the requester resuming it. A module that checks a
+        resumption (:meth:`on_resubmitted`) checks this the same way; the engine
+        retakes the approver's snapshot of the document afterwards.
         """
         return None
 

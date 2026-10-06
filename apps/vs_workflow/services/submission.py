@@ -101,18 +101,7 @@ def submit_for_approval(document, requested_by, *,
             tenant=tenant,
         )
 
-    try:
-        # Summary is best-effort display metadata; approval should not fail on it.
-        document_summary = handler.get_document_summary(document) or {}
-        if not isinstance(document_summary, dict):
-            document_summary = {}
-    except Exception:
-        logger.exception("Could not build workflow summary for %s.", document_type)
-        document_summary = {}
-
-    document_details = validate_document_details(
-        handler.get_document_details(document) or {}
-    )
+    document_summary, document_details = document_snapshot(handler, document, document_type)
 
     with transaction.atomic():
         # Instance creation, audit, document callback, and first routing commit together.
@@ -138,6 +127,53 @@ def submit_for_approval(document, requested_by, *,
         else:
             routing_service.advance_instance(instance, current_attempt=1)
         return instance
+
+
+def document_snapshot(handler, document, document_type: str, *, fallback_summary=None):
+    """``(summary, details)``: what an approver is shown of ``document``.
+
+    Built at submission, and again whenever a returned request goes back in front
+    of its approvers (:func:`refresh_document_snapshot`), so both read the
+    document as it then stands. The summary is best-effort display metadata: a
+    handler that cannot build one is logged and ``fallback_summary`` (empty at
+    submission, the previous summary on a refresh) is kept, because approval must
+    not fail on a heading. The details are validated, so a malformed layout is a
+    handler bug that surfaces rather than a blank review.
+    """
+    try:
+        summary = handler.get_document_summary(document) or {}
+        if not isinstance(summary, dict):
+            summary = {}
+    except Exception:
+        logger.exception("Could not build workflow summary for %s.", document_type)
+        summary = dict(fallback_summary or {})
+    details = validate_document_details(handler.get_document_details(document) or {})
+    return summary, details
+
+
+def refresh_document_snapshot(instance, handler) -> None:
+    """Rebuild ``instance``'s summary and details from its document as it now stands.
+
+    A returned document is its requester's to correct, so what was snapshotted
+    when it was first sent can be out of date by the time the request is back in
+    front of an approver: Mrs Bello asked for 60 chairs, was told to make it 40,
+    and corrected it. Called whenever a returned request re-enters review, by its
+    requester resuming it or by an administrator reversing the return, so the
+    approver reads 40. A document that can no longer be loaded keeps its old
+    snapshot.
+    """
+    model = instance.document_content_type.model_class()
+    document = (
+        model._base_manager.filter(pk=instance.document_object_id).first()
+        if model is not None else None
+    )
+    if document is None:
+        return
+    instance.document_summary, instance.document_details = document_snapshot(
+        handler, document, instance.document_type,
+        fallback_summary=instance.document_summary,
+    )
+    instance.save(update_fields=["document_summary", "document_details", "updated_at"])
 
 
 # Refuse a submission that would file into a tenant the submitter does not belong to.

@@ -293,9 +293,16 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
         Rejection and return each dropped the document back to DRAFT. Undoing the
         vote that caused that has to undo the write as well, or the requester finds
         an editable draft of something the workflow shows as still under review.
+
+        A returned document was its requester's draft, possibly corrected, so it is
+        checked again exactly as a resumption is (:meth:`on_resubmitted`): a
+        journal whose month closed meanwhile refuses the reversal rather than
+        failing when the approver approves it.
         """
         with transaction.atomic():
             doc = self._load(instance)  # Lock the concrete finance document.
+            if context.get("was_returned") and doc.status == DocumentStatus.DRAFT:
+                self.preflight(doc)
             if doc.status == DocumentStatus.DRAFT:
                 doc.status = DocumentStatus.PENDING_APPROVAL  # Back under review.
                 doc.save(update_fields=["status", "updated_at"])

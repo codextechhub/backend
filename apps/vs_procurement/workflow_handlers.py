@@ -137,6 +137,16 @@ class _ProcApprovalHandler(BaseWorkflowHandler):
     def on_cancelled(self, instance, context) -> None:
         approvals.reset_pending(instance.document)
 
+    def on_resubmitted(self, instance, context) -> None:
+        """Check a returned document again before its request resumes.
+
+        A return leaves the document PENDING, since its request is still open, and
+        hands it to its requester to correct. Resuming is the only way back in
+        front of the approvers, and the corrected document is checked as its
+        submission was (:func:`vs_procurement.approvals.resume_returned`).
+        """
+        approvals.resume_returned(instance.document)
+
     # --- reversal ----------------------------------------------------------- #
     #: No shared answer, deliberately. Each concrete type below says for itself
     #: what its approval released, and a type added here later inherits the
@@ -145,7 +155,15 @@ class _ProcApprovalHandler(BaseWorkflowHandler):
     #: raises the refusal in one shape.
 
     def on_action_reversed(self, instance, context) -> None:
-        """Put the document back in the approval queue it was decided out of."""
+        """Put the document back in the approval queue it was decided out of.
+
+        A request that was returned goes back under review without its requester
+        resuming it, possibly corrected meanwhile, so it is checked as a
+        resumption is (:meth:`on_resubmitted`).
+        """
+        if context.get("was_returned"):
+            approvals.resume_returned(instance.document)
+            return
         approvals.reset_to_pending(instance.document)
 
 
@@ -204,8 +222,16 @@ class RequisitionApprovalHandler(_ProcApprovalHandler):
         vendor is told. When every order raised has been cancelled and nothing
         arrived, this approval has released nothing that outlives it, which is the
         case a reversal exists for.
+
+        A live quote request (ordinary or shared) holding its lines is the same
+        commitment one step earlier: only an approved requisition can be put out to
+        tender, and vendors are quoting for it. Undone, the requisition would be
+        back with its approvers, and could be returned to its requester and
+        corrected, while the quote request still sourced the lines as they were.
+        It is stopped by cancelling the quote request, which frees the lines.
         """
         from .models import GoodsReceivedNote
+        from .purchasing import sourced_elsewhere
 
         if goods_arrived(GoodsReceivedNote.objects.filter(
                 purchase_order__requisition=document)):
@@ -218,6 +244,12 @@ class RequisitionApprovalHandler(_ProcApprovalHandler):
                 "A purchase order has already been raised from this requisition, "
                 "so its approval cannot be undone. Cancel the order instead."
             )
+        for line in document.lines.all():
+            if (where := sourced_elsewhere(line)) is not None:
+                return (
+                    f"{where} This requisition's approval cannot be undone while its "
+                    f"lines are being sourced. Cancel that first."
+                )
         return None
 
 

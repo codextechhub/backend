@@ -27,6 +27,7 @@ from .base import (
     _branch_q,
     _branch_scoped,
     _branch_visible,
+    _correcting_returned,
     _date,
     _document_or_404,
     _inherited_branch_id,
@@ -267,7 +268,10 @@ class VendorPaymentListCreateView(_ProcBase):
         if search := request.query_params.get("search", "").strip():
             qs = qs.filter(Q(document_number__icontains=search) | Q(reference__icontains=search)
                            | Q(vendor__code__icontains=search) | Q(vendor__name__icontains=search))
-        return self.paginate(request, qs.order_by("-id"), VendorPaymentListSerializer)
+        return self.paginate(
+            request, qs.order_by("-id"), VendorPaymentListSerializer,
+            page_context=lambda page: {"returned_document_ids": approvals.returned_document_ids(page)},
+        )
 
     @transaction.atomic
     def post(self, request):
@@ -355,7 +359,16 @@ class VendorPaymentDetailView(_ProcBase):
 
     @transaction.atomic
     def patch(self, request, pk):
-        """Replace an unsubmitted/rejected draft and its allocation plan atomically."""
+        """Replace a draft's allocation plan atomically, or correct a returned payment.
+
+        A draft never sent, or rejected, is edited as a draft and left unsubmitted,
+        and follows its bills to their branch. A payment its approver returned to
+        its requester is corrected by that requester and stays PENDING, to be
+        resumed from the approvals screen
+        (:func:`vs_procurement.views.base._correcting_returned`). It keeps its
+        branch: its request was filed under that branch and is decided by that
+        branch's approvers, so settling another branch's bills is a new payment.
+        """
         entity = resolve_entity(request)
         # Serialize competing edits so an allocation plan and its derived totals
         # cannot be saved from different request snapshots.
@@ -363,15 +376,21 @@ class VendorPaymentDetailView(_ProcBase):
             request, VendorPayment.objects.select_for_update().filter(entity=entity),
             pk, "No such vendor payment in this entity.",
         )
-        if payment.status != DocumentStatus.DRAFT or payment.approval_state not in (
-            ProcApprovalState.NOT_SUBMITTED, ProcApprovalState.REJECTED,
-        ):
-            raise ValidationError({"status": "Only an unsubmitted or rejected draft payment can be edited."})
+        returned = _correcting_returned(
+            request, payment, noun="vendor payment",
+            refusal="Only an unsubmitted or rejected draft payment can be edited.",
+        )
         body = request.data
         vendor = _resolve_vendor(request, entity, body.get("vendor", payment.vendor_id))
         _validate_vendor_for_payment(vendor)
         plan = _allocation_plan(request, entity, vendor, body.get("allocations"))
         branch_id = _settled_branch_id(request, plan)
+        if returned and branch_id != payment.branch_id:
+            filed = f"for {payment.branch.name}" if payment.branch_id else "without a branch"
+            raise ValidationError({"allocations": (
+                f"This payment was sent for approval {filed}, and a correction keeps it "
+                f"there. Settle another branch's bills with a new payment."
+            )})
         bank = _resolve_bank_account(
             request, entity,
             body.get("bank_account", getattr(getattr(payment.payment_account, "bank_account", None), "id", None)),
@@ -398,7 +417,8 @@ class VendorPaymentDetailView(_ProcBase):
         payment.wht_tax_code = wht_code
         payment.reference = str(body.get("reference", payment.reference) or "").strip()
         payment.narration = str(body.get("narration", payment.narration) or "").strip()
-        payment.approval_state = ProcApprovalState.NOT_SUBMITTED
+        if not returned:
+            payment.approval_state = ProcApprovalState.NOT_SUBMITTED
         payment.save()
         _replace_plan(payment, plan)
         return success_response("Vendor payment draft updated.", data=_serialize_detail(_payment_queryset(entity).get(pk=pk)))

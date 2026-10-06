@@ -57,6 +57,22 @@ def _run_handler_callback(instance, method: str, context: dict) -> None:
     getattr(handler, method)(instance, context)
 
 
+def _refresh_snapshot(instance) -> None:
+    """Retake the approver's snapshot of a returned request re-entering review.
+
+    Skipped for a document type with no registered handler, as
+    :func:`_run_handler_callback` skips its callbacks: there is nobody to
+    describe the document, and the old snapshot is the best there is.
+    """
+    from vs_workflow.services.submission import refresh_document_snapshot
+
+    try:
+        handler = get_handler(instance.document_type)
+    except UnknownDocumentTypeError:
+        return
+    refresh_document_snapshot(instance, handler)
+
+
 # Lock a workflow instance before mutating state.
 def _lock_instance(instance_id) -> WorkflowInstance:
     """Fetch the instance under a row-level write lock (SELECT FOR UPDATE).
@@ -433,6 +449,12 @@ def reverse_action(action_id, admin, reason: str) -> WorkflowStageAction:
        inside this transaction, so a handler that cannot comply rolls the whole
        reversal back rather than leaving the two descriptions disagreeing.
 
+    A reversal that reopens a returned request puts it back in front of its
+    approvers without its requester resuming it. The module is told so
+    (``was_returned`` in the context), since the requester may have corrected the
+    document in the meantime and it is checked again as a resumption is, and the
+    approver's snapshot of the document is taken again afterwards.
+
     A vote that did not resolve its stage is voided and nothing else moves: no
     stage reopens, and the document is not asked to change either. The owning
     module is still consulted first, because whether the decision may be touched
@@ -473,6 +495,7 @@ def reverse_action(action_id, admin, reason: str) -> WorkflowStageAction:
             "reason": reason,
             "actor_id": str(admin.pk),
             "was_final_approval": instance.status == WorkflowInstanceStatus.APPROVED,
+            "was_returned": instance.status == WorkflowInstanceStatus.RETURNED,
         }
         # Ask before writing: the engine can undo its record of a decision, never
         # the decision's effect in the world.
@@ -515,6 +538,11 @@ def reverse_action(action_id, admin, reason: str) -> WorkflowStageAction:
             context["reopened_stage_code"] = reopened.code
             context["unwound_stages"] = unwound
             handler.on_action_reversed(instance, context)
+            if context["was_returned"]:
+                from vs_workflow.services.submission import refresh_document_snapshot
+
+                # Its requester may have corrected it while it was returned.
+                refresh_document_snapshot(instance, handler)
         return reversal
 
 
@@ -525,7 +553,9 @@ def resubmit(instance_id, requester) -> WorkflowInstance:
     The document's handler hears of it through ``on_resubmitted`` before the
     stage is activated, the way ``on_submitted`` precedes the first stage, so
     the document reads as awaiting approval again and a handler that refuses
-    leaves the request returned.
+    leaves the request returned. The approver's snapshot of the document is then
+    taken again (:func:`~vs_workflow.services.submission.refresh_document_snapshot`),
+    because the requester may have corrected it while it was returned.
     """
     with transaction.atomic():
         instance = _lock_instance(instance_id)
@@ -551,6 +581,7 @@ def resubmit(instance_id, requester) -> WorkflowInstance:
             "actor_id": str(requester.pk), "resuming_stage": returning_stage.code,
             "attempt": next_attempt,
         })
+        _refresh_snapshot(instance)
 
         # If the stage was retired from the template while this instance was
         # sitting in RETURNED, don't re-activate it - advance past it instead.

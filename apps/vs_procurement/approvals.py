@@ -11,8 +11,14 @@ handler (see :mod:`vs_procurement.workflow_handlers`). Those callbacks land here
 * :func:`apply_rejected`   - the workflow terminally rejected it.
 * :func:`reset_pending`    - the requester withdrew / an admin cancelled it.
 * :func:`reset_to_pending` - an admin reversed a vote and the decision is undone.
+* :func:`resume_returned`  - a request its approver returned goes back in front of them.
 
 :func:`submit_for_approval` is the hand-off the API calls.
+
+A returned document keeps ``approval_state`` PENDING, because its request is still
+open: the approver handed it back to its requester, who corrects it and resumes the
+request from the approvals screen. :func:`returned_request` and
+:func:`returned_document_ids` tell a returned document from one an approver holds.
 :func:`ensure_tenant_approval_templates` gives one tenant its own approval rules, and
 :func:`ensure_default_approval_templates` publishes the platform-wide fallback so no
 :class:`~vs_finance.models.LedgerEntity` is ever left unroutable; a tenant's own rules
@@ -529,3 +535,98 @@ def reset_pending(document) -> None:
     if isinstance(document, PurchaseOrder):
         from .po_email import cancel_awaiting
         cancel_awaiting(document, reason="Approval request was withdrawn or cancelled.")
+
+
+# --------------------------------------------------------------------------- #
+# Returned to the requester                                                    #
+# --------------------------------------------------------------------------- #
+
+def _returned_requests(document_type: str, object_ids):
+    """Open requests of ``document_type`` for ``object_ids`` that an approver returned."""
+    from vs_workflow.constants import WorkflowInstanceStatus
+    from vs_workflow.models import WorkflowInstance
+
+    return WorkflowInstance.all_objects.filter(
+        document_type=document_type, document_object_id__in=[str(pk) for pk in object_ids],
+        status=WorkflowInstanceStatus.RETURNED,
+    )
+
+
+def returned_document_ids(documents) -> set:
+    """Primary keys of ``documents`` whose approval request is back with its requester.
+
+    ``documents`` must all be of one procurement model. A returned document is
+    still PENDING, because its request is open, so only PENDING rows are looked
+    up: one query for a page, none for a page with nothing pending. The read
+    shapes carry the answer as ``approval_returned``, which is how a screen tells
+    "with the approver" from "back with you to correct and resume".
+    """
+    rows = [d for d in documents if getattr(d, "approval_state", None) == ProcApprovalState.PENDING]
+    if not rows:
+        return set()
+    by_id = {str(d.pk): d.pk for d in rows}
+    return {
+        by_id[object_id] for object_id in _returned_requests(
+            rows[0].workflow_document_type, by_id,
+        ).values_list("document_object_id", flat=True)
+    }
+
+
+def returned_request(document):
+    """The returned request ``document`` is waiting on its requester for, or ``None``."""
+    if getattr(document, "approval_state", None) != ProcApprovalState.PENDING:
+        return None
+    return _returned_requests(
+        document.workflow_document_type, [document.pk],
+    ).order_by("-created_at").first()
+
+
+def resume_returned(document) -> None:
+    """Check a returned document again as its request goes back in front of its approvers.
+
+    A returned document was its requester's to correct, so whatever its own submit
+    route checked is checked again here, against the document as it now stands:
+    a requisition still has lines and its estimate is the sum of them, a bill is
+    priced and matched again, a payment still settles at least one bill, and an
+    order's scheduled vendor email goes to the order's vendor as it now is (the
+    requester may have changed the vendor while it was returned, and the email
+    must not reach the supplier the order no longer names).
+
+    Runs inside the engine's transaction, after the resumption or the reversal
+    that puts the request back under review, and before any stage is activated.
+    Raising refuses that and leaves the request returned. The document's row is
+    locked first, so a correction still being saved finishes before the check
+    reads it, and a correction that starts afterwards finds the request no longer
+    returned (see :func:`vs_procurement.views.base._correcting_returned`).
+    """
+    from vs_workflow.exceptions import InvalidInstanceStateError
+
+    from .models import PurchaseOrder, PurchaseRequisition, VendorInvoice, VendorPayment
+
+    model = type(document)
+    doc = model._base_manager.select_for_update().get(pk=document.pk)
+    expected = (
+        DocumentStatus.PENDING_APPROVAL if isinstance(doc, PurchaseRequisition)
+        else DocumentStatus.DRAFT
+    )
+    if doc.approval_state != ProcApprovalState.PENDING or doc.status != expected:
+        raise InvalidInstanceStateError(
+            f"{_label(doc)} is '{doc.get_status_display().lower()}', so its request "
+            f"cannot go back to its approvers."
+        )
+    if isinstance(doc, PurchaseRequisition):
+        if not doc.lines.exists():
+            raise InvalidInstanceStateError(f"{_label(doc)} has no lines left to approve.")
+        doc.recompute_total(save=True)
+    elif isinstance(doc, VendorInvoice):
+        from . import payables
+
+        payables.price_vendor_invoice(doc)
+        payables.match_vendor_invoice(doc, save=True)
+    elif isinstance(doc, VendorPayment):
+        if not doc.allocations.exists():
+            raise InvalidInstanceStateError(f"{_label(doc)} settles no bill.")
+    elif isinstance(doc, PurchaseOrder):
+        from .po_email import readdress_awaiting
+
+        readdress_awaiting(doc)

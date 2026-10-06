@@ -21,6 +21,7 @@ from vs_workflow.models import WorkflowInstance
 from vs_config.clock import tenant_today
 
 from .. import po_email, purchasing, sourcing, vendor_portal
+from ..approvals import returned_document_ids
 from ..constants import (
     CLOSED_PO_STATUSES, ContractStatus, ProcApprovalState, QuotationStatus, RfqStatus,
 )
@@ -52,6 +53,7 @@ from ..serializers import (
 from .base import (
     _ProcBase,
     _branch_q,
+    _correcting_returned,
     _branch_scoped,
     _date,
     _document_or_404,
@@ -267,7 +269,10 @@ class PurchaseOrderListCreateView(_ProcBase):
             request, entity, _purchase_order_list_queryset(entity), request.query_params,
         )
         qs = _filter_purchase_orders(qs, request.query_params)
-        return self.paginate(request, qs.order_by("-id"), PurchaseOrderListSerializer)
+        return self.paginate(
+            request, qs.order_by("-id"), PurchaseOrderListSerializer,
+            page_context=lambda page: {"returned_document_ids": returned_document_ids(page)},
+        )
 
     def post(self, request):
         """Create a draft commitment from an entity-scoped approved requisition."""
@@ -339,9 +344,11 @@ class PurchaseOrderDetailView(_ProcBase):
             request, PurchaseOrder.objects.select_for_update().filter(entity=entity), pk,
             "No such purchase order in this entity.",
         )
-        # The workflow overlay can be PENDING while the finance document status still reads DRAFT.
-        if po.status != DocumentStatus.DRAFT or po.approval_state == ProcApprovalState.PENDING:
-            raise ValidationError({"status": "Only a draft purchase order can be edited."})
+        # A draft, or an order its approver returned to its requester; never one with its approvers.
+        _correcting_returned(
+            request, po, noun="purchase order",
+            refusal="Only a draft purchase order can be edited.",
+        )
 
         body = request.data
         if "vendor" in body:
