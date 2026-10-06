@@ -710,7 +710,7 @@ MUST SAY:
   FinanceAuditLog.action must carry both sessions' new choices.
 Verified: tests_deferred_release_branch_close 7, tests_bank_document_rework 14 and tests_paye_annual_people 6 written first and watched failing; those plus the touched modules (bank document states, accruals, list filters, inter-branch, ledger lock, petty cash returns, previous pay, shared write reach, bank account reach, expense claim workflow, vs_workflow actions and reversal contract) 388 OK; vs_finance 1991 OK; vs_rbac 989 OK; vs_workflow 539 OK. The full suite was not run.
 
-### D127. An RFQ edit keeps its requisition links, every send whose approval ends leaves its owner an action, concessions can be corrected, and the requisition pickers leave out what is taken (uncommitted, 2026-10-06)
+### D127. An RFQ edit keeps its requisition links, every send whose approval ends leaves its owner an action, concessions can be corrected, and the requisition pickers leave out what is taken (2effaeb9, 2026-10-06)
 Number may be renumbered at merge: D125 is queued in parallel. No migration.
 MODULES: M22 procurement (RFQs, requisitions), M19 finance (inter-branch transfers, held receipts, petty cash returns, concessions, credit notes, every approval-gated document), MRD.
 MUST SAY:
