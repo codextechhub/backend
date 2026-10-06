@@ -622,7 +622,7 @@ Verified: SharedRfqEndedWithoutAwardTests and ReleaseBackfillTests failed first
 (6 of 8); tests_shared_sourcing_guards 19 OK; vs_procurement 766 OK;
 vs_finance 1955 OK. The full suite was not run.
 
-### D125. Months close in order, the close preview names what the close does itself, no kobo or code names reach a screen, and export money filters take naira (uncommitted, 2026-10-05)
+### D125. Months close in order, the close preview names what the close does itself, no kobo or code names reach a screen, and export money filters take naira (83f81658, 2026-10-05; school-fe 1b9dd07, console-fe c9eed1f, FinPro 59ec2b1)
 Number may be renumbered at merge: another agent queues its own entry in parallel.
 MODULES: M19 finance (period close, settings history, dashboard), M06 workflow (condition sentences, document-type list), M04 roles and permissions (permission labels), M10 notifications (area labels), the Export Centre, platform configuration (console labels), MRD.
 MUST SAY:
