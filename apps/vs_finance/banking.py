@@ -1259,24 +1259,34 @@ def _rework_terms(document) -> tuple:
 
 
 def require_reworkable(document) -> None:
-    """Refuse unless ``document`` is a draft that no approver is holding.
+    """Refuse unless ``document`` is a draft that no approval request is holding open.
 
-    A bank transaction or transfer comes back to its requester as a draft when
-    its approver rejects it or its request is withdrawn or cancelled
-    (:class:`vs_finance.workflow_handlers._FinancePostOnApprove`). Only then may
-    it be corrected, sent again or cancelled: while a request is in flight,
-    including one returned to the requester and resumed through the approvals
-    screen, the approvers are deciding on what they were shown, and a posted,
-    voided or cancelled document is finished.
+    Guards sending a bank transaction or transfer again and cancelling it. It
+    comes back to its requester as a draft when its approver rejects it or its
+    request is withdrawn or cancelled
+    (:class:`vs_finance.workflow_handlers._FinancePostOnApprove`), and only then
+    may it be sent again or cancelled. A document an approver returned is a
+    draft too, but its request is still open: its sender corrects it
+    (:func:`revise_bank_document`) and resumes that request from the approvals
+    screen, and sending it through its own route as well would put two requests
+    for it in front of the approvers. While a request is with its approvers they
+    are deciding on what they were shown, and a posted, voided or cancelled
+    document is finished.
     """
-    from .approvals import APPROVAL_PENDING, approval_states
+    from .approvals import APPROVAL_PENDING, approval_overview
     from .constants import DocumentStatus
     from .exceptions import PostingError
 
     noun = _rework_terms(document)[0]
     number = document.document_number or document.pk
-    if (document.status == DocumentStatus.PENDING_APPROVAL
-            or approval_states([document])[document.pk] == APPROVAL_PENDING):
+    state, returned = approval_overview([document])[document.pk]
+    if document.status == DocumentStatus.DRAFT and returned:
+        raise PostingError(
+            f"The {noun} {number} was returned to whoever sent it for approval. They "
+            f"correct it and resume the request from their approvals; to cancel it, "
+            f"withdraw the request first.",
+        )
+    if document.status == DocumentStatus.PENDING_APPROVAL or state == APPROVAL_PENDING:
         raise PostingError(
             f"The {noun} {number} is with its approvers. It can be changed or cancelled "
             f"once they reject it or the request is withdrawn.",
@@ -1303,19 +1313,34 @@ def revise_bank_document(document, changes, *, actor_user=None):
     field the create path names, so a correction cannot reach what creating could
     not. Each correction is audited with the fields it changed, before and after,
     because what an approver rejected and what is sent to them again can differ
-    in amount or account. Nothing is posted and nothing is sent: the requester
-    submits the corrected draft separately, through the same route.
+    in amount or account. Nothing is posted and nothing is sent.
+
+    Who may correct it, and how it goes back, follow
+    :func:`vs_finance.approvals.correcting_returned`. A draft back from a
+    rejection, withdrawal or cancellation is sent again through its own
+    ``submit/``. A draft an approver returned is corrected by ``actor_user`` only
+    if they sent it, and resumed from the approvals screen; it keeps its branch,
+    because its request was filed under that branch and is decided by that
+    branch's approvers, so moving the money to another branch's account is a new
+    document.
     """
     from rest_framework.exceptions import ValidationError
 
+    from .approvals import correcting_returned
     from .exceptions import PostingError
 
     document = type(document).objects.select_for_update().get(pk=document.pk)
-    require_reworkable(document)
     noun, edited, _, validate, fields = _rework_terms(document)
+    returned = correcting_returned(document, actor_user, noun=noun)
     before = {name: _audited(getattr(document, name)) for name in fields}
     for name, value in changes.items():
         setattr(document, name, value)
+    if returned and before["branch_id"] != document.branch_id:
+        field = "bank_account" if noun == "bank transaction" else "from_account"
+        raise ValidationError({field: (
+            f"This {noun} was sent for approval at its branch, and a correction keeps it "
+            f"there. Record another branch's money as a new {noun}."
+        )})
     try:
         validate(document)
     except PostingError as exc:

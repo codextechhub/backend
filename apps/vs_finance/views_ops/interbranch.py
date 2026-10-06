@@ -203,7 +203,7 @@ class InterBranchTransferSerializer(ApprovalStateMixin, serializers.ModelSeriali
             "adjustment_entry_id",
             "requested_at", "sent_at", "received_at", "arrival_date",
             "declined_at", "decline_reason", "journals", "moved_items", "net_owed",
-            "approval_state",
+            "approval_state", "approval_returned",
         ]
 
     def get_journals(self, obj):

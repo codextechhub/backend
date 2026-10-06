@@ -1648,28 +1648,38 @@ class CreditNoteListCreateView(_FinanceBase):
             invoice=invoice,
             created_by=request.user,
         )
-        for i, ln in enumerate(lines, start=1):
-            CreditNoteLine.objects.create(
-                note=note, line_no=i,
-                description=ln.get("description", ""),
-                revenue_account=_resolve_account(
-                    request, entity, ln.get("revenue_account"),
-                    f"lines[{i}].revenue_account", required=True),
-                quantity=_dec(ln.get("quantity", 1), f"lines[{i}].quantity"),
-                unit_price=_money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),
-                tax_code=_resolve_tax(
-                    entity, ln.get("tax_code"), f"lines[{i}].tax_code",
-                    usage="sales",
-                ),
-                cost_center=_resolve_cost_center(
-                    entity, ln.get("cost_center"), f"lines[{i}].cost_center"),
-            )
+        for i, fields in enumerate(_credit_note_lines(request, entity, lines), start=1):
+            CreditNoteLine.objects.create(note=note, line_no=i, **fields)
         price_credit_note(note)
         note.refresh_from_db()
         return success_response(
             f"{note.get_kind_display()} {note.document_number} created.",
             data=CreditNoteSerializer(note).data, status=201,
         )
+
+
+def _credit_note_lines(request, entity, lines) -> list:
+    """Each of a credit note's ``lines`` as :class:`CreditNoteLine` fields, resolved within reach.
+
+    Raising a note and correcting one accept exactly the same lines: a revenue
+    account the caller reaches, a quantity, a unit price in kobo, and an optional
+    sales tax code and cost centre.
+    """
+    return [
+        {
+            "description": ln.get("description", ""),
+            "revenue_account": _resolve_account(
+                request, entity, ln.get("revenue_account"),
+                f"lines[{i}].revenue_account", required=True),
+            "quantity": _dec(ln.get("quantity", 1), f"lines[{i}].quantity"),
+            "unit_price": _money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),
+            "tax_code": _resolve_tax(
+                entity, ln.get("tax_code"), f"lines[{i}].tax_code", usage="sales"),
+            "cost_center": _resolve_cost_center(
+                entity, ln.get("cost_center"), f"lines[{i}].cost_center"),
+        }
+        for i, ln in enumerate(lines, start=1)
+    ]
 
 
 # Define Credit Note Action Base values.
@@ -1686,18 +1696,101 @@ class _CreditNoteActionBase(_FinanceBase):
 
 # Group endpoint behavior for Credit Note Detail View.
 class CreditNoteDetailView(_CreditNoteActionBase):
-    """GET /finance/credit-notes/<id>/ - retrieve one credit or debit note (by id),
+    """GET/PATCH /finance/credit-notes/<id>/ - one credit or debit note (by id),
     with its lines and current allocation state.
+
+    PATCH corrects a draft note that has come back from approval: any of
+    ``note_date``, ``reason``, ``reference`` and ``lines`` (the create shape,
+    replacing every line; the note is priced again), each checked as on create,
+    the others kept. The customer, invoice and kind are what the note adjusts
+    and are fixed (400), and so is its branch, which follows them.
+
+    Back from a rejection, withdrawal or cancellation, ``submit/`` sends it
+    again. Returned by its approver (``approval_returned``), only the person who
+    sent it may correct it (403 for anybody else), and it is resumed from the
+    approvals screen (``POST /v1/workflow/instances/<id>/resubmit/``), which
+    checks it again and shows the approver the corrected note
+    (:func:`vs_finance.approvals.correcting_returned`). Refused (422) while its
+    approvers hold it and once posted or voided. The correction posts nothing
+    and is audited (``CREDIT_NOTE_EDITED``, before and after). Held by whoever
+    may create credit notes, within the same branch reach (404 outside it).
 
     docstring-name: Credit notes
     """
-    rbac_permission = "finance.creditnote.view"
+
+    @property
+    def rbac_permission(self):
+        return "finance.creditnote.create" if self.request.method == "PATCH" \
+            else "finance.creditnote.view"
 
     # Handle GET requests for this endpoint.
     def get(self, request, pk):
         _, note = self._note(request, pk)
         return success_response(
             "Credit note retrieved.", data=CreditNoteSerializer(note).data,
+        )
+
+    def patch(self, request, pk):
+        from .approvals import correcting_returned
+        from .audit import audit_value, record
+        from .constants import FinanceAuditAction
+        from .credit_notes import price_credit_note
+
+        entity, note = self._note(request, pk)
+        body = request.data or {}
+        fixed = sorted({"customer", "invoice", "kind", "branch", "currency"} & set(body))
+        if fixed:
+            raise ValidationError({fixed[0]: (
+                "A credit or debit note adjusts one customer's account as one kind of "
+                "note; raise a new note for another."
+            )})
+        changes = {}
+        if "note_date" in body:
+            changes["note_date"] = _date(body.get("note_date"), "note_date", required=True)
+        if "reason" in body:
+            changes["reason"] = str(body.get("reason") or "")
+        if "reference" in body:
+            changes["reference"] = str(body.get("reference") or "")
+        lines = _credit_note_lines(request, entity, _require_lines(body)) \
+            if "lines" in body else None
+        with transaction.atomic():
+            note = CreditNote.objects.select_for_update().get(pk=note.pk)
+            correcting_returned(note, request.user, noun="credit note")
+
+            def snapshot():
+                state = {name: audit_value(getattr(note, name))
+                         for name in ("note_date", "reason", "reference", "total")}
+                state["lines"] = [
+                    [line.revenue_account_id, str(line.quantity), line.unit_price,
+                     line.tax_code_id, line.description]
+                    for line in note.lines.order_by("line_no")
+                ]
+                return state
+
+            before = snapshot()
+            for name, value in changes.items():
+                setattr(note, name, value)
+            note.save()
+            if lines is not None:
+                note.lines.all().delete()
+                for i, fields in enumerate(lines, start=1):
+                    CreditNoteLine.objects.create(note=note, line_no=i, **fields)
+            price_credit_note(note)
+            note.refresh_from_db()
+            after = snapshot()
+            changed = [name for name in before if before[name] != after[name]]
+            if changed:
+                record(
+                    entity=entity, action=FinanceAuditAction.CREDIT_NOTE_EDITED,
+                    actor_user=request.user, target=note,
+                    message=(f"Corrected draft {note.get_kind_display().lower()} note "
+                             f"{note.document_number}: {', '.join(changed)}."),
+                    before={name: before[name] for name in changed},
+                    after={name: after[name] for name in changed},
+                )
+        return success_response(
+            f"{note.get_kind_display()} {note.document_number} corrected.",
+            data=CreditNoteSerializer(note).data,
         )
 
 
@@ -3160,15 +3253,18 @@ class ConcessionDetailView(_ConcessionActionBase):
     """GET/PATCH /finance/concessions/<id>/ - one concession (discount / waiver /
     scholarship) by id.
 
-    PATCH corrects a draft, including one back from approval (rejected, or its
-    request withdrawn or cancelled): any of ``kind``, ``concession_date``,
-    ``amount`` (kobo), ``allowance_account``, ``reason`` and ``reference``, each
-    checked as on create, the others kept. The customer and invoice are the debt
-    the concession discounts and are fixed (400); the branch follows the invoice.
-    Refused (422) while its approvers hold it, including a request returned to
-    the requester and waiting to be resumed, and once it is posted or voided.
-    The correction posts nothing; ``submit/`` sends it again. Held by whoever may
-    create concessions, within the same branch reach (404 outside it).
+    PATCH corrects a draft, including one back from approval: any of ``kind``,
+    ``concession_date``, ``amount`` (kobo), ``allowance_account``, ``reason`` and
+    ``reference``, each checked as on create, the others kept. The customer and
+    invoice are the debt the concession discounts and are fixed (400); the branch
+    follows the invoice. Back from a rejection, withdrawal or cancellation,
+    ``submit/`` sends it again. Returned by its approver (``approval_returned``),
+    only the person who sent it may correct it (403 for anybody else) and it is
+    resumed from the approvals screen
+    (:func:`vs_finance.approvals.correcting_returned`). Refused (422) while its
+    approvers hold it and once it is posted or voided. The correction posts
+    nothing and is audited (``CONCESSION_EDITED``, before and after). Held by
+    whoever may create concessions, within the same branch reach (404 outside it).
 
     docstring-name: Concessions
     """
@@ -3186,9 +3282,9 @@ class ConcessionDetailView(_ConcessionActionBase):
         )
 
     def patch(self, request, pk):
-        from .approvals import APPROVAL_PENDING, approval_states
-        from .constants import ConcessionKind
-        from .exceptions import PostingError
+        from .approvals import correcting_returned
+        from .audit import audit_value, record
+        from .constants import ConcessionKind, FinanceAuditAction
 
         entity, concession = self._concession(request, pk)
         body = request.data or {}
@@ -3217,22 +3313,22 @@ class ConcessionDetailView(_ConcessionActionBase):
             changes["reference"] = str(body.get("reference") or "")[:64]
         with transaction.atomic():
             concession = Concession.objects.select_for_update().get(pk=concession.pk)
-            number = concession.document_number or concession.pk
-            if (concession.status == DocumentStatus.PENDING_APPROVAL
-                    or approval_states([concession])[concession.pk] == APPROVAL_PENDING):
-                raise PostingError(
-                    f"Concession {number} is with its approvers. It can be corrected once "
-                    f"they reject it or the request is withdrawn."
-                )
-            if concession.status != DocumentStatus.DRAFT:
-                raise PostingError(
-                    f"Only a draft concession can be corrected; {number} is "
-                    f"'{concession.status}'."
-                )
+            correcting_returned(concession, request.user, noun="concession")
+            before = {name: audit_value(getattr(concession, name)) for name in changes}
             for name, value in changes.items():
                 setattr(concession, name, value)
-            if changes:
+            after = {name: audit_value(getattr(concession, name)) for name in changes}
+            changed = [name for name in changes if before[name] != after[name]]
+            if changed:
                 concession.save()
+                record(
+                    entity=entity, action=FinanceAuditAction.CONCESSION_EDITED,
+                    actor_user=request.user, target=concession,
+                    message=(f"Corrected draft concession {concession.document_number}: "
+                             f"{', '.join(changed)}."),
+                    before={name: before[name] for name in changed},
+                    after={name: after[name] for name in changed},
+                )
         concession.refresh_from_db()
         return success_response(
             f"{concession.get_kind_display()} {concession.document_number} corrected.",

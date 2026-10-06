@@ -579,3 +579,24 @@ class OtherReturnedDocumentTests(_ReturnedFixture):
         self.assertEqual((note.reason, note.approval_state),
                          ("Ten damaged reams", ProcApprovalState.APPROVED))
         self.assertEqual(self.request_for(note).status, WorkflowInstanceStatus.APPROVED)
+
+    def test_a_credit_notes_detail_names_its_approval_request_as_the_other_four_do(self):
+        note = VendorCreditNote.objects.create(
+            entity=self.books, vendor=self.vendor, vendor_invoice=self.ikeja_bill,
+            branch=self.ikeja, note_date=JAN, reason="Damaged",
+        )
+        VendorCreditNoteLine.objects.create(
+            credit_note=note, invoice_line=self.ikeja_bill.lines.get(), net_amount=10_000,
+        )
+        path = f"vendor-credit-notes/{note.pk}/"
+        self.assertIsNone(self.read(self.bello, self.books, path)["workflow_instance_id"])
+
+        note = self.sent_and_returned(note, self.bello, self.eze, comment="Say what was damaged")
+        detail = self.read(self.bello, self.books, path)
+        edited = self.as_(self.bello).patch(
+            self.url(self.books, path), {"reason": "Ten damaged reams"}, format="json")
+
+        self.assertEqual(str(detail["workflow_instance_id"]), str(self.request_for(note).id))
+        self.assertEqual(edited.status_code, 200, edited.data)
+        self.assertEqual(str(edited.data["data"]["workflow_instance_id"]),
+                         str(self.request_for(note).id))

@@ -1379,34 +1379,51 @@ class BankStatementLineIgnoreView(_StatementLineActionBase):
 # Bank transactions                                                           #
 # --------------------------------------------------------------------------- #
 
+def _overview_key(model) -> str:
+    """The serializer-context key a page's approval overview is cached under, per model."""
+    return f"approval_overview:{model._meta.label_lower}"
+
+
 class _ApprovalStateListSerializer(serializers.ListSerializer):
-    """Read a page's approval states in one query (:func:`vs_finance.approvals.approval_states`)."""
+    """Read a page's approval overview in one query (:func:`vs_finance.approvals.approval_overview`)."""
 
     def to_representation(self, data):
-        from ..approvals import approval_states
+        from ..approvals import approval_overview
 
         rows = list(data)
-        self.context.setdefault("approval_states", {}).update(approval_states(rows))
+        if rows:
+            self.context.setdefault(_overview_key(type(rows[0])), {}).update(
+                approval_overview(rows))
         return super().to_representation(rows)
 
 
 class _ApprovalStateMixin(serializers.Serializer):
-    """``branch_name`` and ``approval_state`` for a money document.
+    """``branch_name``, ``approval_state`` and ``approval_returned`` for a money document.
 
     ``approval_state`` is ``NOT_SUBMITTED``, ``PENDING``, ``APPROVED`` or ``REJECTED``,
     the procurement documents' vocabulary for where a document stands with its route.
+    ``approval_returned`` is True while an approver has handed the document back to
+    whoever sent it: its sender corrects it with PATCH and resumes it from the
+    approvals screen (:class:`vs_finance.serializers.ApprovalStateMixin`).
     """
 
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     approval_state = serializers.SerializerMethodField()
+    approval_returned = serializers.SerializerMethodField()
+
+    def _approval(self, obj) -> tuple:
+        from ..approvals import approval_overview
+
+        overview = self.context.setdefault(_overview_key(type(obj)), {})
+        if obj.pk not in overview:
+            overview.update(approval_overview([obj]))
+        return overview[obj.pk]
 
     def get_approval_state(self, obj) -> str:
-        from ..approvals import approval_states
+        return self._approval(obj)[0]
 
-        states = self.context.setdefault("approval_states", {})
-        if obj.pk not in states:
-            states.update(approval_states([obj]))
-        return states[obj.pk]
+    def get_approval_returned(self, obj) -> bool:
+        return self._approval(obj)[1]
 
 
 class BankTransactionSerializer(_ApprovalStateMixin, serializers.ModelSerializer):
@@ -1424,7 +1441,7 @@ class BankTransactionSerializer(_ApprovalStateMixin, serializers.ModelSerializer
             "bank_account_id", "bank_account_name", "direction", "amount",
             "counter_account_id", "counter_account_code", "counter_account_name",
             "transaction_date", "narration", "reference", "journal_id",
-            "branch_name", "approval_state",
+            "branch_name", "approval_state", "approval_returned",
         ]
 
 
@@ -1583,12 +1600,16 @@ class BankTransactionListCreateView(_FinanceBase):
 class BankTransactionDetailView(_FinanceBase):
     """GET/PATCH /finance/bank-transactions/<id>/?entity= - one bank transaction.
 
-    PATCH corrects a draft that has come back from approval (rejected, or its
-    request withdrawn or cancelled): any of the create fields, each checked as on
-    create and within the same branch reach, the others kept. A transaction
-    waiting on its approvers, posted, voided or cancelled is refused (422). The
-    correction is audited and posts nothing; ``submit/`` sends it again. Held by
-    whoever may create bank transactions, since creating one sends it for approval.
+    PATCH corrects a draft that has come back from approval: any of the create
+    fields, each checked as on create and within the same branch reach, the
+    others kept. Back from a rejection, withdrawal or cancellation, ``submit/``
+    sends it again. Returned by its approver (``approval_returned``), only the
+    person who sent it may correct it (403 for anybody else), it stays at its
+    branch (400), and it is resumed from the approvals screen
+    (:func:`vs_finance.approvals.correcting_returned`). A transaction waiting on
+    its approvers, posted, voided or cancelled is refused (422). The correction is
+    audited and posts nothing. Held by whoever may create bank transactions,
+    since creating one sends it for approval.
 
     docstring-name: Bank transactions
     """
@@ -1714,7 +1735,7 @@ class BankTransferSerializer(_ApprovalStateMixin, serializers.ModelSerializer):
             "id", "document_number", "status", "branch_id",
             "from_account_id", "from_account_name", "to_account_id", "to_account_name",
             "amount", "transfer_date", "narration", "reference", "journal_id",
-            "branch_name", "approval_state",
+            "branch_name", "approval_state", "approval_returned",
         ]
 
 

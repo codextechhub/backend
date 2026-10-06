@@ -129,6 +129,19 @@ class VendorPaymentWhtAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(payment.wht_amount, 10_000)
         self.assertEqual(payment.wht_source, WhtSource.ENTERED)
 
+    def test_an_edit_sending_wht_amount_null_works_a_typed_figure_out_again(self, _permission):
+        payment = self._edit(self._create(1_075_000, wht_amount=10_000), 537_500, wht_amount=None)
+        self.assertEqual(payment.wht_amount, 25_000)
+        self.assertEqual(payment.wht_source, WhtSource.COMPUTED)
+        self.assertEqual(payment.net_amount, 512_500)
+
+    def test_an_edit_sending_wht_amount_null_without_a_code_computes_nil(self, _permission):
+        payment = self._edit(
+            self._create(1_075_000, wht_amount=10_000), 537_500,
+            wht_amount=None, wht_tax_code=None,
+        )
+        self.assertEqual((payment.wht_amount, payment.wht_source), (0, WhtSource.COMPUTED))
+
     def test_the_payment_says_how_its_wht_was_arrived_at(self, _permission):
         url = f"/v1/procurement/vendor-payments/?entity={self.entity.code}"
         computed = self.client.post(url, self._body(1_075_000), format="json")

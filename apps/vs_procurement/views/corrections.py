@@ -76,6 +76,24 @@ def _note_queryset(entity):
     ).prefetch_related("lines", "allocations__vendor_invoice")
 
 
+def _serialize_note_detail(note):
+    """A credit note's read shape plus ``workflow_instance_id``, as the other four details carry.
+
+    ``workflow_instance_id`` is the note's latest approval request, or ``None``
+    before it is first sent. The screen resumes a returned note with it
+    (``POST /v1/workflow/instances/<id>/resubmit/``), so the detail of a note an
+    approver handed back must name the request to resume.
+    """
+    from vs_workflow.models import WorkflowInstance
+
+    data = VendorCreditNoteSerializer(note).data
+    instance = WorkflowInstance.all_objects.filter(
+        document_type=note.workflow_document_type, document_object_id=str(note.pk),
+    ).order_by("-created_at").first()
+    data["workflow_instance_id"] = str(instance.id) if instance else None
+    return data
+
+
 def _credit_instruction(body):
     """Read what to credit: ``full``, ``amount`` (kobo) or ``lines``, exactly one of them.
 
@@ -198,7 +216,10 @@ class VendorCreditNoteListCreateView(_ProcBase):
 
 
 class VendorCreditNoteDetailView(_ProcBase):
-    """Read a credit note, or rewrite an unsubmitted or rejected draft."""
+    """Read a credit note, or rewrite an unsubmitted or rejected draft.
+
+    Both answer with the note's ``workflow_instance_id`` (:func:`_serialize_note_detail`).
+    """
 
     @property
     def rbac_permission(self):
@@ -211,9 +232,7 @@ class VendorCreditNoteDetailView(_ProcBase):
         note = _document_or_404(
             request, _note_queryset(entity), pk, "No such vendor credit note in this entity.",
         )
-        return success_response(
-            "Vendor credit note retrieved.", data=VendorCreditNoteSerializer(note).data,
-        )
+        return success_response("Vendor credit note retrieved.", data=_serialize_note_detail(note))
 
     @transaction.atomic
     def patch(self, request, pk):
@@ -250,7 +269,7 @@ class VendorCreditNoteDetailView(_ProcBase):
             _write_lines(note, instruction)
         return success_response(
             "Vendor credit note draft updated.",
-            data=VendorCreditNoteSerializer(_note_queryset(entity).get(pk=note.pk)).data,
+            data=_serialize_note_detail(_note_queryset(entity).get(pk=note.pk)),
         )
 
 

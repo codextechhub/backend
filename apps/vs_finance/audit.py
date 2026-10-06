@@ -57,6 +57,26 @@ def _mirror_to_central(*, action, actor_user, entity, target_type, target_id,
 FROM_TARGET = object()
 
 
+def audit_value(value):
+    """``value`` as an audit row's ``before`` or ``after`` keeps it: JSON, and readable later.
+
+    A related row is kept as its primary key, a date as ISO text and a decimal as
+    text, so a correction's trail can be compared field by field after the rows
+    it named have changed.
+    """
+    import decimal
+
+    from django.db import models
+
+    if isinstance(value, models.Model):
+        return value.pk
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, decimal.Decimal):
+        return str(value)
+    return value
+
+
 def entry_branch_id(target=None, branch=FROM_TARGET):
     """The branch an entry about ``target`` is filed under, as an id or ``None``.
 

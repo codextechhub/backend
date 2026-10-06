@@ -6,9 +6,11 @@ signature. When the approval ends without approving it (Mr Adeyemi rejects it,
 she withdraws it, or an administrator cancels it) each is her draft again. She
 sends the credit note again through ``submit/``; she corrects the bursary to
 25k with PATCH and sends it again the same way. While the approvers hold a
-document, including one returned to her and waiting to be resumed from her
-approvals, neither the correction nor a second ``submit/`` is accepted: that
-would put a second request for the same document in front of them.
+document the correction is refused, and a second ``submit/`` is refused while
+its request is open, including one returned to her and waiting to be resumed
+from her approvals: that would put a second request for the same document in
+front of them. Correcting a returned document is covered in
+:mod:`vs_finance.tests_returned_correction`.
 
 Lekki's bursar reaches neither (404), a reader without the create key may not
 correct one (403), Rival Group's bursar sees nothing of Corona's, and Single
@@ -180,11 +182,8 @@ class ConcessionEditTests(_ReworkFixture):
         pk = self.raise_bursary(okafor)
 
         pending = self.patch(okafor, pk, {"amount": 1})
-        self.end(Concession, pk, "returned")
-        returned = self.patch(okafor, pk, {"amount": 1})
 
-        for response in (pending, returned):
-            self.assertEqual(response.status_code, 422, response.data)
+        self.assertEqual(pending.status_code, 422, pending.data)
         self.assertEqual(Concession.objects.get(pk=pk).amount, 30_000_00)
 
     def test_an_unknown_kind_or_a_bad_date_is_refused_on_the_field(self):

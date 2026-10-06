@@ -1163,17 +1163,9 @@ def create_direct_entry(entity, *, lines, date=None, narration="", reference="",
     with the platform rule for that (:func:`vs_rbac.scoping.raised_branch`) before
     calling here; this function records it and does not judge it.
     """
-    from .accounts import resolve_account
-    from .control_accounts import ensure_no_control_lines
-    from .models import FiscalPeriod, JournalEntry, JournalLine
+    from .models import FiscalPeriod, JournalEntry
 
-    rows = list(lines or [])  # Normalize iterable input and handle None.
-    if not rows:  # Direct entries must include at least one line.
-        raise PostingError("A direct entry needs at least one line.")
-    ensure_no_control_lines(entity, [
-        row[0] if not isinstance(row[0], str) else resolve_account(entity, row[0])
-        for row in rows
-    ])
+    rows = _direct_entry_rows(entity, lines)
 
     if date is None:  # Default direct-entry date when caller omits one.
         date = (  # Prefer earliest fiscal period start, otherwise today.
@@ -1189,15 +1181,111 @@ def create_direct_entry(entity, *, lines, date=None, narration="", reference="",
         narration=narration or ("Opening balances" if opening else "Direct entry"),
         reference=reference, created_by=actor_user,  # External reference and actor.
     )
+    _write_direct_lines(entry, rows)
+    return entry  # Return the draft; posting or submitting it is the caller's decision.
+
+
+def _direct_entry_rows(entity, lines) -> list:
+    """``lines`` as a list, refused when empty or when one names an account a sub-ledger keeps."""
+    from .accounts import resolve_account
+    from .control_accounts import ensure_no_control_lines
+
+    rows = list(lines or [])  # Normalize iterable input and handle None.
+    if not rows:  # Direct entries must include at least one line.
+        raise PostingError("A direct entry needs at least one line.")
+    ensure_no_control_lines(entity, [
+        row[0] if not isinstance(row[0], str) else resolve_account(entity, row[0])
+        for row in rows
+    ])
+    return rows
+
+
+def _write_direct_lines(entry, rows) -> None:
+    """Write ``rows`` (see :func:`create_direct_entry`) as ``entry``'s lines, numbered in order."""
+    from .accounts import resolve_account
+    from .models import JournalLine
+
     for i, row in enumerate(rows, start=1):  # Create journal lines in input order.
-        # optional 4th element: cost_center, optional 5th: dimensions JSON map  # Extra tuple values carry analytics.
-        account, debit, credit, *rest = row  # Unpack mandatory and optional line values.
-        cost_center = rest[0] if rest else None  # Optional cost center.
-        dimensions = rest[1] if len(rest) > 1 else {}  # Optional dimensions JSON map.
-        acct = account if not isinstance(account, str) else resolve_account(entity, account)  # Resolve code strings.
+        account, debit, credit, *rest = row  # Optional 4th: cost centre; optional 5th: dimensions.
+        cost_center = rest[0] if rest else None
+        dimensions = rest[1] if len(rest) > 1 else {}
+        acct = account if not isinstance(account, str) else resolve_account(entry.entity, account)
         JournalLine.objects.create(
             entry=entry, account=acct,  # Attach line to entry and account.
             debit=int(debit or 0), credit=int(credit or 0),  # Store integer kobo side amounts.
-            cost_center=cost_center, dimensions=dimensions or {}, line_no=i,  # Store analytics and line number.
+            cost_center=cost_center, dimensions=dimensions or {}, line_no=i,
         )
-    return entry  # Return the draft; posting or submitting it is the caller's decision.
+
+
+#: Fields of a direct entry a correction may change. The branch and the opening
+#: flag are what it was raised as, and stay.
+DIRECT_ENTRY_FIELDS = ("date", "narration", "reference")
+
+
+@transaction.atomic
+def revise_direct_entry(entry, *, actor_user, changes=None, lines=None):
+    """Correct a draft direct entry: its date, narration or reference, or all its lines.
+
+    ``changes`` maps names in :data:`DIRECT_ENTRY_FIELDS` to new values; ``lines``,
+    when given, replaces every line and is checked as a new entry's are
+    (:func:`create_direct_entry`): at least one, none on an account a sub-ledger
+    keeps. The caller has already checked the lines balance and resolved each
+    account within reach. A new date takes that date's period; whether it is
+    open is checked when the entry is sent again or resumed, as at submission.
+
+    Only a direct entry (``MANUAL`` or ``OPENING``, owned by no document) is
+    corrected here. A journal another document raised is corrected through that
+    document, which is the only thing that may change it
+    (:func:`_journal_document_owner`).
+
+    Who may correct it follows :func:`vs_finance.approvals.correcting_returned`:
+    a draft back from a rejection, withdrawal or cancellation, by anyone holding
+    the key, sent again with ``submit/``; a draft its approver returned, by the
+    person who sent it alone, resumed from the approvals screen. The correction
+    is audited with each changed field before and after, the lines as
+    ``[account code, debit, credit]`` rows.
+    """
+    from .approvals import correcting_returned
+    from .audit import audit_value, record
+    from .constants import FinanceAuditAction
+    from .models import JournalEntry
+
+    entry = JournalEntry.objects.select_for_update().get(pk=entry.pk)
+    number = entry.document_number or entry.pk
+    if entry.source not in (JournalSource.MANUAL, JournalSource.OPENING) or \
+            _journal_document_owner(entry) is not None:
+        raise PostingError(
+            f"Journal {number} was raised by another document. Correct that document "
+            f"instead; only a direct entry is corrected here."
+        )
+    correcting_returned(entry, actor_user, noun="journal")
+
+    def snapshot():
+        state = {name: audit_value(getattr(entry, name)) for name in DIRECT_ENTRY_FIELDS}
+        state["lines"] = [[line.account.code, line.debit, line.credit]
+                          for line in entry.lines.select_related("account").order_by("line_no")]
+        return state
+
+    before = snapshot()
+    for name, value in (changes or {}).items():
+        if name not in DIRECT_ENTRY_FIELDS:
+            raise ValueError(f"A direct entry's {name} is not corrected.")
+        setattr(entry, name, value)
+    if "date" in (changes or {}):
+        entry.period = resolve_period(entry.entity, entry.date)
+    entry.save()
+    if lines is not None:
+        rows = _direct_entry_rows(entry.entity, lines)
+        entry.lines.all().delete()
+        _write_direct_lines(entry, rows)
+    after = snapshot()
+    changed = [name for name in before if before[name] != after[name]]
+    if changed:
+        record(
+            entity=entry.entity, action=FinanceAuditAction.JOURNAL_EDITED,
+            actor_user=actor_user, target=entry,
+            message=f"Corrected draft direct entry {entry.document_number}: {', '.join(changed)}.",
+            before={name: before[name] for name in changed},
+            after={name: after[name] for name in changed},
+        )
+    return entry

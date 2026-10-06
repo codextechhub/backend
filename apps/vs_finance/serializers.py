@@ -308,30 +308,35 @@ class FiscalYearSerializer(BranchStatesMixin, serializers.ModelSerializer):
 
 
 class ApprovalStateMixin(serializers.Serializer):
-    """Adds a read-only ``approval_state``: where the document stands with its approval route.
+    """Adds read-only ``approval_state`` and ``approval_returned``: where the document stands with its route.
 
-    ``NOT_SUBMITTED`` (never sent, or its request was withdrawn or cancelled),
-    ``PENDING`` (a request is open, including one an approver sent back to its
-    requester that is waiting to be resumed from the approvals screen),
-    ``APPROVED`` or ``REJECTED``, read from the document's latest request
-    (:func:`vs_finance.approvals.approval_states`). A draft reading PENDING was
-    sent back: it is resumed from the approvals screen, and its own submit,
-    send and edit routes refuse it.
+    ``approval_state`` is ``NOT_SUBMITTED`` (never sent, or its request was
+    withdrawn or cancelled), ``PENDING`` (a request is open, including one an
+    approver sent back to its sender), ``APPROVED`` or ``REJECTED``, read from the
+    document's latest request (:func:`vs_finance.approvals.approval_overview`).
+
+    ``approval_returned`` is True while an approver has handed the document back
+    to whoever sent it: a draft still reading PENDING, because its request is
+    open. Its sender corrects it through the document's edit route, where it has
+    one, and resumes it from the approvals screen; its own submit and send
+    routes refuse it (:func:`vs_finance.approvals.correcting_returned`). False
+    in every other state.
 
     Read once per page, not once per row: the first row of a list reads the
-    whole page's states in one query and caches them in the shared serializer
-    context under the document's model, so documents of two kinds in one
-    response never mix. A single document costs one query.
+    whole page in one query and caches it in the shared serializer context under
+    the document's model, so documents of two kinds in one response never mix.
+    A single document costs one query, for both fields.
     """
 
     approval_state = serializers.SerializerMethodField()
+    approval_returned = serializers.SerializerMethodField()
 
-    def get_approval_state(self, obj) -> str:
-        from .approvals import approval_states
+    def _approval(self, obj) -> tuple:
+        from .approvals import approval_overview
 
         model = type(obj)
-        states = self.context.setdefault(f"approval_states:{model._meta.label_lower}", {})
-        if obj.pk not in states:
+        overview = self.context.setdefault(f"approval_overview:{model._meta.label_lower}", {})
+        if obj.pk not in overview:
             rows = [obj]
             parent = self.parent
             if isinstance(parent, serializers.ListSerializer) and parent.instance is not None:
@@ -341,8 +346,14 @@ class ApprovalStateMixin(serializers.Serializer):
                 listed = listed.all() if isinstance(listed, Manager) else listed
                 page = [row for row in listed if type(row) is model]
                 rows = page if any(row.pk == obj.pk for row in page) else rows
-            states.update(approval_states(rows))
-        return states[obj.pk]
+            overview.update(approval_overview(rows))
+        return overview[obj.pk]
+
+    def get_approval_state(self, obj) -> str:
+        return self._approval(obj)[0]
+
+    def get_approval_returned(self, obj) -> bool:
+        return self._approval(obj)[1]
 
 
 class JournalLineSerializer(serializers.ModelSerializer):
@@ -396,7 +407,7 @@ class JournalEntryListSerializer(ApprovalStateMixin, serializers.ModelSerializer
             "id", "document_number", "date", "period", "source",
             "status", "narration", "reference", "posted_at",
             "total_debit", "created_by", "created_by_id", "created_by_is_exited",
-            "approval_state",
+            "approval_state", "approval_returned",
         ]
         list_serializer_class = JournalPeopleListSerializer
 
@@ -784,7 +795,7 @@ class CreditNoteSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, ApprovalSta
             "subtotal", "tax_total", "total", "total_naira",
             "allocated_amount", "unallocated_amount", "refunded_amount",
             "transferred_amount", "credit_remaining", "reason", "reference", "lines",
-            "approval_required", "income_given_back", "approval_state",
+            "approval_required", "income_given_back", "approval_state", "approval_returned",
         ]
         list_serializer_class = IncomeGivenBackListSerializer
 
@@ -803,7 +814,7 @@ class RefundSerializer(ApprovalGatedMixin, ApprovalStateMixin, serializers.Model
             "id", "document_number", "customer_id", "customer_code", "customer_name",
             "refund_date", "method", "status", "amount", "amount_naira",
             "bank_account_id", "reference", "narration", "approval_required",
-            "approval_state",
+            "approval_state", "approval_returned",
         ]
 
     def get_amount_naira(self, obj) -> str:
@@ -830,6 +841,7 @@ class CustomerCreditTransferSerializer(ApprovalGatedMixin, ApprovalStateMixin,
             "to_customer_id", "to_customer_code", "to_customer_name",
             "transfer_date", "amount", "amount_naira", "reason",
             "receipt_id", "receipt_number", "approval_required", "approval_state",
+            "approval_returned",
         ]
 
     def get_amount_naira(self, obj) -> str:
@@ -849,7 +861,7 @@ class WriteOffRequestSerializer(ApprovalGatedMixin, ApprovalStateMixin, serializ
             "customer_code", "customer_name", "amount", "amount_naira",
             "write_off_account_id", "write_off_date", "narration", "reason",
             "journal_id", "approval_required", "allowance_used", "recovered_amount",
-            "approval_state",
+            "approval_state", "approval_returned",
         ]
 
     def get_amount_naira(self, obj) -> str:
@@ -915,6 +927,7 @@ class ConcessionSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, ApprovalSta
             "customer_name", "invoice_id", "invoice_number", "concession_date",
             "status", "amount", "amount_naira", "allowance_account",
             "reason", "reference", "approval_required", "income_given_back", "approval_state",
+            "approval_returned",
         ]
         list_serializer_class = IncomeGivenBackListSerializer
 
@@ -1325,7 +1338,7 @@ class ExpenseClaimSerializer(ApprovalStateMixin, serializers.ModelSerializer):
             "title", "narration", "status", "payment_status",
             "subtotal", "tax_total", "total", "total_naira",
             "amount_paid", "balance_due", "journal_id", "approval_required", "lines",
-            "approval_state",
+            "approval_state", "approval_returned",
         ]
 
     def get_total_naira(self, obj) -> str:
@@ -2578,7 +2591,7 @@ class DoubtfulDebtProvisionSerializer(ApprovalGatedMixin, ApprovalStateMixin,
         fields = [
             "id", "document_number", "status", "as_of", "narration", "required_total",
             "movement_total", "policy_snapshot", "lines", "approval_required",
-            "created_at", "partial_view", "approval_state",
+            "created_at", "partial_view", "approval_state", "approval_returned",
         ]
 
     def _part_reach(self):

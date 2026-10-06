@@ -794,6 +794,62 @@ APPROVAL_APPROVED = "APPROVED"
 APPROVAL_REJECTED = "REJECTED"
 
 
+def _latest_requests(documents) -> dict:
+    """``{str(pk): (instance status, requested_by_id)}`` of each document's latest request.
+
+    ``documents`` are of one model. One query: the content type is joined, not
+    looked up first, so a warm cache and a cold one cost the same.
+    """
+    from vs_workflow.models import WorkflowInstance
+
+    meta = type(documents[0])._meta.concrete_model._meta
+    latest = {}
+    for object_id, status, requested_by_id in (
+        WorkflowInstance.all_objects.filter(
+            document_content_type__app_label=meta.app_label,
+            document_content_type__model=meta.model_name,
+            document_object_id__in=[str(doc.pk) for doc in documents],
+        ).order_by("document_object_id", "created_at", "pk")
+        .values_list("document_object_id", "status", "requested_by_id")
+    ):
+        latest[object_id] = (status, requested_by_id)
+    return latest
+
+
+def _state_of(status) -> str:
+    """The approval state a document's latest request ``status`` stands for."""
+    from vs_workflow.constants import WorkflowInstanceStatus as S
+
+    if status is None:
+        return APPROVAL_NOT_SUBMITTED
+    return {
+        S.APPROVED: APPROVAL_APPROVED, S.REJECTED: APPROVAL_REJECTED,
+        S.WITHDRAWN: APPROVAL_NOT_SUBMITTED, S.CANCELLED: APPROVAL_NOT_SUBMITTED,
+    }.get(status, APPROVAL_PENDING)
+
+
+def approval_overview(documents) -> dict:
+    """``{document pk: (approval state, returned)}`` for documents of one model, in one query.
+
+    The state is :func:`approval_states`'. ``returned`` is True while an approver
+    has handed the document back to whoever sent it (its latest request is
+    RETURNED): the state still reads PENDING, because the request is open, and
+    only ``returned`` tells "with the approver" from "back with its sender to
+    correct and resume from the approvals screen".
+    """
+    from vs_workflow.constants import WorkflowInstanceStatus as S
+
+    documents = list(documents)
+    if not documents:
+        return {}
+    latest = _latest_requests(documents)
+    overview = {}
+    for doc in documents:
+        status = latest.get(str(doc.pk), (None, None))[0]
+        overview[doc.pk] = (_state_of(status), status == S.RETURNED)
+    return overview
+
+
 def approval_states(documents) -> dict:
     """``{document pk: approval state}`` for documents of one model, in one query.
 
@@ -803,33 +859,61 @@ def approval_states(documents) -> dict:
     cancelled, ``PENDING`` while a request is in flight (including one returned to
     the requester), and ``APPROVED`` or ``REJECTED`` once decided.
     """
-    from vs_workflow.constants import WorkflowInstanceStatus as S
-    from vs_workflow.models import WorkflowInstance
+    return {pk: state for pk, (state, _) in approval_overview(documents).items()}
 
-    documents = list(documents)
-    if not documents:
-        return {}
-    meta = type(documents[0])._meta.concrete_model._meta
-    latest = {}
-    # The content type is joined, not looked up first: one query, warm cache or cold.
-    for object_id, status in (
-        WorkflowInstance.all_objects.filter(
-            document_content_type__app_label=meta.app_label,
-            document_content_type__model=meta.model_name,
-            document_object_id__in=[str(doc.pk) for doc in documents],
-        ).order_by("document_object_id", "created_at", "pk")
-        .values_list("document_object_id", "status")
-    ):
-        latest[object_id] = status
-    meaning = {
-        S.APPROVED: APPROVAL_APPROVED, S.REJECTED: APPROVAL_REJECTED,
-        S.WITHDRAWN: APPROVAL_NOT_SUBMITTED, S.CANCELLED: APPROVAL_NOT_SUBMITTED,
-    }
-    return {
-        doc.pk: (meaning.get(latest[str(doc.pk)], APPROVAL_PENDING)
-                 if str(doc.pk) in latest else APPROVAL_NOT_SUBMITTED)
-        for doc in documents
-    }
+
+def correcting_returned(document, user, *, noun: str) -> bool:
+    """Say whether an edit of ``document`` may go ahead, and whether it corrects a returned request.
+
+    Every finance route that edits an approval-gated draft shares this rule:
+
+    * A draft never sent for approval, or whose request was rejected, withdrawn
+      or cancelled, is edited as a draft (False). It is sent again through its
+      own submit route.
+    * A draft an approver returned to its sender (its latest request RETURNED) is
+      corrected by that sender alone (True), and the sender resumes the request
+      from the approvals screen (``POST /v1/workflow/instances/<id>/resubmit/``),
+      which checks it again as submitting did and shows the approver the
+      corrected document. Anybody else is refused 403, even holding the edit key:
+      Mr Adeyemi returned Mrs Okafor's journal to Mrs Okafor, and a colleague's
+      change would go back to him under her name.
+    * Anything else is refused (422): a document with its approvers, whose
+      decision must be on what they were shown, and one approved, posted,
+      voided or cancelled.
+
+    The caller has locked ``document``'s row, and the request is read after the
+    lock. A resumption locks the same row before it moves the document to
+    PENDING_APPROVAL, so an edit and a resumption take turns: an edit that comes
+    second finds the document with its approvers and is refused.
+    """
+    from rest_framework.exceptions import PermissionDenied
+
+    from vs_workflow.constants import WorkflowInstanceStatus as S
+
+    from .constants import DocumentStatus
+    from .exceptions import PostingError
+
+    status, requested_by_id = _latest_requests([document]).get(str(document.pk), (None, None))
+    state = _state_of(status)
+    number = getattr(document, "document_number", "") or document.pk
+    if document.status == DocumentStatus.DRAFT and state != APPROVAL_PENDING:
+        return False
+    if document.status == DocumentStatus.DRAFT and status == S.RETURNED:
+        if requested_by_id != getattr(user, "pk", None):
+            raise PermissionDenied(
+                f"The {noun} {number} was returned to the person who sent it for "
+                f"approval, and only they can correct it."
+            )
+        return True
+    if state == APPROVAL_PENDING or document.status == DocumentStatus.PENDING_APPROVAL:
+        raise PostingError(
+            f"The {noun} {number} is with its approvers. It can be corrected once an "
+            f"approver returns it to whoever sent it or rejects it, or the request is "
+            f"withdrawn."
+        )
+    raise PostingError(
+        f"Only a draft {noun} can be corrected; {number} is '{document.status}'."
+    )
 
 
 # --------------------------------------------------------------------------- #

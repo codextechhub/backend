@@ -816,6 +816,63 @@ MUST SAY:
   rule does not apply to them.
 Verified: tests_returned_correction (vs_procurement) 20 (15 failed first; the four refusal tests that passed before already held; the PO email test was watched failing with its fix switched off), vs_workflow ResumedRequestShowsTheCorrectedDocumentTests 2 and ReversingAReturnTellsTheModuleTests 2 (failed first), the vs_finance returned-journal reversal test (watched failing with its fix switched off); new and touched modules together 80 OK; vs_procurement 834 OK; vs_workflow 557 OK; vs_finance 2068 OK; vs_payments 434 OK; leave, user-creation reversal and FAL procurement modules 84 OK. The full suite was not run.
 
+### D129. A finance document an approver returns is corrected by whoever sent it and resumed, a vendor credit note's detail names its approval request, and a typed vendor-payment WHT can be worked out again (uncommitted, 2026-10-06)
+Number may be renumbered at merge. Migration vs_finance 0065_returned_document_corrections (audit action choices only: JOURNAL_EDITED, CREDIT_NOTE_EDITED, CONCESSION_EDITED); renumber if another vs_finance 0065 lands first.
+MODULES: M19 finance (journals and direct entries, credit notes, concessions, bank transactions and transfers, expense claims, every approval-gated read shape), M22 procurement (vendor credit notes, vendor payments), MRD.
+Owner decision (2026-10-06): a returned finance document works like a returned procurement document (D128): its sender corrects it and resumes it.
+MUST SAY:
+- approval_returned (M19). Every finance read shape that carries approval_state
+  now also carries approval_returned (list and detail): credit notes,
+  concessions, refunds, write-offs, customer credit transfers, doubtful-debt
+  provisions, journal entries, expense claims, inter-branch transfers, bank
+  transactions and bank transfers. True while an approver has handed the
+  document back to whoever sent it (a DRAFT still reading approval_state
+  PENDING); false otherwise. Read with approval_state in one query per page.
+  Petty cash returns carry neither field.
+- Correcting a returned document (M19). Only the person who sent it for
+  approval may correct it (403 for anybody else, even holding the key); it
+  keeps approval_state PENDING and is resumed from the approvals screen (POST
+  workflow/instances/<id>/resubmit/), which re-runs the submission checks and
+  shows the approver the corrected document. Its own submit/ and cancel/ stay
+  refused (422) while it is returned. With its approvers, posted, voided or
+  cancelled: 422. A draft back from a rejection, withdrawal or cancellation is
+  still corrected by anyone holding the key and sent again with submit/.
+  - Direct entries (new): PATCH journals/<id>/ takes the direct-entry body
+    (date, narration, reference, lines replacing every line; balanced, no
+    sub-ledger control account), key finance.directentry.post, branch reach as
+    reading (404). branch and opening_balance are fixed (400). A journal another
+    document raised is refused (422): correct that document. Audited
+    JOURNAL_EDITED with before and after, lines as [code, debit, credit].
+  - Credit and debit notes (new): PATCH credit-notes/<id>/ takes note_date,
+    reason, reference and lines (create shape, replacing every line; repriced),
+    key finance.creditnote.create. customer, invoice, kind, branch and currency
+    are fixed (400). Audited CREDIT_NOTE_EDITED.
+  - Concessions: PATCH concessions/<id>/ (D127) now admits the sender of a
+    returned concession, and is audited CONCESSION_EDITED (closes D127's
+    "not written to the finance audit log").
+  - Bank transactions and transfers: PATCH (D126) now admits the sender of a
+    returned document; a returned one keeps its branch (400 on bank_account or
+    from_account if a correction would move it to another branch's account).
+  - Expense claims: attaching or removing a receipt on a returned claim is the
+    sender's alone (403 for anybody else); before, anyone with the create key
+    could change a returned claim's evidence. The claim row is locked for it.
+  - No edit route: refunds, write-offs, customer credit transfers,
+    doubtful-debt provisions, inter-branch transfers and petty cash returns.
+    Returned means resume as is (answering the approver's comment) or withdraw;
+    withdrawn, each lands where D126/D127 say (DRAFT, or CANCELLED for a petty
+    cash return and an unasked inter-branch send or forward).
+- Vendor credit note detail (M22). GET procurement/vendor-credit-notes/<id>/
+  and its PATCH response carry workflow_instance_id (the latest approval
+  request, null before it is first sent), as requisitions, orders, bills and
+  payments already did.
+- Vendor payment WHT (M22). PATCH vendor-payments/<id>/ with wht_amount: null
+  (or "") works the WHT out again from the payment's WHT code and the bills it
+  settles (wht_source COMPUTED; nil without a code), dropping a typed figure. A
+  figure keeps it as typed (ENTERED). Leaving wht_amount out keeps a typed
+  figure and recomputes a computed one, as before. Create is unchanged (null or
+  absent computes).
+Verified: vs_finance tests_returned_correction 18 (written first and watched failing: 405 on the two new PATCH routes, missing approval_returned, 422 where a sender correction should pass, a colleague removing a returned claim's receipt with 200), vs_procurement credit note detail test 1 and WHT null tests 2 (watched failing); new and touched modules together 412 OK; vs_finance 2086 OK; vs_procurement 837 OK; vs_workflow 557 OK; vs_payments 434 OK; full suite with --parallel 4: Ran 9756 tests, OK. Existing test changed: tests_adjustment_rework no longer expects a returned concession to refuse its sender (behaviour changed on purpose).
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

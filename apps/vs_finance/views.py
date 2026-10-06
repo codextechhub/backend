@@ -1165,15 +1165,65 @@ class JournalSummaryView(APIView):
 
 # Group endpoint behavior for Journal Entry Detail View.
 class JournalEntryDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
-    """GET /finance/journals/<id>/?entity= - one journal entry with its lines.
+    """GET/PATCH /finance/journals/<id>/?entity= - one journal entry with its lines.
+
+    PATCH corrects a draft direct entry (one raised through ``direct-entries/``)
+    that has come back from approval. The body is the direct entry's own, each
+    part optional and checked as on create: ``date``, ``narration``,
+    ``reference``, and ``lines`` (``[{account, debit|credit, cost_center?,
+    dimensions?}]``, kobo, balanced), which replaces every line. ``branch`` and
+    ``opening_balance`` are what it was raised as and are fixed (400).
+
+    Back from a rejection, withdrawal or cancellation, ``submit/`` sends it
+    again. Returned by its approver (``approval_returned``), only the person who
+    sent it may correct it (403 for anybody else), and it is resumed from the
+    approvals screen (``POST /v1/workflow/instances/<id>/resubmit/``), which
+    checks it again and shows the approver the corrected entry
+    (:func:`vs_finance.approvals.correcting_returned`). Refused (422) while its
+    approvers hold it, once posted or reversed, and for a journal another
+    document raised, which is corrected through that document. The correction
+    posts nothing and is audited (``JOURNAL_EDITED``). Held by whoever may raise
+    direct entries (``finance.directentry.post``), within the same branch reach
+    (404 outside it).
 
     docstring-name: Journal entries
     """
 
     serializer_class = JournalEntryDetailSerializer
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
-    rbac_permission = "finance.journal.view"
     lookup_field = "id"
+
+    @property
+    def rbac_permission(self):
+        return "finance.directentry.post" if self.request.method == "PATCH" \
+            else "finance.journal.view"
+
+    def patch(self, request, id):
+        from .posting import DIRECT_ENTRY_FIELDS, revise_direct_entry
+
+        entity = resolve_entity(request)
+        entry = self.get_queryset().filter(id=id).first()
+        if entry is None:
+            raise NotFound("Journal entry not found for this entity.")
+        body = request.data or {}
+        fixed = sorted({"branch", "opening_balance", "source", "entity"} & set(body))
+        if fixed:
+            raise ValidationError({fixed[0]: (
+                "A direct entry keeps the branch and kind it was raised with; raise a new "
+                "entry for another."
+            )})
+        # Partial only without lines: a partial pass would skip each line's defaults.
+        serializer = DirectEntryCreateSerializer(data=body, partial="lines" not in body)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        changes = {name: data[name] for name in DIRECT_ENTRY_FIELDS if name in body}
+        lines = _direct_entry_lines(request, entity, data["lines"]) if "lines" in body else None
+        revise_direct_entry(entry, actor_user=request.user, changes=changes, lines=lines)
+        entry = self.get_queryset().get(id=id)
+        return success_response(
+            message=f"Journal {entry.document_number} corrected.",
+            data=JournalEntryDetailSerializer(entry).data,
+        )
 
     # Handle the get queryset workflow.
     def get_queryset(self):
@@ -1864,6 +1914,26 @@ class JournalReverseView(APIView):
         )
 
 
+def _direct_entry_lines(request, entity, lines) -> list:
+    """A direct entry's validated ``lines`` as rows for :func:`vs_finance.posting.create_direct_entry`.
+
+    Each line's account is resolved under the caller's reach, and its optional
+    cost centre and analytical dimensions against this entity, before anything is
+    written, so raising an entry and correcting one accept exactly the same lines.
+    """
+    from .views_ops import _resolve_account, _resolve_cost_center, _resolve_dimensions
+
+    return [
+        (
+            _resolve_account(request, entity, ln["account"], f"lines[{i}].account", required=True),
+            ln["debit"], ln["credit"],
+            _resolve_cost_center(entity, ln.get("cost_center"), "lines.cost_center"),
+            _resolve_dimensions(entity, ln.get("dimensions"), "lines.dimensions"),
+        )
+        for i, ln in enumerate(lines)
+    ]
+
+
 # Group endpoint behavior for Direct Entry Create View.
 class DirectEntryCreateView(APIView):
     """POST /finance/direct-entries/?entity= - post a direct journal entry.
@@ -1911,9 +1981,7 @@ class DirectEntryCreateView(APIView):
 
         from .approvals import approval_required, confirm_unconfigured_post
         from .posting import create_direct_entry, post_journal
-        from .views_ops import (
-            _resolve_account, _resolve_cost_center, _resolve_dimensions, _transaction_branch,
-        )
+        from .views_ops import _transaction_branch
 
         entity = resolve_entity(request)
         serializer = DirectEntryCreateSerializer(data=request.data)
@@ -1923,17 +1991,7 @@ class DirectEntryCreateView(APIView):
         if not isinstance(opening, bool):
             raise ValidationError({"opening_balance": "Expected a JSON boolean."})
         branch = _transaction_branch(request, entity, request.data)
-        # Resolve each line's account under the caller's reach, and its optional cost
-        # centre + analytical dimensions against this entity, before anything is written.
-        lines = [
-            (
-                _resolve_account(request, entity, ln["account"], f"lines[{i}].account", required=True),
-                ln["debit"], ln["credit"],
-                _resolve_cost_center(entity, ln.get("cost_center"), "lines.cost_center"),
-                _resolve_dimensions(entity, ln.get("dimensions"), "lines.dimensions"),
-            )
-            for i, ln in enumerate(data["lines"])
-        ]
+        lines = _direct_entry_lines(request, entity, data["lines"])
         with transaction.atomic():
             entry = create_direct_entry(
                 entity, lines=lines,

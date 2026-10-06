@@ -238,6 +238,14 @@ class ExpenseClaimRejectView(_ExpenseClaimActionBase):
 class ExpenseClaimReceiptView(_ExpenseClaimActionBase):
     """POST (multipart ``file``) attach / DELETE a receipt on a claim line.
 
+    Only while the claim is a draft (400 otherwise): what its approvers decide on
+    is the evidence they were shown. A claim an approver returned to whoever sent
+    it (``approval_returned``) is that person's to change (403 for anybody else),
+    and the approver sees the new evidence when the request is resumed from the
+    approvals screen (:func:`vs_finance.approvals.correcting_returned`). The
+    claim's row is locked for the change, so a resumption and a receipt change
+    take turns.
+
     docstring-name: Expense line receipt
     """
 
@@ -247,9 +255,11 @@ class ExpenseClaimReceiptView(_ExpenseClaimActionBase):
     def _line(self, request, pk, line_id):
         from rest_framework.exceptions import ValidationError
 
+        from ..approvals import correcting_returned
         from ..constants import DocumentStatus
 
         _, claim = self._claim(request, pk)
+        claim = ExpenseClaim.objects.select_for_update().get(pk=claim.pk)
         line = claim.lines.filter(pk=line_id).first()
         if line is None:
             raise NotFound("Line not found on this claim.")
@@ -257,9 +267,11 @@ class ExpenseClaimReceiptView(_ExpenseClaimActionBase):
             raise ValidationError({
                 "detail": "Receipt evidence can only be changed while the claim is a draft."
             })
+        correcting_returned(claim, request.user, noun="expense claim")
         return claim, line
 
     # Handle POST requests for this endpoint.
+    @transaction.atomic
     def post(self, request, pk, line_id):
         from rest_framework.exceptions import ValidationError
 
@@ -282,6 +294,7 @@ class ExpenseClaimReceiptView(_ExpenseClaimActionBase):
         )
 
     # Handle DELETE requests for this endpoint.
+    @transaction.atomic
     def delete(self, request, pk, line_id):
         claim, line = self._line(request, pk, line_id)
         if line.receipt:

@@ -165,15 +165,28 @@ def _settled_branch_id(request, plan):
 def _resolve_payment_wht(body, *, gross, tax_code, plan, existing=None):
     """The WHT a draft carries: typed by the caller, or computed from its tax code.
 
-    A ``wht_amount`` in the body is kept as entered. Without one, a new draft
-    computes it through :func:`vs_procurement.payables.resolve_wht`. An edit that
-    omits it recomputes when the draft's figure was computed (the bills or the
-    code may have changed) and keeps any other figure: one somebody typed is a
-    deliberate choice that an unrelated edit must not erase, and a draft saved
-    before the source was recorded is treated the same way.
+    The body's ``wht_amount`` says which, on create and on edit alike:
+
+    * a figure (kobo) is kept exactly as entered (``wht_source`` ENTERED);
+    * ``null`` (or ``""``) means "work it out": the figure is computed from the
+      payment's WHT code and the bills it settles through
+      :func:`vs_procurement.payables.resolve_wht` (``wht_source`` COMPUTED, nil
+      without a code). This is how an edit drops a figure somebody typed;
+    * left out, a new draft computes it, and an edit recomputes only a figure
+      that was computed (the bills or the code may have changed) and keeps any
+      other: one somebody typed is a deliberate choice that an unrelated edit
+      must not erase, and a draft saved before the source was recorded is
+      treated the same way.
+
+    Mrs Okafor typed N10,000 of WHT on a draft to Adex for an exemption that turns
+    out not to apply. Her screen's "Work it out again" sends ``wht_amount: null``,
+    and the draft carries the 5% the vendor's code gives; an edit to the narration
+    alone, which sends no ``wht_amount``, would have kept her N10,000.
     """
+    recompute = "wht_amount" in body and body.get("wht_amount") in (None, "")
     supplied = body.get("wht_amount")
-    if supplied in (None, "") and existing is not None and existing.wht_source != WhtSource.COMPUTED:
+    if not recompute and supplied in (None, "") and existing is not None \
+            and existing.wht_source != WhtSource.COMPUTED:
         supplied = existing.wht_amount
     if supplied not in (None, ""):
         supplied = _money(supplied, "wht_amount")
