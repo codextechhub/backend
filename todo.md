@@ -816,7 +816,7 @@ MUST SAY:
   rule does not apply to them.
 Verified: tests_returned_correction (vs_procurement) 20 (15 failed first; the four refusal tests that passed before already held; the PO email test was watched failing with its fix switched off), vs_workflow ResumedRequestShowsTheCorrectedDocumentTests 2 and ReversingAReturnTellsTheModuleTests 2 (failed first), the vs_finance returned-journal reversal test (watched failing with its fix switched off); new and touched modules together 80 OK; vs_procurement 834 OK; vs_workflow 557 OK; vs_finance 2068 OK; vs_payments 434 OK; leave, user-creation reversal and FAL procurement modules 84 OK. The full suite was not run.
 
-### D129. A finance document an approver returns is corrected by whoever sent it and resumed, a vendor credit note's detail names its approval request, and a typed vendor-payment WHT can be worked out again (uncommitted, 2026-10-06)
+### D129. A finance document an approver returns is corrected by whoever sent it and resumed, a vendor credit note's detail names its approval request, and a typed vendor-payment WHT can be worked out again (48af1857, 2026-10-06)
 Number may be renumbered at merge. Migration vs_finance 0065_returned_document_corrections (audit action choices only: JOURNAL_EDITED, CREDIT_NOTE_EDITED, CONCESSION_EDITED); renumber if another vs_finance 0065 lands first.
 MODULES: M19 finance (journals and direct entries, credit notes, concessions, bank transactions and transfers, expense claims, every approval-gated read shape), M22 procurement (vendor credit notes, vendor payments), MRD.
 Owner decision (2026-10-06): a returned finance document works like a returned procurement document (D128): its sender corrects it and resumes it.
