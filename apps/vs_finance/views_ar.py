@@ -42,6 +42,7 @@ def _paginate(request, qs, serializer_cls, view, **ser_kwargs):
     page = paginator.paginate_queryset(qs, request, view=view)
     return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)
 
+from .approvals import with_approval_request
 from .constants import (
     PENDING_STATUSES,
     DocumentStatus,
@@ -1715,6 +1716,10 @@ class CreditNoteDetailView(_CreditNoteActionBase):
     and is audited (``CREDIT_NOTE_EDITED``, before and after). Held by whoever
     may create credit notes, within the same branch reach (404 outside it).
 
+    GET and PATCH name the note's latest approval request as
+    ``workflow_instance_id``, null before it is first sent: the id Resume posts
+    to (:func:`vs_finance.approvals.with_approval_request`).
+
     docstring-name: Credit notes
     """
 
@@ -1727,7 +1732,8 @@ class CreditNoteDetailView(_CreditNoteActionBase):
     def get(self, request, pk):
         _, note = self._note(request, pk)
         return success_response(
-            "Credit note retrieved.", data=CreditNoteSerializer(note).data,
+            "Credit note retrieved.",
+            data=with_approval_request(CreditNoteSerializer(note).data, note),
         )
 
     def patch(self, request, pk):
@@ -1790,7 +1796,7 @@ class CreditNoteDetailView(_CreditNoteActionBase):
                 )
         return success_response(
             f"{note.get_kind_display()} {note.document_number} corrected.",
-            data=CreditNoteSerializer(note).data,
+            data=with_approval_request(CreditNoteSerializer(note).data, note),
         )
 
 
@@ -2138,7 +2144,8 @@ class RefundDetailView(_RefundActionBase):
     # Handle GET requests for this endpoint.
     def get(self, request, pk):
         _, refund = self._refund(request, pk)
-        return success_response("Refund retrieved.", data=RefundSerializer(refund).data)
+        return success_response(
+            "Refund retrieved.", data=with_approval_request(RefundSerializer(refund).data, refund))
 
 
 # Group endpoint behavior for Refund Submit View.
@@ -2331,7 +2338,8 @@ class WriteOffRequestDetailView(_WriteOffActionBase):
     def get(self, request, pk):
         _, wor = self._wor(request, pk)
         return success_response(
-            "Write-off request retrieved.", data=WriteOffRequestSerializer(wor).data)
+            "Write-off request retrieved.",
+            data=with_approval_request(WriteOffRequestSerializer(wor).data, wor))
 
 
 # Group endpoint behavior for Write Off Request Submit View.
@@ -3266,6 +3274,10 @@ class ConcessionDetailView(_ConcessionActionBase):
     nothing and is audited (``CONCESSION_EDITED``, before and after). Held by
     whoever may create concessions, within the same branch reach (404 outside it).
 
+    GET and PATCH name the concession's latest approval request as
+    ``workflow_instance_id``, null before it is first sent: the id Resume posts
+    to (:func:`vs_finance.approvals.with_approval_request`).
+
     docstring-name: Concessions
     """
 
@@ -3278,7 +3290,8 @@ class ConcessionDetailView(_ConcessionActionBase):
     def get(self, request, pk):
         _, concession = self._concession(request, pk)
         return success_response(
-            "Concession retrieved.", data=ConcessionSerializer(concession).data,
+            "Concession retrieved.",
+            data=with_approval_request(ConcessionSerializer(concession).data, concession),
         )
 
     def patch(self, request, pk):
@@ -3332,7 +3345,7 @@ class ConcessionDetailView(_ConcessionActionBase):
         concession.refresh_from_db()
         return success_response(
             f"{concession.get_kind_display()} {concession.document_number} corrected.",
-            data=ConcessionSerializer(concession).data,
+            data=with_approval_request(ConcessionSerializer(concession).data, concession),
         )
 
 
@@ -4149,7 +4162,8 @@ class CustomerCreditTransferDetailView(_CreditTransferActionBase):
 
         _, transfer = self._transfer(request, pk)
         return success_response(
-            "Credit transfer retrieved.", data=CustomerCreditTransferSerializer(transfer).data,
+            "Credit transfer retrieved.",
+            data=with_approval_request(CustomerCreditTransferSerializer(transfer).data, transfer),
         )
 
 

@@ -330,9 +330,7 @@ class PurchaseOrderDetailView(_ProcBase):
             "No such purchase order in this entity.",
         )
         data = PurchaseOrderSerializer(po).data
-        # Generic workflow rows use content type + object id, which for_document resolves safely.
-        instance = WorkflowInstance.objects.for_document(po).order_by("-created_at").first()
-        data["workflow_instance_id"] = str(instance.id) if instance else None
+        data["workflow_instance_id"] = WorkflowInstance.objects.latest_id_for(po)
         return success_response("Purchase order retrieved.", data=data)
 
     @transaction.atomic

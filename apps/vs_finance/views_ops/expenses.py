@@ -10,6 +10,7 @@ from vs_rbac.scoping import transaction_branch_q
 from core.response import success_response
 from vs_config.clock import tenant_today
 
+from ..approvals import with_approval_request
 from ..views import resolve_entity
 from ..models import (
     ExpenseClaim,
@@ -156,7 +157,8 @@ class ExpenseClaimDetailView(_ExpenseClaimActionBase):
         _, claim = self._claim(request, pk)
         return success_response(
             "Expense claim retrieved.",
-            data=ExpenseClaimSerializer(claim, context={"request": request}).data,
+            data=with_approval_request(
+                ExpenseClaimSerializer(claim, context={"request": request}).data, claim),
         )
 
 
@@ -290,7 +292,9 @@ class ExpenseClaimReceiptView(_ExpenseClaimActionBase):
         claim.refresh_from_db()
         return success_response(
             "Receipt attached.",
-            data=ExpenseClaimSerializer(claim, context={"request": request}).data, status=201,
+            data=with_approval_request(
+                ExpenseClaimSerializer(claim, context={"request": request}).data, claim),
+            status=201,
         )
 
     # Handle DELETE requests for this endpoint.
@@ -302,7 +306,8 @@ class ExpenseClaimReceiptView(_ExpenseClaimActionBase):
         claim.refresh_from_db()
         return success_response(
             "Receipt removed.",
-            data=ExpenseClaimSerializer(claim, context={"request": request}).data,
+            data=with_approval_request(
+                ExpenseClaimSerializer(claim, context={"request": request}).data, claim),
         )
 
 

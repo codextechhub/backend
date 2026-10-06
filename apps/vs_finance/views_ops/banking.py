@@ -18,6 +18,7 @@ from vs_rbac.scoping import (
 
 from core.response import success_response
 
+from ..approvals import with_approval_request
 from ..audit import record
 from ..constants import (
     BankLineStatus,
@@ -1611,6 +1612,10 @@ class BankTransactionDetailView(_FinanceBase):
     audited and posts nothing. Held by whoever may create bank transactions,
     since creating one sends it for approval.
 
+    GET and PATCH name the transaction's latest approval request as
+    ``workflow_instance_id``, null before it is first sent: the id Resume posts
+    to (:func:`vs_finance.approvals.with_approval_request`).
+
     docstring-name: Bank transactions
     """
 
@@ -1621,7 +1626,9 @@ class BankTransactionDetailView(_FinanceBase):
 
     def get(self, request, pk):
         txn = _transaction_or_404(request, resolve_entity(request), pk)
-        return success_response("Bank transaction retrieved.", data=BankTransactionSerializer(txn).data)
+        return success_response(
+            "Bank transaction retrieved.",
+            data=with_approval_request(BankTransactionSerializer(txn).data, txn))
 
     def patch(self, request, pk):
         from ..banking import revise_bank_document
@@ -1630,9 +1637,10 @@ class BankTransactionDetailView(_FinanceBase):
         txn = _transaction_or_404(request, entity, pk)
         fields = _transaction_fields(request, entity, request.data or {}, editing=True)
         txn = revise_bank_document(txn, fields, actor_user=request.user)
+        txn = _transaction_or_404(request, entity, pk)
         return success_response(
             f"Bank transaction {txn.document_number} corrected.",
-            data=BankTransactionSerializer(_transaction_or_404(request, entity, pk)).data,
+            data=with_approval_request(BankTransactionSerializer(txn).data, txn),
         )
 
 
@@ -1867,7 +1875,9 @@ class BankTransferDetailView(_FinanceBase):
 
     def get(self, request, pk):
         transfer = _transfer_or_404(request, resolve_entity(request), pk)
-        return success_response("Transfer retrieved.", data=BankTransferSerializer(transfer).data)
+        return success_response(
+            "Transfer retrieved.",
+            data=with_approval_request(BankTransferSerializer(transfer).data, transfer))
 
     def patch(self, request, pk):
         from ..banking import revise_bank_document
@@ -1876,9 +1886,10 @@ class BankTransferDetailView(_FinanceBase):
         transfer = _transfer_or_404(request, entity, pk)
         fields = _transfer_fields(request, entity, request.data or {}, current=transfer)
         transfer = revise_bank_document(transfer, fields, actor_user=request.user)
+        transfer = _transfer_or_404(request, entity, pk)
         return success_response(
             f"Transfer {transfer.document_number} corrected.",
-            data=BankTransferSerializer(_transfer_or_404(request, entity, pk)).data,
+            data=with_approval_request(BankTransferSerializer(transfer).data, transfer),
         )
 
 

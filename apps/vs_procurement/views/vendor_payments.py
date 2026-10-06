@@ -249,10 +249,7 @@ def _serialize_detail(payment):
     from vs_workflow.models import WorkflowInstance
 
     data = VendorPaymentSerializer(payment).data
-    workflow = WorkflowInstance.all_objects.filter(
-        document_type="procurement.vendor_payment", document_object_id=str(payment.pk),
-    ).order_by("-created_at").first()
-    data["workflow_instance_id"] = workflow.id if workflow else None
+    data["workflow_instance_id"] = WorkflowInstance.all_objects.latest_id_for(payment)
     data["posting_lines"] = [{
         "account_code": line.account.code, "account_name": line.account.name,
         "debit": line.debit, "credit": line.credit,

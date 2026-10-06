@@ -533,10 +533,7 @@ def _serialize_invoice_detail(invoice):
     data = VendorInvoiceSerializer(invoice).data
     # Workflow, match comparisons, allocations, journal lines, and activity are
     # response overlays; their authoritative state remains in their owning models.
-    workflow = WorkflowInstance.all_objects.filter(
-        document_type="procurement.vendor_invoice", document_object_id=str(invoice.pk),
-    ).order_by("-created_at").first()
-    data["workflow_instance_id"] = workflow.id if workflow else None
+    data["workflow_instance_id"] = WorkflowInstance.all_objects.latest_id_for(invoice)
     comparisons = []
     for line in invoice.lines.all():
         po_line = line.po_line

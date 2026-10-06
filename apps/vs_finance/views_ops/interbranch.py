@@ -33,6 +33,7 @@ from vs_rbac.scoping import (
 
 from core.response import success_response
 
+from ..approvals import with_approval_request
 from ..constants import (
     DocumentStatus,
     InterBranchTransferKind,
@@ -506,8 +507,9 @@ class InterBranchTransferDetailView(_FinanceBase):
 
     def get(self, request, pk):
         transfer = _transfer_or_404(request, resolve_entity(request), pk)
-        return success_response("Inter-branch transfer retrieved.",
-                                data=InterBranchTransferSerializer(transfer).data)
+        return success_response(
+            "Inter-branch transfer retrieved.",
+            data=with_approval_request(InterBranchTransferSerializer(transfer).data, transfer))
 
 
 class InterBranchSendView(_FinanceBase):

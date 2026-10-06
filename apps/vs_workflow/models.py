@@ -685,6 +685,7 @@ class WorkflowInstanceQuerySet(models.QuerySet):
         for_school: Filter instances belonging to a specific school.
         for_branch: Filter instances belonging to a specific branch.
         for_document: Filter instances tracking a specific business document.
+        latest_id_for: The id of a document's latest approval request, or None.
         active: Exclude instances that have reached a terminal status.
     """
 
@@ -700,6 +701,35 @@ class WorkflowInstanceQuerySet(models.QuerySet):
     def for_document(self, document):
         ct = ContentType.objects.get_for_model(type(document))
         return self.filter(document_content_type=ct, document_object_id=str(document.pk))
+
+    def latest_id_for(self, document) -> str | None:
+        """The id of ``document``'s latest approval request, or None before it is first sent.
+
+        A document's detail read names this as ``workflow_instance_id``, so the
+        screen that shows a document an approver returned to its sender can offer
+        Resume (``POST /v1/workflow/instances/<id>/resubmit/``) without searching
+        the approvals queue. The latest request is the one that says where the
+        document stands: an earlier one was withdrawn, cancelled, rejected or
+        decided before the document was sent again.
+
+        One query, warm or cold: the content type is joined rather than looked up
+        first. Ties on ``created_at`` fall to the higher id, the same order the
+        finance approval overview reads, so the request named here is the one its
+        ``approval_state`` and ``approval_returned`` describe. The document has
+        already been read within its tenant and branch reach, so its own key
+        selects only its own requests.
+        """
+        meta = type(document)._meta.concrete_model._meta
+        return (
+            self.filter(
+                document_content_type__app_label=meta.app_label,
+                document_content_type__model=meta.model_name,
+                document_object_id=str(document.pk),
+            )
+            .order_by("-created_at", "-pk")
+            .values_list("id", flat=True)
+            .first()
+        )
 
     def active(self):
         return self.exclude(status__in=list(WORKFLOW_TERMINAL_STATUSES))

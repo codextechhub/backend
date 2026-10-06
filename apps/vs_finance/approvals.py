@@ -862,6 +862,23 @@ def approval_states(documents) -> dict:
     return {pk: state for pk, (state, _) in approval_overview(documents).items()}
 
 
+def with_approval_request(data, document):
+    """``data``, a document's detail, with ``workflow_instance_id`` added; returns ``data``.
+
+    ``workflow_instance_id`` is the document's latest approval request, or None
+    before it is first sent, read as procurement's details read it
+    (:meth:`vs_workflow.models.WorkflowInstanceQuerySet.latest_id_for`). The
+    screen resumes a document an approver returned to its sender with it
+    (``POST /v1/workflow/instances/<id>/resubmit/``). It costs one query, so it
+    is added to a single document's detail and to the edit responses that
+    return that detail, never to a list.
+    """
+    from vs_workflow.models import WorkflowInstance
+
+    data["workflow_instance_id"] = WorkflowInstance.all_objects.latest_id_for(document)
+    return data
+
+
 def correcting_returned(document, user, *, noun: str) -> bool:
     """Say whether an edit of ``document`` may go ahead, and whether it corrects a returned request.
 

@@ -82,15 +82,13 @@ def _serialize_note_detail(note):
     ``workflow_instance_id`` is the note's latest approval request, or ``None``
     before it is first sent. The screen resumes a returned note with it
     (``POST /v1/workflow/instances/<id>/resubmit/``), so the detail of a note an
-    approver handed back must name the request to resume.
+    approver handed back must name the request to resume
+    (:meth:`vs_workflow.models.WorkflowInstanceQuerySet.latest_id_for`).
     """
     from vs_workflow.models import WorkflowInstance
 
     data = VendorCreditNoteSerializer(note).data
-    instance = WorkflowInstance.all_objects.filter(
-        document_type=note.workflow_document_type, document_object_id=str(note.pk),
-    ).order_by("-created_at").first()
-    data["workflow_instance_id"] = str(instance.id) if instance else None
+    data["workflow_instance_id"] = WorkflowInstance.all_objects.latest_id_for(note)
     return data
 
 

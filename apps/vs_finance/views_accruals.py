@@ -28,6 +28,7 @@ from vs_rbac.scoping import (
     transaction_branch_scope,
 )
 
+from .approvals import with_approval_request
 from .constants import DepositStatus, FinanceAuditAction
 from .models import (
     CustomerDeposit,
@@ -411,10 +412,11 @@ class DoubtfulDebtProvisionDetailView(_ProvisionActionBase):
     rbac_permission = "finance.provision.view"
 
     def get(self, request, pk):
+        provision = self._provision(request, pk)
         return success_response(
             "Provision retrieved.",
-            data=DoubtfulDebtProvisionSerializer(
-                self._provision(request, pk), context=_reader_context(request)).data)
+            data=with_approval_request(DoubtfulDebtProvisionSerializer(
+                provision, context=_reader_context(request)).data, provision))
 
 
 class DoubtfulDebtProvisionSubmitView(_ProvisionActionBase):

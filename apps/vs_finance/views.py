@@ -35,6 +35,7 @@ from vs_rbac.scoping import (
     transaction_branch_scope,
 )
 
+from .approvals import with_approval_request
 from .models import (
     Account,
     FiscalPeriod,
@@ -1186,6 +1187,10 @@ class JournalEntryDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     direct entries (``finance.directentry.post``), within the same branch reach
     (404 outside it).
 
+    GET and PATCH name the entry's latest approval request as
+    ``workflow_instance_id``, null before it is first sent: the id Resume posts
+    to (:func:`vs_finance.approvals.with_approval_request`).
+
     docstring-name: Journal entries
     """
 
@@ -1222,7 +1227,14 @@ class JournalEntryDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
         entry = self.get_queryset().get(id=id)
         return success_response(
             message=f"Journal {entry.document_number} corrected.",
-            data=JournalEntryDetailSerializer(entry).data,
+            data=with_approval_request(JournalEntryDetailSerializer(entry).data, entry),
+        )
+
+    def retrieve(self, request, *args, **kwargs):
+        entry = self.get_object()
+        return success_response(
+            message="Data retrieved successfully.",
+            data=with_approval_request(self.get_serializer(entry).data, entry),
         )
 
     # Handle the get queryset workflow.

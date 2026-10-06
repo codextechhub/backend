@@ -348,9 +348,7 @@ class RequisitionDetailView(_ProcBase):
             pk, "No such requisition in this entity.",
         )
         data = RequisitionSerializer(req).data
-        # Generic workflow rows link through content type + object id; for_document builds that pair safely.
-        instance = WorkflowInstance.objects.for_document(req).order_by("-created_at").first()
-        data["workflow_instance_id"] = str(instance.id) if instance else None
+        data["workflow_instance_id"] = WorkflowInstance.objects.latest_id_for(req)
         return success_response("Requisition retrieved.", data=data)
 
     @transaction.atomic
