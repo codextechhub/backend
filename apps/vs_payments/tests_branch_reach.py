@@ -1204,6 +1204,165 @@ class CustodySettingsStayWithinReachTests(_FinanceBranchFixture):
         self.assertEqual(rows, {"Ikeja Branch": ("Rival Access", 900_000)})
 
 
+class TransactionsLogHidesBranchActionsTests(_FinanceBranchFixture):
+    """An action the log can tie to a branch is read by that branch alone.
+
+    Corona's platform pays Ikeja N1,250,000 into Ikeja GTBank and fails Lekki's
+    settlement; the provider subaccounts of both collection banks are saved. No
+    school payment record carries those references, so the log narrows them by
+    the branch each one stores about itself. Lekki's clerk sees "Settlement
+    failed" for Lekki and the Lekki subaccount, and nothing named Ikeja.
+    Custody settings are the whole school's, so every reader holding the
+    permission sees them. A row from before the branch was stored, naming no
+    branch and no settlement, stays visible as it always was.
+    """
+
+    KEYS = ("payments.report.view",)
+    EVERYWHERE = {"Custody updated", "Subaccount from before branches were stored",
+                  "Subaccount with a null branch"}
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.utils import timezone
+
+        from vs_finance.models import BankAccount
+
+        from .constants import HeldSettlementStatus, PaymentAuditAction as A
+        from .models import HeldSettlement, PaymentEvent
+
+        super().setUpTestData()
+        now = timezone.now()
+
+        def settlement(entity, branch, code):
+            gl = Account.objects.create(entity=entity, code=code, name=f"Collections {code}",
+                                        account_type="ASSET", is_postable=True)
+            bank = BankAccount.objects.create(entity=entity, name=f"Collections {code}",
+                                              branch=branch, gl_account=gl)
+            return HeldSettlement.objects.create(
+                entity=entity, tenant=entity.tenant, branch=branch,
+                status=HeldSettlementStatus.PAID, run_on=tenant_today(entity.tenant),
+                cutoff=now, gross=1_000, amount=1_000, bank_account=bank, paid_at=now)
+
+        cls.ikeja_run = settlement(cls.books, cls.ikeja, "1191")
+        cls.lekki_run = settlement(cls.books, cls.lekki, "1192")
+        cls.solo_run = settlement(cls.solo_books, cls.solo_main, "1191")
+
+        def log(entity, action, message, reference="", **metadata):
+            PaymentEvent.objects.create(
+                entity=entity, action=action, message=message, reference=reference,
+                metadata=metadata)
+
+        log(cls.books, A.HELD_SETTLEMENT_PAID, "Settled Ikeja", "TRF-IKJ",
+            settlement_id=cls.ikeja_run.pk, branch_id=cls.ikeja.pk)
+        log(cls.books, A.HELD_SETTLEMENT_FAILED, "Failed Lekki", "TRF-LEK",
+            settlement_id=cls.lekki_run.pk, branch_id=cls.lekki.pk)
+        log(cls.books, A.HELD_SETTLEMENT_PAID, "Settled Lekki before branch_id was stored",
+            "TRF-OLD-LEK", settlement_id=cls.lekki_run.pk)
+        log(cls.books, A.HELD_SETTLEMENT_BUILT, "Built Lekki", "COL-GONE",
+            settlement_id=cls.lekki_run.pk, branch_id=cls.lekki.pk)
+        log(cls.books, A.SUBACCOUNT_SAVED, "Subaccount Ikeja", "ACCT_ikj",
+            bank_account_id=1, branch_id=cls.ikeja.pk, refreshed=False)
+        log(cls.books, A.SUBACCOUNT_SAVED, "Subaccount Lekki", "ACCT_lek",
+            bank_account_id=2, branch_id=cls.lekki.pk, refreshed=True)
+        log(cls.books, A.HELD_OPENING_BALANCE, "Opening Lekki", branch_id=cls.lekki.pk)
+        log(cls.books, A.CUSTODY_SETTINGS_UPDATED, "Custody updated", before={}, after={})
+        log(cls.books, A.SUBACCOUNT_SAVED, "Subaccount from before branches were stored",
+            "ACCT_old", bank_account_id=3)
+        log(cls.books, A.SUBACCOUNT_SAVED, "Subaccount with a null branch", "ACCT_null",
+            branch_id=None)
+        log(cls.rival_books, A.SUBACCOUNT_SAVED, "Subaccount Rival", "ACCT_riv",
+            branch_id=cls.rival_branch.pk)
+        log(cls.solo_books, A.HELD_SETTLEMENT_PAID, "Settled Solo", "TRF-SOLO",
+            settlement_id=cls.solo_run.pk, branch_id=cls.solo_main.pk)
+        log(cls.solo_books, A.SUBACCOUNT_SAVED, "Subaccount Solo", "ACCT_solo",
+            branch_id=cls.solo_main.pk)
+
+    def messages(self, tenant, branch, books=None):
+        n = next(_clerks)
+        client = TenantAPIClient(user=self.grant(
+            self.user_for(tenant, f"log-reader-{n}@corona.test"), *self.KEYS,
+            tenant=tenant, role_key=f"log-reader-{n}", branch=branch))
+        response = client.get(f"/v1/payments/transactions/?entity={(books or self.books).code}")
+        self.assertEqual(response.status_code, 200, response.data)
+        return {row["message"] for row in response.data["data"]}
+
+    def test_a_branch_reader_sees_only_their_branchs_settlements_and_subaccounts(self):
+        self.assertEqual(
+            self.messages(self.tenant, self.lekki),
+            {"Failed Lekki", "Settled Lekki before branch_id was stored", "Built Lekki",
+             "Subaccount Lekki", "Opening Lekki"} | self.EVERYWHERE)
+        self.assertEqual(self.messages(self.tenant, self.ikeja),
+                         {"Settled Ikeja", "Subaccount Ikeja"} | self.EVERYWHERE)
+
+    def test_a_branch_with_no_actions_sees_only_the_school_wide_ones(self):
+        self.assertEqual(self.messages(self.tenant, self.yaba), self.EVERYWHERE)
+
+    def test_a_whole_school_reader_sees_every_action_of_the_school_and_no_other(self):
+        seen = self.messages(self.tenant, None)
+        self.assertEqual(len(seen), 10)
+        self.assertNotIn("Subaccount Rival", seen)
+        self.assertIn("Settled Ikeja", seen)
+        self.assertIn("Failed Lekki", seen)
+
+    def test_a_single_branch_school_is_not_narrowed(self):
+        self.assertEqual(self.messages(self.solo_tenant, self.solo_main, self.solo_books),
+                         {"Settled Solo", "Subaccount Solo"})
+
+    def test_another_schools_branch_id_confers_nothing(self):
+        """Rival's Ikeja Branch has its own id; Corona's Ikeja reader never sees Rival's row."""
+        self.assertNotIn("Subaccount Rival", self.messages(self.tenant, self.ikeja))
+        self.assertEqual(
+            self.messages(self.rival_tenant, self.rival_branch, self.rival_books),
+            {"Subaccount Rival"})
+
+    def test_the_narrowing_is_in_the_query_and_an_empty_reach_still_works(self):
+        from vs_rbac.scoping import BranchScope
+
+        from .reach import PaymentsReach
+
+        lekki = PaymentsReach(
+            self.books, BranchScope(frozenset({self.lekki.pk}), include_shared=False))
+        self.assertEqual(lekki.events().count(), 8)
+        nothing = PaymentsReach(self.books, BranchScope(frozenset(), include_shared=False))
+        self.assertEqual({e.message for e in nothing.events()}, self.EVERYWHERE)
+
+    def test_a_settlement_that_fails_records_its_branch(self):
+        """The writer stores ``branch_id`` itself, so the log never depends on a later lookup."""
+        from types import SimpleNamespace
+
+        from .constants import PaymentAuditAction as A
+        from .held import fail_settlement
+        from .models import HeldSettlement, PaymentEvent, PayoutBatch
+
+        pending = HeldSettlement.objects.get(pk=self.lekki_run.pk)
+        pending.status = "PENDING"
+        pending.batch = PayoutBatch.objects.create(
+            entity=self.books, provider="PAYSTACK", reference="SET-FAIL", purpose="SETTLEMENT")
+        pending.save(update_fields=["status", "batch"])
+        payout = SimpleNamespace(batch_id=pending.batch_id, provider="PAYSTACK", reference="TRF-F")
+        fail_settlement(payout, reason="Account closed")
+        event = PaymentEvent.objects.get(action=A.HELD_SETTLEMENT_FAILED, reference="TRF-F")
+        self.assertEqual(event.metadata["branch_id"], self.lekki.pk)
+        self.assertEqual(event.metadata["settlement_id"], pending.pk)
+
+    def test_a_settlement_that_is_paid_records_its_branch(self):
+        from types import SimpleNamespace
+
+        from .constants import PaymentAuditAction as A
+        from .held import book_settlement_paid
+        from .models import HeldSettlement, PaymentEvent, PayoutBatch
+
+        pending = HeldSettlement.objects.get(pk=self.ikeja_run.pk)
+        pending.status = "PENDING"
+        pending.batch = PayoutBatch.objects.create(
+            entity=self.books, provider="PAYSTACK", reference="SET-PAID", purpose="SETTLEMENT")
+        pending.save(update_fields=["status", "batch"])
+        payout = SimpleNamespace(batch_id=pending.batch_id, provider="PAYSTACK", reference="TRF-P")
+        book_settlement_paid(payout, sent=0)
+        event = PaymentEvent.objects.get(action=A.HELD_SETTLEMENT_PAID, reference="TRF-P")
+        self.assertEqual(event.metadata["branch_id"], self.ikeja.pk)
+
+
 class PaymentsViewsStartFromTheReachTests(SimpleTestCase):
     """No payments view reaches a gateway table except through :class:`PaymentsReach`.
 

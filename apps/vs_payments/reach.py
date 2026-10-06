@@ -24,8 +24,10 @@ reads:
   batch whose lines leave two branches' banks is refused when it is assembled
   (:func:`vs_payments.services.create_payout_batch`);
 * a **gateway action** (the transactions log) is reached with the record whose
-  reference it carries, and a **webhook event** with the collection or payout
-  it matched;
+  reference it carries, or by the branch it stores in its own metadata when no
+  school record carries its reference (a held settlement paid, a collection
+  subaccount saved), and a **webhook event** with the collection or payout it
+  matched;
 * a **bank statement line** (settlement reconciliation) is reached with its
   bank account;
 * a **held settlement** is the branch it pays. The money is held in the
@@ -148,22 +150,44 @@ class PaymentsReach:
         return qs.filter(pk__in=sorted(self.scope.branch_ids))
 
     def events(self):
-        """The transactions log, less every action on a record outside reach.
+        """The transactions log, less every action that belongs to a branch outside reach.
 
-        An action names its record by ``reference``: a collection's, a payout's or a
-        batch's own, or a virtual account's provider reference. A virtual account's
-        actions also carry ``metadata.virtual_account_id``, which is what attributes
-        its creation, whose reference is the one-off request sent to the provider.
-        An action naming no record (a rejected initiation that never wrote one)
-        stays visible.
+        An action is hidden when the record it names lies outside reach, and when
+        the action says by its own metadata which branch it belongs to:
+
+        * by ``reference``: a collection's, a payout's or a batch's own, or a
+          virtual account's provider reference;
+        * by ``metadata.virtual_account_id``, which attributes a virtual
+          account's creation, whose reference is the one-off request sent to the
+          provider;
+        * by ``metadata.branch_id``, which a branch's own actions store: a held
+          settlement built, paid or failed (the settlement transfer is the
+          platform's payout, so no school payment record carries its reference),
+          a collection subaccount saved (its reference is the provider's
+          subaccount code) and an opening held balance recorded;
+        * by ``metadata.settlement_id``, which reaches the settlement's branch
+          for a paid or failed settlement logged before ``branch_id`` was stored
+          beside it.
+
+        Lekki's clerk therefore never reads "Settled N1,250,000 into Ikeja
+        GTBank". What stays visible to every reader holding the permission is
+        what is the whole school's: the custody settings changed or switched, and
+        an action naming no record and no branch (a rejected initiation that
+        never wrote one, or a row from before the branch was stored).
+
+        Each rule is a term of one ``exclude``, so the narrowing is part of the
+        query and a page is never cut short after it is fetched.
         """
         qs = PaymentEvent.objects.filter(entity=self.entity)
         if not self.is_narrowed:
             return qs
         ref = OuterRef("reference")
         virtual_accounts = self._out_of_reach(VirtualAccount)
+        reached = [str(pk) for pk in sorted(self.scope.branch_ids)]
         return qs.annotate(
             _virtual_account=KeyTextTransform("virtual_account_id", "metadata"),
+            _settlement=KeyTextTransform("settlement_id", "metadata"),
+            _branch=KeyTextTransform("branch_id", "metadata"),
         ).exclude(
             Exists(self._out_of_reach(CollectionIntent).filter(reference=ref))
             | Exists(self._out_of_reach(PayoutInstruction).filter(reference=ref))
@@ -171,6 +195,9 @@ class PaymentsReach:
             | Exists(virtual_accounts.exclude(provider_reference="").filter(provider_reference=ref))
             | Exists(virtual_accounts.annotate(_pk_text=Cast("pk", CharField()))
                      .filter(_pk_text=OuterRef("_virtual_account")))
+            | Exists(self._out_of_reach(HeldSettlement).annotate(_pk_text=Cast("pk", CharField()))
+                     .filter(_pk_text=OuterRef("_settlement")))
+            | (Q(_branch__isnull=False) & ~Q(_branch__in=reached))
         )
 
     def webhooks(self):

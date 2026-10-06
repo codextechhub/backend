@@ -854,8 +854,8 @@ def book_settlement_paid(payout, *, sent, paid_at=None, actor_user=None):
         message=(f"Settled {_naira(sent)} into {settlement.bank_account.name} for "
                  f"{_branch_label(settlement.tenant, settlement.branch_id)}."),
         metadata={"settlement_id": settlement.pk, "journal_id": getattr(entry, "pk", None),
-                  "amount": int(sent), "fees": int(settlement.fees),
-                  "transfer_fee": int(settlement.transfer_fee)},
+                  "branch_id": settlement.branch_id, "amount": int(sent),
+                  "fees": int(settlement.fees), "transfer_fee": int(settlement.transfer_fee)},
     )
     return settlement
 
@@ -877,7 +877,7 @@ def fail_settlement(payout, *, reason, actor_user=None):
         action=PaymentAuditAction.HELD_SETTLEMENT_FAILED, entity=settlement.entity,
         provider=payout.provider, reference=payout.reference, actor_user=actor_user,
         succeeded=False, message=f"Settlement {settlement.pk} failed: {reason}"[:255],
-        metadata={"settlement_id": settlement.pk},
+        metadata={"settlement_id": settlement.pk, "branch_id": settlement.branch_id},
     )
     return settlement
 
