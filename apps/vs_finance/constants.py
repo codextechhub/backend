@@ -519,10 +519,16 @@ class PayeMethod(models.TextChoices):
 
 
 class PayeSource(models.TextChoices):
-    """How one payroll line's PAYE figure was arrived at."""
-    COMPUTED = "COMPUTED", "Computed from the tax table"
+    """How one payroll line's PAYE figure was arrived at.
+
+    ``COMPUTED`` and ``SUPPLIED`` are the two ways a tenant's payroll works
+    (:class:`PayeMethod`) and read in the same words, so a line and the setting
+    that produced it never describe one thing two ways. ``OVERRIDE`` is a figure
+    fixed on one employee's salary, ``MANUAL`` one typed on a hand-raised run.
+    """
+    COMPUTED = "COMPUTED", PayeMethod.COMPUTED.label
     OVERRIDE = "OVERRIDE", "Overridden on the employee's salary"
-    SUPPLIED = "SUPPLIED", "Supplied by the salary structure or roster"
+    SUPPLIED = "SUPPLIED", PayeMethod.SUPPLIED.label
     MANUAL = "MANUAL", "Typed on a hand-raised run"
 
 

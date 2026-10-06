@@ -275,13 +275,42 @@ class BranchStatesMixin:
         return data
 
 
-class FiscalPeriodSerializer(BranchStatesMixin, serializers.ModelSerializer):
+class PeriodLabelMixin:
+    """Names a fiscal period the way a person reads it, reading each school once.
+
+    :func:`label_period` is :func:`vs_finance.wording.period_label` for a period
+    in this serializer's output: the month in words ("September 2026"), in the
+    tenant that owns the books the period belongs to. The tenant is looked up once
+    per set of books for the life of the serializer, and a serialized list shares
+    one child serializer, so a page of rows costs one lookup however long it is.
+    The tenant instance is also what remembers the school's date format, so the
+    words of every row after the first cost nothing either.
+    """
+
+    def _tenant_of(self, entity_id):
+        if not hasattr(self, "_tenants"):
+            self._tenants = {}
+        if entity_id not in self._tenants:
+            self._tenants[entity_id] = (
+                LedgerEntity.objects.select_related("tenant").get(pk=entity_id).tenant
+            )
+        return self._tenants[entity_id]
+
+    def label_period(self, period) -> str | None:
+        """``period`` in words, or ``None`` for a record that has no period."""
+        from .wording import period_label
+
+        if period is None:
+            return None
+        return period_label(period, self._tenant_of(period.entity_id))
+
+
+class FiscalPeriodSerializer(PeriodLabelMixin, BranchStatesMixin, serializers.ModelSerializer):
     """A fiscal period; ``label`` is how a person picking it reads it.
 
     ``name`` is the stored name ("2026-09"), kept for a client that keys on it;
     ``label`` is the month in words ("September 2026", through
-    :func:`vs_finance.wording.period_label`), what a picker or a list shows. The
-    tenant is read once per set of books, not once per row.
+    :func:`vs_finance.wording.period_label`), what a picker or a list shows.
     """
 
     fiscal_year = serializers.IntegerField(source="fiscal_year.year", read_only=True)
@@ -299,16 +328,7 @@ class FiscalPeriodSerializer(BranchStatesMixin, serializers.ModelSerializer):
         return getattr(obj, "_branch_status", obj.status)
 
     def get_label(self, obj) -> str:
-        from .wording import period_label
-
-        if not hasattr(self, "_tenants"):
-            self._tenants = {}
-        tenants = self._tenants
-        if obj.entity_id not in tenants:
-            tenants[obj.entity_id] = (
-                LedgerEntity.objects.select_related("tenant").get(pk=obj.entity_id).tenant
-            )
-        return period_label(obj, tenants[obj.entity_id])
+        return self.label_period(obj)
 
 
 class FiscalYearSerializer(BranchStatesMixin, serializers.ModelSerializer):
@@ -410,13 +430,17 @@ class JournalPeopleListSerializer(serializers.ListSerializer):
         return super().to_representation(rows)
 
 
-class JournalEntryListSerializer(ApprovalStateMixin, serializers.ModelSerializer):
+class JournalEntryListSerializer(PeriodLabelMixin, ApprovalStateMixin, serializers.ModelSerializer):
     """A journal in a list. ``created_by_is_exited`` is true once its maker has left.
 
-    ``null`` for a journal the system raised with nobody named.
+    ``null`` for a journal the system raised with nobody named. ``period`` is the
+    period's stored name ("2026-09"), kept for a client that keys on it, and
+    ``period_label`` the month in words ("September 2026"), what a screen shows;
+    both are ``null`` for a journal with no period.
     """
 
     period = serializers.CharField(source="period.name", read_only=True, default=None)
+    period_label = serializers.SerializerMethodField()
     total_debit = serializers.SerializerMethodField()
     created_by = serializers.SerializerMethodField()
     created_by_id = serializers.IntegerField(read_only=True, default=None)
@@ -425,12 +449,15 @@ class JournalEntryListSerializer(ApprovalStateMixin, serializers.ModelSerializer
     class Meta:
         model = JournalEntry
         fields = [
-            "id", "document_number", "date", "period", "source",
+            "id", "document_number", "date", "period", "period_label", "source",
             "status", "narration", "reference", "posted_at",
             "total_debit", "created_by", "created_by_id", "created_by_is_exited",
             "approval_state", "approval_returned",
         ]
         list_serializer_class = JournalPeopleListSerializer
+
+    def get_period_label(self, obj) -> str | None:
+        return self.label_period(obj.period)
 
     def get_created_by_is_exited(self, obj):
         from core.person_exit import person_is_exited
@@ -1766,6 +1793,7 @@ class PayrollLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
     tax_state = serializers.CharField(source="tax_state.code", read_only=True, default=None)
     tax_state_name = serializers.CharField(source="tax_state.name", read_only=True, default=None)
     pfa_name = serializers.CharField(source="pfa.name", read_only=True, default=None)
+    paye_source_label = serializers.CharField(source="get_paye_source_display", read_only=True)
     items = PayrollLineItemSerializer(many=True, read_only=True)
     employee_is_exited = serializers.SerializerMethodField()
 
@@ -1775,7 +1803,7 @@ class PayrollLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
             "id", "line_no", "employee_id", "employee_name", "employee_is_exited", "salary_id",
             "gross_amount", "paye_amount", "pension_amount", "other_deductions_amount",
             "employer_contributions_amount", "net_amount", "taxable_pay",
-            "paye_source", "tax_table_id", "tax_basis", "items",
+            "paye_source", "paye_source_label", "tax_table_id", "tax_basis", "items",
             "tax_state", "tax_state_name", "pfa_id", "pfa_name", "tax_id", "pension_pin",
             "components", "cost_center", "branch_id", "branch_name",
         ]

@@ -35,6 +35,7 @@ from vs_rbac.scoping import caller_branch_ids, inherited_branch_id, transaction_
 
 from .constants import DocumentStatus, PaymentMethod
 from .models import CreditNote, PayerLink, PayerPayment
+from .payer_payments import split_label
 from .views import resolve_entity
 from .views_ar import _resolve_customer
 from .views_ops.base import (
@@ -247,6 +248,7 @@ def _plan_payload(request, plan):
         "amount": plan.amount,
         "payment_date": plan.payment_date.isoformat(),
         "split": plan.split,
+        "split_label": split_label(plan.split),
         "shares": rows,
     }
 
@@ -297,6 +299,7 @@ def _payment_payload(request, document):
         "payment_date": document.payment_date.isoformat(),
         "method": document.method,
         "split": document.split,
+        "split_label": split_label(document.split),
         "reference": document.reference,
         "narration": document.narration,
         "shares": rows,

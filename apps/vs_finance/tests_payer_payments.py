@@ -53,7 +53,11 @@ from .models import (
 )
 from .payer_payments import link_customer, plan_payer_payment, record_payer_payment, void_payer_payment
 from .receivables import post_invoice
-from .receivables_policy import update_receivables_policy
+from .receivables_policy import (
+    resolve_receivables_policy,
+    serialize_receivables_policy,
+    update_receivables_policy,
+)
 from .tests_inter_branch import _InterBranchFixture, net
 from .voids import void_payment
 
@@ -400,6 +404,30 @@ class PayerPaymentApiTests(_PayerFixture):
         self.assertEqual((rows["CHIDI"]["kind"], rows["CHIDI"]["amount"]), ("HELD", 70_000_00))
         self.assertNotIn("bills", rows["CHIDI"])
         self.assertFalse(PayerPayment.objects.exists())
+
+    def test_a_payment_and_its_preview_say_how_it_was_split_in_words(self):
+        offered = {
+            option["value"]: option["label"]
+            for option in serialize_receivables_policy(
+                resolve_receivables_policy(self.books))["payer_payment_split_options"]
+        }
+        preview = self.record(self.ikeja_bursar, path="payer-payments/preview/", amount=400_000_00)
+        typed = self.record(
+            self.ikeja_bursar, path="payer-payments/preview/", amount=400_000_00,
+            shares=[{"customer": "ADA", "amount": 100_000_00}],
+        )
+        pk = self.record(self.ikeja_bursar).data["data"]["id"]
+        client = TenantAPIClient(user=self.ikeja_bursar)
+        read = client.get(self.url(f"payer-payments/{pk}/")).data["data"]
+        listed = client.get(self.url("payer-payments/")).data["data"][0]
+
+        data = preview.data["data"]
+        self.assertEqual((data["split"], data["split_label"]),
+                         ("OLDEST_FIRST", offered["OLDEST_FIRST"]))
+        self.assertEqual(typed.data["data"]["split"], "EXPLICIT")
+        self.assertEqual(typed.data["data"]["split_label"], "Entered per customer")
+        for payment in (read, listed):
+            self.assertEqual(payment["split_label"], offered["OLDEST_FIRST"])
 
     def test_another_tenant_cannot_reach_these_books(self):
         response = self.record(self.rival)

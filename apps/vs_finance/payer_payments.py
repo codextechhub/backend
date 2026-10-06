@@ -55,10 +55,25 @@ from .constants import (
 )
 from .exceptions import FinanceError, PayerPaymentError
 from .money import format_naira
-from .wording import counted, state_word
+from .wording import counted, state_word, words_for_code
 
 #: The split recorded when the bursar typed each customer's amount.
 EXPLICIT_SPLIT = "EXPLICIT"
+
+
+def split_label(split) -> str:
+    """How a payment's split reads to a person: "Oldest bill first, across every customer".
+
+    ``split`` is a :class:`~vs_finance.constants.PayerPaymentSplit` or
+    :data:`EXPLICIT_SPLIT`, read through the payment's own choices
+    (:attr:`vs_finance.models.PayerPayment.SPLIT_CHOICES`), which are built from the
+    labels the receivables settings offer, so a payment and the setting that
+    chose its split never word it differently.
+    """
+    from .models import PayerPayment
+
+    labels = dict(PayerPayment.SPLIT_CHOICES)
+    return str(labels[split]) if split in labels else words_for_code(split)
 
 
 # --------------------------------------------------------------------------- #

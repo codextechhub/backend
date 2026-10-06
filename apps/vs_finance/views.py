@@ -354,6 +354,18 @@ def _resolve_period(entity, request, *, param="period"):
     return period
 
 
+def _period_label(period, entity):
+    """``period`` as a person reads it ("February 2026"), or ``None`` for no period.
+
+    Every report that names the period it covers sends this beside the stored
+    name, through :func:`vs_finance.wording.period_label`, and writes it into the
+    heading of its downloaded file, so a screen and its export agree.
+    """
+    from .wording import period_label
+
+    return None if period is None else period_label(period, entity.tenant)
+
+
 # Support validated ISO date query parameters across finance reports.
 def _resolve_date_param(request, param):
     """Return ``?param=YYYY-MM-DD`` as a date, or ``None`` when it is omitted."""
@@ -2316,7 +2328,7 @@ class FiscalYearCloseView(_FiscalCalendarWriteMixin, APIView):
             reason=body.get("reason"), branch=branch,
         )
         fy.refresh_from_db()  # Pick up the CLOSED status.
-        serialized = [JournalEntryDetailSerializer(j).data for j in journals]
+        serialized = list(JournalEntryDetailSerializer(journals, many=True).data)
         return success_response(
             message=f"Fiscal year {fy.year} closed.",
             data={
@@ -2366,7 +2378,7 @@ class FiscalYearReopenView(_FiscalCalendarWriteMixin, APIView):
             message=f"Fiscal year {fy.year} re-opened.",
             data={
                 "fiscal_year": FiscalYearSerializer(fy).data,
-                "reversals": [JournalEntryDetailSerializer(r).data for r in reversals],
+                "reversals": list(JournalEntryDetailSerializer(reversals, many=True).data),
             },
         )
 
@@ -2474,7 +2486,7 @@ class TrialBalanceView(APIView):
 
         export = _maybe_export(request, ReportTable(
             title="Trial Balance",
-            subtitle=f"{entity.code} · {getattr(period, 'name', None) or 'All periods'}",
+            subtitle=f"{entity.code} · {_period_label(period, entity) or 'All periods'}",
             columns=["Code", "Account", "Type", "Debit", "Credit"],
             rows=[[r.code, r.name, r.account_type, r.debit_naira, r.credit_naira] for r in tb.rows],
             summary_rows=[["", "TOTAL", "", format_naira(tb.total_debit), format_naira(tb.total_credit)]],
@@ -2488,6 +2500,7 @@ class TrialBalanceView(APIView):
                 "entity": entity.code,
                 "narrowed": reader_scope.is_narrowed,
                 "period": getattr(period, "name", None),
+                "period_label": _period_label(period, entity),
                 "rows": [
                     {
                         "account_id": r.account_id, "code": r.code, "name": r.name,
@@ -2578,9 +2591,7 @@ class IncomeStatementView(APIView):
 
         rows = [_xrow("Revenue", r) for r in rep.income_rows]
         rows += [_xrow("Expense", r) for r in rep.expense_rows]
-        from .wording import period_words
-
-        scope = (period_words(period) if period is not None
+        scope = (_period_label(period, entity) if period is not None
                  else f"FY{rep.fiscal_year}" if rep.fiscal_year else "Year to date")
         export = _maybe_export(request, ReportTable(
             title="Income Statement",
@@ -2602,6 +2613,7 @@ class IncomeStatementView(APIView):
                 "entity": entity.code,
                 "narrowed": reader_scope.is_narrowed,
                 "period": rep.period_name,
+                "period_label": _period_label(period, entity),
                 "fiscal_year": rep.fiscal_year,
                 "prior_fiscal_year": rep.prior_fiscal_year,
                 "has_budget": rep.has_budget,
@@ -2717,7 +2729,7 @@ class CashFlowView(APIView):
                          format_naira(cf.by_activity[act])])
         export = _maybe_export(request, ReportTable(
             title="Cash Flow Statement",
-            subtitle=f"{entity.code} · {getattr(period, 'name', None) or 'Year to date'}",
+            subtitle=f"{entity.code} · {_period_label(period, entity) or 'Year to date'}",
             columns=["Activity", "Line", "Amount"],
             rows=rows,
             summary_rows=[
@@ -2740,6 +2752,7 @@ class CashFlowView(APIView):
                 "entity": entity.code,
                 "narrowed": reader_scope.is_narrowed,
                 "period": getattr(period, "name", None),
+                "period_label": _period_label(period, entity),
                 "opening_cash": _money(cf.opening_cash),
                 "closing_cash": _money(cf.closing_cash),
                 "by_activity": {k: _money(v) for k, v in cf.by_activity.items()},
@@ -2791,7 +2804,7 @@ class AnalyticsSliceView(APIView):
 
         export = _maybe_export(request, ReportTable(
             title=f"Analytics Slice · {axis}",
-            subtitle=f"{entity.code} · {getattr(period, 'name', None) or 'All periods'}",
+            subtitle=f"{entity.code} · {_period_label(period, entity) or 'All periods'}",
             columns=["Bucket", "Code", "Account", "Type", "Net"],
             rows=[[r.bucket, r.code, r.name, r.account_type, r.net_naira] for r in sl.rows],
             summary_rows=[["", "", "TOTAL", "", format_naira(sl.total_net)]],
@@ -2805,6 +2818,7 @@ class AnalyticsSliceView(APIView):
                 "entity": entity.code,
                 "narrowed": reader_scope.is_narrowed,
                 "period": getattr(period, "name", None),
+                "period_label": _period_label(period, entity),
                 "axis": sl.axis,
                 "rows": [
                     {
@@ -2840,7 +2854,7 @@ class ChangesInEquityView(APIView):
 
         export = _maybe_export(request, ReportTable(
             title="Statement of Changes in Equity",
-            subtitle=f"{entity.code} · {getattr(period, 'name', None) or 'Inception to date'}",
+            subtitle=f"{entity.code} · {_period_label(period, entity) or 'Inception to date'}",
             columns=["Component", "Opening", "Profit", "Contributions/(Distributions)",
                      "Year-end transfers", "Closing"],
             rows=[
@@ -2864,6 +2878,7 @@ class ChangesInEquityView(APIView):
                 "entity": entity.code,
                 "narrowed": reader_scope.is_narrowed,
                 "period": getattr(period, "name", None),
+                "period_label": _period_label(period, entity),
                 "as_of": str(soce.as_of),
                 "columns": [
                     {
@@ -2968,6 +2983,7 @@ class StatutoryPackView(APIView):
                 "entity": entity.code,
                 "as_of": str(pack.as_of),
                 "period": getattr(period, "name", None),
+                "period_label": _period_label(period, entity),
                 "fiscal_year": pack.fiscal_year,
                 "statement_of_financial_position": {
                     "sections": [

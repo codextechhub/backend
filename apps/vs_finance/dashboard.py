@@ -49,6 +49,7 @@ from .models import AccountBalance, BankAccount, Customer, FiscalPeriod, Invoice
 from .money import format_naira
 from .branch_ledger import ledger_balances
 from .posting import fiscal_calendar_runway
+from .wording import period_label
 
 SPARK_POINTS = 6          # KPI sparkline length (month-end snapshots incl. current)
 TREND_MONTHS = 12         # receivables-vs-collections window
@@ -517,6 +518,9 @@ def _close_progress(entity, period) -> dict | None:
     Depreciation and deferred income falling due are work the close does itself,
     so they count as done, with ``done_by_close`` set, rather than as outstanding:
     the card agrees with the checklist a bursar sees on pressing Close.
+
+    ``period`` is the stored name ("2026-09") and ``period_label`` the month in
+    words ("September 2026"), which is what the card shows.
     """
     if period is None:  # No period means no close checklist.
         return None
@@ -536,7 +540,8 @@ def _close_progress(entity, period) -> dict | None:
         for i in cl.items
     ]
     return {  # Return checklist summary.
-        "period": period.name,  # Period display name.
+        "period": period.name,  # Period stored name.
+        "period_label": period_label(period, entity.tenant),  # The month in words.
         "done": sum(1 for c in checks if c["passed"]),  # Passed check count.
         "total": len(checks),  # Total check count.
         "checks": checks,  # Per-check rows.
@@ -725,7 +730,10 @@ def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK, window=None, u
         ),
         "entity": entity.code,  # Entity code.
         "fiscal_year": _fiscal_year_label(current),  # Fiscal year label.
-        "period": getattr(current, "name", None),  # Current period name.
+        "period": getattr(current, "name", None),  # Current period stored name.
+        "period_label": (
+            period_label(current, entity.tenant) if current is not None else None
+        ),  # The month in words.
         "as_of": as_of.isoformat(),  # Dashboard as-of date.
         "narrowed": not reader.whole_tenant,  # Figures cover only the reader's branches.
         "fiscal_runway": _fiscal_runway(entity),  # Fiscal-calendar expiry warning.
