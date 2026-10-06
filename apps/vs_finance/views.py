@@ -509,14 +509,13 @@ class AccountListCreateView(WholeTenantWriteMixin, EntityScopedListMixin, generi
             raise ValidationError({"name": "An account name is required."})
         parent = None
         if (parent_ref := body.get("parent")) not in (None, ""):
-            # Resolve by code first, then numeric pk (mirrors _resolve_cost_center),
-            # scoped to the entity.
+            # By id for a JSON number, by code for a string, within the entity.
+            from core.references import find_by_code_or_id
+
             from .accounts import accounts_a_caller_may_name
 
             pqs = accounts_a_caller_may_name(request, Account.objects.filter(entity=entity))
-            parent = pqs.filter(code=str(parent_ref)).first()
-            if parent is None and str(parent_ref).isdigit():
-                parent = pqs.filter(pk=int(parent_ref)).first()
+            parent = find_by_code_or_id(pqs, parent_ref)
             if parent is None:
                 raise ValidationError({"parent": "No such parent account in this entity."})
             if parent.account_type != atype or account_type_from_code(parent.code) != atype:

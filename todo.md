@@ -1018,7 +1018,32 @@ MUST SAY:
   mapping's WHT role reads "WHT payable (withholding tax)"; withholding tax
   refusals and two AR jargon messages are plain. The PAYE method label
   "Supplied by the tenant" reads "Taken from the salary structure or roster".
-Verified: new tests watched failing on the old code first: vs_payments tests_batch_words 5, vs_finance tests_list_words ConcessionSummaryTests + open-claims test, vs_procurement tests_sent_back PartlyReceivedExportTests + translator test, vs_exports FromScreenTests (3 new) + DateRangeKeepsItsLastDayWholeTests. Also new: tests_claim_part_pay 4, tests_plain_account_words 2, approver group duplicate refusal, archive and petty cash dates, config refusals. Existing tests changed for wording on purpose: tests_bank_account_split (split date), tests_inter_branch (absorbed cost rule), tests_screen_reads (no such branch). App runs: vs_payments Ran 440 OK, vs_exports 222 OK, vs_config 183 OK, vs_workflow 558 OK, vs_procurement 855 OK, vs_rbac 997 OK, vs_tenants 87 OK, vs_notifications 231 OK, vs_tickets 125 OK, vs_user 430 OK, vs_audit 109 OK, vs_finance Ran 2167 (2 wording assertions updated, both modules rerun: 99 OK). Full suite not run. Commit PENDING.
+Verified: new tests watched failing on the old code first: vs_payments tests_batch_words 5, vs_finance tests_list_words ConcessionSummaryTests + open-claims test, vs_procurement tests_sent_back PartlyReceivedExportTests + translator test, vs_exports FromScreenTests (3 new) + DateRangeKeepsItsLastDayWholeTests. Also new: tests_claim_part_pay 4, tests_plain_account_words 2, approver group duplicate refusal, archive and petty cash dates, config refusals. Existing tests changed for wording on purpose: tests_bank_account_split (split date), tests_inter_branch (absorbed cost rule), tests_screen_reads (no such branch). App runs: vs_payments Ran 440 OK, vs_exports 222 OK, vs_config 183 OK, vs_workflow 558 OK, vs_procurement 855 OK, vs_rbac 997 OK, vs_tenants 87 OK, vs_notifications 231 OK, vs_tickets 125 OK, vs_user 430 OK, vs_audit 109 OK, vs_finance Ran 2167 (2 wording assertions updated, both modules rerun: 99 OK). Full suite with --parallel 4 rerun by the conductor: Ran 9877 tests, OK. Commit a354da62.
+
+### D132. A reference sent as a number is an id and a string is a code, so an id never lands on the row another one wears as its code (PENDING, 2026-10-06)
+MODULES: M19 finance and accounting (ledger accounts, tax codes, cost centres, customers named on any finance write, chart parent account, payer shares, batch customer lines), M22/M23 procurement and AP (stock item inventory and expense accounts, requisition, receipt and stock issue cost centres, tax codes), MRD (API contract for every "code or id" field).
+MUST SAY:
+- One rule for a field that takes a code or an id (core.references). A JSON
+  number is an id and is only ever looked up as one. A string is a code, and is
+  read as an id only when no code matches and it is all digits. Before, a number
+  was tried as a code first. Ledger account codes are all digits and account ids
+  are one sequence across every school, so on a busy database an id reaches the
+  codes: Corona's "Alternate inventory" account with id 5100, sent as 5100 to
+  move a stock item onto it, found the account coded 5100 (an expense) and was
+  refused "Select an active, postable ASSET account", or, where the collision
+  was another asset, filed the stock under the wrong account without a word.
+  Applies to every finance account, tax code, cost centre and customer reference
+  (finance and procurement), the chart's parent account, payer shares and batch
+  customer lines. FinPro sends codes as strings, so its behaviour is unchanged.
+- Procurement cost centres read as finance reads them (M22/M23). A digit string
+  was always an id, so a school that numbers its cost centres ("100
+  Administration") had a requisition, receipt or stock issue filed against
+  whichever centre had id 100, or refused. It is now the centre coded 100.
+- Not changed, on purpose: references a client sends as id strings (finance
+  account mappings, catalogue items, procurement vendors and categories, bank
+  accounts) stay id-first for digit strings, because FinPro's selects send the
+  id as text there.
+Verified: core.tests_references 6, vs_finance.tests_code_or_id 4, vs_procurement.tests_code_or_id 2 and StockConsoleAPITests.test_an_account_sent_by_id_is_never_read_as_a_code, each watched failing without the fix (the stock test with the flaky test's own "400 != 200"). The intermittent StockConsoleAPITests.test_inventory_account_changes_only_when_quantity_and_value_are_zero was this defect: reproduced deterministically by setting the account id sequence to 5100 (400), 1100 and 1400 (wrong account). The intermittent tests_branch_write.WriteThenReadTests failure did not recur in three full --parallel 4 runs, one vs_finance run, 40 runs of the class at shifted id sequences, or under a per-test check for leaked tenant context, audit identity, mock patches, settings overrides and time zone (none found); both failing runs were on the in-progress a2f77bae tree. Then: the two flaky classes with the new tests Ran 41 OK; vs_procurement Ran 857 OK; vs_finance Ran 2162 OK; core Ran 224 OK; full suite with --parallel 4 twice on the final tree: Ran 9870 tests, OK, and Ran 9870 tests, OK.
 
 ## Undone
 

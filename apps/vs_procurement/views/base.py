@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.views import APIView
 
+from core.references import find_by_code_or_id
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 from vs_rbac.scoping import BranchScope, branch_scope, transaction_branch_scope
 from vs_rbac.scoping import caller_branch_ids as _rbac_caller_branch_ids
@@ -50,9 +51,7 @@ def _resolve_tax(entity, ref, field="tax_code"):
     from vs_finance.models import TaxCode
 
     qs = TaxCode.objects.filter(entity=entity)
-    tc = qs.filter(code=str(ref)).first()
-    if tc is None and str(ref).isdigit():
-        tc = qs.filter(pk=int(ref)).first()
+    tc = find_by_code_or_id(qs, ref)
     if tc is None:
         raise ValidationError({field: f"No tax code '{ref}' in this entity."})
     return tc
@@ -71,16 +70,18 @@ def _resolve_currency(entity, ref, field="currency"):
 
 
 def _resolve_cost_center(entity, ref, field="cost_center"):
-    """Resolve an optional active cost centre by id/code inside ``entity``."""
+    """Resolve an optional active cost centre by code or id inside ``entity``.
+
+    Read as finance reads it (:mod:`core.references`): the pickers send the
+    code, and a school may number its cost centres, so "100" is the centre
+    coded 100 and never whichever centre happens to have id 100.
+    """
     if ref in (None, ""):
         return None
     from vs_finance.models import CostCenter
 
     qs = CostCenter.objects.filter(entity=entity, is_active=True)
-    cost_center = (
-        qs.filter(pk=int(ref)).first() if str(ref).isdigit()
-        else qs.filter(code=str(ref)).first()
-    )
+    cost_center = find_by_code_or_id(qs, ref)
     if cost_center is None:
         raise ValidationError({field: "No such active cost centre in this entity."})
     return cost_center

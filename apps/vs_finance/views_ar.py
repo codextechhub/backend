@@ -25,6 +25,7 @@ from django.http import HttpResponse
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from core.pagination import XVSPagination
+from core.references import find_by_code_or_id, pick_by_code_or_id
 from core.response import error_response, success_response
 from vs_config.clock import branch_day_q, branch_today, branch_zone, tenant_today
 from vs_config.display import format_date
@@ -169,10 +170,7 @@ def _resolve_customer(request, entity, ref, field="customer", *, required=True):
             raise ValidationError({field: "A customer (code or id) is required."})
         return None
     qs = _branch_visible(request, Customer.objects.filter(entity=entity))
-    customer = (
-        qs.filter(code=str(ref).upper()).first()
-        or (qs.filter(pk=int(ref)).first() if str(ref).isdigit() else None)
-    )
+    customer = find_by_code_or_id(qs, ref, code=str.upper)
     if customer is None:
         raise NotFound(f"No customer matches '{ref}' for this entity.")
     return customer
@@ -2551,14 +2549,15 @@ def _batch_customers(request, entity, items):
     line naming another branch's customer answers the same 404 as an unknown
     code rather than a refusal that confirms the customer exists.
     """
-    refs = [str(item.get("customer") or "").strip() for item in items]
-    if any(not ref for ref in refs):
-        index = next(index for index, ref in enumerate(refs) if not ref)
+    refs = [item.get("customer") or "" for item in items]
+    if any(not str(ref).strip() for ref in refs):
+        index = next(index for index, ref in enumerate(refs) if not str(ref).strip())
         raise ValidationError({
             "items": {index: {"customer": "A customer is required."}},
         })
-    codes = [ref.upper() for ref in refs]
-    ids = [int(ref) for ref in refs if ref.isdigit()]
+    texts = [str(ref).strip() for ref in refs]
+    codes = [text.upper() for text in texts]
+    ids = [int(text) for text in texts if text.isdigit()]
     customers = list(
         _branch_visible(request, Customer.objects.select_for_update().filter(entity=entity))
         .filter(Q(code__in=codes) | Q(pk__in=ids))
@@ -2567,9 +2566,7 @@ def _batch_customers(request, entity, items):
     by_id = {customer.pk: customer for customer in customers}
     resolved = []
     for index, ref in enumerate(refs):
-        customer = by_code.get(ref.upper())
-        if customer is None and ref.isdigit():
-            customer = by_id.get(int(ref))
+        customer = pick_by_code_or_id(ref, by_code, by_id, code=str.upper)
         if customer is None:
             raise NotFound(
                 f"No customer matches line {index + 1} for this entity."

@@ -29,6 +29,7 @@ from __future__ import annotations
 from django.db.models import Q
 from rest_framework.exceptions import NotFound, ValidationError
 
+from core.references import pick_by_code_or_id
 from core.response import success_response
 from vs_rbac.scoping import caller_branch_ids, inherited_branch_id, transaction_branch_scope
 
@@ -177,7 +178,7 @@ def _shares_from_body(entity, payer, raw):
         if not isinstance(item, dict):
             raise ValidationError({"shares": "Give a list of {customer, amount}."})
         ref = str(item.get("customer") or "").strip()
-        customer = by_code.get(ref.upper()) or (by_id.get(int(ref)) if ref.isdigit() else None)
+        customer = pick_by_code_or_id(item.get("customer"), by_code, by_id, code=str.upper)
         if customer is None:
             raise ValidationError({f"shares[{index}].customer": (
                 f"No customer '{ref}' that {payer.name} pays for."

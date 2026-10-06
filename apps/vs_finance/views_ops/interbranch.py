@@ -35,6 +35,7 @@ from vs_rbac.scoping import (
 )
 
 from core.list_filters import filter_by_word
+from core.references import find_by_code_or_id
 from core.response import success_response
 
 from ..approvals import with_approval_request
@@ -148,9 +149,7 @@ def _customer_for_branch(entity, ref, branch, field="customer"):
     if ref in (None, ""):
         raise ValidationError({field: "Name the customer who paid."})
     qs = Customer.objects.filter(entity=entity).filter(Q(branch=branch) | Q(branch__isnull=True))
-    customer = qs.filter(code=str(ref).upper()).first() or (
-        qs.filter(pk=int(ref)).first() if str(ref).isdigit() else None
-    )
+    customer = find_by_code_or_id(qs, ref, code=str.upper)
     if customer is None:
         raise ValidationError({field: f"No customer '{ref}' of {branch.name}."})
     return customer
@@ -693,8 +692,7 @@ class InterBranchReceivableMoveView(_FinanceBase):
         if ref in (None, ""):
             raise ValidationError({"customer": "Name the customer."})
         qs = Customer.objects.filter(entity=entity)
-        customer = qs.filter(code=str(ref).upper()).first() or (
-            qs.filter(pk=int(ref)).first() if str(ref).isdigit() else None)
+        customer = find_by_code_or_id(qs, ref, code=str.upper)
         if customer is None:
             raise NotFound(f"No customer matches '{ref}' for this entity.")
         with transaction.atomic():

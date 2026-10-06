@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.views import APIView
 
+from core.references import find_by_code_or_id
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 from vs_rbac.scoping import inherited_branch_id as _rbac_inherited_branch_id
 from vs_rbac.scoping import raised_branch as _rbac_raised_branch
@@ -107,7 +108,8 @@ def _resolve_account(request, entity, ref, field, *, required=False,
                      document_branch=NO_DOCUMENT, noun=None, verb="Pay it from"):
     """Resolve a GL account by **code** (e.g. "1100") or id within ``entity`` and the caller's reach.
 
-    Codes are numeric strings, so match on code first, then fall back to a pk lookup.
+    Codes are all digits, so the JSON type decides which is meant: a number is
+    an id and a string a code (:mod:`core.references`).
     Returns ``None`` for a blank ``ref`` unless ``required``. ``request`` is required
     because a ledger account behind another branch's bank account is that bank's
     money: it is refused exactly as an unknown account is (see
@@ -130,9 +132,7 @@ def _resolve_account(request, entity, ref, field, *, required=False,
     qs = accounts_a_caller_may_name(request, Account.objects.filter(entity=entity))
     if document_branch is not NO_DOCUMENT:
         qs = qs.select_related("bank_account", "bank_account__branch")
-    acc = qs.filter(code=str(ref)).first()
-    if acc is None and str(ref).isdigit():  # Numeric refs may be primary keys.
-        acc = qs.filter(pk=int(ref)).first()
+    acc = find_by_code_or_id(qs, ref)  # A JSON number is an id, a string a code.
     if acc is None:  # Unknown, another entity's, or another branch's bank ledger.
         raise ValidationError({field: f"No account '{ref}' in this entity."})
     if document_branch is not NO_DOCUMENT:
@@ -158,9 +158,7 @@ def _resolve_tax(entity, ref, field="tax_code", *, usage=None):
     qs = TaxCode.objects.filter(entity=entity).select_related(
         "collected_account", "paid_account",
     )
-    tc = qs.filter(code=str(ref)).first()
-    if tc is None and str(ref).isdigit():  # Numeric refs may be ids.
-        tc = qs.filter(pk=int(ref)).first()
+    tc = find_by_code_or_id(qs, ref)
     if tc is None:  # Reject missing/cross-entity tax refs.
         raise ValidationError({field: f"No tax code '{ref}' in this entity."})
     if usage is not None and usage not in ("sales", "purchase"):
@@ -201,9 +199,7 @@ def _resolve_cost_center(entity, ref, field="cost_center"):
     if ref in (None, ""):  # Cost center is optional.
         return None
     qs = CostCenter.objects.filter(entity=entity)
-    cc = qs.filter(code=str(ref)).first()
-    if cc is None and str(ref).isdigit():  # Numeric refs may be ids.
-        cc = qs.filter(pk=int(ref)).first()
+    cc = find_by_code_or_id(qs, ref)
     if cc is None:  # Reject missing/cross-entity cost center refs.
         raise ValidationError({field: f"No cost centre '{ref}' in this entity."})
     return cc  # Return resolved cost center.

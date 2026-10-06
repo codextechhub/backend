@@ -9943,6 +9943,37 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertIn("quantity or value remains", str(blocked_value.data))
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_an_account_sent_by_id_is_never_read_as_a_code(self, _perm):
+        """A JSON number names an account by id, even where another account wears it as a code.
+
+        Account ids are one sequence across every school's chart, so they climb
+        through the range the all-digit codes live in. The decoy expense account
+        is coded with the alternate account's id, which is the collision a busy
+        database reaches on its own.
+        """
+        entity, _, _, _, _ = self.build_p2p()
+        alternate = Account.objects.create(
+            entity=entity, code="1410", name="Alternate inventory",
+            account_type="ASSET", is_postable=True,
+        )
+        Account.objects.create(
+            entity=entity, code=str(alternate.pk), name="Decoy expense",
+            account_type="EXPENSE", is_postable=True,
+        )
+        client = self._client(entity)
+        item = self._item(entity, code="EMPTY")
+        url = f"/v1/procurement/stock-items/{item.pk}/?entity={entity.code}"
+
+        by_id = client.patch(url, {"inventory_account": alternate.pk}, format="json")
+        self.assertEqual(by_id.status_code, 200, by_id.data)
+        self.assertEqual(by_id.data["data"]["inventory_code"], "1410")
+
+        # The same digits sent as a string are a code, and name the decoy.
+        by_code = client.patch(url, {"inventory_account": str(alternate.pk)}, format="json")
+        self.assertEqual(by_code.status_code, 400)
+        self.assertIn("ASSET", str(by_code.data))
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_patch_never_touches_balances(self, _perm):
         entity, _, vendor, _, _ = self.build_p2p()
         item = self._item(entity)
