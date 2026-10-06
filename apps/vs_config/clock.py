@@ -77,9 +77,23 @@ _BRANCH_MEMO_ATTRIBUTE = "_vs_config_branch_zones"
 _STYLE_MEMO_ATTRIBUTE = "_vs_config_display_style"
 
 
+#: Names a host's zoneinfo directory can hold that are not zones. ``localtime``
+#: and ``posixrules`` are links Linux distributions add beside the tz database
+#: (the host's own zone, and the old POSIX rule set), and ``Factory`` is the
+#: database's placeholder. ``available_timezones()`` lists whatever the host
+#: has, so the set differs between machines and is removed explicitly.
+_HOST_ALIASES = frozenset({"localtime", "posixrules", "Factory"})
+
+
 @lru_cache(maxsize=1)
 def _known_zones() -> frozenset[str]:
-    return frozenset(available_timezones())
+    """Every real IANA zone name this server can load, host aliases excluded.
+
+    A school whose zone were stored as ``localtime`` would silently follow the
+    server's zone (UTC on a hosted server) rather than its own, and read its
+    days wrong for the first hour after each midnight.
+    """
+    return frozenset(available_timezones()) - _HOST_ALIASES
 
 
 def is_valid_time_zone(name) -> bool:

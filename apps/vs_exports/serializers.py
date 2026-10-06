@@ -567,11 +567,9 @@ class ExportScheduleSerializer(serializers.ModelSerializer):
         return {"reference": run.reference, "status": run.status, "at": run.queued_at}
 
     def validate_timezone_name(self, value):
-        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        from vs_config.clock import is_valid_time_zone
 
-        try:
-            ZoneInfo(value)
-        except (ZoneInfoNotFoundError, ValueError):
+        if not is_valid_time_zone(value):
             raise serializers.ValidationError(
                 f"'{value}' is not a time zone this server knows. Use a name like "
                 f"'Africa/Lagos'."

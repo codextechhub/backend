@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import calendar
 import datetime
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from django.utils import timezone
 
@@ -28,10 +28,9 @@ DEFAULT_TIMEZONE = "Africa/Lagos"
 
 # Resolve a schedule's timezone, falling back to the platform default.
 def _zone(name: str) -> ZoneInfo:
-    try:
-        return ZoneInfo(name or DEFAULT_TIMEZONE)
-    except (ZoneInfoNotFoundError, ValueError):
-        return ZoneInfo(DEFAULT_TIMEZONE)
+    from vs_config.clock import is_valid_time_zone
+
+    return ZoneInfo(name if is_valid_time_zone(name) else DEFAULT_TIMEZONE)
 
 
 # Combine a local date and time into an aware datetime in the schedule's zone.

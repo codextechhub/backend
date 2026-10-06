@@ -12,7 +12,7 @@ from unittest import mock
 from zoneinfo import ZoneInfo
 
 from django.db.models import Q
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
 from vs_tenants.context import reset_current_tenant, set_current_tenant
 from vs_tenants.models import Tenant
@@ -20,6 +20,7 @@ from vs_tenants.models import Tenant
 from .clock import (
     DEFAULT_TIME_ZONE,
     TIME_ZONE_KEY,
+    _known_zones,
     branch_day_q,
     branch_now,
     branch_today,
@@ -52,6 +53,42 @@ NAIROBI_MIDNIGHT_UTC = datetime.datetime(2026, 3, 14, 21, 30, tzinfo=datetime.ti
 
 def _at(instant):
     return mock.patch("django.utils.timezone.now", return_value=instant)
+
+
+class HostAliasZoneTests(SimpleTestCase):
+    """A zone list read from a Linux host carries aliases that are not zones.
+
+    ``/usr/share/zoneinfo`` on Debian and Ubuntu holds ``localtime`` (the host's
+    own zone) and ``posixrules`` beside the real names, and
+    ``zoneinfo.available_timezones()`` returns them. The list is patched here to
+    the shape such a host gives, so the check reads the same on every machine.
+    """
+
+    LINUX_HOST_LIST = {
+        "Africa/Lagos", "Africa/Nairobi", "UTC", "localtime", "posixrules", "Factory",
+    }
+
+    def setUp(self):
+        _known_zones.cache_clear()
+        self.addCleanup(_known_zones.cache_clear)
+        patcher = mock.patch(
+            "vs_config.clock.available_timezones", return_value=set(self.LINUX_HOST_LIST),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        loader = mock.patch("vs_config.clock.ZoneInfo", side_effect=lambda name: object())
+        loader.start()
+        self.addCleanup(loader.stop)
+
+    def test_host_aliases_are_not_zones(self):
+        for alias in ("localtime", "posixrules", "Factory"):
+            with self.subTest(value=alias):
+                self.assertFalse(is_valid_time_zone(alias))
+
+    def test_real_zones_are_still_accepted(self):
+        for name in ("Africa/Lagos", "Africa/Nairobi", "UTC"):
+            with self.subTest(value=name):
+                self.assertTrue(is_valid_time_zone(name))
 
 
 class TenantClockTests(TestCase):
