@@ -598,35 +598,110 @@ def _rfq_detail_queryset(entity):
     )
 
 
-def _write_rfq_lines(request, entity, rfq, lines, *, preserve_history=False):
-    """Validate and (re)create an RFQ's spec lines - a full replacement on edit.
+_LINK_KEYS = ("requisition_line", "requisition_line_id")
 
-    Shared by create and the draft PATCH so both apply identical validation:
-    positive/bounded quantity, active-postable EXPENSE account, entity-scoped tax code,
-    and a requisition line that genuinely lives in this entity. When the RFQ header
-    names a requisition, a supplied source line must belong to that exact document.
-    A source line another live RFQ or order already holds is refused
-    (:func:`vs_procurement.purchasing.refuse_sourced_lines`); this RFQ's own earlier
-    lines are the same sourcing and are not.
+
+def _sent_link(line):
+    """``(sent, value)``: whether ``line`` names its requisition link, and the value named.
+
+    The read shape calls the link ``requisition_line_id``; a write may use that
+    name or ``requisition_line``. A line that names neither leaves the link as it is.
     """
+    for key in _LINK_KEYS:
+        if key in line:
+            return True, line[key]
+    return False, None
+
+
+def _rfq_line_plan(rfq, lines):
+    """Pair each line of an RFQ edit with the active line it updates, and settle its link.
+
+    Returns ``([(line body, requisition line id or None)], releases_blindly)``,
+    the pairs in body order. A line whose ``id`` names one of this RFQ's active
+    lines updates that line: when it
+    does not name its requisition link, the link it already had is kept, so an
+    edit form that echoes the lines back to change a title or a quantity never
+    frees the requisition line. Ikeja's 40 chairs on RQ-0007 stay on RQ-0007 when
+    the buyer retitles it; dropping the link would let a purchase order order the
+    same chairs again. A line without ``id`` is new, linked only when it names a
+    requisition line.
+
+    An issued RFQ's links are what its vendors were invited to quote against, so
+    a line matched by ``id`` may not name a different requisition line or none.
+    A body that sends no line ids at all while this RFQ holds requisition lines it
+    would no longer hold is refused, because it cannot say which lines it kept:
+    a line is removed by leaving it out of a body that names the others by ``id``.
+    ``releases_blindly`` says so, and the writer refuses it once each line's own
+    link has been checked, so a wrong link is reported on its own field first.
+    """
+    active = {line.pk: line for line in rfq.lines.filter(is_active=True)}
+    issued = rfq.rfq_status != RfqStatus.DRAFT
+    seen, plan, any_id = set(), [], False
+    for index, ln in enumerate(lines, start=1):
+        if not isinstance(ln, dict):
+            raise ValidationError({"lines": f"Line {index} must be an object."})
+        sent, value = _sent_link(ln)
+        line_id = ln.get("id")
+        current = None
+        if line_id not in (None, ""):
+            any_id = True
+            current = active.get(int(line_id)) if str(line_id).isdigit() else None
+            if current is None or current.pk in seen:
+                raise ValidationError({"lines": (
+                    f"Line {index} names line {line_id}, which is not a current line of "
+                    f"this RFQ or is named twice."
+                )})
+            seen.add(current.pk)
+        if current is not None and not sent:
+            link = current.requisition_line_id
+        else:
+            link = value if value not in (None, "") else None
+        if current is not None and issued and str(link or "") != str(current.requisition_line_id or ""):
+            raise ValidationError({"requisition_line": (
+                f"Line {index} sources a requisition line its vendors were invited to "
+                f"quote for; an amendment keeps that link. Cancel the RFQ to source "
+                f"the line another way."
+            )})
+        plan.append((ln, link))
+    held = {line.requisition_line_id for line in active.values() if line.requisition_line_id}
+    kept = {str(link) for _, link in plan if link is not None}
+    releases_blindly = not any_id and any(str(pk) not in kept for pk in held)
+    return plan, releases_blindly
+
+
+def _write_rfq_lines(request, entity, rfq, lines, *, preserve_history=False):
+    """Validate and write an RFQ's spec lines: the body becomes the RFQ's active lines.
+
+    Shared by create, the draft PATCH and an amendment so all apply identical
+    validation: positive/bounded quantity, active-postable EXPENSE account,
+    entity-scoped tax code, and a requisition line that genuinely lives in this
+    entity. When the RFQ header names a requisition, a supplied source line must
+    belong to that exact document. A line's requisition link follows
+    :func:`_rfq_line_plan`: kept when a line matched by ``id`` does not name it.
+    A source line another live RFQ or order already holds is refused
+    (:func:`vs_procurement.purchasing.refuse_sourced_lines`); this RFQ's own
+    earlier lines are the same sourcing and are not. Every refusal is raised
+    inside the caller's transaction, which rolls back the lines already written.
+    """
+    plan, releases_blindly = _rfq_line_plan(rfq, lines)
     if preserve_history:
         rfq.lines.filter(is_active=True).update(is_active=False)
     else:
         rfq.lines.all().delete()  # Draft replacement has no published history yet.
-    for i, ln in enumerate(lines, start=1):
+    for i, (ln, link) in enumerate(plan, start=1):
         req_line = None
-        if ln.get("requisition_line"):
+        if link is not None:
             req_lines = PurchaseRequisitionLine.objects.filter(
-                requisition__entity=entity, pk=ln["requisition_line"],
-            )
+                requisition__entity=entity, pk=link,
+            ) if str(link).isdigit() else PurchaseRequisitionLine.objects.none()
             if rfq.requisition_id is not None:
                 req_lines = req_lines.filter(requisition_id=rfq.requisition_id)
             req_line = req_lines.first()
             if req_line is None:
                 message = (
-                    f"No such requisition line {ln['requisition_line']} on this RFQ's requisition."
+                    f"No such requisition line {link} on this RFQ's requisition."
                     if rfq.requisition_id is not None
-                    else f"No such requisition line {ln['requisition_line']}."
+                    else f"No such requisition line {link}."
                 )
                 raise ValidationError({"requisition_line": message})
             _inherited_branch_id(request, rfq, req_line.requisition)
@@ -643,6 +718,11 @@ def _write_rfq_lines(request, entity, rfq, lines, *, preserve_history=False):
             expense_account=_resolve_expense_account(request, entity, ln.get("expense_account"), "expense_account"),
             tax_code=_resolve_tax(entity, ln.get("tax_code")),
         )
+    if releases_blindly:
+        raise ValidationError({"lines": (
+            "Send each kept line's id with its lines: this RFQ sources requisition "
+            "lines, and lines without ids would release them."
+        )})
 
 
 def _shared_line_specs(request, entity, lines):

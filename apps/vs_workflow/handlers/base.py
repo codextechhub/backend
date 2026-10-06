@@ -184,6 +184,22 @@ class BaseWorkflowHandler:
     def on_withdrawn(self, instance, context: Dict) -> None: ...
     def on_cancelled(self, instance, context: Dict) -> None: ...
 
+    def on_resubmitted(self, instance, context: Dict) -> None:
+        """Mirror a returned request resumed by its requester onto the document.
+
+        A return hands the document back to its requester (:meth:`on_returned`),
+        and resuming the request from the approvals screen puts it in front of
+        the approvers again, so the document is back where :meth:`on_submitted`
+        put it. That is the default; a module whose resumption needs more, such
+        as re-running the checks it ran at submission, overrides this.
+
+        Runs inside the resubmission's transaction before the returning stage is
+        activated, as :meth:`on_submitted` runs before the first one, so raising
+        refuses the resumption and leaves the request returned. ``context``
+        carries ``actor_id``, ``resuming_stage`` and ``attempt``.
+        """
+        self.on_submitted(instance, context)
+
     # Reversal is the one outcome the engine cannot decide on its own.
     def reversal_block_reason(self, document: Any) -> Optional[str]:
         """Why this document's approval can no longer be undone, or ``None``.

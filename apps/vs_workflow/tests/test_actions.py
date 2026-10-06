@@ -705,3 +705,41 @@ class ResubmitTests(_Base):
         mock_act.assert_called_once()
         _, _stage_arg, attempt_arg = mock_act.call_args[0]
         self.assertEqual(attempt_arg, self.si.attempt + 1)
+
+
+class ResubmitTellsTheDocumentTests(_Base):
+    """Resuming a returned request tells the document's module before any stage runs."""
+
+    def setUp(self):
+        super().setUp()
+        self.instance.status = WorkflowInstanceStatus.RETURNED
+        self.instance.save(update_fields=["status"])
+
+    def test_resubmit_calls_on_resubmitted_before_the_stage_activates(self):
+        calls = []
+
+        class Recorder(BaseWorkflowHandler):
+            def on_submitted(self, instance, context):
+                calls.append(("on_submitted", dict(context)))
+
+        with patch("vs_workflow.services.actions.get_handler", return_value=Recorder()), \
+             patch("vs_workflow.services.actions.routing_service._activate_stage",
+                   side_effect=lambda *a: calls.append(("activate", None))), \
+             patch("vs_workflow.services.actions.approvers_service.resolve_approvers",
+                   return_value=[]):
+            svc.resubmit(self.instance.id, self.requester)
+
+        self.assertEqual([name for name, _ in calls], ["on_submitted", "activate"])
+        self.assertEqual(calls[0][1]["actor_id"], str(self.requester.pk))
+
+    def test_a_handler_that_refuses_leaves_the_request_returned(self):
+        class Refuser(BaseWorkflowHandler):
+            def on_resubmitted(self, instance, context):
+                raise InvalidInstanceStateError("This journal's month has closed.")
+
+        with patch("vs_workflow.services.actions.get_handler", return_value=Refuser()):
+            with self.assertRaises(InvalidInstanceStateError):
+                svc.resubmit(self.instance.id, self.requester)
+
+        self.instance.refresh_from_db()
+        self.assertEqual(self.instance.status, WorkflowInstanceStatus.RETURNED)

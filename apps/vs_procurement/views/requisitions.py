@@ -90,6 +90,45 @@ def _bool_param(value):
     return None
 
 
+def _filter_free_lines(qs, params):
+    """Keep the requisitions a buyer can still source, for the RFQ and order pickers.
+
+    ``has_free_lines=true`` keeps an approved requisition with at least one line
+    no live RFQ or order holds, which an RFQ can still put out to tender.
+    ``all_lines_free=true`` keeps one whose every line is free, which an order
+    raised straight from the requisition needs, since that order takes every
+    line. ``false`` keeps the rest. Ikeja's 40 chairs on a live RFQ leave Ikeja's
+    requisition out of both; a requisition for chairs and desks whose chairs alone
+    are on an RFQ passes ``has_free_lines`` and fails ``all_lines_free``.
+
+    The rule is :func:`vs_procurement.purchasing.free_to_source`, applied as one
+    ``EXISTS`` per row in the list query itself. It answers on the requisition
+    list's own key, so a buyer who raises orders but never sees RFQs uses it too.
+    A value other than true or false is refused rather than ignored, because an
+    ignored typo would offer requisitions the save then refuses.
+    """
+    from django.db.models import Exists, OuterRef, Q
+
+    from ..purchasing import free_to_source, held_elsewhere
+
+    lines = PurchaseRequisitionLine.objects.filter(requisition=OuterRef("pk"))
+    rules = {
+        "has_free_lines": Q(Exists(free_to_source(lines))),
+        "all_lines_free": (
+            Q(status=DocumentStatus.APPROVED) & Q(Exists(lines))
+            & ~Q(Exists(held_elsewhere(lines)))
+        ),
+    }
+    for name, rule in rules.items():
+        if params.get(name) in (None, ""):
+            continue
+        wanted = _bool_param(params.get(name))
+        if wanted is None:
+            raise ValidationError({name: "Use true or false."})
+        qs = qs.filter(rule) if wanted else qs.exclude(rule)
+    return qs
+
+
 def _filter_requisitions(qs, params):
     """Apply the list/export filters from one shared source of truth."""
     if (status_ := params.get("status")):
@@ -109,6 +148,7 @@ def _filter_requisitions(qs, params):
         # instead of decided. Same bounded-subquery shape as the parked filter.
         override_pks = approval_override.overridden_document_id_subquery(PurchaseRequisition)
         qs = qs.filter(pk__in=override_pks) if overridden else qs.exclude(pk__in=override_pks)
+    qs = _filter_free_lines(qs, params)
     if (search := params.get("search", "").strip()):
         qs = qs.filter(
             Q(document_number__icontains=search) | Q(title__icontains=search)
@@ -143,7 +183,7 @@ class RequisitionListCreateView(_ProcBase):
         entity = resolve_entity(request)
         qs = PurchaseRequisition.objects.filter(entity=entity).select_related(
             "requested_by", "cost_center", "branch",
-        ).prefetch_related("lines")
+        ).prefetch_related("lines__expense_account")
         qs = _branch_scoped(request, entity, qs, request.query_params)
         qs = _filter_requisitions(qs, request.query_params)
         return self.paginate(

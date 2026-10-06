@@ -520,7 +520,13 @@ def reverse_action(action_id, admin, reason: str) -> WorkflowStageAction:
 
 # Resume a returned workflow from the returning stage with a fresh attempt.
 def resubmit(instance_id, requester) -> WorkflowInstance:
-    """Requester resubmits after RETURNED. Resumes from returning stage, new attempt."""
+    """Requester resubmits after RETURNED. Resumes from returning stage, new attempt.
+
+    The document's handler hears of it through ``on_resubmitted`` before the
+    stage is activated, the way ``on_submitted`` precedes the first stage, so
+    the document reads as awaiting approval again and a handler that refuses
+    leaves the request returned.
+    """
     with transaction.atomic():
         instance = _lock_instance(instance_id)
         if instance.status != WorkflowInstanceStatus.RETURNED:
@@ -540,6 +546,11 @@ def resubmit(instance_id, requester) -> WorkflowInstance:
         audit_service.write(instance, AuditEventType.INSTANCE_RESUBMITTED, actor=requester,
                             context={"resuming_stage": returning_stage.code,
                                      "attempt": next_attempt})
+        # The document's module learns the request is live again, before any stage runs.
+        _run_handler_callback(instance, "on_resubmitted", {
+            "actor_id": str(requester.pk), "resuming_stage": returning_stage.code,
+            "attempt": next_attempt,
+        })
 
         # If the stage was retired from the template while this instance was
         # sitting in RETURNED, don't re-activate it - advance past it instead.

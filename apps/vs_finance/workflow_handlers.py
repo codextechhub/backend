@@ -66,7 +66,8 @@ def _quantity(value) -> str:
 # Shared handler for finance docs that post after approval.
 class _FinancePostOnApprove(BaseWorkflowHandler):
     """Shared base: submit → PENDING_APPROVAL; approve → APPROVED then post;
-    reject, return, withdraw or cancel → DRAFT.
+    return → DRAFT; reject, withdraw or cancel → :meth:`status_when_unapproved`
+    (DRAFT unless the type says otherwise).
 
     Subclasses supply the concrete model (``document_model``) and the three
     document-type hooks - :meth:`preflight` (the write-free posting guards),
@@ -126,7 +127,27 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
         """
         if getattr(document, "status", None) != DocumentStatus.DRAFT:  # Only draft finance docs enter approval.
             raise InvalidInstanceStateError("Only a draft can be submitted for approval.")
+        self._refuse_second_request(document)
         self.preflight(document)  # Run write-free posting guards.
+
+    def _refuse_second_request(self, document) -> None:
+        """Refuse a submission while an earlier request for ``document`` is still open.
+
+        A document returned to its requester is a DRAFT again, but its request is
+        not over: it resumes from the approvals screen at the step that returned
+        it. Submitting it through the document's own route as well would put two
+        requests for one credit note in front of the approvers, and both could be
+        approved. Only a request that has ended (approved, rejected, withdrawn or
+        cancelled) leaves the document free to be sent again.
+        """
+        from .approvals import APPROVAL_PENDING, approval_states
+
+        if document.pk and approval_states([document])[document.pk] == APPROVAL_PENDING:
+            raise InvalidInstanceStateError(
+                f"{getattr(self, 'noun', 'This document')} "
+                f"{getattr(document, 'document_number', '') or document.pk} already has an "
+                f"approval request open. Resume it from your approvals, or withdraw it first."
+            )
 
     # Build approval-screen snapshot.
     def get_document_summary(self, document) -> dict:
@@ -141,6 +162,28 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
             doc = self._load(instance)  # Lock the concrete finance document.
             doc.status = DocumentStatus.PENDING_APPROVAL  # Mark it waiting for approval.
             doc.save(update_fields=["status", "updated_at"])
+
+    def on_resubmitted(self, instance, context) -> None:
+        """Put a returned document resumed from the approvals screen back under review.
+
+        This is the sanctioned way back for a returned document; its own submit
+        route refuses it while the request is open (:meth:`_refuse_second_request`).
+        The document was its requester's draft while returned, so it is checked
+        again exactly as a submission is (:meth:`preflight`): a journal whose
+        month has closed meanwhile is refused here, and the request stays
+        returned, rather than failing when the approver approves it. Once
+        PENDING_APPROVAL, nothing that edits a draft reaches it.
+        """
+        doc = self._load(instance)  # Lock the concrete finance document.
+        if doc.status != DocumentStatus.DRAFT:
+            raise InvalidInstanceStateError(
+                f"{getattr(self, 'noun', 'This document')} "
+                f"{getattr(doc, 'document_number', '') or doc.pk} is '{doc.status}', so its "
+                f"request cannot be resumed."
+            )
+        self.preflight(doc)
+        doc.status = DocumentStatus.PENDING_APPROVAL
+        doc.save(update_fields=["status", "updated_at"])
 
     # Post the document when workflow reaches approval.
     def on_approved(self, instance, context) -> None:
@@ -163,11 +206,21 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
         doc.status = DocumentStatus.APPROVED  # Set intermediate approved status.
         doc.save(update_fields=["status", "updated_at"])
 
-    # Return document to draft when rejected.
+    def status_when_unapproved(self, doc) -> str:
+        """The status ``doc`` takes when its approval ends without approving it.
+
+        Rejection, withdrawal and cancellation each end the approval for good. A
+        document lands where its owner can act on it again, which for most types
+        is DRAFT: corrected and sent again, or cancelled. A type whose draft has
+        no such action names its own landing place.
+        """
+        return DocumentStatus.DRAFT
+
+    # Return the document to its owner when rejected.
     def on_rejected(self, instance, context) -> None:
         with transaction.atomic():
             doc = self._load(instance)  # Lock the concrete finance document.
-            doc.status = DocumentStatus.DRAFT  # Rejected documents become editable drafts.
+            doc.status = self.status_when_unapproved(doc)
             doc.save(update_fields=["status", "updated_at"])
 
     # Return document to draft when sent back.
@@ -178,29 +231,30 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
             doc.save(update_fields=["status", "updated_at"])
 
     def on_withdrawn(self, instance, context) -> None:
-        """Hand a withdrawn document back to its requester as a draft.
+        """Hand a withdrawn document back to its requester.
 
         Withdrawal ends the approval without a decision, so the document is
-        where it was before it was sent: a draft that can be corrected and sent
-        again, or cancelled. Left waiting for approval, it would wait for an
-        approval that can no longer come.
+        where it was before it was sent (:meth:`status_when_unapproved`): for
+        most types a draft that can be corrected and sent again, or cancelled.
+        Left waiting for approval, it would wait for an approval that can no
+        longer come.
         """
-        self._back_to_draft(instance)
+        self._approval_ended(instance)
 
     def on_cancelled(self, instance, context) -> None:
-        """Hand a document whose approval an administrator cancelled back as a draft.
+        """Hand back a document whose approval an administrator cancelled.
 
         For the same reason as :meth:`on_withdrawn`: the cancelled approval can
-        never decide it, and the requester starts over from the draft.
+        never decide it, and the requester starts over.
         """
-        self._back_to_draft(instance)
+        self._approval_ended(instance)
 
-    def _back_to_draft(self, instance) -> None:
-        """Return a document still waiting for approval to DRAFT; any other status stays."""
+    def _approval_ended(self, instance) -> None:
+        """Move a document still waiting for approval to :meth:`status_when_unapproved`."""
         with transaction.atomic():
             doc = self._load(instance)
             if doc.status == DocumentStatus.PENDING_APPROVAL:
-                doc.status = DocumentStatus.DRAFT
+                doc.status = self.status_when_unapproved(doc)
                 doc.save(update_fields=["status", "updated_at"])
 
     #: The only statuses from which an approval decision can still be withdrawn.
@@ -517,6 +571,17 @@ class PettyCashReturnHandler(_FinancePostOnApprove):
         validate_petty_cash_return(document)
         ensure_period_open(resolve_period(document.entity, document.return_date))
 
+    def status_when_unapproved(self, doc) -> str:
+        """A return whose approval ends unapproved is CANCELLED, never a draft.
+
+        A return holds one count of the tin against the books of that moment, and
+        has no route to correct it or send it again. Once the approver rejects it,
+        or its request is withdrawn or cancelled, the custodian counts again and
+        raises a new return; a draft would sit on the fund's register with
+        nothing anybody could do to it. Nothing was booked.
+        """
+        return DocumentStatus.CANCELLED
+
     def post(self, document, *, actor_user) -> None:
         from .petty_cash import post_petty_cash_return
 
@@ -579,6 +644,21 @@ class InterBranchTransferHandler(_FinancePostOnApprove):
             document.entity, document.transfer_date,
             document.branch_id, document.to_branch_id,
         )
+
+    def status_when_unapproved(self, doc) -> str:
+        """A request goes back to waiting; a send nobody asked for is over.
+
+        Lekki asked Ikeja for 1m and Ikeja's send was rejected: Lekki's request
+        still stands, so it is a DRAFT request again, which Ikeja sends again or
+        declines. Ikeja sent Lekki 1m unasked, or forwarded money it held for
+        Lekki: that document existed only to be sent, and has nothing an owner
+        could correct, so it becomes CANCELLED (stage ``NOT_SENT``). Nothing was
+        booked. A cancelled forward no longer holds its receipt, which Ikeja
+        forwards again or voids; a cash send is made again as a new transfer.
+        """
+        if doc.requested_by_id is not None:
+            return DocumentStatus.DRAFT
+        return DocumentStatus.CANCELLED
 
     def post(self, document, *, actor_user) -> None:
         from .inter_branch import post_inter_branch_transfer

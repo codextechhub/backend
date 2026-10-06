@@ -710,6 +710,61 @@ MUST SAY:
   FinanceAuditLog.action must carry both sessions' new choices.
 Verified: tests_deferred_release_branch_close 7, tests_bank_document_rework 14 and tests_paye_annual_people 6 written first and watched failing; those plus the touched modules (bank document states, accruals, list filters, inter-branch, ledger lock, petty cash returns, previous pay, shared write reach, bank account reach, expense claim workflow, vs_workflow actions and reversal contract) 388 OK; vs_finance 1991 OK; vs_rbac 989 OK; vs_workflow 539 OK. The full suite was not run.
 
+### D127. An RFQ edit keeps its requisition links, every send whose approval ends leaves its owner an action, concessions can be corrected, and the requisition pickers leave out what is taken (uncommitted, 2026-10-06)
+Number may be renumbered at merge: D125 is queued in parallel. No migration.
+MODULES: M22 procurement (RFQs, requisitions), M19 finance (inter-branch transfers, held receipts, petty cash returns, concessions, credit notes, every approval-gated document), MRD.
+MUST SAY:
+- RFQ lines (M22). PATCH rfqs/<id>/ and POST rfqs/<id>/amendments/ match each
+  sent line to the RFQ's active line by its "id". A matched line that does not
+  name its link (requisition_line, or requisition_line_id as the read shape
+  calls it) keeps the requisition line it had, so retitling a draft or changing
+  an issued RFQ's quantity no longer frees the requisition line for a second
+  order. A line without id is new. A draft may relink or unlink a matched line
+  explicitly; an amendment may not (400 on requisition_line). A body with no
+  line ids that would drop a link is refused (400 on lines); an id that is not
+  a current line of the RFQ, or is sent twice, is 400.
+- Requisition list (M22). GET procurement/requisitions/ takes has_free_lines
+  (true: at least one line no live RFQ or order holds) and all_lines_free (true:
+  every line free and the requisition approved); false keeps the rest; any
+  other value is 400. Same rule as rfqs/free-requisition-lines/. Gated on
+  procurement.requisition.view only, so an order-only buyer uses it. The list
+  no longer costs a query per line.
+- Approval ending unapproved (M19). Rejected, withdrawn or cancelled: an
+  inter-branch cash transfer the receiving branch asked for goes back to DRAFT
+  (stage REQUESTED; send again or decline); one sent unasked, and a forwarded
+  held receipt, become CANCELLED with the new stage NOT_SENT (nothing booked;
+  the held receipt is free to forward again or void; cash is sent again as a
+  new transfer); a petty cash return becomes CANCELLED (count again). Every
+  other finance document still goes back to DRAFT. DECLINED stays for a
+  request the asked branch refused.
+- A returned document (DRAFT with its request waiting to be resumed) is
+  refused by its own submit or send route (INVALID_INSTANCE_STATE), for every
+  finance document type, so one document never has two open requests.
+- Concessions (M19). PATCH concessions/<id>/ corrects a draft, including one
+  back from approval: kind, concession_date, amount, allowance_account, reason,
+  reference; customer, invoice and branch are fixed (400). 422 while with its
+  approvers or once posted. Key finance.concession.create; 404 outside branch
+  reach. Not written to the finance audit log (would need a migration); each
+  approval request keeps its own snapshot.
+- Credit notes (M19). POST credit-notes/<id>/submit/ already sends a note back
+  from approval again (finance.creditnote.submit); the gap was the screen.
+- Resuming a returned request (M18 workflow engine, every module). POST
+  workflow/instances/<id>/resubmit/ now tells the document's module
+  (handler on_resubmitted, before the stage is activated; by default the same
+  as on_submitted), so a finance document resumed from the approvals screen is
+  PENDING_APPROVAL again and no draft edit reaches it. Finance re-runs the
+  submission checks there: a journal whose month closed while it was returned
+  is refused and stays returned. Payout batches read PENDING_APPROVAL again
+  the same way. Procurement documents already kept their pending state through
+  a return and are unchanged.
+- approval_state (M19). Credit notes, concessions, refunds, write-offs,
+  customer credit transfers, doubtful-debt provisions, journal entries (list
+  and detail), expense claims and inter-branch transfers carry approval_state:
+  NOT_SUBMITTED, PENDING (including a draft an approver sent back, still open
+  in approvals), APPROVED or REJECTED, from the document's latest request; read
+  once per page. A draft reading PENDING is resumed from the approvals screen.
+Verified: tests_rfq_line_links 12 (9 failed first), tests_requisition_picker 10 (6 failed first), tests_inter_branch_approval_end 7 (3 failed first), tests_adjustment_rework 12 (11 failed first), the petty cash return approval-end test (failed first); tests_approval_resubmit (vs_finance) 5 (4 failed first), the petty cash resume test (failed first), tests_approval_resubmit (vs_procurement) 2 (passed before the change: procurement already kept its pending state), vs_workflow resubmit contract 2, tests_approval_state_reads 5; vs_workflow 541 OK; vs_payments 434 OK; vs_rbac 989 OK; vs_procurement 811 OK; vs_finance 2022 OK; full suite with --parallel 4: Ran 9597 tests, OK.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

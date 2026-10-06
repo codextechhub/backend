@@ -50,6 +50,7 @@ from ..models import (
     SharedCostRule,
     SharedCostRuleShare,
 )
+from ..serializers import ApprovalStateMixin
 from ..views import resolve_entity
 from .base import _FinanceBase, _bank_account_in_reach, _date, _resolve_account, _transaction_branch
 
@@ -158,7 +159,7 @@ def _reach(request):
 # Serializers                                                                 #
 # --------------------------------------------------------------------------- #
 
-class InterBranchTransferSerializer(serializers.ModelSerializer):
+class InterBranchTransferSerializer(ApprovalStateMixin, serializers.ModelSerializer):
     """One transfer, both branches named.
 
     A receivable move also says what it carried and who owes whom for it:
@@ -202,6 +203,7 @@ class InterBranchTransferSerializer(serializers.ModelSerializer):
             "adjustment_entry_id",
             "requested_at", "sent_at", "received_at", "arrival_date",
             "declined_at", "decline_reason", "journals", "moved_items", "net_owed",
+            "approval_state",
         ]
 
     def get_journals(self, obj):

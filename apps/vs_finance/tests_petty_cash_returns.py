@@ -561,6 +561,91 @@ class PettyCashReturnApiTests(_PettyCashReturnFixture):
         self.fund.refresh_from_db()
         self.assertTrue(self.fund.is_closed)
 
+    def test_a_closure_whose_approval_ends_unapproved_is_cancelled_and_counted_again(self):
+        """Mrs Adeyemi's count is a snapshot: once its approval ends, she counts afresh.
+
+        Rejected by the approver, withdrawn by the officer who raised it or cancelled
+        by an administrator, the closure is CANCELLED rather than a draft nobody can
+        send, and a new closure with a new count goes through the same route.
+        """
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_workflow.constants import WorkflowStageAction
+        from vs_workflow.models import WorkflowInstance, WorkflowStage, WorkflowTemplate
+        from vs_workflow.services.actions import cancel, record_action, withdraw
+
+        template = WorkflowTemplate.objects.create(
+            tenant=self.tenant, branch=None, document_type="finance.petty_cash_return",
+            code="standard", name="Petty cash returns")
+        WorkflowStage.objects.create(
+            template=template, code="approver", label="Closure approval", order=10,
+            approver_role_key="finance-approver")
+        approver = self.grant(self.user_for(self.tenant, "closure-approver@corona.test"),
+                              tenant=self.tenant, role_key="finance-approver")
+        TenantRoleTemplate.objects.filter(tenant=self.tenant, key="finance-approver").update(
+            is_system_role=True)
+        client = self.officer("finance.pettycash.close", branch=self.ikeja, tag="ended")
+        body = {"counted_amount": FLOAT, "bank_account": self.ikeja_bank.pk,
+                "return_date": JAN_20.isoformat()}
+
+        for how in ("rejected", "withdrawn", "cancelled"):
+            with self.subTest(how=how):
+                held = self.call(client, f"petty-cash-funds/{self.fund.pk}/close/", body)
+                self.assertEqual(held.status_code, 201, held.data)
+                pk = held.data["data"]["id"]
+                instance = WorkflowInstance.all_objects.get(
+                    document_object_id=str(pk), document_type="finance.petty_cash_return")
+                if how == "rejected":
+                    record_action(instance.id, approver, WorkflowStageAction.REJECTED,
+                                  comment="Recount it")
+                elif how == "withdrawn":
+                    withdraw(instance.id, instance.requested_by)
+                else:
+                    cancel(instance.id, approver, "Raised in error")
+
+                ret = PettyCashReturn.objects.get(pk=pk)
+                self.assertEqual(ret.status, DocumentStatus.CANCELLED)
+                self.assertIsNone(ret.journal_id)
+                self.fund.refresh_from_db()
+                self.assertFalse(self.fund.is_closed)
+
+    def test_a_returned_closure_resumed_from_approvals_waits_for_approval(self):
+        """Returned to the officer and resumed from her approvals, the closure waits again."""
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_workflow.constants import WorkflowStageAction
+        from vs_workflow.models import WorkflowInstance, WorkflowStage, WorkflowTemplate
+        from vs_workflow.services.actions import record_action
+
+        template = WorkflowTemplate.objects.create(
+            tenant=self.tenant, branch=None, document_type="finance.petty_cash_return",
+            code="standard", name="Petty cash returns")
+        WorkflowStage.objects.create(
+            template=template, code="approver", label="Closure approval", order=10,
+            approver_role_key="finance-approver")
+        approver = self.grant(self.user_for(self.tenant, "resume-approver@corona.test"),
+                              tenant=self.tenant, role_key="finance-approver")
+        TenantRoleTemplate.objects.filter(tenant=self.tenant, key="finance-approver").update(
+            is_system_role=True)
+        client = self.officer("finance.pettycash.close", branch=self.ikeja, tag="resume")
+        held = self.call(client, f"petty-cash-funds/{self.fund.pk}/close/", {
+            "counted_amount": FLOAT, "bank_account": self.ikeja_bank.pk,
+            "return_date": JAN_20.isoformat(),
+        })
+        pk = held.data["data"]["id"]
+        instance = WorkflowInstance.all_objects.get(
+            document_object_id=str(pk), document_type="finance.petty_cash_return")
+        record_action(instance.id, approver, WorkflowStageAction.RETURNED, comment="Recount")
+        self.assertEqual(PettyCashReturn.objects.get(pk=pk).status, DocumentStatus.DRAFT)
+
+        resumed = client.post(f"/v1/workflow/instances/{instance.id}/resubmit/", {}, format="json")
+
+        self.assertEqual(resumed.status_code, 200, resumed.data)
+        self.assertEqual(PettyCashReturn.objects.get(pk=pk).status, DocumentStatus.PENDING_APPROVAL)
+        again = self.call(client, f"petty-cash-funds/{self.fund.pk}/close/", {
+            "counted_amount": FLOAT, "bank_account": self.ikeja_bank.pk,
+            "return_date": JAN_20.isoformat(),
+        })
+        self.assertNotEqual(again.status_code, 201, again.data)
+
     def test_voiding_needs_the_reverse_key(self):
         post_petty_cash_return(self.make_return(
             PettyCashReturnKind.REDUCE, counted=FLOAT, amount=50_000 * NAIRA,

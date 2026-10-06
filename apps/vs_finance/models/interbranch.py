@@ -378,13 +378,16 @@ class InterBranchTransfer(FinanceDocument):
         """Where the transfer stands, in the words its two branches use.
 
         ``REQUESTED`` (asked for, not yet sent), ``PENDING_APPROVAL``, ``SENT``
-        (booked, arrival not yet confirmed), ``RECEIVED``, ``DECLINED`` or
-        ``VOIDED``. A kind that moves no money is ``SENT`` once booked.
+        (booked, arrival not yet confirmed), ``RECEIVED``, ``DECLINED`` (a
+        request the asked branch refused), ``NOT_SENT`` (a send nobody asked for,
+        or a forwarded receipt, whose approval was rejected, withdrawn or
+        cancelled: nothing was booked) or ``VOIDED``. A kind that moves no money
+        is ``SENT`` once booked.
         """
         from ..constants import DocumentStatus
 
         if self.status == DocumentStatus.CANCELLED:
-            return "DECLINED"
+            return "DECLINED" if self.declined_at else "NOT_SENT"
         if self.status == DocumentStatus.REVERSED:
             return "VOIDED"
         if self.status == DocumentStatus.PENDING_APPROVAL:

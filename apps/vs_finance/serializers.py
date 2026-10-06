@@ -307,6 +307,44 @@ class FiscalYearSerializer(BranchStatesMixin, serializers.ModelSerializer):
         return getattr(obj, "_branch_status", obj.status)
 
 
+class ApprovalStateMixin(serializers.Serializer):
+    """Adds a read-only ``approval_state``: where the document stands with its approval route.
+
+    ``NOT_SUBMITTED`` (never sent, or its request was withdrawn or cancelled),
+    ``PENDING`` (a request is open, including one an approver sent back to its
+    requester that is waiting to be resumed from the approvals screen),
+    ``APPROVED`` or ``REJECTED``, read from the document's latest request
+    (:func:`vs_finance.approvals.approval_states`). A draft reading PENDING was
+    sent back: it is resumed from the approvals screen, and its own submit,
+    send and edit routes refuse it.
+
+    Read once per page, not once per row: the first row of a list reads the
+    whole page's states in one query and caches them in the shared serializer
+    context under the document's model, so documents of two kinds in one
+    response never mix. A single document costs one query.
+    """
+
+    approval_state = serializers.SerializerMethodField()
+
+    def get_approval_state(self, obj) -> str:
+        from .approvals import approval_states
+
+        model = type(obj)
+        states = self.context.setdefault(f"approval_states:{model._meta.label_lower}", {})
+        if obj.pk not in states:
+            rows = [obj]
+            parent = self.parent
+            if isinstance(parent, serializers.ListSerializer) and parent.instance is not None:
+                from django.db.models import Manager
+
+                listed = parent.instance
+                listed = listed.all() if isinstance(listed, Manager) else listed
+                page = [row for row in listed if type(row) is model]
+                rows = page if any(row.pk == obj.pk for row in page) else rows
+            states.update(approval_states(rows))
+        return states[obj.pk]
+
+
 class JournalLineSerializer(serializers.ModelSerializer):
     account_code = serializers.CharField(source="account.code", read_only=True)
     account_name = serializers.CharField(source="account.name", read_only=True)
@@ -340,7 +378,7 @@ class JournalPeopleListSerializer(serializers.ListSerializer):
         return super().to_representation(rows)
 
 
-class JournalEntryListSerializer(serializers.ModelSerializer):
+class JournalEntryListSerializer(ApprovalStateMixin, serializers.ModelSerializer):
     """A journal in a list. ``created_by_is_exited`` is true once its maker has left.
 
     ``null`` for a journal the system raised with nobody named.
@@ -358,6 +396,7 @@ class JournalEntryListSerializer(serializers.ModelSerializer):
             "id", "document_number", "date", "period", "source",
             "status", "narration", "reference", "posted_at",
             "total_debit", "created_by", "created_by_id", "created_by_is_exited",
+            "approval_state",
         ]
         list_serializer_class = JournalPeopleListSerializer
 
@@ -727,7 +766,8 @@ class IncomeGivenBackMixin(serializers.Serializer):
         return prime_income_given_back(self.context, (obj.journal_id,))[obj.journal_id]
 
 
-class CreditNoteSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, serializers.ModelSerializer):
+class CreditNoteSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, ApprovalStateMixin,
+                           serializers.ModelSerializer):
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     invoice_number = serializers.CharField(source="invoice.document_number", read_only=True, default=None)
@@ -744,7 +784,7 @@ class CreditNoteSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, serializers
             "subtotal", "tax_total", "total", "total_naira",
             "allocated_amount", "unallocated_amount", "refunded_amount",
             "transferred_amount", "credit_remaining", "reason", "reference", "lines",
-            "approval_required", "income_given_back",
+            "approval_required", "income_given_back", "approval_state",
         ]
         list_serializer_class = IncomeGivenBackListSerializer
 
@@ -752,7 +792,7 @@ class CreditNoteSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, serializers
         return format_naira(obj.total)
 
 
-class RefundSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
+class RefundSerializer(ApprovalGatedMixin, ApprovalStateMixin, serializers.ModelSerializer):
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     amount_naira = serializers.SerializerMethodField()
@@ -763,13 +803,15 @@ class RefundSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
             "id", "document_number", "customer_id", "customer_code", "customer_name",
             "refund_date", "method", "status", "amount", "amount_naira",
             "bank_account_id", "reference", "narration", "approval_required",
+            "approval_state",
         ]
 
     def get_amount_naira(self, obj) -> str:
         return format_naira(obj.amount)
 
 
-class CustomerCreditTransferSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
+class CustomerCreditTransferSerializer(ApprovalGatedMixin, ApprovalStateMixin,
+                                       serializers.ModelSerializer):
     """Read shape for a customer credit transfer and the receipt it gave its destination."""
 
     from_customer_code = serializers.CharField(source="from_customer.code", read_only=True)
@@ -787,14 +829,14 @@ class CustomerCreditTransferSerializer(ApprovalGatedMixin, serializers.ModelSeri
             "from_customer_id", "from_customer_code", "from_customer_name",
             "to_customer_id", "to_customer_code", "to_customer_name",
             "transfer_date", "amount", "amount_naira", "reason",
-            "receipt_id", "receipt_number", "approval_required",
+            "receipt_id", "receipt_number", "approval_required", "approval_state",
         ]
 
     def get_amount_naira(self, obj) -> str:
         return format_naira(obj.amount)
 
 
-class WriteOffRequestSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
+class WriteOffRequestSerializer(ApprovalGatedMixin, ApprovalStateMixin, serializers.ModelSerializer):
     invoice_number = serializers.CharField(source="invoice.document_number", read_only=True)
     customer_code = serializers.CharField(source="invoice.customer.code", read_only=True)
     customer_name = serializers.CharField(source="invoice.customer.name", read_only=True)
@@ -807,6 +849,7 @@ class WriteOffRequestSerializer(ApprovalGatedMixin, serializers.ModelSerializer)
             "customer_code", "customer_name", "amount", "amount_naira",
             "write_off_account_id", "write_off_date", "narration", "reason",
             "journal_id", "approval_required", "allowance_used", "recovered_amount",
+            "approval_state",
         ]
 
     def get_amount_naira(self, obj) -> str:
@@ -855,7 +898,8 @@ class PaymentSerializer(serializers.ModelSerializer):
         return "PARTIAL"
 
 
-class ConcessionSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, serializers.ModelSerializer):
+class ConcessionSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, ApprovalStateMixin,
+                           serializers.ModelSerializer):
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     invoice_number = serializers.CharField(source="invoice.document_number", read_only=True)
@@ -870,7 +914,7 @@ class ConcessionSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, serializers
             "id", "document_number", "kind", "customer_id", "customer_code",
             "customer_name", "invoice_id", "invoice_number", "concession_date",
             "status", "amount", "amount_naira", "allowance_account",
-            "reason", "reference", "approval_required", "income_given_back",
+            "reason", "reference", "approval_required", "income_given_back", "approval_state",
         ]
         list_serializer_class = IncomeGivenBackListSerializer
 
@@ -1268,7 +1312,7 @@ class ExpenseClaimLineSerializer(serializers.ModelSerializer):
         return signed_url(obj.receipt.name, absolute_for=request) or None
 
 
-class ExpenseClaimSerializer(serializers.ModelSerializer):
+class ExpenseClaimSerializer(ApprovalStateMixin, serializers.ModelSerializer):
     lines = ExpenseClaimLineSerializer(many=True, read_only=True)
     balance_due = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
@@ -1281,6 +1325,7 @@ class ExpenseClaimSerializer(serializers.ModelSerializer):
             "title", "narration", "status", "payment_status",
             "subtotal", "tax_total", "total", "total_naira",
             "amount_paid", "balance_due", "journal_id", "approval_required", "lines",
+            "approval_state",
         ]
 
     def get_total_naira(self, obj) -> str:
@@ -2505,7 +2550,8 @@ class DoubtfulDebtProvisionLineSerializer(serializers.ModelSerializer):
         ]
 
 
-class DoubtfulDebtProvisionSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
+class DoubtfulDebtProvisionSerializer(ApprovalGatedMixin, ApprovalStateMixin,
+                                      serializers.ModelSerializer):
     """A doubtful-debt provision run, whole or as the reader's branches' part of it.
 
     A run is raised for every branch at once and names no branch, so a
@@ -2532,7 +2578,7 @@ class DoubtfulDebtProvisionSerializer(ApprovalGatedMixin, serializers.ModelSeria
         fields = [
             "id", "document_number", "status", "as_of", "narration", "required_total",
             "movement_total", "policy_snapshot", "lines", "approval_required",
-            "created_at", "partial_view",
+            "created_at", "partial_view", "approval_state",
         ]
 
     def _part_reach(self):

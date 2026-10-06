@@ -803,19 +803,19 @@ def approval_states(documents) -> dict:
     cancelled, ``PENDING`` while a request is in flight (including one returned to
     the requester), and ``APPROVED`` or ``REJECTED`` once decided.
     """
-    from django.contrib.contenttypes.models import ContentType
-
     from vs_workflow.constants import WorkflowInstanceStatus as S
     from vs_workflow.models import WorkflowInstance
 
     documents = list(documents)
     if not documents:
         return {}
-    ct = ContentType.objects.get_for_model(type(documents[0]))
+    meta = type(documents[0])._meta.concrete_model._meta
     latest = {}
+    # The content type is joined, not looked up first: one query, warm cache or cold.
     for object_id, status in (
         WorkflowInstance.all_objects.filter(
-            document_content_type=ct,
+            document_content_type__app_label=meta.app_label,
+            document_content_type__model=meta.model_name,
             document_object_id__in=[str(doc.pk) for doc in documents],
         ).order_by("document_object_id", "created_at", "pk")
         .values_list("document_object_id", "status")

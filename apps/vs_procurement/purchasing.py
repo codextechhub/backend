@@ -409,6 +409,17 @@ def free_to_source(lines):
     )
 
 
+def held_elsewhere(lines):
+    """Narrow requisition lines to those some live RFQ or order holds.
+
+    The complement of :func:`free_to_source` among an approved requisition's
+    lines: what a buyer can no longer put out to tender or order.
+    """
+    from django.db.models import OuterRef
+
+    return lines.filter(_sourced_q(OuterRef("pk")))
+
+
 def sourced_elsewhere(line, *, rfq=None) -> str | None:
     """Where requisition ``line`` is already sourced, or ``None`` when nothing holds it.
 

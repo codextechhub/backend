@@ -3157,18 +3157,86 @@ class _ConcessionActionBase(_FinanceBase):
 
 # Group endpoint behavior for Concession Detail View.
 class ConcessionDetailView(_ConcessionActionBase):
-    """GET /finance/concessions/<id>/ - retrieve one concession (discount / waiver /
+    """GET/PATCH /finance/concessions/<id>/ - one concession (discount / waiver /
     scholarship) by id.
+
+    PATCH corrects a draft, including one back from approval (rejected, or its
+    request withdrawn or cancelled): any of ``kind``, ``concession_date``,
+    ``amount`` (kobo), ``allowance_account``, ``reason`` and ``reference``, each
+    checked as on create, the others kept. The customer and invoice are the debt
+    the concession discounts and are fixed (400); the branch follows the invoice.
+    Refused (422) while its approvers hold it, including a request returned to
+    the requester and waiting to be resumed, and once it is posted or voided.
+    The correction posts nothing; ``submit/`` sends it again. Held by whoever may
+    create concessions, within the same branch reach (404 outside it).
 
     docstring-name: Concessions
     """
-    rbac_permission = "finance.concession.view"
+
+    @property
+    def rbac_permission(self):
+        return "finance.concession.create" if self.request.method == "PATCH" \
+            else "finance.concession.view"
 
     # Handle GET requests for this endpoint.
     def get(self, request, pk):
         _, concession = self._concession(request, pk)
         return success_response(
             "Concession retrieved.", data=ConcessionSerializer(concession).data,
+        )
+
+    def patch(self, request, pk):
+        from .approvals import APPROVAL_PENDING, approval_states
+        from .constants import ConcessionKind
+        from .exceptions import PostingError
+
+        entity, concession = self._concession(request, pk)
+        body = request.data or {}
+        fixed = sorted({"customer", "invoice", "branch"} & set(body))
+        if fixed:
+            raise ValidationError({fixed[0]: (
+                "A concession discounts one invoice of one customer; raise a new "
+                "concession for another."
+            )})
+        changes = {}
+        if "kind" in body:
+            if body.get("kind") not in ConcessionKind.values:
+                raise ValidationError({"kind": f"Choose one of {', '.join(ConcessionKind.values)}."})
+            changes["kind"] = body["kind"]
+        if "concession_date" in body:
+            changes["concession_date"] = _date(
+                body.get("concession_date"), "concession_date", required=True)
+        if "amount" in body:
+            changes["amount"] = _money(body.get("amount"), "amount")
+        if "allowance_account" in body:
+            changes["allowance_account"] = _resolve_account(
+                request, entity, body.get("allowance_account"), "allowance_account", required=False)
+        if "reason" in body:
+            changes["reason"] = str(body.get("reason") or "")[:255]
+        if "reference" in body:
+            changes["reference"] = str(body.get("reference") or "")[:64]
+        with transaction.atomic():
+            concession = Concession.objects.select_for_update().get(pk=concession.pk)
+            number = concession.document_number or concession.pk
+            if (concession.status == DocumentStatus.PENDING_APPROVAL
+                    or approval_states([concession])[concession.pk] == APPROVAL_PENDING):
+                raise PostingError(
+                    f"Concession {number} is with its approvers. It can be corrected once "
+                    f"they reject it or the request is withdrawn."
+                )
+            if concession.status != DocumentStatus.DRAFT:
+                raise PostingError(
+                    f"Only a draft concession can be corrected; {number} is "
+                    f"'{concession.status}'."
+                )
+            for name, value in changes.items():
+                setattr(concession, name, value)
+            if changes:
+                concession.save()
+        concession.refresh_from_db()
+        return success_response(
+            f"{concession.get_kind_display()} {concession.document_number} corrected.",
+            data=ConcessionSerializer(concession).data,
         )
 
 
