@@ -622,6 +622,17 @@ Verified: SharedRfqEndedWithoutAwardTests and ReleaseBackfillTests failed first
 (6 of 8); tests_shared_sourcing_guards 19 OK; vs_procurement 766 OK;
 vs_finance 1955 OK. The full suite was not run.
 
+### D125. Months close in order, the close preview names what the close does itself, no kobo or code names reach a screen, and export money filters take naira (uncommitted, 2026-10-05)
+Number may be renumbered at merge: another agent queues its own entry in parallel.
+MODULES: M19 finance (period close, settings history, dashboard), M06 workflow (condition sentences, document-type list), M04 roles and permissions (permission labels), M10 notifications (area labels), the Export Centre, platform configuration (console labels), MRD.
+MUST SAY:
+- Close order (M19). New finance calendar setting periods_close_in_order, default on. A month soft-closes only when every earlier month is at least soft-closed and hard-closes or locks only when every earlier month is closed, across fiscal years (the year itself may stay open); a month reopens only when every later month is open. Per branch for a branch close. Force does not bypass it; only the setting does. Refusal names the month in the way; failures earlier_periods_closed / later_periods_open. Migration vs_finance 0064.
+- Close preview (M19). Due depreciation and due deferred income come back passed with done_by_close and a line saying the close posts or releases them; the order shows as a blocking item; the finance dashboard close card reads the same preview.
+- Wording. No user-readable string carries kobo (guard core/test_money_wording.py); amounts read in naira. Settings payloads no longer carry Python dotted paths (consumer is {service, impact}); queued jobs no longer send task_name; 409 PROTECTED_REFERENCE detail keys are plural names.
+- Labels. Settings history entries carry changes [{label, before, after}] in words; workflow conditions carry sentences, new GET /workflow/templates/document-types/; permission_label on role grants; *_label fields across vs_config (new GET /config/definition-choices/ and /config/capability-choices/), vs_notifications (source_module_label) and the rbac registry (readable_label).
+- Export Centre. Money filters (invoice and expense claim Total) take naira; migration vs_exports 0006 converts saved recipes and runs.
+Verified per app by the agents (vs_finance 2000, vs_procurement 761, vs_payments 434, vs_workflow 551, vs_rbac 994, vs_config 180, vs_notifications 231, vs_exports 217, core 210, schools.vs_staff 547, vs_user 430, vs_audit 109). Full suite on the combined change (with migration renumbered to vs_finance 0064), --parallel 4: Ran 9653 tests, OK.
+
 ### D124. A requisition line sits on one live sourcing at a time, ordinary or shared (39e5994e, 2026-10-05)
 Number may be renumbered at merge: another agent queues its own entry in parallel.
 MODULES: M22 procurement and requisitions (RFQs, shared sourcing, purchase orders), MRD.

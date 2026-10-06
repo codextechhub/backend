@@ -329,9 +329,11 @@ class BranchFiscalYearCloseTests(_SharedWriteFixture):
         BranchFiscalYear.objects.create(
             fiscal_year=fiscal_year, branch=self.lekki, status=PeriodStatus.OPEN,
         )
-        BranchFiscalPeriod.objects.create(
-            period=final, branch=self.ikeja, status=PeriodStatus.CLOSED,
-        )
+        # Ikeja has closed every month of the year, so the order lets December lock.
+        for month in range(1, 13):
+            BranchFiscalPeriod.objects.create(
+                period=self.period(month=month), branch=self.ikeja, status=PeriodStatus.CLOSED,
+            )
         state = lock_branch_period(self.books, final, self.ikeja, actor_user=self.adaeze)
         self.assertEqual(state.status, PeriodStatus.LOCKED)
         fiscal_year.refresh_from_db()

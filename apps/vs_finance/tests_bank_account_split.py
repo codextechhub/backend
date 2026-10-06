@@ -422,7 +422,7 @@ class SharedBankAccountSplitTests(_FinanceBranchFixture):
     def test_the_agreed_total_must_equal_the_legacy_balance(self):
         from .bank_splits import split_shared_bank_account
 
-        with self.assertRaisesMessage(BankAccountSplitError, "sum to 999999"):
+        with self.assertRaisesMessage(BankAccountSplitError, "sum to ₦9,999.99"):
             split_shared_bank_account(
                 self.legacy_bank,
                 self.allocations(ikeja=600_000, lekki=399_999),

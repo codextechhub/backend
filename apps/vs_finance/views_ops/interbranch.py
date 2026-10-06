@@ -82,7 +82,7 @@ __all__ = [
 
 def _kobo(value, field="amount"):
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValidationError({field: "Expected a positive whole amount in kobo."})
+        raise ValidationError({field: "Amount must be a whole number greater than zero."})
     return value
 
 

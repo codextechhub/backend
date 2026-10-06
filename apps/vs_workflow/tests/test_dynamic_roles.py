@@ -274,11 +274,11 @@ class DynamicRoleRuleCheckTests(_Fixture):
             self._bursar_otherwise(),
         ], "cannot be compared")
 
-    def test_an_amount_is_whole_kobo(self):
+    def test_an_amount_is_a_whole_number(self):
         self._refused([
             self._to_principal({"op": "gt", "field": "amount", "value": 12.5}),
             self._bursar_otherwise(),
-        ], "whole kobo")
+        ], "must be a whole number")
 
     def test_a_choice_must_be_on_the_list(self):
         self._refused([

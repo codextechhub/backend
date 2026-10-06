@@ -31,7 +31,7 @@ from ..constants import (
     TaxObligationType,
     TaxSourceRole,
 )
-from ..money import MoneyField
+from ..money import MoneyField, format_naira
 from .core import TimeStampedModel, LedgerEntity, FinanceDocument
 from .gl import Account, CostCenter, Currency, FiscalYear, TaxCode
 
@@ -188,7 +188,7 @@ class BankTransaction(FinanceDocument):
         ordering = ["-transaction_date", "-id"]
 
     def __str__(self) -> str:
-        return f"{self.document_number or self.pk}: {self.direction} {self.amount}"
+        return f"{self.document_number or self.pk}: {self.direction} {format_naira(int(self.amount))}"
 
 
 class BankTransfer(FinanceDocument):
@@ -247,7 +247,7 @@ class BankTransfer(FinanceDocument):
         ordering = ["-transfer_date", "-id"]
 
     def __str__(self) -> str:
-        return f"{self.document_number or self.pk}: {self.amount}"
+        return f"{self.document_number or self.pk}: {format_naira(int(self.amount))}"
 
 
 class FinanceDocumentSettings(TimeStampedModel):
@@ -335,6 +335,11 @@ class FinanceCalendarSettings(TimeStampedModel):
     of its end: open the next year itself, contiguous with the last one and on the
     same start month and period length, or only tell the finance staff so they open
     it by hand. The same lead is the notice window the finance dashboard warns in.
+
+    ``periods_close_in_order`` keeps the close sequential: a month closes only once
+    every earlier month is closed, and reopens only while every later month is open
+    (:func:`vs_finance.close.earlier_period_in_the_way`). It is on unless a school
+    turns it off.
     """
 
     class NextYearMode(models.TextChoices):
@@ -350,6 +355,10 @@ class FinanceCalendarSettings(TimeStampedModel):
     next_year_lead_days = models.PositiveSmallIntegerField(
         default=60, validators=[MinValueValidator(7), MaxValueValidator(180)],
         help_text="Days before the calendar ends that the next year is opened or warned about.",
+    )
+    periods_close_in_order = models.BooleanField(
+        default=True,
+        help_text="A period closes only after every earlier one, and reopens only before every later one.",
     )
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
@@ -420,7 +429,7 @@ class BankStatementLine(TimeStampedModel):
         ordering = ["bank_account", "txn_date", "id"]
 
     def __str__(self) -> str:
-        return f"{self.txn_date} {self.amount} [{self.status}]"
+        return f"{self.txn_date} {format_naira(int(self.amount))} [{self.status}]"
 
 
 class BankLineMatch(TimeStampedModel):
@@ -693,7 +702,7 @@ class ExpenseClaimLine(TimeStampedModel):
         return self.net_amount + self.tax_amount
 
     def __str__(self) -> str:
-        return f"{self.description or self.expense_account_id}: {self.line_total}"
+        return f"{self.description or self.expense_account_id}: {format_naira(int(self.line_total))}"
 
 
 class PettyCashFund(TimeStampedModel):
@@ -778,7 +787,7 @@ class PettyCashFund(TimeStampedModel):
         return self.closed_on is not None
 
     def __str__(self) -> str:
-        return f"{self.name} ({self.current_balance} kobo on hand)"
+        return f"{self.name} ({format_naira(int(self.current_balance))} on hand)"
 
 
 class PettyCashVoucher(FinanceDocument):
@@ -836,7 +845,7 @@ class PettyCashVoucher(FinanceDocument):
             self.save(update_fields=["subtotal", "tax_total", "total", "updated_at"])
 
     def __str__(self) -> str:
-        return f"{self.document_number or self.pk}: {self.total} kobo"
+        return f"{self.document_number or self.pk}: {format_naira(int(self.total))}"
 
 
 class PettyCashVoucherLine(TimeStampedModel):
@@ -873,7 +882,7 @@ class PettyCashVoucherLine(TimeStampedModel):
         return self.net_amount + self.tax_amount
 
     def __str__(self) -> str:
-        return f"{self.description or self.expense_account_id}: {self.line_total}"
+        return f"{self.description or self.expense_account_id}: {format_naira(int(self.line_total))}"
 
 
 class PettyCashReturn(FinanceDocument):
@@ -982,7 +991,7 @@ class PettyCashReturn(FinanceDocument):
         return int(self.counted_amount) - int(self.amount)
 
     def __str__(self) -> str:
-        return f"{self.document_number or self.pk}: {self.kind} {self.amount}"
+        return f"{self.document_number or self.pk}: {self.kind} {format_naira(int(self.amount))}"
 
 
 class TaxObligation(TimeStampedModel):
@@ -1172,7 +1181,7 @@ class TaxFiling(FinanceDocument):
             self.save(update_fields=["payment_status", "updated_at"])
 
     def __str__(self) -> str:
-        return f"{self.document_number or self.pk}: {self.amount_due} kobo"
+        return f"{self.document_number or self.pk}: {format_naira(int(self.amount_due))}"
 
 
 class TaxFilingShare(TimeStampedModel):
@@ -1237,7 +1246,7 @@ class TaxFilingShare(TimeStampedModel):
             self.payment_status = InvoicePaymentStatus.PARTIAL
 
     def __str__(self) -> str:
-        return f"{self.filing_id}/{self.branch_id or '-'}: {self.amount_due} kobo"
+        return f"{self.filing_id}/{self.branch_id or '-'}: {format_naira(int(self.amount_due))}"
 
 
 class TaxFilingLine(TimeStampedModel):
@@ -1323,7 +1332,7 @@ class TaxRemittance(TimeStampedModel):
         return self.filing.document_number
 
     def __str__(self) -> str:
-        return f"{self.filing_id}: {self.amount} kobo on {self.pay_date}"
+        return f"{self.filing_id}: {format_naira(int(self.amount))} on {self.pay_date}"
 
 
 class PayrollRun(FinanceDocument):
@@ -1522,7 +1531,7 @@ class PayrollLine(TimeStampedModel):
         ]
 
     def __str__(self) -> str:
-        return f"{self.employee_name or self.employee_id}: net {self.net_amount}"
+        return f"{self.employee_name or self.employee_id}: net {format_naira(int(self.net_amount))}"
 
 
 class PayrollRunBranch(TimeStampedModel):
@@ -1925,7 +1934,7 @@ class EmployeeSalary(TimeStampedModel):
         return max((v for v in later if v.effective_from == start), key=lambda v: v.pk)
 
     def __str__(self) -> str:
-        return f"{self.name}: gross {self.gross_amount}"
+        return f"{self.name}: gross {format_naira(int(self.gross_amount))}"
 
 
 class Budget(TimeStampedModel):
@@ -2021,7 +2030,7 @@ class BudgetLine(TimeStampedModel):
         ordering = ["budget", "account", "period_no"]
 
     def __str__(self) -> str:
-        return f"{self.account_id} P{self.period_no}: {self.amount}"
+        return f"{self.account_id} P{self.period_no}: {format_naira(int(self.amount))}"
 
 
 class FixedAsset(FinanceDocument):
@@ -2120,4 +2129,4 @@ class DepreciationSchedule(TimeStampedModel):
         ordering = ["asset", "seq"]
 
     def __str__(self) -> str:
-        return f"{self.asset_id} #{self.seq} {self.amount} {'✓' if self.is_posted else ''}".strip()
+        return f"{self.asset_id} #{self.seq} {format_naira(int(self.amount))} {'✓' if self.is_posted else ''}".strip()

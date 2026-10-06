@@ -282,8 +282,18 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
 @register_handler("finance.journal")
 # Workflow handler for manual journal approvals.
 class JournalHandler(_FinancePostOnApprove):
-    """Approval handler for a manual :class:`~vs_finance.models.JournalEntry`."""
+    """Approval handler for a manual :class:`~vs_finance.models.JournalEntry`.
+
+    A journal carries no amount column, so a route's threshold tests its debit
+    total, which ``condition_fields`` declares as money: a step shows "Journal
+    total is at least ₦500,000.00", not a bare count of kobo.
+    """
     noun = "Journal entry"
+
+    condition_fields = (
+        ConditionField("document.total_debit_kobo", "Journal total", "document",
+                       ConditionFieldType.MONEY),
+    )
 
     @property
     # Concrete model for finance.journal instances.
@@ -764,8 +774,8 @@ class WriteOffHandler(_FinancePostOnApprove):
             raise PostingError("Write-off amount must be positive.")
         if amount > balance:  # Cannot write off more than the invoice balance.
             raise PostingError(
-                f"Write-off amount ({amount} kobo) exceeds the outstanding balance "
-                f"({balance} kobo).",
+                f"Write-off amount ({format_naira(amount)}) exceeds the outstanding balance "
+                f"({format_naira(balance)}).",
             )
 
         if invoice.customer.receivable_account is None:  # AR control account is required for the reversal.
@@ -880,8 +890,8 @@ class ConcessionHandler(_FinancePostOnApprove):
             raise PostingError("A concession must have a positive amount to post.")
         if amount > balance:  # Cannot forgive more than is owed.
             raise PostingError(
-                f"Concession amount ({amount} kobo) exceeds the outstanding balance "
-                f"({balance} kobo).",
+                f"Concession amount ({format_naira(amount)}) exceeds the outstanding balance "
+                f"({format_naira(balance)}).",
             )
         if document.customer.receivable_account is None:  # AR control must resolve.
             raise PostingError(

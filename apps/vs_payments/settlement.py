@@ -32,6 +32,8 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
+from vs_finance.money import format_naira
+
 from . import audit
 from .constants import CollectionStatus, PaymentAuditAction
 from .exceptions import PaymentStateError
@@ -155,13 +157,14 @@ def settle_collections(statement_line, collection_ids, *, actor_user=None, posti
     net = int(line.amount)
     fee = gross - net
     if fee < 0:
-        _refuse(f"The line brings {net} kobo, more than the {gross} kobo of payments named.",
+        _refuse(f"The line brings {format_naira(net)}, more than the {format_naira(gross)} "
+                f"of payments named.",
                 gross=gross, net=net)
     reported = [intent.fee for intent in intents]
     if all(value is not None for value in reported) and sum(reported) != fee:
         _refuse(
-            f"The provider's fees on these payments come to {sum(reported)} kobo, but the "
-            f"line is {fee} kobo short of them. It carries other payments too, or not all "
+            f"The provider's fees on these payments come to {format_naira(int(sum(reported)))}, "
+            f"but the line is {format_naira(fee)} short of them. It carries other payments too, or not all "
             f"of these.",
             gross=gross, net=net, reported_fee=sum(reported),
         )
@@ -219,13 +222,14 @@ def settle_collections(statement_line, collection_ids, *, actor_user=None, posti
         entity=entity, action=FinanceAuditAction.BANK_RECONCILED,
         actor_user=actor_user, target=bank,
         message=(f"Settled {len(intents)} online payment(s) into {bank.name}: "
-                 f"{gross} kobo less {fee} kobo fees."),
+                 f"{format_naira(gross)} less {format_naira(fee)} fees."),
         bank_account_id=bank.id, journal_id=entry.pk, gross=gross, fee=fee, net=net,
     )
     audit.record(  # Filed under a payment's reference, so it reaches that payment's readers.
         action=PaymentAuditAction.COLLECTIONS_SETTLED, entity=entity,
         reference=intents[0].reference, actor_user=actor_user,
-        message=f"Settled {len(intents)} collection(s): {gross} kobo gross, {fee} kobo fees.",
+        message=(f"Settled {len(intents)} collection(s): {format_naira(gross)} gross, "
+                 f"{format_naira(fee)} fees."),
         metadata={"collection_ids": ids, "journal_id": entry.pk,
                   "bank_line_id": line.pk, "gross": gross, "fee": fee, "net": net},
     )
@@ -346,7 +350,7 @@ def gateway_clearing_current(entity, period, branch=None):
         detail=(
             "No online payment has waited in gateway clearing too long"
             if count == 0 else
-            f"{count} online payment(s), {total} kobo, confirmed {days} or more days before "
+            f"{count} online payment(s), {format_naira(int(total))}, confirmed {days} or more days before "
             f"the period end are still in gateway clearing: match their settlement."
         ),
     )

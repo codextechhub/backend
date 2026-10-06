@@ -31,7 +31,7 @@ from ..constants import (
     PayslipEmailStatus,
     PayBroughtForwardSource,
 )
-from ..money import MoneyField
+from ..money import MoneyField, format_naira
 from .core import LedgerEntity, TimeStampedModel
 from .gl import Account, CostCenter
 from .ops import (
@@ -353,7 +353,7 @@ class EmployeeSalaryVersion(TimeStampedModel):
         indexes = [models.Index(fields=["salary", "effective_from"])]
 
     def __str__(self) -> str:
-        return f"{self.salary_id} from {self.effective_from}: gross {self.gross_amount}"
+        return f"{self.salary_id} from {self.effective_from}: gross {format_naira(int(self.gross_amount))}"
 
 
 class PayBroughtForward(TimeStampedModel):
@@ -435,7 +435,7 @@ class PayBroughtForward(TimeStampedModel):
         ]
 
     def __str__(self) -> str:
-        return f"{self.salary_id} {self.tax_year} {self.source}: {self.taxable_pay}"
+        return f"{self.salary_id} {self.tax_year} {self.source}: {format_naira(int(self.taxable_pay))}"
 
 
 # --------------------------------------------------------------------------- #
@@ -501,7 +501,7 @@ class EmployeeDeduction(TimeStampedModel):
         indexes = [models.Index(fields=["salary", "is_active"])]
 
     def __str__(self) -> str:
-        return f"{self.salary_id}: {self.deduction_type_id} {self.amount}"
+        return f"{self.salary_id}: {self.deduction_type_id} {format_naira(int(self.amount))}"
 
 
 # --------------------------------------------------------------------------- #
@@ -553,7 +553,7 @@ class PayrollLineItem(TimeStampedModel):
         ]
 
     def __str__(self) -> str:
-        return f"{self.line_id} {self.code}: {self.amount}"
+        return f"{self.line_id} {self.code}: {format_naira(int(self.amount))}"
 
 
 def payslip_attachment_path(payslip) -> str:

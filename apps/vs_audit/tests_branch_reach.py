@@ -29,7 +29,7 @@ from .models import AuditEvent
 from .services import emit_audit_event
 
 #: What Ngozi must never read: Ikeja's pay, the school's totals, other branches' names.
-NOT_LEKKIS = ("Ikeja", "Yaba", "45000", "190000", "171000")
+NOT_LEKKIS = ("Ikeja", "Yaba", "45000", "₦450.00", "190000", "171000")
 
 AUDIT_KEYS = ("platform.audit.view", "platform.audit.export")
 
@@ -81,14 +81,14 @@ class _BranchReachFixture(TestCase):
         codex = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
         self.codex = TenantAPIClient(self.person("auditor@codex.test", codex, "codex-audit"))
 
-        self.lekki_paid = self.finance("Disbursed Lekki Branch's net wages 72000 kobo.", self.lekki)
-        self.ikeja_paid = self.finance("Disbursed Ikeja Branch's net wages 45000 kobo.", self.ikeja)
+        self.lekki_paid = self.finance("Disbursed Lekki Branch's net wages ₦720.00.", self.lekki)
+        self.ikeja_paid = self.finance("Disbursed Ikeja Branch's net wages ₦450.00.", self.ikeja)
         self.old_total = self.finance("Accrued payroll: gross 190000, net 171000 kobo.", None)
         self.sign_in = emit_audit_event(
             module_key="IDENTITY", action_type="LOGIN_SUCCESS", entity_type="User",
             entity_id=str(self.ngozi_user.pk), tenant=self.tenant, summary="A sign-in.",
         )
-        self.rival_paid = self.finance("Disbursed Rival Main's net wages 9000 kobo.", self.rival_branch,
+        self.rival_paid = self.finance("Disbursed Rival Main's net wages ₦90.00.", self.rival_branch,
                                        tenant=self.rival_tenant, entity_id="77")
 
     def person(self, email, tenant, role_key, *, branch=None):

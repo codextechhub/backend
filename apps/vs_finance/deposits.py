@@ -45,6 +45,7 @@ from .constants import (
     JournalSource,
 )
 from .exceptions import FinanceError, PostingError
+from .money import format_naira
 
 
 def open_deposits(invoice, lines) -> list:
@@ -178,8 +179,8 @@ def release_deposits(customer, *, offset=False, note_date=None, actor_user=None)
         record(
             entity=entity, action=FinanceAuditAction.DEPOSIT_RELEASED,
             actor_user=actor_user, target=note,
-            message=(f"Released {total} kobo of deposits held for {customer.code}; "
-                     f"{note.allocated_amount} kobo settled bills and the rest is credit."),
+            message=(f"Released {format_naira(total)} of deposits held for {customer.code}; "
+                     f"{format_naira(note.allocated_amount)} settled bills and the rest is credit."),
             customer_code=customer.code, amount=total, settled=note.allocated_amount,
             offset=bool(offset), deposits=[row.pk for row in rows],
         )
@@ -300,7 +301,7 @@ def forfeit_unclaimed_deposits(entity, *, as_of=None, actor_user=None) -> dict:
         record(
             entity=entity, action=FinanceAuditAction.DEPOSITS_FORFEITED,
             actor_user=actor_user, target=forfeiture,
-            message=f"Took {total} kobo of unclaimed deposits to income.",
+            message=f"Took {format_naira(total)} of unclaimed deposits to income.",
             journal_id=journal.pk, amount=total, branch_id=branch_id, years=years,
             deposits=[{"deposit": row.pk, "customer": row.customer.code,
                        "amount": int(row.amount)} for row in group],

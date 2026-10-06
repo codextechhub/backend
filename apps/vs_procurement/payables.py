@@ -947,8 +947,9 @@ def _ensure_advance_journal_coverage(payment, links) -> None:
     linked_later = sum(int(link.amount) for link in links)
     if linked_later != expected_later:
         raise PostingError(
-            f"Vendor payment {payment.document_number or payment.pk} has {expected_later} kobo "
-            f"of later vendor-advance allocations but only {linked_later} kobo of linked "
+            f"Vendor payment {payment.document_number or payment.pk} has "
+            f"{format_naira(expected_later)} of later vendor-advance allocations but only "
+            f"{format_naira(linked_later)} of linked "
             "reclassification journals. Repair the allocation-journal links before "
             "reversing; reversing only part would desynchronise the ledger.",
         )

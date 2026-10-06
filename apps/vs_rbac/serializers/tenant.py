@@ -190,9 +190,15 @@ def _unique_tenant_role_key(tenant, name, exclude_pk=None) -> str:
 # Role templates + role permissions
 # -----------------------------------------------------------------------------
 class TenantRolePermissionSerializer(serializers.ModelSerializer):
-    """One permission row attached to a tenant role template."""
+    """One permission row attached to a tenant role template.
+
+    ``permission_label`` is the permission's readable wording
+    (:attr:`~vs_rbac.models.Permission.readable_label`), so a screen names a
+    grant its own catalogue does not list without falling back to the key.
+    """
 
     permission_key = serializers.CharField(source="permission.key", read_only=True)
+    permission_label = serializers.CharField(source="permission.readable_label", read_only=True)
 
     class Meta:
         model = TenantRolePermission
@@ -200,6 +206,7 @@ class TenantRolePermissionSerializer(serializers.ModelSerializer):
             "id",
             "permission",
             "permission_key",
+            "permission_label",
             "granted",
             "granted_by",
             "granted_at",
@@ -209,6 +216,7 @@ class TenantRolePermissionSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "permission_key",
+            "permission_label",
             "granted_by",
             "granted_at",
             "created_at",
@@ -418,14 +426,28 @@ class TenantRoleTemplateDetailSerializer(
         ).exists()
 
     def get_pending_additions(self, obj) -> list[dict]:
-        rows = TenantRoleChangeDeltaItem.objects.filter(
-            request__target_role=obj,
-            request__status=TenantRoleChangeRequest.Status.PENDING,
-            operation=TenantRoleChangeDeltaItem.Operation.ADD,
-        ).order_by("permission_id").values_list("permission_id", "request_id")
+        """The restricted permissions waiting for approval on this role.
+
+        Each entry carries ``permission_label``, the permission's readable
+        wording, so a screen can name a waiting permission even when its own
+        catalogue no longer lists it.
+        """
+        rows = (
+            TenantRoleChangeDeltaItem.objects.filter(
+                request__target_role=obj,
+                request__status=TenantRoleChangeRequest.Status.PENDING,
+                operation=TenantRoleChangeDeltaItem.Operation.ADD,
+            )
+            .select_related("permission__resource")
+            .order_by("permission_id")
+        )
         return [
-            {"permission_key": key, "request_id": str(request_id)}
-            for key, request_id in rows
+            {
+                "permission_key": row.permission_id,
+                "permission_label": row.permission.readable_label,
+                "request_id": str(row.request_id),
+            }
+            for row in rows
         ]
 
     def get_assigned_users_count(self, obj):

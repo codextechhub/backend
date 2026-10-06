@@ -317,6 +317,26 @@ class WorkflowTemplateViewSet(
         # queryset returns rows in an undefined order across pages.
         return qs.prefetch_related("stages", "routes").order_by("document_type", "code")
 
+    @action(detail=False, methods=["get"], url_path="document-types")
+    def document_types(self, request):
+        """GET /workflow/templates/document-types/ - what a template may be built for.
+
+        Each registered document type as ``{"value", "label"}``, ordered by the
+        label, so the builder offers "Customer refund" rather than asking for
+        ``finance.refund`` to be typed. A school is offered the types it raises.
+        The platform is offered every type, because a template it publishes as
+        the shared definition runs for every tenant that raises that type.
+        """
+        from vs_workflow.handlers.registry import handlers_raised_by, list_registered_handlers
+
+        tenant = self.get_tenant()
+        if getattr(tenant, "kind", None) == Tenant.Kind.PLATFORM:
+            types = list_registered_handlers()
+        else:
+            types = handlers_raised_by(tenant)
+        rows = [{"value": t, "label": document_type_label(t)} for t in types]
+        return Response(sorted(rows, key=lambda row: row["label"]))
+
     @action(detail=False, methods=["post"], url_path="preview-approvers")
     def preview_approvers(self, request):
         """Resolve the eligible approvers for an ad-hoc stage config + sample

@@ -48,6 +48,7 @@ from .constants import (
     account_type_from_code,
 )
 from .exceptions import BankAccountSplitError
+from .money import format_naira
 from .posting import post_journal, resolve_period
 
 
@@ -463,8 +464,8 @@ def split_shared_bank_account(
     agreed_total = sum(row["opening_balance"] for row in rows)
     if agreed_total != legacy_balance:
         raise BankAccountSplitError(
-            f"The agreed branch opening balances sum to {agreed_total} kobo, but the "
-            f"legacy ledger balance on {split_date} is {legacy_balance} kobo."
+            f"The agreed branch opening balances sum to {format_naira(agreed_total)}, but the "
+            f"legacy ledger balance on {split_date} is {format_naira(legacy_balance)}."
         )
 
     book = dict(historical_balances)
@@ -601,7 +602,7 @@ def split_shared_bank_account(
     remaining_balance = int(remaining["debit"] or 0) - int(remaining["credit"] or 0)
     if remaining_balance != 0:
         raise BankAccountSplitError(
-            f"The legacy ledger still carries {remaining_balance} kobo after cutover."
+            f"The legacy ledger still carries {format_naira(remaining_balance)} after cutover."
         )
 
     source.is_active = False

@@ -73,7 +73,8 @@ def overrides_at(user_pk, as_at: AsAt) -> list:
     from vs_rbac.models import Permission, UserPermissionOverride
 
     rows = instances_at(spec_for(UserPermissionOverride), USER, user_pk, as_at)
-    permissions = Permission.objects.in_bulk({row.permission_id for row in rows})
+    permissions = Permission.objects.select_related("resource").in_bulk(
+        {row.permission_id for row in rows})
     for row in rows:
         row.permission = permissions.get(row.permission_id)
     rows = [row for row in rows if row.permission is not None]

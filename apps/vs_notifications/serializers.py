@@ -17,6 +17,7 @@ serializer here. Do not add it.
 from rest_framework import serializers
 
 from .constants import ChannelChoices, NotificationErrorCode
+from . import labels as notification_labels
 from .exceptions import InvalidTemplateSyntaxError
 from .models import (
     Notification,
@@ -159,6 +160,8 @@ class NotificationHistorySerializer(serializers.ModelSerializer):
     event_type_label = serializers.CharField(source="event_type.label", read_only=True)
     recipient_name   = serializers.SerializerMethodField()
     recipient_email  = serializers.SerializerMethodField()
+    channel_label    = serializers.SerializerMethodField()
+    status_label     = serializers.SerializerMethodField()
 
     class Meta:
         model = Notification
@@ -167,8 +170,10 @@ class NotificationHistorySerializer(serializers.ModelSerializer):
             "event_type_key",
             "event_type_label",
             "channel",
+            "channel_label",
             "subject",
             "status",
+            "status_label",
             "retry_count",
             "failure_reason",
             "recipient_name",
@@ -186,6 +191,12 @@ class NotificationHistorySerializer(serializers.ModelSerializer):
 
     def get_recipient_email(self, obj):
         return obj.effective_email
+
+    def get_channel_label(self, obj):
+        return notification_labels.channel_label(obj.channel)
+
+    def get_status_label(self, obj):
+        return notification_labels.status_label(obj.status)
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +222,9 @@ class NotificationEventTypeSerializer(serializers.ModelSerializer):
     Accessible to all authenticated users (used by settings UI and template editor).
     """
 
+    source_module_label = serializers.SerializerMethodField()
+    supported_channel_labels = serializers.SerializerMethodField()
+
     class Meta:
         model = NotificationEventType
         fields = [
@@ -219,13 +233,24 @@ class NotificationEventTypeSerializer(serializers.ModelSerializer):
             "label",
             "description",
             "source_module",
+            "source_module_label",
             "supported_channels",
+            "supported_channel_labels",
             "default_enabled",
             "is_transactional",
             "branch_scoped",
             "is_active",
         ]
         read_only_fields = fields
+
+    def get_source_module_label(self, obj):
+        return notification_labels.source_module_label(obj.source_module)
+
+    def get_supported_channel_labels(self, obj):
+        return [
+            notification_labels.channel_label(channel)
+            for channel in obj.supported_channels or []
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +271,7 @@ class NotificationTemplateSerializer(serializers.ModelSerializer):
     """
     event_type_key   = serializers.CharField(source="event_type.key",   read_only=True)
     event_type_label = serializers.CharField(source="event_type.label", read_only=True)
+    source_module_label = serializers.SerializerMethodField()
     variables        = serializers.SerializerMethodField()
 
     class Meta:
@@ -255,6 +281,7 @@ class NotificationTemplateSerializer(serializers.ModelSerializer):
             "event_type",
             "event_type_key",
             "event_type_label",
+            "source_module_label",
             "channel",
             "subject",
             "body",
@@ -270,9 +297,12 @@ class NotificationTemplateSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = [
-            "id", "event_type_key", "event_type_label", "variables",
-            "created_by", "updated_by", "created_at", "updated_at",
+            "id", "event_type_key", "event_type_label", "source_module_label",
+            "variables", "created_by", "updated_by", "created_at", "updated_at",
         ]
+
+    def get_source_module_label(self, obj):
+        return notification_labels.source_module_label(obj.event_type.source_module)
 
     def get_variables(self, obj):
         return template_variables(
@@ -504,11 +534,14 @@ class EffectiveSettingSerializer(serializers.Serializer):
     event_type_key   = serializers.CharField()
     event_type_label = serializers.CharField()
     source_module    = serializers.CharField()
+    source_module_label = serializers.CharField()
     channel          = serializers.CharField()
+    channel_label    = serializers.CharField()
     is_enabled       = serializers.BooleanField()
     is_transactional = serializers.BooleanField()
-    # Which layer produced is_enabled: "tenant", "platform", or "default".
+    # Which layer produced is_enabled: "branch", "tenant", "platform", or "default".
     source           = serializers.CharField()
+    source_label     = serializers.CharField()
 
 
 # ---------------------------------------------------------------------------

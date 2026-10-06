@@ -16,6 +16,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from ..clock import branch_zone
+from ..labels import audit_action_label, audit_target_type_label
 from ..models import ConfigurationAuditEvent, ConfigurationAuditExportJob
 from ..serializers import build_configuration_target_labels
 from .audit import record_configuration_event
@@ -74,22 +75,42 @@ def scoped_configuration_audit_queryset(*, tenant=None, branch=None):
     return queryset.filter(tenant__isnull=True)
 
 
+#: The column headings of every configuration audit CSV, quick or background.
+AUDIT_CSV_HEADER = (
+    "Date", "Action", "Kind of record", "Record", "Changed by",
+    "Email", "Reason", "Scope", "Before", "After",
+)
+
+
+def audit_csv_row(event, target_labels):
+    """One audit event as a CSV row, in the words the audit screen uses.
+
+    The action and the kind of record are written as their labels, and a record
+    whose own name cannot be found is named by its kind, so the file never shows
+    an action code or a class name. ``target_labels`` is the map
+    :func:`~vs_config.serializers.build_configuration_target_labels` builds for
+    the batch. The before and after snapshots stay as recorded JSON: they are
+    the evidence.
+    """
+    kind = audit_target_type_label(event.target_type)
+    return [
+        event.created_at.isoformat(),
+        audit_action_label(event.action),
+        kind,
+        target_labels.get((event.target_type, event.target_id)) or kind,
+        event.actor.full_name if event.actor else "System",
+        event.actor.email if event.actor else "",
+        event.reason,
+        event.scope_key,
+        json.dumps(event.before_data, ensure_ascii=True, sort_keys=True),
+        json.dumps(event.after_data, ensure_ascii=True, sort_keys=True),
+    ]
+
+
 def _write_rows(writer, events):
     labels = build_configuration_target_labels(events)
     for event in events:
-        target = labels.get((event.target_type, event.target_id)) or event.target_type
-        writer.writerow([
-            event.created_at.isoformat(),
-            event.action,
-            event.target_type,
-            target,
-            event.actor.full_name if event.actor else "System",
-            event.actor.email if event.actor else "",
-            event.reason,
-            event.scope_key,
-            json.dumps(event.before_data, ensure_ascii=True, sort_keys=True),
-            json.dumps(event.after_data, ensure_ascii=True, sort_keys=True),
-        ])
+        writer.writerow(audit_csv_row(event, labels))
 
 
 def execute_configuration_audit_export(job_id):
@@ -127,10 +148,7 @@ def execute_configuration_audit_export(job_id):
             text = io.TextIOWrapper(handle, encoding="utf-8", newline="", write_through=True)
             try:
                 writer = csv.writer(text)
-                writer.writerow([
-                    "created_at", "action", "target_type", "target", "actor_name",
-                    "actor_email", "reason", "scope", "before", "after",
-                ])
+                writer.writerow(AUDIT_CSV_HEADER)
                 size_limit = export_size_limit()
                 chunk = []
                 for event in queryset.iterator(chunk_size=500):

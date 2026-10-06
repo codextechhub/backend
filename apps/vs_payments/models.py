@@ -18,6 +18,7 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
 from vs_finance.models import MoneyField, TimeStampedModel
+from vs_finance.money import format_naira
 
 from .constants import (
     CLEARING_STALE_DAYS_RANGE,
@@ -243,7 +244,7 @@ class CollectionIntent(TimeStampedModel):
         ordering = ["-id"]
 
     def __str__(self) -> str:
-        return f"{self.reference} · {self.amount} kobo · {self.status}"
+        return f"{self.reference} · {format_naira(int(self.amount))} · {self.status}"
 
     @property
     def is_terminal(self) -> bool:
@@ -362,7 +363,10 @@ class PayoutBatch(TimeStampedModel):
         ordering = ["-id"]
 
     def __str__(self) -> str:
-        return f"{self.reference} · {self.item_count} items · {self.total_amount} kobo · {self.status}"
+        return (
+            f"{self.reference} · {self.item_count} items · "
+            f"{format_naira(int(self.total_amount))} · {self.status}"
+        )
 
     @property
     def is_terminal(self) -> bool:
@@ -440,7 +444,7 @@ class PayoutInstruction(TimeStampedModel):
         ordering = ["-id"]
 
     def __str__(self) -> str:
-        return f"{self.reference} · {self.amount} kobo · {self.status}"
+        return f"{self.reference} · {format_naira(int(self.amount))} · {self.status}"
 
     @property
     def is_terminal(self) -> bool:
@@ -535,7 +539,7 @@ class HeldBalance(TimeStampedModel):
         ordering = ["tenant_id", "branch_id"]
 
     def __str__(self) -> str:
-        return f"{self.branch_id}: {self.balance} kobo held"
+        return f"{self.branch_id}: {format_naira(int(self.balance))} held"
 
 
 class HeldMovement(TimeStampedModel):
@@ -623,7 +627,7 @@ class HeldMovement(TimeStampedModel):
         ordering = ["-id"]
 
     def __str__(self) -> str:
-        return f"{self.kind} {self.amount} kobo for branch {self.branch_id}"
+        return f"{self.kind} {format_naira(int(self.amount))} for branch {self.branch_id}"
 
 
 class HeldSettlement(TimeStampedModel):
@@ -704,7 +708,10 @@ class HeldSettlement(TimeStampedModel):
         ordering = ["-id"]
 
     def __str__(self) -> str:
-        return f"Settlement {self.pk} to branch {self.branch_id}: {self.amount} kobo ({self.status})"
+        return (
+            f"Settlement {self.pk} to branch {self.branch_id}: "
+            f"{format_naira(int(self.amount))} ({self.status})"
+        )
 
 
 class HeldReconciliation(TimeStampedModel):
@@ -758,7 +765,13 @@ class HeldReconciliation(TimeStampedModel):
         ordering = ["-checked_on", "-id"]
 
     def __str__(self) -> str:
-        return f"{self.provider} {self.checked_on}: {'agrees' if self.agrees else self.difference}"
+        if self.agrees:
+            shown = "agrees"
+        elif self.difference is None:
+            shown = "no difference recorded"
+        else:
+            shown = format_naira(int(self.difference))
+        return f"{self.provider} {self.checked_on}: {shown}"
 
 
 class ProviderSweep(TimeStampedModel):
@@ -797,7 +810,7 @@ class ProviderSweep(TimeStampedModel):
         ordering = ["-settled_at", "-id"]
 
     def __str__(self) -> str:
-        return f"{self.provider} sweep {self.settlement_id}: {self.amount}"
+        return f"{self.provider} sweep {self.settlement_id}: {format_naira(int(self.amount))}"
 
 
 class WebhookEvent(TimeStampedModel):

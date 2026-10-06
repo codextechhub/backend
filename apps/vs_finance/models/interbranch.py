@@ -23,7 +23,7 @@ from ..constants import (
     RechargeBasis,
     SharedCostTreatment,
 )
-from ..money import MoneyField
+from ..money import MoneyField, format_naira
 from .core import FinanceDocument, LedgerEntity, TimeStampedModel
 from .gl import Account
 
@@ -94,7 +94,7 @@ class HeldForBranchReceipt(FinanceDocument):
         ordering = ["-receipt_date", "-id"]
 
     def __str__(self) -> str:
-        return f"{self.document_number or self.pk}: {self.amount} for branch {self.for_branch_id}"
+        return f"{self.document_number or self.pk}: {format_naira(int(self.amount))} for branch {self.for_branch_id}"
 
 
 class SharedCostRule(TimeStampedModel):
@@ -204,7 +204,7 @@ class InterBranchRecharge(FinanceDocument):
         ordering = ["-recharge_date", "-id"]
 
     def __str__(self) -> str:
-        return f"{self.document_number or self.pk}: {self.amount}"
+        return f"{self.document_number or self.pk}: {format_naira(int(self.amount))}"
 
 
 class InterBranchRechargeLine(TimeStampedModel):
@@ -371,7 +371,7 @@ class InterBranchTransfer(FinanceDocument):
         ordering = ["-transfer_date", "-id"]
 
     def __str__(self) -> str:
-        return f"{self.document_number or self.pk}: {self.kind} {self.amount}"
+        return f"{self.document_number or self.pk}: {self.kind} {format_naira(int(self.amount))}"
 
     @property
     def stage(self) -> str:

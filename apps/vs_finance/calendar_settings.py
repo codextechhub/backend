@@ -1,4 +1,4 @@
-"""Typed fiscal-calendar rollover policy for one ledger entity."""
+"""Typed fiscal-calendar policy for one ledger entity: the rollover and the close order."""
 from __future__ import annotations
 
 from django.db import transaction
@@ -12,6 +12,7 @@ from .models import FinanceCalendarSettings
 SETTING_FIELDS = (
     "next_year_mode",
     "next_year_lead_days",
+    "periods_close_in_order",
 )
 
 #: The lead window an entity may choose, in days.
@@ -32,6 +33,7 @@ def serialize_finance_calendar_settings(settings):
             FinanceCalendarSettings.NextYearMode(settings.next_year_mode).label
         ),
         "next_year_lead_days": settings.next_year_lead_days,
+        "periods_close_in_order": settings.periods_close_in_order,
         "updated_at": settings.updated_at.isoformat() if settings.pk else None,
         "updated_by": settings.updated_by.email if settings.pk and settings.updated_by else None,
     }
@@ -66,6 +68,12 @@ def _validated_values(data):
                 field: f"Use a value from {MIN_LEAD_DAYS} to {MAX_LEAD_DAYS} days.",
             })
         values[field] = value
+
+    field = "periods_close_in_order"
+    if field in data:
+        if not isinstance(data[field], bool):
+            raise ValidationError({field: "Use true or false."})
+        values[field] = data[field]
     return values
 
 

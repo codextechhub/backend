@@ -22,8 +22,13 @@ The two checks:
   been invoiced. A non-zero balance is not wrong in itself - goods received late in the
   month are legitimately unbilled - so this one is a *warning*, not a blocker. It exists
   to make the number impossible to close without seeing.
+
+Each detail line names its amounts in naira for the person closing; the figures
+themselves stay in kobo wherever they are stored.
 """
 from __future__ import annotations
+
+from vs_finance.money import format_naira
 
 
 def ap_reconciled(entity, period, branch=None):
@@ -48,7 +53,10 @@ def ap_reconciled(entity, period, branch=None):
     return ChecklistItem(
         name="ap_reconciled",
         passed=ap.is_reconciled,
-        detail=(f"sub-ledger {ap.subledger_total} vs control {ap.control_total} kobo"),
+        detail=(
+            f"Sub-ledger {format_naira(ap.subledger_total)} against control "
+            f"{format_naira(ap.control_total)}."
+        ),
     )
 
 
@@ -73,16 +81,16 @@ def grir_explained(entity, period, branch=None):
         from vs_rbac.scoping import BranchScope
         scope = BranchScope(frozenset((getattr(branch, "pk", branch),)), include_shared=False)
     balance = grir_balance(entity, branch_scope=scope)
+    if balance == 0:
+        detail = "GR/IR nets to zero."
+    elif balance > 0:
+        detail = (f"GR/IR clearing holds {format_naira(balance)} of goods received "
+                  f"and not yet invoiced.")
+    else:
+        detail = (f"GR/IR clearing holds {format_naira(-balance)} invoiced for goods "
+                  f"not yet received.")
     return ChecklistItem(
-        name="grir_explained",
-        passed=balance == 0,
-        blocking=False,
-        detail=(
-            "GR/IR nets to zero"
-            if balance == 0
-            else f"GR/IR clearing balance {balance} kobo (received not invoiced, "
-                 f"or invoiced not received)"
-        ),
+        name="grir_explained", passed=balance == 0, blocking=False, detail=detail,
     )
 
 

@@ -192,7 +192,7 @@ Those modules remain their own source of truth. A future editable settings secti
 
 ## Consumer ownership metadata
 
-Every live Finance setting now returns code-owned consumer metadata beside its effective value. The registry covers all 13 account mappings, all five document defaults, and all four banking and cash controls. Each entry names the backend service, the concrete code path, and the operational impact of changing the field.
+Every live Finance setting now returns code-owned consumer metadata beside its effective value. The registry covers all 13 account mappings, all five document defaults, and all four banking and cash controls. Each entry names, in plain English, the service that reads the field and the operational impact of changing it. It never names the module or function that reads it, because the registry is sent to the client as it stands.
 
 The registry lives in `apps/vs_finance/settings_ownership.py`. Settings endpoints return it as `consumers`; clients display it but cannot edit it. Tests compare the registry keys with the supported mapping and field specifications, so adding a setting without declaring its consumer fails the focused settings suite. The metadata is explanatory only. Runtime enforcement remains in the shared account, document, banking, reconciliation, receipt, and petty-cash services.
 

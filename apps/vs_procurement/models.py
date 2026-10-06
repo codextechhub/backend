@@ -36,7 +36,7 @@ from django.db.models.functions import Lower
 
 from vs_finance.constants import DocType, InvoicePaymentStatus, PaymentMethod
 from vs_finance.models import FinanceDocument, TimeStampedModel
-from vs_finance.money import MoneyField
+from vs_finance.money import MoneyField, format_naira
 
 from .constants import (
     ContractStatus,
@@ -1312,7 +1312,7 @@ class VendorQuotationLine(TimeStampedModel):
         indexes = [models.Index(fields=["quotation"])]
 
     def __str__(self) -> str:
-        return f"{self.description}: {self.quantity} @ {self.unit_price}"
+        return f"{self.description}: {self.quantity} @ {format_naira(int(self.unit_price))}"
 
 
 def quotation_attachment_upload_to(instance, filename: str) -> str:
@@ -1565,7 +1565,7 @@ class PurchaseOrderLine(TimeStampedModel):
         return _pct(self.invoiced_qty, self.quantity)
 
     def __str__(self) -> str:
-        return f"{self.description}: {self.quantity} @ {self.unit_price}"
+        return f"{self.description}: {self.quantity} @ {format_naira(int(self.unit_price))}"
 
 
 # --------------------------------------------------------------------------- #
@@ -1949,7 +1949,7 @@ class VendorInvoiceLine(TimeStampedModel):
         return self.net_amount + self.tax_amount
 
     def __str__(self) -> str:
-        return f"{self.description or self.expense_account_id}: {self.line_total}"
+        return f"{self.description or self.expense_account_id}: {format_naira(int(self.line_total))}"
 
 
 def vendor_invoice_attachment_path(instance, filename: str) -> str:
@@ -2158,7 +2158,7 @@ class VendorPaymentAllocation(TimeStampedModel):
         ordering = ["payment", "id"]
 
     def __str__(self) -> str:
-        return f"{self.payment_id}→{self.vendor_invoice_id}: {self.amount}"
+        return f"{self.payment_id}→{self.vendor_invoice_id}: {format_naira(int(self.amount))}"
 
 
 def vendor_payment_attachment_path(instance, filename: str) -> str:
@@ -2234,7 +2234,7 @@ class VendorAdvanceAllocationJournal(TimeStampedModel):
         ordering = ["journal_id", "id"]
 
     def __str__(self) -> str:
-        return f"{self.payment_id}→J{self.journal_id}: {self.amount}"
+        return f"{self.payment_id}→J{self.journal_id}: {format_naira(int(self.amount))}"
 
 
 # --------------------------------------------------------------------------- #
@@ -2525,7 +2525,7 @@ class VendorCreditNoteLine(TimeStampedModel):
         indexes = [models.Index(fields=["invoice_line"])]
 
     def __str__(self) -> str:
-        return f"{self.credit_note_id}: {self.net_amount}+{self.tax_amount}"
+        return f"{self.credit_note_id}: {format_naira(int(self.net_amount))} + {format_naira(int(self.tax_amount))}"
 
 
 class VendorCreditNoteAllocation(TimeStampedModel):
@@ -2561,7 +2561,7 @@ class VendorCreditNoteAllocation(TimeStampedModel):
         ordering = ["note", "id"]
 
     def __str__(self) -> str:
-        return f"{self.note_id}→{self.vendor_invoice_id}: {self.amount}"
+        return f"{self.note_id}→{self.vendor_invoice_id}: {format_naira(int(self.amount))}"
 
 
 class VendorCreditAllocationJournal(TimeStampedModel):
@@ -2586,7 +2586,7 @@ class VendorCreditAllocationJournal(TimeStampedModel):
         ordering = ["journal_id", "id"]
 
     def __str__(self) -> str:
-        return f"{self.note_id}→J{self.journal_id}: {self.amount}"
+        return f"{self.note_id}→J{self.journal_id}: {format_naira(int(self.amount))}"
 
 
 class GoodsReturn(FinanceDocument):

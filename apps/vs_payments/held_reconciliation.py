@@ -427,9 +427,11 @@ def _notify_operators(incident, row) -> int:
     """Tell the platform's health and settlement operators. Never raises.
 
     The ``health.alert_fired`` event, so the message arrives where every other
-    platform health alarm does: the observed difference against the tolerance.
+    platform health alarm does: the observed difference against the tolerance,
+    both written in naira.
     """
     try:
+        from vs_finance.money import format_naira
         from vs_notifications.notify import send_notification
         from vs_rbac.evaluator import resolve_users_with_permission
         from vs_tenants.models import Tenant
@@ -449,12 +451,12 @@ def _notify_operators(incident, row) -> int:
             event_key="health.alert_fired",
             context={
                 "incident_code": incident.code,
-                "rule_name": "Provider balance against the platform's books (kobo)",
+                "rule_name": "Provider balance against the platform's books",
                 "severity_label": incident.get_severity_display(),
                 "service_name": f"{row.provider} held balance",
-                "observed_value": abs(int(row.difference or 0)),
+                "observed_value": format_naira(abs(int(row.difference or 0))),
                 "comparator": ">",
-                "threshold": int(row.tolerance),
+                "threshold": format_naira(int(row.tolerance)),
                 "fired_at": incident.started_at.isoformat(),
             },
             recipients=list(recipients.values()),

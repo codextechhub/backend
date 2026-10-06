@@ -88,7 +88,10 @@ from .money import format_naira
 
 
 class LedgerEntitySerializer(serializers.ModelSerializer):
+    """One set of books. ``kind_label`` is the kind in words, for a screen to show."""
+
     base_currency = serializers.CharField(source="base_currency_id", read_only=True)
+    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
     # Originating school id derived from the tenant's school profile (None for
     # platform/product entities). Key kept stable for the frontend.
     source_school_id = serializers.SerializerMethodField()
@@ -96,7 +99,7 @@ class LedgerEntitySerializer(serializers.ModelSerializer):
     class Meta:
         model = LedgerEntity
         fields = [
-            "id", "code", "number_code", "name", "kind", "base_currency",
+            "id", "code", "number_code", "name", "kind", "kind_label", "base_currency",
             "is_active", "source_school_id",
         ]
 
@@ -451,7 +454,8 @@ class DirectEntryCreateSerializer(serializers.Serializer):
         credit = sum(line["credit"] for line in value)
         if debit != credit:
             raise serializers.ValidationError(
-                f"Entry must balance: debits {debit} ≠ credits {credit} (kobo).")
+                f"Entry must balance: debits {format_naira(debit)} against credits "
+                f"{format_naira(credit)}.")
         if debit == 0:
             raise serializers.ValidationError("Direct entry total cannot be zero.")
         return value
@@ -2396,6 +2400,28 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
 
     def get_acted_label(self, obj) -> str:
         return self._attribution(obj)["acted_label"]
+
+
+class SettingsHistorySerializer(FinanceAuditLogSerializer):
+    """A settings change, with each touched setting labelled and its values in words.
+
+    ``changes`` is built from the ``before`` and ``after`` this row would show
+    anyway, after any Field Access filtering, so it can never reveal more than
+    they do. The context carries ``fields`` (the family's
+    :class:`~vs_finance.settings_history.SettingField` map), ``tenant`` for date
+    formats and ``accounts`` (code to name) for account mappings; see
+    :func:`vs_finance.settings_history.settings_history`.
+    """
+
+    def to_representation(self, obj):
+        from .settings_history import describe_changes
+
+        data = super().to_representation(obj)
+        data["changes"] = describe_changes(
+            self.context.get("fields") or {}, data.get("before"), data.get("after"),
+            tenant=self.context.get("tenant"), accounts=self.context.get("accounts"),
+        )
+        return data
 
 
 # --------------------------------------------------------------------------- #

@@ -20,7 +20,7 @@ for a caller that needs a one-off check, and the registry is applied on top of i
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from django.db import transaction
 from django.utils import timezone
@@ -35,6 +35,7 @@ from .constants import (
     PeriodStatus,
 )
 from .exceptions import PeriodCloseError
+from .money import format_naira
 
 #: Checks contributed by dependent apps, in registration order. Populated at startup
 #: from each app's ``ready()``; see :func:`register_close_check`.
@@ -111,107 +112,151 @@ def _run_registered_check(check, *args, **kwargs) -> list:
 
 
 @dataclass
-# One close checklist result.
 class ChecklistItem:
-    """One pre-close check: did it pass, and a human-readable detail line."""
+    """One pre-close check: whether it passed, and a line saying why.
 
-    name: str  # Machine-readable check name.
-    passed: bool  # Whether the check succeeded.
-    blocking: bool = True  # Whether failure prevents close unless forced.
-    detail: str = ""  # Human-readable diagnostic text.
+    ``blocking`` decides whether a failure stops the close unless it is forced; a
+    non-blocking item is a warning, shown so a figure is seen before the close.
+
+    ``close_settles`` is set by a check whose outstanding work the close does itself
+    before it checks again: due depreciation, which the close posts, and deferred
+    income falling due, which it releases. It is the line the preview shows instead
+    of ``detail`` (say "6 depreciation charges are due; closing the period posts
+    them."). The preview (:func:`close_checklist` with ``preview``) then reports the
+    item as passed with ``done_by_close`` set, because pressing Close will settle it,
+    while the close itself still evaluates the item after its own steps, and fails
+    it when the caller told the close not to take that step.
+    """
+
+    name: str
+    passed: bool
+    blocking: bool = True
+    detail: str = ""
+    done_by_close: bool = False
+    close_settles: str = ""
 
 
 @dataclass
-# Collection of period close checks.
 class CloseChecklist:
-    period_id: int  # Fiscal period primary key.
-    items: list = field(default_factory=list)  # Checklist items collected during validation.
+    """The checks for one period, and whether they let it close."""
+
+    period_id: int
+    items: list = field(default_factory=list)
 
     @property
-    # Overall close readiness.
     def passed(self) -> bool:
         """True when no *blocking* check failed (non-blocking warnings are allowed)."""
-        return all(i.passed for i in self.items if i.blocking)  # Ignore non-blocking warnings.
+        return all(i.passed for i in self.items if i.blocking)
 
     @property
-    # Blocking failed checks only.
     def failures(self) -> list:
-        return [i for i in self.items if i.blocking and not i.passed]  # Used in close error details.
+        """The blocking checks that failed, as a close refusal names them."""
+        return [i for i in self.items if i.blocking and not i.passed]
 
 
-# Check whether a date falls inside a fiscal period.
-def _date_in_period(period, date) -> bool:
-    return period.start_date <= date <= period.end_date  # Inclusive period boundary comparison.
+def _plural(count, one, many):
+    return one if count == 1 else many
 
 
-# Run pre-close integrity checks.
-def close_checklist(entity, period, *, branch=None, extra_checks=None) -> CloseChecklist:
+def _as_done_by_close(item):
+    """``item`` as the preview shows it: settled by the close when the close can settle it."""
+    if item.passed or not item.close_settles:
+        return item
+    return replace(item, passed=True, done_by_close=True, detail=item.close_settles)
+
+
+def close_checklist(entity, period, *, branch=None, extra_checks=None, preview=False,
+                    soft=False) -> CloseChecklist:
     """Run the pre-close integrity checks for ``period`` and return the results.
 
     Every check registered through :func:`register_close_check` runs, plus anything
     passed in ``extra_checks`` for a one-off. ``extra_checks`` entries are zero-arg
     callables returning a :class:`ChecklistItem` (or ``(name, passed, detail)`` tuple);
     registered checks are called with ``(entity, period)``.
+
+    ``preview`` asks what pressing Close would find, which is not what the ledger
+    shows today: the close posts due depreciation and releases due deferred income
+    before it checks, so the preview reports those as done by the close
+    (:class:`ChecklistItem`), assuming the close's own steps are left on as they are
+    by default. The preview also carries ``earlier_periods_closed`` while the school
+    keeps its months in order (:func:`earlier_period_in_the_way`), for a hard close
+    or, with ``soft``, a soft close. The close itself refuses that case outright
+    rather than through the checklist, so a forced close cannot override it.
     """
-    from .models import JournalEntry, FixedAsset
-    from .reports import reconcile_ar, trial_balance
     from vs_rbac.scoping import BranchScope
+
+    from .models import DepreciationSchedule, JournalEntry
+    from .reports import reconcile_ar, trial_balance
 
     branch_id = getattr(branch, "pk", branch)
     scope = BranchScope(frozenset((branch_id,)), include_shared=False) if branch_id else None
 
-    items: list[ChecklistItem] = []  # Accumulate checklist results in display order.
+    items: list[ChecklistItem] = []
 
-    # 1. Trial balance balances (it always should - a tripwire for corruption).  # Detect GL imbalance.
+    # Trial balance balances: a tripwire for corruption, since posting keeps it so.
     tb = trial_balance(entity, period=period, scope=scope)
-    items.append(ChecklistItem(  # Add trial balance check result.
-        name="trial_balance_balanced", passed=tb.is_balanced,  # Pass only when debits equal credits.
-        detail=f"difference {tb.difference} kobo",  # Include imbalance amount for diagnostics.
+    items.append(ChecklistItem(
+        name="trial_balance_balanced", passed=tb.is_balanced,
+        detail=(
+            "Debits equal credits." if tb.is_balanced
+            else f"Debits and credits differ by {format_naira(abs(tb.difference))}."
+        ),
     ))
 
-    # 2. No draft journals dated within the period (un-posted work left behind).  # Warning-level close signal.
+    # Draft journals dated in the period: unposted work left behind, a warning.
     drafts = JournalEntry.objects.filter(
-        entity=entity, status=DocumentStatus.DRAFT,  # Scope to draft journals for this entity.
-        date__gte=period.start_date, date__lte=period.end_date,  # Restrict to period dates.
+        entity=entity, status=DocumentStatus.DRAFT,
+        date__gte=period.start_date, date__lte=period.end_date,
     )
     draft_count = drafts.filter(branch_id=branch_id).count() if branch_id else drafts.count()
-    items.append(ChecklistItem(  # Add draft journal warning result.
-        name="no_draft_journals", passed=draft_count == 0, blocking=False,  # Drafts warn but do not block.
-        detail=f"{draft_count} draft journal(s) dated in period",  # Include count for the user.
+    items.append(ChecklistItem(
+        name="no_draft_journals", passed=draft_count == 0, blocking=False,
+        detail=f"{draft_count} draft journal(s) dated in period",
     ))
 
-    # 3. AR sub-ledger reconciles to the AR control account.  # Ensure receivables tie to GL.
+    # AR sub-ledger reconciles to the AR control account.
     ar = reconcile_ar(entity, scope=scope)
-    items.append(ChecklistItem(  # Add AR reconciliation result.
-        name="ar_reconciled", passed=ar.is_reconciled,  # Pass only when subledger equals control.
-        detail=f"sub-ledger {ar.subledger_total} vs control {ar.control_total} kobo",  # Include both balances.
+    items.append(ChecklistItem(
+        name="ar_reconciled", passed=ar.is_reconciled,
+        detail=(
+            f"Sub-ledger {format_naira(ar.subledger_total)} against control "
+            f"{format_naira(ar.control_total)}."
+        ),
     ))
 
-    # 4. All due depreciation has been posted up to the period end.  # Avoid closing with missing asset expense.
-    unposted = 0  # Count due depreciation charges that are still unposted.
-    assets = FixedAsset.objects.filter(entity=entity, asset_status=AssetStatus.ACTIVE)
+    # Depreciation due by the period's end has posted; the close posts it first.
+    due = DepreciationSchedule.objects.filter(
+        asset__entity=entity, asset__asset_status=AssetStatus.ACTIVE,
+        is_posted=False, depreciation_date__lte=period.end_date,
+    )
     if branch_id:
-        assets = assets.filter(branch_id=branch_id)
-    for asset in assets:
-        unposted += asset.schedule.filter(
-            is_posted=False, depreciation_date__lte=period.end_date,  # Due by period end and not posted.
-        ).count()
-    items.append(ChecklistItem(  # Add depreciation readiness result.
-        name="depreciation_posted", passed=unposted == 0,  # Pass when no due charges remain.
-        detail=f"{unposted} due depreciation charge(s) not yet posted",  # Include unposted count.
+        due = due.filter(asset__branch_id=branch_id)
+    unposted = due.count()
+    items.append(ChecklistItem(
+        name="depreciation_posted", passed=unposted == 0,
+        detail=(
+            "Every depreciation charge due by the period's end is posted." if not unposted
+            else f"{unposted} due depreciation {_plural(unposted, 'charge is', 'charges are')} "
+                 f"not yet posted."
+        ),
+        close_settles=(
+            f"{unposted} depreciation {_plural(unposted, 'charge is', 'charges are')} due; "
+            f"closing the period posts {_plural(unposted, 'it', 'them')}."
+            if unposted else ""
+        ),
     ))
 
-    for check in (extra_checks or []):  # Run dependent-app checks injected by caller.
-        result = check() if callable(check) else check  # Support callables and precomputed results.
-        if isinstance(result, ChecklistItem):  # Native checklist items pass through unchanged.
-            items.append(result)  # Add the supplied checklist item.
+    for check in (extra_checks or []):
+        result = check() if callable(check) else check
+        if isinstance(result, ChecklistItem):
+            items.append(result)
         else:  # (name, passed, detail) tuple
-            name, passed, *rest = result  # Unpack tuple-style check result.
+            name, passed, *rest = result
             items.append(ChecklistItem(name=name, passed=passed,
-                                       detail=rest[0] if rest else ""))  # Normalize tuple to ChecklistItem.
+                                       detail=rest[0] if rest else ""))
 
-    # Checks contributed by dependent apps (procurement's AP and GR/IR reconciliations
-    # today). A check that raises fails the close rather than vanishing from it.
+    # Checks contributed by dependent apps (procurement's AP and GR/IR reconciliations,
+    # for one). A check that raises fails the close rather than vanishing from it.
     for check in _REGISTERED_CHECKS:
         if branch_id:
             if not getattr(check, "supports_branch", False):
@@ -220,7 +265,13 @@ def close_checklist(entity, period, *, branch=None, extra_checks=None) -> CloseC
             continue
         items.extend(_run_registered_check(check, entity, period))
 
-    return CloseChecklist(period_id=period.id, items=items)  # Return checklist summary.
+    if preview:
+        items = [_as_done_by_close(item) for item in items]
+        order = _close_order_item(entity, period, branch_id=branch_id, soft=soft)
+        if order is not None:
+            items.insert(0, order)
+
+    return CloseChecklist(period_id=period.id, items=items)
 
 
 @dataclass
@@ -245,6 +296,245 @@ def year_close_checklist(entity, fiscal_year, *, branch=None) -> YearCloseCheckl
         else:
             items.extend(_run_registered_check(check, entity, fiscal_year))
     return YearCloseChecklist(fiscal_year_id=fiscal_year.pk, items=items)
+
+
+# --------------------------------------------------------------------------- #
+# The order periods close and reopen in                                        #
+# --------------------------------------------------------------------------- #
+#: Statuses that count as closed in the walk. A locked month is no more closed
+#: than a closed one for this purpose: both refuse postings.
+_SHUT = (PeriodStatus.CLOSED, PeriodStatus.LOCKED)
+_SOFT_OR_SHUT = (PeriodStatus.SOFT_CLOSED,) + _SHUT
+
+
+def periods_close_in_order(entity) -> bool:
+    """Whether ``entity``'s school keeps its periods closing in date order (on by default)."""
+    from .calendar_settings import resolve_finance_calendar_settings
+
+    return resolve_finance_calendar_settings(entity).periods_close_in_order
+
+
+def period_label(period, tenant) -> str:
+    """How a bursar names ``period``: "August 2026" for a calendar month.
+
+    A period that is not a calendar month (a quarter, or a month that starts mid-way
+    through one) keeps a quarter's own name ("Q1 FY2026"), or reads as its dates.
+    """
+    import datetime
+    import re
+
+    from vs_config.display import format_date, format_month
+
+    start, end = period.start_date, period.end_date
+    if start.day == 1 and (end + datetime.timedelta(days=1)).day == 1 \
+            and (start.year, start.month) == (end.year, end.month):
+        return format_month(start, tenant, month="long")
+    if re.match(r"^\d{4}-\d{2}", period.name or ""):
+        return f"{format_date(start, tenant)} to {format_date(end, tenant)}"
+    return period.name
+
+
+def _unit(period, plural=False) -> str:
+    """"month" for a period a month long or shorter, else "period"."""
+    word = "month" if (period.end_date - period.start_date).days <= 31 else "period"
+    return word + ("s" if plural else "")
+
+
+def _walk(entity, branch_id=None):
+    """``entity``'s periods in the order walk, each annotated with ``walk_status``.
+
+    The year's closing period is left out: it opens and closes with its fiscal year
+    and is not a month anybody closes. For a branch, a period's status is the
+    branch's own row where it has one, and the tenant period's status where it has
+    none, as :func:`vs_finance.branch_close.branch_period_state` reads it.
+    """
+    from django.db.models import F, OuterRef, Subquery
+    from django.db.models.functions import Coalesce
+
+    from .models import BranchFiscalPeriod, FiscalPeriod
+
+    rows = FiscalPeriod.objects.filter(entity=entity, is_closing=False)
+    if branch_id is None:
+        return rows.annotate(walk_status=F("status"))
+    own = BranchFiscalPeriod.objects.filter(
+        period=OuterRef("pk"), branch_id=branch_id,
+    ).values("status")[:1]
+    return rows.annotate(walk_status=Coalesce(Subquery(own), F("status")))
+
+
+def earlier_period_in_the_way(entity, period, *, soft=False, branch=None):
+    """The earliest period before ``period`` that is not closed enough for it to close.
+
+    Walking a ledger entity's periods in date order, across fiscal years, statuses
+    never get more open going back in time. So a soft close needs every earlier
+    period at least SOFT_CLOSED, and a hard close (or a lock) needs every earlier
+    period CLOSED or LOCKED. The fiscal year itself need not be closed: December
+    2026 must be closed before January 2027 closes, while FY2026 stays open for the
+    auditors. ``branch`` walks that branch's own period states.
+
+    Returns ``None`` when nothing is in the way or the school has turned the order
+    off (:func:`periods_close_in_order`).
+    """
+    if not periods_close_in_order(entity):
+        return None
+    return (
+        _walk(entity, getattr(branch, "pk", branch))
+        .filter(end_date__lt=period.start_date)
+        .exclude(walk_status__in=_SOFT_OR_SHUT if soft else _SHUT)
+        .order_by("start_date", "pk")
+        .first()
+    )
+
+
+def later_period_in_the_way(entity, period, *, branch=None):
+    """The latest period after ``period`` that is not OPEN, so ``period`` cannot reopen.
+
+    Periods reopen from the latest back: reopening August while September is closed
+    would leave a closed month after an open one. The latest is named because it is
+    the one to reopen first. Returns ``None`` when every later period is OPEN or the
+    school has turned the order off.
+    """
+    if not periods_close_in_order(entity):
+        return None
+    return (
+        _walk(entity, getattr(branch, "pk", branch))
+        .filter(start_date__gt=period.end_date)
+        .exclude(walk_status=PeriodStatus.OPEN)
+        .order_by("-start_date", "-pk")
+        .first()
+    )
+
+
+def _branch_name(entity, branch):
+    """The branch to name in an order refusal, or ``None`` when naming one adds nothing.
+
+    A school with one branch never hears its branch named: the dimension recedes.
+    """
+    from vs_rbac.scoping import only_branch_id
+
+    if branch is None or only_branch_id(entity.tenant) is not None:
+        return None
+    if hasattr(branch, "name"):
+        return branch.name
+    from vs_tenants.models import Branch
+
+    return Branch.all_objects.filter(pk=branch).values_list("name", flat=True).first()
+
+
+def _close_order_message(entity, period, blocker, *, soft=False, branch=None, act="close"):
+    """The refusal a bursar reads when ``blocker`` must close before ``period`` can.
+
+    ``act`` is "close" or "lock". Names the month in the way and says why, in the
+    school's own month names, and at a branch, which branch.
+    """
+    tenant = entity.tenant
+    target, first = period_label(period, tenant), period_label(blocker, tenant)
+    units, unit = _unit(period, plural=True), _unit(period)
+    where = _branch_name(entity, branch)
+    at = f" at {where}" if where else ""
+    still_soft = blocker.walk_status == PeriodStatus.SOFT_CLOSED
+    verb = "Soft-close or close" if soft else "Close"
+    lead = f"{verb} {first}{at} first" + (": it is only soft-closed." if still_soft else ".")
+    if act == "lock":
+        can = f"{target} can be locked"
+    elif soft:
+        can = f"{target} can be soft-closed"
+    else:
+        can = f"{target} can close"
+    if where:
+        can = f"{where} can {'lock' if act == 'lock' else 'soft-close' if soft else 'close'} {target}"
+    need = "soft-closed or closed" if soft else "closed"
+    return f"{lead} {units.capitalize()} close in order, so {can} once every earlier {unit} is {need}."
+
+
+def refuse_out_of_order_close(entity, period, *, soft=False, branch=None, act="close"):
+    """Raise :class:`PeriodCloseError` when an earlier period must close first.
+
+    Called by every close and lock, forced or not: a forced close overrides the
+    checklist, never the order. Only the school's setting turns it off.
+    """
+    blocker = earlier_period_in_the_way(entity, period, soft=soft, branch=branch)
+    if blocker is not None:
+        raise PeriodCloseError(
+            _close_order_message(entity, period, blocker, soft=soft, branch=branch, act=act),
+            failures=["earlier_periods_closed"], blocking_period=blocker.pk,
+        )
+
+
+def refuse_out_of_order_reopen(entity, period, *, branch=None):
+    """Raise :class:`PeriodCloseError` when a later period must reopen first.
+
+    A LOCKED later period never reopens, so the refusal says the period can no
+    longer be reopened rather than sending the bursar to reopen it.
+    """
+    blocker = later_period_in_the_way(entity, period, branch=branch)
+    if blocker is None:
+        return
+    tenant = entity.tenant
+    target, latest = period_label(period, tenant), period_label(blocker, tenant)
+    units, unit = _unit(period, plural=True), _unit(period)
+    where = _branch_name(entity, branch)
+    at = f" at {where}" if where else ""
+    if blocker.walk_status == PeriodStatus.LOCKED:
+        message = (
+            f"{latest}{at} is locked, so {target} can no longer be reopened. "
+            f"{units.capitalize()} reopen from the latest back, and a locked {unit} never reopens."
+        )
+    else:
+        can = f"{where} can reopen {target}" if where else f"{target} can reopen"
+        message = (
+            f"Reopen {latest}{at} first. {units.capitalize()} reopen from the latest back, "
+            f"so {can} once every later {unit} is open."
+        )
+    raise PeriodCloseError(message, failures=["later_periods_open"], blocking_period=blocker.pk)
+
+
+def _close_order_item(entity, period, *, branch_id=None, soft=False):
+    """The preview's ``earlier_periods_closed`` item, or ``None`` when the order is off.
+
+    A blocking item, so the preview says before Close is pressed what the close
+    would refuse. When the month in the way is only soft-closed and this period is
+    still open, a soft close would go ahead, and the item says so.
+    """
+    if not periods_close_in_order(entity):
+        return None
+    blocker = earlier_period_in_the_way(entity, period, soft=soft, branch=branch_id)
+    if blocker is None:
+        return ChecklistItem(
+            name="earlier_periods_closed", passed=True,
+            detail=f"Every earlier {_unit(period)} is {'soft-closed or closed' if soft else 'closed'}.",
+        )
+    detail = _close_order_message(entity, period, blocker, soft=soft, branch=branch_id)
+    if (not soft and blocker.walk_status == PeriodStatus.SOFT_CLOSED
+            and period.status == PeriodStatus.OPEN):
+        detail += f" {period_label(period, entity.tenant)} can be soft-closed now."
+    return ChecklistItem(name="earlier_periods_closed", passed=False, detail=detail)
+
+
+def lock_periods_in_date_order(entity, period, *, before):
+    """Lock the periods before (or after) ``period``, oldest first, until commit.
+
+    Two bursars closing August and September at the same moment, or one closing
+    September while another reopens August, could otherwise each read the other's
+    month in its old state and leave the books out of order. Every writer of a
+    period's status holds FOR UPDATE on that period's row, so a close takes
+    FOR NO KEY UPDATE on every earlier period and a reopen on every later one before
+    reading their statuses: whoever comes second waits for the first to commit and
+    then reads what it wrote. The rows are taken in date order, with the closer's
+    own row last and the reopener's first, so two of them always queue in the same
+    order and never deadlock. NO KEY UPDATE does not conflict with the KEY SHARE a
+    posting takes (:func:`vs_finance.posting.read_key_shared`), so postings into
+    those months carry on. The year's closing period takes no part.
+    """
+    from .models import FiscalPeriod
+
+    rows = FiscalPeriod.objects.filter(entity=entity, is_closing=False)
+    rows = (
+        rows.filter(end_date__lt=period.start_date) if before
+        else rows.filter(start_date__gt=period.end_date)
+    )
+    list(rows.order_by("start_date", "pk").select_for_update(no_key=True)
+         .values_list("pk", flat=True))
 
 
 @transaction.atomic
@@ -363,12 +653,19 @@ def close_period(entity, period, *, actor_user=None, soft=False, force=False,
     forced request without one is refused before depreciation posts anything. The
     reason lands on the PERIOD_CLOSED audit row beside the checklist it overrode.
 
+    While the school keeps its periods in order (:func:`periods_close_in_order`),
+    every earlier period must be closed first, at least soft-closed for a soft close
+    (:func:`refuse_out_of_order_close`). That refusal comes before anything posts,
+    and ``force`` does not override it.
+
     The period's row is locked FOR UPDATE for the whole close, and its status re-read
     under the lock. A posting takes KEY SHARE on the same row in its guard
     (:func:`vs_finance.posting.ensure_period_open`), so a posting in flight finishes
     before the month closes and a later one sees it closed. The year's row is
     share-locked first, the order the posting guard and the year close both use, so
-    a month close and a year close cannot deadlock on each other.
+    a month close and a year close cannot deadlock on each other. Between the two,
+    the earlier periods are locked oldest first (:func:`lock_periods_in_date_order`),
+    so a reopen of one of them cannot slip in between the order check and the close.
     """
     from .models import FiscalPeriod, FiscalYear
     from .posting import read_key_shared
@@ -380,12 +677,17 @@ def close_period(entity, period, *, actor_user=None, soft=False, force=False,
     if force:
         reason = require_reason(reason, act=f"force-close period '{period}'")
     read_key_shared(FiscalYear, period.fiscal_year_id, ("status",))  # Year before month.
+    in_order = periods_close_in_order(entity)
+    if in_order:
+        lock_periods_in_date_order(entity, period, before=True)
     FiscalPeriod.objects.select_for_update().only("pk").get(pk=period.pk)
     period.refresh_from_db(fields=["status"])
-    if period.status in (PeriodStatus.CLOSED, PeriodStatus.LOCKED):  # Already sealed periods cannot be closed again.
+    if period.status in (PeriodStatus.CLOSED, PeriodStatus.LOCKED):
         raise PeriodCloseError(
             f"Period '{period}' is already '{period.status}'.",
         )
+    if in_order:
+        refuse_out_of_order_close(entity, period, soft=soft)
 
     if run_depreciation:  # Close can auto-post due depreciation.
         run_period_depreciation(entity, period, actor_user=actor_user)  # Post depreciation before checklist.
@@ -428,9 +730,14 @@ def reopen_period(entity, period, *, actor_user=None, reason=None):
     would sit outside that result for good; the year has to be reopened first
     (:func:`reopen_fiscal_year`), which a LOCKED year never is.
 
+    While the school keeps its periods in order (:func:`periods_close_in_order`),
+    every later period must be OPEN first (:func:`refuse_out_of_order_reopen`).
+
     The year's row is share-locked and the period's locked FOR UPDATE, year first as
     every close and posting takes them, so a year close in flight finishes before
-    this reads the year's status.
+    this reads the year's status. The later periods are locked after this one,
+    oldest first (:func:`lock_periods_in_date_order`), so a close of one of them
+    cannot slip in between the order check and the reopen.
     """
     from .models import FiscalPeriod, FiscalYear
     from .posting import read_key_shared
@@ -441,6 +748,9 @@ def reopen_period(entity, period, *, actor_user=None, reason=None):
     reason = require_reason(reason, act=f"reopen period '{period}'")
     year = read_key_shared(FiscalYear, period.fiscal_year_id, ("year", "status"))
     FiscalPeriod.objects.select_for_update().only("pk").get(pk=period.pk)
+    in_order = periods_close_in_order(entity)
+    if in_order:
+        lock_periods_in_date_order(entity, period, before=False)
     period.refresh_from_db(fields=["status"])
     if year is not None and year[1] == PeriodStatus.LOCKED:
         raise PeriodCloseError(
@@ -454,6 +764,8 @@ def reopen_period(entity, period, *, actor_user=None, reason=None):
         raise PeriodCloseError(f"Period '{period}' is LOCKED and cannot be re-opened.")
     if period.status == PeriodStatus.OPEN:  # Open periods do not need reopening.
         raise PeriodCloseError(f"Period '{period}' is already open.")
+    if in_order:
+        refuse_out_of_order_reopen(entity, period)
     period.status = PeriodStatus.OPEN  # Restore open lifecycle status.
     period.closed_at = None  # Clear close timestamp.
     period.closed_by = None  # Clear close actor.
@@ -471,11 +783,23 @@ def reopen_period(entity, period, *, actor_user=None, reason=None):
 @transaction.atomic
 # Permanently lock a closed fiscal period.
 def lock_period(entity, period, *, actor_user=None):
-    """Permanently seal a CLOSED period (e.g. after statutory filing). Irreversible."""
+    """Permanently seal a CLOSED period (e.g. after statutory filing). Irreversible.
+
+    While the school keeps its periods in order, every earlier period must be
+    CLOSED or LOCKED, as for a hard close; they need not be LOCKED themselves.
+    Locking September while August is merely CLOSED keeps the order, because the
+    walk counts both as closed, and it leaves August where the reopen rule already
+    holds it: August reopens only once September is OPEN, which a LOCKED September
+    never is again. Requiring the earlier periods locked as well would force every
+    lock to run oldest first for nothing. No neighbouring rows are locked here: this
+    period is already CLOSED, and an earlier period cannot reopen while a later one
+    is not OPEN, so nothing the check reads can change under it.
+    """
     if period.status != PeriodStatus.CLOSED:  # Only fully closed periods may be locked.
         raise PeriodCloseError(
             f"Only a CLOSED period can be locked; '{period}' is '{period.status}'.",
         )
+    refuse_out_of_order_close(entity, period, act="lock")
     if (
         period.end_date == period.fiscal_year.end_date
         and period.fiscal_year.status == PeriodStatus.OPEN
@@ -550,6 +874,41 @@ def _closing_buckets(entity, fiscal_year):
     return closing
 
 
+def _refuse_year_close_out_of_order(entity, fiscal_year, *, branch_id=None):
+    """Refuse a year close whose hard close of soft-closed months would break the order.
+
+    Only a year with a SOFT_CLOSED month to hard-close can break it, and only when a
+    period before the year is not yet CLOSED or LOCKED. ``branch_id`` reads that
+    branch's own period states.
+    """
+    from .models import FiscalPeriod
+
+    months = FiscalPeriod.objects.filter(fiscal_year=fiscal_year, is_closing=False)
+    first = months.order_by("start_date").first()
+    if first is None:
+        return
+    if branch_id is None:
+        soft = months.filter(status=PeriodStatus.SOFT_CLOSED).exists()
+    else:
+        soft = _walk(entity, branch_id).filter(
+            fiscal_year=fiscal_year, walk_status=PeriodStatus.SOFT_CLOSED,
+        ).exists()
+    if not soft:
+        return
+    lock_periods_in_date_order(entity, first, before=True)
+    blocker = earlier_period_in_the_way(entity, first, branch=branch_id)
+    if blocker is None:
+        return
+    where = _branch_name(entity, branch_id)
+    raise PeriodCloseError(
+        f"Close {period_label(blocker, entity.tenant)}{f' at {where}' if where else ''} "
+        f"first. {_unit(first, plural=True).capitalize()} close in order, and closing "
+        f"FY{fiscal_year.year} closes its soft-closed {_unit(first, plural=True)}, so "
+        f"every {_unit(first)} before the year must be closed first.",
+        failures=["earlier_periods_closed"], blocking_period=blocker.pk,
+    )
+
+
 def _lock_fiscal_year(fiscal_year):
     """Take the year's row lock and bring ``fiscal_year`` up to date under it.
 
@@ -607,7 +966,14 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
       because their year is closed.
     * Every SOFT_CLOSED month of the year is hard-closed as part of the close. A
       soft-closed month still takes privileged postings such as depreciation, and
-      nothing may post into a closed year.
+      nothing may post into a closed year. While the school keeps its periods in
+      order (:func:`periods_close_in_order`), that hard close obeys the order like
+      any other: every period before the year must already be CLOSED or LOCKED, or
+      the close is refused naming the earliest one in the way, forced or not. The
+      year's own months already step down from closed to soft-closed to open when
+      the order is kept, so hard-closing the soft ones keeps it. The earlier periods
+      are locked oldest first after the year's row
+      (:func:`lock_periods_in_date_order`).
     * Every registered year-close check runs first (:func:`register_year_close_check`),
       such as depreciation dated in the year that has not posted. A blocking failure
       refuses the close unless it is forced with a reason; a forced close records the
@@ -694,6 +1060,9 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
             raise PeriodCloseError(
                 f"{open_count} period(s) in FY{fiscal_year.year} are still OPEN; "
                 f"close or soft-close them before closing the year (or pass force).")
+
+    if periods_close_in_order(entity):
+        _refuse_year_close_out_of_order(entity, fiscal_year, branch_id=branch_id)
 
     checklist = year_close_checklist(entity, fiscal_year, branch=branch_id)
     if not checklist.passed and not forced:  # Blocking failures stop the close unless forced.
@@ -812,7 +1181,8 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
         entity=entity, action=FinanceAuditAction.FISCAL_YEAR_CLOSED,
         actor_user=actor_user, target=fiscal_year, target_type="FiscalYear",
         message=(
-            f"Closed FY{fiscal_year.year}: net {net_income} kobo rolled to retained earnings."
+            f"Closed FY{fiscal_year.year}: {'profit' if net_income >= 0 else 'loss'} of "
+            f"{format_naira(abs(net_income))} rolled to retained earnings."
             if journals else f"Closed FY{fiscal_year.year} (no P&L activity)."
         ),
         journal_ids=[j.pk for j in journals], net_by_branch=net_by_branch,

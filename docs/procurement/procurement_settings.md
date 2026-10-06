@@ -229,9 +229,9 @@ This keeps one source of truth for each policy and avoids two screens offering c
 
 ## Consumer ownership metadata
 
-All 13 Procurement policy fields now have code-owned consumer metadata in `apps/vs_procurement/settings_ownership.py`. Each record identifies the backend service, concrete code path, and business impact for the payment-term, delivery, vendor KYC, requisition, receipt, RFQ, contract, competitive-bidding, and invoice-matching setting it describes.
+All 13 Procurement policy fields now have code-owned consumer metadata in `apps/vs_procurement/settings_ownership.py`. Each record names, in plain English, the service that reads the setting and the business impact of changing it for the payment-term, delivery, vendor KYC, requisition, receipt, RFQ, contract, competitive-bidding, and invoice-matching setting it describes.
 
-Both GET and PATCH responses include the complete `consumers` map. The frontend renders these labels next to the matching control, but clients cannot submit or alter ownership claims. Focused tests compare the registry with `SETTING_FIELDS`, which prevents a future field from appearing as a working setting without documented runtime ownership.
+Both GET and PATCH responses include the complete `consumers` map. The frontend renders these labels next to the matching control, but clients cannot submit or alter ownership claims. The map never names the module or function that reads a setting: it is sent to every client that can open the screen, and a code path would describe the server's layout to them. Focused tests compare the registry with `SETTING_FIELDS`, which prevents a future field from appearing as a working setting without documented runtime ownership.
 
 ## API contract
 

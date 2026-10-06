@@ -19,7 +19,7 @@ from ..constants import (
     PeriodStatus,
     TaxTreatment,
 )
-from ..money import MoneyField
+from ..money import MoneyField, format_naira
 from .core import TimeStampedModel, LedgerEntity, FinanceDocument
 
 # ---------------------------------------------------------------------------
@@ -642,7 +642,10 @@ class AccountBalance(TimeStampedModel):
         ordering = ["period", "account"]
 
     def __str__(self) -> str:
-        return f"{self.account_id}@{self.period_id}: Dr {self.debit_total} Cr {self.credit_total}"
+        return (
+            f"{self.account_id}@{self.period_id}: Dr {format_naira(int(self.debit_total))} "
+            f"Cr {format_naira(int(self.credit_total))}"
+        )
 
     @property
     def net_kobo(self) -> int:

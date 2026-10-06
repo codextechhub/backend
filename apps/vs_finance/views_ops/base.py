@@ -410,7 +410,7 @@ def _money(value, field):
     try:  # int() rejects non-integer strings and missing values.
         amount = int(value)  # Normalize to integer kobo.
     except (TypeError, ValueError):  # Invalid money input.
-        raise ValidationError({field: "Expected an integer amount in kobo."})
+        raise ValidationError({field: "Enter the amount as a whole number."})
     if amount < 0:  # Non-negative money parser rejects negative amounts.
         raise ValidationError({field: "Amount cannot be negative."})
     return amount  # Return integer kobo.
@@ -422,7 +422,7 @@ def _signed_money(value, field):
     try:  # Signed amounts still must be integers.
         return int(value)  # Return signed integer kobo.
     except (TypeError, ValueError):  # Invalid signed money input.
-        raise ValidationError({field: "Expected an integer amount in kobo (may be negative)."})
+        raise ValidationError({field: "Enter the amount as a whole number, negative for money out."})
 
 
 # Extract and validate required line array.

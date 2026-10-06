@@ -21,7 +21,7 @@ from django.conf import settings
 from django.db import models
 
 from ..constants import DocType, PayerPaymentSplit, PaymentMethod
-from ..money import MoneyField
+from ..money import MoneyField, format_naira
 from .core import FinanceDocument, LedgerEntity, TimeStampedModel
 
 __all__ = ["PayerLink", "PayerPayment", "PayerPaymentShare"]
@@ -139,7 +139,7 @@ class PayerPayment(FinanceDocument):
         ordering = ["-payment_date", "-id"]
 
     def __str__(self) -> str:
-        return f"{self.document_number or self.pk}: {self.amount} from {self.payer_id}"
+        return f"{self.document_number or self.pk}: {format_naira(int(self.amount))} from {self.payer_id}"
 
 
 class PayerPaymentShare(TimeStampedModel):
@@ -196,4 +196,7 @@ class PayerPaymentShare(TimeStampedModel):
         ordering = ["payer_payment", "id"]
 
     def __str__(self) -> str:
-        return f"{self.payer_payment_id}: {self.amount} to {self.customer_id} at {self.branch_id}"
+        return (
+            f"{self.payer_payment_id}: {format_naira(int(self.amount))} to {self.customer_id} "
+            f"at {self.branch_id}"
+        )

@@ -151,6 +151,9 @@ class StaffRolesView(StaffViewMixin, APIView):
         is exactly the fact the restriction exists to withhold, so a caller
         without the key gets the key absent from the payload entirely.
 
+        Each row names its permission by ``permission_label``, the readable
+        wording; ``permission`` is the key, kept for matching.
+
         The same absence answers a branch-bound reader looking at somebody
         posted only to other branches, who may reach the profile through the
         school's profile policy but not that person's exceptions
@@ -172,6 +175,7 @@ class StaffRolesView(StaffViewMixin, APIView):
         return [
             {
                 "permission": row.permission.key,
+                "permission_label": row.permission.readable_label,
                 "mode": row.mode,
                 "reason": getattr(row, "reason", "") or "",
                 "expires_at": getattr(row, "expires_at", None),

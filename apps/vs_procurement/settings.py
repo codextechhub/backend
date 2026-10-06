@@ -6,6 +6,7 @@ from rest_framework.exceptions import ValidationError
 
 from vs_finance.audit import record
 from vs_finance.constants import FinanceAuditAction
+from vs_finance.settings_history import SettingField
 
 from .constants import PaymentTerms, VendorPurchaseKycRequirement
 from .models import ProcurementSettings
@@ -27,6 +28,33 @@ SETTING_FIELDS = (
     "minimum_submitted_quotations_before_award",
     "non_po_spend_limit_pct",
 )
+
+#: Each setting's label and how its value reads in the settings history
+#: (:mod:`vs_finance.settings_history`). Every field of :data:`SETTING_FIELDS`
+#: has one.
+HISTORY_FIELDS = {
+    "default_payment_terms": SettingField(
+        "Default payment terms", "choice", choices=PaymentTerms),
+    "default_delivery_address": SettingField("Default delivery address", empty="Blank"),
+    "quantity_tolerance_bps": SettingField("Quantity tolerance", "bps"),
+    "price_tolerance_bps": SettingField("Price tolerance", "bps"),
+    "allow_non_po_invoices": SettingField("Allow invoices without a purchase order", "bool"),
+    "vendor_purchase_kyc_requirement": SettingField(
+        "Vendor checks needed before buying", "choice",
+        choices=VendorPurchaseKycRequirement),
+    "require_purchase_order_for_receipts": SettingField(
+        "Require a purchase order for goods receipts", "bool"),
+    "default_requisition_lead_days": SettingField("Default requisition lead time", "days"),
+    "contract_renewal_notice_days": SettingField("Contract renewal notice", "days"),
+    "default_rfq_response_days": SettingField("Time vendors have to quote", "days"),
+    "rfq_closing_soon_days": SettingField("Quotation request closing soon", "days"),
+    "minimum_rfq_invited_vendors": SettingField(
+        "Fewest vendors invited to quote", "count", unit="vendor"),
+    "minimum_submitted_quotations_before_award": SettingField(
+        "Fewest quotations before an award", "count", unit="quotation"),
+    "non_po_spend_limit_pct": SettingField(
+        "Spend allowed without a purchase order", "percent"),
+}
 
 
 def resolve_procurement_settings(entity):

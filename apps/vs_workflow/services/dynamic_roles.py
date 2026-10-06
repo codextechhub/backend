@@ -74,7 +74,7 @@ def _check_value(field: ConditionField, value, tenant, where: str):
         if kind == ConditionFieldType.MONEY:
             if value < 0 or not float(value).is_integer():
                 raise TemplateInvalidError(
-                    f"{where}: an amount is whole kobo and cannot be negative.")
+                    f"{where}: {field.label} must be a whole number and cannot be negative.")
             return int(value)
         return value
     if kind == ConditionFieldType.TEXT:

@@ -957,7 +957,7 @@ class TenantRoleTemplateDetailView(TenantScopedRBACMixin, RetrieveModelMixin, Up
             TenantRoleTemplate.objects.filter(tenant=tenant)
             .select_related("created_by", "tenant", "branch")
             .prefetch_related(
-                "role_permissions__permission",
+                "role_permissions__permission__resource",
                 "role_groups__group",
                 "additional_branches",
             )

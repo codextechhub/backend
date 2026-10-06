@@ -364,6 +364,12 @@ class TenantRoleTemplateViewTests(TestCase):
             [row["permission_key"] for row in resp.data["data"]["pending_additions"]],
             ["payments.payout.create"],
         )
+        # The waiting permission is named in words, not by its dotted key.
+        self.assertEqual(
+            [row["permission_label"] for row in resp.data["data"]["pending_additions"]],
+            [Permission.objects.get(key="payments.payout.create").readable_label],
+        )
+        self.assertNotIn(".", resp.data["data"]["pending_additions"][0]["permission_label"])
 
     def test_create_role_without_a_restricted_key_raises_no_request(self):
         make_permission("students.profile.view")

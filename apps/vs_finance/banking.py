@@ -34,6 +34,7 @@ from .constants import (
     NormalBalance,
 )
 from .exceptions import BankReconciliationError, PeriodClosedError, PostingError
+from .money import format_naira
 from .posting import (
     _period_accepts_posting,
     post_journal,
@@ -458,7 +459,7 @@ def complete_reconciliation(bank_account, *, actor_user=None):
         entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
         actor_user=actor_user, target=bank_account,
         message=f"Reconciliation completed on {bank_account.name} "
-                f"(diff {recon.difference} kobo).",
+                f"(difference {format_naira(recon.difference)}).",
         bank_account_id=bank_account.id, difference=recon.difference,
     )
     return recon  # Return the completed reconciliation snapshot.
@@ -477,8 +478,8 @@ def match_line(statement_line, journal_line, *, actor_user=None):
         raise BankReconciliationError("Only a posted journal line can be matched.")
     if _signed_gl(journal_line) != statement_line.amount:  # Amounts must match exactly in signed form.
         raise BankReconciliationError(
-            f"Amount mismatch: statement {statement_line.amount} kobo vs journal line "
-            f"{_signed_gl(journal_line)} kobo.",
+            f"Amount mismatch: statement {format_naira(statement_line.amount)} vs journal line "
+            f"{format_naira(_signed_gl(journal_line))}.",
         )
     statement_line.matched_line = journal_line  # Link the manual match target.
     statement_line.status = BankLineStatus.MATCHED  # Mark the line reconciled.
@@ -533,8 +534,8 @@ def group_match(statement_line, journal_lines, *, actor_user=None):
 
     if total != statement_line.amount:  # The group must sum exactly to the statement amount.
         raise BankReconciliationError(
-            f"Group total {total} kobo does not equal the statement line "
-            f"{statement_line.amount} kobo.",
+            f"Group total {format_naira(total)} does not equal the statement line "
+            f"{format_naira(statement_line.amount)}.",
         )
 
     BankLineMatch.objects.bulk_create(
@@ -601,8 +602,8 @@ def split_match(journal_line, statement_lines, *, actor_user=None):
 
     if total != _signed_gl(journal_line):  # The split must equal the journal line exactly.
         raise BankReconciliationError(
-            f"Statement lines sum to {total} kobo, not the journal line's "
-            f"{_signed_gl(journal_line)} kobo.",
+            f"Statement lines sum to {format_naira(total)}, not the journal line's "
+            f"{format_naira(_signed_gl(journal_line))}.",
         )
 
     BankLineMatch.objects.bulk_create(
@@ -840,7 +841,7 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
         entity=entity, action=FinanceAuditAction.BANK_CHARGE_POSTED,
         actor_user=actor_user, target=bank_account,
         message=(
-            f"Booked bank adjustment {magnitude} kobo on {bank_account.name}"
+            f"Booked bank adjustment {format_naira(magnitude)} on {bank_account.name}"
             + (
                 f" on {format_date(book_date, entity.tenant)} (bank value date "
                 f"{format_date(statement_line.txn_date, entity.tenant)} "
@@ -1009,7 +1010,7 @@ def _post_bank_transaction_atomic(txn, *, actor_user=None):
         entity=txn.entity, action=FinanceAuditAction.BANK_TRANSACTION_POSTED,
         actor_user=actor_user, target=txn,
         message=(
-            f"{'Received' if money_in else 'Paid'} {txn.amount} kobo "
+            f"{'Received' if money_in else 'Paid'} {format_naira(txn.amount)} "
             f"{'into' if money_in else 'out of'} {bank.name}: {txn.narration}"
         ),
         journal_id=entry.pk, amount=txn.amount, direction=txn.direction,
@@ -1180,7 +1181,7 @@ def _post_bank_transfer_atomic(transfer, *, actor_user=None):
     record(
         entity=transfer.entity, action=FinanceAuditAction.BANK_TRANSFER_POSTED,
         actor_user=actor_user, target=transfer,
-        message=f"Moved {transfer.amount} kobo from {source.name} to {target.name}.",
+        message=f"Moved {format_naira(transfer.amount)} from {source.name} to {target.name}.",
         journal_id=entry.pk, amount=transfer.amount,
         from_account_id=source.pk, to_account_id=target.pk,
     )

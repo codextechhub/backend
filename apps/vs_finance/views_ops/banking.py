@@ -1507,7 +1507,7 @@ def _transaction_fields(request, entity, body, *, editing=False) -> dict:
     if not editing or "amount" in body:
         amount = body.get("amount")
         if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
-            raise ValidationError({"amount": "Expected a positive whole amount in kobo."})
+            raise ValidationError({"amount": "Amount must be a whole number greater than zero."})
         fields["amount"] = amount
     if not editing or "narration" in body:
         narration = str(body.get("narration") or "").strip()
@@ -1753,7 +1753,7 @@ def _transfer_fields(request, entity, body, *, current=None) -> dict:
     if current is None or "amount" in body:
         amount = body.get("amount")
         if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
-            raise ValidationError({"amount": "Expected a positive whole amount in kobo."})
+            raise ValidationError({"amount": "Amount must be a whole number greater than zero."})
         fields["amount"] = amount
     if current is None or "narration" in body:
         narration = str(body.get("narration") or "").strip()

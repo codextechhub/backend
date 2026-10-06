@@ -395,8 +395,11 @@ class FinanceCalendarSettingsAPITests(TestCase):
         values = response.data["data"]["settings"]
         self.assertEqual(values["next_year_mode"], "AUTO_OPEN")
         self.assertEqual(values["next_year_lead_days"], 60)
+        self.assertIs(values["periods_close_in_order"], True)
         self.assertEqual(set(response.data["data"]["consumers"]), set(CALENDAR_SETTING_CONSUMERS))
         self.assertEqual(set(CALENDAR_SETTING_CONSUMERS), set(CALENDAR_SETTING_FIELDS))
+        for entry in response.data["data"]["consumers"].values():
+            self.assertEqual(set(entry), {"service", "impact"})
         self.assertFalse(FinanceCalendarSettings.objects.filter(entity=self.entity).exists())
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
@@ -417,8 +420,25 @@ class FinanceCalendarSettingsAPITests(TestCase):
         self.assertEqual(response.data["data"]["history"][0]["id"], audit.id)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_turning_the_close_order_off_is_audited(self, _permission):
+        response = self.client.patch(self.url, {"periods_close_in_order": False}, format="json")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIs(response.data["data"]["settings"]["periods_close_in_order"], False)
+        self.assertFalse(
+            FinanceCalendarSettings.objects.get(entity=self.entity).periods_close_in_order,
+        )
+        audit = FinanceAuditLog.objects.get(
+            action=FinanceAuditAction.FINANCE_CALENDAR_SETTINGS_UPDATED,
+        )
+        self.assertEqual(audit.before, {"periods_close_in_order": True})
+        self.assertEqual(audit.after, {"periods_close_in_order": False})
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_out_of_range_and_unknown_values_are_refused(self, _permission):
         for body in (
+            {"periods_close_in_order": "no"},
+            {"periods_close_in_order": 0},
             {"next_year_lead_days": 3},
             {"next_year_lead_days": 400},
             {"next_year_lead_days": True},

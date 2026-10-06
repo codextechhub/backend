@@ -36,6 +36,7 @@ from .constants import (
     JournalSource,
 )
 from .exceptions import FinanceError, PostingError
+from .money import format_naira
 
 
 def _rate_for(days_overdue: int, bands) -> int:
@@ -233,7 +234,7 @@ def _post_provision_atomic(provision, *, actor_user=None):
         entity=entity, action=FinanceAuditAction.PROVISION_POSTED,
         actor_user=actor_user, target=provision,
         message=(f"Posted doubtful-debt provision {provision.document_number}: allowance "
-                 f"required {provision.required_total} kobo."),
+                 f"required {format_naira(provision.required_total)}."),
         as_of=str(provision.as_of), required=provision.required_total,
         lines=[{"branch_id": line.branch_id, "required": line.required,
                 "current": line.current, "movement": line.movement,

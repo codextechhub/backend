@@ -43,6 +43,7 @@ from .constants import (
     StatutoryType,
 )
 from .exceptions import FinanceError, PayrollBranchUnassignedError, PayrollError
+from .money import format_naira
 from .payroll_statutory import ItemAccounts
 from .posting import post_journal, resolve_period
 
@@ -858,7 +859,7 @@ def _post_payroll_atomic(run, *, actor_user=None):
             actor_user=actor_user, target=run, branch=share.branch_id,
             message=(
                 f"Accrued {names.get(share.branch_id, '')}'s payroll: "
-                f"gross {share.gross_total}, net {share.net_total} kobo."
+                f"gross {format_naira(share.gross_total)}, net {format_naira(share.net_total)}."
             ),
             journal_id=share.journal_id, gross=share.gross_total, paye=share.paye_total,
             pension=share.pension_total, other_deductions=share.other_deductions_total,
@@ -868,7 +869,10 @@ def _post_payroll_atomic(run, *, actor_user=None):
         record(
             entity=run.entity, action=FinanceAuditAction.PAYROLL_POSTED,
             actor_user=actor_user, target=run, branch=run.journal.branch_id,
-            message=f"Accrued payroll: gross {run.gross_total}, net {run.net_total} kobo.",
+            message=(
+                f"Accrued payroll: gross {format_naira(run.gross_total)}, "
+                f"net {format_naira(run.net_total)}."
+            ),
             journal_id=run.journal_id, gross=run.gross_total, paye=run.paye_total,
             pension=run.pension_total, other_deductions=run.other_deductions_total,
             employer_contributions=run.employer_contributions_total, net=run.net_total,
@@ -988,7 +992,7 @@ def _pay_payroll_atomic(run, *, bank_account=None, bank_accounts=None, pay_date=
     record(  # Audit successful disbursement.
         entity=run.entity, action=FinanceAuditAction.PAYROLL_PAID,  # Audit action.
         actor_user=actor_user, target=run, branch=branch_id,  # The journal's branch.
-        message=f"Disbursed net wages {run.net_total} kobo from {bank_account.name}.",  # Summary.
+        message=f"Disbursed net wages {format_naira(run.net_total)} from {bank_account.name}.",  # Summary.
         journal_id=entry.pk, net=run.net_total,  # Structured metadata.
     )
     from .payslips import issue_payslips
@@ -1044,7 +1048,7 @@ def _pay_branch_shares(run, bank_accounts, *, pay_date, actor_user):
             entity=run.entity, action=FinanceAuditAction.PAYROLL_PAID,
             actor_user=actor_user, target=run, branch=share.branch_id,
             message=(
-                f"Disbursed {share.branch.name}'s net wages {share.net_total} kobo "
+                f"Disbursed {share.branch.name}'s net wages {format_naira(share.net_total)} "
                 f"from {bank.name}."
             ),
             journal_id=entry.pk, net=share.net_total, branch_id=share.branch_id,

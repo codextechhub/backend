@@ -129,7 +129,14 @@ def parked_stage(instance):
     )
 
 
-def stage_requirement(stage) -> str:
+def _role_name(role_key: str, tenant) -> str:
+    """The name of *tenant*'s role with *role_key*, or ``""`` when it holds none."""
+    from vs_workflow.conditions.describe import role_names
+
+    return role_names(tenant).get(role_key, "") if role_key else ""
+
+
+def stage_requirement(stage, tenant=None) -> str:
     """One plain sentence naming what would give this stage an approver.
 
     The dialog has to tell somebody how to fix the situation properly, and "no approver"
@@ -141,12 +148,20 @@ def stage_requirement(stage) -> str:
     string, because the fallback is what a client renders when the approver model
     changes underneath it. A vague sentence is recoverable; a blank space where the
     instruction should be is not.
+
+    A role is named as *tenant* calls it (the document's tenant; the stage's
+    template's when not given), because a shared template names its role by key
+    and each tenant holds its own copy. A role the tenant does not hold reads as
+    "the role this step approves from", never as its key.
     """
     source = stage.approver_source
     if source == ApproverSource.ROLE:
         role_key = approvers_service.stage_role_key(stage)
         if role_key:
-            return f"assign someone to the {role_key} role"
+            name = _role_name(role_key, tenant if tenant is not None else stage.template.tenant)
+            if name:
+                return f"assign someone to the {name} role"
+            return "assign someone to the role this step approves from"
     if source == ApproverSource.WORKFLOW_GROUP and stage.approver_group_id:
         return (f"add someone to the {stage.approver_group.name} approver group")
     if source == ApproverSource.DYNAMIC_ROLE:
@@ -204,6 +219,10 @@ def describe_park(instance) -> dict:
     if stage_instance is None:
         return {"parked": False, "can_continue_without_approval": can_continue}
     stage = stage_instance.stage
+    role_key = (
+        approvers_service.stage_role_key(stage)
+        if stage.approver_source == ApproverSource.ROLE else ""
+    )
     return {
         "parked": True,
         "stage_code": stage.code,
@@ -212,16 +231,15 @@ def describe_park(instance) -> dict:
         # Each is blank unless this stage really resolves that way; see the
         # docstring. They are what a client acts on - linking straight to the role or
         # the group to fill - where ``requirement`` is only the sentence to show.
-        "role_key": (
-            approvers_service.stage_role_key(stage)
-            if stage.approver_source == ApproverSource.ROLE else ""
-        ),
+        "role_key": role_key,
+        # The role's name in the document's tenant, for showing in place of the key.
+        "role_name": _role_name(role_key, instance.tenant) if role_key else "",
         "approver_group_code": (
             stage.approver_group.code
             if stage.approver_source == ApproverSource.WORKFLOW_GROUP
             and stage.approver_group_id else ""
         ),
-        "requirement": stage_requirement(stage),
+        "requirement": stage_requirement(stage, instance.tenant),
         "document_type": instance.document_type,
         "can_continue_without_approval": can_continue,
     }
@@ -272,7 +290,7 @@ def release_parked_stage(instance, *, actor_user, reason=None):
             # relying on a key that may stop being the deciding factor.
             "approver_source": stage_instance.stage.approver_source,
             "role_key": approvers_service.stage_role_key(stage_instance.stage),
-            "requirement": stage_requirement(stage_instance.stage),
+            "requirement": stage_requirement(stage_instance.stage, instance.tenant),
             "reason": reason_text,
         },
         message=(

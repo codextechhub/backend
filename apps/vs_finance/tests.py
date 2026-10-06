@@ -4000,6 +4000,10 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
     def test_final_period_cannot_lock_before_fiscal_year_close(self):
         entity, _, periods = self.books
         december = periods[-1]
+        # The months before December are closed, so the order lets December close.
+        FiscalPeriod.objects.filter(pk__in=[p.pk for p in periods[:-1]]).update(
+            status=PeriodStatus.CLOSED,
+        )
         close_period(entity, december)
         with self.assertRaises(PeriodCloseError):
             lock_period(entity, december)

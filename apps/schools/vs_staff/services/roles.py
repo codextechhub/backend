@@ -72,7 +72,7 @@ def overrides_for(staff, tenant):
 
     return list(
         UserPermissionOverride.objects.filter(tenant=tenant, user=staff.user)
-        .select_related("permission")
+        .select_related("permission__resource")
         .order_by("permission__key")
     )
 

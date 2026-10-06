@@ -76,6 +76,7 @@ from .constants import (
     TaxSourceRole,
 )
 from .exceptions import FinanceError, TaxFilingError
+from .money import format_naira
 from .posting import post_journal, resolve_period
 
 #: Journal sources whose lines are never a return's source lines: the journals the
@@ -794,7 +795,7 @@ def _prepare_filing_atomic(obligation, *, period_start, period_end, due_date,
         actor_user=actor_user,
         describe=lambda share: (
             f"Prepared {obligation.code} filing for {period}: {_whose(share)}, "
-            f"{(share or filing).amount_due} kobo due.",
+            f"{format_naira((share or filing).amount_due)} due.",
             _share_figures(share, filing),
         ),
     )
@@ -880,8 +881,10 @@ def _file_filing_atomic(filing, *, filed_date, filing_reference, adjustment_amou
     if drafted != now:
         raise TaxFilingError(
             f"Return {filing.document_number or filing.pk} has changed since it was "
-            f"prepared (tax {drafted[0]}, input {drafted[1]}, credit {drafted[2]} kobo then; "
-            f"{now[0]}, {now[1]}, {now[2]} now). Prepare it again, check it, then file.",
+            f"prepared (tax {format_naira(drafted[0])}, input {format_naira(drafted[1])}, "
+            f"credit {format_naira(drafted[2])} then; {format_naira(now[0])}, "
+            f"{format_naira(now[1])}, {format_naira(now[2])} now). "
+            f"Prepare it again, check it, then file.",
             failures=["stale_draft"],
         )
     pending = figures.pending
@@ -951,7 +954,7 @@ def _file_filing_atomic(filing, *, filed_date, filing_reference, adjustment_amou
         actor_user=actor_user,
         describe=lambda share: (
             f"Filed {obligation.code} return {label}: {_whose(share)}, "
-            f"{(share or filing).amount_due} kobo due.",
+            f"{format_naira((share or filing).amount_due)} due.",
             {**_share_figures(share, filing),
              "journal_id": share.filing_journal_id if share is not None else None},
         ),
@@ -1249,7 +1252,7 @@ def _pay_filing_atomic(filing, *, bank_account, pay_date, amount, branch, actor_
             entity=filing.entity, action=FinanceAuditAction.TAX_FILING_PAID,
             actor_user=actor_user, target=filing, branch=entry.branch_id,
             message=(
-                f"Remitted {pay} kobo of {obligation.code} filing {label}: {_whose(share)}."
+                f"Remitted {format_naira(pay)} of {obligation.code} filing {label}: {_whose(share)}."
             )[:255],
             journal_id=entry.pk, amount=pay, payment_status=share.payment_status,
         )
@@ -1325,7 +1328,7 @@ def _reverse_remittance_atomic(remittance, *, reason, date, actor_user):
         entity=filing.entity, action=FinanceAuditAction.TAX_REMITTANCE_REVERSED,
         actor_user=actor_user, target=filing, branch=remittance.branch_id,
         message=(
-            f"Reversed a {remittance.amount} kobo remittance of "
+            f"Reversed a {format_naira(remittance.amount)} remittance of "
             f"{filing.obligation.code} return {filing.document_number or filing.pk}: {reason}"
         )[:255],
         journal_id=remittance.journal_id, reversal_id=reversal.pk,

@@ -129,9 +129,9 @@ def _validated_values(data):
                 raise TypeError
             value = int(value)
         except (TypeError, ValueError) as exc:
-            raise ValidationError({field: "Enter a whole amount in kobo."}) from exc
+            raise ValidationError({field: "Enter the amount as a whole number."}) from exc
         if value < 0:
-            raise ValidationError({field: "Use zero or a positive amount in kobo."})
+            raise ValidationError({field: "Use zero or a positive amount."})
         values[field] = value
     if "primary_collection_bank_account" in data:
         values["primary_collection_bank_account"] = data["primary_collection_bank_account"]

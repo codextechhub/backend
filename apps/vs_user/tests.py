@@ -954,7 +954,7 @@ class OrgNodeDeleteProtectionTests(TestCase):
 
         resp = self.client.delete(f"/v1/user/organogram/nodes/{self.department.pk}/")
         self.assertEqual(resp.status_code, 409, resp.content)
-        self.assertEqual(resp.json()["error"]["detail"], {"vs_user.orgnode": 1})
+        self.assertEqual(resp.json()["error"]["detail"], {"org nodes": 1})
         self.team.refresh_from_db()
         self.assertEqual(self.team.parent_id, self.department.pk)
         self.assertTrue(OrgNode.objects.filter(pk=self.department.pk).exists())
@@ -964,7 +964,7 @@ class OrgNodeDeleteProtectionTests(TestCase):
         self.assertEqual(resp.status_code, 409, resp.content)
         body = resp.json()
         self.assertEqual(body["error"]["code"], "PROTECTED_REFERENCE")
-        self.assertEqual(body["error"]["detail"], {"vs_user.position": 1})
+        self.assertEqual(body["error"]["detail"], {"positions": 1})
         self.assertIn("position", body["message"])
 
     def test_empty_leaf_still_deletes(self):

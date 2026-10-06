@@ -319,8 +319,13 @@ def ensure_tenant_approval_templates(
 # --------------------------------------------------------------------------- #
 
 def _label(document) -> str:
-    """Build an audit/error label without assuming numbering has already run."""
-    return f"{type(document).__name__} {document.document_number or document.pk}"
+    """Name a document in an error without assuming numbering has already run.
+
+    Uses the model's verbose name ("Purchase requisition REQ-0001"), never its
+    class name: the label reaches the person who pressed Submit.
+    """
+    kind = str(document._meta.verbose_name)
+    return f"{kind[:1].upper()}{kind[1:]} {document.document_number or document.pk}"
 
 
 def _no_template_message(document) -> str:

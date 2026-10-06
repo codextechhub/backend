@@ -209,7 +209,7 @@ Features and access preserves the capability catalogue, entitlements, dependenci
 
 Effective capability list and configuration export evaluation now preload the catalogue, dependency edges, applicable entitlement layers, and applicable overrides. The number of database queries stays fixed as the catalogue grows instead of repeating queries for each capability and dependency.
 
-Advanced catalogue preserves low-level typed definition and value administration for expert use. Each definition now includes a code-owned consumer label where a verified backend reader exists. The label names the service, concrete consumer, and runtime impact. Definitions without a registered consumer are explicitly marked, and administrators cannot edit ownership claims through the catalogue.
+Advanced catalogue preserves low-level typed definition and value administration for expert use. Each definition now includes a code-owned consumer label where a verified backend reader exists. The label names the service and the runtime impact, in plain English; it never names the module, class or function that reads the key. Definitions without a registered consumer are explicitly marked, and administrators cannot edit ownership claims through the catalogue.
 
 ## Values intentionally kept outside Platform Settings
 

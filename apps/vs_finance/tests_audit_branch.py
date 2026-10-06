@@ -6,7 +6,7 @@ January run, booked one journal per branch. Ngozi keeps Lekki's books, pinned to
 Lekki, and holds the audit-view key. They read the trail the way they read every
 other finance screen: Lekki's entries and nothing else. The run's accrual is
 recorded once per branch share, so they read "Accrued Lekki Branch's payroll:
-gross 80000, net 72000" and never the school's 190,000 or anybody else's pay.
+gross ₦800.00, net ₦720.00" and never the school's 190,000 or anybody else's pay.
 An entry written before entries carried a branch is shown to whole-school
 readers only, because nothing on it says whose it is.
 
@@ -35,6 +35,8 @@ JAN_31 = datetime.date(2026, 1, 31)
 NOT_LEKKIS = (
     "Ada Obi", "Chidi Eze", "Ikeja", "Yaba", "50000", "45000", "60000", "54000",
     "190000", "171000", "130000", "117000",
+    "₦500.00", "₦450.00", "₦600.00", "₦540.00",
+    "₦1,900.00", "₦1,710.00", "₦1,300.00", "₦1,170.00",
 )
 
 
@@ -129,7 +131,7 @@ class ALekkiReaderReadsLekkiTests(_AuditFixture):
 
         self.assertEqual(len(paid), 1, paid)
         self.assertIn("Lekki Branch", paid[0]["message"])
-        self.assertIn("72000", paid[0]["message"])
+        self.assertIn("₦720.00", paid[0]["message"])
         self.assert_nothing_of_theirs(self.rows(self.ngozi))
 
     def test_they_never_see_the_whole_schools_salary_totals(self):
@@ -138,7 +140,7 @@ class ALekkiReaderReadsLekkiTests(_AuditFixture):
         accrued = self.rows(self.ngozi, action=FinanceAuditAction.PAYROLL_POSTED)
 
         self.assertEqual([row["message"] for row in accrued],
-                         ["Accrued Lekki Branch's payroll: gross 80000, net 72000 kobo."])
+                         ["Accrued Lekki Branch's payroll: gross ₦800.00, net ₦720.00."])
         self.assert_nothing_of_theirs(self.rows(self.ngozi))
 
     def test_an_entry_written_before_entries_had_a_branch_is_not_theirs(self):
@@ -409,7 +411,7 @@ class TaxReturnSharesTests(_AuditFixture):
         self.assertEqual(sorted(row["action"] for row in rows),
                          sorted([FinanceAuditAction.TAX_FILING_FILED, FinanceAuditAction.TAX_FILING_PREPARED]))
         text = str(rows)
-        for leaked in ("60000", "90000", "Ikeja"):
+        for leaked in ("60000", "90000", "₦600.00", "₦900.00", "Ikeja"):
             self.assertNotIn(leaked, text)
 
     def test_reversing_a_remittance_is_the_remittances_branchs(self):

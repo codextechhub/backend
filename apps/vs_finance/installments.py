@@ -38,6 +38,7 @@ from .constants import (
     PaymentPlanStatus,
 )
 from .exceptions import FinanceError, PostingError
+from .money import format_naira
 from .posting import post_journal, resolve_period
 
 
@@ -127,8 +128,8 @@ def build_installments(plan, *, amounts=None):
             )
         if sum(amounts) != plan.total_amount:  # Explicit amounts must reconcile to plan total.
             raise PostingError(
-                f"Installment amounts sum to {sum(amounts)} kobo, "
-                f"but the plan total is {plan.total_amount} kobo.",
+                f"Installment amounts sum to {format_naira(int(sum(amounts)))}, "
+                f"but the plan total is {format_naira(plan.total_amount)}.",
             )
         if any(a <= 0 for a in amounts):  # Each installment must be meaningful.
             raise PostingError("Every installment amount must be positive.")
@@ -171,8 +172,8 @@ def _activate_payment_plan_atomic(plan, *, actor_user=None):
         raise PostingError("Build the installment schedule before activating the plan.")
     if plan.scheduled_total != plan.total_amount:  # Schedule amounts must reconcile to plan total.
         raise PostingError(
-            f"Installments sum to {plan.scheduled_total} kobo but the plan total is "
-            f"{plan.total_amount} kobo; rebuild the schedule.",
+            f"Installments sum to {format_naira(plan.scheduled_total)} but the plan total is "
+            f"{format_naira(plan.total_amount)}; rebuild the schedule.",
         )
 
     # Snapshot the invoice settlement that predates the plan. Because the plan spreads
@@ -188,7 +189,7 @@ def _activate_payment_plan_atomic(plan, *, actor_user=None):
         entity=plan.entity, action=FinanceAuditAction.PAYMENT_PLAN_ACTIVATED,  # Audit action.
         actor_user=actor_user, target=plan,  # Actor and target context.
         message=f"Activated {plan.installment_count}-installment plan "  # Human-readable activation message.
-                f"for {plan.customer.code} ({plan.total_amount} kobo).",  # Customer and amount.
+                f"for {plan.customer.code} ({format_naira(plan.total_amount)}).",  # Customer and amount.
         total=plan.total_amount, installments=plan.installment_count,  # Structured metadata.
     )
     # Reflect any settlement already on the linked invoice.  # Keep schedule progress current immediately.
@@ -388,8 +389,8 @@ def _post_concession_atomic(concession, *, actor_user=None):
         raise PostingError("A concession must have a positive amount to post.")
     if amount > balance:  # Cannot credit more than invoice balance.
         raise PostingError(
-            f"Concession amount ({amount} kobo) exceeds the outstanding balance "
-            f"({balance} kobo).",
+            f"Concession amount ({format_naira(amount)}) exceeds the outstanding balance "
+            f"({format_naira(balance)}).",
         )
 
     customer = concession.customer  # Customer controls AR account.
@@ -464,7 +465,7 @@ def _post_concession_atomic(concession, *, actor_user=None):
     record(  # Audit successful concession.
         entity=concession.entity, action=FinanceAuditAction.CONCESSION_POSTED,  # Audit action.
         actor_user=actor_user, target=concession,  # Actor and target context.
-        message=f"Granted {label.lower()} of {amount} kobo on invoice "  # Human-readable message.
+        message=f"Granted {label.lower()} of {format_naira(amount)} on invoice "  # Human-readable message.
                 f"{invoice.document_number} for {customer.code}.",  # Invoice and customer context.
         journal_id=entry.pk, amount=amount, kind=concession.kind,  # Structured concession metadata.
         balance_after=invoice.balance_due,  # Remaining invoice balance.

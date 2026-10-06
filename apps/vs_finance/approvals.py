@@ -755,7 +755,7 @@ def adopt_petty_cash_return_template(tenant, *, threshold: int | None = None,
         raise ValueError("A tenant is required to adopt the petty cash return route.")
     threshold = WF_PETTY_CASH_SHORTAGE_THRESHOLD if threshold is None else int(threshold)
     if threshold < 0:
-        raise ValueError("The shortage threshold is an amount in kobo and cannot be negative.")
+        raise ValueError("The shortage threshold cannot be negative.")
     approver_group_code = approver_group_code or WF_PETTY_CASH_RETURN_APPROVER_GROUP
 
     existing = petty_cash_return_route(tenant)

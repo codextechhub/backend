@@ -5,12 +5,12 @@ from rest_framework.permissions import SAFE_METHODS
 
 from core.response import success_response
 from vs_finance.constants import FinanceAuditAction
-from vs_finance.models import FinanceAuditLog
-from vs_finance.serializers import FinanceAuditLogSerializer
+from vs_finance.settings_history import settings_history
 from vs_finance.views import resolve_entity
 from vs_finance.views_settings import WholeTenantSettingsMixin
 
 from ..settings import (
+    HISTORY_FIELDS,
     resolve_procurement_settings,
     serialize_procurement_settings,
     update_procurement_settings,
@@ -20,21 +20,14 @@ from .base import _ProcBase
 
 
 def _history(entity):
-    """The last ten changes to the entity's procurement settings, newest first.
+    """The last ten changes to the entity's procurement settings, labelled.
 
-    Not narrowed to the caller's branches. The settings belong to the whole
-    tenant, so every entry here carries no branch, and a branch-bound reader who
-    may open the settings may see who changed them. The finance audit trail
-    itself (:mod:`vs_finance.views_ops.audit`) is where an entry with no branch
-    is shown to whole-school readers only.
+    See :func:`vs_finance.settings_history.settings_history`; the labels are
+    :data:`vs_procurement.settings.HISTORY_FIELDS`.
     """
-    rows = (
-        FinanceAuditLog.objects.filter(
-            entity=entity,
-            action=FinanceAuditAction.PROCUREMENT_SETTINGS_UPDATED,
-        ).select_related("actor", "effective_user", "branch").order_by("-created_at", "-id")[:10]
+    return settings_history(
+        entity, FinanceAuditAction.PROCUREMENT_SETTINGS_UPDATED, HISTORY_FIELDS,
     )
-    return FinanceAuditLogSerializer(rows, many=True).data
 
 
 class ProcurementSettingsView(WholeTenantSettingsMixin, _ProcBase):

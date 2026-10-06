@@ -35,6 +35,7 @@ from .constants import (
     PPE_ACCOUNT_CODE,
 )
 from .exceptions import DepreciationError, FinanceError
+from .money import format_naira
 from .posting import post_journal, resolve_period, sealed_fiscal_year
 
 #: Why a depreciation run left a due charge unposted.
@@ -258,7 +259,7 @@ def _acquire_asset_atomic(asset, *, credit_account=None, bank_account=None,
     record(  # Audit successful acquisition.
         entity=asset.entity, action=FinanceAuditAction.ASSET_ACQUIRED,  # Audit action.
         actor_user=actor_user, target=asset,  # Actor and target context.
-        message=f"Capitalised {asset.name} ({asset.cost} kobo).",  # Human-readable audit message.
+        message=f"Capitalised {asset.name} ({format_naira(asset.cost)}).",  # Human-readable audit message.
         journal_id=entry.pk, cost=asset.cost,  # Structured audit metadata.
     )
     return asset  # Return acquired asset.
@@ -479,7 +480,7 @@ def _audit_run_per_branch(entity, groups, row_to_journal, *, actor_user, skipped
             actor_user=actor_user, target_type="LedgerEntity", target_id=str(entity.pk),
             branch=branch_id,
             message=(
-                f"Posted {whose} {amount} kobo depreciation run across {assets} asset(s) "
+                f"Posted {whose} {format_naira(amount)} depreciation run across {assets} asset(s) "
                 f"in {len(part['periods'])} period(s)."
             ),
             journal_id=journal_ids[0], journal_ids=journal_ids, charges=len(rows),
@@ -758,7 +759,10 @@ def _dispose_asset_atomic(asset, *, disposal_date, proceeds=0, bank_account=None
     record(  # Audit successful disposal.
         entity=asset.entity, action=FinanceAuditAction.ASSET_DISPOSED,  # Audit action.
         actor_user=actor_user, target=asset,  # Actor and target context.
-        message=f"Disposed {asset.name}: proceeds {proceeds}, {'gain' if gain_loss >= 0 else 'loss'} {abs(gain_loss)} kobo.",  # Summary.
+        message=(
+            f"Disposed {asset.name}: proceeds {format_naira(int(proceeds))}, "
+            f"{'gain' if gain_loss >= 0 else 'loss'} {format_naira(abs(int(gain_loss)))}."
+        ),  # Summary.
         journal_id=entry.pk, proceeds=proceeds, gain_loss=gain_loss, nbv=nbv,  # Structured disposal metadata.
     )
     return entry  # Return posted disposal journal.

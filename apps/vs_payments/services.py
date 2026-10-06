@@ -27,6 +27,7 @@ from vs_config.clock import branch_today, branch_zone
 from vs_finance.accounts import resolve_account
 from vs_finance.constants import CASH_BANK_CODE, PaymentMethod
 from vs_finance.exceptions import FinanceError
+from vs_finance.money import format_naira
 
 from . import audit, custody, held
 from .constants import (
@@ -261,7 +262,7 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
     audit.record(  # Emit a single audit event for the successful initiation.
         action=PaymentAuditAction.COLLECTION_INITIATED, entity=entity,
         provider=provider_name, reference=reference, actor_user=actor_user,
-        message=f"Initiated {amount} kobo collection via {provider_name}.",
+        message=f"Initiated {format_naira(int(amount))} collection via {provider_name}.",
         metadata={"channel": channel},
     )
 
@@ -320,7 +321,7 @@ def record_virtual_account_deposit(*, virtual_account, reference, amount,
         audit.record(
             action=PaymentAuditAction.COLLECTION_INITIATED, entity=entity,
             provider=virtual_account.provider, reference=reference,
-            message=f"Recorded {amount} kobo deposit into a virtual account.",
+            message=f"Recorded {format_naira(int(amount))} deposit into a virtual account.",
             metadata={"channel": CollectionChannel.VIRTUAL_ACCOUNT,
                       "virtual_account_id": virtual_account.pk},
         )
@@ -639,7 +640,7 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
         action=PaymentAuditAction.COLLECTION_CONFIRMED, entity=intent.entity,
         provider=intent.provider, reference=intent.reference, actor_user=actor_user,
         message=(
-            f"Booked receipt for {intent.amount} kobo"
+            f"Booked receipt for {format_naira(int(intent.amount))}"
             + (f" after the collection was marked {overturned}." if overturned else ".")
         ),
         metadata=audit_metadata,
@@ -1017,7 +1018,7 @@ def _optional_kobo(value, field):
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
-        raise ValidationError({field: "Expected an integer amount in kobo."}) from exc
+        raise ValidationError({field: "Enter the amount as a whole number."}) from exc
 
 
 def _item_wht(item, *, amount):
@@ -1257,7 +1258,7 @@ def _dispatch_transfer(
     audit.record(  # Capture the successful provider submission.
         action=PaymentAuditAction.PAYOUT_INITIATED, entity=payout.entity,
         provider=payout.provider, reference=payout.reference, actor_user=actor_user,
-        message=f"Initiated {transfer_amount} kobo payout via {payout.provider}.",
+        message=f"Initiated {format_naira(int(transfer_amount))} payout via {payout.provider}.",
         metadata={
             "gross_amount": payout.amount, "wht_amount": _payout_wht(payout),
             "transfer_amount": transfer_amount,
@@ -1438,7 +1439,7 @@ def create_payout_batch(
         for item in items:
             amount = int(item.get("amount") or 0)
             if amount <= 0:
-                raise ValidationError({"amount": "Each payout item needs a positive amount (kobo)."})
+                raise ValidationError({"amount": "Each payout item needs an amount greater than zero."})
             snapshots.append(_eligible_vendor_snapshot(entity, item.get("vendor"), item))
             withholdings.append(_item_wht(item, amount=amount))
         line_branches = [
@@ -1511,7 +1512,7 @@ def create_payout_batch(
     audit.record(  # Write a batch-level audit event after the transaction commits.
         action=PaymentAuditAction.PAYOUT_BATCH_CREATED, entity=entity,
         provider=provider_name, reference=batch_reference, actor_user=actor_user,
-        message=f"Created payout batch of {len(items)} items, {total} kobo.",
+        message=f"Created payout batch of {len(items)} items, {format_naira(int(total))}.",
         metadata={"wht": wht_lines},
     )
     return batch  # Return the draft batch for later submission.
@@ -1911,7 +1912,7 @@ def _confirm_payout_atomic(payout_id, *, status, amount, verify_raw, actor_user,
     audit.record(  # Emit the successful confirmation audit event.
         action=PaymentAuditAction.PAYOUT_CONFIRMED, entity=payout.entity,
         provider=payout.provider, reference=payout.reference, actor_user=actor_user,
-        message=f"Booked vendor payment for {payout.amount} kobo.",
+        message=f"Booked vendor payment for {format_naira(int(payout.amount))}.",
         metadata=audit_metadata,
     )
     _refresh_batch(payout)  # Refresh the parent batch after the child status changes.

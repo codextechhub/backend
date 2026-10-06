@@ -71,10 +71,23 @@ class PermissionKeyListValidationMixin:
 # -----------------------------------------------------------------------------
 
 class PermissionModuleSerializer(serializers.ModelSerializer):
+    """A permission module. ``label`` is the stored (possibly blank) name;
+    ``readable_label`` is the one a screen shows, never blank."""
+
+    readable_label = serializers.SerializerMethodField()
+
     class Meta:
         model = PermissionModule
-        fields = ["name", "label", "description", "is_active", "created_at", "updated_at"]
-        read_only_fields = ["created_at", "updated_at"]
+        fields = [
+            "name", "label", "readable_label", "description", "is_active",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = ["readable_label", "created_at", "updated_at"]
+
+    def get_readable_label(self, obj) -> str:
+        from ..models import display_label
+
+        return display_label(obj.label, obj.name)
 
     def validate_name(self, value):
         if self.instance and value != self.instance.name:
@@ -91,22 +104,30 @@ class PermissionResourceSerializer(serializers.ModelSerializer):
         queryset=PermissionModule.objects.filter(is_active=True),
     )
     module_label = serializers.SerializerMethodField(read_only=True)
+    readable_label = serializers.SerializerMethodField(read_only=True)
     permissions_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = PermissionResource
         fields = [
-            "id", "module", "module_label", "name", "label", "description",
-            "is_active", "permissions_count", "created_at", "updated_at",
+            "id", "module", "module_label", "name", "label", "readable_label",
+            "description", "is_active", "permissions_count", "created_at",
+            "updated_at",
         ]
         read_only_fields = [
-            "id", "module_label", "permissions_count", "created_at", "updated_at",
+            "id", "module_label", "readable_label", "permissions_count",
+            "created_at", "updated_at",
         ]
 
     def get_module_label(self, obj):
         from ..models import display_label
 
         return display_label(obj.module.label, obj.module.name)
+
+    def get_readable_label(self, obj) -> str:
+        from ..models import display_label
+
+        return display_label(obj.label, obj.name)
 
     def validate(self, attrs):
         module = attrs.get("module") or getattr(self.instance, "module", None)
@@ -174,12 +195,25 @@ class FieldDefinitionSerializer(serializers.ModelSerializer):
 
 
 class PermissionActionSerializer(serializers.ModelSerializer):
+    """A permission action. Actions store no label of their own, so
+    ``readable_label`` reads the slug as words (``bulk_export`` is "Bulk
+    export") through the same rule as modules and resources."""
+
     permissions_count = serializers.IntegerField(read_only=True, default=0)
+    readable_label = serializers.SerializerMethodField()
 
     class Meta:
         model = PermissionAction
-        fields = ["name", "description", "is_active", "permissions_count", "created_at", "updated_at"]
-        read_only_fields = ["permissions_count", "created_at", "updated_at"]
+        fields = [
+            "name", "readable_label", "description", "is_active",
+            "permissions_count", "created_at", "updated_at",
+        ]
+        read_only_fields = ["readable_label", "permissions_count", "created_at", "updated_at"]
+
+    def get_readable_label(self, obj) -> str:
+        from ..models import display_label
+
+        return display_label("", obj.name)
 
     def validate_name(self, value):
         if self.instance and value != self.instance.name:
@@ -223,6 +257,9 @@ class PermissionSerializer(serializers.ModelSerializer):
     label = serializers.CharField(source="readable_label", read_only=True)
     module_label = serializers.SerializerMethodField(read_only=True)
     resource_label = serializers.SerializerMethodField(read_only=True)
+    sensitivity_label = serializers.CharField(
+        source="get_sensitivity_level_display", read_only=True,
+    )
 
     def get_resource_key(self, obj):
         return obj.resource.name if obj.resource_id else None
@@ -258,6 +295,7 @@ class PermissionSerializer(serializers.ModelSerializer):
             "label",
             "description",
             "sensitivity_level",
+            "sensitivity_label",
             "scope",
             "is_restricted",
             "is_active",
@@ -266,7 +304,8 @@ class PermissionSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "key", "module_key", "module_label", "resource_key",
-            "resource_label", "action_key", "label", "created_at", "updated_at",
+            "resource_label", "action_key", "label", "sensitivity_label",
+            "created_at", "updated_at",
         ]
 
     def validate(self, attrs):

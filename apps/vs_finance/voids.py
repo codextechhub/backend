@@ -16,6 +16,7 @@ from .constants import (
     PaymentPlanStatus,
 )
 from .exceptions import FinanceError, PostingError
+from .money import format_naira
 from .posting import reverse_journal
 
 
@@ -90,8 +91,8 @@ def _ensure_allocation_journal_coverage(source, links):
     linked_later = sum(int(link.amount) for link in links)
     if linked_later != expected_later:
         raise PostingError(
-            f"{type(source).__name__} {source.document_number} has {expected_later} kobo "
-            f"of later customer-credit allocations but only {linked_later} kobo of "
+            f"{type(source).__name__} {source.document_number} has {format_naira(expected_later)} "
+            f"of later customer-credit allocations but only {format_naira(linked_later)} of "
             "linked reclassification journals. Repair/backfill the allocation-journal "
             "links before voiding; reversing only part would desynchronise the ledger.",
         )
@@ -116,9 +117,9 @@ def _void_invoice_atomic(invoice, *, actor_user=None, date=None):
     # The denormalised totals also catch legacy write-offs that predate requests.
     blockers = []
     if invoice.amount_paid:
-        blockers.append(f"{invoice.amount_paid} kobo of receipt settlements")
+        blockers.append(f"{format_naira(invoice.amount_paid)} of receipt settlements")
     if invoice.amount_credited:
-        blockers.append(f"{invoice.amount_credited} kobo of credits/concessions/write-offs")
+        blockers.append(f"{format_naira(invoice.amount_credited)} of credits/concessions/write-offs")
     posted_notes = invoice.credit_notes.filter(status=DocumentStatus.POSTED).order_by("pk")
     if posted_notes.exists():
         blockers.append("posted related credit/debit notes")

@@ -18,7 +18,9 @@ are :data:`~vs_exports.constants.DatasetScope.ENTITY`-scoped: a finance row belo
 a set of books, and one file spanning two entities would be an accounting error.
 
 Money columns are integer kobo in the database and are rendered by
-:func:`vs_exports.catalogue.render_value` - never formatted here.
+:func:`vs_exports.catalogue.render_value` - never formatted here. A filter on an
+amount is declared ``money=True``, so a person filters in naira and the catalogue
+converts to kobo.
 """
 from __future__ import annotations
 
@@ -176,8 +178,7 @@ def register_datasets():
             FilterDef("customer", "Customer", FILTER_TEXT, source="customer__name"),
             FilterDef("customer_code", "Customer code", FILTER_TEXT,
                       source="customer__code"),
-            FilterDef("total", "Total", FILTER_NUMBER_RANGE,
-                      description="Amounts are in kobo."),
+            FilterDef("total", "Total", FILTER_NUMBER_RANGE, money=True),
         ),
     ))
 
@@ -352,8 +353,7 @@ def register_datasets():
                 ("claimant_name", "Claimant"),
                 ("title", "Purpose"),
             ), description="Matches any one of these, the way the search box does."),
-            FilterDef("total", "Total", FILTER_NUMBER_RANGE,
-                      description="Amounts are in kobo."),
+            FilterDef("total", "Total", FILTER_NUMBER_RANGE, money=True),
         ),
     ))
 

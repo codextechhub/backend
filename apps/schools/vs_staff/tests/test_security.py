@@ -358,6 +358,22 @@ class PermissionOverrideVisibilityTests(StaffFixture):
         self.assertEqual(response.data["data"]["overrides"], [])
         self.assertTrue(response.data["data"]["can_change_exceptions"])
 
+    def test_an_exception_names_its_permission_in_words(self):
+        """The profile lists Eze's exception as the permission reads, not its key."""
+        from vs_rbac.models import Permission, UserPermissionOverride
+
+        permission = Permission.objects.get(key="school.user_overrides.view")
+        UserPermissionOverride.objects.create(
+            tenant=self.tenant, user=self.eze.user, permission=permission,
+            mode=UserPermissionOverride.Mode.ALLOW, reason="Covering the registrar.",
+        )
+        response = self.get(self.admin, "staff-roles", pk=self.eze.pk)
+        [row] = response.data["data"]["overrides"]
+        self.assertEqual(row["permission"], "school.user_overrides.view")
+        self.assertEqual(row["permission_label"], permission.readable_label)
+        self.assertNotIn(".", row["permission_label"])
+        self.assertNotIn("_", row["permission_label"])
+
     def test_the_block_says_whether_the_reader_may_change_it(self):
         """Eze is posted at Lekki with Lekki's Teacher grant, so Lekki's head
         may change his exceptions. The registrar is school-wide: readable, not

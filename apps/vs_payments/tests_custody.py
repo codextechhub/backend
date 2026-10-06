@@ -213,7 +213,7 @@ class GatewayClearingTests(_CustodyFixture):
         intent = self.paid(self.books, self.adeyemi, 180_000, fee=2_000)
         with self.assertRaises(PaymentStateError) as caught:
             settlement.settle_collections(self.line(self.lekki_bank, 170_000), [intent.pk])
-        self.assertIn("fees on these payments come to 2000 kobo", str(caught.exception))
+        self.assertIn("fees on these payments come to ₦20.00", str(caught.exception))
         with self.assertRaises(PaymentStateError):
             settlement.settle_collections(self.line(self.lekki_bank, 190_000), [intent.pk])
 
@@ -272,7 +272,7 @@ class GatewayClearingTests(_CustodyFixture):
             end_date__gte=tenant_today(self.tenant))
         warning = settlement.gateway_clearing_current(self.books, period)
         self.assertEqual((warning.passed, warning.blocking), (False, False))
-        self.assertIn("1 online payment(s), 180000 kobo", warning.detail)
+        self.assertIn("1 online payment(s), ₦1,800.00", warning.detail)
 
         settlement.settle_collections(self.line(self.lekki_bank, 178_000), [intent.pk])
         self.assertTrue(settlement.gateway_clearing_current(self.books, period).passed)
@@ -293,7 +293,7 @@ class GatewayClearingTests(_CustodyFixture):
             self.books, period, branch=self.lekki,
         )
 
-        self.assertIn("1 online payment(s), 180000 kobo", warning.detail)
+        self.assertIn("1 online payment(s), ₦1,800.00", warning.detail)
 
 
 class CustodyModeTests(_CustodyFixture):

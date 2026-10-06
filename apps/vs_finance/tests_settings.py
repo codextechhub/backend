@@ -1,7 +1,8 @@
+import re
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
 from core.test_utils import TenantAPIClient
 from vs_finance.account_mappings import ACCOUNT_MAPPING_SPECS, resolve_mapped_account
@@ -22,10 +23,40 @@ from vs_finance.seed import seed_chart_of_accounts, seed_currencies
 from vs_finance.settings_ownership import (
     ACCOUNT_MAPPING_CONSUMERS,
     BANKING_SETTING_CONSUMERS,
+    CALENDAR_SETTING_CONSUMERS,
     DOCUMENT_SETTING_CONSUMERS,
+    PAYROLL_SETTING_CONSUMERS,
+    RECEIVABLES_SETTING_CONSUMERS,
 )
 from schools.vs_schools.models import School
 from vs_tenants.models import Branch
+
+#: A module, class or function path such as ``vs_finance.banking``.
+CODE_PATH = re.compile(r"\b(?:vs_\w+|schools|core)\.\w")
+
+
+def assert_plain_consumers(test, consumers):
+    """Every consumer entry is a service and an impact, and neither names code."""
+    for key, entry in consumers.items():
+        test.assertEqual(set(entry), {"service", "impact"}, key)
+        for text in entry.values():
+            test.assertIsNone(CODE_PATH.search(text), f"{key}: {text}")
+
+
+class SettingConsumersSpeakPlainlyTests(SimpleTestCase):
+    """The consumer maps reach every client that opens a Finance settings screen.
+
+    A module path in them would show a bursar ``vs_finance.banking`` under a
+    control and map the server's layout for anyone who can open the screen, so
+    each entry carries only the service it drives and the effect of a change.
+    """
+
+    def test_every_finance_registry_names_a_service_and_an_impact_only(self):
+        for registry in (
+            ACCOUNT_MAPPING_CONSUMERS, DOCUMENT_SETTING_CONSUMERS, BANKING_SETTING_CONSUMERS,
+            RECEIVABLES_SETTING_CONSUMERS, CALENDAR_SETTING_CONSUMERS, PAYROLL_SETTING_CONSUMERS,
+        ):
+            assert_plain_consumers(self, registry)
 
 
 class FinanceAccountSettingsAPITests(TestCase):
@@ -60,6 +91,7 @@ class FinanceAccountSettingsAPITests(TestCase):
         self.assertEqual(cash["source"], "DEFAULT")
         self.assertTrue(all(row["account_type"] for row in response.data["data"]["account_options"]))
         self.assertEqual(set(response.data["data"]["consumers"]), set(ACCOUNT_MAPPING_CONSUMERS))
+        assert_plain_consumers(self, response.data["data"]["consumers"])
         self.assertEqual(set(ACCOUNT_MAPPING_CONSUMERS), set(ACCOUNT_MAPPING_SPECS))
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
@@ -134,6 +166,7 @@ class FinanceDocumentSettingsAPITests(TestCase):
         self.assertEqual(response.data["data"]["settings"]["default_invoice_due_days"], 30)
         self.assertTrue(response.data["data"]["settings"]["auto_post_manual_invoices"])
         self.assertEqual(set(response.data["data"]["consumers"]), set(DOCUMENT_SETTING_CONSUMERS))
+        assert_plain_consumers(self, response.data["data"]["consumers"])
         self.assertEqual(set(DOCUMENT_SETTING_CONSUMERS), set(DOCUMENT_SETTING_FIELDS))
         self.assertFalse(FinanceDocumentSettings.objects.filter(entity=self.entity).exists())
 
@@ -271,6 +304,7 @@ class FinanceBankingSettingsAPITests(TestCase):
         self.assertEqual(values["default_receipt_allocation_strategy"], "oldest")
         self.assertEqual(values["petty_cash_low_balance_threshold_bps"], 2500)
         self.assertEqual(set(response.data["data"]["consumers"]), set(BANKING_SETTING_CONSUMERS))
+        assert_plain_consumers(self, response.data["data"]["consumers"])
         self.assertEqual(set(BANKING_SETTING_CONSUMERS), set(BANKING_SETTING_FIELDS))
         self.assertFalse(FinanceBankingSettings.objects.filter(entity=self.entity).exists())
 

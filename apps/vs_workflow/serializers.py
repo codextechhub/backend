@@ -5,6 +5,7 @@ from django.db import transaction
 from rest_framework import serializers
 from core.person_exit import person_is_exited, prime_exit_states
 
+from vs_workflow.conditions.describe import ConditionDescriber, ConditionNames
 from vs_workflow.conditions.fields import document_type_label
 
 from vs_rbac.serializers.tenant import (
@@ -21,6 +22,41 @@ from vs_workflow.models import (
     WorkflowRoutePath, WorkflowStage, WorkflowStageAction,
     WorkflowStageApprover, WorkflowStageInstance, WorkflowTemplate,
 )
+
+
+def condition_describer(serializer, document_type="", *, tenant=None):
+    """The :class:`ConditionDescriber` for *document_type*, shared across one response.
+
+    Names are read in the reader's tenant (the request's, else the context's
+    ``tenant``, else *tenant*), because a platform template a school runs names
+    roles and branches by key and id, and the school's own rows hold the names.
+    The describers live in the serializer context, so every stage, route and
+    rule of a page shares one catalogue per document type and one set of
+    lookups.
+    """
+    context = serializer.context
+    names = context.get("condition_names")
+    if names is None:
+        request = context.get("request")
+        reader = getattr(request, "tenant", None) or context.get("tenant") or tenant
+        names = ConditionNames(reader)
+        if isinstance(context, dict):
+            context["condition_names"] = names
+    describers = context.get("condition_describers")
+    if describers is None:
+        describers = {}
+        if isinstance(context, dict):
+            context["condition_describers"] = describers
+    describer = describers.get(document_type)
+    if describer is None:
+        describer = describers[document_type] = ConditionDescriber(
+            document_type=document_type, names=names)
+    return describer
+
+
+def _template_document_type(obj) -> str:
+    template = getattr(obj, "template", None)
+    return getattr(template, "document_type", "") or ""
 
 
 class WorkflowNamedUserListSerializer(serializers.ListSerializer):
@@ -59,13 +95,32 @@ class WorkflowDelegationPeopleListSerializer(serializers.ListSerializer):
 
 
 class WorkflowStageDynamicRuleReadSerializer(serializers.ModelSerializer):
-    role_name = serializers.CharField(source="role.name", read_only=True, default=None)
+    """One of a stage's own Dynamic Role rules.
+
+    ``condition_description`` is the condition in words, read against the
+    stage's document (:mod:`vs_workflow.conditions.describe`). ``role_name``
+    is the role's name, read in the reader's tenant when the rule names its
+    role by key alone, and null when no role there has that key.
+    """
+
+    role_name = serializers.SerializerMethodField()
     is_fallback = serializers.BooleanField(read_only=True)
+    condition_description = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkflowStageDynamicRule
-        fields = ["id", "order", "condition", "role_key", "role_name",
+        fields = ["id", "order", "condition", "condition_description", "role_key", "role_name",
                   "label", "is_fallback"]
+
+    def get_role_name(self, obj):
+        if obj.role_id:
+            return obj.role.name
+        return condition_describer(self).names.role_name(obj.role_key)
+
+    def get_condition_description(self, obj):
+        stage = getattr(obj, "stage", None)
+        return condition_describer(self, _template_document_type(stage)).describe(
+            obj.condition, reads_document=True)
 
 
 class WorkflowDynamicRoleRuleReadSerializer(serializers.ModelSerializer):
@@ -77,14 +132,20 @@ class WorkflowDynamicRoleRuleReadSerializer(serializers.ModelSerializer):
     group_code = serializers.CharField(source="group.code", read_only=True, default=None)
     group_name = serializers.CharField(source="group.name", read_only=True, default=None)
     is_fallback = serializers.BooleanField(read_only=True)
+    condition_description = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkflowDynamicRoleRule
         list_serializer_class = WorkflowNamedUserListSerializer
-        fields = ["id", "order", "condition", "target_kind", "role_key", "role_name",
+        fields = ["id", "order", "condition", "condition_description", "target_kind",
+                  "role_key", "role_name",
                   "user", "user_name", "user_is_exited", "group", "group_code", "group_name",
                   "label", "is_fallback"]
         read_only_fields = fields
+
+    def get_condition_description(self, obj):
+        """The rule's condition in words, read against the rule context."""
+        return condition_describer(self).describe(obj.condition)
 
     def get_user_name(self, obj):
         if obj.user is None:
@@ -117,9 +178,9 @@ class WorkflowStageReadSerializer(serializers.ModelSerializer):
     """
 
     organogram_position_code = serializers.SerializerMethodField()
-    approver_role_name = serializers.CharField(
-        source="approver_role.name", read_only=True, default=None,
-    )
+    organogram_position_name = serializers.SerializerMethodField()
+    approver_role_name = serializers.SerializerMethodField()
+    inclusion_condition_description = serializers.SerializerMethodField()
     approver_group_code = serializers.CharField(
         source="approver_group.code", read_only=True, default=None,
     )
@@ -141,33 +202,81 @@ class WorkflowStageReadSerializer(serializers.ModelSerializer):
             "approver_group_code", "approver_group_name",
             "dynamic_role_rules", "dynamic_role",
             "organogram_target", "organogram_levels", "organogram_position_code",
+            "organogram_position_name",
             "advance_rule", "quorum_count", "on_rejection",
-            "skip_if_no_approvers", "inclusion_condition",
+            "skip_if_no_approvers", "inclusion_condition", "inclusion_condition_description",
         ]
+
+    def _position(self, obj):
+        """``(code, name)`` of the post the stage names, or None."""
+        if obj.organogram_position_id is None and obj.organogram_tenant_position_id is None:
+            return None
+        labels = self.context.get("position_labels")
+        if obj.organogram_position_id or labels is None:
+            from vs_workflow.services.positions import describe_position
+
+            return describe_position(
+                obj.organogram_position if obj.organogram_position_id else None,
+                obj.organogram_tenant_position_id,
+                obj.template.tenant if obj.organogram_tenant_position_id else None,
+            )
+        return labels.get(obj.organogram_tenant_position_id)
 
     def get_organogram_position_code(self, obj):
         if obj.organogram_position_id:
             return obj.organogram_position.code
-        if obj.organogram_tenant_position_id is None:
-            return None
-        labels = self.context.get("position_labels")
-        if labels is None:
-            from vs_workflow.services.positions import describe_position
-
-            label = describe_position(None, obj.organogram_tenant_position_id,
-                                      obj.template.tenant)
-        else:
-            label = labels.get(obj.organogram_tenant_position_id)
+        label = self._position(obj)
         return label[0] if label else None
+
+    def get_organogram_position_name(self, obj):
+        """What the post is called, for a screen to show in place of its code."""
+        label = self._position(obj)
+        return label[1] if label else None
+
+    def get_approver_role_name(self, obj):
+        """The approving role's name, read in the reader's tenant for a key-only stage.
+
+        A stage on a shared template points at its role by key, because every
+        tenant holds its own copy of that role; the name comes from the
+        reader's copy. Null when no role there has the key.
+        """
+        if obj.approver_role_id:
+            return obj.approver_role.name
+        if not obj.approver_role_key:
+            return None
+        return condition_describer(self).names.role_name(obj.approver_role_key)
+
+    def get_inclusion_condition_description(self, obj):
+        """When the stage runs, in words; null for a stage that always runs."""
+        if obj.inclusion_condition in (None, {}):
+            return None
+        return condition_describer(self, _template_document_type(obj)).describe(
+            obj.inclusion_condition, reads_document=True)
 
 
 class WorkflowRoutePathReadSerializer(serializers.ModelSerializer):
+    """One route between stages.
+
+    ``from_stage_label``/``to_stage_label`` are the stages' names; null means
+    the start of the workflow and its approval respectively.
+    ``condition_description`` is the route's condition in words, read against
+    the template's document.
+    """
+
     from_stage_code = serializers.CharField(source="from_stage.code", read_only=True, default=None)
     to_stage_code   = serializers.CharField(source="to_stage.code",   read_only=True, default=None)
+    from_stage_label = serializers.CharField(source="from_stage.label", read_only=True, default=None)
+    to_stage_label   = serializers.CharField(source="to_stage.label",   read_only=True, default=None)
+    condition_description = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkflowRoutePath
-        fields = ["id", "from_stage_code", "to_stage_code", "order", "condition"]
+        fields = ["id", "from_stage_code", "to_stage_code", "from_stage_label",
+                  "to_stage_label", "order", "condition", "condition_description"]
+
+    def get_condition_description(self, obj):
+        return condition_describer(self, _template_document_type(obj)).describe(
+            obj.condition, reads_document=True)
 
 
 class WorkflowTemplateReadSerializer(serializers.ModelSerializer):
@@ -184,6 +293,7 @@ class WorkflowTemplateReadSerializer(serializers.ModelSerializer):
     stages = serializers.SerializerMethodField()
     routes = WorkflowRoutePathReadSerializer(many=True, read_only=True)
     document_type_label = serializers.SerializerMethodField()
+    notification_event_labels = serializers.SerializerMethodField()
     is_platform = serializers.SerializerMethodField()
     tenant_has_own = serializers.SerializerMethodField()
     platform_updated_at = serializers.SerializerMethodField()
@@ -191,6 +301,25 @@ class WorkflowTemplateReadSerializer(serializers.ModelSerializer):
 
     def get_document_type_label(self, obj) -> str:
         return document_type_label(obj.document_type)
+
+    def get_notification_event_labels(self, obj) -> dict:
+        """Each key of ``notification_events`` with the name the notification settings use.
+
+        The names are read once per response. A key no longer registered reads
+        as "A notification no longer sent", never as the key.
+        """
+        labels = self.context.get("notification_event_names")
+        if labels is None:
+            from vs_notifications.models import NotificationEventType
+
+            labels = dict(NotificationEventType.objects.filter(
+                key__startswith="workflow.").values_list("key", "label"))
+            if isinstance(self.context, dict):
+                self.context["notification_event_names"] = labels
+        return {
+            key: labels.get(key) or "A notification no longer sent"
+            for key in (obj.notification_events or {})
+        }
 
     def get_stages(self, obj):
         from vs_workflow.services.positions import describe_tenant_positions
@@ -206,7 +335,9 @@ class WorkflowTemplateReadSerializer(serializers.ModelSerializer):
         labels = describe_tenant_positions(
             (obj.tenant_id, stage.organogram_tenant_position_id) for stage in active
         )
+        condition_describer(self, obj.document_type, tenant=obj.tenant)
         return WorkflowStageReadSerializer(active, many=True, context={
+            **self.context,
             "position_labels": {pid: label for (_, pid), label in labels.items()},
         }).data
 
@@ -246,7 +377,8 @@ class WorkflowTemplateReadSerializer(serializers.ModelSerializer):
         model = WorkflowTemplate
         fields = [
             "id", "tenant", "branch", "document_type", "document_type_label", "code",
-            "name", "description", "notification_events", "is_active",
+            "name", "description", "notification_events", "notification_event_labels",
+            "is_active",
             "is_platform", "tenant_has_own",
             "platform_updated_at", "platform_changed_since",
             "created_at", "updated_at", "stages", "routes",

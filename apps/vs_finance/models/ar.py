@@ -14,7 +14,7 @@ from ..constants import (
     InvoiceSource,
     PaymentMethod,
 )
-from ..money import MoneyField
+from ..money import MoneyField, format_naira
 from .core import TimeStampedModel, LedgerEntity, FinanceDocument
 from .gl import Account, CostCenter, Currency, TaxCode
 
@@ -377,7 +377,7 @@ class InvoiceLine(TimeStampedModel):
         return self.net_amount + self.tax_amount
 
     def __str__(self) -> str:
-        return f"{self.description or self.revenue_account_id}: {self.line_total}"
+        return f"{self.description or self.revenue_account_id}: {format_naira(int(self.line_total))}"
 
 
 class Payment(FinanceDocument):
@@ -516,7 +516,7 @@ class PaymentAllocation(TimeStampedModel):
         ordering = ["payment", "id"]
 
     def __str__(self) -> str:
-        return f"{self.payment_id}→{self.invoice_id}: {self.amount}"
+        return f"{self.payment_id}→{self.invoice_id}: {format_naira(int(self.amount))}"
 
 
 
@@ -665,7 +665,7 @@ class FeeItem(TimeStampedModel):
         indexes = [models.Index(fields=["structure"])]
 
     def __str__(self) -> str:
-        return f"{self.description}: {self.amount}"
+        return f"{self.description}: {format_naira(int(self.amount))}"
 
 
 class FeeItemAssignment(TimeStampedModel):

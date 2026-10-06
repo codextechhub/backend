@@ -10,6 +10,8 @@ and deliberately not a :class:`FinanceError`.
 """
 from vs_tenants.exceptions import BranchlessTenantError  # noqa: F401
 
+from .money import format_naira
+
 
 class FinanceError(Exception):
     error_code = "FINANCE_ERROR"  # Generic finance-layer error code.
@@ -44,8 +46,8 @@ class UnbalancedJournalError(PostingError):
         self.debit = debit  # Store the debit total for handlers/logging.
         self.credit = credit  # Store the credit total for handlers/logging.
         super().__init__(  # Build a detailed imbalance message.
-            f"Journal does not balance: debits={debit} kobo != credits={credit} kobo "
-            f"(difference {debit - credit} kobo).",
+            f"Journal does not balance: debits {format_naira(int(debit))} against credits "
+            f"{format_naira(int(credit))} (difference {format_naira(int(debit) - int(credit))}).",
             debit=debit, credit=credit, difference=debit - credit, **kwargs,
         )
 
@@ -256,7 +258,8 @@ class PettyCashOverdrawError(PettyCashError):
     def __init__(self, *, fund_name="", requested=None, on_hand=None, **kwargs):
         self.fund_name = fund_name  # Store the fund name for diagnostics.
         super().__init__(  # Build an overdraw message with the requested and available amounts.
-            f"Voucher of {requested} exceeds the '{fund_name}' fund's {on_hand} kobo on hand.",
+            f"Voucher of {format_naira(int(requested or 0))} exceeds the '{fund_name}' fund's "
+            f"{format_naira(int(on_hand or 0))} on hand.",
             fund_name=fund_name, requested=str(requested), on_hand=str(on_hand),
             **kwargs,
         )

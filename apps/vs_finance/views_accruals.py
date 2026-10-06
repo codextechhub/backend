@@ -36,6 +36,7 @@ from .models import (
     Payment,
     WriteOffRequest,
 )
+from .money import format_naira
 from .serializers import (
     CustomerDepositSerializer,
     DoubtfulDebtProvisionSerializer,
@@ -497,7 +498,7 @@ class WriteOffRecoverView(_FinanceBase):
         recovery = recover_write_off(write_off, payment, amount=amount, actor_user=request.user)
         write_off.refresh_from_db()
         return success_response(
-            f"Recovered {recovery.amount} kobo of write-off {write_off.document_number}.",
+            f"Recovered {format_naira(recovery.amount)} of write-off {write_off.document_number}.",
             data={"recovery": {"id": recovery.pk, "amount": recovery.amount,
                                "journal_id": recovery.journal_id,
                                "payment_id": recovery.payment_id},

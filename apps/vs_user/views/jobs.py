@@ -40,18 +40,40 @@ def can_view_all_jobs(user) -> bool:
     ).exists()
 
 
+#: What an unlabelled job is called on the queue screen, by its kind.
+_UNLABELLED_JOB = {
+    "import": "Import",
+    "export": "Export",
+    "email": "Email delivery",
+    "system": "System task",
+}
+
+
 class BackgroundJobSerializer(serializers.ModelSerializer):
+    """One background job as the owner's queue screen shows it.
+
+    The job is named by its ``label``, and a job queued without one (a
+    scheduled system run) is named by its kind. The Celery task name is never
+    sent: it is a module path such as ``vs_exports.run_export``, which says
+    nothing to the person reading the queue and describes the server's layout.
+    The platform's own task monitor keeps it for operators.
+    """
+
+    label = serializers.SerializerMethodField()
     owner_name = serializers.SerializerMethodField()
     runtime_seconds = serializers.SerializerMethodField()
 
     class Meta:
         model = BackgroundJob
         fields = [
-            "id", "kind", "label", "task_name", "status", "progress",
+            "id", "kind", "label", "status", "progress",
             "owner", "owner_name", "tenant",
             "created_at", "started_at", "finished_at", "runtime_seconds",
             "result", "error",
         ]
+
+    def get_label(self, obj):
+        return obj.label or _UNLABELLED_JOB.get(obj.kind, "Background task")
 
     def get_owner_name(self, obj):
         return obj.owner.full_name if obj.owner_id and obj.owner else None

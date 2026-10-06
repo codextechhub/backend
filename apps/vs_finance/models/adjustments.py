@@ -14,7 +14,7 @@ from ..constants import (
     PaymentPlanFrequency,
     PaymentPlanStatus,
 )
-from ..money import MoneyField
+from ..money import MoneyField, format_naira
 from .core import TimeStampedModel, FinanceDocument
 from .gl import Account, CostCenter, Currency, TaxCode
 from .ar import Customer, Invoice
@@ -243,7 +243,7 @@ class CreditNoteLine(TimeStampedModel):
         return self.net_amount + self.tax_amount
 
     def __str__(self) -> str:
-        return f"{self.description or self.revenue_account_id}: {self.line_total}"
+        return f"{self.description or self.revenue_account_id}: {format_naira(int(self.line_total))}"
 
 
 class CreditNoteAllocation(TimeStampedModel):
@@ -282,7 +282,7 @@ class CreditNoteAllocation(TimeStampedModel):
         ordering = ["note", "id"]
 
     def __str__(self) -> str:
-        return f"{self.note_id}→{self.invoice_id}: {self.amount}"
+        return f"{self.note_id}→{self.invoice_id}: {format_naira(int(self.amount))}"
 
 
 class DebitNoteAllocation(TimeStampedModel):
@@ -323,7 +323,7 @@ class DebitNoteAllocation(TimeStampedModel):
         ordering = ["payment", "id"]
 
     def __str__(self) -> str:
-        return f"{self.payment_id}→DN{self.note_id}: {self.amount}"
+        return f"{self.payment_id}→DN{self.note_id}: {format_naira(int(self.amount))}"
 
 
 class CustomerCreditAllocationJournal(TimeStampedModel):
@@ -495,7 +495,7 @@ class RefundAllocation(TimeStampedModel):
         return self.payment or self.note
 
     def __str__(self) -> str:
-        return f"{self.refund_id}←{self.source}: {self.amount}"
+        return f"{self.refund_id}←{self.source}: {format_naira(int(self.amount))}"
 
 
 class WriteOffRequest(FinanceDocument):
@@ -766,7 +766,7 @@ class PaymentPlanInstallment(TimeStampedModel):
         return self.balance > 0 and self.due_date < ref
 
     def __str__(self) -> str:
-        return f"#{self.seq_no} due {self.due_date}: {self.amount} ({self.status})"
+        return f"#{self.seq_no} due {self.due_date}: {format_naira(int(self.amount))} ({self.status})"
 
 
 class CustomerCreditTransfer(FinanceDocument):

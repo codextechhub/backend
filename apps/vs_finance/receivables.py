@@ -41,6 +41,7 @@ from .exceptions import (
     FinanceError, PostingError, SettlementBranchError, SettlementTargetError,
 )
 from .deferred_income import defers, schedule_line
+from .money import format_naira
 from .posting import post_journal, resolve_period
 
 
@@ -241,7 +242,7 @@ def _post_invoice_atomic(invoice, *, actor_user=None):
     record(  # Record the successful invoice posting in the finance audit log.
         entity=invoice.entity, action=FinanceAuditAction.INVOICE_POSTED,
         actor_user=actor_user, target=invoice,
-        message=f"Posted invoice for {customer.code} ({invoice.total} kobo).",
+        message=f"Posted invoice for {customer.code} ({format_naira(invoice.total)}).",
         journal_id=entry.pk, total=invoice.total, tax=invoice.tax_total,
     )
     apply_customer_credit(invoice, actor_user=actor_user)  # Credit already held pays the new bill.
@@ -568,8 +569,6 @@ def require_refund_branch_credit(customer, amount, branch_id, *, as_of=None,
     """
     from vs_rbac.scoping import same_transaction_branch
     from vs_tenants.models import Branch
-
-    from .money import format_naira
 
     own = customer_refund_available_balance(
         customer, exclude_refund_id=exclude_refund_id, as_of=as_of,
@@ -1031,7 +1030,7 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
     record(  # Log the successful payment posting in the audit trail.
         entity=payment.entity, action=FinanceAuditAction.PAYMENT_POSTED,
         actor_user=actor_user, target=payment,
-        message=f"Posted receipt from {customer.code} ({payment.amount} kobo).",
+        message=f"Posted receipt from {customer.code} ({format_naira(payment.amount)}).",
         journal_id=entry.pk, amount=payment.amount,
         allocated=applied, unallocated=excess,
     )
@@ -1105,7 +1104,7 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
     record(  # Log the allocation in the finance audit trail.
         entity=payment.entity, action=FinanceAuditAction.PAYMENT_ALLOCATED,
         actor_user=actor_user, target=payment,
-        message=f"Applied {applied} kobo customer credit across {len(created)} invoice(s).",
+        message=f"Applied {format_naira(applied)} of customer credit across {len(created)} invoice(s).",
         journal_id=entry.pk, allocated=payment.allocated_amount,
         unallocated=payment.credit_remaining, effective_date=str(effective),
     )

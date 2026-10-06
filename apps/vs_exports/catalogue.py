@@ -38,12 +38,14 @@ from __future__ import annotations
 
 import datetime
 from dataclasses import dataclass, field as dc_field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
+from django.core.exceptions import ImproperlyConfigured
 from django.db.models import Q
 
 from vs_config.clock import tenant_today
 from vs_config.display import format_date, format_datetime, format_time
+from vs_finance.money import format_naira, to_kobo
 
 from .constants import DatasetScope, ExportFormat, ValuesMode
 
@@ -173,6 +175,8 @@ FILTER_DATE_RANGE = "date_range"
 FILTER_CHOICE = "choice"        # "is any of" over a fixed value set
 FILTER_TEXT = "text"            # case-insensitive contains
 FILTER_BOOLEAN = "boolean"
+#: ``{min, max}``, either bound optional. A number range over a money column is
+#: declared ``money=True`` on its :class:`FilterDef`: its bounds are then naira.
 FILTER_NUMBER_RANGE = "number_range"
 #: "Matches any of these columns" - what a screen's search box actually does. It is a
 #: separate kind rather than several text filters because a search box means OR across
@@ -180,9 +184,23 @@ FILTER_NUMBER_RANGE = "number_range"
 FILTER_SEARCH = "search"
 
 
+#: The hint every money filter carries unless its dataset words its own.
+MONEY_FILTER_HINT = "Enter amounts in naira, e.g. 50000 for ₦50,000.00."
+
+
 @dataclass(frozen=True)
 class FilterDef:
-    """One filter the builder may offer on a dataset."""
+    """One filter the builder may offer on a dataset.
+
+    ``money`` marks a :data:`FILTER_NUMBER_RANGE` over an amount. Amounts are
+    stored as integer kobo, but a person types naira, so a money filter's
+    bounds are naira, with at most two decimal places, and
+    :func:`compile_filter` converts them to kobo. That conversion is the only
+    one: a stored recipe, the builder and the review sentence all hold naira.
+    :func:`register` refuses a number range over a money column that does not
+    say it is money, because that filter would read naira as kobo and apply
+    a typed ₦50,000 as ₦500.
+    """
 
     id: str
     label: str
@@ -197,6 +215,7 @@ class FilterDef:
     #: as ``(path, label)`` pairs. The labels are published so the UI can say which
     #: columns are being searched instead of leaving it to guesswork.
     searches: tuple = ()
+    money: bool = False
 
     @property
     def path(self) -> str:
@@ -217,9 +236,10 @@ class FilterDef:
             "type": self.kind,
             "required": self.required,
             "choices": [{"value": k, "label": v} for k, v in self.choices.items()],
-            "description": self.description,
+            "description": self.description or (MONEY_FILTER_HINT if self.money else ""),
             "is_primary_date": self.is_primary_date,
             "searches": [label for _, label in self.searches],
+            "money": self.money,
         }
 
 
@@ -449,7 +469,25 @@ _REGISTRY: dict[str, Dataset] = {}
 
 # Register one dataset in the catalogue.
 def register(dataset: Dataset) -> Dataset:
-    """Add a dataset to the catalogue (idempotent on key)."""
+    """Add a dataset to the catalogue (idempotent on key).
+
+    Refuses, at boot, a money filter declared wrongly: ``money`` on anything
+    but a number range, or a number range over a money column without it. The
+    second is the one that matters, since it would apply a typed ₦50,000 as
+    ₦500 and widen the file without a word.
+    """
+    money_paths = {f.path for f in dataset.fields if f.kind == KIND_MONEY}
+    for fdef in dataset.filters:
+        if fdef.money and fdef.kind != FILTER_NUMBER_RANGE:
+            raise ImproperlyConfigured(
+                f"{dataset.key}: filter '{fdef.id}' is marked money but is not a "
+                f"number range."
+            )
+        if fdef.kind == FILTER_NUMBER_RANGE and fdef.path in money_paths and not fdef.money:
+            raise ImproperlyConfigured(
+                f"{dataset.key}: filter '{fdef.id}' ranges over a money column, so "
+                f"it must be declared money=True to read its bounds as naira."
+            )
     _REGISTRY[dataset.key] = dataset
     return dataset
 
@@ -655,6 +693,49 @@ def _as_date(raw, filter_id: str, label: str):
         )
 
 
+# Parse one money-filter bound, typed in naira, into integer kobo.
+def _as_kobo(raw, filter_id: str, label: str) -> int | None:
+    """``50000`` or ``"50000.50"`` (naira) to ``5000000`` or ``5000050`` (kobo).
+
+    A blank bound is no bound and returns ``None``. A float, which is how a
+    JSON number with a fraction arrives, is read through its shortest decimal
+    form, so ``0.1`` is ten kobo rather than a binary approximation of it.
+    More than two decimal places is refused rather than rounded: the person
+    meant a precise amount and the filter should not quietly pick another.
+    The messages speak naira only, because naira is what the person typed.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    amount = None
+    if not isinstance(raw, bool) and isinstance(raw, (int, float, Decimal, str)):
+        try:
+            amount = Decimal(str(raw).strip())
+        except InvalidOperation:
+            amount = None
+    if amount is None or not amount.is_finite():
+        raise FilterError(
+            f"“{label}” needs an amount in naira, such as 50000 or 50000.50; it "
+            f"currently reads “{raw}”.",
+            filter_id=filter_id,
+        )
+    if amount != amount.quantize(Decimal("0.01")):
+        raise FilterError(
+            f"“{label}” can have at most two digits after the decimal point; it "
+            f"currently reads “{raw}”.",
+            filter_id=filter_id,
+        )
+    return to_kobo(amount)
+
+
+# Write one money-filter bound as naira for a sentence, never raising.
+def _naira_or_raw(raw) -> str:
+    try:
+        kobo = _as_kobo(raw, "", "")
+    except FilterError:
+        return str(raw)
+    return "any" if kobo is None else format_naira(kobo)
+
+
 # Compile one saved filter into a Q object.
 def compile_filter(dataset: Dataset, spec: dict) -> Q:
     """Turn one stored filter dict into a ``Q``.
@@ -723,11 +804,15 @@ def compile_filter(dataset: Dataset, spec: dict) -> Q:
         return Q(**{path: bool(value)}) if value is not None else Q()
 
     if fdef.kind == FILTER_NUMBER_RANGE:
+        low, high = spec.get("min"), spec.get("max")
+        if fdef.money:
+            low = _as_kobo(low, filter_id, fdef.label)
+            high = _as_kobo(high, filter_id, fdef.label)
         q = Q()
-        if spec.get("min") is not None:
-            q &= Q(**{f"{path}__gte": spec["min"]})
-        if spec.get("max") is not None:
-            q &= Q(**{f"{path}__lte": spec["max"]})
+        if low is not None:
+            q &= Q(**{f"{path}__gte": low})
+        if high is not None:
+            q &= Q(**{f"{path}__lte": high})
         return q
 
     raise FilterError(
@@ -760,6 +845,11 @@ def describe_filter(dataset: Dataset, spec: dict, *, tenant=None) -> str:
         return f"{fdef.label} contains “{spec.get('value')}”"
     if fdef.kind == FILTER_BOOLEAN:
         return f"{fdef.label} is {'yes' if spec.get('value') else 'no'}"
+    if fdef.kind == FILTER_NUMBER_RANGE and fdef.money:
+        return (
+            f"{fdef.label} is between {_naira_or_raw(spec.get('min'))} and "
+            f"{_naira_or_raw(spec.get('max'))}"
+        )
     if fdef.kind == FILTER_NUMBER_RANGE:
         return f"{fdef.label} is between {spec.get('min', 'any')} and {spec.get('max', 'any')}"
     return fdef.label

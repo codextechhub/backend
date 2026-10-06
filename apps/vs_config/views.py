@@ -1,5 +1,4 @@
 import csv
-import json
 import logging
 from datetime import timedelta
 from math import ceil
@@ -21,6 +20,7 @@ from core.response import error_response, success_response
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 from vs_rbac.plan_grants import unsettled_roles_note
 
+from . import labels as config_labels
 from .constants import ConfigPermissions
 from .models import (
     Capability,
@@ -67,7 +67,9 @@ from .services.capabilities import (
     UNSET,
 )
 from .services.audit_exports import (
+    AUDIT_CSV_HEADER,
     apply_configuration_audit_filters,
+    audit_csv_row,
     audit_filter_snapshot,
     create_configuration_audit_export,
     scoped_configuration_audit_queryset,
@@ -143,6 +145,56 @@ class ConfigAPIView(APIView):
         is_platform = getattr(getattr(request.user, "tenant", None), "kind", None) == "PLATFORM"
         if request.method in self.platform_methods and not is_platform:
             raise PermissionDenied("This operation is platform-scoped.")
+
+
+class DefinitionChoicesView(ConfigAPIView):
+    """GET the labelled options a setting definition form offers.
+
+    Each list pairs the stored value with the words a person reads, so the
+    form shows "Whole number" and posts ``INTEGER``. Read under the same key
+    as the definition catalogue, because a caller who can open the catalogue
+    is the one who sees its form.
+    """
+
+    permission_map = {"GET": ConfigPermissions.DEFINITION_VIEW}
+
+    def get(self, request):
+        return success_response(
+            "Setting definition choices retrieved.",
+            {
+                "value_types": config_labels.choice_options(config_labels.VALUE_TYPE_LABELS),
+                "sensitivities": config_labels.choice_options(config_labels.SENSITIVITY_LABELS),
+                "allowed_scopes": config_labels.choice_options(config_labels.ALLOWED_SCOPE_LABELS),
+            },
+        )
+
+
+class CapabilityChoicesView(ConfigAPIView):
+    """GET the labelled options the feature screens offer.
+
+    Capability kinds for the new-feature form, and the entitlement and
+    forced-status values those screens describe. Read under the capability
+    catalogue's own key, for the same reason as :class:`DefinitionChoicesView`.
+    """
+
+    permission_map = {"GET": ConfigPermissions.CAPABILITY_VIEW}
+
+    def get(self, request):
+        return success_response(
+            "Capability choices retrieved.",
+            {
+                "kinds": config_labels.choice_options(config_labels.CAPABILITY_KIND_LABELS),
+                "entitlement_states": config_labels.choice_options(
+                    config_labels.ENTITLEMENT_STATE_LABELS
+                ),
+                "entitlement_sources": config_labels.choice_options(
+                    config_labels.ENTITLEMENT_SOURCE_LABELS
+                ),
+                "override_states": config_labels.choice_options(
+                    config_labels.OVERRIDE_STATE_LABELS
+                ),
+            },
+        )
 
 
 # List active configuration definitions and allow platform staff to create new keys.
@@ -346,6 +398,7 @@ class ValueResetView(ConfigAPIView):
                 "cleared": cleared,
                 "effective_value": value,
                 "source": source.scope_key if source else "default",
+                "source_label": config_labels.value_source_label(source),
             },
         )
 
@@ -800,6 +853,7 @@ class EntitlementCalendarView(ConfigAPIView):
                 "starts_at": row.starts_at.isoformat() if row.starts_at else None,
                 "ends_at": row.ends_at.isoformat() if row.ends_at else None,
                 "status": status_value,
+                "status_label": config_labels.CALENDAR_STATUS_LABELS[status_value],
                 "warning": warning,
                 "days_until_expiry": (
                     ceil((row.ends_at - now).total_seconds() / 86400)
@@ -1172,15 +1226,35 @@ class AuditEventFacetsView(ConfigAPIView):
             seen.add(key)
             targets.append({
                 "type": event.target_type,
+                "type_label": config_labels.audit_target_type_label(event.target_type),
                 "id": event.target_id,
-                "label": serializer.get_target_label(event) or event.target_type,
+                "label": (
+                    serializer.get_target_label(event)
+                    or config_labels.audit_target_type_label(event.target_type)
+                ),
             })
             if len(targets) >= 200:
                 break
         targets.sort(key=lambda item: (item["label"].lower(), item["type"], item["id"]))
         return success_response(
             "Configuration audit facets retrieved.",
-            {"actions": actions, "target_types": target_types, "actors": actors, "targets": targets},
+            {
+                "actions": actions,
+                "action_options": [
+                    {"value": action, "label": config_labels.audit_action_label(action)}
+                    for action in actions
+                ],
+                "target_types": target_types,
+                "target_type_options": [
+                    {
+                        "value": target_type,
+                        "label": config_labels.audit_target_type_label(target_type),
+                    }
+                    for target_type in target_types
+                ],
+                "actors": actors,
+                "targets": targets,
+            },
         )
 
 
@@ -1196,26 +1270,10 @@ class AuditEventExportView(ConfigAPIView):
         response["Content-Disposition"] = 'attachment; filename="configuration-audit.csv"'
         response["X-Export-Truncated"] = "true" if truncated else "false"
         writer = csv.writer(response)
-        writer.writerow([
-            "created_at", "action", "target_type", "target", "actor_name",
-            "actor_email", "reason", "scope", "before", "after",
-        ])
-        serializer = ConfigurationAuditEventSerializer(context={
-            "_target_labels": build_configuration_target_labels(events),
-        })
+        writer.writerow(AUDIT_CSV_HEADER)
+        target_labels = build_configuration_target_labels(events)
         for event in events:
-            writer.writerow([
-                event.created_at.isoformat(),
-                event.action,
-                event.target_type,
-                serializer.get_target_label(event) or event.target_type,
-                event.actor.full_name if event.actor else "System",
-                event.actor.email if event.actor else "",
-                event.reason,
-                event.scope_key,
-                json.dumps(event.before_data, ensure_ascii=True, sort_keys=True),
-                json.dumps(event.after_data, ensure_ascii=True, sort_keys=True),
-            ])
+            writer.writerow(audit_csv_row(event, target_labels))
         return response
 
 

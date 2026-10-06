@@ -1,9 +1,10 @@
 import datetime
+import re
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
 from core.test_utils import TenantAPIClient
 from vs_config.clock import tenant_today
@@ -28,6 +29,29 @@ from vs_procurement.settings import SETTING_FIELDS
 from vs_procurement.settings_ownership import PROCUREMENT_SETTING_CONSUMERS
 from schools.vs_schools.models import School
 from vs_tenants.models import Branch
+
+#: A module, class or function path such as ``vs_procurement.payables``.
+CODE_PATH = re.compile(r"\b(?:vs_\w+|schools|core)\.\w")
+
+
+def assert_plain_consumers(test, consumers):
+    """Every consumer entry is a service and an impact, and neither names code."""
+    for key, entry in consumers.items():
+        test.assertEqual(set(entry), {"service", "impact"}, key)
+        for text in entry.values():
+            test.assertIsNone(CODE_PATH.search(text), f"{key}: {text}")
+
+
+class SettingConsumersSpeakPlainlyTests(SimpleTestCase):
+    """The consumer map reaches every client that opens Procurement settings.
+
+    A module path in it would show a buyer ``vs_procurement.payables`` under a
+    control and map the server's layout for anyone who can open the screen, so
+    each entry carries only the service it drives and the effect of a change.
+    """
+
+    def test_every_entry_names_a_service_and_an_impact_only(self):
+        assert_plain_consumers(self, PROCUREMENT_SETTING_CONSUMERS)
 
 
 class ProcurementSettingsAPITests(TestCase):
@@ -72,6 +96,7 @@ class ProcurementSettingsAPITests(TestCase):
         )
         self.assertEqual(set(response.data["data"]["consumers"]), set(SETTING_FIELDS))
         self.assertEqual(set(PROCUREMENT_SETTING_CONSUMERS), set(SETTING_FIELDS))
+        assert_plain_consumers(self, response.data["data"]["consumers"])
         self.assertFalse(ProcurementSettings.objects.filter(entity=self.entity).exists())
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)

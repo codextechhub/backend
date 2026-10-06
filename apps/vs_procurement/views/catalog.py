@@ -53,7 +53,7 @@ def _strict_price(value):
     """Accept a non-negative integer-kobo standard price without JSON coercion."""
     # JSON booleans and floats must not cross the integer-kobo boundary by coercion.
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValidationError({"standard_unit_price": "Expected a whole integer amount in kobo."})
+        raise ValidationError({"standard_unit_price": "Price must be a whole number."})
     if value < 0:
         raise ValidationError({"standard_unit_price": "Amount cannot be negative."})
     if value > 9_223_372_036_854_775_807:

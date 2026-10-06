@@ -239,6 +239,13 @@ class MyTasksAPITests(TestCase):
         resp = self.client.get(reverse("me-tasks") + "?scope=all&kind=system")
         self.assertEqual(len(resp.data["data"]), 1)
 
+    def test_a_job_is_named_in_words_and_never_by_its_task_path(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.get(reverse("me-tasks") + "?scope=all&kind=system")
+        job = resp.data["data"][0]
+        self.assertEqual(job["label"], "System task")
+        self.assertNotIn("task_name", job)
+
     def test_summary_flags_admin_toggle(self):
         self.client.force_authenticate(self.me)
         resp = self.client.get(reverse("me-tasks-summary"))

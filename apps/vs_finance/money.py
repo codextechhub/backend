@@ -64,7 +64,7 @@ def to_naira(kobo: int) -> Decimal:
     Decimal('1250.50')
     """
     if not isinstance(kobo, int):  # Internal money values must remain integer kobo.
-        raise TypeError(f"kobo must be an int, got {type(kobo).__name__}")
+        raise TypeError(f"An amount must be an int, got {type(kobo).__name__}")
     return (Decimal(kobo) / KOBO_PER_NAIRA).quantize(_NAIRA_QUANT)
 
 
@@ -140,7 +140,7 @@ def naira_in_words(kobo: int) -> str:
     'Zero naira only'
     """
     if not isinstance(kobo, int):  # Internal money values must remain integer kobo.
-        raise TypeError(f"kobo must be an int, got {type(kobo).__name__}")
+        raise TypeError(f"An amount must be an int, got {type(kobo).__name__}")
     negative = kobo < 0  # Preserve sign for final wording.
     kobo = abs(kobo)  # Spell the absolute amount.
     naira, k = divmod(kobo, KOBO_PER_NAIRA)  # Split major and minor units.

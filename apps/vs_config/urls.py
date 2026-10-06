@@ -4,6 +4,7 @@ from . import views
 
 
 urlpatterns = [
+    path("definition-choices/", views.DefinitionChoicesView.as_view(), name="config-definition-choices"),
     path("definitions/", views.DefinitionListCreateView.as_view(), name="config-definition-list"),
     path("definitions/<str:key>/", views.DefinitionDetailView.as_view(), name="config-definition-detail"),
     path("values/", views.ValueListSetView.as_view(), name="config-value-list"),
@@ -14,6 +15,7 @@ urlpatterns = [
     path("integration-settings/test/", views.IntegrationConnectionTestView.as_view(), name="integration-settings-test"),
     path("effective-values/", views.EffectiveValueView.as_view(), name="config-effective-values"),
     path("effective-values/<str:key>/", views.EffectiveValueView.as_view(), name="config-effective-value"),
+    path("capability-choices/", views.CapabilityChoicesView.as_view(), name="config-capability-choices"),
     path("capabilities/", views.CapabilityListCreateView.as_view(), name="config-capability-list"),
     path("capabilities/<slug:key>/", views.CapabilityDetailView.as_view(), name="config-capability-detail"),
     path("entitlements/", views.EntitlementListSetView.as_view(), name="config-entitlement-list"),

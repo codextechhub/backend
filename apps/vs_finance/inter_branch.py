@@ -1306,7 +1306,7 @@ def run_recharge(entity, *, paying_branch, expense_account, amount, recharge_dat
             field="expense_account",
         )
     if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
-        raise InterBranchError("Recharge a positive whole amount in kobo.", field="amount")
+        raise InterBranchError("The amount to recharge must be a whole number greater than zero.", field="amount")
     cleaned = recharge_weights(entity, basis=basis, weights=weights, rule=rule)
     shares = split_by_weight(amount, cleaned)
     owing = {branch: share for branch, share in shares.items() if branch != payer.pk and share > 0}

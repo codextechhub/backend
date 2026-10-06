@@ -463,7 +463,7 @@ def _strict_kobo(value, field):
     bool must never cross the integer-kobo boundary by coercion.
     """
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValidationError({field: "Expected a whole integer amount in kobo."})
+        raise ValidationError({field: "Amount must be a whole number."})
     if value < 0:
         raise ValidationError({field: "Amount cannot be negative."})
     if value > 9_223_372_036_854_775_807:  # Fits BIGINT - the MoneyField storage width.
@@ -540,7 +540,7 @@ def _money(value, field):
     try:
         amount = int(value)
     except (TypeError, ValueError):
-        raise ValidationError({field: "Expected an integer amount in kobo."})
+        raise ValidationError({field: "Enter the amount as a whole number."})
     if amount < 0:
         raise ValidationError({field: "Amount cannot be negative."})
     return amount

@@ -29,8 +29,7 @@ from .document_settings import (
     serialize_finance_document_settings,
     update_finance_document_settings,
 )
-from .models import FinanceAuditLog
-from .serializers import FinanceAuditLogSerializer
+from .settings_history import finance_setting_fields, settings_history
 from .settings_ownership import (
     ACCOUNT_MAPPING_CONSUMERS,
     BANKING_SETTING_CONSUMERS,
@@ -41,19 +40,11 @@ from .views import resolve_entity
 
 
 def _settings_history(entity, action):
-    """The last ten changes to one of the entity's finance settings, newest first.
+    """The last ten changes to one of the entity's finance settings, labelled.
 
-    Not narrowed to the caller's branches. The settings belong to the whole
-    tenant, so every entry here carries no branch, and a branch-bound reader who
-    may open the settings may see who changed them. The finance audit trail
-    itself (:mod:`vs_finance.views_ops.audit`) is where an entry with no branch
-    is shown to whole-school readers only.
+    See :func:`vs_finance.settings_history.settings_history`.
     """
-    rows = (
-        FinanceAuditLog.objects.filter(entity=entity, action=action)
-        .select_related("actor", "effective_user", "branch").order_by("-created_at", "-id")[:10]
-    )
-    return FinanceAuditLogSerializer(rows, many=True).data
+    return settings_history(entity, action, finance_setting_fields(action))
 
 
 class WholeTenantSettingsMixin(WholeTenantWriteMixin):

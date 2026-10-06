@@ -1,3 +1,4 @@
+import re
 from datetime import timedelta
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -5,7 +6,7 @@ from unittest.mock import patch
 from django.core.cache import cache
 from django.core.files.storage import FileSystemStorage, default_storage
 from django.core.exceptions import ValidationError
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -649,6 +650,37 @@ class PlatformSettingsAPITests(TestCase):
         self.assertEqual(definition.value_type, "STRING")
         self.assertTrue(definition.is_active)
 
+    def test_a_definition_names_what_it_drives_without_naming_code(self):
+        self.client.force_authenticate(self.platform_user)
+        response = self.client.get("/v1/config/definitions/platform.profile.name/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            response.data["data"]["consumer"],
+            {
+                "service": "Finance documents",
+                "impact": "Supplies the issuer identity on platform invoices and receipts.",
+            },
+        )
+
+
+class SettingConsumersSpeakPlainlyTests(SimpleTestCase):
+    """The consumer label reaches every client that opens the settings catalogue.
+
+    A class path in it would show an operator
+    ``vs_user.services.auth.LoginService`` beside a setting and map the
+    server's layout, so each entry carries only the service and the impact.
+    """
+
+    def test_every_entry_names_a_service_and_an_impact_only(self):
+        from .runtime_settings import SETTING_CONSUMERS
+
+        code_path = re.compile(r"\b(?:vs_\w+|schools|core)\.\w")
+        for key, entry in SETTING_CONSUMERS.items():
+            self.assertEqual(set(entry), {"service", "impact"}, key)
+            for text in entry.values():
+                self.assertIsNone(code_path.search(text), f"{key}: {text}")
+
 
 class GenericValueResetAPITests(TestCase):
     def setUp(self):
@@ -1052,7 +1084,11 @@ class ConfigurationAuditDetailAPITests(TestCase):
         self.assertIn(self.event.target_id, [item["id"] for item in facets.data["data"]["targets"]])
         self.assertEqual(exported.status_code, 200, getattr(exported, "data", None))
         self.assertEqual(exported["Content-Type"], "text/csv; charset=utf-8")
-        self.assertIn("First audit event", exported.content.decode())
+        csv_text = exported.content.decode()
+        self.assertIn("First audit event", csv_text)
+        self.assertTrue(csv_text.startswith("Date,Action,Kind of record,Record,"), csv_text[:80])
+        self.assertNotIn(f",{self.event.action},", csv_text)
+        self.assertNotIn(f",{self.event.target_type},", csv_text)
 
     def test_detail_id_cannot_escape_tenant_scope(self):
         first_school = make_school(slug="audit-detail-first")
@@ -1385,13 +1421,16 @@ class ConfigurationAuditSavedViewsAndExportsTests(TestCase):
         with default_storage.open(job.storage_name, "rb") as handle:
             body = handle.read()
         self.assertIsInstance(body, bytes)
-        self.assertIn(b"created_at,action,target_type", body)
+        text = body.decode()
+        self.assertTrue(text.startswith("Date,Action,Kind of record,Record,"), text[:80])
+        self.assertIn("Setting changed", text)
+        self.assertNotIn("config.value.updated", text)
 
         downloaded = self.client.get(
             f"/v1/config/audit-events/export-jobs/{job.pk}/download/"
         )
         self.assertEqual(downloaded.status_code, 200)
-        self.assertIn(b"config.value.updated", b"".join(downloaded.streaming_content))
+        self.assertIn(b"Setting changed", b"".join(downloaded.streaming_content))
 
     @patch("vs_config.tasks.run_configuration_audit_export_task.delay")
     def test_oversized_export_fails_with_the_size_limit_in_its_own_words(self, delay):

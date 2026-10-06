@@ -159,7 +159,7 @@ def _establish_fund_atomic(fund, *, bank_account, amount, date, actor_user=None)
     record(  # Audit successful establishment/top-up.
         entity=fund.entity, action=FinanceAuditAction.PETTY_CASH_ESTABLISHED,  # Audit action.
         actor_user=actor_user, target=fund,  # Actor and target context.
-        message=f"Established {amount} kobo into petty cash '{fund.name}'.",  # Summary.
+        message=f"Established {format_naira(amount)} into petty cash '{fund.name}'.",  # Summary.
         journal_id=entry.pk, amount=amount,  # Structured metadata.
     )
     return entry  # Return posted transfer journal.
@@ -295,7 +295,7 @@ def _post_voucher_atomic(voucher, *, actor_user=None):
     record(  # Audit successful voucher post.
         entity=voucher.entity, action=FinanceAuditAction.PETTY_CASH_VOUCHER_POSTED,  # Audit action.
         actor_user=actor_user, target=voucher,  # Actor and target context.
-        message=f"Posted petty cash voucher ({voucher.total} kobo from '{fund.name}').",  # Summary.
+        message=f"Posted petty cash voucher ({format_naira(voucher.total)} from '{fund.name}').",  # Summary.
         journal_id=entry.pk, total=voucher.total, tax=voucher.tax_total,  # Structured metadata.
     )
     return voucher  # Return posted voucher.
@@ -339,7 +339,7 @@ def void_voucher(voucher, *, actor_user=None):
         entity=voucher.entity, action=FinanceAuditAction.PETTY_CASH_VOUCHER_VOIDED,  # Audit action.
         actor_user=actor_user, target=voucher,  # Actor and target context.
         message=f"Voided petty cash voucher {voucher.document_number or voucher.pk} "  # Human-readable summary.
-                f"(reversed journal {voucher.journal_id}); {voucher.total} kobo back to "  # Reversal and amount.
+                f"(reversed journal {voucher.journal_id}); {format_naira(voucher.total)} back to "  # Reversal and amount.
                 f"'{fund.name}'.",  # Fund name.
         journal_id=voucher.journal_id, total=voucher.total,  # Structured metadata.
     )
@@ -413,7 +413,7 @@ def _replenish_fund_atomic(fund, *, bank_account, date, amount=None, actor_user=
     record(  # Audit successful replenishment.
         entity=fund.entity, action=FinanceAuditAction.PETTY_CASH_REPLENISHED,  # Audit action.
         actor_user=actor_user, target=fund,  # Actor and target context.
-        message=f"Replenished {top_up} kobo into petty cash '{fund.name}'.",  # Summary.
+        message=f"Replenished {format_naira(top_up)} into petty cash '{fund.name}'.",  # Summary.
         journal_id=entry.pk, amount=top_up,  # Structured metadata.
     )
     return entry  # Return posted replenishment journal.

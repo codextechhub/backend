@@ -1,4 +1,12 @@
-"""JSON condition evaluator with trace output."""
+"""JSON condition evaluator with trace output.
+
+The trace is stored on the route-evaluation audit entry and returned by the
+builder's previews, so a person can read it. A check that fails to run is
+recorded in it as :data:`CHECK_FAILED`, never as the exception: the exception's
+class and text describe the server's code, and are logged here for whoever
+maintains it.
+"""
+import logging
 from decimal import Decimal
 from typing import Any, Dict, Tuple
 from vs_workflow.constants import (
@@ -10,6 +18,11 @@ from vs_workflow.exceptions import TemplateInvalidError, UnknownOperatorError
 from vs_workflow.conditions.registry import get_condition_function
 
 _MISSING = object()
+
+logger = logging.getLogger(__name__)
+
+#: What a trace says about a check that raised instead of answering.
+CHECK_FAILED = "This check could not be answered for this document, so it counted as not met."
 
 # Resolve dotted paths across dicts and model-like objects without raising.
 def _extract_field(document: Any, path: str) -> Any:
@@ -83,10 +96,11 @@ def evaluate_condition(condition: Any, document: Any) -> Tuple[bool, Dict]:
         fn = get_condition_function(key)
         try:
             result = bool(fn(document, args))
-        except Exception as exc:
-            # Custom condition failures fail closed but keep the error visible in the trace.
+        except Exception:
+            # A failing custom check fails closed; the reason goes to the log.
+            logger.exception("Condition function %r raised", key)
             return False, {"kind": "fn", "fn": key, "args": args, "result": False,
-                           "error": f"{type(exc).__name__}: {exc}"}
+                           "error": CHECK_FAILED}
         return result, {"kind": "fn", "fn": key, "args": args, "result": result}
     if "op" in condition:
         op = condition["op"]
@@ -101,10 +115,11 @@ def evaluate_condition(condition: Any, document: Any) -> Tuple[bool, Dict]:
         left = None if extracted is _MISSING else extracted
         try:
             result = _apply_op(op, left, value)
-        except TypeError as exc:
+        except TypeError:
+            logger.info("Condition on %r could not compare %r with %r", field_path, left, value)
             return False, {"kind": "op", "op": op, "field": field_path,
                            "left": _safe(left), "right": _safe(value),
-                           "result": False, "error": f"{type(exc).__name__}: {exc}"}
+                           "result": False, "error": CHECK_FAILED}
         return result, {"kind": "op", "op": op, "field": field_path,
                         "left": _safe(left), "right": _safe(value), "result": result}
     raise TemplateInvalidError("Condition did not match any supported form")

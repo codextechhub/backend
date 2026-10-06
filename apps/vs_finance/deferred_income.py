@@ -57,6 +57,7 @@ from .constants import (
     RevenueRecognitionMethod,
 )
 from .exceptions import PeriodCloseError, PostingError
+from .money import format_naira
 
 
 def month_end(day: datetime.date) -> datetime.date:
@@ -465,7 +466,7 @@ def release_deferred_income(entity, *, up_to, actor_user=None, allow_restricted=
         record(
             entity=entity, action=FinanceAuditAction.DEFERRED_INCOME_RELEASED,
             actor_user=actor_user, target=release,
-            message=f"Released {total} kobo of deferred income for {day:%B %Y}.",
+            message=f"Released {format_naira(total)} of deferred income for {day:%B %Y}.",
             journal_id=journal.pk, amount=total, branch_id=key[0],
             invoices=sorted({row.invoice_id for row in rows}),
         )
@@ -520,7 +521,7 @@ def reverse_deferred_release(entity, period, *, actor_user=None):
         record(
             entity=entity, action=FinanceAuditAction.DEFERRED_RELEASE_REVERSED,
             actor_user=actor_user, target=release,
-            message=f"Reversed a deferred income release of {release.amount} kobo.",
+            message=f"Reversed a deferred income release of {format_naira(release.amount)}.",
             journal_id=release.journal_id, reversal_id=reversal.pk,
         )
     return len(releases)
@@ -572,9 +573,14 @@ def sealed_release_branches(entity, periods) -> dict:
 
 
 def deferred_income_close_check(entity, period, branch=None):
-    """Close check: no deferred income due in or before ``period`` is left unreleased."""
+    """Close check: no deferred income due in or before ``period`` is left unreleased.
+
+    The close releases what is due before it checks, so the item carries
+    ``close_settles`` for the preview to say so (:class:`vs_finance.close.ChecklistItem`).
+    """
     from .close import ChecklistItem
     from .models import DeferredIncomeEntry
+    from .money import format_naira
 
     due = DeferredIncomeEntry.objects.filter(
         entity=entity, status=DeferredIncomeStatus.PENDING,
@@ -584,9 +590,18 @@ def deferred_income_close_check(entity, period, branch=None):
         due = due.filter(branch_id=getattr(branch, "pk", branch))
     row = due.aggregate(n=Count("pk"), total=Sum(F("amount") - F("unwound_amount")))
     count, total = int(row["n"] or 0), int(row["total"] or 0)
+    shares = f"{count} deferred income {'share' if count == 1 else 'shares'} ({format_naira(total)})"
+    are = "is" if count == 1 else "are"
     return ChecklistItem(
         name="deferred_income_released", passed=count == 0,
-        detail=f"{count} deferred income share(s) due, {total} kobo, not yet released",
+        detail=(
+            "Every deferred income share due by the period's end is released." if not count
+            else f"{shares} {are} due and not yet released."
+        ),
+        close_settles=(
+            f"{shares} {are} due; closing the period releases {'it' if count == 1 else 'them'}."
+            if count else ""
+        ),
     )
 
 

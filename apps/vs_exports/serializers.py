@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from .catalogue import describe_filter, get_dataset
+from .catalogue import FilterError, compile_filter, describe_filter, get_dataset
 from .constants import (
     DatasetScope,
     Recurrence,
@@ -33,6 +33,22 @@ from .models import (
     ExportRun,
     ExportSchedule,
 )
+
+
+# Refuse a filter value the dataset cannot apply, before it is saved or queued.
+def check_filter_values(dataset, filters):
+    """Compile each filter spec against *dataset*, raising a 400 on the first bad one.
+
+    :func:`~vs_exports.catalogue.compile_filter` is the one reader of a filter
+    value, so it is also the judge of one: a money bound that is not an amount
+    in naira, or a date that is not a date, is refused here with the sentence a
+    failed run would have shown, rather than saved or queued to fail later.
+    """
+    for spec in filters or []:
+        try:
+            compile_filter(dataset, spec)
+        except FilterError as exc:
+            raise serializers.ValidationError({"filters": str(exc)})
 
 
 # --------------------------------------------------------------------------- #
@@ -176,6 +192,9 @@ class ExportDefinitionWriteSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     "filters": f"'{spec['id']}' is not a filter on {dataset.name}.",
                 })
+        # Values are judged when they are written; a rename leaves stored ones be.
+        if "filters" in attrs:
+            check_filter_values(dataset, filters)
 
         # A draft may be incomplete; anything runnable must be complete.
         is_draft = attrs.get("is_draft", getattr(self.instance, "is_draft", False))
@@ -458,6 +477,10 @@ class QuickExportSerializer(PreviewSerializer):
     #: large export falls back to the queue rather than being refused, because
     #: the caller wanted the data either way.
     sync = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, attrs):
+        check_filter_values(get_dataset(attrs["dataset_key"]), attrs.get("filters"))
+        return attrs
 
 
 class RunRequestSerializer(serializers.Serializer):

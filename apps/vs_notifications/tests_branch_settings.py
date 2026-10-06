@@ -133,10 +133,13 @@ class BranchAdminAccessTests(_BranchSettingsFixture):
             "event_type_key": FEE_EMAIL,
             "event_type_label": NotificationEventType.objects.get(key=FEE_EMAIL).label,
             "source_module": "vs_billing",
+            "source_module_label": "Billing",
             "channel": EMAIL,
+            "channel_label": "Email",
             "is_enabled": False,
             "is_transactional": False,
             "source": "branch",
+            "source_label": "Branch setting",
             "branch_scoped": True,
             "can_edit": True,
         }])

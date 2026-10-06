@@ -490,9 +490,10 @@ class ReopenFiscalYearTests(_YearFixture):
         self.close_year()
         reopen_fiscal_year(self.books, self.year(), reason=REASON)
 
-        reopen_period(self.books, self.month(1), reason=REASON)
-        self.post(self.ikeja, datetime.date(2026, 1, 20), [("1100", 5000, 0), ("4100", 0, 5000)])
-        FiscalPeriod.objects.filter(pk=self.month(1).pk).update(status=PeriodStatus.CLOSED)
+        # December is the latest month, so it reopens without reopening any other.
+        reopen_period(self.books, self.month(12), reason=REASON)
+        self.post(self.ikeja, datetime.date(2026, 12, 20), [("1100", 5000, 0), ("4100", 0, 5000)])
+        FiscalPeriod.objects.filter(pk=self.month(12).pk).update(status=PeriodStatus.CLOSED)
         journals, net = close_fiscal_year(self.books, self.year())
 
         self.assertEqual(net, 135000)

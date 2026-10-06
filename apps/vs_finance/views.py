@@ -2012,12 +2012,20 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
 
     # Handle GET requests for this endpoint.
     def get(self, request, id):
-        """Preview the close checklist for a period (no side effects)."""
+        """Preview what closing the period would find (no side effects).
+
+        The preview describes the close as it would run with its own steps on:
+        depreciation and deferred income falling due come back passed and
+        ``done_by_close``, because the close posts and releases them first. While
+        the school keeps its periods in order it carries ``earlier_periods_closed``,
+        for a hard close, or for a soft close with ``?soft=true``.
+        """
         from .close import close_checklist
 
         entity, period = self._period(request, id)
         branch = _calendar_branch(request, entity)
-        checklist = close_checklist(entity, period, branch=branch)
+        soft = str(request.query_params.get("soft", "")).lower() in ("1", "true", "yes")
+        checklist = close_checklist(entity, period, branch=branch, preview=True, soft=soft)
         items = _serialize_checklist(checklist)["items"]
         return success_response(
             message=f"Close checklist for '{period}'.",
@@ -2064,6 +2072,7 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
             soft=bool(body.get("soft", False)),
             force=_is_forced(request),
             run_depreciation=bool(body.get("run_depreciation", True)),
+            release_deferred=bool(body.get("release_deferred", True)),
             reason=body.get("reason"),
         )
         return success_response(
@@ -2304,12 +2313,17 @@ def _money(amount):
     return {"kobo": amount, "naira": format_naira(amount)}
 
 
-# Support the serialize checklist workflow.
 def _serialize_checklist(checklist):
+    """A close checklist as the screens read it.
+
+    ``done_by_close`` marks an item the close settles itself, which only a preview
+    reports (:class:`vs_finance.close.ChecklistItem`).
+    """
     return {
         "passed": checklist.passed,
         "items": [
-            {"name": i.name, "passed": i.passed, "blocking": i.blocking, "detail": i.detail}
+            {"name": i.name, "passed": i.passed, "blocking": i.blocking,
+             "done_by_close": i.done_by_close, "detail": i.detail}
             for i in checklist.items
         ],
     }

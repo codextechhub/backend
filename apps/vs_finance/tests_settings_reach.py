@@ -232,3 +232,23 @@ class CalendarSettingsReachTests(_ReachFixture):
         response = self.send(self.tolu, "patch", self.PATH, self.solo_books, self.BODY)
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(self.stored(self.solo_books).next_year_mode, "WARN_ONLY")
+
+    def test_a_branch_bound_holder_cannot_turn_the_close_order_off(self):
+        response = self.send(
+            self.ngozi, "patch", self.PATH, self.books, {"periods_close_in_order": False},
+        )
+        self.assert_refused(
+            response,
+            "Only a school-wide administrator can change the fiscal calendar settings.",
+        )
+        self.assertIsNone(self.stored(self.books))
+
+    def test_another_schools_books_are_not_found_and_nothing_moves(self):
+        response = self.send(
+            self.adaeze, "patch", self.PATH, self.solo_books, {"periods_close_in_order": False},
+        )
+        self.assertEqual(response.status_code, 404, response.data)
+        self.assertIsNone(self.stored(self.solo_books))
+        self.assertEqual(self.audits(
+            self.solo_books, FinanceAuditAction.FINANCE_CALENDAR_SETTINGS_UPDATED,
+        ), 0)

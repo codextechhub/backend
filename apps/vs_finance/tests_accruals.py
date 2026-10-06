@@ -43,6 +43,7 @@ from vs_finance.models import (
     DeferredIncomeEntry,
     FeeItem,
     FeeStructure,
+    FinanceCalendarSettings,
     FinanceReceivablesPolicy,
     FiscalPeriod,
     Invoice,
@@ -85,12 +86,20 @@ class _AccrualFixture(TestCase):
 
     @classmethod
     def build_books(cls, code, tenant):
+        """Books for 2026 and 2027 whose months close in any order.
+
+        The accrual tests close a month of 2027 while 2026 is still open, because
+        the second term's fees are billed in December. The order the months close
+        in is not what they test (:mod:`vs_finance.tests_period_order` does that),
+        so these books turn it off.
+        """
         entity = LedgerEntity.objects.create(
             name=f"{code} Books", code=code, kind=LedgerEntity.Kind.TENANT, tenant=tenant,
         )
         seed_chart_of_accounts(entity)
         seed_fiscal_year(entity, year=2026)
         seed_fiscal_year(entity, year=2027)
+        FinanceCalendarSettings.objects.create(entity=entity, periods_close_in_order=False)
         return entity
 
     @classmethod
@@ -269,6 +278,28 @@ class DeferredIncomeReleaseTests(_AccrualFixture):
         january.refresh_from_db()
         self.assertEqual(january.status, "CLOSED")
         self.assertEqual(self.schedule(invoice)[0][3], DeferredIncomeStatus.RELEASED)
+
+    def test_the_close_preview_shows_the_share_as_done_by_the_close(self):
+        from vs_finance.close import close_checklist
+
+        self.bill(self.eze)
+        preview = close_checklist(self.books, self.period(2027, 1), preview=True)
+        item = next(i for i in preview.items if i.name == "deferred_income_released")
+        self.assertTrue(item.passed)
+        self.assertTrue(item.done_by_close)
+        self.assertEqual(
+            item.detail,
+            "1 deferred income share (₦375.00) is due; closing the period releases it.",
+        )
+        self.assertTrue(preview.passed)
+
+    def test_a_close_told_not_to_release_the_share_is_still_blocked(self):
+        from vs_finance.close import close_period
+
+        self.bill(self.eze)
+        with self.assertRaises(PeriodCloseError) as refused:
+            close_period(self.books, self.period(2027, 1), release_deferred=False)
+        self.assertIn("deferred_income_released", refused.exception.failures)
 
     def test_releases_are_reversed_with_their_open_month_and_released_again(self):
         from vs_finance.deferred_income import release_deferred_income, reverse_deferred_release

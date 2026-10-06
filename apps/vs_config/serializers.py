@@ -5,9 +5,11 @@ from uuid import UUID
 from django.utils import timezone
 from rest_framework import serializers
 
+from . import labels
 from .constants import VALID_SCOPES
 from .models import (
     Capability,
+    CapabilityDepthGrant,
     CapabilityEntitlement,
     CapabilityOverride,
     ConfigurationAuditEvent,
@@ -27,16 +29,45 @@ class ActorSerializer(serializers.Serializer):
 
 
 class ConfigurationDefinitionSerializer(serializers.ModelSerializer):
+    """One setting definition, with the words a settings screen shows for it.
+
+    ``group_label`` is the section the setting is listed under, and the
+    ``*_label`` fields name its enum values, so a client never has to read the
+    dotted key or an enum member to describe the setting.
+    """
+
     consumer = serializers.SerializerMethodField()
+    group_label = serializers.SerializerMethodField()
+    value_type_label = serializers.SerializerMethodField()
+    sensitivity_label = serializers.SerializerMethodField()
+    allowed_scope_labels = serializers.SerializerMethodField()
 
     class Meta:
         model = ConfigurationDefinition
         fields = [
-            "id", "key", "label", "description", "value_type", "default_value",
-            "validation_rules", "allowed_scopes", "sensitivity", "is_active",
-            "consumer", "created_by", "created_at", "updated_at",
+            "id", "key", "label", "description", "group_label", "value_type",
+            "value_type_label", "default_value", "validation_rules",
+            "allowed_scopes", "allowed_scope_labels", "sensitivity",
+            "sensitivity_label", "is_active", "consumer", "created_by",
+            "created_at", "updated_at",
         ]
         read_only_fields = ["id", "created_by", "created_at", "updated_at"]
+
+    def get_group_label(self, obj):
+        return labels.setting_group_label(obj.key)
+
+    def get_value_type_label(self, obj):
+        return labels.VALUE_TYPE_LABELS.get(obj.value_type, "Value")
+
+    def get_sensitivity_label(self, obj):
+        return labels.SENSITIVITY_LABELS.get(obj.sensitivity, "Internal")
+
+    def get_allowed_scope_labels(self, obj):
+        return [
+            labels.ALLOWED_SCOPE_LABELS[scope]
+            for scope in obj.allowed_scopes or []
+            if scope in labels.ALLOWED_SCOPE_LABELS
+        ]
 
     def get_consumer(self, obj):
         from .runtime_settings import get_setting_consumer
@@ -210,17 +241,6 @@ class CapabilitySerializer(serializers.ModelSerializer):
         child=serializers.SlugField(max_length=100), required=False, write_only=True
     )
 
-    def to_representation(self, instance):
-        # Read side of the write-only dependencies list: the required keys.
-        # A capability with an unmet dependency resolves OFF regardless of
-        # grants/overrides, so clients need this to explain the state.
-        data = super().to_representation(instance)
-        data["dependencies"] = [
-            link.requires.key
-            for link in instance.dependency_links.select_related("requires").all()
-        ]
-        return data
-
     class Meta:
         model = Capability
         fields = [
@@ -274,24 +294,46 @@ class CapabilitySerializer(serializers.ModelSerializer):
         return capability
 
     def to_representation(self, instance):
+        """Add the read side of the write-only ``dependencies`` list.
+
+        A capability with an unmet dependency resolves off whatever its grants
+        and overrides say, so a client needs the required capabilities to
+        explain that state: ``dependencies`` keeps their keys, and
+        ``dependency_details`` pairs each key with the name a person reads,
+        archived capabilities included.
+        """
         data = super().to_representation(instance)
-        data["dependencies"] = list(
+        required = list(
             instance.dependency_links.order_by("requires__key")
-            .values_list("requires__key", flat=True)
+            .values_list("requires__key", "requires__label")
         )
+        data["dependencies"] = [key for key, _ in required]
+        data["dependency_details"] = [
+            {"key": key, "label": label or "Another feature"} for key, label in required
+        ]
+        data["kind_label"] = labels.CAPABILITY_KIND_LABELS.get(instance.kind, "Feature")
         return data
 
 
 class CapabilityEntitlementSerializer(serializers.ModelSerializer):
     capability_key = serializers.CharField(source="capability.key", read_only=True)
+    state_label = serializers.SerializerMethodField()
+    source_label = serializers.SerializerMethodField()
 
     class Meta:
         model = CapabilityEntitlement
         fields = [
-            "id", "capability", "capability_key", "tenant", "state", "source",
-            "starts_at", "ends_at", "updated_by", "created_at", "updated_at",
+            "id", "capability", "capability_key", "tenant", "state", "state_label",
+            "source", "source_label", "starts_at", "ends_at", "updated_by",
+            "created_at", "updated_at",
         ]
         read_only_fields = fields
+
+    def get_state_label(self, obj):
+        return labels.ENTITLEMENT_STATE_LABELS.get(obj.state, "Recorded")
+
+    def get_source_label(self, obj):
+        return labels.ENTITLEMENT_SOURCE_LABELS.get(obj.source, "Recorded grant")
 
 
 class SetEntitlementSerializer(serializers.Serializer):
@@ -350,14 +392,18 @@ class BulkSetEntitlementSerializer(serializers.Serializer):
 
 class CapabilityOverrideSerializer(serializers.ModelSerializer):
     capability_key = serializers.CharField(source="capability.key", read_only=True)
+    state_label = serializers.SerializerMethodField()
 
     class Meta:
         model = CapabilityOverride
         fields = [
             "id", "capability", "capability_key", "tenant", "branch", "state",
-            "reason", "updated_by", "created_at", "updated_at",
+            "state_label", "reason", "updated_by", "created_at", "updated_at",
         ]
         read_only_fields = fields
+
+    def get_state_label(self, obj):
+        return labels.OVERRIDE_STATE_LABELS.get(obj.state, "Follows the plan")
 
 
 class SetOverrideSerializer(serializers.Serializer):
@@ -450,16 +496,20 @@ class ConfigurationAuditExportJobSerializer(serializers.ModelSerializer):
     tenant_name = serializers.CharField(source="tenant.name", read_only=True, allow_null=True)
     branch_name = serializers.CharField(source="branch.name", read_only=True, allow_null=True)
     download_available = serializers.SerializerMethodField()
+    status_label = serializers.SerializerMethodField()
 
     class Meta:
         model = ConfigurationAuditExportJob
         fields = [
-            "id", "status", "filters", "scope_key", "tenant_slug", "tenant_name",
+            "id", "status", "status_label", "filters", "scope_key", "tenant_slug", "tenant_name",
             "branch", "branch_name", "file_name", "row_count", "failure_message",
             "requested_at", "started_at", "completed_at", "available_until",
             "download_available",
         ]
         read_only_fields = fields
+
+    def get_status_label(self, obj):
+        return labels.EXPORT_JOB_STATUS_LABELS.get(obj.status, "Queued")
 
     def get_download_available(self, obj):
         return bool(
@@ -471,17 +521,42 @@ class ConfigurationAuditExportJobSerializer(serializers.ModelSerializer):
 
 
 class ConfigurationAuditEventSerializer(serializers.ModelSerializer):
+    """One configuration audit event, with the words its screen shows.
+
+    ``action`` and ``target_type`` stay the stored machine values, because
+    saved views, filters and exports are keyed on them. ``action_label``,
+    ``target_type_label`` and ``field_labels`` (one entry per key in either
+    snapshot) are what a person reads.
+    """
+
     actor = ActorSerializer(read_only=True)
+    action_label = serializers.SerializerMethodField()
+    target_type_label = serializers.SerializerMethodField()
     target_label = serializers.SerializerMethodField()
+    field_labels = serializers.SerializerMethodField()
 
     class Meta:
         model = ConfigurationAuditEvent
         fields = [
-            "id", "action", "target_type", "target_id", "target_label", "tenant",
-            "branch", "actor", "before_data", "after_data", "reason", "metadata",
+            "id", "action", "action_label", "target_type", "target_type_label",
+            "target_id", "target_label", "tenant", "branch", "actor",
+            "before_data", "after_data", "field_labels", "reason", "metadata",
             "created_at",
         ]
         read_only_fields = fields
+
+    def get_action_label(self, obj):
+        return labels.audit_action_label(obj.action)
+
+    def get_target_type_label(self, obj):
+        return labels.audit_target_type_label(obj.target_type)
+
+    def get_field_labels(self, obj):
+        keys = set()
+        for snapshot in (obj.before_data, obj.after_data):
+            if isinstance(snapshot, dict):
+                keys.update(snapshot)
+        return {key: labels.audit_field_label(key) for key in sorted(keys)}
 
     def get_target_label(self, obj):
         """Human name for the audited object so raw ids never reach the UI.
@@ -522,8 +597,14 @@ class ConfigurationAuditEventSerializer(serializers.ModelSerializer):
                     .filter(pk=obj.target_id).first()
                 )
                 label = row.capability.label if row else ""
+            elif obj.target_type == "CapabilityDepthGrant":
+                row = (
+                    CapabilityDepthGrant.all_objects.select_related("capability")
+                    .filter(pk=obj.target_id).first()
+                )
+                label = row.capability.label if row else ""
             elif obj.target_type == "IntegrationConnection":
-                label = f"{obj.target_id.title()} connection"
+                label = labels.integration_connection_label(obj.target_id)
             elif obj.target_type == "ConfigurationAuditExportJob":
                 row = ConfigurationAuditExportJob.objects.filter(pk=obj.target_id).first()
                 label = row.file_name or "Queued audit export" if row else ""
@@ -542,12 +623,12 @@ def build_configuration_target_labels(events):
     event while preserving the serializer's deleted-target fallback.
     """
     grouped = defaultdict(set)
-    labels = {}
+    resolved = {}
     for event in events:
         key = (event.target_type, event.target_id)
-        labels[key] = ""
+        resolved[key] = ""
         if event.target_type == "IntegrationConnection":
-            labels[key] = f"{event.target_id.title()} connection"
+            resolved[key] = labels.integration_connection_label(event.target_id)
         else:
             grouped[event.target_type].add(event.target_id)
 
@@ -570,6 +651,10 @@ def build_configuration_target_labels(events):
         ),
         "CapabilityOverride": (
             CapabilityOverride.all_objects.select_related("capability"),
+            lambda row: row.capability.label,
+        ),
+        "CapabilityDepthGrant": (
+            CapabilityDepthGrant.all_objects.select_related("capability"),
             lambda row: row.capability.label,
         ),
         "ConfigurationAuditExportJob": (
@@ -595,5 +680,5 @@ def build_configuration_target_labels(events):
         manager, label_for = query
         for row in manager.filter(pk__in=valid_ids):
             for raw_id in canonical_to_raw[str(row.pk)]:
-                labels[(target_type, raw_id)] = label_for(row)
-    return labels
+                resolved[(target_type, raw_id)] = label_for(row)
+    return resolved

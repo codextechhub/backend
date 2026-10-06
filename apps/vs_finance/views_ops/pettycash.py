@@ -373,7 +373,7 @@ class _PettyCashReturnRaiseBase(_PettyCashFundActionBase):
         entity, fund = self._fund(request, pk)
         body = request.data or {}
         if body.get("counted_amount") in (None, ""):
-            raise ValidationError({"counted_amount": "Count the tin and give the cash found, in kobo."})
+            raise ValidationError({"counted_amount": "Count the tin and enter the cash found as a whole amount."})
         counted = _money(body.get("counted_amount"), "counted_amount")
         amount, new_float = self._amounts(body, fund, counted)
         bank = _resolve_bank_account(

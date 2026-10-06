@@ -512,15 +512,29 @@ def _approvals(entity, reader=EVERY_BLOCK) -> dict:
 
 # Summarize period close checklist status.
 def _close_progress(entity, period) -> dict | None:
+    """How far ``period`` is from closing, read the way the close preview reads it.
+
+    Depreciation and deferred income falling due are work the close does itself,
+    so they count as done, with ``done_by_close`` set, rather than as outstanding:
+    the card agrees with the checklist a bursar sees on pressing Close.
+    """
     if period is None:  # No period means no close checklist.
         return None
     from .close import close_checklist
 
     try:  # Checklist can fail on configuration issues; dashboard should degrade.
-        cl = close_checklist(entity, period)  # Run close checks.
+        cl = close_checklist(entity, period, preview=True)  # Run close checks.
     except Exception:  # pragma: no cover - defensive
         return None  # Hide close progress instead of failing dashboard.
-    checks = [{"name": i.name, "passed": bool(i.passed), "blocking": bool(i.blocking)} for i in cl.items]  # Shape checklist rows.
+    checks = [
+        {
+            "name": i.name,
+            "passed": bool(i.passed),
+            "blocking": bool(i.blocking),
+            "done_by_close": bool(i.done_by_close),
+        }
+        for i in cl.items
+    ]
     return {  # Return checklist summary.
         "period": period.name,  # Period display name.
         "done": sum(1 for c in checks if c["passed"]),  # Passed check count.

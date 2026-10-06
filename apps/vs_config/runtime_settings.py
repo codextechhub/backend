@@ -9,6 +9,7 @@ from email.utils import parseaddr
 
 from django.conf import settings
 
+from .labels import payment_provider_label
 from .models import ConfigurationDefinition, ConfigurationValue
 from .services.scopes import normalize_scope
 
@@ -65,112 +66,91 @@ SECURITY_COMPLIANCE = {
     "proxy_idle_timeout_minutes": {"direction": "maximum", "min": 5, "max": 120},
 }
 
-# Code-owned ownership data. Administrators can see who consumes a key, but
-# cannot author claims that are not backed by an application integration.
+#: What each curated platform setting drives, as the settings screens show it.
+#: Code-owned: administrators cannot author these claims. See get_setting_consumer.
 SETTING_CONSUMERS = {
     "platform.profile.name": {
         "service": "Finance documents",
-        "consumer": "vs_finance.documents._issuer_block",
         "impact": "Supplies the issuer identity on platform invoices and receipts.",
     },
     "platform.profile.tagline": {
         "service": "Finance documents",
-        "consumer": "vs_finance.documents._issuer_block",
         "impact": "Supplies the issuer tagline on platform invoices and receipts.",
     },
     "platform.profile.address": {
         "service": "Finance documents",
-        "consumer": "vs_finance.documents._issuer_block",
         "impact": "Supplies the issuer address on platform invoices and receipts.",
     },
     "platform.profile.email": {
         "service": "Finance documents",
-        "consumer": "vs_finance.documents._issuer_block",
         "impact": "Supplies the public issuer email on platform invoices and receipts.",
     },
     "platform.profile.phone": {
         "service": "Finance documents",
-        "consumer": "vs_finance.documents._issuer_block",
         "impact": "Supplies the public issuer phone on platform invoices and receipts.",
     },
     "platform.profile.website": {
         "service": "Finance documents",
-        "consumer": "vs_finance.documents._issuer_block",
         "impact": "Supplies the issuer website on platform invoices and receipts.",
     },
     "platform.profile.logo_url": {
         "service": "Finance documents",
-        "consumer": "vs_finance.documents._issuer_block",
         "impact": "Supplies the public logo URL on platform invoices and receipts.",
     },
     "platform.onboarding.default_ownership_type": {
         "service": "School onboarding",
-        "consumer": "schools.vs_schools.serializers.SchoolCreateSerializer",
         "impact": "Fills ownership type when a new school omits it.",
     },
     "platform.onboarding.default_term_structure": {
         "service": "School onboarding",
-        "consumer": "schools.vs_schools.serializers.SchoolCreateSerializer",
         "impact": "Fills academic structure when a new school omits it.",
     },
     "platform.onboarding.default_currency": {
         "service": "School onboarding",
-        "consumer": "schools.vs_schools.serializers.SchoolCreateSerializer",
         "impact": "Fills billing currency when a new school omits it.",
     },
     "platform.onboarding.default_branch_country": {
         "service": "Branch onboarding",
-        "consumer": "schools.vs_schools.serializers.BranchCreateSerializer",
         "impact": "Fills country when a new branch omits it.",
     },
     "security.failed_login_threshold": {
         "service": "User authentication",
-        "consumer": "vs_user.services.auth.LoginService",
         "impact": "Controls when failed sign-ins lock an account.",
     },
     "security.account_lock_minutes": {
         "service": "User authentication",
-        "consumer": "vs_user.services.auth.LoginService",
         "impact": "Controls the duration of automatic account lockouts.",
     },
     "security.self_reset_expiry_hours": {
         "service": "Password recovery",
-        "consumer": "vs_user.services.password.PasswordService",
         "impact": "Controls self-service password reset link expiry.",
     },
     "security.admin_reset_expiry_hours": {
         "service": "Password recovery",
-        "consumer": "vs_user.services.password.PasswordService",
         "impact": "Controls administrator-issued password reset link expiry.",
     },
     "security.invitation_expiry_days": {
         "service": "User invitations",
-        "consumer": "vs_user.services.invitation.InvitationService",
         "impact": "Controls new-user invitation expiry.",
     },
     "security.proxy_idle_timeout_minutes": {
         "service": "Proxy sessions",
-        "consumer": "vs_rbac.authentication.TenantJWTAuthentication",
         "impact": "Expires idle impersonation sessions during authentication.",
     },
     "integrations.email.sender_name": {
         "service": "Application mail",
-        "consumer": "core.mail.build_from_email",
         "impact": "Supplies the default display name for outbound email.",
     },
     "integrations.email.sender_address": {
         "service": "Application mail",
-        "consumer": "core.mail.build_from_email",
         "impact": "Supplies the default sender address for outbound email.",
     },
     "notifications.email_max_retries": {
         "service": "Notification worker",
-        "consumer": "vs_notifications.tasks",
         "impact": "Limits queued email delivery retries.",
     },
     "notifications.email_retry_backoff_seconds": {
         "service": "Notification worker",
-        "consumer": "vs_notifications.tasks",
         "impact": "Controls the delay between email delivery retries.",
     },
 }
@@ -315,6 +295,7 @@ def resolve_integration_settings():
         result["settings"][field] = value
         result["sources"][field] = source
 
+    provider = str(getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")).upper()
     result["status"] = {
         "email": {
             "configured": bool(getattr(settings, "EMAIL_HOST_USER", "")),
@@ -322,7 +303,8 @@ def resolve_integration_settings():
             "credentials_managed_by": "deployment",
         },
         "payments": {
-            "provider": str(getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")).upper(),
+            "provider": provider,
+            "provider_label": payment_provider_label(provider),
             "configured": bool(
                 getattr(settings, "PAYSTACK_SECRET_KEY", "")
                 and getattr(settings, "PAYSTACK_PUBLIC_KEY", "")
@@ -351,6 +333,12 @@ def validate_security_compliance(field, value, *, tenant=None, branch=None):
 
 
 def get_setting_consumer(key):
+    """The service a platform setting drives and the effect of changing it.
+
+    Answers ``{"service", "impact"}`` in plain English, or None for a key no
+    application reads. The value is serialized to the settings screens as it
+    stands, so it never names the module, class or function that reads the key.
+    """
     return SETTING_CONSUMERS.get(key)
 
 

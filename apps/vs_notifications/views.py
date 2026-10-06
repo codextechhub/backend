@@ -44,6 +44,7 @@ from .constants import (
     NotificationPermission,
 )
 from .exceptions import FilterRequiredError
+from . import labels as notification_labels
 from .models import (
     Notification,
     NotificationEventType,
@@ -590,10 +591,13 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
                     "event_type_key":   et.key,
                     "event_type_label": et.label,
                     "source_module":    et.source_module,
+                    "source_module_label": notification_labels.source_module_label(et.source_module),
                     "channel":          channel,
+                    "channel_label":    notification_labels.channel_label(channel),
                     "is_enabled":       is_enabled,
                     "is_transactional": et.is_transactional,
                     "source":           source,
+                    "source_label":     notification_labels.setting_source_label(source),
                     "branch_scoped":    et.branch_scoped,
                     "can_edit":         can_edit,
                 })
@@ -916,6 +920,7 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
                     "event_type_key":   event_type.key,
                     "event_type_label": event_type.label,
                     "source_module":    event_type.source_module,
+                    "source_module_label": notification_labels.source_module_label(event_type.source_module),
                     "description":      event_type.description,
                     "channels":         missing,
                 })

@@ -298,7 +298,7 @@ class CollectionListCreateView(APIView):
 
         amount = int(body.get("amount") or 0)
         if amount <= 0:  # Reject empty or negative collections.
-            raise ValidationError({"amount": "A positive amount (in kobo) is required."})
+            raise ValidationError({"amount": "Enter an amount greater than zero."})
         
         invoice = _entity_obj(request, entity, Invoice, body.get("invoice"), "invoice")
         customer = _collection_payer(request, entity, body.get("customer"), invoice)
@@ -547,7 +547,7 @@ class PayoutListCreateView(APIView):
         idempotency_key = _required_idempotency_key(request)
         amount = int(body.get("amount") or 0)
         if amount <= 0:  # Reject invalid payout amounts.
-            raise ValidationError({"amount": "A positive amount (in kobo) is required."})
+            raise ValidationError({"amount": "Enter an amount greater than zero."})
         vendor = _payout_vendor(request, entity, body.get("vendor"))
         source = _payout_source(request, entity, body.get("source_account"))
         item = {
@@ -666,7 +666,7 @@ class PayoutBatchListCreateView(APIView):
         for idx, raw in enumerate(raw_items):  # Normalize each submitted line item.
             amount = int(raw.get("amount") or 0)
             if amount <= 0:  # Reject empty or negative line amounts.
-                raise ValidationError({f"items[{idx}].amount": "A positive amount (kobo) is required."})
+                raise ValidationError({f"items[{idx}].amount": "Enter an amount greater than zero."})
             try:
                 vendor = _payout_vendor(request, entity, raw.get("vendor"))
             except ValidationError as exc:

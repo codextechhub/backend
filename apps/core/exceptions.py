@@ -37,11 +37,12 @@ def _is_unique_violation(exc: IntegrityError) -> bool:
 
 
 def _blocker_summary(exc) -> tuple[str, dict]:
-    """Human phrase + machine detail for a ProtectedError / RestrictedError.
+    """Human phrase + per-kind counts for a ProtectedError / RestrictedError.
 
-    Returns e.g. ("2 positions", {"vs_user.position": 2}). Only model names and
-    counts are exposed - never the blocking rows themselves, which may live
-    outside the caller's tenant/entity scope.
+    Returns e.g. ("2 positions", {"positions": 2}). Only the plural name of each
+    blocking kind of record and its count are exposed - never the blocking rows
+    themselves, which may live outside the caller's tenant/entity scope, and
+    never the model label (``vs_user.position``), which names server code.
     """
     objects = (
         getattr(exc, 'protected_objects', None)
@@ -58,7 +59,8 @@ def _blocker_summary(exc) -> tuple[str, dict]:
         meta = model._meta
         label = meta.verbose_name if count == 1 else meta.verbose_name_plural
         phrases.append(f'{count} {str(label).lower()}')
-        detail[meta.label_lower] = count
+        plural = str(meta.verbose_name_plural).lower()
+        detail[plural] = detail.get(plural, 0) + count
 
     if not phrases:
         return 'other records', {}
