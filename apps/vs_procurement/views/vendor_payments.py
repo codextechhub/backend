@@ -89,7 +89,7 @@ def _resolve_bank_account(request, entity, ref, *, document_branch):
             request, entity, ref, document_branch=document_branch, noun="vendor payment")
     gl = account.gl_account
     if not (account.is_active and gl.is_active and gl.is_postable):
-        raise ValidationError({"bank_account": "No active bank account with a postable GL account exists in this entity."})
+        raise ValidationError({"bank_account": "No active bank account is set up to pay from in these books."})
     return account
 
 

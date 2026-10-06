@@ -1,7 +1,7 @@
 """Typed fiscal-calendar policy for one ledger entity: the rollover and the close order."""
 from __future__ import annotations
 
-from vs_finance.wording import counted
+from vs_finance.wording import choice_options, choose_one_of, counted
 
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
@@ -34,6 +34,7 @@ def serialize_finance_calendar_settings(settings):
         "next_year_mode_label": (
             FinanceCalendarSettings.NextYearMode(settings.next_year_mode).label
         ),
+        "next_year_mode_options": choice_options(FinanceCalendarSettings.NextYearMode),
         "next_year_lead_days": settings.next_year_lead_days,
         "periods_close_in_order": settings.periods_close_in_order,
         "updated_at": settings.updated_at.isoformat() if settings.pk else None,
@@ -53,7 +54,7 @@ def _validated_values(data):
     if field in data:
         value = str(data[field] or "").upper()
         if value not in FinanceCalendarSettings.NextYearMode.values:
-            raise ValidationError({field: "Choose AUTO_OPEN or WARN_ONLY."})
+            raise ValidationError({field: choose_one_of(FinanceCalendarSettings.NextYearMode)})
         values[field] = value
 
     field = "next_year_lead_days"

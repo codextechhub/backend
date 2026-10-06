@@ -347,7 +347,8 @@ def gateway_clearing_current(entity, period, branch=None):
     count = stale.count()
     total = sum(stale.values_list("amount", flat=True)) if count else 0
     return ChecklistItem(
-        name="gateway_clearing_current", title="Online payments settled",
+        name="gateway_clearing_current",
+        title="Gateway clearing current (online payments paid into the bank)",
         passed=count == 0,
         blocking=False,
         detail=(

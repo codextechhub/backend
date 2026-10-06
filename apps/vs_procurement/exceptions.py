@@ -185,17 +185,48 @@ class ThreeWayMatchError(PostingError):
 
 
 class MissingControlAccountError(PostingError):
-    """A required control account (GR/IR clearing, WHT payable, AP) is not configured."""
+    """An account a purchase posts to (GR/IR clearing, WHT payable, AP) is not set up.
+
+    Names the account by its code and its role, and says nothing about any other
+    books' accounts.
+    """
     error_code = "CONTROL_ACCOUNT_MISSING"
-    default_message = "A required control account is not configured for this entity."
+    default_message = "An account these postings need is missing from the chart of accounts."
 
     def __init__(self, code, *, label="", **kwargs):
-        """Identify the missing chart code without leaking any cross-entity account data."""
         self.code = code
+        named = f"Account {code}, {label}," if label else f"Account {code}"
         super().__init__(
-            f"No {label or 'control'} account '{code}' found in this entity's chart of accounts.",
+            f"{named} is missing from the chart of accounts, inactive, or a heading that "
+            f"takes no entries. It can be set up under account mapping.",
             code=code, **kwargs,
         )
+
+
+class NoPayableAccountError(PostingError):
+    """A vendor has no account chosen for what is owed to them, so nothing posts for them.
+
+    One sentence for every posting that needs the vendor's payable account. A
+    bursar posting a bill, a payment or a credit note reads it in plain words; an
+    accountant carrying in an opening bill (``accountant=True``) reads the term
+    with the plain words beside it (:data:`vs_finance.constants.AP_NAME`). The
+    error code stays ``POSTING_ERROR``, which clients already key on.
+    """
+
+    def __init__(self, vendor, *, accountant=False, **kwargs):
+        from vs_finance.constants import AP_NAME
+
+        if accountant:
+            message = (
+                f"Vendor {vendor.code} has no {AP_NAME[0].lower()}{AP_NAME[1:]} account set. "
+                f"Choose one on the vendor's record."
+            )
+        else:
+            message = (
+                f"Vendor {vendor.code} has no account chosen for what is owed to them, so "
+                f"nothing can be posted for them yet. Choose one on the vendor's record."
+            )
+        super().__init__(message, **kwargs)
 
 
 class SettlementBranchError(PostingError):

@@ -80,7 +80,7 @@ class ControlAccountLockedError(PostingError):
     """A hand-typed journal named an account a sub-ledger keeps."""
 
     error_code = "CONTROL_ACCOUNT_LOCKED"
-    default_message = "A hand-typed journal cannot post to an account a sub-ledger keeps."
+    default_message = "A hand-typed journal cannot post to an account that documents keep."
 
 
 def register_control_account_provider(fn):

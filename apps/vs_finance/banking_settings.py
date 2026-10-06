@@ -1,7 +1,7 @@
 """Typed bank-reconciliation and receipt-allocation defaults."""
 from __future__ import annotations
 
-from vs_finance.wording import counted
+from vs_finance.wording import choice_options, choose_one_of, counted
 
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
@@ -40,6 +40,9 @@ def serialize_finance_banking_settings(settings):
             FinanceBankingSettings.ReceiptAllocationStrategy(
                 settings.default_receipt_allocation_strategy,
             ).label
+        ),
+        "default_receipt_allocation_strategy_options": choice_options(
+            FinanceBankingSettings.ReceiptAllocationStrategy,
         ),
         "petty_cash_low_balance_threshold_bps": (
             settings.petty_cash_low_balance_threshold_bps
@@ -80,7 +83,7 @@ def _validated_values(data):
     if field in data:
         value = str(data[field] or "").lower()
         if value not in FinanceBankingSettings.ReceiptAllocationStrategy.values:
-            raise ValidationError({field: "Select a supported allocation strategy."})
+            raise ValidationError({field: choose_one_of(FinanceBankingSettings.ReceiptAllocationStrategy)})
         values[field] = value
 
     field = "petty_cash_low_balance_threshold_bps"

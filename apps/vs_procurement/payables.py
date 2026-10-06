@@ -37,6 +37,7 @@ from vs_finance.audit import record, record_rejection
 from vs_finance.constants import (
     GRIR_NAME,
     GRIR_PLAIN,
+    WHT_NAME,
     AccountType,
     DocumentStatus,
     FinanceAuditAction,
@@ -54,7 +55,7 @@ from .constants import (
     MATCH_BLOCKING, PURCHASE_PRICE_VARIANCE_CODE, MatchStatus, ProcApprovalState,
     VENDOR_ADVANCE_CODE, VendorKycStatus, WHT_PAYABLE_CODE, WhtSource,
 )
-from .exceptions import SettlementBranchError, ThreeWayMatchError
+from .exceptions import NoPayableAccountError, SettlementBranchError, ThreeWayMatchError
 from .purchasing import resolve_account
 from .settings import resolve_procurement_settings
 from vs_finance.wording import counted, state_word
@@ -214,7 +215,7 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
     vendor = invoice.vendor  # Vendor drives the AP control account.
     ap_account = vendor.payable_account  # Resolve the vendor payable account.
     if ap_account is None:  # Cannot credit AP without a payable account.
-        raise PostingError(f"Vendor {vendor.code} has no payable (AP control) account set.")
+        raise NoPayableAccountError(vendor)
 
     if invoice.total <= 0:  # Reject zero or negative bills.
         raise PostingError("A vendor invoice must have a positive total to post.")
@@ -512,7 +513,7 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
 
     ap_account = vendor.payable_account  # Resolve the AP control account.
     if ap_account is None:  # Cannot debit AP without a payable account.
-        raise PostingError(f"Vendor {vendor.code} has no payable (AP control) account set.")
+        raise NoPayableAccountError(vendor)
     if payment.payment_account_id is None:  # A bank/cash account is required for the credit side.
         raise PostingError("Vendor payment has no payment (bank/cash) account set.")
     if (
@@ -585,12 +586,12 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
         wht_account = (  # Prefer the tax-code account when configured.
             payment.wht_tax_code.collected_account
             if (payment.wht_tax_code_id and payment.wht_tax_code.collected_account_id)  # Branch on the current domain condition.
-            else resolve_account(payment.entity, WHT_PAYABLE_CODE, label="WHT payable")
+            else resolve_account(payment.entity, WHT_PAYABLE_CODE, label=WHT_NAME)
         )
         line_no += 1  # Last line is the WHT payable credit.
         JournalLine.objects.create(
             entry=entry, account=wht_account, debit=0, credit=payment.wht_amount,
-            description="WHT withheld", line_no=line_no,
+            description=WHT_NAME, line_no=line_no,
         )
 
     post_journal(entry, actor_user=actor_user)  # Validate and post the payment journal.
@@ -844,7 +845,7 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, stric
     vendor = payment.vendor  # Vendor drives the AP control account.
     ap_account = vendor.payable_account  # Resolve the AP control account.
     if ap_account is None:  # Cannot debit AP without a payable account.
-        raise PostingError(f"Vendor {vendor.code} has no payable (AP control) account set.")
+        raise NoPayableAccountError(vendor)
 
     remaining = payment.advance_remaining  # Money of this payment still in 1240.
     if remaining <= 0:  # Nothing sitting in the advance to apply.
@@ -1081,7 +1082,7 @@ def _post_opening_vendor_invoice_atomic(invoice, *, actor_user=None):
         raise PostingError("An opening bill stands on its own; it cannot name a purchase order.")
     vendor = invoice.vendor
     if vendor.payable_account_id is None:
-        raise PostingError(f"Vendor {vendor.code} has no payable (AP control) account set.")
+        raise NoPayableAccountError(vendor, accountant=True)
     invoice.recompute_totals(save=True)
     if invoice.total <= 0 or invoice.tax_total:
         raise PostingError("An opening bill carries a positive amount and no tax.")
@@ -1090,7 +1091,8 @@ def _post_opening_vendor_invoice_atomic(invoice, *, actor_user=None):
     if live is not None and invoice.invoice_date >= live:
         raise PostingError(
             f"Bill {invoice.vendor_reference or number} from {vendor.name} is dated "
-            f"{invoice.invoice_date}, on or after the books went live on {live}. "
+            f"{format_date(invoice.invoice_date, invoice.entity.tenant)}, on or after the "
+            f"books went live on {format_date(live, invoice.entity.tenant)}. "
             f"Key it as an ordinary bill instead.",
         )
 
@@ -1131,7 +1133,8 @@ def _post_opening_vendor_invoice_atomic(invoice, *, actor_user=None):
         entity=invoice.entity, action=FinanceAuditAction.VENDOR_OPENING_BILL_POSTED,
         actor_user=actor_user, target=invoice,
         message=(
-            f"Carried in an opening bill from {vendor.code} dated {invoice.invoice_date} "
+            f"Carried in an opening bill from {vendor.code} dated "
+            f"{format_date(invoice.invoice_date, invoice.entity.tenant)} "
             f"({format_naira(invoice.total)})."
         ),
         journal_id=entry.pk, total=invoice.total, invoice_date=str(invoice.invoice_date),

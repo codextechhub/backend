@@ -38,7 +38,8 @@ from .constants import (
     JournalSource,
 )
 from .exceptions import (
-    FinanceError, PostingError, SettlementBranchError, SettlementTargetError,
+    FinanceError, NoReceivableAccountError, PostingError, SettlementBranchError,
+    SettlementTargetError,
 )
 from .deferred_income import defers, schedule_line
 from .money import format_naira
@@ -973,7 +974,7 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
     customer = payment.customer  # The customer determines the AR control account.
     ar_account = customer.receivable_account  # Resolve the AR control account once.
     if ar_account is None:  # Posting requires an AR control account.
-        raise PostingError(f"Customer {customer.code} has no receivable (AR control) account set.")
+        raise NoReceivableAccountError(customer)
     if payment.deposit_account_id is None:  # Cash must post into a bank/cash account.
         raise PostingError("Payment has no deposit (bank/cash) account set.")
 

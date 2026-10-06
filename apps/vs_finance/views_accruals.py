@@ -268,8 +268,15 @@ def _release_row(release, sealed_by=(), tenant=None) -> dict:
     period undo (:func:`vs_finance.deferred_income.sealed_release_branches`).
     ``tenant`` is the one whose month words the refusal is written in.
     """
+    from types import SimpleNamespace
+
+    from .wording import period_label
+
     date = release.journal.date
     reason = _reverse_blocked_reason(release, sealed_by, tenant)
+    period = SimpleNamespace(
+        start_date=release.period_start, end_date=release.period_end, name=release.period_name,
+    )
     return {
         "id": release.pk,
         "branch_id": release.branch_id,
@@ -278,6 +285,9 @@ def _release_row(release, sealed_by=(), tenant=None) -> dict:
         "month": f"{date.year:04d}-{date.month:02d}",
         "period_id": release.period_id,
         "period_name": release.period_name,
+        "period_label": (
+            period_label(period, tenant) if release.period_id is not None else None
+        ),
         "period_status": release.period_status,
         "branch_period_status": release.branch_period_status,
         "amount": release.amount,

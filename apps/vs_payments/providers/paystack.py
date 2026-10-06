@@ -272,9 +272,12 @@ class PaystackProvider(Provider):
         rows, page = [], 1
         while True:
             if page > self.SETTLEMENT_MAX_PAGES:
+                from vs_config.display import format_date
+
                 raise ProviderError(
                     f"Paystack listed more than {self.SETTLEMENT_MAX_PAGES} pages of settlements "
-                    f"from {start.isoformat()} to {end.isoformat()}.", provider=self.name)
+                    f"from {format_date(start, None)} to {format_date(end, None)}.",
+                    provider=self.name)
             response = self._get(
                 f"/settlement?perPage={self.SETTLEMENT_PAGE_SIZE}&page={page}"
                 f"&from={start.isoformat()}&to={end.isoformat()}&subaccount=none")

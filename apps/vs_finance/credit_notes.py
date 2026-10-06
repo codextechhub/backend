@@ -51,7 +51,7 @@ from .constants import (
 from .chronology import ANY_BRANCH
 from .bill_adjustments import give_back, plan_adjustment
 from .deferred_income import apply_unwind, plan_unwind
-from .exceptions import FinanceError, PostingError
+from .exceptions import FinanceError, NoReceivableAccountError, PostingError
 from .money import format_naira
 from .posting import post_journal, resolve_period
 from .receivables import (
@@ -179,9 +179,7 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
     customer = note.customer  # Customer drives AR control account.
     ar_account = customer.receivable_account  # Customer AR account.
     if ar_account is None:  # AR side cannot post without a control account.
-        raise PostingError(
-            f"Customer {customer.code} has no receivable (AR control) account set.",
-        )
+        raise NoReceivableAccountError(customer)
 
     price_credit_note(note)  # Ensure note totals are current before posting.
     if note.total <= 0:  # Note must move a positive amount.
@@ -795,7 +793,7 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
     customer = invoice.customer  # Customer controls AR account.
     ar_account = customer.receivable_account  # AR control account.
     if ar_account is None:  # Credit side needs AR account.
-        raise PostingError(f"Customer {customer.code} has no receivable (AR control) account set.")
+        raise NoReceivableAccountError(customer)
 
     expense = write_off_account or resolve_mapped_account(  # Use explicit write-off account or default.
         invoice.entity, AccountMappingKey.BAD_DEBT_EXPENSE, label="bad-debt expense",  # Resolve bad-debt expense account.

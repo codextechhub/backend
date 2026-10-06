@@ -902,7 +902,7 @@ class WriteOffHandler(_FinancePostOnApprove):
         eventual post agree - but never mutates.
         """
         from .chronology import ensure_on_or_after
-        from .exceptions import PostingError
+        from .exceptions import NoReceivableAccountError, PostingError
 
         invoice = document.invoice  # Invoice targeted by the write-off request.
         if invoice.status != DocumentStatus.POSTED:  # Only posted invoices have AR balances.
@@ -936,9 +936,7 @@ class WriteOffHandler(_FinancePostOnApprove):
             )
 
         if invoice.customer.receivable_account is None:  # AR control account is required for the reversal.
-            raise PostingError(
-                f"Customer {invoice.customer.code} has no receivable (AR control) account set.",
-            )
+            raise NoReceivableAccountError(invoice.customer)
 
     # Post an approved write-off request.
     def post(self, document, *, actor_user) -> None:
@@ -1017,7 +1015,7 @@ class ConcessionHandler(_FinancePostOnApprove):
         waiver would otherwise sit looking valid and fail at the final step.
         """
         from .chronology import ensure_on_or_after
-        from .exceptions import PostingError
+        from .exceptions import NoReceivableAccountError, PostingError
 
         invoice = document.invoice  # Invoice the concession reduces.
         if invoice.status != DocumentStatus.POSTED:  # Only posted invoices carry AR.
@@ -1052,10 +1050,7 @@ class ConcessionHandler(_FinancePostOnApprove):
                 f"({format_naira(balance)}).",
             )
         if document.customer.receivable_account is None:  # AR control must resolve.
-            raise PostingError(
-                f"Customer {document.customer.code} has no receivable (AR control) "
-                f"account set.",
-            )
+            raise NoReceivableAccountError(document.customer)
 
     # Post an approved concession.
     def post(self, document, *, actor_user) -> None:
@@ -1121,17 +1116,14 @@ class CreditNoteHandler(_FinancePostOnApprove):
         knowable up front: the note has lines and a customer with an AR control. The
         service re-guards everything under its own locks at post time.
         """
-        from .exceptions import PostingError
+        from .exceptions import NoReceivableAccountError, PostingError
 
         if not document.lines.exists():  # A note with no lines has nothing to post.
             raise PostingError(
                 f"Credit note {document.document_number or document.pk} has no lines.",
             )
         if document.customer.receivable_account is None:  # AR control must resolve.
-            raise PostingError(
-                f"Customer {document.customer.code} has no receivable (AR control) "
-                f"account set.",
-            )
+            raise NoReceivableAccountError(document.customer)
 
     # Post an approved credit or debit note.
     def post(self, document, *, actor_user) -> None:

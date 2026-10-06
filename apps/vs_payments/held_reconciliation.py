@@ -398,8 +398,8 @@ def _raise(row) -> str:
              + f"), a difference of "
              f"{format_naira(row.difference)} against a tolerance of {format_naira(row.tolerance)}."]
     if row.provider_account != row.held_total:
-        parts.append(f"The provider balance account also differs from the held-funds "
-                     f"sub-ledger ({format_naira(row.held_total)}): a held movement is not "
+        parts.append(f"The provider balance account also differs from the total held "
+                     f"for clients ({format_naira(row.held_total)}): a held movement is not "
                      f"yet posted to the platform's books.")
     incident = report_configuration_fault(
         fault_key=FAULT_KEY,

@@ -192,6 +192,13 @@ def split_preview(bank_account, *, split_date) -> dict:
     }
 
 
+#: What each allocation switch says, for the refusal that asks for it.
+_FLAG_WORDS = {
+    "is_primary": "whether its new account is the main account of these books",
+    "is_primary_collection": "whether its new account collects the branch's payments",
+}
+
+
 def _branch_id(value):
     """Return an allocation's branch primary key without trusting its tenant."""
     return getattr(value, "pk", value)
@@ -204,14 +211,14 @@ def _clean_allocations(entity, allocations):
     rows = list(allocations or [])
     if not 2 <= len(rows) <= MAX_SPLIT_BRANCHES:
         raise BankAccountSplitError(
-            f"Name between 2 and {MAX_SPLIT_BRANCHES} branch allocations."
+            f"Share the account between 2 and {MAX_SPLIT_BRANCHES} branches."
         )
 
     branch_ids = [_branch_id(row.get("branch")) for row in rows]
     if any(value in (None, "") for value in branch_ids):
-        raise BankAccountSplitError("Every allocation must name its branch.")
+        raise BankAccountSplitError("Every share must name its branch.")
     if len(set(branch_ids)) != len(branch_ids):
-        raise BankAccountSplitError("Every allocation must name a distinct branch.")
+        raise BankAccountSplitError("Every share must name a distinct branch.")
 
     branches = {
         branch.pk: branch
@@ -223,7 +230,7 @@ def _clean_allocations(entity, allocations):
     }
     if set(branch_ids) != set(branches):
         raise BankAccountSplitError(
-            "An allocation branch does not belong to these books or is not in service."
+            "A branch named for a share does not belong to these books or is not in service."
         )
 
     bank_names = []
@@ -239,18 +246,18 @@ def _clean_allocations(entity, allocations):
         ledger_code = str(row.get("ledger_account_code") or "").strip()
         ledger_name = str(row.get("ledger_account_name") or "").strip()
         if not bank_name:
-            raise BankAccountSplitError("Every successor bank account needs a name.")
+            raise BankAccountSplitError("Every new branch bank account needs a name.")
         if not ledger_name:
-            raise BankAccountSplitError("Every successor ledger account needs a name.")
+            raise BankAccountSplitError("Every new branch ledger account needs a name.")
         if len(bank_name) > 160 or len(ledger_name) > 160:
-            raise BankAccountSplitError("Successor account names cannot exceed 160 characters.")
+            raise BankAccountSplitError("Account names cannot be longer than 160 characters.")
         if not ledger_code.isdigit() or len(ledger_code) != ACCOUNT_CODE_LENGTH:
             raise BankAccountSplitError(
-                f"Every successor ledger code must contain exactly {ACCOUNT_CODE_LENGTH} digits."
+                f"Every new branch ledger code must be exactly {ACCOUNT_CODE_LENGTH} digits."
             )
         for flag in ("is_primary", "is_primary_collection"):
             if flag not in row or type(row[flag]) is not bool:
-                raise BankAccountSplitError(f"Every allocation must explicitly set {flag}.")
+                raise BankAccountSplitError(f"Say for every branch {_FLAG_WORDS[flag]}.")
         bank_names.append(bank_name)
         ledger_names.append(ledger_name)
         codes.append(ledger_code)
@@ -265,13 +272,13 @@ def _clean_allocations(entity, allocations):
         })
 
     if len(set(bank_names)) != len(bank_names):
-        raise BankAccountSplitError("Every successor bank account name must be unique.")
+        raise BankAccountSplitError("Every new branch bank account name must be unique.")
     if len(set(ledger_names)) != len(ledger_names):
-        raise BankAccountSplitError("Every successor ledger account name must be unique.")
+        raise BankAccountSplitError("Every new branch ledger account name must be unique.")
     if len(set(codes)) != len(codes):
-        raise BankAccountSplitError("Every successor ledger account code must be unique.")
+        raise BankAccountSplitError("Every new branch ledger account code must be unique.")
     if sum(row["is_primary"] for row in cleaned) > 1:
-        raise BankAccountSplitError("Choose at most one successor as the entity's primary account.")
+        raise BankAccountSplitError("Choose at most one new branch account as the main account of these books.")
     return cleaned
 
 
@@ -315,7 +322,7 @@ def split_shared_bank_account(
     if difference_treatment not in BankSplitDifferenceTreatment.values:
         raise BankAccountSplitError(
             "Choose how a branch's difference is treated: "
-            + " or ".join(BankSplitDifferenceTreatment.values) + "."
+            + " or ".join(f'"{label}"' for label in BankSplitDifferenceTreatment.labels) + "."
         )
     treatment = BankSplitDifferenceTreatment(difference_treatment)
     agreement_reference = str(agreement_reference or "").strip()
@@ -349,23 +356,27 @@ def split_shared_bank_account(
             f"Bank account {source.name} already belongs to a branch and is not shared."
         )
     if not (legacy.is_active and legacy.is_postable):
-        raise BankAccountSplitError("The legacy ledger must be active and postable at cutover.")
+        raise BankAccountSplitError(
+            f"The shared account's ledger, {legacy.code} {legacy.name}, must be active and "
+            f"take entries before the account can be split."
+        )
     if legacy.account_type != AccountType.ASSET or legacy.normal_balance != NormalBalance.DEBIT:
-        raise BankAccountSplitError("A bank split requires an asset ledger with a debit balance.")
+        raise BankAccountSplitError("Only a bank account kept on an asset ledger can be split.")
 
     rows = _clean_allocations(source.entity, allocations)
     names = [row["bank_account_name"] for row in rows]
     ledger_names = [row["ledger_account_name"] for row in rows]
     codes = [row["ledger_account_code"] for row in rows]
     if BankAccount.objects.filter(entity=source.entity, name__in=names).exists():
-        raise BankAccountSplitError("A successor bank account name already exists in these books.")
+        raise BankAccountSplitError("A new branch bank account name already exists in these books.")
     if Account.objects.filter(entity=source.entity, code__in=codes).exists():
-        raise BankAccountSplitError("A successor ledger account code already exists in these books.")
+        raise BankAccountSplitError("A new branch ledger code already exists in these books.")
     if Account.objects.filter(entity=source.entity, name__in=ledger_names).exists():
-        raise BankAccountSplitError("A successor ledger account name already exists in these books.")
+        raise BankAccountSplitError("A new branch ledger account name already exists in these books.")
     if any(account_type_from_code(code) != legacy.account_type for code in codes):
         raise BankAccountSplitError(
-            "Every successor ledger code must belong to the legacy account's account type."
+            f"Every new branch ledger code must be an asset code, like the shared "
+            f"account's {legacy.code}."
         )
 
     selected_primary = any(row["is_primary"] for row in rows)
@@ -374,7 +385,7 @@ def split_shared_bank_account(
         is_active=True,
         is_primary=True,
     ).exclude(pk=source.pk).exists():
-        raise BankAccountSplitError("Another active bank account is already the entity primary.")
+        raise BankAccountSplitError("Another active bank account is already the main account of these books.")
     collection_branch_ids = [
         row["branch"].pk for row in rows if row["is_primary_collection"]
     ]
@@ -407,7 +418,7 @@ def split_shared_bank_account(
             f"The physical bank account has a statement ending after {day(split_date)}; "
             f"the first ends on {day(future_statement)}."
         )
-    unmatched_line = (
+    unmatched_on = (
         source.statement_lines.filter(
             txn_date__lte=split_date,
             status=BankLineStatus.UNMATCHED,
@@ -416,10 +427,10 @@ def split_shared_bank_account(
         .values_list("txn_date", flat=True)
         .first()
     )
-    if unmatched_line is not None:
+    if unmatched_on is not None:
         raise BankAccountSplitError(
-            "Reconcile or explicitly ignore every bank statement line through the "
-            f"cutover date; an unmatched line remains on {unmatched_line}."
+            f"Match or ignore every bank statement line up to the split date, "
+            f"{day(split_date)}, first: a line dated {day(unmatched_on)} is still unmatched."
         )
 
     future = (
@@ -431,8 +442,9 @@ def split_shared_bank_account(
     )
     if future is not None:
         raise BankAccountSplitError(
-            f"The legacy ledger has posted movement after {day(split_date)}; "
-            f"the first is dated {day(future)}. Reverse or move it before cutover."
+            f"The shared account's ledger has entries after the split date, "
+            f"{day(split_date)}: the first is dated {day(future)}. Reverse it, or move it "
+            f"to the split date or earlier, first."
         )
     legacy_lines = ledger_lines(source.entity).filter(
         account=legacy,
@@ -440,8 +452,8 @@ def split_shared_bank_account(
     )
     if legacy_lines.filter(entry__branch__isnull=True).exists():
         raise BankAccountSplitError(
-            "The legacy ledger still has posted movement without a branch. Run the "
-            "branch backfill and place every flagged journal before this cutover."
+            "Some entries on the shared account's ledger have no branch yet. Give each "
+            "of them its branch, then split the account."
         )
     book_balances = branch_book_balances(source.entity, legacy, split_date)
     historical_balances = [
@@ -460,15 +472,16 @@ def split_shared_bank_account(
         )
         if historical_branch_ids != owned_branch_ids:
             raise BankAccountSplitError(
-                "The legacy ledger has posted movement assigned outside an in-service "
-                "branch of these books. Correct its branch before cutover."
+                "Some entries on the shared account's ledger belong to a branch that is "
+                "not in service in these books. Move them to the right branch, then split "
+                "the account."
             )
     legacy_balance = sum(balance for _, balance in historical_balances)
     agreed_total = sum(row["opening_balance"] for row in rows)
     if agreed_total != legacy_balance:
         raise BankAccountSplitError(
-            f"The agreed branch opening balances sum to {format_naira(agreed_total)}, but the "
-            f"legacy ledger balance on {day(split_date)} is {format_naira(legacy_balance)}."
+            f"The agreed opening balances add up to {format_naira(agreed_total)}, but the "
+            f"shared account's balance on {day(split_date)} is {format_naira(legacy_balance)}."
         )
 
     book = dict(historical_balances)
@@ -530,8 +543,8 @@ def split_shared_bank_account(
         for branch_id, amount in historical_balances:
             journals.append(post_pair(
                 branch_id,
-                f"Clear legacy branch bank balance from {source.name}",
-                "Clear the legacy bank balance at branch cutover",
+                f"Clear the branch's share of shared bank account {source.name}",
+                "Branch's share of the shared bank account cleared at the split",
                 retained_earnings,
                 legacy,
                 amount,
@@ -570,7 +583,7 @@ def split_shared_bank_account(
             is_postable=True,
             is_active=True,
             subtype=legacy.subtype,
-            description=f"Branch bank ledger cut over from account {legacy.code}.",
+            description=f"Branch bank ledger split from shared account {legacy.code}.",
             ifrs_line=legacy.ifrs_line,
         )
         new_bank = BankAccount.objects.create(
@@ -594,7 +607,7 @@ def split_shared_bank_account(
             continue
         journals.append(post_pair(
             row["branch"].pk,
-            f"Branch bank cutover from {source.name}",
+            f"Branch bank account opened from shared account {source.name}",
             f"Agreed opening balance for {row['branch'].name}",
             new_ledger,
             retained_earnings if permanent else legacy,
@@ -605,7 +618,7 @@ def split_shared_bank_account(
     remaining_balance = int(remaining["debit"] or 0) - int(remaining["credit"] or 0)
     if remaining_balance != 0:
         raise BankAccountSplitError(
-            f"The legacy ledger still carries {format_naira(remaining_balance)} after cutover."
+            f"The shared account's ledger still holds {format_naira(remaining_balance)} after the split."
         )
 
     source.is_active = False
@@ -634,7 +647,7 @@ def split_shared_bank_account(
         actor_user=actor_user,
         target=source,
         message=(
-            f"Split legacy bank account {source.name} into {len(created_banks)} "
+            f"Split shared bank account {source.name} into {len(created_banks)} "
             f"branch accounts on {day(split_date)}, {treatment_note}."
         ),
         before=source_before,

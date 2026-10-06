@@ -28,6 +28,7 @@ themselves stay in kobo wherever they are stored.
 """
 from __future__ import annotations
 
+from vs_finance.constants import AP_PLAIN, GRIR_PLAIN
 from vs_finance.money import format_naira
 
 
@@ -51,7 +52,7 @@ def ap_reconciled(entity, period, branch=None):
         scope = BranchScope(frozenset((getattr(branch, "pk", branch),)), include_shared=False)
     ap = reconcile_ap(entity, branch_scope=scope)
     return ChecklistItem(
-        name="ap_reconciled", title="Payables agree with the ledger",
+        name="ap_reconciled", title=f"AP reconciled ({AP_PLAIN})",
         passed=ap.is_reconciled,
         detail=(
             f"Suppliers' balances total {format_naira(ap.subledger_total)}; the payables "
@@ -91,7 +92,7 @@ def grir_explained(entity, period, branch=None):
     else:
         detail = f"{format_naira(-balance)} has been billed for goods not yet received."
     return ChecklistItem(
-        name="grir_explained", title="Goods received but not yet billed",
+        name="grir_explained", title=f"GR/IR explained ({GRIR_PLAIN})",
         passed=balance == 0, blocking=False, detail=detail,
     )
 

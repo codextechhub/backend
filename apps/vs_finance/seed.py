@@ -9,7 +9,8 @@ horizontal-module rule.
 from __future__ import annotations
 
 from .constants import (
-    GRIR_NAME, AccountType, IFRSLine, TaxFilingFrequency, TaxObligationType, TaxTreatment,
+    AP_NAME, AR_NAME, GATEWAY_NAME, GRIR_NAME, WHT_NAME, AccountType, IFRSLine,
+    TaxFilingFrequency, TaxObligationType, TaxTreatment,
 )
 
 #: ISO currencies the platform knows out of the box. NGN is the platform base.
@@ -27,8 +28,8 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("1000", "Assets", AccountType.ASSET, False, False),  # Asset section header.
     ("1100", "Cash & Bank", AccountType.ASSET, True, False),  # Main cash/bank account.
     ("1110", "Petty Cash", AccountType.ASSET, True, False),  # Petty cash account.
-    ("1125", "Gateway Clearing", AccountType.ASSET, True, False),  # Confirmed online payments not yet settled to a bank.
-    ("1200", "Accounts Receivable", AccountType.ASSET, True, False),  # AR control account.
+    ("1125", GATEWAY_NAME, AccountType.ASSET, True, False),  # Confirmed online payments not yet settled to a bank.
+    ("1200", AR_NAME, AccountType.ASSET, True, False),  # AR control account.
     ("1290", "Allowance for Doubtful Debts", AccountType.ASSET, True, True),  # Contra-asset against 1200.
     # Vendor advances is the asset mirror of 2140 Customer Credit, numbered to match
     # it (x140 = "counterparty prepayment control"). Money paid to a vendor before
@@ -44,14 +45,14 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("1900", "Accumulated Depreciation", AccountType.ASSET, True, True),  # Contra-asset depreciation account.
     # Liabilities  # Liability root and default liability accounts.
     ("2000", "Liabilities", AccountType.LIABILITY, False, False),  # Liability section header.
-    ("2100", "Accounts Payable", AccountType.LIABILITY, True, False),  # AP control account.
+    ("2100", AP_NAME, AccountType.LIABILITY, True, False),  # AP control account.
     ("2140", "Customer Credit", AccountType.LIABILITY, True, False),  # Customer credits liability.
     ("2150", GRIR_NAME, AccountType.LIABILITY, True, False),  # Goods received, not yet billed.
     ("2160", "Deferred Income", AccountType.LIABILITY, True, False),  # Billed ahead of the service period.
     ("2170", "Customer Deposits Held", AccountType.LIABILITY, True, False),  # Refundable deposits.
     ("2190", "Held for Other Branches", AccountType.LIABILITY, True, False),  # Received for another branch.
     ("2200", "Output VAT (Payable)", AccountType.LIABILITY, True, False),  # Output VAT payable.
-    ("2300", "WHT Payable", AccountType.LIABILITY, True, False),  # Withholding tax payable.
+    ("2300", WHT_NAME, AccountType.LIABILITY, True, False),  # Withholding tax payable.
     ("2310", "PAYE Payable", AccountType.LIABILITY, True, False),  # PAYE payable.
     ("2320", "Pension Payable", AccountType.LIABILITY, True, False),  # Pension payable.
     ("2330", "Net Wages Payable", AccountType.LIABILITY, True, False),  # Net payroll payable.

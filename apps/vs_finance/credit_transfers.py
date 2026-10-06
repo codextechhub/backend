@@ -18,7 +18,7 @@ from .audit import record, record_rejection
 from .constants import (
     CREDIT_TRANSFER_METHOD, AccountMappingKey, DocumentStatus, FinanceAuditAction,
 )
-from .exceptions import FinanceError, PostingError
+from .exceptions import FinanceError, NoReceivableAccountError, PostingError
 from .money import format_naira
 from .wording import state_word
 
@@ -49,7 +49,7 @@ def check_transfer(transfer):
                 f"credit moves only within one branch's books.",
             )
     if destination.receivable_account_id is None:
-        raise PostingError(f"Customer {destination.code} has no receivable (AR control) account set.")
+        raise NoReceivableAccountError(destination)
     available = customer_refund_available_balance(
         source, as_of=transfer.transfer_date, branch=transfer.branch_id)
     if transfer.amount > available:

@@ -37,7 +37,7 @@ from .constants import (
     PaymentPlanFrequency,
     PaymentPlanStatus,
 )
-from .exceptions import FinanceError, PostingError
+from .exceptions import FinanceError, NoReceivableAccountError, PostingError
 from .money import format_naira
 from .posting import post_journal, resolve_period
 from .wording import state_word
@@ -397,7 +397,7 @@ def _post_concession_atomic(concession, *, actor_user=None):
     customer = concession.customer  # Customer controls AR account.
     ar_account = customer.receivable_account  # AR control account for credit side.
     if ar_account is None:  # AR cannot be credited without a control account.
-        raise PostingError(f"Customer {customer.code} has no receivable (AR control) account set.")
+        raise NoReceivableAccountError(customer)
 
     allowance = concession.allowance_account or resolve_account(  # Use explicit allowance account or default.
         concession.entity, DISCOUNTS_ALLOWED_CODE, label="discounts & allowances",  # Resolve default allowance account.

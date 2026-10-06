@@ -53,6 +53,7 @@ a school app.
 """
 from __future__ import annotations
 
+from vs_config.display import format_date
 from vs_finance.wording import agrees, counted
 
 import datetime
@@ -237,7 +238,8 @@ def ensure_platform_accounts(platform):
             raise MissingAccountError(code, label=AccountMappingKey(key).label)
         parent = Account.objects.filter(entity=platform, code=header).first()
         if parent is None:
-            raise MissingAccountError(header, label="chart of accounts")
+            raise MissingAccountError(
+                header, label="the liabilities heading" if header == "2000" else "the assets heading")
         found.append(Account.objects.create(
             entity=platform, code=code, name=name, account_type=account_type,
             is_postable=True, ifrs_line=line, parent=parent,
@@ -647,7 +649,8 @@ def build_settlement(entity, branch_id, *, today=None, final=False, actor_user=N
             last = (HeldSettlement.objects.filter(branch_id=branch_id)
                     .exclude(status=HeldSettlementStatus.FAILED).order_by("-run_on").first())
             if last is not None and (today - last.run_on).days < interval:
-                return None, f"{label}: next settlement is due {counted(interval, 'day')} after {last.run_on}."
+                return None, (f"{label}: next settlement is due {counted(interval, 'day')} "
+                              f"after {format_date(last.run_on, tenant)}.")
         cutoff = (timezone.now() if final else datetime.datetime.combine(
             today, datetime.time.min, tzinfo=tenant_zone(tenant)))
         claims = list(

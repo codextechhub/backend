@@ -30,6 +30,32 @@ class PostingError(FinanceError):
     default_message = "The journal could not be posted."  # Default posting failure message.
 
 
+class NoReceivableAccountError(PostingError):
+    """A customer has no account chosen for what they owe, so nothing posts for them.
+
+    One sentence for every posting that needs the customer's receivable account.
+    A bursar raising a receipt, a credit note or a concession reads it in plain
+    words; an accountant carrying in opening balances (``accountant=True``) reads
+    the term with the plain words beside it (:data:`~vs_finance.constants.AR_NAME`).
+    The error code stays ``POSTING_ERROR``, which clients already key on.
+    """
+
+    def __init__(self, customer, *, accountant=False, **kwargs):
+        from .constants import AR_NAME
+
+        if accountant:
+            message = (
+                f"Customer {customer.code} has no {AR_NAME[0].lower()}{AR_NAME[1:]} account "
+                f"set. Choose one on the customer's record."
+            )
+        else:
+            message = (
+                f"Customer {customer.code} has no account chosen for what they owe, so "
+                f"nothing can be posted for them yet. Choose one on the customer's record."
+            )
+        super().__init__(message, **kwargs)
+
+
 class BankAccountSplitError(FinanceError):
     """A legacy shared bank account cannot be cut over as requested."""
 
@@ -249,19 +275,23 @@ class DocumentNumberingError(FinanceError):
 # Banking, expenses, payroll, budget, fixed assets, period close      #  # Support modules share these errors.          
 # --------------------------------------------------------------------------- #  # End phase-4 header.
 
-# Group behavior for Missing Account Error.
 class MissingAccountError(PostingError):
-    """A well-known control account (by CoA code) is absent or not postable."""
+    """An account a posting needs (found by its chart code) is absent, inactive or a heading.
 
-    error_code = "ACCOUNT_NOT_FOUND"  # Required control account could not be resolved.
-    default_message = "A required control account is missing from the chart."  # Default missing-account message.
+    ``label`` names the account's role as the account mapping does, so the
+    sentence reads "Account 2300, WHT payable (withholding tax), is missing ...".
+    """
+
+    error_code = "ACCOUNT_NOT_FOUND"
+    default_message = "An account these postings need is missing from the chart of accounts."
 
     def __init__(self, code, label="", **kwargs):
-        self.code = code  # Store the missing account code.
-        self.label = label  # Store the human-readable label, if any.
-        super().__init__(  # Build a detailed missing-account message.
-            f"Required account '{code}'{f' ({label})' if label else ''} is missing, "
-            f"inactive or not postable for this entity.",
+        self.code = code
+        self.label = label
+        named = f"Account {code}, {label}," if label else f"Account {code}"
+        super().__init__(
+            f"{named} is missing from the chart of accounts, inactive, or a heading that "
+            f"takes no entries. It can be set up under account mapping.",
             code=code, label=label, **kwargs,
         )
 

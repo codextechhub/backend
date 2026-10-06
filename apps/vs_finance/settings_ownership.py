@@ -21,11 +21,11 @@ ACCOUNT_MAPPING_CONSUMERS = {
     ),
     AccountMappingKey.ACCOUNTS_RECEIVABLE: _consumer(
         "Accounts receivable posting",
-        "Posts and validates customer control-account balances.",
+        "Holds what customers owe: every bill, receipt and credit note posts here.",
     ),
     AccountMappingKey.ACCOUNTS_PAYABLE: _consumer(
         "Procurement payables posting",
-        "Posts vendor liabilities into the Finance control account.",
+        "Holds what is owed to suppliers: every vendor bill, payment and credit note posts here.",
     ),
     AccountMappingKey.CUSTOMER_CREDIT: _consumer(
         "Collections and refunds",

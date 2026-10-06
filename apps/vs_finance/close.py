@@ -30,6 +30,7 @@ from vs_config.display import format_date
 from .audit import record
 from .account_mappings import resolve_mapped_account
 from .constants import (
+    AR_PLAIN,
     AssetStatus,
     AccountMappingKey,
     DocumentStatus,
@@ -141,11 +142,13 @@ class ChecklistItem:
 
     @property
     def label(self) -> str:
-        """The check's name as a bursar reads it: "Receivables agree with the ledger".
+        """The check's name on the close checklist: "AR reconciled (what customers owe)".
 
-        ``name`` stays the machine code a screen keys on (``ar_reconciled``) and is
-        never put in a sentence. A check contributed by another app passes its own
-        ``title``; finance's own checks are named in :data:`CHECK_TITLES`.
+        The checklist is an accountant's screen, so a check named by an accounting
+        term carries the plain words beside it. ``name`` stays the machine code a
+        screen keys on (``ar_reconciled``) and is never put in a sentence. A check
+        contributed by another app passes its own ``title``; finance's own checks
+        are named in :data:`CHECK_TITLES`.
         """
         return (
             self.title or CHECK_TITLES.get(self.name)
@@ -153,15 +156,17 @@ class ChecklistItem:
         )
 
 
-#: How finance's own close checks read to a person, by their machine name.
+#: How finance's own close checks read on the checklist, by their machine name.
+#: An accounting term is paired with its plain words; a title already in plain
+#: words stands alone.
 CHECK_TITLES = {
-    "trial_balance_balanced": "Debits and credits balance",
+    "trial_balance_balanced": "Trial balance agrees (debits equal credits)",
     "no_draft_journals": "No draft journals left in the month",
-    "ar_reconciled": "Receivables agree with the ledger",
+    "ar_reconciled": f"AR reconciled ({AR_PLAIN})",
     "depreciation_posted": "Depreciation posted",
     "earlier_periods_closed": "Earlier months closed",
-    "deferred_income_released": "Deferred income released",
-    "inter_branch_balanced": "Balances between branches agree",
+    "deferred_income_released": "Deferred income released (fees billed ahead, now earned)",
+    "inter_branch_balanced": "Inter-branch balances agree (what branches owe each other)",
     "sealed_figures_unchanged": "Closed figures unchanged",
     "depreciation_posted_for_year": "The year's depreciation posted",
 }

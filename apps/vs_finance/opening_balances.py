@@ -23,7 +23,7 @@ from .constants import (
     InvoiceSource,
     JournalSource,
 )
-from .exceptions import FinanceError, PostingError
+from .exceptions import FinanceError, NoReceivableAccountError, PostingError
 from .money import format_naira
 from .wording import state_word
 
@@ -104,7 +104,7 @@ def _post_opening_invoice_atomic(invoice, *, actor_user=None):
         raise PostingError(f"Opening invoice {number} is {state_word(invoice)}; only a draft can be posted.")
     customer = invoice.customer
     if customer.receivable_account_id is None:
-        raise PostingError(f"Customer {customer.code} has no receivable (AR control) account set.")
+        raise NoReceivableAccountError(customer, accountant=True)
     invoice.recompute_totals(save=True)
     if invoice.total <= 0 or invoice.tax_total:
         raise PostingError("An opening invoice carries a positive amount and no tax.")

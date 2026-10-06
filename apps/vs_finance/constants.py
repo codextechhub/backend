@@ -1012,27 +1012,37 @@ BAD_DEBT_EXPENSE_CODE = "5350"           # Bad debts (expense) - write-offs and 
 CUSTOMER_CREDIT_CODE = "2140"            # Customer credit balances (liability) - overpayments / unapplied credit / refundable
 
 
-#: The goods-received clearing account in the words each reader is given. A
-#: bursar's screens, refusals and messages say what it holds in plain words
-#: (:data:`GRIR_PLAIN`); an accountant's screens (the chart of accounts, the
-#: account mapping, journals and posting previews, the reconciliation report)
-#: give the accounting term with the plain words beside it (:data:`GRIR_NAME`),
-#: so neither reader has to translate.
+#: The accounts a school's two readers name differently, in the words each is given.
+#: A bursar's screens, refusals and messages say what the account holds in plain
+#: words (``*_PLAIN``); an accountant's screens (the chart of accounts, the account
+#: mapping, journals and posting previews, the close checklist, the reconciliation
+#: reports) give the accounting term with the plain words beside it (``*_NAME``),
+#: so neither reader has to translate. Each pair is the one source for the seeded
+#: account's name, its mapping role's label and every journal line or check that
+#: names it, so a posted document and the preview of a new one always agree.
 GRIR_PLAIN = "goods received, not yet billed"
 GRIR_NAME = f"GR/IR clearing ({GRIR_PLAIN})"
+AR_PLAIN = "what customers owe"
+AR_NAME = f"Accounts receivable ({AR_PLAIN})"
+AP_PLAIN = "what is owed to suppliers"
+AP_NAME = f"Accounts payable ({AP_PLAIN})"
+WHT_PLAIN = "withholding tax"
+WHT_NAME = f"WHT payable ({WHT_PLAIN})"
+GATEWAY_PLAIN = "online payments not yet in the bank"
+GATEWAY_NAME = f"Gateway clearing ({GATEWAY_PLAIN})"
 
 
 class AccountMappingKey(models.TextChoices):
     """Entity-level account roles used by Finance and Procurement services."""
 
     CASH_BANK = "CASH_BANK", "Cash and bank"
-    ACCOUNTS_RECEIVABLE = "ACCOUNTS_RECEIVABLE", "Accounts receivable"
-    ACCOUNTS_PAYABLE = "ACCOUNTS_PAYABLE", "Accounts payable"
+    ACCOUNTS_RECEIVABLE = "ACCOUNTS_RECEIVABLE", AR_NAME
+    ACCOUNTS_PAYABLE = "ACCOUNTS_PAYABLE", AP_NAME
     CUSTOMER_CREDIT = "CUSTOMER_CREDIT", "Customer credit"
     VENDOR_ADVANCE = "VENDOR_ADVANCE", "Vendor advances"
-    GRIR_CLEARING = "GRIR_CLEARING", "GR/IR clearing (goods received, not yet billed)"
+    GRIR_CLEARING = "GRIR_CLEARING", GRIR_NAME
     OUTPUT_VAT = "OUTPUT_VAT", "Output VAT"
-    WHT_PAYABLE = "WHT_PAYABLE", "WHT payable (withholding tax)"
+    WHT_PAYABLE = "WHT_PAYABLE", WHT_NAME
     RETAINED_EARNINGS = "RETAINED_EARNINGS", "Retained earnings"
     BAD_DEBT_EXPENSE = "BAD_DEBT_EXPENSE", "Bad debt expense"
     BANK_CHARGES = "BANK_CHARGES", "Bank charges"
@@ -1044,7 +1054,7 @@ class AccountMappingKey(models.TextChoices):
     DOUBTFUL_DEBT_ALLOWANCE = "DOUBTFUL_DEBT_ALLOWANCE", "Allowance for doubtful debts"
     BAD_DEBT_RECOVERED = "BAD_DEBT_RECOVERED", "Bad debts recovered"
     FORFEITED_DEPOSIT_INCOME = "FORFEITED_DEPOSIT_INCOME", "Forfeited deposits income"
-    GATEWAY_CLEARING = "GATEWAY_CLEARING", "Gateway clearing"
+    GATEWAY_CLEARING = "GATEWAY_CLEARING", GATEWAY_NAME
     # Platform books only: what the platform's provider balance holds for each
     # client branch whose online money it keeps, and the balance itself.
     CLIENT_FUNDS_HELD = "CLIENT_FUNDS_HELD", "Client funds held"

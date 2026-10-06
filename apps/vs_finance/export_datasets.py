@@ -437,8 +437,8 @@ def register_datasets():
         module="Finance",
         name="Customer master",
         description=(
-            "The AR customer list with codes, contacts and control accounts. Master "
-            "data, so no date filter is required."
+            "Every customer with their code, contacts and the account that holds what "
+            "they owe. A list, so no date range is needed."
         ),
         base=_customers,
         permission="finance.customer.view",

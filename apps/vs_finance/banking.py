@@ -473,7 +473,7 @@ def match_line(statement_line, journal_line, *, actor_user=None):
     bank_account = statement_line.bank_account  # Resolve the owning bank account once.
     if journal_line.account_id != bank_account.gl_account_id:  # The journal must sit on the cash account.
         raise BankReconciliationError(
-            "The journal line is not on this bank account's GL cash account.",
+            "The journal line is not on this bank account's ledger account.",
         )
     if journal_line.entry.status not in LEDGER_STATUSES:  # Only lines in the ledger can be matched.
         raise BankReconciliationError("Only a posted journal line can be matched.")
@@ -525,7 +525,7 @@ def group_match(statement_line, journal_lines, *, actor_user=None):
         seen.add(jl.id)  # Mark this journal line as seen.
         if jl.account_id != bank_account.gl_account_id:  # Every line must be on the cash account.
             raise BankReconciliationError(
-                "A journal line is not on this bank account's GL cash account.",
+                "A journal line is not on this bank account's ledger account.",
             )
         if jl.entry.status not in LEDGER_STATUSES:  # Only lines in the ledger can be matched.
             raise BankReconciliationError("Only posted journal lines can be matched.")
@@ -580,7 +580,7 @@ def split_match(journal_line, statement_lines, *, actor_user=None):
     bank_account = slines[0].bank_account  # All statement lines must belong to the same bank account.
     if journal_line.account_id != bank_account.gl_account_id:  # The journal must sit on the same cash account.
         raise BankReconciliationError(
-            "The journal line is not on this bank account's GL cash account.",
+            "The journal line is not on this bank account's ledger account.",
         )
     if journal_line.entry.status not in LEDGER_STATUSES:  # Only lines in the ledger can be matched.
         raise BankReconciliationError("Only a posted journal line can be matched.")

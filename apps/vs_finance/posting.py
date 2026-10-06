@@ -402,9 +402,10 @@ def posting_window(entity, *, today=None, branch=None) -> dict:
                  if default_date and p.start_date <= default_date <= p.end_date),
                 None,
             ),
+            entity.tenant,
         ),
-        "open": [_period_brief(p) for p in open_periods],
-        "blocked": [_period_brief(p) for p in periods if p not in open_periods],
+        "open": [_period_brief(p, entity.tenant) for p in open_periods],
+        "blocked": [_period_brief(p, entity.tenant) for p in periods if p not in open_periods],
     }
 
 
@@ -528,7 +529,7 @@ def fiscal_calendar_runway(entity, *, today=None) -> dict:
         "threshold_days": threshold,
         "status": status,
         "should_warn": status != FISCAL_RUNWAY_HEALTHY,
-        "last_period": _period_brief(last),
+        "last_period": _period_brief(last, entity.tenant),
         "gaps": [
             {"start": earlier[1] + one_day, "end": later[0] - one_day}
             for earlier, later in zip(runs, runs[1:])
@@ -536,14 +537,20 @@ def fiscal_calendar_runway(entity, *, today=None) -> dict:
     }
 
 
-# Shrink a period to the fields a date picker needs.
-def _period_brief(period) -> dict | None:
-    """Serialise a period to the minimum a picker needs: when it is and why."""
+def _period_brief(period, tenant) -> dict | None:
+    """Serialise a period to the minimum a picker needs: when it is and why.
+
+    ``label`` is the month as a person reads it ("September 2026"); ``name``
+    stays the stored name ("2026-09") for a client that keys on it.
+    """
+    from .wording import period_label
+
     if period is None:
         return None
     return {
         "id": period.id,
         "name": period.name,
+        "label": period_label(period, tenant),
         "period_no": period.period_no,
         "status": period.status,
         "start_date": period.start_date,

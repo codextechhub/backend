@@ -276,18 +276,39 @@ class BranchStatesMixin:
 
 
 class FiscalPeriodSerializer(BranchStatesMixin, serializers.ModelSerializer):
+    """A fiscal period; ``label`` is how a person picking it reads it.
+
+    ``name`` is the stored name ("2026-09"), kept for a client that keys on it;
+    ``label`` is the month in words ("September 2026", through
+    :func:`vs_finance.wording.period_label`), what a picker or a list shows. The
+    tenant is read once per set of books, not once per row.
+    """
+
     fiscal_year = serializers.IntegerField(source="fiscal_year.year", read_only=True)
     status = serializers.SerializerMethodField()
+    label = serializers.SerializerMethodField()
 
     class Meta:
         model = FiscalPeriod
         fields = [
-            "id", "period_no", "name", "fiscal_year",
+            "id", "period_no", "name", "label", "fiscal_year",
             "start_date", "end_date", "status", "closed_at", "is_closing",
         ]
 
     def get_status(self, obj):
         return getattr(obj, "_branch_status", obj.status)
+
+    def get_label(self, obj) -> str:
+        from .wording import period_label
+
+        if not hasattr(self, "_tenants"):
+            self._tenants = {}
+        tenants = self._tenants
+        if obj.entity_id not in tenants:
+            tenants[obj.entity_id] = (
+                LedgerEntity.objects.select_related("tenant").get(pk=obj.entity_id).tenant
+            )
+        return period_label(obj, tenants[obj.entity_id])
 
 
 class FiscalYearSerializer(BranchStatesMixin, serializers.ModelSerializer):

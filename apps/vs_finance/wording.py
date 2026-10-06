@@ -121,3 +121,24 @@ def branch_words(branch):
     if row is None or only_branch_id(row.tenant_id) is not None:
         return None
     return row.name
+
+
+def choice_options(choices) -> list[dict]:
+    """A choices class as the options a dropdown offers: ``[{"value", "label"}]``.
+
+    A settings screen reads its dropdown from here, so the option a person picks
+    carries the same words the server writes into the setting's "Recent changes"
+    line (:mod:`vs_finance.settings_history`) and into every refusal about it.
+    """
+    return [{"value": value, "label": str(label)} for value, label in choices.choices]
+
+
+def choose_one_of(choices) -> str:
+    """The refusal for a value outside ``choices``, naming each option by its label.
+
+    'Choose "Computed from the national tax table" or "Taken from the salary
+    structure or roster".' A stored code (``SUPPLIED``) never appears in it.
+    """
+    labels = [f'"{label}"' for label in choices.labels]
+    listed = labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} or {labels[-1]}"
+    return f"Choose {listed}."

@@ -7,7 +7,7 @@ refuses the write to a caller whose reach is not the whole tenant.
 """
 from __future__ import annotations
 
-from vs_finance.wording import counted
+from vs_finance.wording import choice_options, choose_one_of, counted
 
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
@@ -54,10 +54,7 @@ def serialize_receivables_policy(policy):
     return {
         "revenue_recognition": policy.revenue_recognition,
         "revenue_recognition_label": RevenueRecognitionMethod(policy.revenue_recognition).label,
-        "revenue_recognition_options": [
-            {"value": value, "label": label}
-            for value, label in RevenueRecognitionMethod.choices
-        ],
+        "revenue_recognition_options": choice_options(RevenueRecognitionMethod),
         "provision_bands": [
             {"over_days": days, "rate_bps": rate} for days, rate in provision_bands(policy)
         ],
@@ -67,8 +64,7 @@ def serialize_receivables_policy(policy):
             field: getattr(policy, field) for field in CHOICE_SETTINGS
         },
         **{
-            f"{field}_options": [{"value": value, "label": label} for value, label in choices.choices]
-            for field, choices in CHOICE_SETTINGS.items()
+            f"{field}_options": choice_options(choices) for field, choices in CHOICE_SETTINGS.items()
         },
         "updated_at": policy.updated_at.isoformat() if policy.pk else None,
         "updated_by": policy.updated_by.email if policy.pk and policy.updated_by else None,
@@ -127,7 +123,7 @@ def _validated_values(data):
     if "revenue_recognition" in data:
         value = str(data["revenue_recognition"] or "").upper()
         if value not in RevenueRecognitionMethod.values:
-            raise ValidationError({"revenue_recognition": "Select a supported recognition method."})
+            raise ValidationError({"revenue_recognition": choose_one_of(RevenueRecognitionMethod)})
         values["revenue_recognition"] = value
     if "provision_bands" in data:
         values["provision_bands"] = _validated_bands(data["provision_bands"])
@@ -144,7 +140,7 @@ def _validated_values(data):
         if field in data:
             value = str(data[field] or "").upper()
             if value not in choices.values:
-                raise ValidationError({field: "Select one of the listed options."})
+                raise ValidationError({field: choose_one_of(choices)})
             values[field] = value
     return values
 

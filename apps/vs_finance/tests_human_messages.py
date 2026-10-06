@@ -1,7 +1,9 @@
 """What a bursar reads is worded from the screens, never from the code.
 
 A refusal names a month as "September 2026", not ``2026-09 [CLOSED]``; a close
-check as "Payables agree with the ledger", not ``ap_reconciled``; a status as
+check as "AP reconciled (what is owed to suppliers)", not ``ap_reconciled``: the
+checklist is an accountant's screen, so the term comes with its plain words, while
+what each check found is said in plain words alone. A status reads as
 "posted", not ``POSTED``; a note as "Credit note", not "Credit note (reduces
 AR)". The codes stay in the error payload, where a screen keys on them. And the
 held-ledger tolerance an operator types is naira, as every amount shown is.
@@ -22,7 +24,7 @@ class CloseChecksReadInWordsTests(SimpleTestCase):
 
     def test_a_failed_check_is_named_by_its_title_and_what_it_found(self):
         items = [
-            ChecklistItem(name="ap_reconciled", title="Payables agree with the ledger",
+            ChecklistItem(name="ap_reconciled", title="AP reconciled (what is owed to suppliers)",
                           passed=False, detail="Sub-ledger ₦10.00 against control ₦12.00."),
             ChecklistItem(name="trial_balance_balanced", passed=False,
                           detail="Debits and credits differ by ₦2.00."),
@@ -32,8 +34,9 @@ class CloseChecksReadInWordsTests(SimpleTestCase):
 
         self.assertEqual(
             sentence,
-            "Payables agree with the ledger: Sub-ledger ₦10.00 against control ₦12.00; "
-            "Debits and credits balance: Debits and credits differ by ₦2.00",
+            "AP reconciled (what is owed to suppliers): Sub-ledger ₦10.00 against control "
+            "₦12.00; Trial balance agrees (debits equal credits): Debits and credits differ "
+            "by ₦2.00",
         )
         self.assertNotIn("_", sentence)
 
@@ -60,8 +63,10 @@ class StatusesReadInWordsTests(SimpleTestCase):
         self.assertEqual(CreditNoteKind.DEBIT.label, "Debit note")
 
 
-#: Words a school bursar has no reason to know, kept off the close checklist.
-CLOSE_JARGON = ("GR/IR", "sub-ledger", "control ", "clearing", "checksum", "trial balance")
+#: Accounting terms a bursar has no reason to know: a check title may name one
+#: only with its plain words beside it, and what a check found never does.
+CLOSE_JARGON = ("GR/IR", "sub-ledger", "control ", "clearing", "checksum", "trial balance",
+                "AR ", "AP ", "deferred income", "inter-branch")
 
 
 class CloseChecklistSpeaksPlainlyTests(SimpleTestCase):
@@ -70,12 +75,40 @@ class CloseChecklistSpeaksPlainlyTests(SimpleTestCase):
         for word in CLOSE_JARGON:
             self.assertNotIn(word.lower(), text.lower())
 
-    def test_finance_check_titles_carry_no_jargon(self):
+    def assert_paired(self, title):
+        """A title is plain words, or a term followed by its plain words in brackets."""
+        term, _, gloss = title.partition(" (")
+        if gloss:
+            self.assertTrue(gloss.endswith(")"), title)
+            self.assert_plain(gloss)
+        else:
+            self.assert_plain(term)
+
+    def test_finance_check_titles_pair_each_term_with_plain_words(self):
         from .close import CHECK_TITLES
 
         for name, title in CHECK_TITLES.items():
             with self.subTest(check=name):
-                self.assert_plain(title)
+                self.assert_paired(title)
+        self.assertEqual(CHECK_TITLES["ar_reconciled"], "AR reconciled (what customers owe)")
+
+    def test_contributed_check_titles_pair_each_term_with_plain_words(self):
+        from types import SimpleNamespace
+
+        from vs_procurement import close_checks
+
+        ap = SimpleNamespace(is_reconciled=True, subledger_total=0, control_total=0)
+        with mock.patch("vs_procurement.reports.reconcile_ap", return_value=ap), \
+                mock.patch("vs_procurement.reports.grir_balance", return_value=0), \
+                mock.patch("vs_procurement.models.Vendor.objects") as vendors:
+            vendors.filter.return_value.exists.return_value = True
+            ap_item = close_checks.ap_reconciled(object(), object())
+            grir_item = close_checks.grir_explained(object(), object())
+
+        self.assertEqual(ap_item.label, "AP reconciled (what is owed to suppliers)")
+        self.assertEqual(grir_item.label, "GR/IR explained (goods received, not yet billed)")
+        for item in (ap_item, grir_item):
+            self.assert_paired(item.label)
 
     def test_goods_received_but_not_billed_reads_in_plain_words(self):
         from vs_procurement import close_checks
@@ -86,7 +119,7 @@ class CloseChecklistSpeaksPlainlyTests(SimpleTestCase):
                     mock.patch("vs_procurement.models.Vendor.objects") as vendors:
                 vendors.filter.return_value.exists.return_value = True
                 item = close_checks.grir_explained(object(), object())
-            self.assertEqual(item.label, "Goods received but not yet billed")
+            self.assertEqual(item.label, "GR/IR explained (goods received, not yet billed)")
             self.assert_plain(item.detail)
             details[balance] = item.detail
         self.assertIn("₦15,000.00", details[1_500_000])

@@ -32,6 +32,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from django.db import transaction
 from django.db.models import F, Sum
 
+from vs_config.display import format_date
 from vs_finance.audit import record, record_rejection
 from vs_finance.constants import (
     GRIR_NAME,
@@ -56,6 +57,7 @@ from .constants import (
 )
 from .exceptions import (
     GoodsReturnError,
+    NoPayableAccountError,
     SettlementBranchError,
     VendorCreditNoteError,
     VendorInvoiceVoidError,
@@ -407,14 +409,15 @@ def _post_vendor_credit_note_atomic(note, *, actor_user=None):
     ensure_on_or_after(
         subject=f"Vendor credit note {_label(note)}", subject_date=note.note_date,
         source=f"bill {_label(invoice)}", source_date=invoice.invoice_date,
-        remedy=f"Date the credit note {invoice.invoice_date} or later.",
+        remedy=f"Date the credit note {format_date(invoice.invoice_date, note.entity.tenant)} or later.",
+        tenant=note.entity.tenant,
     )
     _check_credit_caps(note, invoice, lines)
 
     vendor = invoice.vendor
     ap_account = vendor.payable_account
     if ap_account is None:
-        raise PostingError(f"Vendor {vendor.code} has no payable (AP control) account set.")
+        raise NoPayableAccountError(vendor)
 
     grir_total = 0
     ppv_by_cost_center: dict[int | None, int] = defaultdict(int)
@@ -605,7 +608,7 @@ def allocate_vendor_credit_note(note, *, allocations=None, actor_user=None, bill
         raise VendorCreditNoteError("Only a posted vendor credit note can be applied.")
     vendor = note.vendor
     if vendor.payable_account_id is None:
-        raise PostingError(f"Vendor {vendor.code} has no payable (AP control) account set.")
+        raise NoPayableAccountError(vendor)
     remaining = note.advance_remaining
     if remaining <= 0:
         return []
@@ -956,7 +959,8 @@ def _return_goods_atomic(grn, *, return_date, reason, lines=None, actor_user=Non
     ensure_on_or_after(
         subject=f"Return of goods on {_label(grn)}", subject_date=return_date,
         source=f"goods receipt {_label(grn)}", source_date=grn.received_date,
-        remedy=f"Date the return {grn.received_date} or later.",
+        remedy=f"Date the return {format_date(grn.received_date, grn.entity.tenant)} or later.",
+        tenant=grn.entity.tenant,
     )
 
     grn_lines = {

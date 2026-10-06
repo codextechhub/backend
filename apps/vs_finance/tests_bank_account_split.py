@@ -422,7 +422,7 @@ class SharedBankAccountSplitTests(_FinanceBranchFixture):
     def test_the_agreed_total_must_equal_the_legacy_balance(self):
         from .bank_splits import split_shared_bank_account
 
-        with self.assertRaisesMessage(BankAccountSplitError, "sum to ₦9,999.99"):
+        with self.assertRaisesMessage(BankAccountSplitError, "add up to ₦9,999.99"):
             split_shared_bank_account(
                 self.legacy_bank,
                 self.allocations(ikeja=600_000, lekki=399_999),
@@ -441,7 +441,10 @@ class SharedBankAccountSplitTests(_FinanceBranchFixture):
         self.post_movement(
             self.books, self.legacy_ledger, 50_000, JAN_20, branch=self.ikeja,
         )
-        with self.assertRaisesMessage(BankAccountSplitError, "posted movement after"):
+        with self.assertRaisesMessage(
+            BankAccountSplitError,
+            "entries after the split date, 15 Jan 2026: the first is dated 20 Jan 2026.",
+        ):
             split_shared_bank_account(
                 self.legacy_bank,
                 self.allocations(),
@@ -500,7 +503,10 @@ class SharedBankAccountSplitTests(_FinanceBranchFixture):
             txn_date=JAN_10,
             amount=25_000,
         )
-        with self.assertRaisesMessage(BankAccountSplitError, "unmatched line"):
+        with self.assertRaisesMessage(
+            BankAccountSplitError,
+            "up to the split date, 15 Jan 2026, first: a line dated 10 Jan 2026 is still unmatched.",
+        ):
             split_shared_bank_account(
                 self.legacy_bank,
                 self.allocations(),
@@ -512,7 +518,7 @@ class SharedBankAccountSplitTests(_FinanceBranchFixture):
         from .bank_splits import split_shared_bank_account
 
         JournalEntry.objects.filter(pk=self.historical_journal.pk).update(branch=None)
-        with self.assertRaisesMessage(BankAccountSplitError, "branch backfill"):
+        with self.assertRaisesMessage(BankAccountSplitError, "have no branch yet"):
             split_shared_bank_account(
                 self.legacy_bank,
                 self.allocations(),
@@ -591,7 +597,7 @@ class SharedBankAccountSplitTests(_FinanceBranchFixture):
 
         allocations = self.allocations()
         allocations[1]["is_primary"] = True
-        with self.assertRaisesMessage(BankAccountSplitError, "one successor"):
+        with self.assertRaisesMessage(BankAccountSplitError, "at most one new branch account"):
             split_shared_bank_account(
                 self.legacy_bank,
                 allocations,
@@ -628,7 +634,7 @@ class SharedBankAccountSplitTests(_FinanceBranchFixture):
             entity=self.books, branch=self.yaba, gl_account=other_ledger,
             name="Existing primary", is_primary=True,
         )
-        with self.assertRaisesMessage(BankAccountSplitError, "already the entity primary"):
+        with self.assertRaisesMessage(BankAccountSplitError, "already the main account"):
             split_shared_bank_account(
                 self.legacy_bank,
                 self.allocations(),
@@ -911,7 +917,11 @@ class SharedBankAccountSplitTests(_FinanceBranchFixture):
         self.assert_equal_shares_post_no_difference(BankSplitDifferenceTreatment.PERMANENT_MOVE)
 
     def test_an_unknown_treatment_is_refused(self):
-        with self.assertRaisesMessage(BankAccountSplitError, "Choose how"):
+        with self.assertRaisesMessage(
+            BankAccountSplitError,
+            'Choose how a branch\'s difference is treated: "Debt between branches" or '
+            '"Permanent move through retained earnings".',
+        ):
             self.split(self.allocations(), difference_treatment="WRITE_OFF")
         self.assertTrue(BankAccount.objects.get(pk=self.legacy_bank.pk).is_active)
 

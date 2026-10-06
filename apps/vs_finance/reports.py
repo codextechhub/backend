@@ -1300,6 +1300,7 @@ def budget_monthly_matrix(budget) -> BudgetMatrix:
     """
     from .constants import AccountType, NormalBalance
     from .models import BudgetLine, FiscalPeriod
+    from .wording import period_label
 
     _PL_TYPES = {AccountType.INCOME, AccountType.EXPENSE}
     fiscal_year = budget.fiscal_year
@@ -1368,7 +1369,11 @@ def budget_monthly_matrix(budget) -> BudgetMatrix:
     return BudgetMatrix(
         budget_id=budget.id,
         fiscal_year_id=fiscal_year.id,
-        periods=[{"period_no": p.period_no, "label": p.name} for p in periods],
+        periods=[
+            {"period_no": p.period_no, "name": p.name,
+             "label": period_label(p, budget.entity.tenant)}
+            for p in periods
+        ],
         rows=rows,
         total_budget=grand_budget,
         total_actual=grand_actual,

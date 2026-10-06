@@ -9,7 +9,7 @@ binds every branch that pays staff from these books.
 """
 from __future__ import annotations
 
-from vs_finance.wording import counted
+from vs_finance.wording import choice_options, choose_one_of, counted
 
 import datetime
 
@@ -50,6 +50,7 @@ def serialize_finance_payroll_settings(settings):
     for field in DATE_FIELDS:
         data[field] = data[field].isoformat() if data[field] else None
     data["paye_method_label"] = PayeMethod(settings.paye_method).label
+    data["paye_method_options"] = choice_options(PayeMethod)
     data["updated_at"] = settings.updated_at.isoformat() if settings.pk else None
     data["updated_by"] = settings.updated_by.email if settings.pk and settings.updated_by else None
     return data
@@ -66,7 +67,7 @@ def _validated_values(data):
     if "paye_method" in data:
         value = str(data["paye_method"] or "").upper()
         if value not in PayeMethod.values:
-            raise ValidationError({"paye_method": "Choose COMPUTED or SUPPLIED."})
+            raise ValidationError({"paye_method": choose_one_of(PayeMethod)})
         values["paye_method"] = value
     if "tax_country" in data:
         from .models import PayeTaxTable
