@@ -765,7 +765,7 @@ MUST SAY:
   once per page. A draft reading PENDING is resumed from the approvals screen.
 Verified: tests_rfq_line_links 12 (9 failed first), tests_requisition_picker 10 (6 failed first), tests_inter_branch_approval_end 7 (3 failed first), tests_adjustment_rework 12 (11 failed first), the petty cash return approval-end test (failed first); tests_approval_resubmit (vs_finance) 5 (4 failed first), the petty cash resume test (failed first), tests_approval_resubmit (vs_procurement) 2 (passed before the change: procurement already kept its pending state), vs_workflow resubmit contract 2, tests_approval_state_reads 5; vs_workflow 541 OK; vs_payments 434 OK; vs_rbac 989 OK; vs_procurement 811 OK; vs_finance 2022 OK; full suite with --parallel 4: Ran 9597 tests, OK.
 
-### D128. A procurement document an approver returns is corrected by whoever sent it and resumed from the approvals screen (uncommitted, 2026-10-06)
+### D128. A procurement document an approver returns is corrected by whoever sent it and resumed from the approvals screen (c74397ed, 2026-10-06)
 Number may be renumbered at merge. No migration.
 MODULES: M22 procurement (requisitions, purchase orders, vendor bills, vendor payments, vendor credit notes), M18 workflow engine (every module), M19 finance (reversal of a returned request), MRD.
 Owner decision (2026-10-06): a returned requisition or vendor bill can be corrected and resumed, as finance documents can, rather than cancelled and raised again.
