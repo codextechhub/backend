@@ -429,7 +429,7 @@ class BankStatementLine(TimeStampedModel):
         ordering = ["bank_account", "txn_date", "id"]
 
     def __str__(self) -> str:
-        return f"{self.txn_date} {format_naira(int(self.amount))} [{self.status}]"
+        return f"{self.txn_date} {format_naira(int(self.amount))} ({self.get_status_display().lower()})"
 
 
 class BankLineMatch(TimeStampedModel):
@@ -581,7 +581,7 @@ class BankReconciliation(TimeStampedModel):
         ordering = ["-created_at", "-id"]
 
     def __str__(self) -> str:
-        return f"{self.bank_account.name} recon {self.as_of_date} [{self.status}]"
+        return f"{self.bank_account.name} reconciliation {self.as_of_date} ({self.get_status_display().lower()})"
 
 
 class ExpenseClaim(FinanceDocument):
@@ -1996,7 +1996,7 @@ class Budget(TimeStampedModel):
         ordering = ["entity", "-fiscal_year__year", "name"]
 
     def __str__(self) -> str:
-        return f"{self.name} [{self.status}]"
+        return f"{self.name} ({self.get_status_display().lower()})"
 
     @property
     def is_locked(self) -> bool:

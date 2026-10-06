@@ -71,7 +71,8 @@ from .constants import (
 )
 from .exceptions import FinanceError, InterBranchError, InterBranchUnavailableError, PostingError
 from .money import format_naira
-from .posting import ensure_period_open, post_journal, resolve_period, reverse_journal
+from .posting import ensure_date_open, post_journal, resolve_period, reverse_journal
+from .wording import state_word
 
 #: Kinds that move money between two bank accounts.
 MONEY_KINDS = (InterBranchTransferKind.CASH, InterBranchTransferKind.FORWARDED_RECEIPT)
@@ -114,14 +115,12 @@ def tenant_branch(entity, ref, *, field="branch"):
 def ensure_branches_open(entity, on_date, *branches) -> None:
     """Refuse unless both branches of a transfer can post on ``on_date``.
 
-    The books close by month for the tenant, so both branches are open exactly
-    when the tenant's period covering the date accepts a posting. This is the
-    one place a transfer asks, so a per-branch close answers here for both
-    branches at once.
+    Each branch closes its own months, so the date must be open at every branch
+    the transfer books into (:func:`vs_finance.posting.ensure_date_open`). This is
+    the one place a transfer asks, so a refusal names the branch that has closed.
     """
-    period = resolve_period(entity, on_date)
     for branch in branches:
-        ensure_period_open(period, branch=branch)
+        ensure_date_open(entity, on_date, branch=branch)
 
 
 def inter_branch_account(entity):
@@ -378,7 +377,7 @@ def _post_money_transfer_atomic(transfer, *, actor_user=None):
     transfer = InterBranchTransfer.objects.select_for_update().get(pk=transfer.pk)
     if transfer.status not in (DocumentStatus.DRAFT, DocumentStatus.APPROVED):
         raise PostingError(
-            f"Transfer {transfer.document_number or transfer.pk} is '{transfer.status}'; "
+            f"Transfer {transfer.document_number or transfer.pk} is {state_word(transfer)}; "
             f"only a draft or approved one can be sent.",
         )
     validate_money_transfer(transfer)
@@ -448,12 +447,19 @@ def _post_money_transfer_atomic(transfer, *, actor_user=None):
 
 @transaction.atomic
 def decline_request(transfer, *, reason="", actor_user=None):
-    """The sending branch declines a request it will not meet. Nothing was booked."""
+    """The sending branch declines a request it will not meet. Nothing was booked.
+
+    Refused while the send is with its approvers or returned to whoever sent it:
+    the approval request is withdrawn first
+    (:func:`vs_finance.approvals.refuse_while_request_open`).
+    """
+    from .approvals import refuse_while_request_open
     from .models import InterBranchTransfer
 
     transfer = InterBranchTransfer.objects.select_for_update().get(pk=transfer.pk)
     if transfer.status != DocumentStatus.DRAFT or transfer.requested_by_id is None:
         raise InterBranchError("Only a request still waiting to be sent can be declined.")
+    refuse_while_request_open(transfer, noun="inter-branch transfer", act="declined")
     transfer.status = DocumentStatus.CANCELLED
     transfer.declined_by = actor_user
     transfer.declined_at = timezone.now()
@@ -538,7 +544,7 @@ def post_held_receipt(held, *, actor_user=None):
 
     held = HeldForBranchReceipt.objects.select_for_update().get(pk=held.pk)
     if held.status != DocumentStatus.DRAFT:
-        raise PostingError(f"Receipt {held.document_number} is '{held.status}' and cannot be posted.")
+        raise PostingError(f"Receipt {held.document_number} is {state_word(held)} and cannot be posted.")
     validate_held_receipt(held)
     narration = (
         held.narration or f"Received for {held.for_branch.name}: {held.customer.name}"
@@ -578,9 +584,13 @@ def post_held_receipt(held, *, actor_user=None):
 def void_held_receipt(held, *, actor_user=None, date=None, payer_payment=None):
     """Reverse a held receipt that was never forwarded and that no statement has matched.
 
+    A forward whose approval request is still open (returned to whoever sent it
+    included) holds the receipt too: that request is withdrawn first.
+
     One that is a customer's share of a payer's payment is voided only with that
     payment (``payer_payment``), which voids every share together.
     """
+    from .approvals import refuse_while_request_open
     from .banking import journal_is_reconciled
     from .models import HeldForBranchReceipt, InterBranchTransfer
     from .payer_payments import payer_payment_refusal
@@ -600,6 +610,8 @@ def void_held_receipt(held, *, actor_user=None, date=None, payer_payment=None):
             f"Receipt {held.document_number} is forwarded by {forward.document_number}; "
             f"void that transfer first.",
         )
+    for draft in InterBranchTransfer.objects.filter(held_receipt=held, status=DocumentStatus.DRAFT):
+        refuse_while_request_open(draft, noun="forward of this receipt", act="voided")
     if journal_is_reconciled(held.journal_id):
         raise InterBranchError(
             f"Receipt {held.document_number} is matched to a bank statement line. "
@@ -690,7 +702,7 @@ def _void_transfer_atomic(transfer, *, actor_user=None, date=None, recharge=None
     transfer = InterBranchTransfer.objects.select_for_update().get(pk=transfer.pk)
     if transfer.status != DocumentStatus.POSTED:
         raise InterBranchError(
-            f"Only a posted transfer can be voided; {transfer.document_number} is '{transfer.status}'.",
+            f"Only a posted transfer can be voided; {transfer.document_number} is {state_word(transfer)}.",
         )
     if transfer.kind == InterBranchTransferKind.GOODS:
         raise InterBranchError(

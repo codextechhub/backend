@@ -23,6 +23,7 @@ from .constants import (
 )
 from .exceptions import FinanceError, PostingError
 from .money import format_naira
+from .wording import state_word
 
 
 def books_went_live(entity):
@@ -98,7 +99,7 @@ def _post_opening_invoice_atomic(invoice, *, actor_user=None):
     if invoice.source != InvoiceSource.OPENING:
         raise PostingError(f"Invoice {number} is not an opening invoice.")
     if invoice.status != DocumentStatus.DRAFT:
-        raise PostingError(f"Opening invoice {number} is '{invoice.status}'; only a draft can be posted.")
+        raise PostingError(f"Opening invoice {number} is {state_word(invoice)}; only a draft can be posted.")
     customer = invoice.customer
     if customer.receivable_account_id is None:
         raise PostingError(f"Customer {customer.code} has no receivable (AR control) account set.")

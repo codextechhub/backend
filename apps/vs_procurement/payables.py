@@ -55,6 +55,7 @@ from .constants import (
 from .exceptions import SettlementBranchError, ThreeWayMatchError
 from .purchasing import resolve_account
 from .settings import resolve_procurement_settings
+from vs_finance.wording import state_word
 
 
 # --------------------------------------------------------------------------- #
@@ -195,7 +196,7 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
 
     if invoice.status != DocumentStatus.DRAFT:  # Only draft bills can be posted.
         raise PostingError(
-            f"Vendor invoice {invoice.document_number or invoice.pk} is '{invoice.status}', "
+            f"Vendor invoice {invoice.document_number or invoice.pk} is {state_word(invoice)}, "
             f"only a draft can be posted.",
         )
     if invoice.approval_state != ProcApprovalState.APPROVED:
@@ -486,7 +487,7 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
 
     if payment.status != DocumentStatus.DRAFT:  # Only draft vendor payments can be posted.
         raise PostingError(
-            f"Vendor payment {payment.document_number or payment.pk} is '{payment.status}', "
+            f"Vendor payment {payment.document_number or payment.pk} is {state_word(payment)}, "
             f"only a draft can be posted.",
         )
     vendor = payment.vendor  # Vendor drives AP and blocking rules.
@@ -1073,7 +1074,7 @@ def _post_opening_vendor_invoice_atomic(invoice, *, actor_user=None):
     if not invoice.is_opening:
         raise PostingError(f"Vendor invoice {number} is not an opening bill.")
     if invoice.status != DocumentStatus.DRAFT:
-        raise PostingError(f"Opening bill {number} is '{invoice.status}'; only a draft can be posted.")
+        raise PostingError(f"Opening bill {number} is {state_word(invoice)}; only a draft can be posted.")
     if invoice.purchase_order_id or invoice.lines.exclude(po_line=None).exists():
         raise PostingError("An opening bill stands on its own; it cannot name a purchase order.")
     vendor = invoice.vendor

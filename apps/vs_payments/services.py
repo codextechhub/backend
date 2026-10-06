@@ -54,6 +54,7 @@ from .exceptions import (
 )
 from .models import CollectionIntent, PayoutBatch, PayoutInstruction, VirtualAccount
 from .providers.registry import available_providers, get_provider, is_available
+from vs_finance.wording import state_word
 
 _logger = logging.getLogger("vs_payments.services")  # Diagnostics for off-request dispatch work.
 
@@ -692,10 +693,11 @@ def _booking_date(entity, paid_at, branch=None):
         return today, {}
     paid_on = min(paid_at.astimezone(branch_zone(entity.tenant, branch)).date(), today)
     metadata = {"paid_on": paid_on.isoformat()}
-    if _period_accepts_posting(resolve_period(entity, paid_on)):
+    if _period_accepts_posting(resolve_period(entity, paid_on), branch=branch):
         return paid_on, metadata
     later = [
-        window["start_date"] for window in posting_window(entity, today=today)["open"]
+        window["start_date"]
+        for window in posting_window(entity, today=today, branch=branch)["open"]
         if window["start_date"] > paid_on
     ]
     if not later:
@@ -793,7 +795,7 @@ def _unsettlable_reason(intent):
     invoice = Invoice.objects.select_for_update(of=("self",)).get(pk=intent.invoice_id)
     intent.invoice = invoice
     if invoice.status != DocumentStatus.POSTED:
-        return f"the invoice is '{invoice.status}', so it can no longer be paid."
+        return f"the invoice is {state_word(invoice)}, so it can no longer be paid."
     if invoice.customer_id != intent.customer_id:
         return "the invoice belongs to another customer than the one who paid."
     return None

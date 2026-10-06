@@ -83,7 +83,7 @@ def validate_value(definition, value):
             raise ValueError
     except (ValueError, TypeError, InvalidOperation):
         raise InvalidConfigurationValue(
-            f"Value for '{definition.key}' is not a valid {definition.get_value_type_display().lower()}.",
+            f"{definition.label} must be a valid {definition.get_value_type_display().lower()}.",
             extra={"key": definition.key},
         )
 
@@ -99,17 +99,17 @@ def validate_value(definition, value):
                 minimum = Decimal(str(rules["min"])) if is_decimal else rules["min"]
                 if comparable < minimum:
                     raise InvalidConfigurationValue(
-                        f"Value for '{definition.key}' is below the minimum."
+                        f"{definition.label} must be at least {rules['min']}."
                     )
             if "max" in rules:
                 maximum = Decimal(str(rules["max"])) if is_decimal else rules["max"]
                 if comparable > maximum:
                     raise InvalidConfigurationValue(
-                        f"Value for '{definition.key}' exceeds the maximum."
+                        f"{definition.label} must be at most {rules['max']}."
                     )
         except TypeError:
             raise InvalidConfigurationValue(
-                f"Value for '{definition.key}' cannot be compared with its configured bounds."
+                f"{definition.label} cannot be checked against its allowed range."
             )
     return value
 

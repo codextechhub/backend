@@ -60,6 +60,7 @@ from .receivables import (
     compute_tax,
     stamp_allocation_effective_date,
 )
+from .wording import state_word
 
 
 # --------------------------------------------------------------------------- #
@@ -171,7 +172,7 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
     note.refresh_from_db()
     if note.status != DocumentStatus.DRAFT:  # Only draft notes can post.
         raise PostingError(
-            f"Credit note {note.document_number or note.pk} is '{note.status}', "
+            f"Credit note {note.document_number or note.pk} is {state_word(note)}, "
             f"only a draft note can be posted.",
         )
 
@@ -596,7 +597,7 @@ def _post_refund_atomic(refund, *, actor_user=None):
 
     if refund.status != DocumentStatus.DRAFT:  # Only draft refunds can post.
         raise PostingError(
-            f"Refund {refund.document_number or refund.pk} is '{refund.status}', "
+            f"Refund {refund.document_number or refund.pk} is {state_word(refund)}, "
             f"only a draft refund can be posted.",
         )
     if refund.amount <= 0:  # Refund must pay a positive amount.
@@ -775,7 +776,7 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
     invoice.refresh_from_db()
     if invoice.status != DocumentStatus.POSTED:  # Only posted invoices have AR balances.
         raise PostingError(
-            f"Invoice {invoice.document_number or invoice.pk} is '{invoice.status}'; "
+            f"Invoice {invoice.document_number or invoice.pk} is {state_word(invoice)}; "
             f"only a posted invoice can be written off.",
         )
 
@@ -890,7 +891,7 @@ def post_write_off_request(wor, *, actor_user=None):
         locked = type(wor).objects.select_for_update(of=("self",)).get(pk=wor.pk)
         if locked.status not in (DocumentStatus.DRAFT, DocumentStatus.APPROVED):  # Request must be direct-postable or workflow-approved.
             raise PostingError(
-                f"Write-off {locked.document_number or locked.pk} is '{locked.status}'; "
+                f"Write-off {locked.document_number or locked.pk} is {state_word(locked)}; "
                 f"only a draft or approved write-off request can be posted.",
             )
 
@@ -961,7 +962,7 @@ def _recover_write_off_atomic(write_off, payment, *, amount=None, actor_user=Non
         "customer", "entity__tenant").get(pk=write_off.invoice_id)
     if write_off.status != DocumentStatus.POSTED or write_off.journal_id is None:
         raise PostingError(
-            f"Write-off {write_off.document_number} is '{write_off.status}'; only a "
+            f"Write-off {write_off.document_number} is {state_word(write_off)}; only a "
             f"posted write-off can be recovered.",
         )
     if payment.status != DocumentStatus.POSTED:

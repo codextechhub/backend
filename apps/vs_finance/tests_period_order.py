@@ -306,7 +306,8 @@ class PeriodOrderPreviewTests(_OrderFixture):
         data = self.preview(2)
         item = self.item(data, CLOSE_ORDER)
         self.assertEqual(item, {
-            "name": CLOSE_ORDER, "passed": False, "blocking": True, "done_by_close": False,
+            "name": CLOSE_ORDER, "label": "Earlier months closed",
+            "passed": False, "blocking": True, "done_by_close": False,
             "detail": "Close January 2026 first. Months close in order, so February 2026 "
                       "can close once every earlier month is closed.",
         })

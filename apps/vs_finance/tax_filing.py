@@ -78,6 +78,7 @@ from .constants import (
 from .exceptions import FinanceError, TaxFilingError
 from .money import format_naira
 from .posting import post_journal, resolve_period
+from .wording import state_word
 
 #: Journal sources whose lines are never a return's source lines: the journals the
 #: tax module writes for itself. Their reversals are left out through ``reverses``.
@@ -860,7 +861,7 @@ def _file_filing_atomic(filing, *, filed_date, filing_reference, adjustment_amou
     filing = _lock(filing)
     if filing.filing_status != TaxFilingStatus.DRAFT:
         raise TaxFilingError(
-            f"Filing {filing.document_number or filing.pk} is '{filing.filing_status}', "
+            f"Filing {filing.document_number or filing.pk} is {state_word(filing, 'filing_status')}, "
             f"only a draft can be filed.",
         )
 
@@ -999,7 +1000,7 @@ def _unfile_filing_atomic(filing, *, actor_user=None):
         )
     if filing.filing_status != TaxFilingStatus.FILED:
         raise TaxFilingError(
-            f"Filing {label} is '{filing.filing_status}', only a filed return can be un-filed.",
+            f"Filing {label} is {state_word(filing, 'filing_status')}, only a filed return can be un-filed.",
         )
     if int(filing.amount_paid or 0) > 0:
         raise TaxFilingError(

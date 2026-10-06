@@ -44,6 +44,7 @@ from vs_workflow.presentation import document_details, fields_section, table_sec
 
 from .constants import DocumentStatus, PaymentMethod, PettyCashReturnKind
 from .money import format_naira
+from .wording import period_words, state_word
 
 
 def _console_document_link(path: str, document) -> str:
@@ -128,7 +129,40 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
         if getattr(document, "status", None) != DocumentStatus.DRAFT:  # Only draft finance docs enter approval.
             raise InvalidInstanceStateError("Only a draft can be submitted for approval.")
         self._refuse_second_request(document)
-        self.preflight(document)  # Run write-free posting guards.
+        self._ready_to_post(document)
+
+    def _ready_to_post(self, document) -> None:
+        """Every check approving ``document`` would make, without writing anything.
+
+        The one check submission, resumption (:meth:`on_resubmitted`) and the
+        undoing of a return (:meth:`on_action_reversed`) all run, so a document
+        that passes here does not fail later in front of its approver for a
+        reason that was already knowable. The month its posting lands in must be
+        open at the branch whose books it lands in (:meth:`ensure_month_open`),
+        then the type's own posting guards run (:meth:`preflight`).
+        """
+        self.ensure_month_open(document)
+        self.preflight(document)
+
+    #: The document's own date: the day its posting lands on.
+    date_field = ""
+
+    def ensure_month_open(self, document) -> None:
+        """Refuse unless the month ``document`` posts into is open at its own branch.
+
+        Months close per branch (:mod:`vs_finance.branch_close`): Ikeja closes
+        September while Lekki is still finishing it. So Mrs Bello's Ikeja
+        document dated in September is refused here, naming Ikeja, when it is
+        sent or resumed, while a Lekki document dated the same day goes through.
+        By default the document posts on its ``date_field`` into its own
+        branch's books; a type that posts elsewhere, or into several branches,
+        says so by overriding this.
+        """
+        from .posting import ensure_date_open
+
+        ensure_date_open(
+            document.entity, getattr(document, self.date_field), branch=document.branch_id,
+        )
 
     def _refuse_second_request(self, document) -> None:
         """Refuse a submission while an earlier request for ``document`` is still open.
@@ -169,19 +203,19 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
         This is the sanctioned way back for a returned document; its own submit
         route refuses it while the request is open (:meth:`_refuse_second_request`).
         The document was its requester's draft while returned, so it is checked
-        again exactly as a submission is (:meth:`preflight`): a journal whose
-        month has closed meanwhile is refused here, and the request stays
-        returned, rather than failing when the approver approves it. Once
-        PENDING_APPROVAL, nothing that edits a draft reaches it.
+        again exactly as a submission is (:meth:`_ready_to_post`): a journal
+        whose month its own branch has closed meanwhile is refused here, and the
+        request stays returned, rather than failing when the approver approves
+        it. Once PENDING_APPROVAL, nothing that edits a draft reaches it.
         """
         doc = self._load(instance)  # Lock the concrete finance document.
         if doc.status != DocumentStatus.DRAFT:
             raise InvalidInstanceStateError(
                 f"{getattr(self, 'noun', 'This document')} "
-                f"{getattr(doc, 'document_number', '') or doc.pk} is '{doc.status}', so its "
+                f"{getattr(doc, 'document_number', '') or doc.pk} is {state_word(doc)}, so its "
                 f"request cannot be resumed."
             )
-        self.preflight(doc)
+        self._ready_to_post(doc)
         doc.status = DocumentStatus.PENDING_APPROVAL
         doc.save(update_fields=["status", "updated_at"])
 
@@ -250,12 +284,22 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
         self._approval_ended(instance)
 
     def _approval_ended(self, instance) -> None:
-        """Move a document still waiting for approval to :meth:`status_when_unapproved`."""
+        """Move a document whose request has ended to :meth:`status_when_unapproved`.
+
+        A document still with its approvers is PENDING_APPROVAL; one an approver
+        had returned to its sender is already a DRAFT. Both land where the type
+        says once the request is withdrawn or cancelled: a DRAFT for most types,
+        CANCELLED for a type whose draft nobody can send again (a petty cash
+        return, an inter-branch send nobody asked for). Leaving a returned one a
+        DRAFT would strand it on the register with no request and no way back.
+        """
         with transaction.atomic():
             doc = self._load(instance)
-            if doc.status == DocumentStatus.PENDING_APPROVAL:
-                doc.status = self.status_when_unapproved(doc)
-                doc.save(update_fields=["status", "updated_at"])
+            if doc.status in (DocumentStatus.PENDING_APPROVAL, DocumentStatus.DRAFT):
+                landing = self.status_when_unapproved(doc)
+                if doc.status != landing:
+                    doc.status = landing
+                    doc.save(update_fields=["status", "updated_at"])
 
     #: The only statuses from which an approval decision can still be withdrawn.
     #: Approval posts, and posting is what each document type's own service
@@ -302,7 +346,7 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
         with transaction.atomic():
             doc = self._load(instance)  # Lock the concrete finance document.
             if context.get("was_returned") and doc.status == DocumentStatus.DRAFT:
-                self.preflight(doc)
+                self._ready_to_post(doc)
             if doc.status == DocumentStatus.DRAFT:
                 doc.status = DocumentStatus.PENDING_APPROVAL  # Back under review.
                 doc.save(update_fields=["status", "updated_at"])
@@ -367,13 +411,12 @@ class JournalHandler(_FinancePostOnApprove):
         """Run the posting guards without writing anything.
 
         Reuses the exact guards :func:`vs_finance.posting.post_journal` applies at
-        post time (period resolvable + open, ≥1 line, balanced, every account
-        active + postable) so the preflight and the eventual post agree - the only
-        difference is this one never mutates.
+        post time (≥1 line, balanced, every account active + postable) so the
+        preflight and the eventual post agree - the only difference is this one
+        never mutates. Its period is checked at its own branch first
+        (:meth:`ensure_month_open`).
         """
-        from .posting import ensure_balanced, ensure_period_open, sum_sides
-
-        ensure_period_open(document.period)  # Reject journals into closed/restricted periods.
+        from .posting import ensure_balanced, sum_sides
 
         lines = list(document.lines.select_related("account").all())
         if not lines:  # Journals need at least one line.
@@ -392,6 +435,12 @@ class JournalHandler(_FinancePostOnApprove):
         from .control_accounts import ensure_hand_journal_allowed
 
         ensure_hand_journal_allowed(document)
+
+    def ensure_month_open(self, document) -> None:
+        """A journal posts into the period it names, in its own branch's books."""
+        from .posting import ensure_period_open
+
+        ensure_period_open(document.period, branch=document.branch_id)
 
     # Post an approved journal.
     def post(self, document, *, actor_user) -> None:
@@ -417,7 +466,7 @@ class JournalHandler(_FinancePostOnApprove):
             fields_section("Journal details", [
                 ("Reference", document.reference or "-"),
                 ("Narration", document.narration),
-                ("Period", str(document.period)),
+                ("Period", period_words(document.period) if document.period_id else "-"),
             ]),
             table_section(
                 "Journal lines",
@@ -455,12 +504,12 @@ class BankTransactionHandler(_FinancePostOnApprove):
         from .models import BankTransaction
         return BankTransaction
 
+    date_field = "transaction_date"
+
     def preflight(self, document) -> None:
         from .banking import validate_bank_transaction
-        from .posting import ensure_period_open, resolve_period
 
         validate_bank_transaction(document)
-        ensure_period_open(resolve_period(document.entity, document.transaction_date))
 
     def post(self, document, *, actor_user) -> None:
         from .banking import post_bank_transaction
@@ -508,12 +557,12 @@ class BankTransferHandler(_FinancePostOnApprove):
         from .models import BankTransfer
         return BankTransfer
 
+    date_field = "transfer_date"
+
     def preflight(self, document) -> None:
         from .banking import validate_bank_transfer
-        from .posting import ensure_period_open, resolve_period
 
         validate_bank_transfer(document)
-        ensure_period_open(resolve_period(document.entity, document.transfer_date))
 
     def post(self, document, *, actor_user) -> None:
         from .banking import post_bank_transfer
@@ -571,12 +620,12 @@ class PettyCashReturnHandler(_FinancePostOnApprove):
         from .models import PettyCashReturn
         return PettyCashReturn
 
+    date_field = "return_date"
+
     def preflight(self, document) -> None:
         from .petty_cash import validate_petty_cash_return
-        from .posting import ensure_period_open, resolve_period
 
         validate_petty_cash_return(document)
-        ensure_period_open(resolve_period(document.entity, document.return_date))
 
     def status_when_unapproved(self, doc) -> str:
         """A return whose approval ends unapproved is CANCELLED, never a draft.
@@ -644,9 +693,14 @@ class InterBranchTransferHandler(_FinancePostOnApprove):
         return InterBranchTransfer
 
     def preflight(self, document) -> None:
-        from .inter_branch import ensure_branches_open, validate_money_transfer
+        from .inter_branch import validate_money_transfer
 
         validate_money_transfer(document)
+
+    def ensure_month_open(self, document) -> None:
+        """Both branches book a transfer, so its date must be open at each of them."""
+        from .inter_branch import ensure_branches_open
+
         ensure_branches_open(
             document.entity, document.transfer_date,
             document.branch_id, document.to_branch_id,
@@ -707,6 +761,7 @@ class InterBranchTransferHandler(_FinancePostOnApprove):
 class RefundHandler(_FinancePostOnApprove):
     """Approval handler for a customer :class:`~vs_finance.models.Refund` (cash out)."""
     noun = "Customer refund"
+    date_field = "refund_date"
 
     condition_fields = (
         ConditionField("document.method", "Refund method", "document",
@@ -821,6 +876,21 @@ class WriteOffHandler(_FinancePostOnApprove):
         from .models import WriteOffRequest
         return WriteOffRequest  # Return write-off request model class.
 
+    def ensure_month_open(self, document) -> None:
+        """A dated write-off posts in its invoice's branch on its own date.
+
+        One with no date posts on the day it is approved
+        (:func:`vs_finance.credit_notes.write_off_date_for`), which is not known
+        while it is sent or resumed, so only its posting checks that month.
+        """
+        from .posting import ensure_date_open
+
+        if document.write_off_date is None:
+            return
+        ensure_date_open(
+            document.entity, document.write_off_date, branch=document.invoice.branch_id,
+        )
+
     # Validate write-off can post before workflow submission.
     def preflight(self, document) -> None:
         """Run the write-off guards without writing anything.
@@ -837,7 +907,7 @@ class WriteOffHandler(_FinancePostOnApprove):
         invoice = document.invoice  # Invoice targeted by the write-off request.
         if invoice.status != DocumentStatus.POSTED:  # Only posted invoices have AR balances.
             raise PostingError(
-                f"Invoice {invoice.document_number or invoice.pk} is '{invoice.status}'; "
+                f"Invoice {invoice.document_number or invoice.pk} is {state_word(invoice)}; "
                 f"only a posted invoice can be written off.",
             )
 
@@ -917,6 +987,7 @@ class ConcessionHandler(_FinancePostOnApprove):
     handler and hands the service a DRAFT document instead.
     """
     noun = "Concession"
+    date_field = "concession_date"
 
     @property
     # Concrete model for finance.concession instances.
@@ -951,7 +1022,7 @@ class ConcessionHandler(_FinancePostOnApprove):
         invoice = document.invoice  # Invoice the concession reduces.
         if invoice.status != DocumentStatus.POSTED:  # Only posted invoices carry AR.
             raise PostingError(
-                f"Invoice {invoice.document_number or invoice.pk} is '{invoice.status}'; "
+                f"Invoice {invoice.document_number or invoice.pk} is {state_word(invoice)}; "
                 f"a concession can only reduce a posted invoice.",
             )
         if invoice.customer_id != document.customer_id:  # Its own customer's bill only.
@@ -1027,6 +1098,7 @@ class CreditNoteHandler(_FinancePostOnApprove):
     DRAFT rather than pre-flipped, as for refunds and concessions.
     """
     noun = "Credit or debit note"
+    date_field = "note_date"
 
     @property
     # Concrete model for finance.credit_note instances.
@@ -1071,7 +1143,7 @@ class CreditNoteHandler(_FinancePostOnApprove):
     def summary(self, document) -> dict:
         return {  # Workflow summary payload.
             "title": document.document_number or str(document.pk),  # Document number or id.
-            "subtitle": f"{document.get_kind_display()} note",  # Credit or debit.
+            "subtitle": document.get_kind_display(),  # Credit note or debit note.
             "fields": [  # Key facts shown to approvers.
                 {"label": "Customer", "value": document.customer.code},  # Customer code.
                 {"label": "Total", "value": format_naira(document.total)},  # Note total.
@@ -1118,6 +1190,7 @@ class CustomerCreditTransferHandler(_FinancePostOnApprove):
     ``_mark_approved`` (flip to APPROVED) is what the posting service insists on.
     """
     noun = "Customer credit transfer"
+    date_field = "transfer_date"
 
     @property
     def document_model(self):
@@ -1174,6 +1247,13 @@ class DoubtfulDebtProvisionHandler(_FinancePostOnApprove):
         from .models import DoubtfulDebtProvision
         return DoubtfulDebtProvision
 
+    def ensure_month_open(self, document) -> None:
+        """Checked per branch by :func:`vs_finance.provisions.check_provision`, which :meth:`preflight` runs.
+
+        The run names no branch of its own: it posts one journal for each branch
+        whose allowance moves, and each of those branches must have its month open.
+        """
+
     def preflight(self, document) -> None:
         from .provisions import check_provision
 
@@ -1224,6 +1304,7 @@ class DoubtfulDebtProvisionHandler(_FinancePostOnApprove):
 class ExpenseClaimHandler(_FinancePostOnApprove):
     """Post a staff expense claim only after its approval route completes."""
     noun = "Expense claim"
+    date_field = "claim_date"
 
     @property
     def document_model(self):
@@ -1243,7 +1324,6 @@ class ExpenseClaimHandler(_FinancePostOnApprove):
         from .accounts import resolve_account
         from .constants import ACCRUED_REIMBURSEMENT_CODE
         from .exceptions import ExpenseClaimError
-        from .posting import resolve_period
 
         # Creation prices and persists every line. Recompute the header in memory so
         # the approval snapshot cannot rely on a stale roll-up without changing the
@@ -1257,8 +1337,6 @@ class ExpenseClaimHandler(_FinancePostOnApprove):
                 ACCRUED_REIMBURSEMENT_CODE,
                 label="accrued reimbursement",
             )
-        resolve_period(document.entity, document.claim_date)
-
         for line in document.lines.select_related("tax_code__paid_account"):
             if line.tax_amount and (
                 line.tax_code_id is None or line.tax_code.paid_account_id is None

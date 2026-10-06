@@ -36,6 +36,7 @@ from .base import (
     _strict_kobo,
     _text,
 )
+from vs_finance.wording import state_word
 
 # --------------------------------------------------------------------------- #
 # Vendor contracts                                                            #
@@ -226,7 +227,7 @@ class ContractDetailView(_ProcBase):
         # Only DRAFT / ACTIVE are editable; terminal states are a settled record.
         if contract.status in _TERMINAL_STATUSES:
             raise ValidationError(
-                {"status": f"A '{contract.status}' contract can no longer be edited."})
+                {"status": f"A {state_word(contract)} contract can no longer be edited."})
         body = request.data
         if "title" in body:
             contract.title = _text(body.get("title"), "title", 200, required=True)

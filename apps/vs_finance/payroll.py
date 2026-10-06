@@ -46,6 +46,7 @@ from .exceptions import FinanceError, PayrollBranchUnassignedError, PayrollError
 from .money import format_naira
 from .payroll_statutory import ItemAccounts
 from .posting import post_journal, resolve_period
+from .wording import state_word
 
 
 # Calculate salary breakdown from a structure.
@@ -788,7 +789,7 @@ def _post_payroll_atomic(run, *, actor_user=None):
 
     if run.run_status != PayrollRunStatus.DRAFT:  # Only draft runs can be accrued.
         raise PayrollError(
-            f"Payroll run {run.document_number or run.pk} is '{run.run_status}', "
+            f"Payroll run {run.document_number or run.pk} is {state_word(run, 'run_status')}, "
             f"only a draft can be posted.",
         )
 
@@ -947,7 +948,7 @@ def _pay_payroll_atomic(run, *, bank_account=None, bank_accounts=None, pay_date=
                         actor_user=None):
     if run.run_status != PayrollRunStatus.POSTED:  # Only accrued payroll can be paid.
         raise PayrollError(
-            f"Payroll run {run.document_number or run.pk} is '{run.run_status}', "
+            f"Payroll run {run.document_number or run.pk} is {state_word(run, 'run_status')}, "
             f"it must be posted (accrued) before it can be paid.",
         )
     if run.net_total <= 0:  # Nothing leaves bank when net total is zero.

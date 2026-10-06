@@ -37,6 +37,7 @@ from .constants import (
 from .exceptions import DepreciationError, FinanceError
 from .money import format_naira
 from .posting import post_journal, resolve_period, sealed_fiscal_year
+from .wording import state_word
 
 #: Why a depreciation run left a due charge unposted.
 SKIPPED_CLOSED_YEAR = "dated in a closed year"
@@ -215,7 +216,7 @@ def _acquire_asset_atomic(asset, *, credit_account=None, bank_account=None,
 
     if asset.asset_status != AssetStatus.DRAFT:  # Only draft assets can be acquired.
         raise DepreciationError(
-            f"Asset {asset.document_number or asset.pk} is '{asset.asset_status}', "
+            f"Asset {asset.document_number or asset.pk} is {state_word(asset, 'asset_status')}, "
             f"only a draft can be acquired.",
         )
     if asset.cost <= 0:  # Capitalized assets must have positive cost.
@@ -224,7 +225,7 @@ def _acquire_asset_atomic(asset, *, credit_account=None, bank_account=None,
     ppe, accum, expense = _asset_accounts(asset)  # Resolve asset cost, contra, and expense accounts.
     credit = credit_account or (bank_account.gl_account if bank_account else None)  # Choose funding account.
     if credit is None:  # Acquisition journal needs a credit side.
-        raise DepreciationError("Provide a bank_account or credit_account to fund the acquisition.")
+        raise DepreciationError("Choose the bank account that paid for the asset, or the account it is owed on.")
 
     period = resolve_period(asset.entity, asset.acquisition_date)  # Find acquisition period.
     entry = JournalEntry.objects.create(
@@ -303,7 +304,7 @@ def _post_depreciation_atomic(asset, *, up_to_date, actor_user=None, allow_restr
 
     if asset.asset_status != AssetStatus.ACTIVE:  # Only active assets can depreciate.
         raise DepreciationError(
-            f"Asset {asset.document_number or asset.pk} is '{asset.asset_status}'; "
+            f"Asset {asset.document_number or asset.pk} is {state_word(asset, 'asset_status')}; "
             f"only an ACTIVE asset can be depreciated.",
         )
 
@@ -697,7 +698,7 @@ def _dispose_asset_atomic(asset, *, disposal_date, proceeds=0, bank_account=None
 
     if asset.asset_status not in (AssetStatus.ACTIVE, AssetStatus.FULLY_DEPRECIATED):  # Only live/depreciated assets can be disposed.
         raise DepreciationError(
-            f"Asset {asset.document_number or asset.pk} is '{asset.asset_status}'; "
+            f"Asset {asset.document_number or asset.pk} is {state_word(asset, 'asset_status')}; "
             f"only an active or fully-depreciated asset can be disposed.",
         )
     # Refuse to dispose while depreciation due up to the disposal date is still unposted:

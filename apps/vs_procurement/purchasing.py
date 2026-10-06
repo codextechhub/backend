@@ -43,6 +43,7 @@ from .exceptions import (
     PurchaseOrderUnderApprovalError,
     RequisitionError,
 )
+from vs_finance.wording import state_word
 
 
 # --------------------------------------------------------------------------- #
@@ -134,7 +135,7 @@ def submit_requisition(requisition, *, actor_user=None):
     if requisition.status != DocumentStatus.DRAFT:
         raise RequisitionError(
             f"Requisition {requisition.document_number or requisition.pk} is "
-            f"'{requisition.status}', only a draft can be submitted.",
+            f"{state_word(requisition)}, only a draft can be submitted.",
         )
     requisition.recompute_total(save=False)
     requisition.status = DocumentStatus.PENDING_APPROVAL
@@ -151,7 +152,7 @@ def approve_requisition(requisition, *, actor_user=None):
     if requisition.status not in (DocumentStatus.PENDING_APPROVAL, DocumentStatus.DRAFT):
         raise RequisitionError(
             f"Requisition {requisition.document_number or requisition.pk} is "
-            f"'{requisition.status}' and cannot be approved.",
+            f"{state_word(requisition)} and cannot be approved.",
         )
     requisition.status = DocumentStatus.APPROVED
     requisition.save(update_fields=["status", "updated_at"])
@@ -172,7 +173,7 @@ def approve_purchase_order(po, *, actor_user=None):
     """
     if po.status not in (DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL):
         raise RequisitionError(
-            f"Purchase order {po.document_number or po.pk} is '{po.status}' "
+            f"Purchase order {po.document_number or po.pk} is {state_word(po)} "
             f"and cannot be approved.",
         )
     po.status = DocumentStatus.APPROVED
@@ -523,7 +524,7 @@ def create_po_from_requisition(requisition, *, vendor, order_date, actor_user=No
     if requisition.status != DocumentStatus.APPROVED:
         raise RequisitionError(
             f"Requisition {requisition.document_number or requisition.pk} must be "
-            f"APPROVED before raising a PO (is '{requisition.status}').",
+            f"approved before an order is raised from it; it is {state_word(requisition)}.",
         )
     refuse_sourced_lines(list(requisition.lines.all()))
     from vs_rbac.scoping import only_branch_id
@@ -621,7 +622,7 @@ def _post_grn_atomic(grn, *, actor_user=None):
 
     if grn.status != DocumentStatus.DRAFT:
         raise PostingError(
-            f"GRN {grn.document_number or grn.pk} is '{grn.status}', only a draft can be posted.",
+            f"GRN {grn.document_number or grn.pk} is {state_word(grn)}, only a draft can be posted.",
         )
     if grn.purchase_order_id and grn.purchase_order.status != DocumentStatus.APPROVED:
         raise PostingError(

@@ -18,13 +18,14 @@ from .constants import (
 from .exceptions import FinanceError, PostingError
 from .money import format_naira
 from .posting import reverse_journal
+from .wording import state_word
 
 
 def _guard_posted(document, label):
     if document.status != DocumentStatus.POSTED or document.journal_id is None:
         raise PostingError(
             f"Only a posted {label} with a journal can be voided; "
-            f"{document.document_number or document.pk} is '{document.status}'.",
+            f"{document.document_number or document.pk} is {state_word(document)}.",
         )
 
 

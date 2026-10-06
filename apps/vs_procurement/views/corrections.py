@@ -8,6 +8,7 @@ accounting and the audit rows; these views own request parsing and reach.
 """
 from __future__ import annotations
 
+from vs_workflow.services.approval_filter import filter_by_approval_param
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
@@ -173,6 +174,7 @@ class VendorCreditNoteListCreateView(_ProcBase):
             qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
         if (bill := params.get("vendor_invoice")) and str(bill).isdigit():
             qs = qs.filter(vendor_invoice_id=int(bill))
+        qs = filter_by_approval_param(qs, params)
         return self.paginate(
             request, qs.order_by("-id"), VendorCreditNoteListSerializer,
             page_context=lambda page: {"returned_document_ids": approvals.returned_document_ids(page)},
@@ -375,7 +377,7 @@ class VendorCreditNoteAllocateView(_ProcBase):
                 note, actor_user=request.user, bill_scope=_branch_q(request),
             )
         else:
-            raise ValidationError({"allocations": "Provide allocations or auto_allocate=true."})
+            raise ValidationError({"allocations": "Choose the bills to apply it to, or apply it automatically."})
         note = _note_queryset(entity).get(pk=pk)
         applied = before - note.advance_remaining
         message = (

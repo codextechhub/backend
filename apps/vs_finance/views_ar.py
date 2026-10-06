@@ -11,6 +11,7 @@ which own every posting. Money is integer kobo.
 """
 from __future__ import annotations
 
+from vs_workflow.services.approval_filter import filter_by_approval, filter_by_approval_param
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
 from django.db import transaction
@@ -1121,7 +1122,7 @@ class PaymentAllocateView(_FinanceBase):
                                  default=policy.default_receipt_allocation_strategy,
                              ))
         else:
-            raise ValidationError({"allocations": "Provide allocations or auto_allocate=true."})
+            raise ValidationError({"allocations": "Choose the bills to apply it to, or apply it automatically."})
         p.refresh_from_db()
         return success_response(
             f"Receipt {p.document_number} allocated.",
@@ -1536,7 +1537,7 @@ class FeeStructureGenerateView(_FinanceBase):
             refs = body.get("customers") or []
             if not refs:
                 raise ValidationError(
-                    {"customers": "Provide a customers list or all_active=true."})
+                    {"customers": "Choose the customers, or every active customer."})
             customers = [_resolve_customer(request, entity, r, "customers") for r in refs]
             off_list = _customers_off_the_price_list(structure, customers)
             if off_list:
@@ -1616,6 +1617,7 @@ class CreditNoteListCreateView(_FinanceBase):
             qs = qs.filter(status=DocumentStatus.POSTED).filter(applied_q)
         elif status_val == "issued":
             qs = qs.filter(status=DocumentStatus.POSTED).exclude(applied_q)
+        qs = filter_by_approval_param(qs, request.query_params)
         return _paginate(request, qs.order_by("-note_date", "-id"), CreditNoteSerializer, self)
 
     @transaction.atomic
@@ -1789,7 +1791,7 @@ class CreditNoteDetailView(_CreditNoteActionBase):
                 record(
                     entity=entity, action=FinanceAuditAction.CREDIT_NOTE_EDITED,
                     actor_user=request.user, target=note,
-                    message=(f"Corrected draft {note.get_kind_display().lower()} note "
+                    message=(f"Corrected draft {note.get_kind_display().lower()} "
                              f"{note.document_number}: {', '.join(changed)}."),
                     before={name: before[name] for name in changed},
                     after={name: after[name] for name in changed},
@@ -1889,7 +1891,7 @@ class CreditNoteSubmitView(_CreditNoteActionBase):
         instance = submit_for_approval(note, requested_by=request.user)
         note.refresh_from_db()
         return success_response(
-            f"{note.get_kind_display()} note {note.document_number} submitted "
+            f"{note.get_kind_display()} {note.document_number} submitted "
             f"for approval.",
             data=CreditNoteSerializer(note).data
             | {"approval": release_svc.approval_block(instance)},
@@ -2009,6 +2011,7 @@ class RefundListCreateView(_FinanceBase):
             qs = qs.filter(status=status_val)
         if (customer := request.query_params.get("customer")):
             qs = qs.filter(customer=_resolve_customer(request, entity, customer))
+        qs = filter_by_approval_param(qs, request.query_params)
         return _paginate(
             request, qs.order_by("-refund_date", "-id"), RefundSerializer, self)
 
@@ -2300,6 +2303,7 @@ class WriteOffRequestListCreateView(_FinanceBase):
             qs = qs.filter(status=status_val)
         if (invoice := request.query_params.get("invoice")):
             qs = qs.filter(invoice=_resolve_invoice(request, entity, invoice))
+        qs = filter_by_approval_param(qs, request.query_params)
         return _paginate(
             request, qs.order_by("-id"), WriteOffRequestSerializer, self)
 
@@ -2809,7 +2813,7 @@ class ARAdjustmentBatchView(_FinanceBase):
 
 
 # Support the writeoff rows workflow.
-def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None):
+def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None, approval=None):
     """Normalised bad-debt write-off rows, from two disjoint sources.
 
     * POSTED write-offs come from the finance audit log (``INVOICE_WRITTEN_OFF``
@@ -2843,6 +2847,11 @@ def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None):
     resolvable invoice is not shown to a narrowed caller: failing closed on an
     oddity is right where failing open would leak another branch's bad debt.
     Omitting ``scope`` means no narrowing, which is what an unbound caller gets.
+
+    ``approval`` is the list's ``?approval=`` value
+    (:func:`vs_workflow.services.approval_filter.filter_by_approval`). Given, it
+    keeps only the requests it names, and drops the posted write-offs read from
+    the ledger record, which have no approval request to be sent back.
     """
     from .approvals import ApprovalGate
     from vs_rbac.scoping import UNNARROWED
@@ -2862,7 +2871,9 @@ def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None):
             ref=Cast("pk", CharField()),
         ).values("ref")
         posted = posted.filter(target_type="Invoice", target_id__in=in_reach)
-    logs = list(posted.order_by("-created_at", "-id")[:limit])
+    logs = [] if approval else list(posted.order_by("-created_at", "-id")[:limit])
+    requests = filter_by_approval(
+        scope.filter(WriteOffRequest.objects.filter(entity=entity)), approval)
     need_ids = [int(l.target_id) for l in logs
                 if not l.metadata.get("customer_code") and str(l.target_id).isdigit()]
     invs = {i.id: i for i in Invoice.objects.filter(id__in=need_ids).select_related("customer")} \
@@ -2888,7 +2899,7 @@ def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None):
 
     # Non-posted write-off requests (drafts + awaiting approval). The audit log
     # only records POSTED write-offs, so these would otherwise never surface.
-    for w in (scope.filter(WriteOffRequest.objects.filter(entity=entity))
+    for w in (requests
               .exclude(status=DocumentStatus.POSTED)
               .select_related("invoice", "invoice__customer", "entity__tenant", "branch")
               .order_by("-id")[:limit]):
@@ -2923,7 +2934,11 @@ class ARAdjustmentListView(_FinanceBase):
     kind's key: a credit controller who handles write-offs sees write-offs, not
     the refunds paid back to parents. A KPI the reader may not see is ``None``;
     ``kinds`` lists the row kinds they receive. Every figure is narrowed to the
-    reader's branches, refundable credit included.
+    reader's branches, refundable credit included. ``?approval=returned`` keeps
+    the refunds and write-off requests an approver sent back (the KPIs stay
+    whole-list figures). Each row carries
+    ``approval_state`` and ``approval_returned``, read for the page in one query
+    per kind (:func:`_with_approval_overview`).
 
     docstring-name: Refunds & write-offs
     """
@@ -2963,7 +2978,8 @@ class ARAdjustmentListView(_FinanceBase):
         # school that is two extra queries a row for a handful of distinct scopes.
         refunds = (transaction_branch_scope(request).filter(Refund.objects.filter(entity=entity))
                    if sees_refunds else Refund.objects.none())
-        for r in (refunds
+        approval = request.query_params.get("approval")
+        for r in (filter_by_approval(refunds, approval)
                   .select_related("customer", "entity__tenant", "branch")
                   .order_by("-refund_date", "-id")[:1000]):
             refund_rows.append({
@@ -2975,7 +2991,8 @@ class ARAdjustmentListView(_FinanceBase):
                 "approval_required": gate.required(r),
             })
         writeoff_rows = (
-            _writeoff_rows(entity, gate=gate, scope=scope) if sees_writeoffs else []
+            _writeoff_rows(entity, gate=gate, scope=scope, approval=approval)
+            if sees_writeoffs else []
         )
 
         # KPI totals - from the full sets, independent of the type filter / page.
@@ -3030,8 +3047,34 @@ class ARAdjustmentListView(_FinanceBase):
                 "refundable_credit": refundable_credit,
             },
             "kinds": [kind for kind, seen in (("REFUND", sees_refunds), ("WRITEOFF", sees_writeoffs)) if seen],
-            "data": rows[start:start + page_size],
+            "data": _with_approval_overview(rows[start:start + page_size]),
         })
+
+
+def _with_approval_overview(rows):
+    """``rows`` of the refunds and write-offs list, each with ``approval_state`` and ``approval_returned``.
+
+    Read for the page alone, after it is cut, in one query per kind
+    (:func:`vs_finance.approvals.approval_overview`), never per row. A refund or
+    write-off request row reads its document's latest approval request: a
+    request an approver handed back reads PENDING and returned. A posted
+    write-off reported from the ledger record carries no document to read, so it
+    reads ``approval_state`` null and ``approval_returned`` false.
+    """
+    from .approvals import approval_overview
+
+    refunds = approval_overview([Refund(pk=row["refund_id"]) for row in rows if row.get("refund_id")])
+    write_offs = approval_overview(
+        [WriteOffRequest(pk=row["write_off_id"]) for row in rows if row.get("write_off_id")])
+    for row in rows:
+        if row.get("refund_id"):
+            state, returned = refunds[row["refund_id"]]
+        elif row.get("write_off_id"):
+            state, returned = write_offs[row["write_off_id"]]
+        else:
+            state, returned = None, False
+        row["approval_state"], row["approval_returned"] = state, returned
+    return rows
 
 
 # Group endpoint behavior for Invoice Pay View.
@@ -3207,6 +3250,7 @@ class ConcessionListCreateView(_FinanceBase):
                 | Q(invoice__document_number__icontains=search)
                 | Q(customer__name__icontains=search) | Q(customer__code__icontains=search)
             )
+        qs = filter_by_approval_param(qs, request.query_params)
         paginator = XVSPagination()
         page = paginator.paginate_queryset(qs.order_by("-concession_date", "-id"), request, view=self)
         return paginator.get_paginated_response(ConcessionSerializer(page, many=True).data)
@@ -4105,6 +4149,7 @@ class CustomerCreditTransferListCreateView(_FinanceBase):
         from .views_ops.base import _filter_by_branch
 
         qs = _filter_by_branch(qs, request, entity)
+        qs = filter_by_approval_param(qs, request.query_params)
         return _paginate(request, qs.order_by("-transfer_date", "-id"),
                          CustomerCreditTransferSerializer, self)
 

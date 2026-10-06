@@ -1494,12 +1494,16 @@ class PettyCashVoucherSerializer(serializers.ModelSerializer):
         return f"{label} +{len(lines) - 1}" if len(lines) > 1 else label
 
 
-class PettyCashReturnSerializer(serializers.ModelSerializer):
+class PettyCashReturnSerializer(ApprovalStateMixin, serializers.ModelSerializer):
     """A petty cash return: the count, the books, what was banked and the float after.
 
     ``difference`` is the count less the books (positive over, negative short);
     ``cash_left`` is what the tin keeps after the return. ``counted_by_name`` and
     ``created_by_name`` name the people on it, each beside ``<person>_is_exited``.
+    ``approval_state`` and ``approval_returned`` say where it stands with its
+    approval route (:class:`ApprovalStateMixin`), read once per page: a return
+    an approver handed back reads PENDING and returned, and is resumed or its
+    request withdrawn, never cancelled underneath the request.
     """
 
     person_fields = ("counted_by", "created_by")
@@ -1530,7 +1534,7 @@ class PettyCashReturnSerializer(serializers.ModelSerializer):
             "cash_left", "previous_float_amount", "new_float_amount",
             "counted_by_id", "narration", "reference", "journal_id", "created_by_id",
             "branch_name", "counted_by_name", "counted_by_is_exited",
-            "created_by_name", "created_by_is_exited",
+            "created_by_name", "created_by_is_exited", "approval_state", "approval_returned",
         ]
 
     def get_amount_naira(self, obj) -> str:

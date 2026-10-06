@@ -7,6 +7,7 @@ the separate accounting mutation that creates ledger history.
 """
 from __future__ import annotations
 
+from vs_workflow.services.approval_filter import filter_by_approval_param
 from django.db import transaction
 from django.db.models import Q
 from rest_framework.exceptions import NotFound, ValidationError
@@ -278,6 +279,7 @@ class VendorPaymentListCreateView(_ProcBase):
         if search := request.query_params.get("search", "").strip():
             qs = qs.filter(Q(document_number__icontains=search) | Q(reference__icontains=search)
                            | Q(vendor__code__icontains=search) | Q(vendor__name__icontains=search))
+        qs = filter_by_approval_param(qs, request.query_params)
         return self.paginate(
             request, qs.order_by("-id"), VendorPaymentListSerializer,
             page_context=lambda page: {"returned_document_ids": approvals.returned_document_ids(page)},
@@ -599,7 +601,7 @@ class VendorPaymentAllocateAdvanceView(_ProcBase):
                 payment, actor_user=request.user, bill_scope=_branch_q(request))
         else:
             raise ValidationError(
-                {"allocations": "Provide allocations or auto_allocate=true."})
+                {"allocations": "Choose the bills to apply it to, or apply it automatically."})
 
         payment.refresh_from_db()
         applied = before - payment.advance_remaining

@@ -42,6 +42,7 @@ from .posting import (
     resolve_period,
     reverse_journal,
 )
+from .wording import state_word
 
 
 # --------------------------------------------------------------------------- #
@@ -507,7 +508,7 @@ def group_match(statement_line, journal_lines, *, actor_user=None):
 
     if statement_line.status != BankLineStatus.UNMATCHED:  # Only unmatched lines can be grouped.
         raise BankReconciliationError(
-            f"Statement line is '{statement_line.status}', only an unmatched line can be matched.",
+            f"Statement line is {state_word(statement_line)}, only an unmatched line can be matched.",
         )
     lines = list(journal_lines)  # Materialize the candidate journal lines.
     if len(lines) < 2:  # Group matching needs more than one line.
@@ -596,7 +597,7 @@ def split_match(journal_line, statement_lines, *, actor_user=None):
             raise BankReconciliationError("All statement lines must belong to the same bank account.")
         if sl.status != BankLineStatus.UNMATCHED:  # Only unmatched lines can participate.
             raise BankReconciliationError(
-                f"Statement line {sl.id} is '{sl.status}', only an unmatched line can be matched.",
+                f"Statement line {sl.id} is {state_word(sl)}, only an unmatched line can be matched.",
             )
         total += sl.amount  # Accumulate the statement amounts.
 
@@ -673,7 +674,7 @@ def set_line_ignored(statement_line, *, ignored=True, reason="", actor_user=None
     if ignored:  # Move an unmatched line into ignored state.
         if statement_line.status != BankLineStatus.UNMATCHED:  # Only unmatched lines can be ignored.
             raise BankReconciliationError(
-                f"Statement line is '{statement_line.status}', only an unmatched line can be ignored.",
+                f"Statement line is {state_word(statement_line)}, only an unmatched line can be ignored.",
             )
         statement_line.status = BankLineStatus.IGNORED  # Mark the line ignored.
     else:  # Restore an ignored line back to unmatched.
@@ -696,7 +697,7 @@ def set_line_ignored(statement_line, *, ignored=True, reason="", actor_user=None
 # --------------------------------------------------------------------------- #
 
 # Choose the date an adjustment should post on.
-def resolve_adjustment_date(entity, txn_date, *, requested=None):
+def resolve_adjustment_date(entity, txn_date, *, branch, requested=None):
     """Return the date a bank adjustment should post on, for ``txn_date``'s line.
 
     A bank statement legitimately covers a month that is already closed - importing
@@ -721,27 +722,31 @@ def resolve_adjustment_date(entity, txn_date, *, requested=None):
     snaps around *today*, which would drop a January charge into the current month
     and distort it. This answers "where does an already-dated item land".
 
-    Raises :class:`PeriodClosedError` when the entity has no open period at all -
+    Postable means postable for ``branch``, the bank account's branch: months
+    close per branch, so a charge on Ikeja's account lands in a month Ikeja still
+    has open, whatever Lekki's books say.
+
+    Raises :class:`PeriodClosedError` when the branch has no open period at all -
     nothing can post then, and failing closed is the only honest answer.
     """
     if requested is not None:
         return requested
 
     period = resolve_period(entity, txn_date)
-    if _period_accepts_posting(period):
+    if _period_accepts_posting(period, branch=branch):
         return txn_date
 
-    open_periods = posting_window(entity)["open"]
+    open_periods = posting_window(entity, branch=branch)["open"]
     after = [p["start_date"] for p in open_periods if p["start_date"] > txn_date]
     before = [p["end_date"] for p in open_periods if p["end_date"] < txn_date]
     if after:
         return min(after)
     if before:
         return max(before)
-    raise PeriodClosedError(
-        period_label=str(period) if period else "<none>",
-        status=getattr(period, "status", "missing"),
-    )
+    from .posting import ensure_period_open
+
+    ensure_period_open(period, branch=branch)  # Raises, naming the month and branch.
+    raise PeriodClosedError(period_label="this date", status="missing")
 
 
 @transaction.atomic
@@ -772,7 +777,7 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
     entity = bank_account.entity  # Resolve the owning entity.
     if statement_line.status != BankLineStatus.UNMATCHED:  # Only unmatched lines can be adjusted.
         raise BankReconciliationError(
-            f"Statement line is '{statement_line.status}', only an unmatched line can be adjusted.",
+            f"Statement line is {state_word(statement_line)}, only an unmatched line can be adjusted.",
         )
     if statement_line.amount == 0:  # Zero-amount lines do not require adjustments.
         raise BankReconciliationError("Cannot adjust a zero-amount statement line.")
@@ -787,7 +792,7 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
         )
 
     book_date = resolve_adjustment_date(  # The date this adjustment can actually post on.
-        entity, statement_line.txn_date, requested=posting_date,
+        entity, statement_line.txn_date, branch=bank_account.branch_id, requested=posting_date,
     )
     deferred = book_date != statement_line.txn_date  # Booked outside the bank's own value date.
     period = resolve_period(entity, book_date)  # Find the accounting period for the posting date.
@@ -978,7 +983,7 @@ def _post_bank_transaction_atomic(txn, *, actor_user=None):
     txn = BankTransaction.objects.select_for_update().get(pk=txn.pk)
     if txn.status not in (DocumentStatus.DRAFT, DocumentStatus.APPROVED):
         raise PostingError(
-            f"Bank transaction {txn.document_number or txn.pk} is '{txn.status}'; "
+            f"Bank transaction {txn.document_number or txn.pk} is {state_word(txn)}; "
             f"only a draft or approved one can be posted.",
         )
     validate_bank_transaction(txn)
@@ -1050,7 +1055,7 @@ def _void_bank_transaction_atomic(txn, *, actor_user=None, date=None):
     if txn.status != DocumentStatus.POSTED or txn.journal_id is None:
         raise PostingError(
             f"Only a posted bank transaction can be voided; "
-            f"{txn.document_number or txn.pk} is '{txn.status}'.",
+            f"{txn.document_number or txn.pk} is {state_word(txn)}.",
         )
     if journal_is_reconciled(txn.journal_id):
         raise PostingError(
@@ -1154,7 +1159,7 @@ def _post_bank_transfer_atomic(transfer, *, actor_user=None):
     transfer = BankTransfer.objects.select_for_update().get(pk=transfer.pk)
     if transfer.status not in (DocumentStatus.DRAFT, DocumentStatus.APPROVED):
         raise PostingError(
-            f"Transfer {transfer.document_number or transfer.pk} is '{transfer.status}'; "
+            f"Transfer {transfer.document_number or transfer.pk} is {state_word(transfer)}; "
             f"only a draft or approved one can be posted.",
         )
     validate_bank_transfer(transfer)
@@ -1214,7 +1219,7 @@ def _void_bank_transfer_atomic(transfer, *, actor_user=None, date=None):
     if transfer.status != DocumentStatus.POSTED or transfer.journal_id is None:
         raise PostingError(
             f"Only a posted transfer can be voided; "
-            f"{transfer.document_number or transfer.pk} is '{transfer.status}'.",
+            f"{transfer.document_number or transfer.pk} is {state_word(transfer)}.",
         )
     if journal_is_reconciled(transfer.journal_id):
         raise PostingError(
@@ -1294,7 +1299,7 @@ def require_reworkable(document) -> None:
     if document.status != DocumentStatus.DRAFT:
         raise PostingError(
             f"Only a draft {noun} can be changed, sent for approval or cancelled; "
-            f"{number} is '{document.status}'.",
+            f"{number} is {state_word(document)}.",
         )
 
 

@@ -82,12 +82,37 @@ def _validation_error_detail(exc: DjangoValidationError) -> dict:
 
 
 def _validation_error_message(detail: dict) -> str:
-    """One human sentence naming the fields that failed."""
+    """One human sentence naming the fields that failed, in words (:func:`field_words`)."""
     parts = []
     for field, messages in detail.items():
-        prefix = '' if field == NON_FIELD_ERRORS else f'{field}: '
+        prefix = '' if field == NON_FIELD_ERRORS else f'{field_words(field)}: '
         parts.extend(f'{prefix}{message}' for message in messages)
     return '; '.join(parts) or 'Validation failed.'
+
+
+def field_words(path: str) -> str:
+    """A field's path as a person reads it: ``lines.1.gross_amount`` reads "Line 2, gross amount".
+
+    ``message`` is the sentence every screen shows, so it never carries a field's
+    code name; the code names stay keys of ``error.detail``, where a screen that
+    marks the field reads them. Underscores become spaces, and a list index
+    (``.1`` or ``[1]``) numbers the item before it from one, in the singular.
+    """
+    import re
+
+    words = []
+    for part in re.sub(r'\[(\d+)\]', r'.\1', str(path)).split('.'):
+        if not part:
+            continue
+        if part.isdigit() and words:
+            noun = words[-1]
+            if noun.endswith('s') and not noun.endswith('ss'):
+                noun = noun[:-1]
+            words[-1] = f'{noun} {int(part) + 1}'
+        else:
+            words.append(part.replace('_', ' ').strip())
+    text = ', '.join(words)
+    return text[:1].upper() + text[1:]
 
 
 #: Keys whose messages speak for the whole request, so no field name is shown.
@@ -139,7 +164,8 @@ def _request_error_message(data) -> str:
     ``NotFound`` or ``ValidationError({"detail": ..., "code": ...})`` always
     has. Otherwise a single message is shown on its own, since the screen
     that raised it already knows which field it is about. Several are each
-    prefixed with their field, so the reader can tell them apart. The generic
+    prefixed with their field in words (:func:`field_words`), so the reader can
+    tell them apart without reading a code name. The generic
     sentence is left only for a body with no message in it at all.
     """
     if isinstance(data, dict) and 'detail' in data:
@@ -150,7 +176,7 @@ def _request_error_message(data) -> str:
         return _REQUEST_ERROR_FALLBACK
     if len(leaves) == 1:
         return leaves[0][1]
-    parts = [f'{path}: {text}' if path else text for path, text in leaves]
+    parts = [f'{field_words(path)}: {text}' if path else text for path, text in leaves]
     shown = parts[:_MAX_MESSAGE_PARTS]
     hidden = len(parts) - len(shown)
     if hidden:

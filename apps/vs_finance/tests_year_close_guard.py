@@ -250,7 +250,7 @@ class PostingIntoAClosedYearTests(_YearFixture):
         with self.assertRaises(PeriodClosedError) as caught:
             self.post(self.ikeja, datetime.date(2026, 6, 5), [("1100", 5000, 0), ("4100", 0, 5000)])
         self.assertIn("FY2026", caught.exception.message)
-        self.assertIn("Reopen the fiscal year first", caught.exception.message)
+        self.assertIn("Reopen the year first", caught.exception.message)
 
     def test_a_forced_close_leaves_open_months_that_still_refuse(self):
         self.trade()
@@ -311,7 +311,7 @@ class PostingIntoAClosedYearTests(_YearFixture):
 
         with self.assertRaises(PeriodCloseError) as caught:
             reopen_period(self.books, self.month(1), reason=REASON)
-        self.assertIn("LOCKED", caught.exception.message)
+        self.assertIn("locked", caught.exception.message)
 
     def test_the_year_close_hard_closes_every_soft_closed_month(self):
         self.trade()

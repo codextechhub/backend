@@ -49,6 +49,7 @@ from .exceptions import FinanceError, PettyCashError, PettyCashOverdrawError
 from .money import format_naira
 from .posting import post_journal, resolve_period
 from .receivables import compute_line_net, compute_tax
+from .wording import state_word
 
 
 # Read live GL balance for a petty-cash fund.
@@ -208,7 +209,7 @@ def _post_voucher_atomic(voucher, *, actor_user=None):
 
     if voucher.status != DocumentStatus.DRAFT:  # Only draft vouchers can post.
         raise PettyCashError(
-            f"Voucher {voucher.document_number or voucher.pk} is '{voucher.status}', "
+            f"Voucher {voucher.document_number or voucher.pk} is {state_word(voucher)}, "
             f"only a draft can be posted.",
         )
 
@@ -317,7 +318,7 @@ def void_voucher(voucher, *, actor_user=None):
 
     if voucher.status != DocumentStatus.POSTED:  # Only posted vouchers have journals to reverse.
         raise PettyCashError(
-            f"Only a posted voucher can be voided (this is '{voucher.status}').",
+            f"Only a posted voucher can be voided (this is {state_word(voucher)}).",
         )
     if voucher.journal_id is None:  # Posted voucher should always have a posting journal.
         raise PettyCashError("Voucher has no posting journal to reverse.")
@@ -438,7 +439,7 @@ def cancel_voucher(voucher, *, actor_user=None):
     if voucher.status != DocumentStatus.DRAFT:
         raise PettyCashError(
             f"Only a draft voucher can be cancelled; {voucher.document_number or voucher.pk} "
-            f"is '{voucher.status}'. A posted voucher is voided instead.",
+            f"is {state_word(voucher)}. A posted voucher is voided instead.",
         )
     voucher.status = DocumentStatus.CANCELLED
     voucher.save(update_fields=["status", "updated_at"])
@@ -699,7 +700,7 @@ def _post_petty_cash_return_atomic(ret, *, actor_user=None):
     ret = PettyCashReturn.objects.select_for_update().get(pk=ret.pk)
     if ret.status not in (DocumentStatus.DRAFT, DocumentStatus.APPROVED):
         raise PettyCashError(
-            f"Petty cash return {ret.document_number or ret.pk} is '{ret.status}'; "
+            f"Petty cash return {ret.document_number or ret.pk} is {state_word(ret)}; "
             f"only a draft or approved one can be posted.",
         )
     fund = PettyCashFund.objects.select_for_update().get(pk=ret.fund_id)
@@ -796,6 +797,11 @@ def void_petty_cash_return(ret, *, actor_user=None, date=None):
 def _void_petty_cash_return_atomic(ret, *, actor_user=None, date=None):
     """Undo a return: cancel a draft, or reverse a posted one and restore the fund.
 
+    A draft whose approval request is still open, returned to its sender
+    included, is refused: the request is withdrawn first
+    (:func:`vs_finance.approvals.refuse_while_request_open`), which itself
+    cancels the return.
+
     A posted return is reversed as every bank document is: refused while its bank
     line is matched to a statement line (the bank says the money arrived, so the
     match is undone on the reconciliation first), and in a period that is still
@@ -807,6 +813,7 @@ def _void_petty_cash_return_atomic(ret, *, actor_user=None, date=None):
     reopened. Undoing it then would restore a float or a closure nobody now
     expects, so the later change is undone first.
     """
+    from .approvals import refuse_while_request_open
     from .banking import journal_is_reconciled
     from .models import PettyCashFund, PettyCashReturn
     from .posting import reverse_journal
@@ -814,6 +821,10 @@ def _void_petty_cash_return_atomic(ret, *, actor_user=None, date=None):
     ret = PettyCashReturn.objects.select_for_update().get(pk=ret.pk)
     label = ret.document_number or ret.pk
     if ret.status == DocumentStatus.DRAFT:
+        refuse_while_request_open(
+            ret, noun="petty cash return",
+            remedy="Withdraw the approval request instead: that cancels the return.",
+        )
         ret.status = DocumentStatus.CANCELLED
         ret.save(update_fields=["status", "updated_at"])
         record(
@@ -824,8 +835,8 @@ def _void_petty_cash_return_atomic(ret, *, actor_user=None, date=None):
         return ret
     if ret.status != DocumentStatus.POSTED:
         raise PettyCashError(
-            f"Petty cash return {label} is '{ret.status}'. Only a posted return is voided, "
-            f"or a draft cancelled; one waiting on approval is decided there.",
+            f"Petty cash return {label} is {state_word(ret)}. Only a posted return is "
+            f"voided, or a draft cancelled; one waiting on approval is decided there.",
         )
 
     fund = PettyCashFund.objects.select_for_update().get(pk=ret.fund_id)

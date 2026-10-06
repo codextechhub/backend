@@ -37,6 +37,7 @@ from .constants import (
 )
 from .exceptions import FinanceError, PostingError
 from .money import format_naira
+from .wording import state_word
 
 
 def _rate_for(days_overdue: int, bands) -> int:
@@ -164,10 +165,19 @@ def prepare_provision(entity, *, as_of, narration="", actor_user=None):
 
 
 def check_provision(provision) -> None:
-    """The posting guards, without writing: a period that takes the journals, and the accounts."""
-    from .posting import ensure_period_open, resolve_period
+    """The posting guards, without writing: a period that takes the journals, and the accounts.
 
-    ensure_period_open(resolve_period(provision.entity, provision.as_of))
+    The run posts one journal per branch whose allowance moves, so its date must be
+    open at each of those branches: a run dated in a September Ikeja has closed is
+    refused while it still moves Ikeja's allowance, whatever Lekki's September says.
+    """
+    from .posting import ensure_date_open
+
+    branch_ids = sorted({
+        line.branch_id for line in provision.lines.all() if line.movement
+    }) or [None]
+    for branch_id in branch_ids:
+        ensure_date_open(provision.entity, provision.as_of, branch=branch_id)
     resolve_mapped_account(provision.entity, AccountMappingKey.DOUBTFUL_DEBT_ALLOWANCE,
                            label="allowance for doubtful debts")
     resolve_mapped_account(provision.entity, AccountMappingKey.BAD_DEBT_EXPENSE,
@@ -195,7 +205,7 @@ def _post_provision_atomic(provision, *, actor_user=None):
     provision = DoubtfulDebtProvision.objects.select_for_update(of=("self",)).get(pk=provision.pk)
     if provision.status not in (DocumentStatus.DRAFT, DocumentStatus.APPROVED):
         raise PostingError(
-            f"Provision {provision.document_number} is '{provision.status}'; only a draft "
+            f"Provision {provision.document_number} is {state_word(provision)}; only a draft "
             f"or approved run can be posted.",
         )
     entity = provision.entity

@@ -874,6 +874,90 @@ MUST SAY:
 Verified: vs_finance tests_returned_correction 18 (written first and watched failing: 405 on the two new PATCH routes, missing approval_returned, 422 where a sender correction should pass, a colleague removing a returned claim's receipt with 200), vs_procurement credit note detail test 1 and WHT null tests 2 (watched failing); new and touched modules together 412 OK; vs_finance 2086 OK; vs_procurement 837 OK; vs_workflow 557 OK; vs_payments 434 OK; full suite with --parallel 4: Ran 9756 tests, OK. Existing test changed: tests_adjustment_rework no longer expects a returned concession to refuse its sender (behaviour changed on purpose).
 Also (M19, and M22 for the shared helper; commit 3150a71c): every finance detail with approval_returned now carries workflow_instance_id (string, the latest approval request; null before first sent), which Resume posts to: GET credit-notes, concessions, refunds, write-offs, credit-transfers, provisions, journals, expense-claims, inter-branch-transfers, bank-transactions and bank-transfers /<id>/, the PATCH responses of journals, credit notes, concessions, bank transactions and bank transfers, and an expense claim's receipt attach/remove responses. Lists do not carry it. One query per detail, read through the shared WorkflowInstance.objects/all_objects.latest_id_for(document), which procurement's five details (requisition, order, bill, payment, credit note) now use too. Verified: tests_detail_approval_request 4 (watched failing: KeyError on all 11 kinds); vs_finance 2090 OK; vs_workflow 557 OK; vs_procurement 837 OK.
 
+### D130. Documents are checked against their own branch's month, nothing is cancelled under an open approval request, every list can show what was sent back, and refusals speak in words (PENDING, 2026-10-06)
+Number may be renumbered at merge. Migrations: vs_finance 0066_credit_note_kind_labels (choice labels only), vs_config 0016_held_tolerance_in_naira (data: renames the tolerance setting and converts its values); renumber if another 0066 or 0016 lands first.
+MODULES: M19 finance and accounting (period checks, close checklist, petty cash returns, bank documents, expense claims, inter-branch transfers, held receipts), M20 adjustments and concessions (credit and debit notes, refunds and write-offs list, concessions), M22/M23 procurement and AP (order display status and filters, order export, sent-back filter), M18 payments and collections (payout batches, held-ledger tolerance, collection and settlement dating), M07 workflow and approval engine (the shared sent-back filter), M06 configuration and capability (catalogue wording, value refusals), MRD (every module: request error messages name fields in words).
+MUST SAY:
+- Months per branch (M19). Every approval-routed finance document is checked
+  against the month its posting lands in AT ITS OWN BRANCH when it is sent, when
+  a returned one is resumed (POST workflow/instances/<id>/resubmit/) and when a
+  return is reversed: journals, bank transactions, bank transfers, petty cash
+  returns, refunds, dated write-offs (an undated one posts on its approval day,
+  checked then), concessions, credit and debit notes, customer credit
+  transfers, expense claims, inter-branch transfers (both branches) and
+  doubtful-debt provision runs (each branch whose allowance moves). Before, only
+  the school's month was read (Ikeja having closed September, an Ikeja journal
+  resumed and then failed at approval), and refunds, write-offs, concessions,
+  credit notes, credit transfers and expense claims were not checked at all. A
+  refusal is 409 PERIOD_CLOSED: "Ikeja Branch has closed September 2026, so
+  nothing more can be posted into it. Reopen September 2026 for Ikeja Branch, or
+  use a date in a month Ikeja Branch still has open." A one-branch school is not
+  told its branch. error.detail keeps status (CLOSED, LOCKED, SOFT_CLOSED,
+  missing, CLOSING), period_label (now the month in words), branch (id) and
+  fiscal_year.
+- The same branch reading now also decides where a dated item lands: a bank
+  adjustment and a gateway settlement on an Ikeja account, an online collection
+  or vendor payout booked late, a reversal falling forward out of a closed
+  month, and deferred income released over a closed month. The guard
+  (ensure_period_open / _period_accepts_posting) now requires the branch
+  argument, so no caller can forget it.
+- No cancel under an open request (M19). Cancelling or voiding a draft whose
+  approval request is still open, with its approvers or returned to its
+  sender, is refused 422 APPROVAL_REQUEST_OPEN with "Withdraw the approval
+  request first" (error.detail: approval_state, approval_returned): petty cash
+  return void ("Cancel return"), expense claim reject, inter-branch request
+  decline, and a held receipt's void while its forward is returned. Bank
+  documents already refused; procurement already refused (approval_state
+  PENDING). Withdrawing a returned petty cash return, or a returned inter-branch
+  send nobody asked for, now ends it as CANCELLED (before it stayed a DRAFT with
+  no request); other types still land as DRAFT.
+- Petty cash returns (M19). List rows and detail carry approval_state and
+  approval_returned (read once per page); the detail carries
+  workflow_instance_id. Payout batches (M18) list and detail carry
+  approval_state and approval_returned; the detail carries workflow_instance_id.
+- Refunds and write-offs list (M20). GET ar-adjustments/ rows carry
+  approval_state and approval_returned (one query per kind per page). A posted
+  write-off read from the ledger record carries approval_state null.
+- Sent back filter (every module with approval lists). ?approval=returned on:
+  finance journals/, credit-notes/, refunds/, write-offs/, ar-adjustments/,
+  provisions/, credit-transfers/, concessions/, bank-transactions/,
+  bank-transfers/, inter-branch-transfers/, expense-claims/, petty-cash-returns/;
+  procurement requisitions/, purchase-orders/, vendor-invoices/,
+  vendor-payments/, vendor-credit-notes/. Keeps only documents whose latest
+  approval request is RETURNED (the rows reading approval_returned true), as a
+  queryset subquery before paging, inside the caller's branch reach and tenant.
+  Any other value is 400 on "approval". ar-adjustments drops the posted
+  ledger-record rows under it; its KPIs stay whole-list.
+- Order status (M22/M23). display_status reads PENDING_APPROVAL for an order
+  whose approval is open (returned included) before DRAFT; cancelled and
+  reversed read as such first. ?status= filters in the same precedence: DRAFT,
+  APPROVED and PARTIAL leave out orders with an open approval; PENDING_APPROVAL
+  keeps them. The order quick export translates status the same way (new
+  approval_state export filter); PARTIAL is reported as not carried.
+- Close checklist under All branches (M19). At a school with several branches,
+  "Earlier months closed" (earlier_periods_closed) answers per branch: it names
+  each branch whose earlier month is open, says which branches can close the
+  month now, and is a warning (blocking false) while any branch still to close
+  can close; it blocks only when none can. A one-branch school and a named
+  branch are unchanged. Close checklist items carry a new "label" (the check in
+  words) beside "name".
+- Words, not codes (M19, M20, M22/M23, M18, M06, MRD). A fiscal period's
+  __str__ is its name alone; refusals and messages name months as "September
+  2026", statuses in words ("is posted", not "is 'POSTED'"), close checks by
+  title ("Payables agree with the ledger: ...", machine names stay in
+  error.detail.failures), and a credit or debit note as "Credit note" / "Debit
+  note" (labels lost "(reduces AR)" / "(increases AR)"). Request error messages
+  with several field errors name each field in words ("Line 2, gross amount:"),
+  error.detail keeps the field keys. Sentences that named fields or commands
+  (bank_account, auto_allocate=true, start_date, ensure_default_policy, ...)
+  were reworded. Configuration value refusals name the setting's label, not its
+  key.
+- Held-ledger tolerance (M18, M06). The platform setting is
+  payments.held_reconciliation_tolerance (was ..._tolerance_kobo), a whole
+  number of naira with a naira description; existing values convert from kobo,
+  rounded up.
+Verified: tests_branch_month_checks 12 (the four resume and send refusals watched failing with the branch switched off), tests_sent_back (vs_finance) 10 and (vs_procurement) 6, tests_petty_cash_sent_back 7, tests_inter_branch_sent_back 3, tests_whole_school_close_order 5, tests_human_messages 7, vs_payments tests_payout_sent_back 1; the filter, refusal and read-shape tests watched failing with each fix switched off (21 failures, then 4, then the order display test). Existing tests changed for wording on purpose: tests_period_order (label key), tests_year_close_guard (two phrases), tests.PeriodClosedMessageTests, core test_exceptions (field names in words). vs_finance Ran 2134 (2 failures, both wording and an undated write-off, fixed and rerun: 12 OK); vs_procurement Ran 843 OK; vs_payments Ran 435 OK (after fixing a missed settlement caller the required branch argument exposed); vs_workflow Ran 557 OK; vs_config Ran 180 OK; core Ran 215 OK; full suite with --parallel 4: Ran 9812 tests, OK.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

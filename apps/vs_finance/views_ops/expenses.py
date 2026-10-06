@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 
+from vs_workflow.services.approval_filter import filter_by_approval_param
 from django.db import transaction
 from rest_framework.exceptions import NotFound
 from vs_rbac.scoping import transaction_branch_q
@@ -87,6 +88,7 @@ class ExpenseClaimListCreateView(_FinanceBase):
                 | Q(title__icontains=search)
                 | Q(document_number__icontains=search)
             )
+        qs = filter_by_approval_param(qs, request.query_params)
         return self.paginate(
             request, qs.order_by("-claim_date", "-id"), ExpenseClaimSerializer,
             context={"request": request, "approval_gate": ApprovalGate()},
@@ -216,18 +218,30 @@ class ExpenseClaimSubmitView(_ExpenseClaimActionBase):
 
 # Group endpoint behavior for Expense Claim Reject View.
 class ExpenseClaimRejectView(_ExpenseClaimActionBase):
-    """POST - reject (cancel) a draft expense claim. docstring-name: Reject an expense claim"""
+    """POST - reject (cancel) a draft expense claim.
+
+    Refused (422, ``APPROVAL_REQUEST_OPEN``) while the claim's approval request
+    is open, returned to its sender included: the request is withdrawn first
+    (:func:`vs_finance.approvals.refuse_while_request_open`).
+
+    docstring-name: Reject an expense claim
+    """
     rbac_permission = "finance.expenseclaim.post"  # the approver decides approve OR reject
 
     # Handle POST requests for this endpoint.
+    @transaction.atomic
     def post(self, request, pk):
+        from ..approvals import refuse_while_request_open
         from ..constants import DocumentStatus
+        from ..wording import state_word
         from rest_framework.exceptions import ValidationError
 
         _, claim = self._claim(request, pk)
+        claim = ExpenseClaim.objects.select_for_update().get(pk=claim.pk)
         if claim.status != DocumentStatus.DRAFT:
             raise ValidationError(
-                {"status": f"Only a draft claim can be rejected (this is '{claim.status}')."})
+                {"status": f"Only a draft claim can be rejected; this one is {state_word(claim)}."})
+        refuse_while_request_open(claim, noun="expense claim", act="rejected")
         claim.status = DocumentStatus.CANCELLED
         claim.save(update_fields=["status", "updated_at"])
         return success_response(

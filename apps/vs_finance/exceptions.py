@@ -57,56 +57,90 @@ class PeriodClosedError(PostingError):
     default_message = "Cannot post into a closed or locked period."  # Default closed-period message.
     http_status = 409  # Closed period is a conflict, not a validation error.
 
-    # Initialize this object with its required state.
-    def __init__(self, period_label, status, *, fiscal_year_label=None, **kwargs):
-        """``fiscal_year_label`` names the year when the year, not the month, refuses.
+    def __init__(self, period_label, status, *, fiscal_year_label=None, branch_name=None,
+                 **kwargs):
+        """A refusal a bursar can act on, worded from the screens' own words.
 
-        A month can read OPEN inside a CLOSED or LOCKED year. Telling the caller to
-        re-open the month would send them to a screen that cannot help, so the
-        message names the year and says to reopen it instead. ``status`` is
-        ``"missing"`` when no period covers the date, and ``"CLOSING"`` for a
-        year's closing period, which no ordinary posting may use.
+        ``period_label`` is the month as a person names it ("September 2026",
+        :func:`vs_finance.wording.period_words`), never a period's ``__str__``.
+        ``status`` is the stored status code (``CLOSED``, ``LOCKED``,
+        ``SOFT_CLOSED``), ``"missing"`` when no period covers the date and
+        ``"CLOSING"`` for a year's closing period, which no ordinary posting may
+        use. It reaches a client in ``error.detail`` and never in the sentence.
+
+        ``fiscal_year_label`` names the year when the year, not the month,
+        refuses: a month can read open inside a closed year, and telling the
+        reader to reopen the month would send them to a screen that cannot help.
+        ``branch_name`` names the branch whose own close refuses, where the school
+        has more than one: Ikeja closing September refuses an Ikeja journal dated
+        September while Lekki still posts into it.
         """
+        from .wording import period_status_word
+
         self.period_label = period_label  # Store the period label for diagnostics.
-        self.status = status  # Store the period status for diagnostics.
+        self.status = status  # Store the period status code for diagnostics.
+        word = period_status_word(status)
+        where = f" for {branch_name}" if branch_name else ""
         if fiscal_year_label is not None:
-            reopen = (
-                "A LOCKED year is permanently sealed; post into a period of an open year."
+            if branch_name:
+                lead = f"{branch_name} has {word} its {fiscal_year_label} financial year"
+            else:
+                lead = f"The {fiscal_year_label} financial year is {word}"
+            remedy = (
+                "A locked year never reopens; use a date in an open year."
                 if status == "LOCKED"
-                else "Reopen the fiscal year first, or post into a period of an open year."
+                else f"Reopen the year{where} first, or use a date in an open year."
             )
-            super().__init__(
-                f"Cannot post into period '{period_label}': fiscal year "
-                f"{fiscal_year_label} is '{status}'. {reopen}",
-                period_label=period_label, status=status,
-                fiscal_year=fiscal_year_label, **kwargs,
+            message = f"{lead}, so nothing more can be posted into {period_label}. {remedy}"
+        elif status == "missing":
+            # No date works when nobody created next year's calendar, so name that
+            # cause and its fix (vs_finance.posting.fiscal_calendar_runway warns first).
+            message = (
+                "No fiscal period covers this date. Either the date falls outside your "
+                "fiscal calendar, or the next fiscal year has not been created yet. "
+                "Open Fiscal Periods and create the next fiscal year if the calendar "
+                "has run out."
             )
-            return
-        # "missing" means no period covers the date at all. The old advice ("choose
-        # another date") is impossible when the real cause is that nobody created
-        # next year's calendar, because then no date works, so name that cause and
-        # the fix. See vs_finance.posting.fiscal_calendar_runway, which warns before
-        # an entity gets here.
-        message = (
-            "No fiscal period covers this date. Either the date falls outside your "
-            "fiscal calendar, or the next fiscal year has not been created yet. "
-            "Open Fiscal Periods and create the next fiscal year if the calendar "
-            "has run out."
-            if status == "missing"
-            else (
-                f"Cannot post into '{period_label}': it is the year's closing period, "
-                f"which only the year-end close posts into. Post into an ordinary month."
+        elif status == "CLOSING":
+            message = (
+                f"{period_label} is the year's closing period, which only the year-end "
+                f"close posts into. Use a date in an ordinary month."
             )
-            if status == "CLOSING"
-            else (
-                f"Cannot post into period '{period_label}': it is '{status}'. "
-                f"Re-open the period or post into the current open period."
+        elif status == "LOCKED":
+            lead = f"{branch_name} has locked {period_label}" if branch_name \
+                else f"{period_label} is locked"
+            message = (
+                f"{lead}, so nothing more can be posted into it. A locked month never "
+                f"reopens; use a date in an open month."
             )
-        )
-        super().__init__(  # Build a detailed closed-period message.
+        elif status in ("CLOSED", "SOFT_CLOSED"):
+            lead = f"{branch_name} has {word} {period_label}" if branch_name \
+                else f"{period_label} is {word}"
+            month = f"a month {branch_name} still has open" if branch_name else "an open month"
+            message = (
+                f"{lead}, so nothing more can be posted into it. Reopen {period_label}"
+                f"{where}, or use a date in {month}."
+            )
+        else:
+            message = f"{period_label} is not open, so nothing can be posted into it."
+        super().__init__(
             message,
-            period_label=period_label, status=status, **kwargs,
+            period_label=period_label, status=status,
+            **({"fiscal_year": fiscal_year_label} if fiscal_year_label is not None else {}),
+            **kwargs,
         )
+
+
+class ApprovalRequestOpenError(PostingError):
+    """A document cannot be cancelled or voided while its approval request is open.
+
+    Open includes a request an approver returned to whoever sent it: the request
+    still exists, and resuming it later would fail on a cancelled document. The
+    request is withdrawn first, which ends it and hands the document back.
+    """
+
+    error_code = "APPROVAL_REQUEST_OPEN"
+    default_message = "Withdraw this document's approval request first."
 
 
 class BackdatedPostingError(PostingError):

@@ -900,7 +900,7 @@ class ContractMilestone(TimeStampedModel):
         ]
 
     def __str__(self) -> str:
-        return f"{self.name} ({self.status})"
+        return f"{self.name} ({self.get_status_display().lower()})"
 
 
 # --------------------------------------------------------------------------- #

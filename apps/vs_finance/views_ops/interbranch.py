@@ -16,6 +16,7 @@ branch-bound reader only the pairs their branches are part of.
 """
 from __future__ import annotations
 
+from vs_workflow.services.approval_filter import filter_by_approval_param
 from django.db import transaction
 from django.db.models import Prefetch, Q
 from rest_framework import serializers
@@ -426,6 +427,7 @@ class InterBranchTransferListCreateView(_FinanceBase):
             if not str(adjustment).isdigit():
                 raise ValidationError({"adjustment": "Expected a journal id."})
             qs = qs.filter(adjustment_entry_id=int(adjustment))
+        qs = filter_by_approval_param(qs, request.query_params)
         return self.paginate(request, qs.order_by("-transfer_date", "-id"), InterBranchTransferSerializer)
 
     def post(self, request):

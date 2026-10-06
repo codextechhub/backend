@@ -32,6 +32,7 @@ from .exceptions import ExpenseClaimError, FinanceError
 from .money import format_naira
 from .posting import post_journal, resolve_period
 from .receivables import compute_line_net, compute_tax
+from .wording import state_word
 
 
 # Recalculate claim line and header totals.
@@ -71,7 +72,7 @@ def _post_expense_claim_atomic(claim, *, actor_user=None):
 
     if claim.status != DocumentStatus.DRAFT:  # Only draft claims can be posted.
         raise ExpenseClaimError(
-            f"Expense claim {claim.document_number or claim.pk} is '{claim.status}', "
+            f"Expense claim {claim.document_number or claim.pk} is {state_word(claim)}, "
             f"only a draft can be posted.",
         )
 
@@ -276,7 +277,7 @@ def void_expense_claim(claim, *, actor_user=None):
 
     if claim.status != DocumentStatus.POSTED:  # Only posted claims have a journal to reverse.
         raise ExpenseClaimError(
-            f"Only a posted claim can be voided (this is '{claim.status}'); "
+            f"Only a posted claim can be voided (this is {state_word(claim)}); "
             f"a draft is rejected, not voided.",
         )
     if claim.amount_paid > 0:  # Do not void claims after cash has already been paid.

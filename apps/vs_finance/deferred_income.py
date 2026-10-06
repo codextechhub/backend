@@ -382,18 +382,18 @@ def cancel_invoice_schedule(invoice, *, reversal, actor_user=None):
 # Release                                                                     #
 # --------------------------------------------------------------------------- #
 
-def _release_date(entity, day, up_to, *, allow_restricted):
+def _release_date(entity, day, up_to, *, branch, allow_restricted):
     """The date a share recognised on ``day`` is released on, by a run up to ``up_to``.
 
     The end of its own month, or ``up_to`` when that is earlier. A share whose
-    month no longer takes postings (closed over it) is released on ``up_to``
-    instead, in the month the run is for.
+    month no longer takes postings at its own ``branch`` (closed over it) is
+    released on ``up_to`` instead, in the month the run is for.
     """
     from .posting import _period_accepts_posting, resolve_period
 
     target = min(month_end(day), up_to)
     period = resolve_period(entity, target)
-    if not _period_accepts_posting(period, allow_restricted=allow_restricted):
+    if not _period_accepts_posting(period, branch=branch, allow_restricted=allow_restricted):
         return up_to
     return target
 
@@ -424,7 +424,7 @@ def release_deferred_income(entity, *, up_to, actor_user=None, allow_restricted=
     groups: dict[tuple, list] = defaultdict(list)
     dates: dict[tuple, datetime.date] = {}
     for entry in entries:
-        day = _release_date(entity, entry.recognition_date, up_to,
+        day = _release_date(entity, entry.recognition_date, up_to, branch=entry.branch_id,
                             allow_restricted=allow_restricted)
         key = (entry.branch_id, day.year, day.month)
         groups[key].append(entry)
@@ -490,9 +490,11 @@ def reverse_deferred_release(entity, period, *, actor_user=None):
     if period.entity_id != entity.pk:
         raise PostingError("That period belongs to another set of books.")
     if period.status != PeriodStatus.OPEN:
+        from .wording import period_label, period_status_word
+
         raise PeriodCloseError(
-            f"Period '{period}' is '{period.status}'; its deferred income releases are "
-            f"sealed with it. Reopen the period first.",
+            f"{period_label(period, entity.tenant)} is {period_status_word(period.status)}; "
+            f"its deferred income releases are sealed with it. Reopen the month first.",
         )
     releases = list(
         DeferredIncomeRelease.objects.select_for_update()

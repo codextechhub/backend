@@ -93,13 +93,13 @@ def _validated_bands(raw):
     """
     field = "provision_bands"
     if not isinstance(raw, list) or not raw:
-        raise ValidationError({field: "Give at least one band of over_days and rate_bps."})
+        raise ValidationError({field: "Give at least one band: how many days overdue, and the rate held against it."})
     if len(raw) > MAX_PROVISION_BANDS:
         raise ValidationError({field: f"Use at most {MAX_PROVISION_BANDS} bands."})
     bands = []
     for band in raw:
         if not isinstance(band, dict) or set(band) != {"over_days", "rate_bps"}:
-            raise ValidationError({field: "Each band needs over_days and rate_bps, and nothing else."})
+            raise ValidationError({field: "Each band needs how many days overdue and the rate held against it, and nothing else."})
         bands.append((
             _whole_number(band["over_days"], field, low=0, high=36_500, unit="days"),
             _whole_number(band["rate_bps"], field, low=0, high=10_000, unit="basis points"),

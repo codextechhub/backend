@@ -13,13 +13,14 @@ from django.utils import timezone
 from .audit import record
 from .constants import AccountType, BudgetStatus, DocType, FinanceAuditAction
 from .exceptions import BudgetError
+from .wording import state_word
 
 
 # Guard writes to approved/locked budgets.
 def _ensure_editable(budget):
     if budget.is_locked:  # Approved budgets are frozen.
         raise BudgetError(
-            f"Budget '{budget.name}' is '{budget.status}' and can no longer be edited.",
+            f"Budget '{budget.name}' is {state_word(budget)} and can no longer be edited.",
         )
 
 
@@ -210,7 +211,7 @@ def approve_budget(budget, *, actor_user=None):
     """Approve a draft budget, locking its lines against further edits."""
     if budget.status != BudgetStatus.DRAFT:  # Only draft budgets can enter approval.
         raise BudgetError(
-            f"Budget '{budget.name}' is '{budget.status}'; only a draft can be approved.",
+            f"Budget '{budget.name}' is {state_word(budget)}; only a draft can be approved.",
         )
     budget.status = BudgetStatus.APPROVED  # Move budget to approved lifecycle state.
     budget.approved_at = timezone.now()

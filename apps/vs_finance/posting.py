@@ -33,6 +33,7 @@ from .exceptions import (
     PostingError,
     UnbalancedJournalError,
 )
+from .wording import state_word
 
 
 # Structural type for period guard inputs.
@@ -110,51 +111,87 @@ def read_key_shared(model, pk, fields):
         return cursor.fetchone()
 
 
-def _refuse_period_status(label, status, *, allow_restricted, allow_closed):
+def _refuse_period_status(label, status, *, allow_restricted, allow_closed, branch_name=None,
+                          branch_id=None):
     """Raise :class:`PeriodClosedError` unless a month in ``status`` takes the posting."""
-    if status == PeriodStatus.LOCKED:  # A statutory lock is irreversible, even at year end.
-        raise PeriodClosedError(period_label=label, status=str(status))
+    if _status_accepts(status, allow_restricted=allow_restricted, allow_closed=allow_closed):
+        return
+    raise PeriodClosedError(
+        period_label=label, status=str(status or "unknown"), branch_name=branch_name,
+        **({"branch": branch_id} if branch_id is not None else {}),
+    )
 
-    if status == PeriodStatus.CLOSED:  # Only the formal year close may bypass CLOSED.
-        if allow_closed:
-            return
-        raise PeriodClosedError(period_label=label, status=str(status))
 
-    if status in PERIOD_POSTING_RESTRICTED and not allow_restricted:  # Soft-closed periods require privileged posting.
-        raise PeriodClosedError(period_label=label, status=str(status))
+def _status_accepts(status, *, allow_restricted, allow_closed) -> bool:
+    """Whether a month in ``status`` takes a posting with these privileges.
 
-    if status != PeriodStatus.OPEN and status not in PERIOD_POSTING_RESTRICTED:  # Anything unknown must fail closed.
-        raise PeriodClosedError(period_label=label, status=str(status or "unknown"))
+    LOCKED never does, even at year end; CLOSED only for the formal year close
+    (``allow_closed``); SOFT_CLOSED only for a privileged close-process posting
+    (``allow_restricted``); anything unknown fails closed.
+    """
+    if status == PeriodStatus.LOCKED:
+        return False
+    if status == PeriodStatus.CLOSED:
+        return allow_closed
+    if status in PERIOD_POSTING_RESTRICTED:
+        return allow_restricted
+    return status == PeriodStatus.OPEN
+
+
+#: Marks a call that has not said which branch's books it posts into.
+_NO_BRANCH_GIVEN = object()
+
+
+def _require_branch_argument(branch, name):
+    if branch is _NO_BRANCH_GIVEN:
+        raise TypeError(
+            f"{name}() needs branch=: the branch the posting lands in, or None for a "
+            f"posting into no branch's books."
+        )
 
 
 # Guard posting period availability.
 def ensure_period_open(
     period: _PeriodLike,
     *,
+    branch=_NO_BRANCH_GIVEN,
     allow_restricted: bool = False,
     allow_closed: bool = False,
-    branch=None,
 ) -> None:
-    """Raise :class:`PeriodClosedError` if ``period`` cannot accept a posting.
+    """Raise :class:`PeriodClosedError` if ``period`` cannot accept a posting for ``branch``.
+
+    **Months close per branch** (:mod:`vs_finance.branch_close`). Ikeja closes
+    September while Lekki is still finishing it, and the tenant's own period
+    closes only once every branch has. A period's own status therefore answers
+    for the whole school, and ``branch`` (a :class:`~vs_tenants.models.Branch`
+    or its id) is required: the branch whose books the posting lands in, whose
+    own month and year are checked as well. A caller that truly posts into no
+    branch's books (the year-end close's tenant-wide steps) says so with
+    ``branch=None``. Leaving it out raises ``TypeError``, because a guard that
+    forgets the branch passes Mrs Bello's Ikeja journal dated a September Ikeja
+    has closed, and the journal then fails in front of her approver.
 
     A period of a CLOSED or LOCKED fiscal year refuses every posting, whatever its
-    own status and whatever the flags say. The year-end closing journal is no
-    exception to this: :func:`vs_finance.close.close_fiscal_year` posts it while the
-    year is still OPEN and seals the year afterwards, and
-    :func:`vs_finance.close.reopen_fiscal_year` sets the year OPEN before it
-    reverses that journal.
+    own status and whatever the flags say, and so does a period of a year the
+    branch has closed. The year-end closing journal is no exception to this:
+    :func:`vs_finance.close.close_fiscal_year` posts it while the year is still
+    OPEN and seals the year afterwards, and :func:`vs_finance.close.reopen_fiscal_year`
+    sets the year OPEN before it reverses that journal.
 
-    For a saved :class:`~vs_finance.models.FiscalPeriod` the year's and the month's
-    statuses are read from the database under a KEY SHARE lock
-    (:func:`read_key_shared`), year first and month second, the order the year
-    close takes its own locks in. Called inside the posting transaction, as
-    :func:`post_journal` does, the locks hold until commit, so a close cannot slip
-    between this check and the posting it guards. The status on the object passed
-    in is checked as well, so a caller holding a stricter view is not overruled.
+    For a saved :class:`~vs_finance.models.FiscalPeriod` the statuses are read
+    from the database under a KEY SHARE lock (:func:`read_key_shared`): the
+    tenant's year first and month second, the order the year close takes its own
+    locks in, then the branch's year and month. Called inside the posting
+    transaction, as :func:`post_journal` does, the locks hold until commit, so a
+    close cannot slip between this check and the posting it guards. The status on
+    the object passed in is checked as well, so a caller holding a stricter view
+    is not overruled.
 
     Args:
         period: Any object with a ``status`` string drawn from
             :class:`~vs_finance.constants.PeriodStatus`.
+        branch: The branch whose books the posting lands in, or ``None`` for
+            none; see above.
         allow_restricted: When ``True``, soft-closed periods are permitted - used by
             privileged close-process auto-postings (depreciation, accruals). Ordinary
             postings pass ``False`` and are blocked from soft-closed periods too.
@@ -163,16 +200,21 @@ def ensure_period_open(
             year is reopened; LOCKED periods remain immutable. No ordinary or
             month-end posting should set this flag.
 
-    A missing period (``None``) is treated as a hard error: nothing posts without a
-    period.
+    A missing period (``None``) is a hard error: nothing posts without a period.
+    Every refusal names the month as a person does ("September 2026") and, at a
+    school with several branches, the branch whose own close refuses
+    (:class:`~vs_finance.exceptions.PeriodClosedError`).
     """
     from .models import BranchFiscalPeriod, BranchFiscalYear, FiscalPeriod, FiscalYear
+    from .wording import branch_words, period_words
 
+    _require_branch_argument(branch, "ensure_period_open")
     if period is None:  # Nothing should post without a resolved accounting period.
-        raise PeriodClosedError(period_label="<none>", status="missing")
+        raise PeriodClosedError(period_label="this date", status="missing")
 
     status = getattr(period, "status", None)  # Read status defensively from period-like object.
-    label = str(period)  # Human-readable period label for errors.
+    label = period_words(period)  # The month as a person names it.
+    flags = {"allow_restricted": allow_restricted, "allow_closed": allow_closed}
 
     year_id = getattr(period, "fiscal_year_id", None)
     if year_id is not None:  # Year first: the order the year close locks in.
@@ -185,45 +227,58 @@ def ensure_period_open(
     if getattr(period, "is_closing", False) and not allow_closed:  # Year-end close only.
         raise PeriodClosedError(period_label=label, status="CLOSING")
 
-    _refuse_period_status(
-        label, status, allow_restricted=allow_restricted, allow_closed=allow_closed,
-    )
+    _refuse_period_status(label, status, **flags)
 
-    if isinstance(period, FiscalPeriod) and period.pk is not None:
-        stored = read_key_shared(FiscalPeriod, period.pk, ("status",))
-        if stored is not None and stored[0] != status:  # Committed status wins over a stale copy.
-            _refuse_period_status(
-                f"{period.name} [{stored[0]}]", stored[0],
-                allow_restricted=allow_restricted, allow_closed=allow_closed,
+    if not (isinstance(period, FiscalPeriod) and period.pk is not None):
+        return
+    stored = read_key_shared(FiscalPeriod, period.pk, ("status",))
+    if stored is not None and stored[0] != status:  # Committed status wins over a stale copy.
+        _refuse_period_status(label, stored[0], **flags)
+    if branch is None or period.is_closing:
+        return
+
+    branch_id = getattr(branch, "pk", branch)
+    branch_year = BranchFiscalYear.objects.filter(
+        fiscal_year_id=period.fiscal_year_id, branch_id=branch_id,
+    ).values_list("pk", flat=True).first()
+    if branch_year is not None:
+        year_status = read_key_shared(BranchFiscalYear, branch_year, ("status",))
+        if year_status is not None and year_status[0] in _SEALED_YEAR_STATUSES:
+            raise PeriodClosedError(
+                period_label=label, status=str(year_status[0]),
+                fiscal_year_label=f"FY{period.fiscal_year.year}",
+                branch_name=branch_words(branch), branch=branch_id,
             )
-        if branch is not None and not period.is_closing:
-            branch_id = getattr(branch, "pk", branch)
-            branch_year = BranchFiscalYear.objects.filter(
-                fiscal_year_id=period.fiscal_year_id, branch_id=branch_id,
-            ).values_list("pk", flat=True).first()
-            if branch_year is not None:
-                year_status = read_key_shared(BranchFiscalYear, branch_year, ("status",))
-                if year_status is not None:
-                    _refuse_period_status(
-                        f"FY{period.fiscal_year.year} branch {branch_id}", year_status[0],
-                        allow_restricted=allow_restricted, allow_closed=allow_closed,
-                    )
-            branch_period = BranchFiscalPeriod.objects.filter(
-                period=period, branch_id=branch_id,
-            ).values_list("pk", flat=True).first()
-            if branch_period is not None:
-                branch_status = read_key_shared(BranchFiscalPeriod, branch_period, ("status",))
-                if branch_status is not None:
-                    _refuse_period_status(
-                        f"{period.name} branch {branch_id}", branch_status[0],
-                        allow_restricted=allow_restricted, allow_closed=allow_closed,
-                    )
+    branch_period = BranchFiscalPeriod.objects.filter(
+        period=period, branch_id=branch_id,
+    ).values_list("pk", flat=True).first()
+    if branch_period is not None:
+        own = read_key_shared(BranchFiscalPeriod, branch_period, ("status",))
+        if own is not None and not _status_accepts(own[0], **flags):
+            _refuse_period_status(
+                label, own[0], **flags, branch_id=branch_id, branch_name=branch_words(branch),
+            )
+
+
+def ensure_date_open(entity, on_date, *, branch, allow_restricted: bool = False) -> None:
+    """Refuse unless ``branch`` can post into ``entity``'s books on ``on_date``.
+
+    The period covering the date is resolved (:func:`resolve_period`) and checked
+    for that branch (:func:`ensure_period_open`). Every approval-routed finance
+    document makes this check before it is sent for approval and again when a
+    returned one is resumed, so the answer it gets then is the answer its posting
+    gets on approval.
+    """
+    ensure_period_open(
+        resolve_period(entity, on_date), branch=branch, allow_restricted=allow_restricted,
+    )
 
 
 # Non-raising period posting test.
 def _period_accepts_posting(
     period,
     *,
+    branch=_NO_BRANCH_GIVEN,
     allow_restricted: bool = False,
     allow_closed: bool = False,
 ) -> bool:
@@ -231,19 +286,35 @@ def _period_accepts_posting(
 
     Mirrors the guard's logic without raising, so callers (e.g. reversal-date
     selection) can *test* a period and pick an alternative rather than fail.
+    ``branch`` is required for the reason the guard requires it: a month Ikeja
+    has closed is no landing place for an Ikeja posting, however the school's
+    month reads.
     """
+    _require_branch_argument(branch, "_period_accepts_posting")
     if period is None:  # Missing period cannot accept postings.
         return False
     if sealed_fiscal_year(period, fresh=False) is not None:  # A closed year takes nothing.
         return False
-    status = getattr(period, "status", None)  # Read status defensively.
-    if status == PeriodStatus.LOCKED:  # A locked period never accepts another entry.
-        return False
-    if status == PeriodStatus.CLOSED:  # CLOSED is bypassed only for a formal year-end journal.
-        return allow_closed
-    if status in PERIOD_POSTING_RESTRICTED:  # Restricted periods depend on caller privilege.
-        return allow_restricted
-    return status == PeriodStatus.OPEN  # Only open periods accept ordinary postings.
+    statuses = [getattr(period, "status", None)]
+    if branch is not None and getattr(period, "pk", None) is not None \
+            and not getattr(period, "is_closing", False):
+        from .models import BranchFiscalPeriod, BranchFiscalYear
+
+        branch_id = getattr(branch, "pk", branch)
+        year_status = BranchFiscalYear.objects.filter(
+            fiscal_year_id=period.fiscal_year_id, branch_id=branch_id,
+        ).values_list("status", flat=True).first()
+        if year_status in _SEALED_YEAR_STATUSES:
+            return False
+        own = BranchFiscalPeriod.objects.filter(
+            period_id=period.pk, branch_id=branch_id,
+        ).values_list("status", flat=True).first()
+        if own is not None:
+            statuses.append(own)
+    return all(
+        _status_accepts(status, allow_restricted=allow_restricted, allow_closed=allow_closed)
+        for status in statuses
+    )
 
 
 # Describe which dates an ordinary posting may use.
@@ -298,7 +369,7 @@ def posting_window(entity, *, today=None, branch=None) -> dict:
     open_periods = [
         p for p in periods
         if getattr(p, "_branch_year_status", PeriodStatus.OPEN) == PeriodStatus.OPEN
-        and _period_accepts_posting(p)
+        and _period_accepts_posting(p, branch=None)  # Statuses above are the branch's already.
     ]
     covering = next(  # The open period containing today, if any.
         (p for p in open_periods if p.start_date <= today <= p.end_date), None,
@@ -627,6 +698,7 @@ def _post_journal_atomic(
     """
     from .audit import record
     from .models import JournalEntry
+    from .wording import period_words
 
     # Serialise concurrent posts of the *same* entry: take a row lock and re-read the
     # status under it before doing anything. Without this, two requests can both pass
@@ -684,7 +756,7 @@ def _post_journal_atomic(
         entity=entry.entity,  # Entity posted into.
         action=FinanceAuditAction.JOURNAL_POSTED,  # Audit action.
         actor_user=actor_user, target=entry,  # Actor and target context.
-        message=f"Posted into {entry.period}.",  # Human-readable audit message.
+        message=f"Posted into {period_words(entry.period)}.",  # Human-readable audit message.
         after={"status": DocumentStatus.POSTED, "posted_at": entry.posted_at.isoformat()},  # Post-state snapshot.
         debit=total_debit, credit=total_credit,  # Structured totals.
     )
@@ -1020,7 +1092,7 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
     if entry.status != DocumentStatus.POSTED:  # Only posted journals can be reversed.
         raise PostingError(
             f"Only a posted journal can be reversed; {entry.document_number or entry.pk} "
-            f"is '{entry.status}'.",
+            f"is {state_word(entry)}.",
         )
     if hasattr(entry, "reversed_by") and entry.reversed_by is not None:  # Prevent duplicate reversals.
         raise PostingError(
@@ -1047,8 +1119,9 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
     period = resolve_period(entry.entity, reversal_date)  # Resolve period for selected reversal date.
     if entry.period is not None and entry.period.is_closing and reversal_date == entry.date:
         period = entry.period  # A closing journal is undone in its own closing period.
-    if date is None and not _period_accepts_posting(  # Original period may now be closed.
-        period, allow_restricted=allow_restricted, allow_closed=allow_closed,
+    if date is None and not _period_accepts_posting(  # Its branch may have closed the month.
+        period, branch=entry.branch_id,
+        allow_restricted=allow_restricted, allow_closed=allow_closed,
     ):
         reversal_date = branch_today(entry.entity.tenant, entry.branch_id)
         # Falling forward to today must not turn a future-dated source into a

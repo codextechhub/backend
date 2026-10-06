@@ -29,6 +29,7 @@ submit endpoint and the direct-post view read it so they can never disagree.  # 
 distinct scope, for list endpoints that would otherwise ask per row.
 """
 from __future__ import annotations
+from .wording import state_word
 
 
 # Cache template resolution across many documents on one request.
@@ -879,6 +880,48 @@ def with_approval_request(data, document):
     return data
 
 
+def refuse_while_request_open(document, *, noun: str, act: str = "cancelled",
+                              remedy: str | None = None) -> None:
+    """Refuse to cancel or void ``document`` while its approval request is open.
+
+    The one rule every route that ends a draft shares (a petty cash return's
+    void, an expense claim's reject, an inter-branch request's decline, a bank
+    document's cancel): a document whose latest request is still open, whether
+    with its approvers or returned to whoever sent it, is not ended underneath
+    that request. Mrs Okafor's petty cash return comes back to her from the
+    approver; if "Cancel return" went through, the return would read cancelled
+    while its request sat open in her approvals, and resuming it later would fail.
+    So the request is withdrawn first, which ends it and lands the document where
+    the type says (:meth:`vs_finance.workflow_handlers._FinancePostOnApprove.status_when_unapproved`).
+
+    ``act`` completes "then it can be ..." ("cancelled", "declined", "voided");
+    ``remedy`` replaces that sentence where withdrawing does the act itself (a
+    withdrawn petty cash return is cancelled by the withdrawal).
+    The caller has locked the document's row; the request is read after the lock.
+    Raises :class:`~vs_finance.exceptions.ApprovalRequestOpenError` (422), whose
+    payload carries ``approval_state`` and ``approval_returned`` for a screen.
+    """
+    from .exceptions import ApprovalRequestOpenError
+
+    if not document.pk:
+        return
+    state, returned = approval_overview([document])[document.pk]
+    if state != APPROVAL_PENDING:
+        return
+    number = getattr(document, "document_number", "") or document.pk
+    if returned:
+        lead = (
+            f"The {noun} {number} was returned to whoever sent it for approval, and "
+            f"its approval request is still open."
+        )
+    else:
+        lead = f"The {noun} {number} is with its approvers."
+    raise ApprovalRequestOpenError(
+        f"{lead} {remedy or f'Withdraw the approval request first, then it can be {act}.'}",
+        approval_state=state, approval_returned=returned,
+    )
+
+
 def correcting_returned(document, user, *, noun: str) -> bool:
     """Say whether an edit of ``document`` may go ahead, and whether it corrects a returned request.
 
@@ -929,7 +972,7 @@ def correcting_returned(document, user, *, noun: str) -> bool:
             f"withdrawn."
         )
     raise PostingError(
-        f"Only a draft {noun} can be corrected; {number} is '{document.status}'."
+        f"Only a draft {noun} can be corrected; {number} is {state_word(document)}."
     )
 
 

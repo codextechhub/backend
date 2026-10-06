@@ -281,9 +281,9 @@ def seed_fiscal_year(
     from .models import FiscalPeriod, FiscalYear
 
     if not 1 <= start_month <= 12:  # Month must be valid.
-        raise ValueError("start_month must be between 1 and 12.")
+        raise ValueError("The first month of the financial year must be between 1 and 12.")
     if not 1 <= fiscal_start_day <= 31:  # Anchor day must be valid.
-        raise ValueError("fiscal_start_day must be between 1 and 31.")
+        raise ValueError("The day the financial year starts on must be between 1 and 31.")
     if year is None:  # The year whose span covers the entity's own today.
         today = tenant_today(entity.tenant)
         this_years_start = datetime.date(
@@ -292,7 +292,7 @@ def seed_fiscal_year(
         )
         year = today.year if today >= this_years_start else today.year - 1
     if fiscal_period_frequency not in {"MONTHLY", "QUARTERLY"}:
-        raise ValueError("fiscal_period_frequency must be MONTHLY or QUARTERLY.")
+        raise ValueError("Periods must be monthly or quarterly.")
 
     # Calculate an anchored boundary at an offset from the fiscal start.
     def _boundary(offset):

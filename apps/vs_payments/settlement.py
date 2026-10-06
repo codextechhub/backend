@@ -37,6 +37,7 @@ from vs_finance.money import format_naira
 from . import audit
 from .constants import CollectionStatus, PaymentAuditAction
 from .exceptions import PaymentStateError
+from vs_finance.wording import state_word
 
 
 def awaiting_settlement_q(prefix: str = "") -> Q:
@@ -117,7 +118,7 @@ def settle_collections(statement_line, collection_ids, *, actor_user=None, posti
     bank = line.bank_account
     entity = bank.entity
     if line.status != BankLineStatus.UNMATCHED:
-        _refuse(f"Statement line is '{line.status}'; only an unmatched line can be settled.")
+        _refuse(f"Statement line is {state_word(line)}; only an unmatched line can be settled.")
     if line.amount <= 0:
         _refuse("Only money arriving in the bank can settle online payments.")
 
@@ -170,7 +171,9 @@ def settle_collections(statement_line, collection_ids, *, actor_user=None, posti
         )
 
     branch_id = bank.branch_id or only_branch_id_or_several(tenant_id)
-    book_date = resolve_adjustment_date(entity, line.txn_date, requested=posting_date)
+    book_date = resolve_adjustment_date(
+        entity, line.txn_date, branch=branch_id, requested=posting_date,
+    )
     received = max(intent.payment.payment_date for intent in intents)
     if book_date < received:  # Money cannot leave clearing before it entered it.
         tenant = entity.tenant if entity.tenant_id else None
@@ -344,7 +347,7 @@ def gateway_clearing_current(entity, period, branch=None):
     count = stale.count()
     total = sum(stale.values_list("amount", flat=True)) if count else 0
     return ChecklistItem(
-        name="gateway_clearing_current",
+        name="gateway_clearing_current", title="Online payments settled",
         passed=count == 0,
         blocking=False,
         detail=(

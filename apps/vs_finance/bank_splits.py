@@ -232,7 +232,7 @@ def _clean_allocations(entity, allocations):
         try:
             opening_balance = int(row["opening_balance"])
         except (KeyError, TypeError, ValueError):
-            raise BankAccountSplitError("Every allocation needs an integer opening_balance.")
+            raise BankAccountSplitError("Give every branch's share an opening balance, as a whole number.")
         bank_name = str(row.get("bank_account_name") or "").strip()
         ledger_code = str(row.get("ledger_account_code") or "").strip()
         ledger_name = str(row.get("ledger_account_name") or "").strip()

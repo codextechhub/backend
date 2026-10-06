@@ -191,7 +191,7 @@ settlement report *(confirm the field)*; the settlement match books it.
   each less its fee; Paystack says what it holds (`GET /balance` *(confirm)*). Each
   day's comparison is recorded (`HeldReconciliation`: date, Paystack's figure, the
   books' figure and its parts, the difference, the tolerance). A difference above
-  the platform setting `payments.held_reconciliation_tolerance_kobo` (default 0),
+  the platform setting `payments.held_reconciliation_tolerance` (whole naira, default 0),
   or a provider balance account that differs from the sub-ledger, opens one
   system-health incident (`payments.held-ledger-mismatch`) and tells Codex's
   health and settlement operators once; the next agreeing check resolves it. A day

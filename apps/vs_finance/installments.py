@@ -40,6 +40,7 @@ from .constants import (
 from .exceptions import FinanceError, PostingError
 from .money import format_naira
 from .posting import post_journal, resolve_period
+from .wording import state_word
 
 
 # --------------------------------------------------------------------------- #
@@ -166,7 +167,7 @@ def _activate_payment_plan_atomic(plan, *, actor_user=None):
     if plan.plan_status != PaymentPlanStatus.DRAFT:  # Only draft plans can activate.
         raise PostingError(
             f"Payment plan {plan.document_number or plan.pk} is "
-            f"'{plan.plan_status}'; only a draft plan can be activated.",
+            f"{state_word(plan, 'plan_status')}; only a draft plan can be activated.",
         )
     if not plan.installments.exists():
         raise PostingError("Build the installment schedule before activating the plan.")
@@ -351,13 +352,13 @@ def _post_concession_atomic(concession, *, actor_user=None):
     if concession.status != DocumentStatus.DRAFT:  # Only draft concessions can post.
         raise PostingError(
             f"Concession {concession.document_number or concession.pk} is "
-            f"'{concession.status}'; only a draft concession can be posted.",
+            f"{state_word(concession)}; only a draft concession can be posted.",
         )
 
     invoice = Invoice.objects.select_for_update(of=("self",)).get(pk=concession.invoice_id)
     if invoice.status != DocumentStatus.POSTED:  # Only posted invoices have AR to reduce.
         raise PostingError(
-            f"Invoice {invoice.document_number or invoice.pk} is '{invoice.status}'; "
+            f"Invoice {invoice.document_number or invoice.pk} is {state_word(invoice)}; "
             f"a concession can only reduce a posted invoice.",
         )
     if invoice.customer_id != concession.customer_id:  # A concession reduces its own customer's bill.

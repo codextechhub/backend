@@ -59,6 +59,7 @@ from .exceptions import (
     VendorInvoiceVoidError,
 )
 from .purchasing import resolve_account
+from vs_finance.wording import state_word
 
 
 # --------------------------------------------------------------------------- #
@@ -381,7 +382,7 @@ def _post_vendor_credit_note_atomic(note, *, actor_user=None):
 
     if note.status != DocumentStatus.DRAFT:
         raise VendorCreditNoteError(
-            f"Vendor credit note {_label(note)} is '{note.status}'; only a draft can be posted.",
+            f"Vendor credit note {_label(note)} is {state_word(note)}; only a draft can be posted.",
         )
     if note.approval_state != ProcApprovalState.APPROVED:
         raise VendorCreditNoteError(
@@ -389,7 +390,7 @@ def _post_vendor_credit_note_atomic(note, *, actor_user=None):
         )
     if invoice.status != DocumentStatus.POSTED:
         raise VendorCreditNoteError(
-            f"Bill {_label(invoice)} is '{invoice.status}'; only a posted bill can be credited.",
+            f"Bill {_label(invoice)} is {state_word(invoice)}; only a posted bill can be credited.",
         )
     if (note.entity_id, note.vendor_id, note.branch_id) != (
             invoice.entity_id, invoice.vendor_id, invoice.branch_id):
@@ -729,7 +730,7 @@ def _void_vendor_credit_note_atomic(note, *, actor_user=None, date=None):
     note = VendorCreditNote.objects.select_for_update().get(pk=note.pk)
     if note.status != DocumentStatus.POSTED or note.journal_id is None:
         raise VendorCreditNoteError(
-            f"Only a posted vendor credit note can be voided; {_label(note)} is '{note.status}'.",
+            f"Only a posted vendor credit note can be voided; {_label(note)} is {state_word(note)}.",
         )
     allocations = list(
         VendorCreditNoteAllocation.objects.select_for_update().filter(note=note)
@@ -827,7 +828,7 @@ def _void_vendor_invoice_atomic(invoice, *, actor_user=None, date=None):
     if invoice.status != DocumentStatus.POSTED or invoice.journal_id is None:
         raise VendorInvoiceVoidError(
             f"Only a posted vendor invoice can be voided; {_label(invoice)} is "
-            f"'{invoice.status}'.",
+            f"{state_word(invoice)}.",
         )
     if invoice.amount_paid > 0:
         raise VendorInvoiceVoidError(
@@ -945,7 +946,7 @@ def _return_goods_atomic(grn, *, return_date, reason, lines=None, actor_user=Non
     grn = GoodsReceivedNote.objects.select_for_update().get(pk=grn.pk)
     if grn.status != DocumentStatus.POSTED or grn.journal_id is None:
         raise GoodsReturnError(
-            f"Only a posted goods receipt can be reversed; {_label(grn)} is '{grn.status}'.",
+            f"Only a posted goods receipt can be reversed; {_label(grn)} is {state_word(grn)}.",
         )
     reason = str(reason or "").strip()
     if not reason:

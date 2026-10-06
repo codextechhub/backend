@@ -278,7 +278,9 @@ def _post_platform_journal(movement, *, actor_user=None):
             raise PaymentStateError("The platform's books are not set up.")
         with transaction.atomic():
             held, provider, owed = ensure_platform_accounts(platform)
-            day = resolve_adjustment_date(platform, movement.occurred_on)
+            day = resolve_adjustment_date(
+                platform, movement.occurred_on, branch=_platform_branch_id(platform),
+            )
             entry = JournalEntry.objects.create(
                 entity=platform, branch_id=_platform_branch_id(platform), date=day,
                 period=resolve_period(platform, day), source=JournalSource.SYSTEM,

@@ -274,8 +274,8 @@ class CreditNoteKind(models.TextChoices):
     charge or under-bill correction: ``Dr AR, Cr revenue + Cr output tax``) - a
     supplementary invoice, so it is never allocated to reduce another invoice.
     """
-    CREDIT = "CREDIT", "Credit note (reduces AR)"
-    DEBIT = "DEBIT", "Debit note (increases AR)"
+    CREDIT = "CREDIT", "Credit note"
+    DEBIT = "DEBIT", "Debit note"
 
 
 # Group behavior for Payment Plan Frequency.

@@ -19,7 +19,7 @@ from vs_finance.money import format_naira
 from vs_rbac.field_enforcement import FieldAccessMixin, can_read
 from vs_config.clock import branch_today
 
-from .constants import ProcApprovalState, QuotationStatus
+from .constants import CLOSED_PO_STATUSES, ProcApprovalState, QuotationStatus
 from .purchasing import po_receipt_stage
 from .models import (
     CatalogItem,
@@ -1229,11 +1229,23 @@ class PurchaseOrderSerializer(ApprovalReturnedMixin, serializers.ModelSerializer
         return format_naira(obj.total)
 
     def get_display_status(self, obj) -> str:
-        # Approval overlays take precedence; a partially received draft must not look issued.
-        if obj.status == DocumentStatus.DRAFT:
-            return DocumentStatus.DRAFT
+        """The order's one headline status, in the precedence the list filter uses.
+
+        A cancelled or reversed order reads as such. Otherwise an order whose
+        approval request is open reads PENDING_APPROVAL before anything else: an
+        order stays DRAFT while its approvers decide (and while one of them has
+        returned it to its sender), and reading "Draft" then hid that it was with
+        an approver, where a requisition in the same position reads Pending
+        Approval. A draft reads DRAFT, and a partially received order PARTIAL.
+        :func:`vs_procurement.views.orders._filter_purchase_orders` filters on the
+        same precedence, so ``?status=`` returns exactly the rows that read it.
+        """
+        if obj.status in CLOSED_PO_STATUSES:
+            return obj.status
         if obj.status == DocumentStatus.PENDING_APPROVAL or obj.approval_state == ProcApprovalState.PENDING:
             return DocumentStatus.PENDING_APPROVAL
+        if obj.status == DocumentStatus.DRAFT:
+            return DocumentStatus.DRAFT
         stage = po_receipt_stage(
             sum((line.quantity for line in obj.lines.all()), 0),
             sum((line.received_qty for line in obj.lines.all()), 0),

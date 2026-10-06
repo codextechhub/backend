@@ -283,7 +283,8 @@ class FiscalPeriod(TimeStampedModel):
         ordering = ["entity", "fiscal_year", "period_no"]
 
     def __str__(self) -> str:
-        return f"{self.name} [{self.status}]"
+        """The period's name alone: its status is a code, and never part of a sentence."""
+        return self.name
 
 
 class BranchFiscalPeriod(TimeStampedModel):

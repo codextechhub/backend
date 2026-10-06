@@ -22,6 +22,7 @@ from vs_config.display import format_date
 from .constants import QuotationStatus, RfqStatus
 from .exceptions import SourcingError
 from .purchasing import price_po, refuse_sourced_lines, vendor_purchase_block_reason
+from vs_finance.wording import state_word
 
 
 # --------------------------------------------------------------------------- #
@@ -44,7 +45,7 @@ def set_rfq_invitations(rfq, vendors, *, actor_user=None):
 
     if rfq.rfq_status != RfqStatus.DRAFT:
         raise SourcingError(
-            f"RFQ {rfq.document_number or rfq.pk} is '{rfq.rfq_status}'; "
+            f"RFQ {rfq.document_number or rfq.pk} is {state_word(rfq, 'rfq_status')}; "
             f"invited vendors can only be changed while it is a draft.",
         )
 
@@ -99,7 +100,7 @@ def issue_rfq(rfq, *, competition_exception_reason="", actor_user=None):
     rfq = RequestForQuotation.objects.select_for_update(of=("self",)).get(pk=rfq.pk)
     if rfq.rfq_status != RfqStatus.DRAFT:
         raise SourcingError(
-            f"RFQ {rfq.document_number or rfq.pk} is '{rfq.rfq_status}'; "
+            f"RFQ {rfq.document_number or rfq.pk} is {state_word(rfq, 'rfq_status')}; "
             f"only a draft RFQ can be issued.",
         )
     line_count = rfq.lines.count()
@@ -267,7 +268,7 @@ def close_rfq(rfq, *, reason="", actor_user=None):
     rfq = RequestForQuotation.objects.select_for_update(of=("self",)).get(pk=rfq.pk)
     if rfq.rfq_status != RfqStatus.ISSUED:
         raise SourcingError(
-            f"RFQ {rfq.document_number or rfq.pk} is '{rfq.rfq_status}'; "
+            f"RFQ {rfq.document_number or rfq.pk} is {state_word(rfq, 'rfq_status')}; "
             f"only an issued RFQ can be closed without award.",
         )
     _reject_live_quotations(rfq, actor_user=actor_user)
@@ -331,11 +332,11 @@ def submit_quotation(quotation, *, actor_user=None):
     if quotation.quotation_status != QuotationStatus.DRAFT:
         raise SourcingError(
             f"Quotation {quotation.document_number or quotation.pk} is "
-            f"'{quotation.quotation_status}'; only a draft quotation can be submitted.",
+            f"{state_word(quotation, 'quotation_status')}; only a draft quotation can be submitted.",
         )
     if rfq.rfq_status != RfqStatus.ISSUED:
         raise SourcingError(
-            f"RFQ {rfq.document_number} is '{rfq.rfq_status}'; "
+            f"RFQ {rfq.document_number} is {state_word(rfq, 'rfq_status')}; "
             f"quotations can only be submitted while it is ISSUED.",
         )
     if not quotation.lines.exists():
@@ -415,11 +416,11 @@ def award_quotation(
     if quotation.quotation_status != QuotationStatus.SUBMITTED:
         raise SourcingError(
             f"Quotation {quotation.document_number or quotation.pk} is "
-            f"'{quotation.quotation_status}'; only a submitted quotation can be awarded.",
+            f"{state_word(quotation, 'quotation_status')}; only a submitted quotation can be awarded.",
         )
     if rfq.rfq_status != RfqStatus.ISSUED:
         raise SourcingError(
-            f"RFQ {rfq.document_number} is '{rfq.rfq_status}'; only an issued RFQ "
+            f"RFQ {rfq.document_number} is {state_word(rfq, 'rfq_status')}; only an issued RFQ "
             f"can be awarded.",
         )
     from vs_rbac.scoping import only_branch_id, same_transaction_branch

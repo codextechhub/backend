@@ -51,7 +51,7 @@ def ap_reconciled(entity, period, branch=None):
         scope = BranchScope(frozenset((getattr(branch, "pk", branch),)), include_shared=False)
     ap = reconcile_ap(entity, branch_scope=scope)
     return ChecklistItem(
-        name="ap_reconciled",
+        name="ap_reconciled", title="Payables agree with the ledger",
         passed=ap.is_reconciled,
         detail=(
             f"Sub-ledger {format_naira(ap.subledger_total)} against control "
@@ -90,7 +90,8 @@ def grir_explained(entity, period, branch=None):
         detail = (f"GR/IR clearing holds {format_naira(-balance)} invoiced for goods "
                   f"not yet received.")
     return ChecklistItem(
-        name="grir_explained", passed=balance == 0, blocking=False, detail=detail,
+        name="grir_explained", title="Goods received and bills match",
+        passed=balance == 0, blocking=False, detail=detail,
     )
 
 

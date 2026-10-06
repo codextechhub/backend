@@ -7,6 +7,7 @@ derived server-side in integer kobo.
 """
 from __future__ import annotations
 
+from vs_workflow.services.approval_filter import filter_by_approval_param
 import datetime
 
 from django.db import transaction
@@ -245,6 +246,7 @@ def _filter_requisitions(qs, params):
         override_pks = approval_override.overridden_document_id_subquery(PurchaseRequisition)
         qs = qs.filter(pk__in=override_pks) if overridden else qs.exclude(pk__in=override_pks)
     qs = _filter_free_lines(qs, params)
+    qs = filter_by_approval_param(qs, params)
     if (search := params.get("search", "").strip()):
         qs = qs.filter(
             Q(document_number__icontains=search) | Q(title__icontains=search)

@@ -2,6 +2,7 @@
 """
 from __future__ import annotations
 
+from vs_workflow.services.approval_filter import filter_by_approval_param
 import hashlib
 
 from django.db import transaction
@@ -1577,6 +1578,7 @@ class BankTransactionListCreateView(_FinanceBase):
             qs = qs.filter(bank_account_id=int(bank))
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
+        qs = filter_by_approval_param(qs, request.query_params)
         return self.paginate(request, qs.order_by("-transaction_date", "-id"), BankTransactionSerializer)
 
     def post(self, request):
@@ -1835,6 +1837,7 @@ class BankTransferListCreateView(_FinanceBase):
             qs = qs.filter(Q(from_account_id=int(bank)) | Q(to_account_id=int(bank)))
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
+        qs = filter_by_approval_param(qs, request.query_params)
         return self.paginate(request, qs.order_by("-transfer_date", "-id"), BankTransferSerializer)
 
     def post(self, request):

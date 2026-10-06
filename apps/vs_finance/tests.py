@@ -248,31 +248,31 @@ class PostingGuardTests(TestCase):
 
     # Verify open period allows posting behavior.
     def test_open_period_allows_posting(self):
-        ensure_period_open(self._Period(PeriodStatus.OPEN))  # no raise
+        ensure_period_open(self._Period(PeriodStatus.OPEN), branch=None)  # no raise
 
     # Verify closed and locked block posting behavior.
     def test_closed_and_locked_block_posting(self):
         for status in (PeriodStatus.CLOSED, PeriodStatus.LOCKED):
             with self.assertRaises(PeriodClosedError):
-                ensure_period_open(self._Period(status))
+                ensure_period_open(self._Period(status), branch=None)
 
     # Verify soft closed blocked by default allowed when privileged behavior.
     def test_soft_closed_blocked_by_default_allowed_when_privileged(self):
         with self.assertRaises(PeriodClosedError):
-            ensure_period_open(self._Period(PeriodStatus.SOFT_CLOSED))
-        ensure_period_open(self._Period(PeriodStatus.SOFT_CLOSED), allow_restricted=True)
+            ensure_period_open(self._Period(PeriodStatus.SOFT_CLOSED), branch=None)
+        ensure_period_open(self._Period(PeriodStatus.SOFT_CLOSED), allow_restricted=True, branch=None)
 
     def test_closed_bypass_is_explicit_and_never_applies_to_locked(self):
         with self.assertRaises(PeriodClosedError):
-            ensure_period_open(self._Period(PeriodStatus.CLOSED), allow_restricted=True)
-        ensure_period_open(self._Period(PeriodStatus.CLOSED), allow_closed=True)
+            ensure_period_open(self._Period(PeriodStatus.CLOSED), allow_restricted=True, branch=None)
+        ensure_period_open(self._Period(PeriodStatus.CLOSED), allow_closed=True, branch=None)
         with self.assertRaises(PeriodClosedError):
-            ensure_period_open(self._Period(PeriodStatus.LOCKED), allow_closed=True)
+            ensure_period_open(self._Period(PeriodStatus.LOCKED), allow_closed=True, branch=None)
 
     # Verify missing period fails closed behavior.
     def test_missing_period_fails_closed(self):
         with self.assertRaises(PeriodClosedError):
-            ensure_period_open(None)
+            ensure_period_open(None, branch=None)
 
     # Verify balanced check behavior.
     def test_balanced_check(self):
@@ -557,11 +557,11 @@ class PostingWindowTests(TestCase):
 
         for brief in window["open"]:
             period = FiscalPeriod.objects.get(pk=brief["id"])
-            ensure_period_open(period)  # must not raise
+            ensure_period_open(period, branch=None)  # must not raise
         for brief in window["blocked"]:
             period = FiscalPeriod.objects.get(pk=brief["id"])
             with self.assertRaises(PeriodClosedError):
-                ensure_period_open(period)
+                ensure_period_open(period, branch=None)
 
 
 # Group tests for Fiscal Calendar Runway Tests.
@@ -659,7 +659,7 @@ class FiscalCalendarRunwayTests(TestCase):
         # And the guard agrees: nothing posts on a date past the calendar's end.
         self.assertIsNone(resolve_period(entity, datetime.date(2027, 1, 5)))
         with self.assertRaises(PeriodClosedError):
-            ensure_period_open(resolve_period(entity, datetime.date(2027, 1, 5)))
+            ensure_period_open(resolve_period(entity, datetime.date(2027, 1, 5)), branch=None)
 
     # Verify an entity with no periods reports expired behavior.
     def test_an_entity_with_no_periods_reports_expired(self):
@@ -724,7 +724,7 @@ class PeriodClosedMessageTests(TestCase):
     # Verify the missing period message points at the fiscal calendar behavior.
     def test_the_missing_period_message_points_at_the_fiscal_calendar(self):
         with self.assertRaises(PeriodClosedError) as caught:
-            ensure_period_open(None)
+            ensure_period_open(None, branch=None)
 
         message = str(caught.exception)
         self.assertIn("No fiscal period covers this date", message)
@@ -732,18 +732,17 @@ class PeriodClosedMessageTests(TestCase):
         self.assertNotIn("Choose a date within an open fiscal period", message)
         self.assertEqual(caught.exception.status, "missing")
 
-    # Verify the closed period message is unchanged behavior.
-    def test_the_closed_period_message_is_unchanged(self):
+    def test_the_closed_period_message_names_the_month_not_its_code(self):
         closed = FiscalPeriod(
             name="Jan 2026", start_date=datetime.date(2026, 1, 1),
             end_date=datetime.date(2026, 1, 31), status=PeriodStatus.CLOSED,
         )
         with self.assertRaisesMessage(
             PeriodClosedError,
-            "Cannot post into period 'Jan 2026 [CLOSED]': it is 'CLOSED'. "
-            "Re-open the period or post into the current open period.",
+            "Jan 2026 is closed, so nothing more can be posted into it. Reopen Jan 2026, "
+            "or use a date in an open month.",
         ):
-            ensure_period_open(closed)
+            ensure_period_open(closed, branch=None)
 
 
 # Group tests for Posting Window Endpoint Tests.

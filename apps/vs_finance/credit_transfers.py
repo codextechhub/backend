@@ -20,6 +20,7 @@ from .constants import (
 )
 from .exceptions import FinanceError, PostingError
 from .money import format_naira
+from .wording import state_word
 
 
 def check_transfer(transfer):
@@ -94,7 +95,7 @@ def _post_transfer_atomic(transfer, *, actor_user=None):
     if transfer.status != DocumentStatus.APPROVED:
         raise PostingError(
             f"Credit transfer {transfer.document_number or transfer.pk} is "
-            f"'{transfer.status}'; only an approved transfer can be posted.",
+            f"{state_word(transfer)}; only an approved transfer can be posted.",
         )
     list(Customer.objects.select_for_update().filter(
         pk__in=sorted({transfer.from_customer_id, transfer.to_customer_id})).order_by("pk"))
@@ -182,7 +183,7 @@ def _void_transfer_atomic(transfer, *, actor_user=None, date=None):
     if transfer.status != DocumentStatus.POSTED or transfer.receipt_id is None:
         raise PostingError(
             f"Only a posted credit transfer can be voided; "
-            f"{transfer.document_number or transfer.pk} is '{transfer.status}'.",
+            f"{transfer.document_number or transfer.pk} is {state_word(transfer)}.",
         )
     _void_payment_atomic(transfer.receipt, actor_user=actor_user, date=date, transfer=transfer)
 

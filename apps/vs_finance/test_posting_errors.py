@@ -18,4 +18,4 @@ class PostingErrorMessageTests(SimpleTestCase):
                 "calendar has run out."
             ),
         ):
-            ensure_period_open(None)
+            ensure_period_open(None, branch=None)

@@ -9,6 +9,7 @@ rendered by ``core.exceptions.custom_exception_handler`` (the typed-exception pa
 the views stay thin.
 """
 from __future__ import annotations
+from vs_workflow.services.approval_filter import filter_by_approval_param
 import datetime
 from shutil import which
 
@@ -36,6 +37,7 @@ from vs_rbac.scoping import (
 )
 
 from .approvals import with_approval_request
+from .wording import period_status_word
 from .models import (
     Account,
     FiscalPeriod,
@@ -1101,6 +1103,7 @@ class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
                 | Q(narration__icontains=search)
                 | Q(reference__icontains=search)
             )
+        qs = filter_by_approval_param(qs, params)
         return qs.order_by("-date", "-id")
 
 
@@ -2098,7 +2101,7 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
         checklist = close_checklist(entity, period, branch=branch, preview=True, soft=soft)
         items = _serialize_checklist(checklist)["items"]
         return success_response(
-            message=f"Close checklist for '{period}'.",
+            message=f"Close checklist for {_period_said(period)}.",
             data={
                 "period": FiscalPeriodSerializer(period).data,
                 "passed": checklist.passed,
@@ -2127,12 +2130,12 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
             )
             if _single_branch(entity):
                 return success_response(
-                    message=f"Period '{period}' closed to {state.status}.",
+                    message=f"{_period_said(period)} is now {period_status_word(state.status)}.",
                     data={"period": FiscalPeriodSerializer(period).data,
                           "checklist": _serialize_checklist(checklist)},
                 )
             return success_response(
-                message=f"Branch period '{period}' closed to {state.status}.",
+                message=f"{_period_said(period)} is now {period_status_word(state.status)} at {branch.name}.",
                 data={"period": FiscalPeriodSerializer(period).data,
                       "branch_period": _branch_period_data(state),
                       "checklist": _serialize_checklist(checklist)},
@@ -2146,7 +2149,7 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
             reason=body.get("reason"),
         )
         return success_response(
-            message=f"Period '{period}' closed to {period.status}.",
+            message=f"{_period_said(period)} is now {period_status_word(period.status)}.",
             data={
                 "period": FiscalPeriodSerializer(period).data,
                 "checklist": _serialize_checklist(checklist),
@@ -2193,11 +2196,11 @@ class PeriodReopenView(_FiscalCalendarWriteMixin, APIView):
             )
             if _single_branch(entity):
                 return success_response(
-                    message=f"Period '{period}' re-opened to {state.status}.",
+                    message=f"{_period_said(period)} reopened.",
                     data=FiscalPeriodSerializer(period).data,
                 )
             return success_response(
-                message=f"Branch period '{period}' re-opened to {state.status}.",
+                message=f"{_period_said(period)} reopened at {branch.name}.",
                 data={"period": FiscalPeriodSerializer(period).data,
                       "branch_period": _branch_period_data(state)},
             )
@@ -2206,7 +2209,7 @@ class PeriodReopenView(_FiscalCalendarWriteMixin, APIView):
             reason=(request.data or {}).get("reason"),
         )
         return success_response(
-            message=f"Period '{period}' re-opened to {period.status}.",
+            message=f"{_period_said(period)} reopened.",
             data=FiscalPeriodSerializer(period).data,
         )
 
@@ -2244,17 +2247,17 @@ class PeriodLockView(_FiscalCalendarWriteMixin, APIView):
             state = lock_branch_period(entity, period, branch, actor_user=request.user)
             if _single_branch(entity):
                 return success_response(
-                    message=f"Period '{period}' locked to {state.status}.",
+                    message=f"{_period_said(period)} locked.",
                     data=FiscalPeriodSerializer(period).data,
                 )
             return success_response(
-                message=f"Branch period '{period}' locked to {state.status}.",
+                message=f"{_period_said(period)} locked at {branch.name}.",
                 data={"period": FiscalPeriodSerializer(period).data,
                       "branch_period": _branch_period_data(state)},
             )
         period = lock_period(entity, period, actor_user=request.user)
         return success_response(
-            message=f"Period '{period}' locked to {period.status}.",
+            message=f"{_period_said(period)} locked.",
             data=FiscalPeriodSerializer(period).data,
         )
 
@@ -2386,17 +2389,26 @@ def _money(amount):
 def _serialize_checklist(checklist):
     """A close checklist as the screens read it.
 
+    ``name`` is the check's machine code, for a screen to key on; ``label`` is
+    how it reads to a person (:attr:`vs_finance.close.ChecklistItem.label`).
     ``done_by_close`` marks an item the close settles itself, which only a preview
     reports (:class:`vs_finance.close.ChecklistItem`).
     """
     return {
         "passed": checklist.passed,
         "items": [
-            {"name": i.name, "passed": i.passed, "blocking": i.blocking,
+            {"name": i.name, "label": i.label, "passed": i.passed, "blocking": i.blocking,
              "done_by_close": i.done_by_close, "detail": i.detail}
             for i in checklist.items
         ],
     }
+
+
+def _period_said(period) -> str:
+    """``period`` as a person names it in a response message ("September 2026")."""
+    from .wording import period_words
+
+    return period_words(period)
 
 
 # Support the line workflow.
@@ -2767,13 +2779,14 @@ class AnalyticsSliceView(APIView):
         reader_scope = _reader_scope(request)
         axis = (request.query_params.get("axis") or "").strip()
         if not axis:
-            raise ValidationError({"axis": "An 'axis' query parameter is required "
-                                           "('cost_center' or a dimension code)."})
+            raise ValidationError({"axis": "Choose what to break the figures down by: "
+                                           "cost centre, or one of your dimensions."})
         if axis != "cost_center" and not Dimension.objects.filter(
             entity=entity, code=axis, is_active=True
         ).exists():
             raise ValidationError(
-                {"axis": f"'{axis}' is not 'cost_center' or an active dimension in this entity."})
+                {"axis": "Break the figures down by cost centre, or by one of your active "
+                         "dimensions."})
 
         period = _resolve_period(entity, request)
         account_type = request.query_params.get("account_type") or None

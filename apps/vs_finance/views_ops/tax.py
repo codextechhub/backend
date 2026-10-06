@@ -544,7 +544,7 @@ class TaxFilingPayView(_TaxFilingActionBase):
             rows = [{key: body[key] for key in ("branch", "bank_account", "amount") if key in body}]
             fields = ("branch", "bank_account", "amount")
         elif not isinstance(rows, list) or not rows:
-            raise ValidationError({"shares": "Give at least one {branch, bank_account} payment."})
+            raise ValidationError({"shares": "Give at least one payment: the branch paying and the bank account it pays from."})
         else:
             fields = None
 

@@ -38,7 +38,7 @@ def _validate_date_window(start, end):
     """Reject an inverted inclusive report window instead of returning a false empty."""
     if start is not None and end is not None and start > end:
         raise ValidationError({
-            "end_date": "end_date must be on or after start_date.",
+            "end_date": "The end date must be on or after the start date.",
         })
 
 

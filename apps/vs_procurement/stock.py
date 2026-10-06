@@ -470,7 +470,7 @@ def _adjust_stock_atomic(stock_item, *, quantity_delta, movement_date, location=
         value = round_stock_kobo(Decimal(balance.stock_value) * delta / on_hand)
     else:
         raise StockError(
-            "A unit_cost is required to increase stock that has no existing average cost.",
+            "Give a unit cost: this item has no average cost yet to value the extra stock at.",
         )
     if value <= 0:
         raise StockError("A stock adjustment must have a positive value to post.")

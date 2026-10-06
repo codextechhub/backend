@@ -55,6 +55,7 @@ from .constants import (
 )
 from .exceptions import FinanceError, PayerPaymentError
 from .money import format_naira
+from .wording import state_word
 
 #: The split recorded when the bursar typed each customer's amount.
 EXPLICIT_SPLIT = "EXPLICIT"
@@ -436,13 +437,13 @@ def _record_atomic(payer, *, bank_account, amount, payment_date, method, referen
     """
     from .inter_branch import post_held_receipt, validate_held_receipt
     from .models import Customer, HeldForBranchReceipt, Payment, PayerPayment, PayerPaymentShare
-    from .posting import ensure_period_open, resolve_period
+    from .posting import ensure_date_open
     from .receivables import post_payment
 
     Customer.objects.select_for_update().get(pk=payer.pk)
     if method not in PaymentMethod.values:
         raise PayerPaymentError("Unknown payment method.", field="method")
-    ensure_period_open(resolve_period(payer.entity, payment_date))
+    ensure_date_open(payer.entity, payment_date, branch=bank_account.branch_id)  # The bank's branch books it.
     plan = plan_payer_payment(
         payer, bank_account=bank_account, amount=amount, payment_date=payment_date,
         shares=shares, split=split,
@@ -568,7 +569,7 @@ def _void_atomic(document, *, actor_user=None, date=None):
     document = PayerPayment.objects.select_for_update().get(pk=document.pk)
     if document.status != DocumentStatus.POSTED:
         raise PayerPaymentError(
-            f"Only a posted payment can be voided; {document.document_number} is '{document.status}'.",
+            f"Only a posted payment can be voided; {document.document_number} is {state_word(document)}.",
         )
     shares = list(document.shares.select_related("receipt", "held_receipt", "customer").order_by("pk"))
     held_ids = [s.held_receipt_id for s in shares if s.held_receipt_id]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 
+from vs_workflow.services.approval_filter import filter_by_approval_param
 from django.db import transaction
 from rest_framework.exceptions import NotFound, ValidationError
 from vs_rbac.scoping import WholeTenantWriteMixin, transaction_branch_q
@@ -539,11 +540,16 @@ class PettyCashReturnListView(_FinanceBase):
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
         qs = _filter_by_branch(qs, request, entity)
+        qs = filter_by_approval_param(qs, request.query_params)
         return self.paginate(request, qs.order_by("-return_date", "-id"), PettyCashReturnSerializer)
 
 
 class PettyCashReturnDetailView(_FinanceBase):
     """GET /finance/petty-cash-returns/<id>/?entity= - one return.
+
+    Carries ``workflow_instance_id``, the return's latest approval request (null
+    before it is first sent), which a return an approver handed back is resumed
+    with (``POST /v1/workflow/instances/<id>/resubmit/``) or its request withdrawn.
 
     docstring-name: Petty cash returns
     """
@@ -551,10 +557,15 @@ class PettyCashReturnDetailView(_FinanceBase):
     rbac_permission = "finance.pettycash.view"
 
     def get(self, request, pk):
+        from ..approvals import with_approval_request
+
         ret = _returns_in_reach(request, resolve_entity(request)).filter(pk=pk).first()
         if ret is None:
             raise NotFound("Petty cash return not found for this entity.")
-        return success_response("Petty cash return retrieved.", data=PettyCashReturnSerializer(ret).data)
+        return success_response(
+            "Petty cash return retrieved.",
+            data=with_approval_request(PettyCashReturnSerializer(ret).data, ret),
+        )
 
 
 class PettyCashReturnVoidView(_FinanceBase):
@@ -564,7 +575,9 @@ class PettyCashReturnVoidView(_FinanceBase):
     fund's cash and float come back, a closure reopening the fund; refused (409)
     while its bank line is matched to a statement line, after a later return of the
     fund, or once the fund has moved on. A draft left by a rejected approval is
-    cancelled. The return must be one of the caller's own branches' (404 otherwise).
+    cancelled; one whose approval request is still open, returned to its sender
+    included, is refused (422, ``APPROVAL_REQUEST_OPEN``) until the request is
+    withdrawn. The return must be one of the caller's own branches' (404 otherwise).
 
     docstring-name: Void a petty cash return
     """

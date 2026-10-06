@@ -7,6 +7,7 @@ approval or edit from silently becoming an accounting mutation.
 """
 from __future__ import annotations
 
+from vs_workflow.services.approval_filter import filter_by_approval_param
 import hashlib
 import json
 from decimal import Decimal
@@ -662,6 +663,7 @@ class VendorInvoiceListCreateView(_ProcBase):
             qs = qs.filter(Q(document_number__icontains=search) | Q(vendor_reference__icontains=search)
                            | Q(vendor__code__icontains=search) | Q(vendor__name__icontains=search)
                            | Q(purchase_order__document_number__icontains=search))
+        qs = filter_by_approval_param(qs, request.query_params)
         return self.paginate(
             request, qs.order_by("-id"), VendorInvoiceListSerializer,
             page_context=lambda page: {"returned_document_ids": returned_document_ids(page)},

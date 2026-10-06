@@ -30,6 +30,7 @@ from .constants import (
     FinanceAuditAction,
 )
 from .exceptions import PostingError
+from .wording import state_word
 
 logger = logging.getLogger(__name__)  # Module logger for notification dispatch failures.
 
@@ -82,8 +83,8 @@ def _resolve_policy(entity, policy=None):
     )
     if chosen is None:  # Dunning cannot run without a stage policy.
         raise PostingError(
-            "No active dunning policy for this entity. Create one (or call "
-            "ensure_default_policy) before generating reminders.",
+            "No reminder policy is active for these books. Set one up before "
+            "generating reminders.",
         )
     return chosen  # Return the selected active policy.
 
@@ -437,7 +438,7 @@ def mark_notice_sent(notice, *, actor_user=None):
         return notice
     if notice.notice_status != DunningNoticeStatus.PENDING:  # Only pending notices can be sent.
         raise PostingError(
-            f"Notice {notice.document_number} is '{notice.notice_status}'; "
+            f"Notice {notice.document_number} is {state_word(notice, 'notice_status')}; "
             f"only a pending notice can be marked sent.",
         )
 

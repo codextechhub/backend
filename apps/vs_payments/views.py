@@ -751,6 +751,10 @@ class PayoutBatchSummaryView(APIView):
 class PayoutBatchDetailView(APIView):
     """GET a batch with its items; POST refuses direct provider submission.
 
+    GET carries ``workflow_instance_id``, the batch's latest approval request
+    (null before it is first sent), which a batch an approver returned is resumed
+    with (``POST /v1/workflow/instances/<id>/resubmit/``).
+
     docstring-name: Payout batches
     """
 
@@ -769,9 +773,12 @@ class PayoutBatchDetailView(APIView):
     def get(self, request, pk):
         _, reach = _reach(request)
         batch = reach.get_or_404(reach.batches(), pk, "No such payout batch in this entity.")
+        from vs_finance.approvals import with_approval_request
+
         return success_response(
             "Payout batch retrieved.",
-            data=PayoutBatchSerializer(batch, context={"request": request}).data,
+            data=with_approval_request(
+                PayoutBatchSerializer(batch, context={"request": request}).data, batch),
         )
 
     # Handle POST requests for this endpoint.

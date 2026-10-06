@@ -36,6 +36,7 @@ from .audit import record
 from .close import require_reason
 from .constants import FinanceAuditAction, PeriodStatus
 from .exceptions import PeriodCloseError
+from .wording import state_word
 
 #: The setting holding the minimum age, in whole years after a year's end.
 MIN_AGE_KEY = "finance.archive.min_age_years"
@@ -148,7 +149,7 @@ def archive_fiscal_year(entity, fiscal_year, *, actor_user=None, reason=None):
         raise PeriodCloseError(f"Fiscal year {fiscal_year.year} is already archived.")
     if fiscal_year.status not in (PeriodStatus.CLOSED, PeriodStatus.LOCKED):
         raise PeriodCloseError(
-            f"Fiscal year {fiscal_year.year} is '{fiscal_year.status}'. Only a closed "
+            f"Fiscal year {fiscal_year.year} is {state_word(fiscal_year)}. Only a closed "
             f"or locked year can be archived.")
     earliest = earliest_archive_date(fiscal_year)
     if tenant_today(entity.tenant) < earliest:

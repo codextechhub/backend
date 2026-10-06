@@ -43,6 +43,7 @@ from .exceptions import (
 from .deferred_income import defers, schedule_line
 from .money import format_naira
 from .posting import post_journal, resolve_period
+from .wording import state_word
 
 
 # --------------------------------------------------------------------------- #
@@ -118,7 +119,7 @@ def _post_invoice_atomic(invoice, *, actor_user=None):
 
     if invoice.status != DocumentStatus.DRAFT:  # Only drafts can be posted.
         raise PostingError(
-            f"Invoice {invoice.document_number or invoice.pk} is '{invoice.status}', "
+            f"Invoice {invoice.document_number or invoice.pk} is {state_word(invoice)}, "
             f"only a draft invoice can be posted.",
         )
 
@@ -740,7 +741,7 @@ def _require_settlable_targets(source, targets):
                     f"to the {kind} that replaced it.",
                 )
             raise SettlementTargetError(
-                f"{kind.capitalize()} {number} is '{target.status}'; only a posted {kind} "
+                f"{kind.capitalize()} {number} is {state_word(target)}; only a posted {kind} "
                 f"can be settled.",
             )
         if target.customer_id != source.customer_id:
@@ -963,7 +964,7 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
 
     if payment.status != DocumentStatus.DRAFT:  # Only draft receipts can be posted.
         raise PostingError(
-            f"Payment {payment.document_number or payment.pk} is '{payment.status}', "
+            f"Payment {payment.document_number or payment.pk} is {state_word(payment)}, "
             f"only a draft payment can be posted.",
         )
     if payment.amount <= 0:  # Reject zero or negative receipts.

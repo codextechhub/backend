@@ -82,6 +82,7 @@ def _requisitions(scope):
 
 
 _DOC_STATUS = choice_labels("vs_finance.constants.DocumentStatus")
+_APPROVAL_STATE = choice_labels("vs_procurement.constants.ProcApprovalState")
 _KYC_STATUS = choice_labels("vs_procurement.constants.VendorKycStatus")
 _MATCH_STATUS = choice_labels("vs_procurement.constants.MatchStatus")
 
@@ -126,6 +127,7 @@ def register_datasets():
             FilterDef("order_date", "Order date", FILTER_DATE_RANGE, required=True,
                       is_primary_date=True),
             FilterDef("status", "Status", FILTER_CHOICE, choices=_DOC_STATUS),
+            FilterDef("approval_state", "Approval", FILTER_CHOICE, choices=_APPROVAL_STATE),
             FilterDef("vendor", "Vendor", FILTER_TEXT, source="vendor__name"),
         ),
     ))
@@ -271,11 +273,33 @@ def register_datasets():
 # --------------------------------------------------------------------------- #
 # Translate the purchase-order list screen's filters into export filters.
 def _translate_purchase_orders(params):
+    """The order list's filters as export filters, ``status`` in the list's own precedence.
+
+    The list's status chip is the order's display status
+    (:func:`vs_procurement.views.orders._filter_purchase_orders`): an order whose
+    approval request is open reads Pending Approval, whatever its stored status.
+    So Pending Approval exports the orders whose approval is pending, and every
+    other status leaves them out, and the file holds the rows the table showed.
+    """
     from vs_exports.catalogue import Unmapped
 
+    from .constants import ProcApprovalState
+
     filters, unmapped = [], []
+    settled = [str(state) for state in ProcApprovalState.values if state != ProcApprovalState.PENDING]
     if value := params.get("status"):
-        filters.append({"id": "status", "values": [value]})
+        if value == "PENDING_APPROVAL":
+            filters.append({"id": "approval_state", "values": [str(ProcApprovalState.PENDING)]})
+        elif value == "PARTIAL":
+            unmapped.append(Unmapped(
+                "status", value,
+                "The purchase-order export cannot filter by how much of an order has "
+                "been received, so the file is not limited by it.",
+            ))
+        else:
+            filters.append({"id": "status", "values": [value]})
+            if value not in ("CANCELLED", "REVERSED"):
+                filters.append({"id": "approval_state", "values": settled})
     if value := params.get("vendor"):
         filters.append({"id": "vendor", "value": value})
     for key in ("q", "search"):

@@ -6,6 +6,7 @@ import re
 from rest_framework import serializers
 
 from vs_finance.money import format_naira
+from vs_finance.serializers import ApprovalStateMixin
 from vs_rbac.field_enforcement import FieldAccessMixin, can_read
 
 from .models import (
@@ -112,7 +113,15 @@ class PayoutInstructionSerializer(FieldAccessMixin, serializers.ModelSerializer)
         return int((obj.metadata or {}).get("wht_amount", 0))
 
 
-class PayoutBatchSerializer(serializers.ModelSerializer):
+class PayoutBatchSerializer(ApprovalStateMixin, serializers.ModelSerializer):
+    """A payout batch with its instructions.
+
+    ``approval_state`` and ``approval_returned`` say where it stands with its
+    approval route (:class:`vs_finance.serializers.ApprovalStateMixin`): a batch
+    an approver handed back reads PENDING and returned while it stays DRAFT, and
+    is resumed from the approvals screen with the detail's ``workflow_instance_id``.
+    """
+
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     total_amount_naira = serializers.SerializerMethodField()
     instructions = PayoutInstructionSerializer(many=True, read_only=True)
@@ -123,7 +132,7 @@ class PayoutBatchSerializer(serializers.ModelSerializer):
         fields = [
             "id", "entity_code", "branch", "provider", "reference", "title", "narration", "status",
             "total_amount", "total_amount_naira", "item_count", "submitted_at",
-            "created_at", "instructions",
+            "created_at", "instructions", "approval_state", "approval_returned",
         ]
 
     def get_total_amount_naira(self, obj):
@@ -257,8 +266,11 @@ class PaymentEventSerializer(serializers.ModelSerializer):
         return self._attribution(obj)["acted_label"]
 
 
-class PayoutBatchSummarySerializer(serializers.ModelSerializer):
-    """List view - omits the (potentially large) child instruction array."""
+class PayoutBatchSummarySerializer(ApprovalStateMixin, serializers.ModelSerializer):
+    """List view - omits the (potentially large) child instruction array.
+
+    Carries ``approval_state`` and ``approval_returned``, read once per page.
+    """
 
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     total_amount_naira = serializers.SerializerMethodField()
@@ -268,7 +280,7 @@ class PayoutBatchSummarySerializer(serializers.ModelSerializer):
         fields = [
             "id", "entity_code", "provider", "reference", "title", "status",
             "total_amount", "total_amount_naira", "item_count", "submitted_at",
-            "created_at",
+            "created_at", "approval_state", "approval_returned",
         ]
 
     def get_total_amount_naira(self, obj):

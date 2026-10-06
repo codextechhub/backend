@@ -12,7 +12,7 @@ and the provider says what it actually holds (``available_balance``, Paystack's
 records the check (:class:`~vs_payments.models.HeldReconciliation`).
 
 When they differ by more than the platform's tolerance (the configuration value
-``payments.held_reconciliation_tolerance_kobo``, default 0), or the account
+``payments.held_reconciliation_tolerance``, in naira, default 0), or the account
 disagrees with the sub-ledger it mirrors, the check opens one system-health
 incident (:func:`vs_health.faults.report_configuration_fault`, as the worker
 watchdog does) and tells the platform's operators once, when it opens. The next
@@ -90,8 +90,8 @@ FAULT_KEY = "payments.held-ledger-mismatch"
 #: The incident a settlement record the check refuses to count is filed under.
 SWEEP_FAULT_KEY = "payments.provider-sweep-refused"
 
-#: The platform setting holding the tolerance, in kobo.
-TOLERANCE_KEY = "payments.held_reconciliation_tolerance_kobo"
+#: The platform setting holding the tolerance, in whole naira as an operator types it.
+TOLERANCE_KEY = "payments.held_reconciliation_tolerance"
 
 #: The platform setting saying the provider sweeps the platform's balance to its bank.
 SWEPT_KEY = "payments.provider_balance_swept"
@@ -121,11 +121,15 @@ class SweepUnsettled(Exception):
 
 
 def tolerance() -> int:
-    """Kobo the provider's balance may differ from the books by before it is an incident."""
+    """Kobo the provider's balance may differ from the books by before it is an incident.
+
+    The setting is typed in naira, as every amount a person sees is
+    (:data:`TOLERANCE_KEY`); the check compares kobo, so it is converted here.
+    """
     from vs_config.conf import get_config
 
     try:
-        return max(0, int(get_config(TOLERANCE_KEY, 0) or 0))
+        return max(0, int(get_config(TOLERANCE_KEY, 0) or 0)) * 100
     except (TypeError, ValueError):
         return 0
 

@@ -22,6 +22,7 @@ from vs_config.display import format_date_range
 from .constants import CONTRACT_DOC_TYPE, ContractStatus, MilestoneStatus
 from .exceptions import ContractError
 from .purchasing import vendor_purchase_block_reason
+from vs_finance.wording import state_word
 
 
 # --------------------------------------------------------------------------- #
@@ -63,13 +64,13 @@ def activate_contract(contract, *, actor_user=None):
     contract.vendor = Vendor.objects.select_for_update(of=("self",)).get(pk=contract.vendor_id)
     if contract.status != ContractStatus.DRAFT:
         raise ContractError(
-            f"Contract {contract.reference} is '{contract.status}'; "
+            f"Contract {contract.reference} is {state_word(contract)}; "
             f"only a draft contract can be activated.",
         )
     if contract.start_date is None or contract.end_date is None:
-        raise ContractError("A contract needs a start_date and end_date before activation.")
+        raise ContractError("A contract needs a start date and an end date before it is made active.")
     if contract.end_date < contract.start_date:
-        raise ContractError("A contract's end_date cannot precede its start_date.")
+        raise ContractError("A contract cannot end before it starts.")
     if reason := vendor_purchase_block_reason(contract.vendor):
         raise ContractError(reason)
     contract.status = ContractStatus.ACTIVE
@@ -140,11 +141,11 @@ def renew_contract(contract, *, reference, start_date, end_date, contract_value=
 
     if contract.status not in (ContractStatus.ACTIVE, ContractStatus.EXPIRED):
         raise ContractError(
-            f"Contract {contract.reference} is '{contract.status}'; only an active or "
+            f"Contract {contract.reference} is {state_word(contract)}; only an active or "
             f"expired contract can be renewed.",
         )
     if end_date < start_date:
-        raise ContractError("The renewal's end_date cannot precede its start_date.")
+        raise ContractError("The renewal cannot end before it starts.")
     if reason := vendor_purchase_block_reason(contract.vendor):
         raise ContractError(reason)
 

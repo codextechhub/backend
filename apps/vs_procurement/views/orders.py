@@ -7,6 +7,7 @@ these APIs are integer kobo; quantities use bounded decimal units.
 """
 from __future__ import annotations
 
+from vs_workflow.services.approval_filter import filter_by_approval_param
 import datetime
 
 from django.db import transaction
@@ -73,6 +74,7 @@ from .base import (
     _strict_kobo,
     _text,
 )
+from vs_finance.wording import state_word
 
 # --------------------------------------------------------------------------- #
 # Purchase orders                                                             #
@@ -150,7 +152,7 @@ def _resolve_po_contract(entity, vendor, raw):
             {"contract": "A purchase order can only be linked to its own vendor's contract."})
     if contract.status != ContractStatus.ACTIVE:
         raise ValidationError(
-            {"contract": "Call-offs can only be raised against an ACTIVE contract."})
+            {"contract": "Call-offs can only be raised against an active contract."})
     return contract
 
 
@@ -171,22 +173,33 @@ def _purchase_order_list_queryset(entity):
 
 
 def _filter_purchase_orders(qs, params):
-    """Apply server-side PO filters, including the derived partial-receipt stage."""
+    """Apply server-side PO filters, including the derived partial-receipt stage.
+
+    ``status`` filters on the order's ``display_status``, in its precedence
+    (:meth:`vs_procurement.serializers.PurchaseOrderSerializer.get_display_status`):
+    an order whose approval request is open is PENDING_APPROVAL and nothing else,
+    so ``?status=DRAFT`` leaves out a draft with its approvers (or returned to its
+    sender), and ``?status=PENDING_APPROVAL`` includes it. A cancelled or reversed
+    order is only ever its own status.
+    """
     if (status_ := params.get("status")):
-        if status_ == "PARTIAL":
+        pending = Q(status=DocumentStatus.PENDING_APPROVAL) | Q(approval_state=ProcApprovalState.PENDING)
+        if status_ in CLOSED_PO_STATUSES:
+            qs = qs.filter(status=status_)
+        elif status_ == "PENDING_APPROVAL":
+            qs = qs.filter(pending).exclude(status__in=CLOSED_PO_STATUSES)
+        elif status_ == "PARTIAL":
             # Quantities are aggregate annotations, so this becomes one grouped SQL query instead of page-local logic.
-            qs = qs.exclude(status__in=(DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL)).filter(
+            qs = qs.exclude(status__in=_UNISSUED_PO_STATUSES).exclude(pending).filter(
                 received_qty__gt=0, received_qty__lt=F("ordered_qty"),
             )
-        elif status_ == "PENDING_APPROVAL":
-            qs = qs.filter(Q(status=DocumentStatus.PENDING_APPROVAL) | Q(approval_state=ProcApprovalState.PENDING))
         elif status_ == "APPROVED":
             # Fully received documents remain approved in the list; only in-progress receipt work moves to Partial.
-            qs = qs.filter(status=DocumentStatus.APPROVED).filter(
+            qs = qs.filter(status=DocumentStatus.APPROVED).exclude(pending).filter(
                 Q(received_qty__isnull=True) | Q(received_qty=0) | Q(received_qty__gte=F("ordered_qty")),
             )
         else:
-            qs = qs.filter(status=status_)
+            qs = qs.filter(status=status_).exclude(pending)
     if (vendor := params.get("vendor")):
         qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
     if (search := params.get("search", "").strip()):
@@ -196,7 +209,7 @@ def _filter_purchase_orders(qs, params):
             | Q(vendor__name__icontains=search)
             | Q(requisition__document_number__icontains=search)
         )
-    return qs
+    return filter_by_approval_param(qs, params)
 
 
 def purchase_order_summary(entity, *, as_of: datetime.date | None = None,
@@ -745,7 +758,7 @@ def _shared_line_specs(request, entity, lines):
         allocated_quantity = 0
         for allocation in allocations:
             if not isinstance(allocation, dict) or not allocation.get("requisition_line"):
-                raise ValidationError({"allocations": "Each allocation needs a requisition_line."})
+                raise ValidationError({"allocations": "Each allocation needs the requisition line it covers."})
             # Locked so two buyers cannot put one line on two RFQs at once.
             source = PurchaseRequisitionLine.objects.select_for_update(of=("self",)).select_related(
                 "requisition",
@@ -998,7 +1011,7 @@ class RfqDetailView(_ProcBase):
         # Only a draft is editable; once issued its lines are a firm invitation vendors quote against.
         if rfq.rfq_status != RfqStatus.DRAFT:
             raise ValidationError(
-                {"rfq_status": f"Only a draft RFQ can be edited (this one is '{rfq.rfq_status}')."})
+                {"rfq_status": f"Only a draft RFQ can be edited (this one is {state_word(rfq, 'rfq_status')})."})
         body = request.data
         if "title" in body:
             rfq.title = _text(body.get("title"), "title", 200)
@@ -1237,7 +1250,7 @@ class QuotationListCreateView(_ProcBase):
         # A quotation is an offer against a *live* invitation - the RFQ must be issued.
         if rfq.rfq_status != RfqStatus.ISSUED:
             raise ValidationError(
-                {"rfq": f"Quotations can only be captured against an ISSUED RFQ (this one is '{rfq.rfq_status}')."})
+                {"rfq": f"Quotations can only be captured against an issued RFQ; this one is {state_word(rfq, 'rfq_status')}."})
         vendor = _resolve_vendor(request, entity, body.get("vendor"))
         # Governance gate: an inactive / on-hold / KYC-rejected vendor cannot enter contention.
         if reason := purchasing.vendor_purchase_block_reason(vendor):
@@ -1315,7 +1328,7 @@ class QuotationDetailView(_ProcBase):
         if quotation.quotation_status != QuotationStatus.DRAFT:
             raise ValidationError(
                 {"quotation_status": f"Only a draft quotation can be edited (this one is "
-                                     f"'{quotation.quotation_status}')."})
+                                     f"{state_word(quotation, 'quotation_status')})."})
         body = request.data
         if "quote_date" in body:
             quotation.quote_date = _date(body.get("quote_date"), "quote_date", required=True)

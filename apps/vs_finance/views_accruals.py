@@ -14,6 +14,7 @@ names no branch, is read through its branch lines (:func:`_provisions_in_reach`)
 """
 from __future__ import annotations
 
+from vs_workflow.services.approval_filter import filter_by_approval_param
 from django.db import transaction
 from django.db.models import Q
 from rest_framework.exceptions import NotFound, ValidationError
@@ -376,6 +377,7 @@ class DoubtfulDebtProvisionListCreateView(_WholeTenantRun):
               .select_related("entity__tenant", "branch").order_by("-id"))
         # A run names no branch; ``?branch=`` keeps the runs with a line for it.
         qs = _filter_by_branch(qs, request, entity, column="lines__branch")
+        qs = filter_by_approval_param(qs, request.query_params)
         return _paginate(request, qs, DoubtfulDebtProvisionSerializer, self,
                          context=_reader_context(request))
 

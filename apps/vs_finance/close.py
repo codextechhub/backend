@@ -36,6 +36,7 @@ from .constants import (
 )
 from .exceptions import PeriodCloseError
 from .money import format_naira
+from .wording import period_label, period_status_word
 
 #: Checks contributed by dependent apps, in registration order. Populated at startup
 #: from each app's ``ready()``; see :func:`register_close_check`.
@@ -134,6 +135,43 @@ class ChecklistItem:
     detail: str = ""
     done_by_close: bool = False
     close_settles: str = ""
+    title: str = ""
+
+    @property
+    def label(self) -> str:
+        """The check's name as a bursar reads it: "Receivables agree with the ledger".
+
+        ``name`` stays the machine code a screen keys on (``ar_reconciled``) and is
+        never put in a sentence. A check contributed by another app passes its own
+        ``title``; finance's own checks are named in :data:`CHECK_TITLES`.
+        """
+        return (
+            self.title or CHECK_TITLES.get(self.name)
+            or self.name.replace("_", " ").capitalize()
+        )
+
+
+#: How finance's own close checks read to a person, by their machine name.
+CHECK_TITLES = {
+    "trial_balance_balanced": "Trial balance balances",
+    "no_draft_journals": "No draft journals left in the month",
+    "ar_reconciled": "Receivables agree with the ledger",
+    "depreciation_posted": "Depreciation posted",
+    "earlier_periods_closed": "Earlier months closed",
+    "deferred_income_released": "Deferred income released",
+    "inter_branch_balanced": "Balances between branches agree",
+    "sealed_figures_unchanged": "Closed figures unchanged",
+    "depreciation_posted_for_year": "The year's depreciation posted",
+}
+
+
+def failures_sentence(items) -> str:
+    """The failed checks of a refusal as one sentence: each one's title and what it found."""
+    parts = []
+    for item in items:
+        detail = str(item.detail or "").strip().rstrip(".")
+        parts.append(f"{item.label}: {detail}" if detail else item.label)
+    return "; ".join(parts)
 
 
 @dataclass
@@ -314,26 +352,6 @@ def periods_close_in_order(entity) -> bool:
     return resolve_finance_calendar_settings(entity).periods_close_in_order
 
 
-def period_label(period, tenant) -> str:
-    """How a bursar names ``period``: "August 2026" for a calendar month.
-
-    A period that is not a calendar month (a quarter, or a month that starts mid-way
-    through one) keeps a quarter's own name ("Q1 FY2026"), or reads as its dates.
-    """
-    import datetime
-    import re
-
-    from vs_config.display import format_date, format_month
-
-    start, end = period.start_date, period.end_date
-    if start.day == 1 and (end + datetime.timedelta(days=1)).day == 1 \
-            and (start.year, start.month) == (end.year, end.month):
-        return format_month(start, tenant, month="long")
-    if re.match(r"^\d{4}-\d{2}", period.name or ""):
-        return f"{format_date(start, tenant)} to {format_date(end, tenant)}"
-    return period.name
-
-
 def _unit(period, plural=False) -> str:
     """"month" for a period a month long or shorter, else "period"."""
     word = "month" if (period.end_date - period.start_date).days <= 31 else "period"
@@ -498,6 +516,11 @@ def _close_order_item(entity, period, *, branch_id=None, soft=False):
     """
     if not periods_close_in_order(entity):
         return None
+    if branch_id is None:
+        from vs_rbac.scoping import only_branch_id
+
+        if only_branch_id(entity.tenant) is None:
+            return _whole_school_order_item(entity, period, soft=soft)
     blocker = earlier_period_in_the_way(entity, period, soft=soft, branch=branch_id)
     if blocker is None:
         return ChecklistItem(
@@ -509,6 +532,75 @@ def _close_order_item(entity, period, *, branch_id=None, soft=False):
             and period.status == PeriodStatus.OPEN):
         detail += f" {period_label(period, entity.tenant)} can be soft-closed now."
     return ChecklistItem(name="earlier_periods_closed", passed=False, detail=detail)
+
+
+def _whole_school_order_item(entity, period, *, soft=False):
+    """``earlier_periods_closed`` for the All branches view of a school with several branches.
+
+    Each branch closes its own months in order (:func:`refuse_out_of_order_close`
+    with its branch), and the school's month closes once every branch has closed
+    it. So the whole-school view answers branch by branch, from each branch's own
+    months, never from the school's month (which stays open until the last branch
+    closes, and would report Lekki's open August as everybody's).
+
+    Bright Star has closed August at Ikeja but not at Lekki. Viewing September
+    under All branches:
+
+    * the item names Lekki's August as the month in Lekki's way, says Ikeja can
+      close September now, and is a warning, not a blocker: Ikeja's close, and a
+      forced close of it, are still open to the bursar exactly as they are when
+      Ikeja is chosen;
+    * once Lekki's August is closed too, it passes;
+    * it blocks only when no branch still to close September can close it, which
+      is when every close the bursar could start would be refused.
+
+    A branch that has already closed the month (soft-closed, for a soft close)
+    is left out: it has nothing left to wait for.
+    """
+    from vs_tenants.models import Branch
+
+    from .models import BranchFiscalPeriod
+
+    tenant = entity.tenant
+    target = period_label(period, tenant)
+    done = _SOFT_OR_SHUT if soft else _SHUT
+    own = dict(BranchFiscalPeriod.objects.filter(period=period).values_list("branch_id", "status"))
+    ready, blocked = [], []
+    for branch in Branch.all_objects.filter(tenant_id=entity.tenant_id).order_by("name", "pk"):
+        if own.get(branch.pk, period.status) in done:
+            continue
+        blocker = earlier_period_in_the_way(entity, period, soft=soft, branch=branch.pk)
+        if blocker is None:
+            ready.append(branch.name)
+        else:
+            blocked.append((branch.name, period_label(blocker, tenant)))
+    need = "soft-closed or closed" if soft else "closed"
+    if not blocked:
+        return ChecklistItem(
+            name="earlier_periods_closed", passed=True,
+            detail=f"Every earlier {_unit(period)} is {need} at every branch.",
+        )
+    act = "soft-close" if soft else "close"
+    waiting = "; ".join(
+        f"{name} has not {act}d {first} yet, so {name} can {act} {target} only after it"
+        for name, first in blocked
+    )
+    if ready:
+        detail = f"{waiting}. {_joined(ready)} can {act} {target} now."
+    else:
+        detail = (
+            f"{waiting}. {_unit(period, plural=True).capitalize()} close in order at "
+            f"each branch, so no branch can {act} {target} yet."
+        )
+    return ChecklistItem(
+        name="earlier_periods_closed", passed=False, blocking=not ready, detail=detail,
+    )
+
+
+def _joined(names) -> str:
+    """"Ikeja", "Ikeja and Lekki", "Abuja, Ikeja and Lekki"."""
+    names = list(names)
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
 
 
 def lock_periods_in_date_order(entity, period, *, before):
@@ -612,7 +704,7 @@ def _transition(period, new_status, *, actor_user, action, message, **metadata):
     record(  # Audit the transition.
         entity=period.entity, action=action, actor_user=actor_user, target=period,  # Entity, action, actor, target.
         message=message, target_type="FiscalPeriod",  # Human message and explicit target type.
-        period=str(period), period_status=new_status,  # Structured period metadata.
+        period=period.name, period_status=new_status,  # Structured period metadata.
         **metadata,
     )
     return period  # Return transitioned period.
@@ -670,12 +762,13 @@ def close_period(entity, period, *, actor_user=None, soft=False, force=False,
     from .models import FiscalPeriod, FiscalYear
     from .posting import read_key_shared
 
+    said = period_label(period, entity.tenant)
     if period.is_closing:
         raise PeriodCloseError(
-            f"'{period}' is the year's closing period; it opens and closes with its "
+            f"{said} is the year's closing period; it opens and closes with its "
             f"fiscal year, not on its own.")
     if force:
-        reason = require_reason(reason, act=f"force-close period '{period}'")
+        reason = require_reason(reason, act=f"force-close {said}")
     read_key_shared(FiscalYear, period.fiscal_year_id, ("status",))  # Year before month.
     in_order = periods_close_in_order(entity)
     if in_order:
@@ -683,9 +776,7 @@ def close_period(entity, period, *, actor_user=None, soft=False, force=False,
     FiscalPeriod.objects.select_for_update().only("pk").get(pk=period.pk)
     period.refresh_from_db(fields=["status"])
     if period.status in (PeriodStatus.CLOSED, PeriodStatus.LOCKED):
-        raise PeriodCloseError(
-            f"Period '{period}' is already '{period.status}'.",
-        )
+        raise PeriodCloseError(f"{said} is already {period_status_word(period.status)}.")
     if in_order:
         refuse_out_of_order_close(entity, period, soft=soft)
 
@@ -700,18 +791,17 @@ def close_period(entity, period, *, actor_user=None, soft=False, force=False,
 
     checklist = close_checklist(entity, period, extra_checks=extra_checks)  # Run close integrity checks.
     if not checklist.passed and not force:  # Blocking failures stop the close unless forced.
-        failed = ", ".join(f"{i.name} ({i.detail})" for i in checklist.failures)  # Build readable failure summary.
         raise PeriodCloseError(
-            f"Period '{period}' is not ready to close: {failed}.",
-            failures=[i.name for i in checklist.failures],  # Provide machine-readable failed check names.
+            f"{said} is not ready to close. {failures_sentence(checklist.failures)}.",
+            failures=[i.name for i in checklist.failures],  # Machine names, for a screen to key on.
         )
 
     new_status = PeriodStatus.SOFT_CLOSED if soft else PeriodStatus.CLOSED  # Choose requested close strength.
     _transition(  # Apply the period status transition and audit it.
         period, new_status, actor_user=actor_user,  # Target status and actor.
         action=FinanceAuditAction.PERIOD_CLOSED,  # Audit action for close.
-        message=f"Closed period to {new_status}"  # Base audit message.
-                + ("" if checklist.passed else " (forced over checklist failures)"),  # Flag forced closes.
+        message=f"{'Soft-closed' if soft else 'Closed'} {said}"
+                + ("" if checklist.passed else " over failed checks"),  # Flag forced closes.
         **({"forced": True, "reason": reason} if force else {}),
     )
     _sync_branch_periods(period, new_status, actor_user)
@@ -742,10 +832,11 @@ def reopen_period(entity, period, *, actor_user=None, reason=None):
     from .models import FiscalPeriod, FiscalYear
     from .posting import read_key_shared
 
+    said = period_label(period, entity.tenant)
     if period.is_closing:
         raise PeriodCloseError(
-            f"'{period}' is the year's closing period; reopen the fiscal year instead.")
-    reason = require_reason(reason, act=f"reopen period '{period}'")
+            f"{said} is the year's closing period; reopen the fiscal year instead.")
+    reason = require_reason(reason, act=f"reopen {said}")
     year = read_key_shared(FiscalYear, period.fiscal_year_id, ("year", "status"))
     FiscalPeriod.objects.select_for_update().only("pk").get(pk=period.pk)
     in_order = periods_close_in_order(entity)
@@ -754,16 +845,16 @@ def reopen_period(entity, period, *, actor_user=None, reason=None):
     period.refresh_from_db(fields=["status"])
     if year is not None and year[1] == PeriodStatus.LOCKED:
         raise PeriodCloseError(
-            f"Period '{period}' belongs to FY{year[0]}, which is LOCKED; neither the "
-            f"year nor its periods can be re-opened.")
+            f"{said} belongs to FY{year[0]}, which is locked; neither the year nor "
+            f"its months can be reopened.")
     if year is not None and year[1] == PeriodStatus.CLOSED:
         raise PeriodCloseError(
-            f"Period '{period}' belongs to FY{year[0]}, which is CLOSED. Reopen the "
-            f"fiscal year first, then re-open the period.")
+            f"{said} belongs to FY{year[0]}, which is closed. Reopen the fiscal year "
+            f"first, then reopen the month.")
     if period.status == PeriodStatus.LOCKED:  # Locked periods are irreversible.
-        raise PeriodCloseError(f"Period '{period}' is LOCKED and cannot be re-opened.")
+        raise PeriodCloseError(f"{said} is locked and can never be reopened.")
     if period.status == PeriodStatus.OPEN:  # Open periods do not need reopening.
-        raise PeriodCloseError(f"Period '{period}' is already open.")
+        raise PeriodCloseError(f"{said} is already open.")
     if in_order:
         refuse_out_of_order_reopen(entity, period)
     period.status = PeriodStatus.OPEN  # Restore open lifecycle status.
@@ -774,7 +865,7 @@ def reopen_period(entity, period, *, actor_user=None, reason=None):
     record(  # Audit the reopen.
         entity=entity, action=FinanceAuditAction.PERIOD_REOPENED,  # Audit action for reopening.
         actor_user=actor_user, target=period, target_type="FiscalPeriod",  # Actor and target context.
-        message=f"Re-opened period '{period}'.", period=str(period),  # Human and structured period text.
+        message=f"Reopened {said}.", period=period.name,  # Human and structured period text.
         reason=reason,
     )
     return period  # Return reopened period.
@@ -795,9 +886,11 @@ def lock_period(entity, period, *, actor_user=None):
     period is already CLOSED, and an earlier period cannot reopen while a later one
     is not OPEN, so nothing the check reads can change under it.
     """
+    said = period_label(period, entity.tenant)
     if period.status != PeriodStatus.CLOSED:  # Only fully closed periods may be locked.
         raise PeriodCloseError(
-            f"Only a CLOSED period can be locked; '{period}' is '{period.status}'.",
+            f"Only a closed month can be locked; {said} is "
+            f"{period_status_word(period.status)}.",
         )
     refuse_out_of_order_close(entity, period, act="lock")
     if (
@@ -810,7 +903,7 @@ def lock_period(entity, period, *, actor_user=None):
     _transition(  # Apply irreversible lock transition and audit it.
         period, PeriodStatus.LOCKED, actor_user=actor_user,  # Target locked status and actor.
         action=FinanceAuditAction.PERIOD_LOCKED,  # Audit action for lock.
-        message=f"Locked period '{period}' - permanently sealed.",  # Human-readable audit message.
+        message=f"Locked {said} for good.",  # Human-readable audit message.
     )
     _sync_branch_periods(period, PeriodStatus.LOCKED, actor_user)
     return period  # Return locked period.
@@ -1017,7 +1110,7 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     current_status = branch_row.status if branch_row is not None else fiscal_year.status
     if current_status in (PeriodStatus.CLOSED, PeriodStatus.LOCKED):
         raise PeriodCloseError(
-            f"Fiscal year {fiscal_year.year} is already '{current_status}'.")
+            f"FY{fiscal_year.year} is already {period_status_word(current_status)}.")
 
     closing_date = closing_date or fiscal_year.end_date  # Default to the last day of the year.
     if closing_date != fiscal_year.end_date:
@@ -1058,8 +1151,10 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
             )
         if open_count:  # Refuse while any month is still OPEN.
             raise PeriodCloseError(
-                f"{open_count} period(s) in FY{fiscal_year.year} are still OPEN; "
-                f"close or soft-close them before closing the year (or pass force).")
+                f"{open_count} {'month' if open_count == 1 else 'months'} of "
+                f"FY{fiscal_year.year} {'is' if open_count == 1 else 'are'} still open. "
+                f"Close or soft-close {'it' if open_count == 1 else 'them'} before closing "
+                f"the year, or force the close with a reason.")
 
     if periods_close_in_order(entity):
         _refuse_year_close_out_of_order(entity, fiscal_year, branch_id=branch_id)
@@ -1067,8 +1162,8 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     checklist = year_close_checklist(entity, fiscal_year, branch=branch_id)
     if not checklist.passed and not forced:  # Blocking failures stop the close unless forced.
         raise PeriodCloseError(
-            f"FY{fiscal_year.year} is not ready to close: "
-            + " ".join(i.detail for i in checklist.failures),
+            f"FY{fiscal_year.year} is not ready to close. "
+            f"{failures_sentence(checklist.failures)}.",
             failures=[i.name for i in checklist.failures],
         )
 
@@ -1080,10 +1175,10 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     if buckets:
         period = ensure_closing_period(fiscal_year)  # The closing entries' own period.
         if not _period_accepts_posting(  # Formal close may use CLOSED, but never LOCKED.
-            period, allow_restricted=True, allow_closed=True,
+            period, branch=branch_id, allow_restricted=True, allow_closed=True,
         ):
             raise PeriodCloseError(
-                f"The closing period of FY{fiscal_year.year} is LOCKED, so no closing "
+                f"The closing period of FY{fiscal_year.year} is locked, so no closing "
                 f"entry can post into it.")
 
     if branch_row is None:
@@ -1243,17 +1338,18 @@ def reopen_fiscal_year(entity, fiscal_year, *, actor_user=None, reason=None, bra
         if branch_row is None or branch_row.status != PeriodStatus.CLOSED:
             status = branch_row.status if branch_row is not None else PeriodStatus.OPEN
             raise PeriodCloseError(
-                f"Branch fiscal year {fiscal_year.year} is '{status}'; only a CLOSED year can be re-opened.")
+                f"FY{fiscal_year.year} is {period_status_word(status)} at {owned_branch.name}; "
+                f"only a closed year can be reopened.")
     if fiscal_year.archived_at is not None:
         raise PeriodCloseError(
             f"Fiscal year {fiscal_year.year} is archived. Unarchive it before re-opening it.")
     if fiscal_year.status == PeriodStatus.LOCKED:
         raise PeriodCloseError(
-            f"Fiscal year {fiscal_year.year} is LOCKED and cannot be re-opened.")
+            f"FY{fiscal_year.year} is locked and can never be reopened.")
     if branch_row is None and fiscal_year.status != PeriodStatus.CLOSED:
         raise PeriodCloseError(
-            f"Fiscal year {fiscal_year.year} is '{fiscal_year.status}'; only a CLOSED "
-            f"year can be re-opened.")
+            f"FY{fiscal_year.year} is {period_status_word(fiscal_year.status)}; only a "
+            f"closed year can be reopened.")
 
     journals = list(
         fiscal_year.closing_journals.filter(status=DocumentStatus.POSTED)
@@ -1265,7 +1361,8 @@ def reopen_fiscal_year(entity, fiscal_year, *, actor_user=None, reason=None, bra
             raise PeriodCloseError(
                 f"FY{fiscal_year.year} cannot be re-opened: its closing journal "
                 f"{journal.document_number or journal.pk} sits in "
-                f"'{journal.period or journal.date}', which is LOCKED, so it cannot be reversed.")
+                f"{period_label(journal.period, entity.tenant) if journal.period else journal.date}, "
+                f"which is locked, so it cannot be reversed.")
 
     if fiscal_year.status == PeriodStatus.CLOSED:
         fiscal_year.status = PeriodStatus.OPEN

@@ -374,7 +374,7 @@ def require_own_branch_bank(bank, document_branch, *, noun, field="bank_account"
 def _resolve_fiscal_year(entity, ref, field="fiscal_year"):
     """Resolve a fiscal year by its ``year`` label (preferred) or id within ``entity``."""
     if ref in (None, ""):  # Fiscal year is required for these endpoints.
-        raise ValidationError({field: "A fiscal_year (year or id) is required."})
+        raise ValidationError({field: "Choose the financial year."})
     qs = FiscalYear.objects.filter(entity=entity)
     fy = qs.filter(year=int(ref)).first() if str(ref).isdigit() else None
     if fy is None and str(ref).isdigit():  # Numeric refs can also be primary keys.

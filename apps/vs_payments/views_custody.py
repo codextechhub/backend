@@ -497,8 +497,8 @@ class PlatformProviderSettingsView(APIView):
         definition = ConfigurationDefinition.objects.filter(
             key=held_reconciliation.SWEPT_KEY, is_active=True).first()
         if definition is None:
-            raise NotFound("The setting is not in the configuration catalogue; "
-                           "run seed_config_catalogue.")
+            raise NotFound("This setting is not set up on the platform yet, so it "
+                           "cannot be changed here.")
         set_value(definition=definition, value=swept, actor=request.user, reason=reason)
         return success_response("Payment provider settings saved.",
                                 data=_provider_settings_payload())

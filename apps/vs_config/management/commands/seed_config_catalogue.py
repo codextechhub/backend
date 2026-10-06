@@ -121,10 +121,11 @@ DEFINITIONS = [
         "STRING", "Nigeria", {},
     ),
     (
-        "payments.held_reconciliation_tolerance_kobo", "Held-ledger Reconciliation Tolerance",
-        "Kobo the payment provider's reported balance may differ from the platform's books "
-        "before the daily check opens a health incident.",
-        "INTEGER", 0, {"min": 0, "max": 100_000_000},
+        "payments.held_reconciliation_tolerance", "Held-ledger Reconciliation Tolerance",
+        "Naira by which the payment provider's reported balance may differ from the "
+        "platform's books before the daily check opens a health incident. A whole "
+        "number of naira; 0 means the two must agree exactly.",
+        "INTEGER", 0, {"min": 0, "max": 1_000_000},
     ),
     (
         "payments.provider_balance_swept", "Paystack Balance Swept Automatically",

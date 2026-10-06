@@ -63,7 +63,7 @@ class CustomExceptionHandlerTests(TestCase):
 
         self.assertEqual(
             response.data["message"],
-            "email: That address already has an account.; role: Pick a role.",
+            "Email: That address already has an account.; Role: Pick a role.",
         )
 
     def test_non_field_errors_are_not_prefixed(self):
@@ -74,7 +74,7 @@ class CustomExceptionHandlerTests(TestCase):
 
         self.assertEqual(
             response.data["message"],
-            "The end date is before the start date.; name: This field is required.",
+            "The end date is before the start date.; Name: This field is required.",
         )
 
     def test_a_nested_row_error_carries_its_path(self):
@@ -90,8 +90,26 @@ class CustomExceptionHandlerTests(TestCase):
 
         self.assertEqual(
             response.data["message"],
-            "lines.0.amount: Required.; lines.1.amount: Required.",
+            "Line 1, amount: Required.; Line 2, amount: Required.",
         )
+
+    def test_a_field_reads_in_words_never_as_its_code_name(self):
+        from core.exceptions import field_words
+
+        self.assertEqual(field_words("gross_amount"), "Gross amount")
+        self.assertEqual(field_words("lines.1.unit_price"), "Line 2, unit price")
+        self.assertEqual(field_words("lines[0].gross_amount"), "Line 1, gross amount")
+        self.assertEqual(field_words("address"), "Address")
+        response = self._handle(ValidationError({
+            "gross_amount": ["Enter the amount as a whole number."],
+            "wht_amount": ["Amount cannot be negative."],
+        }))
+        self.assertEqual(
+            response.data["message"],
+            "Gross amount: Enter the amount as a whole number.; Wht amount: Amount cannot "
+            "be negative.",
+        )
+        self.assertIn("gross_amount", response.data["error"]["detail"])
 
     def test_a_long_list_of_errors_is_summarised(self):
         response = self._handle(ValidationError({f"f{n}": ["Bad."] for n in range(8)}))
@@ -139,7 +157,7 @@ class DjangoValidationErrorEnvelopeTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(
-            response.data["message"], "_type: This field cannot be blank."
+            response.data["message"], "Type: This field cannot be blank."
         )
 
     def test_a_field_error_keeps_its_field_in_the_detail(self):
@@ -159,9 +177,9 @@ class DjangoValidationErrorEnvelopeTests(TestCase):
             "slug": ["This slug is reserved. Choose another."],
         }))
 
-        self.assertIn("name: This field cannot be blank.", response.data["message"])
+        self.assertIn("Name: This field cannot be blank.", response.data["message"])
         self.assertIn(
-            "slug: This slug is reserved. Choose another.", response.data["message"]
+            "Slug: This slug is reserved. Choose another.", response.data["message"]
         )
 
     def test_a_message_with_no_field_is_not_given_a_fake_one(self):
